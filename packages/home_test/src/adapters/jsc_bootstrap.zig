@@ -904,6 +904,7 @@ fn transpileSource(
 fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
     if (std.mem.indexOfScalar(u8, source_text, '#') != null) return true;
     if (handle.minify_syntax or handle.minify_whitespace or handle.minify_identifiers) return true;
+    if (std.mem.indexOf(u8, source_text, "/*") != null) return true;
     if (loader == .js and std.mem.indexOf(u8, source_text, "String.raw`") != null) return true;
     return switch (loader) {
         .ts, .tsx => true,
@@ -966,13 +967,16 @@ fn transpileSourceWithBunParser(
         parser_options.features.replace_exports = replace_exports;
     }
 
-    var parser = try home_rt.js_parser.Parser.init(
+    var parser = home_rt.js_parser.Parser.init(
         parser_options,
         &log,
         &source,
         define,
         ast_allocator,
-    );
+    ) catch {
+        recordNativeParseError(&log);
+        return error.ParseError;
+    };
 
     const parse_result = parser.parse() catch {
         recordNativeParseError(&log);
@@ -6042,6 +6046,59 @@ test "adapter prints numeric property keys that overflow like Bun.Transpiler" {
             try std.testing.expectEqualStrings(expected_plain, plain_output);
         }
     }
+}
+
+test "adapter scans multiline comments like Bun.Transpiler" {
+    const handle = TranspilerHandle{ .loader = .js };
+    var x_pad: [8193]u8 = undefined;
+    @memset(&x_pad, 'x');
+    const pad600 = x_pad[0..600];
+
+    const sizes = [_]usize{ 480, 511, 512, 513, 576, 1000, 4095, 4096, 4097, 8193 };
+    for (sizes) |size| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "/*{s}*/ pass();", .{x_pad[0..size]});
+        defer std.testing.allocator.free(source);
+        const output = try transpileSource(std.testing.allocator, &handle, source, .js);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings("pass();\n", output);
+    }
+
+    const stars = try std.testing.allocator.alloc(u8, 600);
+    defer std.testing.allocator.free(stars);
+    @memset(stars, '*');
+    const all_stars = try std.fmt.allocPrint(std.testing.allocator, "/*{s}*/ pass();", .{stars});
+    defer std.testing.allocator.free(all_stars);
+    const all_stars_output = try transpileSource(std.testing.allocator, &handle, all_stars, .js);
+    defer std.testing.allocator.free(all_stars_output);
+    try std.testing.expectEqualStrings("pass();\n", all_stars_output);
+
+    const newline_source = try std.fmt.allocPrint(std.testing.allocator, "function f() {{ return /*{s}\n{s}*/ 1 }}", .{ pad600, pad600 });
+    defer std.testing.allocator.free(newline_source);
+    const newline_output = try transpileSource(std.testing.allocator, &handle, newline_source, .js);
+    defer std.testing.allocator.free(newline_output);
+    try std.testing.expectEqualStrings("function f() {\n  return;\n}\n", newline_output);
+
+    const no_newline_source = try std.fmt.allocPrint(std.testing.allocator, "function f() {{ return /*{s}{s}*/ 1 }}", .{ pad600, pad600 });
+    defer std.testing.allocator.free(no_newline_source);
+    const no_newline_output = try transpileSource(std.testing.allocator, &handle, no_newline_source, .js);
+    defer std.testing.allocator.free(no_newline_output);
+    try std.testing.expectEqualStrings("function f() {\n  return 1;\n}\n", no_newline_output);
+
+    const around_code = try std.fmt.allocPrint(std.testing.allocator, "const a = \"before\";/*{s}*/const b = \"after\"; console.log(a, b);", .{pad600});
+    defer std.testing.allocator.free(around_code);
+    const around_output = try transpileSource(std.testing.allocator, &handle, around_code, .js);
+    defer std.testing.allocator.free(around_output);
+    try std.testing.expectEqualStrings("const a = \"before\";\nconst b = \"after\";\nconsole.log(a, b);\n", around_output);
+
+    const eof_comment = try std.fmt.allocPrint(std.testing.allocator, "pass(); /*{s}*/", .{pad600});
+    defer std.testing.allocator.free(eof_comment);
+    const eof_output = try transpileSource(std.testing.allocator, &handle, eof_comment, .js);
+    defer std.testing.allocator.free(eof_output);
+    try std.testing.expectEqualStrings("pass();\n", eof_output);
+
+    const unterminated = try std.fmt.allocPrint(std.testing.allocator, "/*{s}", .{pad600});
+    defer std.testing.allocator.free(unterminated);
+    try std.testing.expectError(error.ParseError, transpileSource(std.testing.allocator, &handle, unterminated, .js));
 }
 
 test "adapter rewrites string lengths like Bun.Transpiler minify syntax" {
