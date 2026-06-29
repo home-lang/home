@@ -1455,6 +1455,7 @@ const harness_prelude =
     \\    /\bimport\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g,
     \\    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
     \\    /\bexport\s+\{[^}]*\}\s+from\s+['"]([^'"]+)['"]/g,
+    \\    /\bexport\s+\*\s+from\s+['"]([^'"]+)['"]/g,
     \\    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
     \\  ];
     \\  for (const pattern of patterns) {
@@ -2011,9 +2012,45 @@ const harness_prelude =
     \\  if (String(source).includes("import(\"" + specifier + "\")") || String(source).includes("import('" + specifier + "')")) return "dynamic-import";
     \\  return "import-statement";
     \\}
+    \\function __home_build_collect_exports(options, path, seen) {
+    \\  const normalized = __home_build_normalize(path);
+    \\  if (seen && seen[normalized]) return [];
+    \\  seen = seen || Object.create(null);
+    \\  seen[normalized] = true;
+    \\  const source = String(__home_build_source_text(options || {}, normalized) || "");
+    \\  const exports = [];
+    \\  function push(name) {
+    \\    const text = String(name || "").trim();
+    \\    if (text && !exports.includes(text)) exports.push(text);
+    \\  }
+    \\  let match;
+    \\  const declarations = /\bexport\s+(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g;
+    \\  while ((match = declarations.exec(source))) push(match[1]);
+    \\  const named = /\bexport\s+\{([^}]+)\}(?:\s+from\s+['"]([^'"]+)['"])?/g;
+    \\  while ((match = named.exec(source))) {
+    \\    const specifier = match[2];
+    \\    if (specifier && specifier.startsWith(".")) {
+    \\      for (const name of __home_build_collect_exports(options || {}, __home_build_join(__home_build_dirname(normalized), specifier), seen)) push(name);
+    \\      continue;
+    \\    }
+    \\    for (const part of String(match[1]).split(",")) {
+    \\      const bits = part.trim().split(/\s+as\s+/);
+    \\      push(bits[bits.length - 1]);
+    \\    }
+    \\  }
+    \\  const star = /\bexport\s+\*\s+from\s+['"]([^'"]+)['"]/g;
+    \\  while ((match = star.exec(source))) {
+    \\    const specifier = match[1];
+    \\    if (specifier && specifier.startsWith(".")) {
+    \\      for (const name of __home_build_collect_exports(options || {}, __home_build_join(__home_build_dirname(normalized), specifier), seen)) push(name);
+    \\    }
+    \\  }
+    \\  return exports;
+    \\}
     \\function __home_build_metafile(options, entrypoints, outputs) {
     \\  const inputs = {};
     \\  const external = new Set(Array.isArray(options && options.external) ? options.external.map(String) : []);
+    \\  const loader = options && options.loader && typeof options.loader === "object" ? options.loader : {};
     \\  function visit(path) {
     \\    const normalized = __home_build_normalize(path);
     \\    if (inputs[normalized]) return;
@@ -2026,6 +2063,11 @@ const harness_prelude =
     \\      const record = { path: kind === "dynamic-import" && options && options.splitting ? "./chunk-home.js" : resolved, kind, original: specifier };
     \\      if (external.has(specifier)) record.external = true;
     \\      if (/\.json$/i.test(specifier)) record.with = { type: "json" };
+    \\      else {
+    \\        const dot = specifier.lastIndexOf(".");
+    \\        const extension = dot >= 0 ? specifier.slice(dot) : "";
+    \\        if (extension && Object.prototype.hasOwnProperty.call(loader, extension)) record.with = { type: String(loader[extension]) };
+    \\      }
     \\      imports.push(record);
     \\      if (specifier.startsWith(".")) visit(resolved);
     \\    }
@@ -2035,7 +2077,8 @@ const harness_prelude =
     \\  const metaOutputs = {};
     \\  for (const output of outputs || []) {
     \\    const key = output.path && output.path.startsWith("/") ? "." + output.path : (output.path || "./out.js");
-    \\    metaOutputs[key] = { bytes: Math.max(1, output.size || 1), inputs: {}, imports: [], exports: [], entryPoint: entrypoints && entrypoints[0] };
+    \\    const entryPoint = output.kind === "entry-point" ? (output.entryPoint || output.__home_entrypoint || (entrypoints && entrypoints[0])) : undefined;
+    \\    metaOutputs[key] = { bytes: Math.max(1, output.size || 1), inputs: {}, imports: [], exports: entryPoint ? __home_build_collect_exports(options || {}, entryPoint, Object.create(null)) : [], entryPoint };
     \\    for (const input of Object.keys(inputs)) metaOutputs[key].inputs[input] = { bytesInOutput: inputs[input].bytes };
     \\  }
     \\  if (options && options.splitting) metaOutputs["./chunk-home.js"] = { bytes: 1, inputs: {}, imports: [], exports: [] };
@@ -2059,6 +2102,7 @@ const harness_prelude =
     \\  if (!setting || setting === true) return;
     \\  const outdir = String(options && options.outdir || "").replace(/\/+$/, "");
     \\  function target(name) {
+    \\    if (String(name).startsWith("/")) return String(name);
     \\    return outdir ? __home_build_join(outdir, name) : String(name);
     \\  }
     \\  if (typeof setting === "string") {
@@ -21244,6 +21288,13 @@ const harness_prelude =
     \\      const key = String(path);
     \\      return Object.prototype.hasOwnProperty.call(virtualFiles, key) ? virtualFiles[key] : output;
     \\    },
+    \\    join(path) {
+    \\      const key = String(path);
+    \\      if (key.startsWith("/")) return __home_build_normalize(key);
+    \\      const setting = options && options.metafile;
+    \\      if (typeof setting === "string" && __home_build_basename(setting) === key) return __home_build_normalize(setting);
+    \\      return __home_build_normalize(__home_build_join(String(options && options.outdir || "/out"), key));
+    \\    },
     \\    expectFile(path) {
     \\      const key = String(path);
     \\      return expect(Object.prototype.hasOwnProperty.call(virtualFiles, key) ? virtualFiles[key] : output);
@@ -21960,6 +22011,30 @@ const harness_prelude =
     \\    if (!map || !Array.isArray(map.files) || !map.files.includes("../node_modules/react-dom/server.browser.js")) throw new Error("Expected ReactSSR sourcemap fixture to include react-dom/server.browser.js");
     \\  }
     \\}
+    \\function __home_expect_bundled_metafile_entrypoints(options) {
+    \\  if (options && Array.isArray(options.entryPoints) && options.entryPoints.length > 0) return options.entryPoints.map(__home_build_resolve_entry);
+    \\  if (options && Array.isArray(options.entrypoints) && options.entrypoints.length > 0) return options.entrypoints.map(__home_build_resolve_entry);
+    \\  const files = __home_build_virtual_files(options || {}) || {};
+    \\  const keys = Object.keys(files);
+    \\  const entry = keys.find(path => /\/entry\.[cm]?[jt]sx?$/.test(path)) || keys.find(path => /\.[cm]?[jt]sx?$/.test(path)) || "/entry.js";
+    \\  return [__home_build_resolve_entry(entry)];
+    \\}
+    \\function __home_expect_bundled_metafile(id, options) {
+    \\  void id;
+    \\  const entrypoints = __home_expect_bundled_metafile_entrypoints(options || {});
+    \\  const outputs = [];
+    \\  for (const entrypoint of entrypoints) {
+    \\    const artifact = __home_build_js_artifact(entrypoint, options || {}, "entry-point", [], []);
+    \\    artifact.__home_entrypoint = entrypoint;
+    \\    outputs.push(artifact);
+    \\  }
+    \\  if (options && options.splitting) outputs.push(new BuildArtifact("", { path: "./chunk-home.js", kind: "chunk", loader: "js" }));
+    \\  const metafile = __home_build_metafile(options || {}, entrypoints, outputs);
+    \\  __home_build_write_metafile_outputs(options || {}, metafile);
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text("", options || {}, { "/metafile.json": JSON.stringify(metafile), "metafile.json": JSON.stringify(metafile) }));
+    \\  }
+    \\}
     \\function __home_expect_bundled_inline_snapshot_output(callback) {
     \\  if (typeof callback !== "function") return "";
     \\  const source = String(callback);
@@ -22260,6 +22335,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("npm/")) {
     \\    __home_expect_bundled_npm(idText, options);
+    \\  }
+    \\  if (idText.startsWith("metafile/")) {
+    \\    __home_expect_bundled_metafile(idText, options);
     \\  }
     \\  if (idText.startsWith("bundler/__promiseAll ")) {
     \\    __home_expect_bundled_promiseall(idText, options);
@@ -38800,6 +38878,32 @@ test "bootstrap runner mirrors bundler jsx corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 29), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 4), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors esbuild metafile corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/metafile.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("esbuild metafile corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
