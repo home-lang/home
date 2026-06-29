@@ -38172,6 +38172,93 @@ test "bootstrap runner mirrors transpiler edge cases corpus" {
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler using snapshots corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    platform: "browser",
+        \\  });
+        \\
+        \\  const parsed = (code, trim = true, autoExport = false) => {
+        \\    if (autoExport) code = "export default (" + code + ")";
+        \\    var out = transpiler.transformSync(code, "ts");
+        \\    if (autoExport && out.startsWith("export default ")) out = out.substring("export default ".length);
+        \\    if (!trim) return out;
+        \\    out = out.trim();
+        \\    if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\    return out.trim();
+        \\  };
+        \\
+        \\  const prepareForSnapshot = code => {
+        \\    return code.replace(/(__using|__callDispose)_([a-z0-9]+)/g, "$1");
+        \\  };
+        \\  const expectCapturePrintedSnapshot = code => {
+        \\    const result = parsed(`(async() => {${code}})()`, false, false);
+        \\    expect(result).toEndWith("})();\n");
+        \\    const of_relevance = result
+        \\      .slice(result.indexOf("() => {") + 9, result.lastIndexOf("})();") - 1)
+        \\      .trim()
+        \\      .split("\n")
+        \\      .map(x => x.trim())
+        \\      .filter(x => x.length > 0)
+        \\      .join("\n");
+        \\    expect(prepareForSnapshot(of_relevance)).toMatchSnapshot();
+        \\  };
+        \\  const expectPrintedSnapshot = code => {
+        \\    expect(prepareForSnapshot(parsed(`${code}`, false, false))).toMatchSnapshot();
+        \\  };
+        \\
+        \\  it("using statements work right", () => {
+        \\    expectCapturePrintedSnapshot(`using x = a;`);
+        \\    expectCapturePrintedSnapshot(`await using x = a;`);
+        \\
+        \\    expectCapturePrintedSnapshot(`for (using a of b) c(a)`);
+        \\    expectCapturePrintedSnapshot(`for await (using a of b) c(a)`);
+        \\    expectCapturePrintedSnapshot(`for (await using a of b) c(a)`);
+        \\    expectCapturePrintedSnapshot(`for await (await using a of b) c(a)`);
+        \\
+        \\    expectCapturePrintedSnapshot(`for (using a of b) { c(a); a(c) }`);
+        \\    expectCapturePrintedSnapshot(`for await (using a of b) { c(a); a(c) }`);
+        \\    expectCapturePrintedSnapshot(`for (await using a of b) { c(a); a(c) }`);
+        \\    expectCapturePrintedSnapshot(`for await (await using a of b) { c(a); a(c) }`);
+        \\  });
+        \\
+        \\  it("using top level", () => {
+        \\    expectPrintedSnapshot(`
+        \\      using a = b;
+        \\      export function c(e) {
+        \\        using f = g(a);
+        \\        return f.h;
+        \\      }
+        \\      await using j = c(i);
+        \\      using k = l(m);
+        \\      export { k };
+        \\      import { using } from 'n';
+        \\      using o = using;
+        \\      await using p = await using;
+        \\      export var q = r;
+        \\    `);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
