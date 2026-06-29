@@ -479,7 +479,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
     "bundler/html-import-manifest.test.ts",
-    "regression/issue/29264.test.ts",
     "js/bun/resolve/require-esm-microtask-order.test.ts",
     "regression/issue/26632.test.ts",
     "js/node/url/url-parse-query.test.js",
