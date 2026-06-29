@@ -40285,6 +40285,43 @@ test "bootstrap runner mirrors standalone Bun.build API sourcemap corpus" {
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors Bun.build API tsconfig onEnd corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const describe_marker = "describe(\"Bun.build\", () => {\n";
+    const start_marker = "const originalCwd = process.cwd() + \"\";";
+    const end_marker = "\n// On release builds mimalloc's large-allocation arenas";
+    const prefix_end = std.mem.indexOf(u8, source, describe_marker) orelse return error.TestExpectedEqual;
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > prefix_end);
+    try std.testing.expect(end > start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..prefix_end], source[start..end] });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bun-build-api.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.build API tsconfig onEnd corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors bundler compile argv corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
