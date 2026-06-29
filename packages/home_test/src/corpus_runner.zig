@@ -38259,6 +38259,132 @@ test "bootstrap runner mirrors transpiler using snapshots corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler transform corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    define: {
+        \\      "process.env.NODE_ENV": JSON.stringify("development"),
+        \\      user_undefined: "undefined",
+        \\      user_nested: "location.origin",
+        \\      "hello.earth": "hello.mars",
+        \\      "Math.log": "console.error",
+        \\    },
+        \\    platform: "browser",
+        \\  });
+        \\
+        \\  const code = `import { useParams } from "remix";
+        \\  import type { LoaderFunction, ActionFunction } from "remix";
+        \\  import { type xx } from 'mod';
+        \\  import { type xx as yy } from 'mod';
+        \\  import { type 'xx' as yy } from 'mod';
+        \\  import { type if as yy } from 'mod';
+        \\  import React, { type ReactNode, Component as Romponent, Component } from 'react';
+        \\
+        \\  export const loader: LoaderFunction = async ({
+        \\    params
+        \\  }) => {
+        \\    console.log(params.postId);
+        \\  };
+        \\
+        \\  export const action: ActionFunction = async ({
+        \\    params
+        \\  }) => {
+        \\    console.log(params.postId);
+        \\  };
+        \\
+        \\  export default function PostRoute() {
+        \\    const params = useParams();
+        \\    console.log(params.postId);
+        \\  }
+        \\  `;
+        \\
+        \\  describe("transform", () => {
+        \\    it("special identifier in import statement", () => {
+        \\      const out = transpiler.transformSync(`
+        \\        import {ɵtest} from 'foo'
+        \\      `);
+        \\
+        \\      expect(out).toBe('import { ɵtest } from "foo";\n');
+        \\    });
+        \\
+        \\    it("removes types", () => {
+        \\      expect(code.includes("mod")).toBe(true);
+        \\      expect(code.includes("xx")).toBe(true);
+        \\      expect(code.includes("ActionFunction")).toBe(true);
+        \\      expect(code.includes("LoaderFunction")).toBe(true);
+        \\      expect(code.includes("ReactNode")).toBe(true);
+        \\      expect(code.includes("React")).toBe(true);
+        \\      expect(code.includes("Component")).toBe(true);
+        \\      const out = transpiler.transformSync(code);
+        \\
+        \\      expect(out.includes("ActionFunction")).toBe(false);
+        \\      expect(out.includes("LoaderFunction")).toBe(false);
+        \\      expect(out.includes("mod")).toBe(false);
+        \\      expect(out.includes("xx")).toBe(false);
+        \\      expect(out.includes("ReactNode")).toBe(false);
+        \\      const { exports } = transpiler.scan(out);
+        \\      exports.sort();
+        \\
+        \\      expect(exports[0]).toBe("action");
+        \\      expect(exports[2]).toBe("loader");
+        \\      expect(exports[1]).toBe("default");
+        \\      expect(exports).toHaveLength(3);
+        \\    });
+        \\
+        \\    it("#17961 - node target", async () => {
+        \\      const transpiler = new Bun.Transpiler({
+        \\        loader: "ts",
+        \\        target: "node",
+        \\      });
+        \\
+        \\      const input = `let list = ["•", "-", "◦", "▪", "▫"];`;
+        \\      const result = await transpiler.transform(input);
+        \\      expect(result).toBe(`let list = ["•", "-", "◦", "▪", "▫"];\n`);
+        \\    });
+        \\
+        \\    it("#17961 - browser target", async () => {
+        \\      const transpiler = new Bun.Transpiler({
+        \\        loader: "ts",
+        \\        target: "browser",
+        \\      });
+        \\
+        \\      const input = `let list = ["•", "-", "◦", "▪", "▫"];`;
+        \\      const result = await transpiler.transform(input);
+        \\      expect(result).toBe(`let list = ["•", "-", "◦", "▪", "▫"];\n`);
+        \\    });
+        \\
+        \\    it("#17961 - bun target", async () => {
+        \\      const transpiler = new Bun.Transpiler({
+        \\        loader: "ts",
+        \\        target: "bun",
+        \\      });
+        \\
+        \\      const input = `let list = ["•", "-", "◦", "▪", "▫"];\n`;
+        \\      const result = await transpiler.transform(input);
+        \\      expect(result).toBe(`let list = [\"\\u2022\", \"-\", \"\\u25E6\", \"\\u25AA\", \"\\u25AB\"];\n`);
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
