@@ -38901,6 +38901,76 @@ test "bootstrap runner mirrors transpiler simplification scopes corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler dead code option corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  describe("simplification", () => {
+        \\    const transpiler = new Bun.Transpiler({
+        \\      loader: "tsx",
+        \\      platform: "browser",
+        \\      minify: { syntax: true },
+        \\    });
+        \\
+        \\    const parsed = (code, trim = true, autoExport = false, transpiler_ = transpiler) => {
+        \\      if (autoExport) code = "export default (" + code + ")";
+        \\
+        \\      var out = transpiler_.transformSync(code, "js");
+        \\      if (autoExport && out.startsWith("export default ")) {
+        \\        out = out.substring("export default ".length);
+        \\      }
+        \\
+        \\      if (trim) {
+        \\        out = out.trim();
+        \\        if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\        return out.trim();
+        \\      }
+        \\
+        \\      return out;
+        \\    };
+        \\
+        \\    describe("dead code elimination", () => {
+        \\      const transpilerNoDCE = new Bun.Transpiler({ deadCodeElimination: false });
+        \\      it("should DCE with deadCodeElimination: true or by default", () => {
+        \\        expect(parsed("123", true, false)).toBe("");
+        \\        expect(parsed("[-1, 2n, null]", true, false)).toBe("");
+        \\        expect(parsed("true", true, false)).toBe("");
+        \\        expect(parsed("!0", true, false)).toBe("");
+        \\        expect(parsed('if (!1) "dead";', true, false)).toBe("if (false)");
+        \\        expect(parsed("if (!1) var x = 2;", true, false)).toBe("if (false)\n  var x");
+        \\        expect(parsed("if (undefined) { let y = Math.random(); }", true, false)).toBe("if (undefined) {}");
+        \\      });
+        \\      it("should not DCE with deadCodeElimination: false", () => {
+        \\        expect(parsed("123", true, false, transpilerNoDCE)).toBe("123");
+        \\        expect(parsed("[1, 2n, null]", true, false, transpilerNoDCE)).toBe("[1, 2n, null]");
+        \\        expect(parsed("true", true, false, transpilerNoDCE)).toBe("true");
+        \\        expect(parsed("!0", true, false, transpilerNoDCE)).toBe("!0");
+        \\        expect(parsed('if (!1) "dead";', true, false, transpilerNoDCE)).toBe('if (!1)\n  "dead"');
+        \\        expect(parsed("if (!1) var x = 2;", true, false, transpilerNoDCE)).toBe("if (!1)\n  var x = 2");
+        \\        expect(parsed("if (undefined) { let y = Math.random(); }", true, false, transpilerNoDCE)).toBe(
+        \\          "if (undefined) {\n  let y = Math.random();\n}",
+        \\        );
+        \\      });
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
