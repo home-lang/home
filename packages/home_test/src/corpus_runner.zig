@@ -10048,6 +10048,12 @@ const harness_prelude =
     \\  }
     \\  return "";
     \\}
+    \\function __home_cli_has_windows_metadata_flag(cmd) {
+    \\  return cmd.some(part => String(part).startsWith("--windows-"));
+    \\}
+    \\function __home_cli_windows_metadata_flag(cmd) {
+    \\  return cmd.find(part => String(part).startsWith("--windows-")) || "--windows-title";
+    \\}
     \\function __home_bun_cpu_profile_for_issue_29240(scriptPath) {
     \\  const isTs = String(scriptPath).endsWith(".ts");
     \\  const url = "file://" + String(scriptPath);
@@ -10571,6 +10577,12 @@ const harness_prelude =
     \\    if (entries.some(entry => /\.html?$/i.test(entry))) {
     \\      return __home_spawn_completed("", "HTML imports are only supported when bundling\n", 1);
     \\    }
+    \\  }
+    \\  if (cmd.includes("build") && __home_cli_has_windows_metadata_flag(cmd)) {
+    \\    const flag = __home_cli_windows_metadata_flag(cmd);
+    \\    if (!cmd.includes("--compile")) return __home_spawn_completed("", "error: " + flag + " requires --compile\n", 1);
+    \\    const target = __home_cli_option_value(cmd, "--target");
+    \\    if (target && !String(target).includes("windows")) return __home_spawn_completed("", "error: windows metadata flags require a Windows compile target\n", 1);
     \\  }
     \\  if (cmd.includes("build") && cmd.includes("--compile")) {
     \\    const outfile = __home_cli_option_value(cmd, "--outfile");
@@ -39936,6 +39948,48 @@ test "bootstrap runner mirrors Bun.build compile sourcemap corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors compile Windows metadata validation corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/compile-windows-metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const outer_marker = "describe.skipIf(!isWindows).concurrent(\"Windows compile metadata\", () => {\n";
+    const start_marker = "    test(\"windows flags without --compile should error\"";
+    const end_marker = "  });\n\n  describe(\"Bun.build() API\"";
+    const outer_start = std.mem.indexOf(u8, source, outer_marker) orelse return error.TestExpectedEqual;
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > outer_start);
+    try std.testing.expect(end > start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{
+        source[0..outer_start],
+        "describe.concurrent(\"Windows compile metadata\", () => {\n  describe(\"CLI flags\", () => {\n",
+        source[start..end],
+        "  });\n});\n",
+    });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/compile-windows-metadata.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("compile Windows metadata validation corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile argv corpus" {
