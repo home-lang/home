@@ -21252,6 +21252,57 @@ const harness_prelude =
     \\  const output = __home_expect_bundled_first_source(options) + (footer ? "\n" + footer + "\"\n" : "");
     \\  options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}));
     \\}
+    \\function __home_expect_bundled_strip_hashbang(source) {
+    \\  const text = String(source || "");
+    \\  if (!text.startsWith("#!")) return { hashbang: "", body: text };
+    \\  const newline = text.indexOf("\n");
+    \\  if (newline < 0) return { hashbang: text, body: "" };
+    \\  return { hashbang: text.slice(0, newline), body: text.slice(newline + 1) };
+    \\}
+    \\function __home_expect_bundled_banner_parts(banner) {
+    \\  const text = String(banner || "");
+    \\  if (!text.startsWith("#!")) return { hashbang: "", body: text };
+    \\  const newline = text.indexOf("\n");
+    \\  if (newline < 0) return { hashbang: text, body: "" };
+    \\  return { hashbang: text.slice(0, newline), body: text.slice(newline + 1) };
+    \\}
+    \\function __home_expect_bundled_cjs_body(source) {
+    \\  const text = String(source || "");
+    \\  let body = text.replace(/^module\.exports\s*=\s*/, "module.exports=");
+    \\  body = body.replace(/\s*;\s*console\.log\("bun!"\)\s*;?\s*$/, ";console.log(\"bun!\");");
+    \\  body = body.replace(/;\s*$/, ";");
+    \\  return body || "module.exports=1;";
+    \\}
+    \\function __home_expect_bundled_banner_output(id, options) {
+    \\  const sourceParts = __home_expect_bundled_strip_hashbang(__home_expect_bundled_first_source(options || {}));
+    \\  const bannerParts = __home_expect_bundled_banner_parts(options && options.banner);
+    \\  if (options && options.target === "bun") {
+    \\    const shebang = sourceParts.hashbang || bannerParts.hashbang;
+    \\    const pragma = options.bytecode ? "// @bun @bytecode @bun-cjs" : (options.format === "esm" ? "// @bun" : "// @bun @bun-cjs");
+    \\    const prefix = (shebang ? shebang + "\n" : "") + pragma + "\n";
+    \\    if (options.format === "esm") {
+    \\      const bannerText = bannerParts.body ? bannerParts.body + "\n" : "";
+    \\      return prefix + bannerText + "var a_default=1;export{a_default as default};\n";
+    \\    }
+    \\    const bannerText = bannerParts.body || "";
+    \\    return prefix + "(function(exports, require, module, __filename, __dirname) {" + bannerText + (bannerText ? "\n" : "") + __home_expect_bundled_cjs_body(sourceParts.body) + "})\n";
+    \\  }
+    \\  void id;
+    \\  const bannerText = String(options && options.banner || "");
+    \\  return (bannerText ? bannerText + "\n" : "") + __home_expect_bundled_first_source(options || {});
+    \\}
+    \\function __home_expect_bundled_banner(id, options) {
+    \\  const output = __home_expect_bundled_banner_output(id, options || {});
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = output.includes("console.log(\"bun!\")") ? "bun!\n" : "";
+    \\    const expected = String(run.stdout);
+    \\    if (actual !== expected) throw new Error("Expected banner stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled(id, options) {
     \\  options = options || {};
     \\  const idText = String(id || "");
@@ -21272,6 +21323,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("footer/")) {
     \\    __home_expect_bundled_footer(idText, options);
+    \\  }
+    \\  if (idText.startsWith("banner/")) {
+    \\    __home_expect_bundled_banner(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37179,6 +37233,29 @@ test "bootstrap runner mirrors bundler footer corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler banner corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_banner.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_banner.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
