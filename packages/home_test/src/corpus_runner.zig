@@ -39489,6 +39489,31 @@ test "bootstrap runner mirrors transpiler dead code option corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler ternary comma simplification corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, it } from "bun:test";
+        \\
+        \\it("does not duplicate the branch when simplifying an unused ternary with a comma test", () => {
+        \\  const transpiler = new Bun.Transpiler({ loader: "js" });
+        \\  expect(transpiler.transformSync("(f(), g()) ? 1 : h();").trim()).toBe("f(), g() || h();");
+        \\  expect(transpiler.transformSync("(f(), g()) ? h() : 1;").trim()).toBe("f(), g() && h();");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";

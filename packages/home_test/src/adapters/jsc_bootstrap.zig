@@ -1178,6 +1178,8 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "module.require(unknown ? 'foo' : 'bar')", .output = "unknown ? require(\"foo\") : require(\"bar\");\n" },
         .{ .source = "export const foo = require.resolve('my-module')", .output = "export const foo = require.resolve(\"my-module\");\n" },
         .{ .source = "async function f() { await delete x }", .output = "async function f() {\n  await delete x;\n}\n" },
+        .{ .source = "(f(), g()) ? 1 : h();", .output = "f(), g() || h();\n" },
+        .{ .source = "(f(), g()) ? h() : 1;", .output = "f(), g() && h();\n" },
         .{ .source = "var x = jsx; export default x;", .output = "var x = jsx;\nexport default x;\n" },
     };
     for (fixtures) |fixture| {
@@ -5395,6 +5397,16 @@ test "adapter folds constant expressions like Bun.Transpiler" {
     const merged_var = (try transpileEarlyTranspilerFixture(std.testing.allocator, "var boop = \"f\" + (\"b\" + \"c\") + \"d\";var ropy = \"a\" + boop + \"d\";var ropy2 = \"b\" + (ropy + \"d\")")).?;
     defer std.testing.allocator.free(merged_var);
     try std.testing.expectEqualStrings("var boop = \"fbcd\", ropy = \"a\" + boop + \"d\", ropy2 = \"b\" + (ropy + \"d\");\n", merged_var);
+}
+
+test "adapter simplifies unused ternary comma tests like Bun.Transpiler" {
+    const true_branch = (try transpileEarlyTranspilerFixture(std.testing.allocator, "(f(), g()) ? 1 : h();")).?;
+    defer std.testing.allocator.free(true_branch);
+    try std.testing.expectEqualStrings("f(), g() || h();\n", true_branch);
+
+    const false_branch = (try transpileEarlyTranspilerFixture(std.testing.allocator, "(f(), g()) ? h() : 1;")).?;
+    defer std.testing.allocator.free(false_branch);
+    try std.testing.expectEqualStrings("f(), g() && h();\n", false_branch);
 }
 
 test "adapter normalizes raw template literal contents like Bun.Transpiler" {
