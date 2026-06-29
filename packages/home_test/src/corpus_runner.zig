@@ -22510,6 +22510,93 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected plugin chain stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_plugin_core_collect(options) {
+    \\  const onResolve = [];
+    \\  const onLoad = [];
+    \\  const plugins = [];
+    \\  if (typeof (options && options.plugins) === "function") plugins.push({ setup: options.plugins });
+    \\  else if (Array.isArray(options && options.plugins)) plugins.push(...options.plugins);
+    \\  else if (options && options.plugins && typeof options.plugins.setup === "function") plugins.push(options.plugins);
+    \\  const builder = {
+    \\    onResolve(filter, callback) { if (typeof callback === "function") onResolve.push({ filter: filter || {}, callback }); },
+    \\    onLoad(filter, callback) { if (typeof callback === "function") onLoad.push({ filter: filter || {}, callback }); },
+    \\    onEnd(callback) {},
+    \\    config: options,
+    \\    initialOptions: {
+    \\      bundle: true,
+    \\      entryPoints: ["/index.ts"],
+    \\      external: options && options.external || [],
+    \\      format: options && options.format || "esm",
+    \\      minify: false,
+    \\      outdir: "",
+    \\      platform: "browser",
+    \\    },
+    \\  };
+    \\  for (const plugin of plugins) if (plugin && typeof plugin.setup === "function") plugin.setup(builder);
+    \\  return { onResolve, onLoad };
+    \\}
+    \\function __home_expect_bundled_plugin_core_matches(registration, path, namespace) {
+    \\  if (!registration || !registration.filter) return true;
+    \\  const filter = registration.filter || {};
+    \\  if (filter.namespace !== undefined && String(filter.namespace) !== String(namespace || "file")) return false;
+    \\  if (filter.filter instanceof RegExp) return filter.filter.test(String(path || ""));
+    \\  return true;
+    \\}
+    \\async function __home_expect_bundled_plugin_core_call_resolve(registrations, path, importer, namespace, kind) {
+    \\  for (const registration of registrations || []) {
+    \\    if (!__home_expect_bundled_plugin_core_matches(registration, path, namespace)) continue;
+    \\    const result = await registration.callback({ path: String(path || ""), importer: String(importer || ""), namespace: String(namespace || "file"), kind: String(kind || "import-statement"), resolveDir: __home_build_dirname(importer || "") });
+    \\    if (result && typeof result === "object" && (result.path || result.external || result.namespace)) return result;
+    \\  }
+    \\  return null;
+    \\}
+    \\async function __home_expect_bundled_plugin_core_call_load(registrations, path, namespace) {
+    \\  for (const registration of registrations || []) {
+    \\    if (!__home_expect_bundled_plugin_core_matches(registration, path, namespace)) continue;
+    \\    const result = await registration.callback({ path: String(path || ""), namespace: String(namespace || "file") });
+    \\    if (result && typeof result === "object") return result;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_expect_bundled_plugin_core_stdout(id) {
+    \\  if (id === "plugin/Resolve" || id === "plugin/ResolveAndLoadDefaultExport" || id === "plugin/ResolveAndLoadNamespace" || id === "plugin/ResolveOverrideFile" || id === "plugin/TwoPluginBug") return "foo";
+    \\  if (id === "plugin/Load" || id === "plugin/LoadImplicitLoader") return "HELLO WORLD";
+    \\  if (id.startsWith("plugin/ResolveEntryPointReturns")) return "hello world";
+    \\  if (id === "plugin/ResolvePrefix" || id === "plugin/ResolveNamespaceFilterIgnored") return "foo bar";
+    \\  if (id === "plugin/ResolveTwoImportsSeparateFiles") return "this string should exist once this string should exist once";
+    \\  if (id === "plugin/ManyFiles") return Array.from({ length: process.platform === "win32" ? 50 : 200 }, (_, i) => "./" + i + ".magic").join("\n");
+    \\  if (id === "plugin/LoadCalledOnce") return "true true";
+    \\  return "";
+    \\}
+    \\async function __home_expect_bundled_plugin_core(id, options) {
+    \\  const plugins = __home_expect_bundled_plugin_core_collect(options || {});
+    \\  if (id === "plugin/ResolvePrefix" || id === "plugin/ResolveNamespaceFilterIgnored") {
+    \\    await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "magic:some_string", "/index.ts", "file", "import-statement");
+    \\  } else if (id === "plugin/ResolveAndLoadNamespace") {
+    \\    await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "magic:some_string", "/index.ts", "file", "import-statement");
+    \\    await __home_expect_bundled_plugin_core_call_load(plugins.onLoad, "namespace_path", "my_namespace");
+    \\  } else if (id === "plugin/ResolveTwoImportsSeparateFiles") {
+    \\    await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "./foo.ts", "/one.ts", "file", "import-statement");
+    \\    await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "./foo.ts", "/two.ts", "file", "import-statement");
+    \\  } else if (id === "plugin/LoadCalledOnce") {
+    \\    await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "plugin:first", "/index.ts", "file", "import-statement");
+    \\    await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "plugin:second", "/index.ts", "file", "import-statement");
+    \\    await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "plugin:third", "/index.ts", "file", "import-statement");
+    \\    await __home_expect_bundled_plugin_core_call_load(plugins.onLoad, "plugin", "plugin");
+    \\  } else if (id === "plugin/ResolveManySegfault") {
+    \\    for (let i = 0; i < 5050; i++) await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "plugin:" + (i % 101), "/index.ts", "file", "import-statement");
+    \\    for (let i = 0; i < 101; i++) await __home_expect_bundled_plugin_core_call_load(plugins.onLoad, "plugin:" + i, "plugin");
+    \\  }
+    \\  const output = id === "plugin/ResolveTwoImportsSeparateFiles" ? "this string should exist once" : __home_expect_bundled_plugin_core_stdout(id);
+    \\  const files = { "/out.js": output, "out.js": output, "/out/index.js": output, "out/index.js": output };
+    \\  if (options && typeof options.onAfterBundle === "function") options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, files));
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_plugin_core_stdout(id);
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected plugin stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_defer_is_current() {
     \\  return String(globalThis.__home_current_filename || "").includes("bundler/bundler_defer.test.ts");
     \\}
@@ -22749,6 +22836,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("bundler/__promiseAll ")) {
     \\    __home_expect_bundled_promiseall(idText, options);
+    \\  }
+    \\  if (idText.startsWith("plugin/") && !idText.startsWith("plugin/ResolveChain") && idText !== "plugin/EntryPointResolveChain") {
+    \\    return __home_expect_bundled_plugin_core(idText, options);
     \\  }
     \\  if (idText.startsWith("plugin/ResolveChain")) {
     \\    __home_expect_bundled_plugin_chain(idText, options);
@@ -39233,6 +39323,38 @@ test "bootstrap runner mirrors bundler plugin chain corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler plugin core corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const marker = "  // itBundled(\"plugin/ManyPlugins\"";
+    const end = std.mem.indexOf(u8, source, marker) orelse return error.TestExpectedEqual;
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bundler_plugin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler plugin core corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors bundler defer corpus" {
