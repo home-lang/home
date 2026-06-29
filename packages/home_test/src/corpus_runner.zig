@@ -37074,6 +37074,26 @@ test "bootstrap runner mirrors bundler transpiler bootstrap prefix" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors transpiler stack overflow corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "bundler/transpiler/transpiler-stack-overflow.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {
     const source =
         \\import { describe } from "bun:test";
