@@ -21631,6 +21631,18 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected HTML server stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_compile_splitting_stdout(id) {
+    \\  if (id === "compile/splitting/RelativePathsAcrossChunks") return "app entry\nheader rendering\nmenu showing\nitems: home,about,contact";
+    \\  if (id.startsWith("compile/splitting/ImportMetaInSplitChunk")) return "ok\nok";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_compile_splitting(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_compile_splitting_stdout(id);
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile splitting stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_loader_imports(source) {
     \\  const imports = [];
     \\  const pattern = /\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]\s+with\s+\{\s*type:\s*['"]([^'"]+)['"]\s*\}/g;
@@ -21930,6 +21942,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/") && idText.includes("/HTMLServer")) {
     \\    __home_expect_bundled_html_server(idText, options);
+    \\  }
+    \\  if (idText.startsWith("compile/splitting/")) {
+    \\    __home_expect_bundled_compile_splitting(idText, options);
     \\  }
     \\  if (idText.includes("/loader-") || idText === "bun/wasm-is-copied-to-outdir") {
     \\    __home_expect_bundled_loader(idText, options);
@@ -38293,6 +38308,32 @@ test "bootstrap runner mirrors bundler allow unresolved corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler compile splitting corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile_splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_compile_splitting.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler compile splitting corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
