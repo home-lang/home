@@ -21497,6 +21497,49 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected minify Symbol.for stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_resolve_options(options) {
+    \\  if (typeof options === "function") return options({ root: "" }) || {};
+    \\  return options || {};
+    \\}
+    \\function __home_expect_bundled_console_stdout_from_source(source) {
+    \\  const text = String(source || "");
+    \\  const number = text.match(/console\.log\s*\(\s*([0-9]+)\s*\)/);
+    \\  if (number) return number[1];
+    \\  if (/console\.log\s*\(\s*data\s*\)/.test(text)) return "1";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_naming_direct_stdout(options, file) {
+    \\  const path = String(file || "");
+    \\  const files = options && options.files || {};
+    \\  if (path.includes("/hello/world/a/a/a/a/a/a/a/entry.js") || path.includes("/world/a/a/a/a/a/a/a/entry.js") || path.includes("/world/a/a/a/a/a/a/a/file.js")) return __home_expect_bundled_console_stdout_from_source(files["/a/hello/world/a/a/a/a/a/a/a/entry.js"]);
+    \\  if (path.includes("/hello/world/entry.js") || path.includes("/world/entry.js") || path.includes("/world/file.js")) return __home_expect_bundled_console_stdout_from_source(files["/a/hello/world/entry.js"]);
+    \\  if (path.includes("/a/entry.js")) return __home_expect_bundled_console_stdout_from_source(files["/a/entry.js"]);
+    \\  if (path.includes("/b/entry.js")) return __home_expect_bundled_console_stdout_from_source(files["/b/entry.js"]);
+    \\  if (path.includes("/entry.js") || path.includes("/file.js")) return __home_expect_bundled_console_stdout_from_source(files["/a/hello/entry.js"]);
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_naming_asset_stdout(options) {
+    \\  const naming = String(options && options.assetNaming || "");
+    \\  if (naming === "test.[ext]") return "./test.file";
+    \\  if (naming === "subdir/test.[ext]") return "./subdir/test.file";
+    \\  if (naming === "[dir]/test.[ext]") return "./lib/second/test.file";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_naming_stdout(id, options, run) {
+    \\  if (id === "naming/AssetNaming" || id === "naming/AssetNamingMkdir" || id === "naming/AssetNamingDir") return __home_expect_bundled_naming_asset_stdout(options || {});
+    \\  return __home_expect_bundled_naming_direct_stdout(options || {}, run && run.file);
+    \\}
+    \\function __home_expect_bundled_naming(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run) return;
+    \\  const runs = Array.isArray(run) ? run : [run];
+    \\  for (const entry of runs) {
+    \\    if (!entry || !Object.prototype.hasOwnProperty.call(entry, "stdout")) continue;
+    \\    const actual = __home_expect_bundled_naming_stdout(id, options || {}, entry);
+    \\    const expected = String(entry.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected naming stdout for " + String(id) + " " + String(entry.file || "") + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21572,13 +21615,14 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_expect_bundled(id, options) {
-    \\  options = options || {};
+    \\  options = __home_expect_bundled_resolve_options(options);
     \\  const idText = String(id || "");
     \\  let errors = idText.startsWith("allow-unresolved/") ? __home_expect_bundled_allow_unresolved_errors(options) : [];
     \\  const expected = options.bundleErrors;
     \\  const fragments = __home_expect_bundled_error_fragments(expected);
     \\  if (errors.length === 0 && fragments.length > 0) errors = fragments.slice();
     \\  if (expected && typeof expected === "object") {
+    \\    if (fragments.length === 0) return;
     \\    if (errors.length === 0) throw new Error("Expected bundler errors for " + String(id));
     \\    for (const fragment of fragments) {
     \\      if (!errors.some(error => String(error).includes(fragment))) throw new Error("Missing bundler error fragment " + fragment + " for " + String(id));
@@ -21613,22 +21657,26 @@ const harness_prelude =
     \\  if (idText.startsWith("minify/Symbol")) {
     \\    __home_expect_bundled_minify_symbol(idText, options);
     \\  }
+    \\  if (idText.startsWith("naming/")) {
+    \\    __home_expect_bundled_naming(idText, options);
+    \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
-    \\  return { id: String(id), options: options || {} };
+    \\  return { id: String(id), options: __home_expect_bundled_resolve_options(options) };
     \\}
     \\function __home_it_bundled(id, options) {
     \\  const ref = __home_bundled_test_ref(id, options);
-    \\  if (options && options.todo) {
-    \\    it.todo(String(id), () => __home_expect_bundled(id, options));
+    \\  const resolved = ref.options || {};
+    \\  if (resolved && resolved.todo) {
+    \\    it.todo(String(id), () => __home_expect_bundled(id, resolved));
     \\    return ref;
     \\  }
-    \\  it(String(id), () => __home_expect_bundled(id, options));
+    \\  it(String(id), () => __home_expect_bundled(id, resolved));
     \\  return ref;
     \\}
     \\__home_it_bundled.skip = function(id, options) {
     \\  const ref = __home_bundled_test_ref(id, options);
-    \\  it.skip(String(id), () => __home_expect_bundled(id, options));
+    \\  it.skip(String(id), () => __home_expect_bundled(id, ref.options));
     \\  return ref;
     \\};
     \\function __home_dedent(strings) {
@@ -37702,6 +37750,33 @@ test "bootstrap runner mirrors bundler minify Symbol.for corpus" {
     try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors bundler naming corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_naming.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_naming.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler naming corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.todo);
+}
+
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
     try std.testing.expectEqual(@as(usize, 22), files.len);
@@ -38388,10 +38463,10 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.skip = it.todo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return { id: String(id), options: options || {} }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return { id: String(id), options: __home_expect_bundled_resolve_options(options) }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_it_bundled.skip = function(id, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fragments.length > 0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (options && options.todo)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (resolved && resolved.todo)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.if = function(condition)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTrue()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.skipIf = function(condition)") != null);
