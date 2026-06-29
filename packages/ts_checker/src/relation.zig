@@ -2089,6 +2089,26 @@ pub const Engine = struct {
     fn computeIntersectionObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         const source_members = self.interner.intersectionMembers(source);
         const target_members = self.interner.objectMembers(target);
+        if (self.strict_null_checks) {
+            const target_str_idx = self.interner.objectStringIndex(target);
+            if (target_str_idx != Primitive.none and
+                !try self.intersectionObjectAssignableToStringIndex(source, target_str_idx))
+            {
+                return false;
+            }
+            const target_num_idx = self.interner.objectNumberIndex(target);
+            if (target_num_idx != Primitive.none and
+                !try self.intersectionObjectAssignableToNumberIndex(source, target_num_idx))
+            {
+                return false;
+            }
+            const target_sym_idx = self.interner.objectSymbolIndex(target);
+            if (target_sym_idx != Primitive.none and
+                !try self.intersectionObjectAssignableToSymbolIndex(source, target_sym_idx))
+            {
+                return false;
+            }
+        }
         for (target_members) |tm| {
             var found = false;
             for (source_members) |member_t| {
@@ -2113,6 +2133,118 @@ pub const Engine = struct {
             }
         }
         return true;
+    }
+
+    fn intersectionObjectAssignableToStringIndex(
+        self: *Engine,
+        source: TypeId,
+        target_idx: TypeId,
+    ) anyerror!bool {
+        var flat_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer flat_members.deinit(self.gpa);
+        var saw_contributing_member = try self.collectIntersectionStringIndexContributors(source, target_idx, &flat_members);
+        var seen_names: std.AutoHashMapUnmanaged(types.StringId, void) = .empty;
+        defer seen_names.deinit(self.gpa);
+        for (flat_members.items) |member| {
+            const gop = try seen_names.getOrPut(self.gpa, member.name);
+            if (gop.found_existing) continue;
+            saw_contributing_member = true;
+            var same_name_types: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer same_name_types.deinit(self.gpa);
+            for (flat_members.items) |candidate| {
+                if (candidate.name != member.name) continue;
+                try same_name_types.append(self.gpa, candidate.type);
+            }
+            const apparent_member_t = if (same_name_types.items.len == 1)
+                same_name_types.items[0]
+            else
+                self.interner.internIntersection(same_name_types.items) catch return error.OutOfMemory;
+            if (!try self.isAssignableTo(apparent_member_t, target_idx)) return false;
+        }
+        return saw_contributing_member;
+    }
+
+    fn collectIntersectionStringIndexContributors(
+        self: *Engine,
+        source: TypeId,
+        target_idx: TypeId,
+        flat_members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) anyerror!bool {
+        var saw_contributing_member = false;
+        for (self.interner.intersectionMembers(source)) |member_t| {
+            if (member_t >= self.interner.pool.typeCount()) continue;
+            const mf = self.pool().flagsOf(member_t);
+            if (mf.is_intersection) {
+                if (try self.collectIntersectionStringIndexContributors(member_t, target_idx, flat_members)) {
+                    saw_contributing_member = true;
+                }
+                continue;
+            }
+            if (!mf.is_object_type) continue;
+            const source_str_idx = self.interner.objectStringIndex(member_t);
+            if (source_str_idx != Primitive.none) {
+                saw_contributing_member = true;
+                if (!try self.isAssignableTo(source_str_idx, target_idx)) return false;
+                continue;
+            }
+            const object_members = self.interner.objectMembers(member_t);
+            if (object_members.len > 0) saw_contributing_member = true;
+            try flat_members.appendSlice(self.gpa, object_members);
+        }
+        return saw_contributing_member;
+    }
+
+    fn intersectionObjectAssignableToNumberIndex(
+        self: *Engine,
+        source: TypeId,
+        target_idx: TypeId,
+    ) anyerror!bool {
+        for (self.interner.intersectionMembers(source)) |member_t| {
+            if (member_t >= self.interner.pool.typeCount()) continue;
+            const mf = self.pool().flagsOf(member_t);
+            if (mf.is_intersection) {
+                if (!try self.intersectionObjectAssignableToNumberIndex(member_t, target_idx)) return false;
+                continue;
+            }
+            if (!mf.is_object_type) continue;
+            const source_num_idx = self.interner.objectNumberIndex(member_t);
+            const source_str_idx = self.interner.objectStringIndex(member_t);
+            const source_idx_alt = if (source_num_idx != Primitive.none) source_num_idx else source_str_idx;
+            if (source_idx_alt != Primitive.none) {
+                if (!try self.isAssignableTo(source_idx_alt, target_idx)) return false;
+                continue;
+            }
+            const si = self.string_interner orelse continue;
+            for (self.interner.objectMembers(member_t)) |sm| {
+                const name_bytes = si.getOptional(sm.name) orelse continue;
+                if (!isNumericName(name_bytes)) continue;
+                const sm_eff = try self.effectiveOptionalMemberType(sm);
+                if (!try self.isAssignableTo(sm_eff, target_idx)) return false;
+            }
+        }
+        return true;
+    }
+
+    fn intersectionObjectAssignableToSymbolIndex(
+        self: *Engine,
+        source: TypeId,
+        target_idx: TypeId,
+    ) anyerror!bool {
+        var saw_symbol_index = false;
+        for (self.interner.intersectionMembers(source)) |member_t| {
+            if (member_t >= self.interner.pool.typeCount()) continue;
+            const mf = self.pool().flagsOf(member_t);
+            if (mf.is_intersection) {
+                if (!try self.intersectionObjectAssignableToSymbolIndex(member_t, target_idx)) return false;
+                continue;
+            }
+            if (!mf.is_object_type) continue;
+            const source_sym_idx = self.interner.objectSymbolIndex(member_t);
+            if (source_sym_idx == Primitive.none) continue;
+            saw_symbol_index = true;
+            if (!try self.isAssignableTo(source_sym_idx, target_idx)) return false;
+        }
+        return saw_symbol_index;
     }
 
     fn intersectionObjectHasMemberNamed(self: *Engine, source: TypeId, name: types.StringId) anyerror!bool {
