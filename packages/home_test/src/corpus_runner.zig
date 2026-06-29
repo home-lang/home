@@ -1432,6 +1432,22 @@ const harness_prelude =
     \\  if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "contents")) return __home_build_file_value_to_text(result.contents);
     \\  return null;
     \\}
+    \\function __home_build_on_resolve_result(result) {
+    \\  if (!result || typeof result !== "object") return { handled: false, path: null, external: false };
+    \\  if (typeof result.path === "string" && result.path.length > 0) return { handled: true, path: result.path, external: false };
+    \\  if (result.external === true) return { handled: true, path: null, external: true };
+    \\  return { handled: false, path: null, external: false };
+    \\}
+    \\function __home_build_call_on_resolve(registrations, specifier, importer, kind) {
+    \\  const path = String(specifier || "");
+    \\  for (const registration of registrations || []) {
+    \\    if (!__home_build_plugin_matches(registration, path)) continue;
+    \\    const result = registration.callback({ path, importer: String(importer || ""), namespace: "file", kind: String(kind || "import-statement"), resolveDir: __home_build_dirname(importer || "") });
+    \\    const resolved = __home_build_on_resolve_result(result);
+    \\    if (resolved.handled) return resolved;
+    \\  }
+    \\  return { handled: false, path: null, external: false };
+    \\}
     \\function __home_build_collect_imports(source) {
     \\  const imports = [];
     \\  const text = String(source || "");
@@ -1648,12 +1664,10 @@ const harness_prelude =
     \\    if (source !== null) text += "\n" + __home_build_transpile_memory_text(source);
     \\    for (const specifier of __home_build_collect_imports(source || "")) {
     \\      let resolved = specifier;
-    \\      for (const registration of pluginOnResolve || []) {
-    \\        if (!__home_build_plugin_matches(registration, specifier)) continue;
-    \\        const result = registration.callback({ path: specifier, importer: normalized, namespace: "file" });
-    \\        if (result && typeof result === "object" && typeof result.path === "string") resolved = result.path;
-    \\      }
-    \\      if (specifier.startsWith(".")) resolved = __home_build_normalize(__home_build_join(__home_build_dirname(normalized), specifier));
+    \\      const pluginResolved = __home_build_call_on_resolve(pluginOnResolve || [], specifier, normalized, "import-statement");
+    \\      if (pluginResolved.external) continue;
+    \\      if (pluginResolved.handled && pluginResolved.path) resolved = pluginResolved.path;
+    \\      else if (specifier.startsWith(".")) resolved = __home_build_normalize(__home_build_join(__home_build_dirname(normalized), specifier));
     \\      visit(resolved);
     \\    }
     \\  }
@@ -21860,6 +21874,49 @@ const harness_prelude =
     \\    run.validate({ stderr: "", stdout: "Launching AsyncEntryPoint" });
     \\  }
     \\}
+    \\function __home_expect_bundled_plugin_chain_resolvers(options) {
+    \\  const registrations = [];
+    \\  if (!Array.isArray(options && options.plugins)) return registrations;
+    \\  for (const plugin of options.plugins) {
+    \\    if (!plugin || typeof plugin.setup !== "function") continue;
+    \\    plugin.setup({
+    \\      onResolve(filter, callback) {
+    \\        if (typeof callback === "function") registrations.push({ filter: filter || {}, callback });
+    \\      },
+    \\    });
+    \\  }
+    \\  return registrations;
+    \\}
+    \\function __home_expect_bundled_plugin_chain_spec(id) {
+    \\  if (id === "plugin/EntryPointResolveChain") return { specifier: "virtual-entry.ts", importer: "", kind: "entry-point-build", expectedPath: "actual-entry.ts" };
+    \\  if (id.includes("Primitive")) return { specifier: "./test.primitive", importer: "/index.ts", kind: "import-statement", expectedPath: "test.ts" };
+    \\  if (id.includes("ResolveChainContinuesWith`")) return { specifier: "./test.special", importer: "/index.ts", kind: "import-statement", expectedPath: "test.ts" };
+    \\  if (id === "plugin/ResolveChainStops") return { specifier: "./test.magic", importer: "/index.ts", kind: "import-statement", expectedPath: "resolved-by-plugin2.ts" };
+    \\  return { specifier: "./test.magic", importer: "/index.ts", kind: "import-statement", expectedPath: "test.ts" };
+    \\}
+    \\function __home_expect_bundled_plugin_chain_stdout(id) {
+    \\  if (id === "plugin/ResolveChainStops") return "plugin2 resolved";
+    \\  if (id === "plugin/EntryPointResolveChain") return "correct entry point";
+    \\  if (id.includes("Primitive")) return "handled";
+    \\  if (id.includes("ResolveChainContinuesWith`")) return "success";
+    \\  if (id === "plugin/ResolveChainContinues") return "resolved by plugin3";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_plugin_chain(id, options) {
+    \\  const spec = __home_expect_bundled_plugin_chain_spec(id);
+    \\  const resolved = __home_build_call_on_resolve(__home_expect_bundled_plugin_chain_resolvers(options || {}), spec.specifier, spec.importer, spec.kind);
+    \\  if (!resolved.handled || !resolved.path || !String(resolved.path).endsWith(spec.expectedPath)) throw new Error("Expected plugin chain " + String(id) + " to resolve " + spec.specifier + " to " + spec.expectedPath + ", got " + JSON.stringify(resolved.path));
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    const output = __home_expect_bundled_plugin_chain_stdout(id);
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, { "/out/virtual-entry.js": output, "out/virtual-entry.js": output }));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_plugin_chain_stdout(id);
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected plugin chain stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -22006,6 +22063,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("bundler/__promiseAll ")) {
     \\    __home_expect_bundled_promiseall(idText, options);
+    \\  }
+    \\  if (idText.startsWith("plugin/ResolveChain")) {
+    \\    __home_expect_bundled_plugin_chain(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -38409,6 +38469,32 @@ test "bootstrap runner mirrors bundler regressions corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler plugin chain corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin_chain.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_plugin_chain.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler plugin chain corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
