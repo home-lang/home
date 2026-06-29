@@ -38967,6 +38967,208 @@ test "bootstrap runner mirrors transpiler comma operator corpus" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler constant folding corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  describe("simplification", () => {
+        \\    const transpilerMinifySyntax = new Bun.Transpiler({
+        \\      loader: "tsx",
+        \\      platform: "browser",
+        \\      minify: { syntax: true },
+        \\    });
+        \\    const transpiler = transpilerMinifySyntax;
+        \\
+        \\    const parsed = (code, trim = true, autoExport = false, transpiler_ = transpilerMinifySyntax) => {
+        \\      if (autoExport) code = "export default (" + code + ")";
+        \\
+        \\      var out = transpiler_.transformSync(code, "js");
+        \\      if (autoExport && out.startsWith("export default ")) {
+        \\        out = out.substring("export default ".length);
+        \\      }
+        \\
+        \\      if (trim) {
+        \\        out = out.trim();
+        \\        if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\        return out.trim();
+        \\      }
+        \\
+        \\      return out;
+        \\    };
+        \\
+        \\    it("constant folding", () => {
+        \\      const expectPrinted = (code, out) => {
+        \\        expect(parsed(code, true, true, transpilerMinifySyntax)).toBe(out);
+        \\      };
+        \\
+        \\      for (let i = 1; i < 120; i++) {
+        \\        const inner = "${" + i + " * 1}";
+        \\        expectPrinted("console.log(`" + inner + "`)", 'console.log("' + i + '")');
+        \\
+        \\        const innerNeg = "${" + -i + " * 1}";
+        \\        expectPrinted("console.log(`" + innerNeg + "`)", 'console.log("' + -i + '")');
+        \\      }
+        \\
+        \\      expectPrinted("1 && 2", "2");
+        \\      expectPrinted("1 || 2", "1");
+        \\      expectPrinted("0 && 1", "0");
+        \\      expectPrinted("0 || 1", "1");
+        \\
+        \\      expectPrinted("null ?? 1", "1");
+        \\      expectPrinted("undefined ?? 1", "1");
+        \\      expectPrinted("0 ?? 1", "0");
+        \\      expectPrinted("false ?? 1", "!1");
+        \\      expectPrinted('"" ?? 1', '""');
+        \\
+        \\      expectPrinted("typeof undefined", '"undefined"');
+        \\      expectPrinted("typeof null", '"object"');
+        \\      expectPrinted("typeof false", '"boolean"');
+        \\      expectPrinted("typeof true", '"boolean"');
+        \\      expectPrinted("typeof 123", '"number"');
+        \\      expectPrinted("typeof 123n", '"bigint"');
+        \\      expectPrinted("typeof 'abc'", '"string"');
+        \\      expectPrinted("typeof function() {}", '"function"');
+        \\      expectPrinted("typeof (() => {})", '"function"');
+        \\      expectPrinted("typeof {}", '"object"');
+        \\      expectPrinted("typeof {foo: 123}", '"object"');
+        \\      expectPrinted("typeof []", '"object"');
+        \\      expectPrinted("typeof [0]", '"object"');
+        \\      expectPrinted("typeof [null]", '"object"');
+        \\      expectPrinted("typeof ['boolean']", '"object"');
+        \\
+        \\      expectPrinted('typeof [] === "object"', "!0");
+        \\      expectPrinted("typeof {foo: 123} === typeof {bar: 123}", "!0");
+        \\      expectPrinted("typeof {foo: 123} !== typeof 123", "!0");
+        \\
+        \\      expectPrinted("undefined === undefined", "!0");
+        \\      expectPrinted("undefined !== undefined", "!1");
+        \\      expectPrinted("undefined == undefined", "!0");
+        \\      expectPrinted("undefined != undefined", "!1");
+        \\
+        \\      expectPrinted("null === null", "!0");
+        \\      expectPrinted("null !== null", "!1");
+        \\      expectPrinted("null == null", "!0");
+        \\      expectPrinted("null != null", "!1");
+        \\
+        \\      expectPrinted("undefined === null", "!1");
+        \\      expectPrinted("undefined !== null", "!0");
+        \\      expectPrinted("undefined == null", "!0");
+        \\      expectPrinted("undefined != null", "!1");
+        \\
+        \\      expectPrinted("true === true", "!0");
+        \\      expectPrinted("true === false", "!1");
+        \\      expectPrinted("true !== true", "!1");
+        \\      expectPrinted("true !== false", "!0");
+        \\      expectPrinted("true == true", "!0");
+        \\      expectPrinted("true == false", "!1");
+        \\      expectPrinted("true != true", "!1");
+        \\      expectPrinted("true != false", "!0");
+        \\
+        \\      expectPrinted("1 === 1", "!0");
+        \\      expectPrinted("1 === 2", "!1");
+        \\      expectPrinted("1 === '1'", '1 === "1"');
+        \\      expectPrinted("1 == 1", "!0");
+        \\      expectPrinted("1 == 2", "!1");
+        \\      expectPrinted("1 == '1'", '1 == "1"');
+        \\
+        \\      expectPrinted("1 !== 1", "!1");
+        \\      expectPrinted("1 !== 2", "!0");
+        \\      expectPrinted("1 !== '1'", '1 !== "1"');
+        \\      expectPrinted("1 != 1", "!1");
+        \\      expectPrinted("1 != 2", "!0");
+        \\      expectPrinted("1 != '1'", '1 != "1"');
+        \\
+        \\      expectPrinted('"" == 0', "!0");
+        \\      expectPrinted("1n == 1n", "!0");
+        \\      expectPrinted("1234n == 1234n", "!0");
+        \\      expectPrinted("0x00n == 0n", "0x00n == 0n");
+        \\      expectPrinted("1n == 2n", "1n == 2n");
+        \\
+        \\      expectPrinted("'a' === '\\x61'", "!0");
+        \\      expectPrinted("'a' === '\\x62'", "!1");
+        \\      expectPrinted("'a' === 'abc'", "!1");
+        \\      expectPrinted("'a' !== '\\x61'", "!1");
+        \\      expectPrinted("'a' !== '\\x62'", "!0");
+        \\      expectPrinted("'a' !== 'abc'", "!0");
+        \\      expectPrinted("'a' == '\\x61'", "!0");
+        \\      expectPrinted("'a' == '\\x62'", "!1");
+        \\      expectPrinted("'a' == 'abc'", "!1");
+        \\      expectPrinted("'a' != '\\x61'", "!1");
+        \\      expectPrinted("'a' != '\\x62'", "!0");
+        \\      expectPrinted("'a' != 'abc'", "!0");
+        \\
+        \\      expectPrinted("'a' + 'b'", '"ab"');
+        \\      expectPrinted("'a' + 'bc'", '"abc"');
+        \\      expectPrinted("'ab' + 'c'", '"abc"');
+        \\      expectPrinted("x + 'a' + 'b'", 'x + "ab"');
+        \\      expectPrinted("x + 'a' + 'bc'", 'x + "abc"');
+        \\      expectPrinted("x + 'ab' + 'c'", 'x + "abc"');
+        \\      expectPrinted("'a' + 1", '"a1"');
+        \\      expectPrinted("x * 'a' + 'b'", 'x * "a" + "b"');
+        \\
+        \\      expectPrinted("'a' + ('b' + 'c') + 'd'", '"abcd"');
+        \\      expectPrinted("('a' + 'b') + 'c'", '"abc"');
+        \\      expectPrinted("'a' + ('b' + 'c')", '"abc"');
+        \\      expectPrinted("'a' + ('b' + ('c' + 'd')) + 'e'", '"abcde"');
+        \\      expectPrinted("'a' + ('b' + ('c' + ('d' + 'e')))", '"abcde"');
+        \\      expectPrinted("('a' + ('b' + ('c' + 'd'))) + 'e'", '"abcde"');
+        \\      expectPrinted("('a' + ('b' + 'c')) + ('d' + 'e')", '"abcde"');
+        \\      expectPrinted("('a' + 'b') + ('c' + 'd')", '"abcd"');
+        \\      expectPrinted("'a' + ('b' + 'c') + 'd'", '"abcd"');
+        \\      expectPrinted("'a' + ('b' + ('c' + 'd'))", '"abcd"');
+        \\
+        \\      function check(input, output) {
+        \\        expect(transpiler.transformSync(input)).toEqual(output);
+        \\      }
+        \\
+        \\      var output = `var boop = "bcd";\nconst ropy = "a" + boop + "d", ropy2 = "b" + boop;\n`;
+        \\      check(`var boop = ('b' + 'c') + 'd'; const ropy = "a" + boop + 'd'; const ropy2 = 'b' + boop;`, output);
+        \\
+        \\      output = `var boop = "fbcd", ropy = "a" + boop + "d", ropy2 = "b" + (ropy + "d");\n`;
+        \\      check(`var boop = "f" + ("b" + "c") + "d";var ropy = "a" + boop + "d";var ropy2 = "b" + (ropy + "d")`, output);
+        \\
+        \\      expectPrinted("'string' + `template`", `"stringtemplate"`);
+        \\      expectPrinted("`template` + 'string'", '"templatestring"');
+        \\
+        \\      expectPrinted("123", "123");
+        \\      expectPrinted("123 .toString()", "123 .toString()");
+        \\      expectPrinted("-123", "-123");
+        \\      expectPrinted("(-123).toString()", "(-123).toString()");
+        \\      expectPrinted("-0", "-0");
+        \\      expectPrinted("(-0).toString()", "(-0).toString()");
+        \\      expectPrinted("-0 === 0", "!0");
+        \\
+        \\      expectPrinted("NaN", "NaN");
+        \\      expectPrinted("NaN.toString()", "NaN.toString()");
+        \\      expectPrinted("NaN === NaN", "!1");
+        \\
+        \\      expectPrinted("Infinity", "1 / 0");
+        \\      expectPrinted("Infinity.toString()", "(1 / 0).toString()");
+        \\      expectPrinted("(-Infinity).toString()", "(-1 / 0).toString()");
+        \\      expectPrinted("Infinity === Infinity", "!0");
+        \\      expectPrinted("Infinity === -Infinity", "!1");
+        \\
+        \\      expectPrinted("123n === 1_2_3n", "!0");
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler dead code option corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
