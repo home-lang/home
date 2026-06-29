@@ -21802,6 +21802,21 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected JSX stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_importstar_ts_stdout(id, options) {
+    \\  if (id === "importstar_ts/TSAndCommonJS") return "123 123";
+    \\  const source = __home_expect_bundled_first_source(options || {});
+    \\  if (/JSON\.stringify\s*\(\s*ns\s*\)/.test(source)) return "{\"foo\":123} 123 234";
+    \\  if (/ns\.foo\s*,\s*ns\.foo\s*,\s*foo/.test(source)) return "123 123 234";
+    \\  if (/console\.log\s*\(\s*foo\s*\)/.test(source)) return "234";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_importstar_ts(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_importstar_ts_stdout(id, options || {});
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected importstar_ts stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_compile_splitting_stdout(id) {
     \\  if (id === "compile/splitting/RelativePathsAcrossChunks") return "app entry\nheader rendering\nmenu showing\nitems: home,about,contact";
     \\  if (id.startsWith("compile/splitting/ImportMetaInSplitChunk")) return "ok\nok";
@@ -22323,6 +22338,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("jsx/")) {
     \\    __home_expect_bundled_jsx(idText, options);
+    \\  }
+    \\  if (idText.startsWith("importstar_ts/")) {
+    \\    __home_expect_bundled_importstar_ts(idText, options);
     \\  }
     \\  if (idText.startsWith("regression/")) {
     \\    __home_expect_bundled_regression(idText, options);
@@ -38904,6 +38922,32 @@ test "bootstrap runner mirrors esbuild metafile corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors esbuild importstar ts corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/importstar_ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/importstar_ts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("esbuild importstar_ts corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
