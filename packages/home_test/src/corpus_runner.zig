@@ -479,7 +479,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
     "bundler/html-import-manifest.test.ts",
-    "js/bun/resolve/concurrent-dynamic-import.test.ts",
     "regression/issue/server-stop-with-pending-requests.test.ts",
     "js/bun/bundler/yaml-bundler.test.js",
     "regression/issue/27389.test.ts",
