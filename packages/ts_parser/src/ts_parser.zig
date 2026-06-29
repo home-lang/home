@@ -5147,10 +5147,7 @@ pub const Parser = struct {
             }
             if (self.peek().kind == .kw_static and self.peekAt(1).kind == .open_brace) {
                 _ = self.advance();
-                self.static_block_depth += 1;
-                errdefer self.static_block_depth -= 1;
-                const block = try self.parseBlockStatement();
-                self.static_block_depth -= 1;
+                const block = try self.parseClassStaticBlockBody();
                 try members.append(self.gpa, block);
                 continue;
             }
@@ -5170,10 +5167,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(bad.span.start, bad.line, 1184, "Modifiers cannot appear here.");
                 }
                 _ = self.advance();
-                self.static_block_depth += 1;
-                errdefer self.static_block_depth -= 1;
-                const block = try self.parseBlockStatement();
-                self.static_block_depth -= 1;
+                const block = try self.parseClassStaticBlockBody();
                 try members.append(self.gpa, block);
                 continue;
             }
@@ -5873,6 +5867,25 @@ pub const Parser = struct {
             members.items,
             is_abstract,
         );
+    }
+
+    fn parseClassStaticBlockBody(self: *Parser) ParseError!NodeId {
+        self.static_block_depth += 1;
+        defer self.static_block_depth -= 1;
+        self.function_depth += 1;
+        defer self.function_depth -= 1;
+
+        const prev_loop_depth = self.loop_depth;
+        const prev_loop_switch_depth = self.loop_switch_depth;
+        const prev_outer_loop_or_switch_active = self.outer_loop_or_switch_active;
+        self.outer_loop_or_switch_active = prev_outer_loop_or_switch_active or prev_loop_switch_depth > 0;
+        self.loop_depth = 0;
+        self.loop_switch_depth = 0;
+        defer self.loop_depth = prev_loop_depth;
+        defer self.loop_switch_depth = prev_loop_switch_depth;
+        defer self.outer_loop_or_switch_active = prev_outer_loop_or_switch_active;
+
+        return try self.parseBlockStatement();
     }
 
     fn memberAccessToTypeRef(self: *Parser, expr: NodeId, args: []const NodeId) ParseError!NodeId {
