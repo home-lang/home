@@ -6010,6 +6010,40 @@ test "adapter preserves keyword operator spacing when minifying whitespace like 
     }
 }
 
+test "adapter prints numeric property keys that overflow like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        minified: []const u8,
+        plain: ?[]const u8 = null,
+    };
+    const cases = [_]Case{
+        .{ .source = "x = { 1e999: 1 };", .minified = "x={[1/0]:1};", .plain = "x = { [1 / 0]: 1 };\n" },
+        .{ .source = "x = { 1e999() {} };", .minified = "x={[1/0](){}};" },
+        .{ .source = "x = { get 1e999() {} };", .minified = "x={get[1/0](){}};" },
+        .{ .source = "x = { set 1e999(v) {} };", .minified = "x={set[1/0](v){}};" },
+        .{ .source = "x = class { 1e999() {} };", .minified = "x=class{[1/0](){}};", .plain = "x = class {\n  [1 / 0]() {}\n};\n" },
+        .{ .source = "x = class { static 1e999() {} };", .minified = "x=class{static[1/0](){}};" },
+        .{ .source = "x = class { 1e999 = 1 };", .minified = "x=class{[1/0]=1};" },
+        .{ .source = "x = class { static 1e999 = 1 };", .minified = "x=class{static[1/0]=1};" },
+        .{ .source = "const { 1e999: y } = x;", .minified = "const{[1/0]:y}=x;", .plain = "const { [1 / 0]: y } = x;\n" },
+        .{ .source = "({ 1e999: x.y } = z);", .minified = "({[1/0]:x.y}=z);" },
+    };
+
+    const minify_handle = TranspilerHandle{ .loader = .ts, .minify_whitespace = true };
+    const plain_handle = TranspilerHandle{ .loader = .ts };
+    for (cases) |case| {
+        const minified_output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
+        defer std.testing.allocator.free(minified_output);
+        try std.testing.expectEqualStrings(case.minified, minified_output);
+
+        if (case.plain) |expected_plain| {
+            const plain_output = try transpileSource(std.testing.allocator, &plain_handle, case.source, .ts);
+            defer std.testing.allocator.free(plain_output);
+            try std.testing.expectEqualStrings(expected_plain, plain_output);
+        }
+    }
+}
+
 test "adapter rewrites string lengths like Bun.Transpiler minify syntax" {
     const Case = struct {
         source: []const u8,

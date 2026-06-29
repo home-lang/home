@@ -3431,6 +3431,16 @@ fn NewPrinter(
             }
 
             const _key = item.key.?;
+            if (!is_json and !item.flags.contains(.is_computed)) {
+                switch (_key.data) {
+                    .e_number => |num| {
+                        if (!std.math.isFinite(num.value)) {
+                            item.flags.setPresent(.is_computed, true);
+                        }
+                    },
+                    else => {},
+                }
+            }
 
             if (!is_json and item.flags.contains(.is_computed)) {
                 p.print("[");
@@ -3708,6 +3718,17 @@ fn NewPrinter(
                             if (property.flags.contains(.is_spread)) {
                                 p.print("...");
                             } else {
+                                if (!property.flags.contains(.is_computed)) {
+                                    switch (property.key.data) {
+                                        .e_number => |num| {
+                                            if (!std.math.isFinite(num.value)) {
+                                                property.flags.setPresent(.is_computed, true);
+                                            }
+                                        },
+                                        else => {},
+                                    }
+                                }
+
                                 if (property.flags.contains(.is_computed)) {
                                     p.print("[");
                                     p.printExpr(property.key, .comma, ExprFlag.None());

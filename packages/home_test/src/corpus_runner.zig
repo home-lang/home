@@ -38207,6 +38207,67 @@ test "bootstrap runner mirrors transpiler keyword operator minify whitespace cor
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler numeric property overflow corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("numeric property keys that overflow to Infinity", () => {
+        \\  const minifier = new Bun.Transpiler({ loader: "ts", minifyWhitespace: true });
+        \\  const plain = new Bun.Transpiler({ loader: "ts" });
+        \\
+        \\  it("are printed as computed properties when minifying whitespace", () => {
+        \\    expect(minifier.transformSync("x = { 1e999: 1 };")).toBe("x={[1/0]:1};");
+        \\    expect(minifier.transformSync("x = { 1e999() {} };")).toBe("x={[1/0](){}};");
+        \\    expect(minifier.transformSync("x = { get 1e999() {} };")).toBe("x={get[1/0](){}};");
+        \\    expect(minifier.transformSync("x = { set 1e999(v) {} };")).toBe("x={set[1/0](v){}};");
+        \\    expect(minifier.transformSync("x = class { 1e999() {} };")).toBe("x=class{[1/0](){}};");
+        \\    expect(minifier.transformSync("x = class { static 1e999() {} };")).toBe("x=class{static[1/0](){}};");
+        \\    expect(minifier.transformSync("x = class { 1e999 = 1 };")).toBe("x=class{[1/0]=1};");
+        \\    expect(minifier.transformSync("x = class { static 1e999 = 1 };")).toBe("x=class{static[1/0]=1};");
+        \\    expect(minifier.transformSync("const { 1e999: y } = x;")).toBe("const{[1/0]:y}=x;");
+        \\    expect(minifier.transformSync("({ 1e999: x.y } = z);")).toBe("({[1/0]:x.y}=z);");
+        \\  });
+        \\
+        \\  it("are printed as computed properties without minification", () => {
+        \\    expect(plain.transformSync("x = { 1e999: 1 };")).toBe("x = { [1 / 0]: 1 };\n");
+        \\    expect(plain.transformSync("x = class { 1e999() {} };")).toBe("x = class {\n  [1 / 0]() {}\n};\n");
+        \\    expect(plain.transformSync("const { 1e999: y } = x;")).toBe("const { [1 / 0]: y } = x;\n");
+        \\  });
+        \\
+        \\  it("handles a method name with hundreds of digits", () => {
+        \\    const digits = Buffer.alloc(325, "9").toString();
+        \\    expect(minifier.transformSync(`(class { ${digits}() {} });`)).toBe("(class{[1/0](){}});");
+        \\  });
+        \\
+        \\  it("still refers to the same property at runtime", () => {
+        \\    const out = minifier.transformSync(`
+        \\      const obj = { 1e999: "object" };
+        \\      const { 1e999: destructured } = { 1e999: "destructured" };
+        \\      class C {
+        \\        1e999() { return "method"; }
+        \\        static 1e999 = "static";
+        \\      }
+        \\      var result = [obj[Infinity], destructured, new C()[Infinity](), C[Infinity]];
+        \\    `);
+        \\    expect(new Function(`${out}; return result;`)()).toEqual(["object", "destructured", "method", "static"]);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler crash regression corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
