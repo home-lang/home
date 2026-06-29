@@ -39169,6 +39169,91 @@ test "bootstrap runner mirrors transpiler constant folding corpus" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler type coercion corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  describe("simplification", () => {
+        \\    const transpiler = new Bun.Transpiler({
+        \\      loader: "tsx",
+        \\      platform: "browser",
+        \\      minify: { syntax: true },
+        \\    });
+        \\
+        \\    describe("type coercions", () => {
+        \\      const dead = `
+        \\      if ("") {
+        \\        TEST_FAIL
+        \\      }
+        \\
+        \\      if (false) {
+        \\        TEST_FAIL
+        \\      }
+        \\
+        \\      if (0) {
+        \\        TEST_FAIL
+        \\      }
+        \\
+        \\      if (void 0) {
+        \\        TEST_FAIL
+        \\      }
+        \\
+        \\      if (null) {
+        \\        TEST_FAIL
+        \\      }
+        \\
+        \\      var should_be_true = typeof "" === "string" || false
+        \\      var should_be_false = typeof "" !== "string" && TEST_FAIL;
+        \\      var should_be_false_2 = typeof true === "string" && TEST_FAIL;
+        \\      var should_be_false_3 = typeof false === "string" && TEST_FAIL;
+        \\      var should_be_false_4 = typeof 123n === "string" && TEST_FAIL;
+        \\      var should_be_false_5 = typeof function(){} === "string" && TEST_FAIL;
+        \\      var should_be_kept = typeof globalThis.BACON  === "string" && TEST_OK;
+        \\      var should_be_kept_1 = typeof TEST_OK  === "string";
+        \\
+        \\      var should_be_kept_2 = TEST_OK ?? true;
+        \\      var should_be_kept_4 = { "TEST_OK": true } ?? TEST_FAIL;
+        \\      var should_be_false_6 = false ?? TEST_FAIL;
+        \\      var should_be_true_7 = true ?? TEST_FAIL;
+        \\    `;
+        \\      const out = transpiler.transformSync(dead);
+        \\
+        \\      for (let line of out.split("\n")) {
+        \\        it(line, () => {
+        \\          if (line.includes("should_be_kept")) {
+        \\            expect(line.includes("TEST_OK")).toBe(true);
+        \\          }
+        \\
+        \\          if (line.includes("should_be_false")) {
+        \\            if (!line.includes("= !1")) throw new Error(`Expected false in "${line}"`);
+        \\            expect(line.includes("= !1")).toBe(true);
+        \\          }
+        \\
+        \\          if (line.includes("TEST_FAIL")) {
+        \\            throw new Error(`"${line}"\n\tshould not contain TEST_FAIL`);
+        \\          }
+        \\        });
+        \\      }
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler dead code option corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
