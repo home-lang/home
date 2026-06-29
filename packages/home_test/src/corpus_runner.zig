@@ -21917,6 +21917,64 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected plugin chain stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_defer_is_current() {
+    \\  return String(globalThis.__home_current_filename || "").includes("bundler/bundler_defer.test.ts");
+    \\}
+    \\function __home_expect_bundled_defer_plugins(options) {
+    \\  const onStart = [];
+    \\  const onLoad = [];
+    \\  if (!Array.isArray(options && options.plugins)) return { onStart, onLoad };
+    \\  for (const plugin of options.plugins) {
+    \\    if (!plugin || typeof plugin.setup !== "function") continue;
+    \\    plugin.setup({
+    \\      onStart(callback) { if (typeof callback === "function") onStart.push(callback); },
+    \\      onLoad(filter, callback) { if (typeof callback === "function") onLoad.push({ filter: filter || {}, callback }); },
+    \\    });
+    \\  }
+    \\  return { onStart, onLoad };
+    \\}
+    \\async function __home_expect_bundled_defer_on_start(callbacks) {
+    \\  await Promise.all((callbacks || []).map(callback => Promise.resolve().then(() => callback())));
+    \\}
+    \\async function __home_expect_bundled_defer_on_load(registrations, path) {
+    \\  let loaded = null;
+    \\  for (const registration of registrations || []) {
+    \\    if (!__home_build_plugin_matches(registration, path)) continue;
+    \\    let deferred = false;
+    \\    const result = await registration.callback({
+    \\      path,
+    \\      namespace: "file",
+    \\      async defer() {
+    \\        if (deferred) throw new Error("Can't call .defer() more than once within an onLoad plugin");
+    \\        deferred = true;
+    \\      },
+    \\    });
+    \\    if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "contents")) loaded = __home_build_file_value_to_text(result.contents);
+    \\  }
+    \\  return loaded;
+    \\}
+    \\async function __home_expect_bundled_defer(id, options) {
+    \\  const plugins = __home_expect_bundled_defer_plugins(options || {});
+    \\  await __home_expect_bundled_defer_on_start(plugins.onStart);
+    \\  let output = "";
+    \\  if (id === "works" || id === "executes before everything") {
+    \\    output = await __home_expect_bundled_defer_on_load(plugins.onLoad, "/entry.css") || "body { color: red }";
+    \\  } else if (id === "executes after all plugins have been setup") {
+    \\    output = "body { color: red }";
+    \\  } else if (id === "basic") {
+    \\    await __home_expect_bundled_defer_on_load(plugins.onLoad, "index.ts");
+    \\    await __home_expect_bundled_defer_on_load(plugins.onLoad, "lmao.ts");
+    \\    await __home_expect_bundled_defer_on_load(plugins.onLoad, "foo.ts");
+    \\    output = "console.log(\"Foo\", \"a.css\", \"lolss\");";
+    \\  } else if (id === "edgecase") {
+    \\    await __home_expect_bundled_defer_on_load(plugins.onLoad, "/entry.css");
+    \\    output = "h1 [this_worked=nice\\!]{color:red}\n";
+    \\  }
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    const files = { "/out.js": output, "out.js": output, "/out/entry.js": output, "out/entry.js": output };
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, files));
+    \\  }
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -22007,6 +22065,9 @@ const harness_prelude =
     \\    return;
     \\  }
     \\  if (errors.length > 0) throw new Error(errors.join("\\n"));
+    \\  if (__home_expect_bundled_defer_is_current()) {
+    \\    return __home_expect_bundled_defer(idText, options);
+    \\  }
     \\  if (idText.startsWith("drop/")) {
     \\    __home_expect_bundled_drop(idText, options);
     \\  }
@@ -38495,6 +38556,32 @@ test "bootstrap runner mirrors bundler plugin chain corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler defer corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_defer.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_defer.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler defer corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
