@@ -37117,6 +37117,29 @@ test "bootstrap runner mirrors late transpiler bootstrap tranche" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors bundler CLI resolver bootstrap tail" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var summary = Summary{};
+    defer summary.deinit(std.testing.allocator);
+    for (bundler_transpiler_bootstrap_files[18..22]) |relative| {
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", relative, &summary);
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), summary.files);
+    try std.testing.expectEqual(@as(usize, 26), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {
     const source =
         \\import { describe } from "bun:test";
