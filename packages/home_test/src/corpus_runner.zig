@@ -38796,6 +38796,111 @@ test "bootstrap runner mirrors transpiler type export corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler simplification scopes corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  describe("simplification", () => {
+        \\    const transpiler = new Bun.Transpiler({
+        \\      loader: "tsx",
+        \\      define: {
+        \\        "process.env.NODE_ENV": JSON.stringify("development"),
+        \\        user_undefined: "undefined",
+        \\      },
+        \\      platform: "browser",
+        \\      minify: { syntax: true },
+        \\    });
+        \\
+        \\    const parsed = (code, trim = true, autoExport = false) => {
+        \\      if (autoExport) code = "export default (" + code + ")";
+        \\
+        \\      var out = transpiler.transformSync(code, "js");
+        \\      if (autoExport && out.startsWith("export default ")) {
+        \\        out = out.substring("export default ".length);
+        \\      }
+        \\
+        \\      if (trim) {
+        \\        out = out.trim();
+        \\        if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\        return out.trim();
+        \\      }
+        \\
+        \\      return out;
+        \\    };
+        \\
+        \\    const expectPrinted = (code, out) => {
+        \\      expect(parsed(code, true, true)).toBe(out);
+        \\    };
+        \\
+        \\    it("unary operator", () => {
+        \\      expectPrinted("a = !(b, c)", "a = (b, !c)");
+        \\    });
+        \\
+        \\    it("constant folding scopes", () => {
+        \\      var transpiler = new Bun.Transpiler({
+        \\        inline: true,
+        \\        platform: "bun",
+        \\        allowBunRuntime: false,
+        \\        minify: { syntax: true },
+        \\      });
+        \\
+        \\      function check(input) {
+        \\        transpiler.transformSync(input);
+        \\      }
+        \\
+        \\      check("var x; 1 ? 0 : ()=>{}; (()=>{})()");
+        \\      check("var x; 0 ? ()=>{} : 1; (()=>{})()");
+        \\      check("var x; 0 && (()=>{}); (()=>{})()");
+        \\      check("var x; 1 || (()=>{}); (()=>{})()");
+        \\      check("if (1) 0; else ()=>{}; (()=>{})()");
+        \\      check("if (0) ()=>{}; else 1; (()=>{})()");
+        \\      check(`
+        \\      var func = () => {};
+        \\      var x;
+        \\      1 ? 0 : func;
+        \\      (() => {})();
+        \\      switch (1) {
+        \\        case 0: {
+        \\          class Foo {
+        \\            static {
+        \\              function hey() {
+        \\                return class {
+        \\                  static {
+        \\                    var foo = class {
+        \\                      hey(arg) {
+        \\                        return 1;
+        \\                      }
+        \\                    };
+        \\                    new foo();
+        \\                  }
+        \\                };
+        \\              }
+        \\            }
+        \\          }
+        \\          new Foo();
+        \\        }
+        \\      }
+        \\      `);
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
