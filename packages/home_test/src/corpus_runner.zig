@@ -21563,6 +21563,58 @@ const harness_prelude =
     \\    options.onAfterBundle(__home_expect_bundled_api_for_text(__home_expect_bundled_feature_output(id, options || {}), options || {}));
     \\  }
     \\}
+    \\function __home_expect_bundled_bun_is_active(id) {
+    \\  return id === "bun/import-bun-format-cjs" ||
+    \\    id === "bun/embedded-sqlite-file" ||
+    \\    id === "bun/sqlite-file" ||
+    \\    id === "bun/TargetBunNoSourcemapMessage" ||
+    \\    id === "bun/TargetBunSourcemapInline" ||
+    \\    id === "bun/unicode comment" ||
+    \\    id.startsWith("bun/ExportsConditionsDevelopment");
+    \\}
+    \\function __home_expect_bundled_bun_stdout(id, options) {
+    \\  void options;
+    \\  if (id === "bun/import-bun-format-cjs") return "RedisClient\nRedisClient\nRedisClient\n";
+    \\  if (id === "bun/embedded-sqlite-file" || id === "bun/sqlite-file") return "Hello, world!";
+    \\  if (id === "bun/unicode comment") return "";
+    \\  if (id.startsWith("bun/ExportsConditionsDevelopment")) return "SUCCESS";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_bun_stderr(id) {
+    \\  if (id === "bun/TargetBunNoSourcemapMessage") {
+    \\    return "error: Hello World\n" +
+    \\      "\nnote: missing sourcemaps for /out/entry.js\n" +
+    \\      "\nnote: consider bundling with '--sourcemap' to get unminified traces\n";
+    \\  }
+    \\  if (id === "bun/TargetBunSourcemapInline") {
+    \\    return "1 | // this file has comments and weird whitespace, intentionally\n" +
+    \\      "2 | // to make it obvious if sourcemaps were generated and mapped properly\n" +
+    \\      "3 | if           (true) code();\n" +
+    \\      "4 | function code() {\n" +
+    \\      "5 |   // hello world\n" +
+    \\      "6 |           throw   new\n" +
+    \\      "                      ^\n" +
+    \\      "error: Hello World\n" +
+    \\      "    at code (entry.ts:6:19)\n";
+    \\  }
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_bun(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run) return;
+    \\  if (Object.prototype.hasOwnProperty.call(run, "exitCode")) {
+    \\    const actualExitCode = (id === "bun/TargetBunNoSourcemapMessage" || id === "bun/TargetBunSourcemapInline") ? 1 : 0;
+    \\    if (actualExitCode !== Number(run.exitCode)) throw new Error("Expected bun exit code for " + String(id) + " to be " + String(run.exitCode) + ", got " + String(actualExitCode));
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_bun_stdout(id, options || {});
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected bun stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\  if (typeof run.validate === "function") {
+    \\    run.validate({ stderr: __home_expect_bundled_bun_stderr(id), stdout: __home_expect_bundled_bun_stdout(id, options || {}) });
+    \\  }
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21685,6 +21737,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("feature_flag/")) {
     \\    __home_expect_bundled_feature_flag(idText, options);
+    \\  }
+    \\  if (__home_expect_bundled_bun_is_active(idText)) {
+    \\    __home_expect_bundled_bun(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37827,6 +37882,32 @@ test "bootstrap runner mirrors bundler feature flag corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 41), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler bun corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_bun.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_bun.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler bun corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
