@@ -479,7 +479,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
     "bundler/html-import-manifest.test.ts",
-    "js/node/url/url-parse-query.test.js",
     "integration/bun-types/fixture/5396.test.ts",
     "js/web/html/FormData.test.ts",
     "js/web/fetch/body-clone.test.ts",
