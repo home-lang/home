@@ -479,7 +479,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
     "bundler/html-import-manifest.test.ts",
-    "js/bun/bundler/yaml-bundler.test.js",
     "regression/issue/27389.test.ts",
     "regression/issue/29264.test.ts",
     "js/bun/resolve/require-esm-microtask-order.test.ts",
@@ -47259,6 +47258,27 @@ test "bootstrap runner mirrors server stop pending requests corpus" {
     const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/server-stop-with-pending-requests.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/server-stop-with-pending-requests.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors YAML bundler corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/bundler/yaml-bundler.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/bundler/yaml-bundler.test.js");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
 
