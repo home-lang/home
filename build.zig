@@ -75,8 +75,8 @@ fn dependOnTest(
 // HOME_BUN_OBJ_ROOT / HOME_BUN_WEBKIT_LIB environment variables (see
 // linkBunNative). When neither the env var nor this path exists, the build
 // falls back to the system JavaScriptCore framework (no Bun bindings).
-const bun_obj_root_default = "/Users/chrisbreuer/Code/bun/build/release/obj";
-const bun_webkit_lib_default = "/Users/chrisbreuer/.bun/build-cache/webkit-5488984d20e0dbfe-arm64/lib";
+const bun_obj_root_default = "/Users/chris/Code/bun/build/release/obj";
+const bun_webkit_lib_default = "/Users/chris/.bun/build-cache/webkit-cd821fecca0d39c8-macos-arm64/lib";
 const link_bun_rust_archive = false;
 
 const native_vendor_roots = [_][]const u8{
