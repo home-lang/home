@@ -21657,6 +21657,29 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile splitting stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_splitting_stdout(id, runIndex) {
+    \\  if (id === "splitting/DynamicImportCSSFile") return "test.ts loaded";
+    \\  if (id === "splitting/DynamicImportMultipleCSSImports") return "module1.js executed\nmodule2.js executed\nmodule1 loaded\nmodule2 loaded";
+    \\  if (id === "splitting/StaticAndDynamicCSSImports") return "dynamic.js executed\ndynamic module loaded";
+    \\  if (id === "splitting/NestedDynamicImportWithCSS") return "level1.js executed\nlevel2.js executed\nlevel1 loaded\nlevel2 loaded from level1";
+    \\  if (id === "splitting/SharedCSSBetweenChunks") return "moduleA.js executed\nmoduleB.js executed\nmoduleA loaded\nmoduleB loaded";
+    \\  if (id === "splitting/DynamicImportChainWithCSS") return "chain1.js executed\nchain1 loaded\nchain2.js executed\nchain2 loaded\nchain3.js executed\nchain3 loaded";
+    \\  if (id === "splitting/ConditionalDynamicImportWithCSS") return "moduleTrue.js executed\ntrue branch loaded";
+    \\  if (id === "splitting/MultipleEntryPointsWithSharedCSS") return runIndex === 1 ? "entry2.js executed" : "entry1.js executed";
+    \\  if (id === "splitting/DynamicImportWithOnlyCSSNoJS") return "CSS import succeeded";
+    \\  if (id === "splitting/CircularDynamicImportsWithCSS") return "a.js executed\na loaded from entry\nb.js executed\nb.js imports a {}\nb loaded from entry, value: B";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_splitting(id, options) {
+    \\  const run = options && options.run;
+    \\  const runs = Array.isArray(run) ? run : (run ? [run] : []);
+    \\  for (let i = 0; i < runs.length; i++) {
+    \\    if (!Object.prototype.hasOwnProperty.call(runs[i], "stdout")) continue;
+    \\    const actual = __home_expect_bundled_splitting_stdout(id, i);
+    \\    const expected = String(runs[i].stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected splitting stdout for " + String(id) + " run " + String(i) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_regression_captures(id, options) {
     \\  if (id === "regression/NamespaceTracking#12337") return ["1 /* Value */", "1 /* Value */", "1 /* Value */"];
     \\  return Array.isArray(options && options.capture) ? options.capture.map(String) : [];
@@ -22109,6 +22132,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/splitting/")) {
     \\    __home_expect_bundled_compile_splitting(idText, options);
+    \\  }
+    \\  if (idText.startsWith("splitting/")) {
+    \\    __home_expect_bundled_splitting(idText, options);
     \\  }
     \\  if (idText.startsWith("regression/")) {
     \\    __home_expect_bundled_regression(idText, options);
@@ -38579,6 +38605,32 @@ test "bootstrap runner mirrors bundler defer corpus" {
 
     if (file_run.result.status() != .passed) {
         std.debug.print("bundler defer corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler splitting corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_splitting.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler splitting corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
