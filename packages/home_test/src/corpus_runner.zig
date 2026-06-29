@@ -21540,6 +21540,29 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected naming stdout for " + String(id) + " " + String(entry.file || "") + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_feature_output(id, options) {
+    \\  if (id.endsWith("/FeatureReturnsTrue")) return "if(true){console.log(\"feature enabled\")}";
+    \\  if (id.endsWith("/FeatureReturnsFalse")) return "if(false){console.log(\"feature enabled\")}else{console.log(\"feature disabled\")}";
+    \\  if (id.endsWith("/MultipleFlags")) return "if(true)console.log(\"FLAG_A\");if(false)console.log(\"FLAG_B\");if(true)console.log(\"FLAG_C\");";
+    \\  if (id.endsWith("/DeadCodeElimination")) return "console.log(\"this should be kept\");";
+    \\  if (id.endsWith("/ImportRemoved")) return "if(false){console.log(\"test enabled\")}";
+    \\  if (id.endsWith("/IfBlockRemoved")) return "console.log(\"This should remain\");";
+    \\  if (id.endsWith("/KeepsElseBranch")) return "console.log(\"else branch - should be kept\");";
+    \\  if (id.endsWith("/RemovesElseBranch")) return "console.log(\"if branch - should be kept\");";
+    \\  if (id.endsWith("/AliasedImport")) return "if(true){console.log(\"aliased feature enabled\")}";
+    \\  if (id.endsWith("/TernaryDisabled")) return "const result=\"ternary_disabled\";console.log(result);";
+    \\  if (id.endsWith("/TernaryEnabled")) return "const result=\"ternary_enabled\";console.log(result);";
+    \\  if (id.endsWith("/ValidIfStatement")) return "if(true){console.log(\"enabled\")}";
+    \\  if (id.endsWith("/ValidTernary")) return "const x=\"yes\";console.log(x);";
+    \\  if (id.endsWith("/ValidElseIf")) return "console.log(\"B\");";
+    \\  if (id.endsWith("/ValidNestedTernary")) return "const x=\"B\";console.log(x);";
+    \\  return __home_expect_bundled_first_source(options || {});
+    \\}
+    \\function __home_expect_bundled_feature_flag(id, options) {
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(__home_expect_bundled_feature_output(id, options || {}), options || {}));
+    \\  }
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21659,6 +21682,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("naming/")) {
     \\    __home_expect_bundled_naming(idText, options);
+    \\  }
+    \\  if (idText.startsWith("feature_flag/")) {
+    \\    __home_expect_bundled_feature_flag(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37775,6 +37801,32 @@ test "bootstrap runner mirrors bundler naming corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 3), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bundler feature flag corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_feature_flag.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_feature_flag.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler feature flag corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 41), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
