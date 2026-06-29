@@ -5189,6 +5189,15 @@ const harness_prelude =
     \\  child.success = true;
     \\  return child;
     \\}
+    \\function __home_spawn_transpiler_define_empty_key_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex < 0) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  if (!source.includes('"": "1"') || !source.includes("FOO") || !source.includes("transformSync(\"console.log(FOO);\"")) return null;
+    \\  return __home_spawn_completed("console.log(\"bar\");\n", "", 0);
+    \\}
     \\function __home_bun_test_cli_files(cwd, args) {
     \\  const root = String(cwd || process.cwd());
     \\  let entries = [];
@@ -13436,6 +13445,8 @@ const harness_prelude =
     \\    if (runSyntaxFixture) return runSyntaxFixture;
     \\    const transpilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
     \\    if (transpilerCacheFixture) return transpilerCacheFixture;
+    \\    const transpilerDefineEmptyKeyFixture = __home_spawn_transpiler_define_empty_key_fixture(options || {});
+    \\    if (transpilerDefineEmptyKeyFixture) return transpilerDefineEmptyKeyFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
     \\    if (promptsFixture) return promptsFixture;
     \\    const repeatingStdoutFixture = __home_spawn_repeating_stdout_fixture(options || {});
@@ -37495,6 +37506,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fixtures/9-comments.ts") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "''+'c'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "transformSync(\\\"console.log(FOO);\\\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fixtures/lots-of-for-loop.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainEqual(expected)") != null);
@@ -37675,6 +37687,46 @@ test "Bun test import rewrite embeds copied snapshot files" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_snapshot_values = __home_load_snapshots(") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Bun.Transpiler using statements work right 1") != null);
+}
+
+test "bootstrap runner mirrors transpiler define empty key subprocess" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("define with an empty-string key is ignored without leaving uninitialized slots", async () => {
+        \\  const proc = Bun.spawn({
+        \\    cmd: [
+        \\      bunExe(),
+        \\      "-e",
+        \\      `
+        \\        const t = new Bun.Transpiler({ define: { "": "1", FOO: '"bar"' } });
+        \\        process.stdout.write(t.transformSync("console.log(FOO);", "js"));
+        \\      `,
+        \\    ],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).toBe("");
+        \\  expect(stdout.trim()).toBe('console.log("bar");');
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun test import rewrite lowers single test binding" {
