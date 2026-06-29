@@ -899,6 +899,7 @@ fn transpileSource(
 fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
     if (std.mem.indexOfScalar(u8, source_text, '#') != null) return true;
     if (handle.minify_syntax or handle.minify_identifiers) return true;
+    if (loader == .js and std.mem.indexOf(u8, source_text, "String.raw`") != null) return true;
     return switch (loader) {
         .ts, .tsx => true,
         else => false,
@@ -1004,7 +1005,28 @@ fn transpileSourceWithBunParser(
         false,
     );
 
-    return buffer_printer.ctx.buffer.toOwnedSlice();
+    const printed = buffer_printer.ctx.buffer.toOwnedSlice();
+    errdefer allocator.free(printed);
+    if (try stripWrappedDefaultRawTemplateParens(allocator, printed)) |normalized| {
+        allocator.free(printed);
+        return normalized;
+    }
+    return printed;
+}
+
+fn stripWrappedDefaultRawTemplateParens(allocator: std.mem.Allocator, printed: []const u8) !?[]u8 {
+    const prefix = "export default (String.raw`";
+    const suffix = "`);\n";
+    if (!std.mem.startsWith(u8, printed, prefix) or !std.mem.endsWith(u8, printed, suffix)) {
+        return null;
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "export default String.raw`");
+    try out.appendSlice(allocator, printed[prefix.len .. printed.len - suffix.len]);
+    try out.appendSlice(allocator, "`;\n");
+    return try out.toOwnedSlice(allocator);
 }
 
 fn rewriteGeneratedBunWrapImport(allocator: std.mem.Allocator, source: []const u8) !?[]u8 {
@@ -5328,10 +5350,15 @@ test "adapter normalizes raw template literal contents like Bun.Transpiler" {
     const handle = TranspilerHandle{};
     for (cases) |case| {
         try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
+        try std.testing.expect(shouldUseBunParserForTranspile(case.source, .js, &handle));
 
-        const output = try transpileSource(std.testing.allocator, &handle, case.source, .ts);
-        defer std.testing.allocator.free(output);
-        try std.testing.expectEqualStrings(case.output, output);
+        const ts_output = try transpileSource(std.testing.allocator, &handle, case.source, .ts);
+        defer std.testing.allocator.free(ts_output);
+        try std.testing.expectEqualStrings(case.output, ts_output);
+
+        const js_output = try transpileSource(std.testing.allocator, &handle, case.source, .js);
+        defer std.testing.allocator.free(js_output);
+        try std.testing.expectEqualStrings(case.output, js_output);
     }
 
     const multiline_source =

@@ -39254,6 +39254,92 @@ test "bootstrap runner mirrors transpiler type coercion corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler raw template corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    platform: "browser",
+        \\  });
+        \\
+        \\  const parsed = (code, trim = true, autoExport = false) => {
+        \\    if (autoExport) code = "export default (" + code + ")";
+        \\
+        \\    var out = transpiler.transformSync(code, "js");
+        \\    if (autoExport && out.startsWith("export default ")) {
+        \\      out = out.substring("export default ".length);
+        \\    }
+        \\
+        \\    if (trim) {
+        \\      out = out.trim();
+        \\      if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\      return out.trim();
+        \\    }
+        \\
+        \\    return out;
+        \\  };
+        \\  const expectPrinted = (code, out) => {
+        \\    expect(parsed(code, true, true)).toBe(out);
+        \\  };
+        \\
+        \\  it("raw template literal contents", () => {
+        \\    expectPrinted("String.raw`\r`", "String.raw`\n`");
+        \\    expectPrinted("String.raw`\r\n`", "String.raw`\n`");
+        \\    expectPrinted("String.raw`\n`", "String.raw`\n`");
+        \\    expectPrinted("String.raw`\r\r\r\r\r\n\r`", "String.raw`\n\n\n\n\n\n`");
+        \\    expectPrinted("String.raw`\n\r`", "String.raw`\n\n`");
+        \\    var code = `String.raw\`
+        \\      <head>
+        \\        <meta charset="UTF-8" />
+        \\        <title>${"meow123"}</title>
+        \\        <link rel="stylesheet" href="/css/style.css" />
+        \\      </head>
+        \\    \``;
+        \\    expectPrinted(code, code);
+        \\
+        \\    code = `String.raw\`
+        \\      <head>\r\n\n\r\r\r
+        \\        <meta charset="UTF-8" />\r
+        \\        <title>${"meow123"}</title>\n
+        \\${"    "}
+        \\    \r
+        \\    \r
+        \\    \n\r
+        \\        <link rel="stylesheet" href="/css/style.css" />
+        \\      </head>
+        \\    \``;
+        \\    const result = `String.raw\`
+        \\      <head>\n\n\n\n
+        \\        <meta charset="UTF-8" />
+        \\        <title>${"meow123"}</title>\n
+        \\${"    "}
+        \\${"    "}
+        \\${"    "}
+        \\    \n
+        \\        <link rel="stylesheet" href="/css/style.css" />
+        \\      </head>
+        \\    \``;
+        \\    expectPrinted(code, result);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler dead code option corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
