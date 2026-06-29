@@ -381,6 +381,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "module") or
         std.ascii.eqlIgnoreCase(key, "moduleResolution") or
         std.ascii.eqlIgnoreCase(key, "noEmit") or
+        std.ascii.eqlIgnoreCase(key, "noEmitHelpers") or
         std.ascii.eqlIgnoreCase(key, "noFallthroughCasesInSwitch") or
         std.ascii.eqlIgnoreCase(key, "noImplicitAny") or
         std.ascii.eqlIgnoreCase(key, "noImplicitOverride") or
@@ -54999,6 +55000,13 @@ test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
         \\// @target: es2020
         \\// @strict: true
         \\const x = 1;
+    ));
+    // Emit-affecting runner directives are also stripped from
+    // diagnostic line baselines.
+    try T.expectEqual(@as(u32, 2), countLeadingDirectiveLines(
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\class C {}
     ));
     // Blank line between directives still strips (each blank is
     // promoted into the count when the next directive line is seen).
