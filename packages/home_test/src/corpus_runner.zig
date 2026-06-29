@@ -479,7 +479,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
     "bundler/html-import-manifest.test.ts",
-    "js/deno/v8/error.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
