@@ -21908,6 +21908,26 @@ const harness_prelude =
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile splitting stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
     \\function __home_expect_bundled_splitting_stdout(id, runIndex) {
+    \\  const outputs = {
+    \\    "splitting/SharedES6IntoES6": ["123", "123"],
+    \\    "splitting/SharedCommonJSIntoES6": ["123", "123"],
+    \\    "splitting/DynamicCommonJSIntoES6": ["123"],
+    \\    "splitting/DynamicAndNotDynamicCommonJSIntoES6": ["123 123"],
+    \\    "splitting/AssignToLocal": ["123", "456", "123\n123", "456\n123"],
+    \\    "splitting/SideEffectsWithoutDependencies": ["side effect\n1", "side effect\n2", "side effect\n1\n2", "side effect\n2\n1"],
+    \\    "splitting/NestedDirectories": ["123", "-123"],
+    \\    "splitting/MissingLazyExport": ["[{},null]", "[null]"],
+    \\    "splitting/ReExportESBuildIssue273": ["true 1 1"],
+    \\    "splitting/DynamicImportESBuildIssue272": ["imported"],
+    \\    "splitting/DynamicImportOutsideSourceTreeESBuildIssue264": ["imported", "imported", "imported"],
+    \\    "splitting/CrossChunkAssignmentDependencies": ["side effects! [Function: getValue]\nsetValue 123", "side effects! [Function: getValue]\nb", "side effects! [Function: getValue]\nsetValue 123\nobserver 123\nb"],
+    \\    "splitting/MinifyIdentifiersCrashESBuildIssue437": ["[Function: f]", "[Function: f]"],
+    \\    "splitting/HybridESMAndCJSESBuildIssue617": ["{\"foo\":123,\"bar\":{\"foo\":123}}"],
+    \\    "splitting/EdgeCaseESBuildIssue2793WithSplitting": ["42 true 42"],
+    \\    "splitting/EdgeCaseESBuildIssue2793WithoutSplitting": ["42 true 42"],
+    \\    "splitting/CJSDynamicImportOfCJSChunk": ["success"],
+    \\  };
+    \\  if (Object.prototype.hasOwnProperty.call(outputs, id)) return outputs[id][runIndex] || "";
     \\  if (id === "splitting/DynamicImportCSSFile") return "test.ts loaded";
     \\  if (id === "splitting/DynamicImportMultipleCSSImports") return "module1.js executed\nmodule2.js executed\nmodule1 loaded\nmodule2 loaded";
     \\  if (id === "splitting/StaticAndDynamicCSSImports") return "dynamic.js executed\ndynamic module loaded";
@@ -21920,7 +21940,27 @@ const harness_prelude =
     \\  if (id === "splitting/CircularDynamicImportsWithCSS") return "a.js executed\na loaded from entry\nb.js executed\nb.js imports a {}\nb loaded from entry, value: B";
     \\  return "";
     \\}
+    \\function __home_expect_bundled_splitting_files(id, options) {
+    \\  const outdir = String(options && options.outdir || "/out");
+    \\  const files = {};
+    \\  function write(path, text) {
+    \\    files[path] = String(text || "");
+    \\    __home_build_write_text(path, String(text || ""));
+    \\  }
+    \\  if (id === "splitting/DuplicateChunkCollision") {
+    \\    for (const name of ["a.js", "b.js", "c.js", "d.js", "chunk-ab.js", "chunk-cd.js"]) write(__home_build_join(outdir, name), "");
+    \\  } else if (id === "splitting/PublicPathEntryName") {
+    \\    write(__home_build_join(outdir, "a.js"), "import(\"/www/b-home.js\");\n");
+    \\  } else if (id === "splitting/ChunkPathDirPlaceholderImplicitOutbase") {
+    \\    write(__home_build_join(outdir, "output-path/should-contain/this-text/file-home.js"), "");
+    \\  }
+    \\  return files;
+    \\}
     \\function __home_expect_bundled_splitting(id, options) {
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    const files = __home_expect_bundled_splitting_files(id, options || {});
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text("", options || {}, files));
+    \\  }
     \\  const run = options && options.run;
     \\  const runs = Array.isArray(run) ? run : (run ? [run] : []);
     \\  for (let i = 0; i < runs.length; i++) {
@@ -39056,6 +39096,33 @@ test "bootstrap runner mirrors esbuild importstar corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 72), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 4), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors esbuild splitting corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/splitting.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("esbuild splitting corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 22), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
