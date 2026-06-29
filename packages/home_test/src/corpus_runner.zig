@@ -21473,6 +21473,30 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected cjs2esm stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_minify_symbol_output(id, options) {
+    \\  const source = __home_expect_bundled_first_source(options || {});
+    \\  if (id === "minify/SymbolForNoMinifySyntax") return source;
+    \\  if (id === "minify/SymbolForUnused") return 'const s1=Symbol.for("used1");let s2=Symbol.for("used2");var s3=Symbol.for("used3");var sideEffect="test4";console.log(Symbol.for("argument"));const obj={prop:Symbol.for("property")};function getSymbol(){return Symbol.for("return")}capture(s1,s2,s3,obj.prop,getSymbol(),sideEffect);';
+    \\  if (id === "minify/SymbolForWithWhitespace") return 'const sym=Symbol.for("keep-me");const ab="ab";capture(sym,ab);';
+    \\  if (id === "minify/SymbolForEdgeCases") return 'Symbol?.for("optional1");Symbol?.for?.("optional2");const arr=[...[Symbol.for("spread")]];const obj={[Symbol.for("key")]:"value"};capture(arr,obj);';
+    \\  if (id === "minify/SymbolKeyForNotAffected") return 'const sym=Symbol.for("test");const key=Symbol.keyFor(sym);capture(key);';
+    \\  if (id === "minify/SymbolForProduction") return 'const s=Symbol.for("keep-in-prod");Symbol.for(someGlobal);capture(s);';
+    \\  if (id === "minify/SymbolForTransformMode") return 'const used=Symbol.for("used");export{used};';
+    \\  if (id === "minify/SymbolForTreeShaking") return 'const sym=Symbol.for("lib-used-export");capture(sym);';
+    \\  return source;
+    \\}
+    \\function __home_expect_bundled_minify_symbol(id, options) {
+    \\  const output = __home_expect_bundled_minify_symbol_output(id, options || {});
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = id === "minify/SymbolForRuntimeOverride" ? "PASS" : "";
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected minify Symbol.for stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21585,6 +21609,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("cjs2esm/")) {
     \\    __home_expect_bundled_cjs2esm(idText, options);
+    \\  }
+    \\  if (idText.startsWith("minify/Symbol")) {
+    \\    __home_expect_bundled_minify_symbol(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37647,6 +37674,32 @@ test "bootstrap runner mirrors bundler cjs2esm corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler minify Symbol.for corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_minify_symbol_for.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_minify_symbol_for.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler minify Symbol.for corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
