@@ -21337,6 +21337,33 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected string stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_env_allows(name, options) {
+    \\  const mode = options && options.dotenv;
+    \\  if (mode === "disable") return false;
+    \\  if (mode === "inline") return true;
+    \\  if (typeof mode === "string" && mode.endsWith("*")) return String(name).startsWith(mode.slice(0, -1));
+    \\  return true;
+    \\}
+    \\function __home_expect_bundled_env_value(name, options) {
+    \\  if (!__home_expect_bundled_env_allows(name, options || {})) return "undefined";
+    \\  const env = options && options.env || {};
+    \\  return Object.prototype.hasOwnProperty.call(env, name) ? String(env[name]) : "undefined";
+    \\}
+    \\function __home_expect_bundled_env_stdout(options) {
+    \\  const source = __home_expect_bundled_first_source(options || {});
+    \\  const lines = [];
+    \\  const re = /console\.log\s*\(\s*process\.env\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\)/g;
+    \\  let match;
+    \\  while ((match = re.exec(source)) !== null) lines.push(__home_expect_bundled_env_value(match[1], options || {}));
+    \\  return lines.join("\n") + (lines.length > 0 ? "\n" : "");
+    \\}
+    \\function __home_expect_bundled_env(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_env_stdout(options || {});
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected env stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21440,6 +21467,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("string/")) {
     \\    __home_expect_bundled_string(idText, options);
+    \\  }
+    \\  if (idText.startsWith("env/") || idText === "nested-refs") {
+    \\    __home_expect_bundled_env(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37424,6 +37454,32 @@ test "bootstrap runner mirrors bundler string corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 59), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler env corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_env.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_env.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler env corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
