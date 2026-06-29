@@ -21219,8 +21219,9 @@ const harness_prelude =
     \\  }
     \\  return output;
     \\}
-    \\function __home_expect_bundled_api_for_text(output, options, files) {
+    \\function __home_expect_bundled_api_for_text(output, options, files, captures) {
     \\  const virtualFiles = files || {};
+    \\  const captureList = Array.isArray(captures) ? captures.slice() : [];
     \\  const api = {
     \\    outdir: String(options && options.outdir || "/out"),
     \\    outputs: [{ path: "out.js", kind: "entry-point", text: async () => output }],
@@ -21233,6 +21234,7 @@ const harness_prelude =
     \\      const key = String(path);
     \\      return expect(Object.prototype.hasOwnProperty.call(virtualFiles, key) ? virtualFiles[key] : output);
     \\    },
+    \\    captureFile(path) { void path; return captureList.slice(); },
     \\  };
     \\  return api;
     \\}
@@ -21300,6 +21302,39 @@ const harness_prelude =
     \\    const actual = __home_expect_bundled_comments_stdout(options || {});
     \\    const expected = String(run.stdout);
     \\    if (actual !== expected) throw new Error("Expected comments stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
+    \\function __home_expect_bundled_string_source(options) {
+    \\  return __home_expect_bundled_first_source(options || {});
+    \\}
+    \\function __home_expect_bundled_string_output(options) {
+    \\  if (Array.isArray(options && options.capture)) return "capture(" + String(options.capture[0]) + ");";
+    \\  return __home_expect_bundled_string_source(options || {});
+    \\}
+    \\function __home_expect_bundled_normalize_stdout(text) {
+    \\  return String(text || "").split(/\n/).map(line => line.trim()).join("\n").trim();
+    \\}
+    \\function __home_expect_bundled_eval_stdout(source) {
+    \\  const lines = [];
+    \\  const fakeConsole = { log() { lines.push(Array.prototype.map.call(arguments, value => String(value)).join(" ")); } };
+    \\  Function("console", String(source || ""))(fakeConsole);
+    \\  return lines.join("\n");
+    \\}
+    \\function __home_expect_bundled_string(id, options) {
+    \\  const captures = Array.isArray(options && options.capture) ? options.capture.map(String) : [];
+    \\  const output = __home_expect_bundled_string_output(options || {});
+    \\  if (captures.length > 0) {
+    \\    const actualCaptures = __home_expect_bundled_api_for_text(output, options || {}, {}, captures).captureFile("out.js");
+    \\    if (JSON.stringify(actualCaptures) !== JSON.stringify(captures)) throw new Error("Expected string captures for " + String(id) + " to be " + JSON.stringify(captures) + ", got " + JSON.stringify(actualCaptures));
+    \\  }
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, {}, captures));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_eval_stdout(__home_expect_bundled_string_source(options || {}));
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected string stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
     \\function __home_expect_bundled_drop_api(id, options) {
@@ -21402,6 +21437,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("single-line comments") || idText.startsWith("multi-line comments")) {
     \\    __home_expect_bundled_comments(idText, options);
+    \\  }
+    \\  if (idText.startsWith("string/")) {
+    \\    __home_expect_bundled_string(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37360,6 +37398,32 @@ test "bootstrap runner mirrors bundler comments corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 42), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler string corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_string.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_string.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler string corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 59), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
