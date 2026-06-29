@@ -40494,6 +40494,40 @@ test "bootstrap runner mirrors native plugin error corpus" {
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors native plugin tail corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const first_case_marker = "  it(\"works in a basic case\"";
+    const start_marker = "  it(\"should use result of the first plugin that runs and doesn't execute the others\"";
+    const first_case = std.mem.indexOf(u8, source, first_case_marker) orelse return error.TestExpectedEqual;
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > first_case);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..first_case], source[start..] });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/native-plugin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("native plugin tail corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors bundler compile argv corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
