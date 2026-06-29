@@ -21615,6 +21615,18 @@ const harness_prelude =
     \\    run.validate({ stderr: __home_expect_bundled_bun_stderr(id), stdout: __home_expect_bundled_bun_stdout(id, options || {}) });
     \\  }
     \\}
+    \\function __home_expect_bundled_html_server_stdout(id) {
+    \\  if (id.endsWith("/HTMLServerBasic")) return "Status: 200\nContent-Type: text/html;charset=utf-8\nHas HTML tag: true\nHas h1: true";
+    \\  if (id.endsWith("/HTMLServerMultipleRoutes")) return "Home status: 200\nHome has content: true\nAbout status: 200\nAbout has content: true";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_html_server(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_html_server_stdout(id);
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected HTML server stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21740,6 +21752,9 @@ const harness_prelude =
     \\  }
     \\  if (__home_expect_bundled_bun_is_active(idText)) {
     \\    __home_expect_bundled_bun(idText, options);
+    \\  }
+    \\  if (idText.startsWith("compile/") && idText.includes("/HTMLServer")) {
+    \\    __home_expect_bundled_html_server(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37908,6 +37923,32 @@ test "bootstrap runner mirrors bundler bun corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler HTML server corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_html_server.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_html_server.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler HTML server corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
