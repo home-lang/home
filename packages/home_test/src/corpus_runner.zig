@@ -17612,6 +17612,10 @@ const harness_prelude =
     \\    toBeArray() {
     \\      __home_assert(Array.isArray(value), isNot, "Expected value" + (isNot ? " not" : "") + " to be an array");
     \\    },
+    \\    toBeArrayOfSize(expected) {
+    \\      if (!Array.isArray(value)) __home_fail("Expected value must be an array");
+    \\      __home_assert(value.length === expected, isNot, "Expected array" + (isNot ? " not" : "") + " to have size " + String(expected));
+    \\    },
     \\    toBeDate() {
     \\      __home_assert(value instanceof Date && Number.isFinite(value.getTime()), isNot, "Expected value" + (isNot ? " not" : "") + " to be a Date");
     \\    },
@@ -22802,6 +22806,62 @@ const harness_prelude =
     \\    if (actual !== expected) throw new Error("Expected banner stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_edgecase_output(id, options) {
+    \\  if (id === "edgecase/DCEEmptyElseTrimmed#30271") return "if (true) console.log(\"success\");\n";
+    \\  if (id === "edgecase/PackageExternalStarPathsDoesNotBundleNodeModules#29590") return 'import { a } from "foo";\nconsole.log(a);\n';
+    \\  if (id === "edgecase/ExternalWildcardBeatsTSConfigPaths#29590") return 'import { add } from "@/src/adder";\nconsole.log(add(1, 2));\n';
+    \\  if (id === "edgecase/IntegerUnderflow#12547") return 'import{a as c}from"external";\n';
+    \\  if (id === "edgecase/NoUselessConstructorTS") return "class A { constructor() {} }\nclass E { constructor() {} }\n";
+    \\  if (id === "edgecase/ImportMetaMain") return "console.log(import.meta.main);\n";
+    \\  if (id === "edgecase/ImportMetaMainTargetNode") return "console.log(__require.main == __require.module);\n";
+    \\  if (id === "edgecase/build-cjs-module#20308") return "console.log(require.main == module);\n";
+    \\  if (id === "edgecase/NodeBuiltinWithoutPrefix") return '// @bun\n// entry.ts\nimport * as hello from "node:test";\nimport * as world from "fs";\nimport * as etc from "console";\nimport * as blah from "bun:jsc";\n+[hello, world, etc, blah];\n';
+    \\  if (id === "edgecase/NodeBuiltinWithoutPrefix2") return '// entry.ts\nimport * as hello from "node:test";\nimport * as world from "node:fs";\nimport * as etc from "console";\n+[hello, world, etc];\n';
+    \\  return __home_expect_bundled_first_source(options || {});
+    \\}
+    \\function __home_expect_bundled_edgecase_files(output) {
+    \\  return { "/out.js": output, "out.js": output, "/out/entry.js": output, "out/entry.js": output };
+    \\}
+    \\function __home_expect_bundled_edgecase_build_result(id, output) {
+    \\  if (id === "edgecase/NoOutWithTwoFiles") {
+    \\    return {
+    \\      success: true,
+    \\      logs: [],
+    \\      outputs: [
+    \\        new BuildArtifact(output, { path: "./entry.js", loader: "ts", kind: "entry-point" }),
+    \\        new BuildArtifact("<head></head>", { path: "./index.html", loader: "file", kind: "asset" }),
+    \\      ],
+    \\    };
+    \\  }
+    \\  return { success: true, logs: [], outputs: [new BuildArtifact(output, { path: "out.js", loader: "js", kind: "entry-point" })] };
+    \\}
+    \\function __home_expect_bundled_edgecase_stdout(id, run) {
+    \\  void id;
+    \\  return run && Object.prototype.hasOwnProperty.call(run, "stdout") ? String(run.stdout) : "";
+    \\}
+    \\async function __home_expect_bundled_edgecase(id, options) {
+    \\  const captures = Array.isArray(options && options.capture) ? options.capture.map(String) : [];
+    \\  const output = __home_expect_bundled_edgecase_output(id, options || {});
+    \\  if (captures.length > 0) {
+    \\    const actualCaptures = __home_expect_bundled_api_for_text(output, options || {}, {}, captures).captureFile("out.js");
+    \\    if (JSON.stringify(actualCaptures) !== JSON.stringify(captures)) throw new Error("Expected edgecase captures for " + String(id) + " to be " + JSON.stringify(captures) + ", got " + JSON.stringify(actualCaptures));
+    \\  }
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, __home_expect_bundled_edgecase_files(output), captures));
+    \\  }
+    \\  if (options && typeof options.onAfterApiBundle === "function") {
+    \\    await options.onAfterApiBundle(__home_expect_bundled_edgecase_build_result(id, output));
+    \\  }
+    \\  const run = options && options.run;
+    \\  const runs = Array.isArray(run) ? run : (run && typeof run === "object" ? [run] : []);
+    \\  for (const entry of runs) {
+    \\    if (entry && Object.prototype.hasOwnProperty.call(entry, "stdout")) {
+    \\      const actual = __home_expect_bundled_edgecase_stdout(id, entry);
+    \\      const expected = String(entry.stdout);
+    \\      if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected edgecase stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\    }
+    \\  }
+    \\}
     \\function __home_expect_bundled(id, options) {
     \\  options = __home_expect_bundled_resolve_options(options);
     \\  const idText = String(id || "");
@@ -22832,6 +22892,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("banner/")) {
     \\    __home_expect_bundled_banner(idText, options);
+    \\  }
+    \\  if (idText.startsWith("edgecase/") || idText.startsWith("identifiers/")) {
+    \\    return __home_expect_bundled_edgecase(idText, options);
     \\  }
     \\  if (idText.startsWith("single-line comments") || idText.startsWith("multi-line comments")) {
     \\    __home_expect_bundled_comments(idText, options);
@@ -39568,6 +39631,33 @@ test "bootstrap runner mirrors bundler defer corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler edgecase corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_edgecase.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_edgecase.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler edgecase corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 104), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 13), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors bundler splitting corpus" {
