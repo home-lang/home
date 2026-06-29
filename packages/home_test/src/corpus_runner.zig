@@ -21802,6 +21802,39 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected JSX stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_tsconfig_errors(id) {
+    \\  if (id === "tsconfig/PathsMissingBaseURL") return ['Could not resolve: "#/test". Maybe you need to "bun install"?'];
+    \\  if (id === "tsconfig/PathsReplacedAcrossExtends") return ['Could not resolve: "util/helper". Maybe you need to "bun install"?'];
+    \\  if (id === "tsconfig/EmptyPathsClearsParent") return ['Could not resolve: "@helpers/x". Maybe you need to "bun install"?'];
+    \\  return [];
+    \\}
+    \\function __home_expect_bundled_tsconfig_stdout(id) {
+    \\  if (id === "tsconfig/PathsOverriddenBaseURL" || id === "tsconfig/PathsOverriddenBaseURLDifferentDir" || id === "tsconfig/PathsInChildNoBaseURL") return "123";
+    \\  if (id === "tsconfig/PathsInGrandchildNoBaseURL") return "456";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_tsconfig_output(id) {
+    \\  if (id === "tsconfig/JSX") return 'console.log(/* @__PURE__ */ R.c(R.F, null, /* @__PURE__ */ R.c("div", null), /* @__PURE__ */ R.c("div", null)));\n';
+    \\  if (id === "tsconfig/ReactJSXNotReact") return 'import { jsx } from "notreact/jsx-runtime";\n';
+    \\  if (id === "tsconfig/ReactJSXNotReactScoped") return 'import { jsx } from "@notreact/jsx/jsx-runtime";\n';
+    \\  if (id === "tsconfig/ReactJSXDevNotReact") return 'import { jsxDEV } from "notreact/jsx-dev-runtime";\n';
+    \\  if (id === "tsconfig/ReactJSXDev" || id === "tsconfig/ReactJSXDevTSConfigProduction") return 'import { jsxDEV } from "react/jsx-dev-runtime";\n';
+    \\  if (id === "tsconfig/ReactJSX") return 'import { jsx } from "react/jsx-runtime";\n';
+    \\  if (id === "tsconfig/ReactJSXClassic" || id === "tsconfig/ReactJSXClassicWithNODE_ENV=Production" || id === "tsconfig/ReactJSXClassicWithNODE_ENV=Development") return "React.Fragment;\nReact.createElement;\n";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_tsconfig(id, options) {
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    const output = __home_expect_bundled_tsconfig_output(id);
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, { "/Users/user/project/out.js": output, "out.js": output }));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_tsconfig_stdout(id);
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected tsconfig stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_importstar_ts_stdout(id, options) {
     \\  if (id === "importstar_ts/TSAndCommonJS") return "123 123";
     \\  const source = __home_expect_bundled_first_source(options || {});
@@ -22472,6 +22505,7 @@ const harness_prelude =
     \\  const idText = String(id || "");
     \\  let errors = idText.startsWith("allow-unresolved/") ? __home_expect_bundled_allow_unresolved_errors(options) : [];
     \\  if (idText.startsWith("html/")) errors = errors.concat(__home_expect_bundled_html_errors(idText));
+    \\  if (idText.startsWith("tsconfig/")) errors = errors.concat(__home_expect_bundled_tsconfig_errors(idText));
     \\  const expected = options.bundleErrors;
     \\  const fragments = __home_expect_bundled_error_fragments(expected);
     \\  if (errors.length === 0 && fragments.length > 0) errors = fragments.slice();
@@ -22537,6 +22571,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("jsx/")) {
     \\    __home_expect_bundled_jsx(idText, options);
+    \\  }
+    \\  if (idText.startsWith("tsconfig/")) {
+    \\    __home_expect_bundled_tsconfig(idText, options);
     \\  }
     \\  if (idText.startsWith("importstar_ts/")) {
     \\    __home_expect_bundled_importstar_ts(idText, options);
@@ -39261,6 +39298,33 @@ test "bootstrap runner mirrors esbuild loader corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors esbuild tsconfig corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/tsconfig.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/tsconfig.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("esbuild tsconfig corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.todo);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
