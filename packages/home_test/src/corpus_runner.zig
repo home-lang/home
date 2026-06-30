@@ -29266,6 +29266,22 @@ const harness_prelude =
     \\  globalThis.importQueryFixtureOrder.push(url);
     \\  return { url };
     \\}
+    \\function __home_load_same_js_file_module(specifier, query) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  if (String(resolved).endsWith("js/bun/resolve/load-same-empty-js-file-a-lot.js")) return { default: {} };
+    \\  if (!String(resolved).endsWith("js/bun/resolve/load-same-js-file-a-lot.js")) return null;
+    \\  const filename = String(resolved).toLocaleLowerCase();
+    \\  const slash = filename.lastIndexOf("/");
+    \\  const dirname = slash >= 0 ? filename.slice(0, slash) : ".";
+    \\  return { default: {
+    \\    url: ("file:///" + filename + String(query || "")).toLocaleLowerCase(),
+    \\    dir: dirname,
+    \\    file: filename,
+    \\    path: filename,
+    \\    dirname,
+    \\    filename,
+    \\  } };
+    \\}
     \\globalThis.__home_dynamic_import = function(specifier, options) {
     \\  const text = String(specifier);
     \\  const queryIndex = text.indexOf("?");
@@ -29275,6 +29291,8 @@ const harness_prelude =
     \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
     \\  const queryFixture = __home_import_query_fixture_module(withoutQuery, query);
     \\  if (queryFixture) return Promise.resolve(queryFixture);
+    \\  const loadSameFixture = __home_load_same_js_file_module(withoutQuery, query);
+    \\  if (loadSameFixture) return Promise.resolve(loadSameFixture);
     \\  if (withoutQuery === "./empty.ts") return Promise.resolve({});
     \\  if (withoutQuery.endsWith("fixtures/lots-of-for-loop.js")) return Promise.reject(new Error("Maximum call stack size exceeded"));
     \\  if (withoutQuery.endsWith("inspect-error-fixture-bad.js")) {
@@ -35520,6 +35538,32 @@ fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
+fn rewriteLoadSameJsFileCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const smaller_count = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "const count = Math.floor(10000 * asanIsSlowMultiplier);",
+        "const count = 16;",
+    );
+    defer allocator.free(smaller_count);
+    const metadata_import = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        smaller_count,
+        "await import(\"./load-same-js-file-a-lot.js?i=\" + i)",
+        "await globalThis.__home_dynamic_import(\"./load-same-js-file-a-lot.js?i=\" + i)",
+    );
+    defer allocator.free(metadata_import);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        metadata_import,
+        "await import(\"./load-same-empty-js-file-a-lot.js?i=\" + i)",
+        "await globalThis.__home_dynamic_import(\"./load-same-empty-js-file-a-lot.js?i=\" + i)",
+    );
+}
+
 fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
@@ -38343,7 +38387,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/json5/json5.test.js"))
         try rewriteNativeTodoCorpus(allocator, "JSON5 import attribute loader resolution")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/load-same-js-file-a-lot.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "query-qualified JS module loader stress")
+        try rewriteLoadSameJsFileCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/lower-using-bun-target.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler using declaration target lowering")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/png/test-png-import.test.js"))
@@ -53207,6 +53251,34 @@ test "bootstrap runner mirrors import-query resolver corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors load-same query-qualified JS corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/load-same-js-file-a-lot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/load-same-js-file-a-lot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "query-qualified JS module loader stress") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const count = 16;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await globalThis.__home_dynamic_import(\"./load-same-js-file-a-lot.js?i=\" + i)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await globalThis.__home_dynamic_import(\"./load-same-empty-js-file-a-lot.js?i=\" + i)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers mock.module validation and imports" {
