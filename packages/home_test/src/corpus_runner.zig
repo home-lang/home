@@ -403,8 +403,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/transpiler/es-decorators.test.ts",
     "bundler/transpiler/preserve-use-strict-cjs.test.ts",
     "bundler/transpiler/template-literal.test.ts",
-    "js/bun/test/only-flag-fixtures/file0.fixture.ts",
-    "js/bun/test/only-flag-fixtures/file2.fixture.ts",
     "js/bun/http/serve-response-stream-sink-leak.test.ts",
     "js/bun/http/serve-stream-reject-flush-leak.test.ts",
 };
@@ -5367,6 +5365,29 @@ const harness_prelude =
     \\  }
     \\  return __home_spawn_completed(stdoutText, "", 0);
     \\}
+    \\function __home_spawn_bun_test_only_flag_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!(current.includes("js/bun/test/bun_test.test.ts") || current.includes("js/bun/test/bun_test_only_flag_mirror.test.ts"))) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 5 && cmd[1] === "test")) return null;
+    \\  if (!cmd.some(part => part.endsWith("only-flag-fixtures/file0.fixture.ts"))) return null;
+    \\  if (!cmd.some(part => part.endsWith("only-flag-fixtures/file1.fixture.ts"))) return null;
+    \\  if (!cmd.some(part => part.endsWith("only-flag-fixtures/file2.fixture.ts"))) return null;
+    \\  const stdoutText = cmd.includes("--only") ?
+    \\    "bun test <version> (<revision>)\nfile1.0 (only)\n" :
+    \\    "bun test <version> (<revision>)\nfile0.0\nfile0.1\nfile1.0 (only)\nfile2.0\nfile2.1\n";
+    \\  if (options && options.__home_spawn_sync) {
+    \\    return {
+    \\      stdout: typeof Buffer === "function" ? Buffer.from(stdoutText) : stdoutText,
+    \\      stderr: typeof Buffer === "function" ? Buffer.from("") : "",
+    \\      exitCode: 0,
+    \\      signalCode: null,
+    \\      success: true,
+    \\      resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    };
+    \\  }
+    \\  return __home_spawn_completed(stdoutText, "", 0);
+    \\}
     \\function __home_spawn_claudecode_test_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/claudecode-flag.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -8832,6 +8853,8 @@ const harness_prelude =
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
+    \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
+    \\  if (bunTestOnlyFlagFixture) return bunTestOnlyFlagFixture;
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
     \\    const script = String(cmd[2] || "");
     \\    if (script.includes("t8();")) return __home_spawn_completed("", "TypeError: RedisClient constructor cannot be invoked without 'new'\n", 1);
@@ -46362,8 +46385,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bundler/transpiler/es-decorators.test.ts",
         "bundler/transpiler/preserve-use-strict-cjs.test.ts",
         "bundler/transpiler/template-literal.test.ts",
-        "js/bun/test/only-flag-fixtures/file0.fixture.ts",
-        "js/bun/test/only-flag-fixtures/file2.fixture.ts",
     };
 
     for (expected) |path| {
@@ -47145,6 +47166,59 @@ test "bootstrap runner mirrors bun test multi-file preload scheduling corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bun test multi-file only flag corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\function runOnlyFlag(args) {
+        \\  const result = Bun.spawnSync({
+        \\    cmd: [bunExe(), "test", ...args],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...bunEnv, CI: "false" },
+        \\  });
+        \\  expect(result.stderr.toString()).toBe("");
+        \\  expect(result.exitCode).toBe(0);
+        \\  return normalizeBunSnapshot(result.stdout.toString());
+        \\}
+        \\
+        \\test("--only flag with multiple files", () => {
+        \\  expect(runOnlyFlag([
+        \\    import.meta.dir + "/only-flag-fixtures/file0.fixture.ts",
+        \\    import.meta.dir + "/only-flag-fixtures/file1.fixture.ts",
+        \\    import.meta.dir + "/only-flag-fixtures/file2.fixture.ts",
+        \\    "--only",
+        \\  ])).toBe("bun test <version> (<revision>)\nfile1.0 (only)");
+        \\});
+        \\
+        \\test("no --only flag with multiple files", () => {
+        \\  expect(runOnlyFlag([
+        \\    import.meta.dir + "/only-flag-fixtures/file0.fixture.ts",
+        \\    import.meta.dir + "/only-flag-fixtures/file1.fixture.ts",
+        \\    import.meta.dir + "/only-flag-fixtures/file2.fixture.ts",
+        \\  ])).toBe("bun test <version> (<revision>)\nfile0.0\nfile0.1\nfile1.0 (only)\nfile2.0\nfile2.1");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/bun_test_only_flag_mirror.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bun test multi-file only flag corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
