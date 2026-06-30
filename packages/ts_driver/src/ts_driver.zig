@@ -1922,6 +1922,7 @@ pub fn compileSource(
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setAllowJsEnabled(options.allow_js);
     checker.setEmitImplicitAnySuggestions(options.include_suggestions);
+    checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
     if (options.external_resolver) |er| checker.setExternalResolver(er);
