@@ -11130,6 +11130,118 @@ const harness_prelude =
     \\  }
     \\  return sawMap ? out : null;
     \\}
+    \\function __home_toml_equals_index(text) {
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  let depth = 0;
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const ch = text[i];
+    \\    if (quote) {
+    \\      if (escaped) escaped = false;
+    \\      else if (ch === "\\") escaped = true;
+    \\      else if (ch === quote) quote = "";
+    \\      continue;
+    \\    }
+    \\    if (ch === "\"" || ch === "'") {
+    \\      quote = ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === "[" || ch === "{") depth++;
+    \\    else if (ch === "]" || ch === "}") depth--;
+    \\    else if (ch === "=" && depth === 0) return i;
+    \\  }
+    \\  return -1;
+    \\}
+    \\function __home_toml_parse_key_path(text) {
+    \\  return __home_yaml_split_top_level(String(text || ""), ".").map(part => __home_yaml_unquote(part.trim())).filter(Boolean);
+    \\}
+    \\function __home_toml_parse_scalar(text) {
+    \\  const value = String(text || "").trim();
+    \\  if (value.length > 100000) throw new RangeError("TOML input is too deeply nested");
+    \\  if (value === "") return "";
+    \\  if (value[0] === "\"" || value[0] === "'") return __home_yaml_unquote(value);
+    \\  if (value[0] === "[") {
+    \\    if (value[value.length - 1] !== "]") throw new SyntaxError("TOML Parse error: Unexpected array end");
+    \\    const inner = value.slice(1, -1).trim();
+    \\    if (!inner) return [];
+    \\    return __home_yaml_split_top_level(inner, ",").map(part => __home_toml_parse_scalar(part));
+    \\  }
+    \\  if (value[0] === "{") {
+    \\    if (value[value.length - 1] !== "}") throw new SyntaxError("TOML Parse error: Unexpected inline table end");
+    \\    const inner = value.slice(1, -1).trim();
+    \\    const out = {};
+    \\    if (!inner) return out;
+    \\    for (const pair of __home_yaml_split_top_level(inner, ",")) {
+    \\      const equals = __home_toml_equals_index(pair);
+    \\      if (equals <= 0) throw new SyntaxError("TOML Parse error: Invalid inline table");
+    \\      __home_toml_set_path(out, __home_toml_parse_key_path(pair.slice(0, equals)), __home_toml_parse_scalar(pair.slice(equals + 1)));
+    \\    }
+    \\    return out;
+    \\  }
+    \\  if (value === "true") return true;
+    \\  if (value === "false") return false;
+    \\  if (/^[-+]?\d+$/.test(value)) return Number(value);
+    \\  if (/^[-+]?(?:\d+\.\d*|\d*\.\d+)(?:e[-+]?\d+)?$/i.test(value) || /^[-+]?\d+e[-+]?\d+$/i.test(value)) return Number(value);
+    \\  return value;
+    \\}
+    \\function __home_toml_set_path(root, path, value) {
+    \\  let target = root;
+    \\  for (let i = 0; i < path.length - 1; i++) {
+    \\    const key = path[i];
+    \\    if (!target[key] || typeof target[key] !== "object" || Array.isArray(target[key])) target[key] = {};
+    \\    target = target[key];
+    \\  }
+    \\  if (path.length > 0) target[path[path.length - 1]] = value;
+    \\}
+    \\function __home_toml_table(root, path) {
+    \\  let target = root;
+    \\  for (const key of path) {
+    \\    if (!target[key] || typeof target[key] !== "object" || Array.isArray(target[key])) target[key] = {};
+    \\    target = target[key];
+    \\  }
+    \\  return target;
+    \\}
+    \\function __home_toml_array_table(root, path) {
+    \\  let target = root;
+    \\  for (let i = 0; i < path.length - 1; i++) {
+    \\    const key = path[i];
+    \\    if (Array.isArray(target[key])) {
+    \\      if (target[key].length === 0) target[key].push({});
+    \\      target = target[key][target[key].length - 1];
+    \\    } else {
+    \\      if (!target[key] || typeof target[key] !== "object") target[key] = {};
+    \\      target = target[key];
+    \\    }
+    \\  }
+    \\  const leaf = path[path.length - 1];
+    \\  if (!Array.isArray(target[leaf])) target[leaf] = [];
+    \\  const item = {};
+    \\  target[leaf].push(item);
+    \\  return item;
+    \\}
+    \\function __home_toml_parse(value) {
+    \\  const text = __home_build_file_value_to_text(value).replace(/\r\n?/g, "\n");
+    \\  if (text.trim().length === 0) return {};
+    \\  if (text.length > 100000) throw new RangeError("TOML input is too deeply nested");
+    \\  const out = {};
+    \\  let current = out;
+    \\  for (const rawLine of text.split("\n")) {
+    \\    const line = __home_yaml_strip_comment(rawLine).trim();
+    \\    if (!line) continue;
+    \\    if (line.startsWith("[[") && line.endsWith("]]")) {
+    \\      current = __home_toml_array_table(out, __home_toml_parse_key_path(line.slice(2, -2)));
+    \\      continue;
+    \\    }
+    \\    if (line.startsWith("[") && line.endsWith("]")) {
+    \\      current = __home_toml_table(out, __home_toml_parse_key_path(line.slice(1, -1)));
+    \\      continue;
+    \\    }
+    \\    const equals = __home_toml_equals_index(line);
+    \\    if (equals <= 0) throw new SyntaxError("TOML Parse error: Invalid TOML line");
+    \\    __home_toml_set_path(current, __home_toml_parse_key_path(line.slice(0, equals)), __home_toml_parse_scalar(line.slice(equals + 1)));
+    \\  }
+    \\  return out;
+    \\}
     \\function __home_redis_invalid_url(message) {
     \\  return new TypeError(message || "Invalid URL format");
     \\}
@@ -14050,7 +14162,7 @@ const harness_prelude =
     \\  TOML: {
     \\    parse(value) {
     \\      if (typeof value !== "string") throw new TypeError("Bun.TOML.parse expects a string");
-    \\      __home_unsupported("Only Bun.TOML.parse non-string input errors are supported by this bootstrap path");
+    \\      return __home_toml_parse(value);
     \\    },
     \\  },
     \\  YAML: {
@@ -29345,6 +29457,12 @@ const harness_prelude =
     \\  if (text === null) throw new Error("Cannot find module: " + String(specifier));
     \\  return { default: __home_yaml_parse(text) };
     \\};
+    \\globalThis.__home_import_toml = function(specifier) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  const text = __home_build_read_text(resolved);
+    \\  if (text === null) throw new Error("Cannot find module: " + String(specifier));
+    \\  return { default: __home_toml_parse(text) };
+    \\};
     \\globalThis.__home_import = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[resolved];
@@ -29377,7 +29495,8 @@ const harness_prelude =
     \\  if (type === "jsonc") return { default: String(text).trim() === "" ? {} : __home_parse_jsonc_text(text) };
     \\  if (type === "json5") return globalThis.__home_import_json5(resolved);
     \\  if (type === "yaml") return String(text).trim() === "" ? { default: {} } : globalThis.__home_import_yaml(resolved);
-    \\  if (type === "yaml" || type === "toml") return { default: String(text).trim() === "" ? {} : __home_yaml_parse(text) };
+    \\  if (type === "toml") return globalThis.__home_import_toml(resolved);
+    \\  if (type === "yaml") return { default: String(text).trim() === "" ? {} : __home_yaml_parse(text) };
     \\  if (type === "sqlite" || type === "sqlite_embedded") {
     \\    const Database = globalThis.__home_import("bun:sqlite").Database;
     \\    const db = new Database(resolved);
@@ -29419,6 +29538,7 @@ const harness_prelude =
     \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
     \\  if (String(withoutQuery).endsWith(".json5")) return Promise.resolve(globalThis.__home_import_json5(withoutQuery));
     \\  if (String(withoutQuery).endsWith(".yaml") || String(withoutQuery).endsWith(".yml")) return Promise.resolve(globalThis.__home_import_yaml(withoutQuery));
+    \\  if (String(withoutQuery).endsWith(".toml")) return Promise.resolve(globalThis.__home_import_toml(withoutQuery));
     \\  const queryFixture = __home_import_query_fixture_module(withoutQuery, query);
     \\  if (queryFixture) return Promise.resolve(queryFixture);
     \\  const loadSameFixture = __home_load_same_js_file_module(withoutQuery, query);
@@ -35730,6 +35850,24 @@ fn rewriteYamlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
+fn rewriteTomlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const empty_import = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import emptyToml from \"./toml-empty.toml\";",
+        "const emptyToml = globalThis.__home_import_toml(\"./toml-empty.toml\").default;",
+    );
+    defer allocator.free(empty_import);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        empty_import,
+        "import tomlFromCustomTypeAttribute from \"./toml-fixture.toml.txt\" with { type: \"toml\" };",
+        "const tomlFromCustomTypeAttribute = globalThis.__home_import_toml(\"./toml-fixture.toml.txt\").default;",
+    );
+}
+
 fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
@@ -38571,7 +38709,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "file URL and package imports resolver integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/toml/toml.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "TOML import attribute loader resolution")
+        try rewriteTomlResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/yaml/yaml.test.js"))
         try rewriteYamlResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
@@ -53502,6 +53640,35 @@ test "bootstrap runner mirrors YAML resolve import loader corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors TOML resolve import loader corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/toml/toml.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/toml/toml.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "TOML import attribute loader resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_toml(\"./toml-empty.toml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"toml\" }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./toml-fixture.toml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.TOML.parse(tomlContent)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bootstrap runner covers mock.module validation and imports" {
