@@ -160,30 +160,9 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/empty-file.test.ts",
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
-    "js/bun/http/bun-serve-body-json-async.test.ts",
-    "js/bun/http/req-url-leak.test.ts",
-    "js/bun/http/leaks-test.test.ts",
-    "js/third_party/prompts/prompts.test.ts",
-    "js/web/timers/microtask.test.js",
-    "js/web/timers/setImmediate.test.js",
-    "js/web/timers/setImmediate2.test.ts",
-    "js/web/timers/clearImmediate-gc.test.ts",
-    "js/web/timers/performance.test.js",
-    "js/web/timers/performance-entries.test.ts",
-    "js/web/fetch/blob-cow.test.ts",
-    "js/web/fetch/blob-array-fast-path.test.ts",
-    "regression/issue/02368.test.ts",
-    "js/web/request/request.test.ts",
-    "cli/install/architecture-match.test.ts",
-    "js/web/fetch/body-async-iterator.test.ts",
     "js/web/fetch/fetch-abort-queued.test.ts",
     "js/web/fetch/fetch-abort-stream-body.test.ts",
-    "js/web/abort/abort-controller-gc-reason.test.ts",
-    "js/web/workers/message-port-context-destroy-leak.test.ts",
     "js/web/websocket/websocket-proxy-close-reentrancy.test.ts",
-    "js/web/html/URLSearchParams.test.ts",
-    "js/web/html/FormData-file-error-leak.test.ts",
-    "js/web/url/url.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -46423,11 +46402,8 @@ test "bun test import detector ignores fixture source strings" {
 
 test "minimal JS subset includes low-risk Bun corpus expansion files" {
     const expected = [_][]const u8{
-        "js/web/fetch/body-async-iterator.test.ts",
         "js/web/fetch/fetch-abort-queued.test.ts",
         "js/web/fetch/fetch-abort-stream-body.test.ts",
-        "js/web/abort/abort-controller-gc-reason.test.ts",
-        "js/web/workers/message-port-context-destroy-leak.test.ts",
         "js/web/websocket/websocket-proxy-close-reentrancy.test.ts",
     };
 
@@ -55037,6 +55013,59 @@ test "bootstrap runner mirrors timers and highlighter queue mini-suite" {
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "timers/highlighter queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/bun/http/bun-serve-body-json-async.test.ts", .passed = 1 },
+        .{ .path = "js/bun/http/req-url-leak.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/http/leaks-test.test.ts", .passed = 3 },
+        .{ .path = "js/third_party/prompts/prompts.test.ts", .passed = 1 },
+        .{ .path = "js/web/timers/microtask.test.js", .passed = 1 },
+        .{ .path = "js/web/timers/setImmediate.test.js", .passed = 3 },
+        .{ .path = "js/web/timers/setImmediate2.test.ts", .passed = 1 },
+        .{ .path = "js/web/timers/clearImmediate-gc.test.ts", .passed = 1 },
+        .{ .path = "js/web/timers/performance.test.js", .passed = 6 },
+        .{ .path = "js/web/timers/performance-entries.test.ts", .passed = 1 },
+        .{ .path = "js/web/fetch/blob-cow.test.ts", .passed = 1 },
+        .{ .path = "js/web/fetch/blob-array-fast-path.test.ts", .passed = 11 },
+        .{ .path = "regression/issue/02368.test.ts", .passed = 2 },
+        .{ .path = "js/web/request/request.test.ts", .passed = 4 },
+        .{ .path = "cli/install/architecture-match.test.ts", .passed = 30 },
+        .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
+        .{ .path = "js/web/abort/abort-controller-gc-reason.test.ts", .passed = 2 },
+        .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
+        .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
+        .{ .path = "js/web/html/FormData-file-error-leak.test.ts", .passed = 1 },
+        .{ .path = "js/web/url/url.test.ts", .passed = 13 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "HTTP/web tail queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
