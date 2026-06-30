@@ -408,7 +408,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
     "js/bun/test/only-flag-fixtures/file2.fixture.ts",
-    "js/bun/test/todo-test-fixture-2.js",
     "js/bun/test/only-fixture-1.ts",
     "js/bun/test/only-fixture-2.ts",
     "js/bun/test/only-fixture-3.ts",
@@ -427,8 +426,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-parse-invalid-input.test.js",
     "js/web/url/url.windows.test.js",
     "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
-    "js/bun/test/expect-type-doctest.test.ts",
-    "js/bun/test/todo-test-fixture.js",
     "cli/test/test-randomize.fixture.ts",
     "bundler/bun-build-api.test.ts",
 };
@@ -46343,7 +46340,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
         "js/bun/test/only-flag-fixtures/file2.fixture.ts",
-        "js/bun/test/todo-test-fixture-2.js",
         "js/bun/test/only-fixture-1.ts",
         "js/bun/test/only-fixture-2.ts",
         "js/bun/test/only-fixture-3.ts",
@@ -46355,8 +46351,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "cli/run/commonjs-no-export.test.ts",
         "cli/run/jsx-symbol-collision.test.ts",
         "cli/run/shell-keepalive.test.ts",
-        "js/bun/test/expect-type-doctest.test.ts",
-        "js/bun/test/todo-test-fixture.js",
     };
 
     for (expected) |path| {
@@ -51934,6 +51928,32 @@ test "bootstrap runner allows expectTypeOf doctest as type-only smoke" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
+test "bootstrap runner mirrors expectTypeOf doctest corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/expect-type-doctest.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/expect-type-doctest.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(prepared.fileSpec().allow_no_tests);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("expectTypeOf doctest corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
 test "bootstrap runner allows docker-gated issue 28632 with no registered tests" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -52003,6 +52023,56 @@ test "bootstrap runner keeps todo-only files as todo" {
 
     try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors todo fixture corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/todo-test-fixture.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/todo-test-fixture.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .todo) {
+        std.debug.print("todo fixture corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors compact todo fixture corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/todo-test-fixture-2.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/todo-test-fixture-2.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .todo) {
+        std.debug.print("compact todo fixture corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner gives test.only precedence over describe.only" {
