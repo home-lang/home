@@ -399,7 +399,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/esbuild/splitting.test.ts",
     "bundler/esbuild/ts.test.ts",
     "bundler/esbuild/tsconfig.test.ts",
-    "bundler/transpiler/preserve-use-strict-cjs.test.ts",
     "js/bun/http/serve-response-stream-sink-leak.test.ts",
     "js/bun/http/serve-stream-reject-flush-leak.test.ts",
 };
@@ -46378,7 +46377,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bundler/esbuild/splitting.test.ts",
         "bundler/esbuild/ts.test.ts",
         "bundler/esbuild/tsconfig.test.ts",
-        "bundler/transpiler/preserve-use-strict-cjs.test.ts",
     };
 
     for (expected) |path| {
@@ -46863,6 +46861,31 @@ test "bootstrap runner mirrors template literal corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors preserve strict CJS corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/preserve-use-strict-cjs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/preserve-use-strict-cjs.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("preserve strict CJS corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors commonjs invalid run corpus" {
