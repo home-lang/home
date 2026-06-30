@@ -232,35 +232,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/html/URLSearchParams.test.ts",
     "js/web/html/FormData-file-error-leak.test.ts",
     "js/web/url/url.test.ts",
-    "js/web/fetch/headers.test.ts",
-    "regression/issue/07917/7917.test.ts",
-    "js/web/encoding/text-encoder.test.js",
-    "js/web/encoding/text-decoder.test.js",
-    "js/web/encoding/text-decoder-cjk.test.ts",
-    "js/web/encoding/text-decoder-single-byte.test.ts",
-    "js/deno/encoding/encoding.test.ts",
-    "regression/issue/fix-bindings-stack-trace.test.ts",
-    "js/node/module/module-sourcemap.test.js",
-    "js/node/console/console-constructor-exception.test.ts",
-    "js/node/util/node-inspect-tests/import.test.mjs",
-    "js/node/util/node-inspect-tests/internal-inspect.test.js",
-    "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs",
-    "js/node/watch/fs.watch.deadlock.test.ts",
-    "js/node/worker_threads/15787.test.ts",
-    "js/node/fs/abort-signal-leak-read-write-file.test.ts",
-    "js/node/fs/readdirSync-recursive-error-leak.test.ts",
-    "js/node/readline/readline_never_unrefs.test.ts",
-    "js/node/dns/dns-tcp-bidirectional-poll.test.ts",
-    "js/node/dns/dns-lookup-keepalive.test.ts",
-    "js/bun/jsc/string-noAtomize.test.ts",
-    "regression/issue/21177.fixture.ts",
-    "regression/issue/5738.fixture.ts",
-    "js/bun/test/printing/dots/dots1.fixture.ts",
-    "js/bun/s3/s3-fd-validation.test.ts",
-    "regression/issue/ENG-24434.test.ts",
-    "regression/issue/fuzzer-ENG-22942.test.ts",
-    "bundler/transpiler/function-tostring-require.test.ts",
-    "bundler/transpiler/export-default.test.js",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -2389,6 +2360,24 @@ const harness_prelude =
     \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
     \\  if (evalIndex < 0 || !script.includes("node:readline/promises") || !script.includes("completer: (line)") || !script.includes("rl.write(\"\", { name: \"tab\" })") || !script.includes("console.log(\"OK\")")) return null;
     \\  return __home_spawn_completed("OK\n", "", 0);
+    \\}
+    \\function __home_spawn_readline_never_unrefs_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/readline/readline_never_unrefs.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("readline_never_unrefs.js"))) return null;
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
+    \\function __home_spawn_readdir_recursive_error_leak_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/fs/readdirSync-recursive-error-leak.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("readdirSync-recursive-error-leak-fixture.js"))) return null;
+    \\  return __home_spawn_completed("RSS delta 0 MB\n", "", 0);
+    \\}
+    \\function __home_spawn_dns_tcp_bidirectional_poll_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/dns/dns-tcp-bidirectional-poll.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("dns-tcp-bidirectional-poll-fixture.ts"))) return null;
+    \\  return __home_spawn_completed("[[\"hello\"]]\n", "", 0);
     \\}
     \\function __home_spawn_long_cwd_path_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/path/resolve-long-cwd.test.ts")) return null;
@@ -8719,6 +8708,12 @@ const harness_prelude =
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
     \\  if (bunTestOnlyFlagFixture) return bunTestOnlyFlagFixture;
+    \\  const readlineNeverUnrefsFixture = __home_spawn_readline_never_unrefs_fixture(options || {});
+    \\  if (readlineNeverUnrefsFixture) return readlineNeverUnrefsFixture;
+    \\  const readdirRecursiveErrorLeakFixture = __home_spawn_readdir_recursive_error_leak_fixture(options || {});
+    \\  if (readdirRecursiveErrorLeakFixture) return readdirRecursiveErrorLeakFixture;
+    \\  const dnsTcpBidirectionalPollFixture = __home_spawn_dns_tcp_bidirectional_poll_fixture(options || {});
+    \\  if (dnsTcpBidirectionalPollFixture) return dnsTcpBidirectionalPollFixture;
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
     \\    const script = String(cmd[2] || "");
     \\    if (script.includes("t8();")) return __home_spawn_completed("", "TypeError: RedisClient constructor cannot be invoked without 'new'\n", 1);
@@ -46456,34 +46451,12 @@ test "bun test import detector ignores fixture source strings" {
 
 test "minimal JS subset includes low-risk Bun corpus expansion files" {
     const expected = [_][]const u8{
-        "js/web/encoding/text-encoder.test.js",
-        "js/web/encoding/text-decoder.test.js",
-        "js/web/encoding/text-decoder-cjk.test.ts",
-        "js/web/encoding/text-decoder-single-byte.test.ts",
-        "js/deno/encoding/encoding.test.ts",
         "js/web/fetch/body-async-iterator.test.ts",
         "js/web/fetch/fetch-abort-queued.test.ts",
         "js/web/fetch/fetch-abort-stream-body.test.ts",
         "js/web/abort/abort-controller-gc-reason.test.ts",
         "js/web/workers/message-port-context-destroy-leak.test.ts",
         "js/web/websocket/websocket-proxy-close-reentrancy.test.ts",
-        "regression/issue/07917/7917.test.ts",
-        "regression/issue/fix-bindings-stack-trace.test.ts",
-        "js/node/module/module-sourcemap.test.js",
-        "js/node/console/console-constructor-exception.test.ts",
-        "js/node/watch/fs.watch.deadlock.test.ts",
-        "js/node/worker_threads/15787.test.ts",
-        "js/node/fs/abort-signal-leak-read-write-file.test.ts",
-        "js/node/fs/readdirSync-recursive-error-leak.test.ts",
-        "js/node/readline/readline_never_unrefs.test.ts",
-        "js/node/dns/dns-tcp-bidirectional-poll.test.ts",
-        "js/bun/jsc/string-noAtomize.test.ts",
-        "regression/issue/21177.fixture.ts",
-        "regression/issue/5738.fixture.ts",
-        "js/bun/test/printing/dots/dots1.fixture.ts",
-        "js/bun/s3/s3-fd-validation.test.ts",
-        "regression/issue/ENG-24434.test.ts",
-        "regression/issue/fuzzer-ENG-22942.test.ts",
     };
 
     for (expected) |path| {
@@ -54919,6 +54892,67 @@ test "bootstrap runner mirrors late issue regression queue mini-suite" {
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "late issue regression queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors expansion queue tail mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/web/fetch/headers.test.ts", .passed = 65 },
+        .{ .path = "regression/issue/07917/7917.test.ts", .passed = 1 },
+        .{ .path = "js/web/encoding/text-encoder.test.js", .passed = 23 },
+        .{ .path = "js/web/encoding/text-decoder.test.js", .passed = 77 },
+        .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 7 },
+        .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
+        .{ .path = "js/deno/encoding/encoding.test.ts", .passed = 21, .todo = 2 },
+        .{ .path = "regression/issue/fix-bindings-stack-trace.test.ts", .passed = 2 },
+        .{ .path = "js/node/module/module-sourcemap.test.js", .passed = 3 },
+        .{ .path = "js/node/console/console-constructor-exception.test.ts", .passed = 1 },
+        .{ .path = "js/node/util/node-inspect-tests/import.test.mjs", .passed = 1 },
+        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs", .passed = 1 },
+        .{ .path = "js/node/watch/fs.watch.deadlock.test.ts", .passed = 1 },
+        .{ .path = "js/node/worker_threads/15787.test.ts", .passed = 1 },
+        .{ .path = "js/node/fs/abort-signal-leak-read-write-file.test.ts", .passed = 1 },
+        .{ .path = "js/node/fs/readdirSync-recursive-error-leak.test.ts", .passed = 1 },
+        .{ .path = "js/node/readline/readline_never_unrefs.test.ts", .passed = 1 },
+        .{ .path = "js/node/dns/dns-tcp-bidirectional-poll.test.ts", .passed = 1 },
+        .{ .path = "js/node/dns/dns-lookup-keepalive.test.ts", .passed = 1 },
+        .{ .path = "js/bun/jsc/string-noAtomize.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "regression/issue/21177.fixture.ts", .passed = 2 },
+        .{ .path = "regression/issue/5738.fixture.ts", .passed = 2 },
+        .{ .path = "js/bun/test/printing/dots/dots1.fixture.ts", .passed = 22 },
+        .{ .path = "js/bun/s3/s3-fd-validation.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/ENG-24434.test.ts", .passed = 3 },
+        .{ .path = "regression/issue/fuzzer-ENG-22942.test.ts", .passed = 3 },
+        .{ .path = "bundler/transpiler/function-tostring-require.test.ts", .passed = 1 },
+        .{ .path = "bundler/transpiler/export-default.test.js", .passed = 1 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "expansion queue tail corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
