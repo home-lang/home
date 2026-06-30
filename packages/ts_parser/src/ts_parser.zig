@@ -4096,7 +4096,8 @@ pub const Parser = struct {
             while (true) {
                 const param_start = self.peek();
                 if (param_start.kind == .open_brace and self.peekAt(1).kind == .close_brace and
-                    (self.peekAt(1).flags.preceded_by_newline or self.peekAt(2).kind == .eof))
+                    (self.peekAt(1).flags.preceded_by_newline or self.peekAt(2).kind == .eof) and
+                    !emptyBindingPatternParameterCanContinue(self.peekAt(2).kind))
                 {
                     _ = self.advance();
                     const close = self.peek();
@@ -4604,6 +4605,13 @@ pub const Parser = struct {
         }
         if (!missing_close_reported) _ = try self.expectClosingMatch(.close_paren, "')' to close parameter list", open_paren.span.start, "(", ")");
         return try params.toOwnedSlice(self.gpa);
+    }
+
+    fn emptyBindingPatternParameterCanContinue(kind: TokenKind) bool {
+        return switch (kind) {
+            .close_paren, .comma, .question, .colon, .equal => true,
+            else => false,
+        };
     }
 
     fn decoratedThisParameterDiagnosticStart(self: *const Parser, at_pos: u32) u32 {
@@ -20188,6 +20196,18 @@ test "parser: object binding pattern supports renames nested patterns and rest" 
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(nested.name));
     const rest = hir_mod.parameterOf(&s.hir, elems[4]);
     try T.expect(rest.flags.is_rest);
+}
+
+test "parser: empty object binding pattern arrow parameter may span lines" {
+    var s = try newTestSetup(
+        \\const f = ({
+        \\}) => 1;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1005);
+    }
 }
 
 test "parser: array binding pattern supports nested rest target" {

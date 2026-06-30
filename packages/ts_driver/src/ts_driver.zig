@@ -4772,6 +4772,56 @@ test "driver: classic JSX fragment factory scope can be declared" {
     }
 }
 
+test "driver: React lib reference satisfies classic JSX fragment factory scope" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator,
+        \\/// <reference path="/.lib/react16.d.ts" />
+        \\let v = <></>;
+    , opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2879);
+    }
+}
+
+test "driver: React lib synthetic intrinsic props accept className and key" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator,
+        \\/// <reference path="/.lib/react16.d.ts" />
+        \\const v = <div className="" key="">ok</div>;
+    , opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != ts_checker.check.TsCodes.type_not_assignable);
+    }
+}
+
 test "driver: automatic JSX fragment does not require classic fragment factory scope" {
     var c = try compileSource(T.allocator,
         \\// @jsx: react-jsx
