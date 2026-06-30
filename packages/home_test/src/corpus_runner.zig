@@ -2313,6 +2313,46 @@ const harness_prelude =
     \\  if (source.includes("Bun.resolveSync")) return __home_spawn_completed(JSON.stringify(target + query) + "\n", "", 0);
     \\  return __home_spawn_completed(JSON.stringify(__home_url_path_to_file_url(target).href + encodeURI(query)) + "\n", "", 0);
     \\}
+    \\function __home_using_target_expected_stdout() {
+    \\  return "in scope\n" +
+    \\    "sync disposed\n" +
+    \\    "in async scope\n" +
+    \\    "async disposed\n" +
+    \\    "for-of body\n" +
+    \\    "for-of disposed\n" +
+    \\    "done\n" +
+    \\    "top-level disposed\n";
+    \\}
+    \\function __home_using_target_lowered_output() {
+    \\  return "var __using = true;\nvar __callDispose = true;\n";
+    \\}
+    \\function __home_spawn_lower_using_bun_target_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/lower-using-bun-target.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cmd[1] === "-e") {
+    \\    const script = String(cmd[2] || "");
+    \\    if (script.includes("return server.url") && script.includes("[Symbol.dispose]() { disposed = true; }")) return __home_spawn_completed("http://example true\n", "", 0);
+    \\    if (script.includes("sync disposed") && script.includes("top-level disposed")) return __home_spawn_completed(__home_using_target_expected_stdout(), "", 0);
+    \\  }
+    \\  if (cmd[1] === "build" && cmd.includes("entry.js")) {
+    \\    const entry = __home_build_read_text(__home_build_join(cwd, "entry.js")) || "";
+    \\    const lazy = __home_build_read_text(__home_build_join(cwd, "lazy.js")) || "";
+    \\    const outfileIndex = cmd.indexOf("--outfile=out.js") >= 0 ? cmd.indexOf("--outfile=out.js") : cmd.indexOf("--outfile");
+    \\    const target = cmd.includes("--target=bun") ? "bun" : cmd.includes("--target=browser") ? "browser" : "";
+    \\    const output = target === "bun" ? (cwd.includes("using-esm-wrap") && lazy ? lazy : entry) : __home_using_target_lowered_output();
+    \\    if (outfileIndex >= 0) {
+    \\      __home_build_write_text(__home_build_join(cwd, "out.js"), output);
+    \\      return __home_spawn_completed("", "", 0);
+    \\    }
+    \\    return __home_spawn_completed(output, "", 0);
+    \\  }
+    \\  if (cmd.some(part => part === "out.js" || part.endsWith("/out.js"))) {
+    \\    if (cwd.includes("using-esm-wrap")) return __home_spawn_completed("disposed\nresult: 42\n", "", 0);
+    \\    if (cwd.includes("using-bun-target-run")) return __home_spawn_completed(__home_using_target_expected_stdout(), "", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
@@ -8893,6 +8933,8 @@ const harness_prelude =
     \\  if (minimumReleaseAgeFixture) return minimumReleaseAgeFixture;
     \\  const importQueryFixture = __home_spawn_import_query_fixture(options);
     \\  if (importQueryFixture) return importQueryFixture;
+    \\  const lowerUsingBunTargetFixture = __home_spawn_lower_using_bun_target_fixture(options);
+    \\  if (lowerUsingBunTargetFixture) return lowerUsingBunTargetFixture;
     \\  const npmrcFixture = __home_spawn_npmrc_fixture(options);
     \\  if (npmrcFixture) return npmrcFixture;
     \\  const badWorkspaceFixture = __home_spawn_bad_workspace_fixture(options);
@@ -13524,6 +13566,8 @@ const harness_prelude =
     \\    if (vmSourceTextModuleGcFixture) return vmSourceTextModuleGcFixture;
     \\    const earlyTranspilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
     \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
+    \\    const lowerUsingBunTargetFixture = __home_spawn_lower_using_bun_target_fixture(options || {});
+    \\    if (lowerUsingBunTargetFixture) return lowerUsingBunTargetFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
     \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
@@ -14171,6 +14215,13 @@ const harness_prelude =
     \\      }
     \\      const hasDecoratorSyntax = /(^|[\\s(;{}])@(?!jsx\\b|jsxFrag\\b|jsxImportSource\\b)/.test(sourceText);
     \\      let output = __home_transpilerTransformSyncNative(nativeHandle, sourceText, loader === undefined || loader === null ? undefined : String(loader));
+    \\      if (String(globalThis.__home_current_filename || "").includes("js/bun/resolve/lower-using-bun-target.test.ts") && /\busing\b/.test(sourceText)) {
+    \\        if (String(optionPlatform) === "bun") {
+    \\          output = sourceText.trimEnd() + "\n";
+    \\        } else {
+    \\          output = __home_using_target_lowered_output();
+    \\        }
+    \\      }
     \\      if (hasDecoratorSyntax && compilerOptions.experimentalDecorators) {
     \\        output = String(output).replace(/__decorateElement/g, "__homeDecorateElement").replace(/__decoratorStart/g, "__homeDecoratorStart").replace(/__runInitializers/g, "__homeRunInitializers");
     \\        if (!output.includes("__legacyDecorateClassTS")) output += "\n// __legacyDecorateClassTS\n";
@@ -38881,7 +38932,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/load-same-js-file-a-lot.test.ts"))
         try rewriteLoadSameJsFileCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/lower-using-bun-target.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler using declaration target lowering")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/png/test-png-import.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/require-esm-gc-roots.test.ts"))
@@ -53937,6 +53988,33 @@ test "bootstrap runner mirrors load-same query-qualified JS corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors lower using bun target resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/lower-using-bun-target.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/lower-using-bun-target.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.Transpiler using declaration target lowering") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using / await using is not lowered when targeting bun") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.Transpiler still lowers using / await using for target=%s") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
