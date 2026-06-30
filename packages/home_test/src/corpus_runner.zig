@@ -30366,8 +30366,12 @@ const harness_prelude =
     \\}
     \\if (typeof URL.canParse !== "function") {
     \\  URL.canParse = function(input, base) {
+    \\    if (arguments.length === 0) {
+    \\      const error = new TypeError("The \"input\" argument must be specified");
+    \\      error.code = "ERR_MISSING_ARGS";
+    \\      throw error;
+    \\    }
     \\    try {
-    \\      if (arguments.length === 0) throw new TypeError("URL.canParse requires an input");
     \\      new URL(input, base);
     \\      return true;
     \\    } catch (error) {
@@ -30421,7 +30425,11 @@ const harness_prelude =
     \\  Object.setPrototypeOf(URL, __home_NativeURL);
     \\  Object.defineProperty(URL, "canParse", { configurable: true, value: function(input) {
     \\    const base = arguments[1];
-    \\    if (arguments.length === 0) return false;
+    \\    if (arguments.length === 0) {
+    \\      const error = new TypeError("The \"input\" argument must be specified");
+    \\      error.code = "ERR_MISSING_ARGS";
+    \\      throw error;
+    \\    }
     \\    if (input === undefined && arguments.length < 2) return false;
     \\    if (input === undefined && base === undefined) return false;
     \\    if (typeof input === "string") {
@@ -30893,7 +30901,11 @@ const harness_prelude =
     \\};
     \\function __home_url_format_legacy(urlObject) {
     \\  if (typeof urlObject === "string") urlObject = __home_url_parse(urlObject);
-    \\  else if (typeof urlObject !== "object" || urlObject === null) throw new TypeError('The "urlObject" argument must be one of type object or string.');
+    \\  else if (typeof urlObject !== "object" || urlObject === null) {
+    \\    const error = new TypeError('The "urlObject" argument must be one of type object or string.');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
     \\  if (urlObject instanceof __home_legacy_Url) return urlObject.format();
     \\  return __home_legacy_Url.prototype.format.call(urlObject);
     \\}
@@ -36206,6 +36218,26 @@ fn rewriteUrlParseQueryCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
+fn rewriteNodeUrlCanParseCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.todo(\"invalid input\", () => {",
+        "test(\"invalid input\", () => {",
+    );
+}
+
+fn rewriteNodeUrlFormatInvalidInputCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.todo(\"invalid input\", () => {",
+        "test(\"invalid input\", () => {",
+    );
+}
+
 fn rewriteNodeUrlPathToFileUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const with_unc_paths = try std.mem.replaceOwned(
         u8,
@@ -39136,6 +39168,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteGlobMatchCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
         try rewriteUrlParseQueryCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-canParse-whatwg.test.js"))
+        try rewriteNodeUrlCanParseCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-format-invalid-input.test.js"))
+        try rewriteNodeUrlFormatInvalidInputCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-pathtofileurl.test.js"))
         try rewriteNodeUrlPathToFileUrlCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-fileurltopath.test.js"))
@@ -56704,8 +56740,8 @@ test "bootstrap runner mirrors minimal core tail utility mini-suite" {
         .{ .path = "js/node/path/posix-exists.test.js", .passed = 1 },
         .{ .path = "js/node/path/win32-exists.test.js", .passed = 1 },
         .{ .path = "js/node/path/15704.test.js", .passed = 1 },
-        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 1, .todo = 1 },
-        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 2 },
+        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 2 },
         .{ .path = "integration/bun-types/fixture/23347.test.ts", .passed = 6 },
         .{ .path = "js/bun/resolve/toml/toml-parse.test.ts", .passed = 1 },
         .{ .path = "js/bun/resolve/toml/crash/toml-crash.test.ts", .passed = 1 },
@@ -56942,8 +56978,8 @@ test "bootstrap runner covers Node url bootstrap smokes" {
         \\import url from "node:url";
         \\
         \\describe("URL.canParse", () => {
-        \\  test.todo("invalid input", () => {
-        \\    URL.canParse();
+        \\  test("invalid input", () => {
+        \\    assert.throws(() => URL.canParse(), { code: "ERR_MISSING_ARGS", name: "TypeError" });
         \\  });
         \\
         \\  test("repeatedly called produces same result", () => {
@@ -56954,8 +56990,8 @@ test "bootstrap runner covers Node url bootstrap smokes" {
         \\});
         \\
         \\describe("url.format", () => {
-        \\  test.todo("invalid input", () => {
-        \\    url.format(null);
+        \\  test("invalid input", () => {
+        \\    assert.throws(() => url.format(null), { code: "ERR_INVALID_ARG_TYPE", name: "TypeError" });
         \\  });
         \\
         \\  test("empty", () => {
@@ -56974,8 +57010,48 @@ test "bootstrap runner covers Node url bootstrap smokes" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors node url invalid argument corpora" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        error_code: []const u8,
+    }{
+        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .error_code = "ERR_MISSING_ARGS" },
+        .{ .path = "js/node/url/url-format-invalid-input.test.js", .error_code = "ERR_INVALID_ARG_TYPE" },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    for (cases) |case| {
+        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        defer std.testing.allocator.free(full_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, full_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"invalid input\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, case.error_code) != null);
+
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+        try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    }
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
