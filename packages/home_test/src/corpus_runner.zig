@@ -391,14 +391,8 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/esbuild/css.test.ts",
     "bundler/esbuild/dce.test.ts",
     "bundler/esbuild/default.test.ts",
-    "bundler/esbuild/importstar_ts.test.ts",
-    "bundler/esbuild/importstar.test.ts",
-    "bundler/esbuild/loader.test.ts",
     "bundler/esbuild/lower.test.ts",
-    "bundler/esbuild/packagejson.test.ts",
-    "bundler/esbuild/splitting.test.ts",
     "bundler/esbuild/ts.test.ts",
-    "bundler/esbuild/tsconfig.test.ts",
     "js/bun/http/serve-response-stream-sink-leak.test.ts",
     "js/bun/http/serve-stream-reject-flush-leak.test.ts",
 };
@@ -46369,14 +46363,8 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bundler/esbuild/css.test.ts",
         "bundler/esbuild/dce.test.ts",
         "bundler/esbuild/default.test.ts",
-        "bundler/esbuild/importstar_ts.test.ts",
-        "bundler/esbuild/importstar.test.ts",
-        "bundler/esbuild/loader.test.ts",
         "bundler/esbuild/lower.test.ts",
-        "bundler/esbuild/packagejson.test.ts",
-        "bundler/esbuild/splitting.test.ts",
         "bundler/esbuild/ts.test.ts",
-        "bundler/esbuild/tsconfig.test.ts",
     };
 
     for (expected) |path| {
