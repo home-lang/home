@@ -142,24 +142,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/24045.test.ts",
     "regression/issue/07324.test.ts",
     "regression/issue/07827.test.ts",
-    "internal/powershell-escape.test.ts",
-    "js/node/assert/assert.test.cjs",
-    "js/node/assert/assert-match.test.cjs",
-    "js/node/assert/assert-doesNotMatch.test.cjs",
-    "js/node/path/posix-exists.test.js",
-    "js/node/path/win32-exists.test.js",
-    "js/node/path/15704.test.js",
-    "js/node/url/url-canParse-whatwg.test.js",
-    "js/node/url/url-format-invalid-input.test.js",
-    "integration/bun-types/fixture/23347.test.ts",
-    "js/bun/resolve/toml/toml-parse.test.ts",
-    "js/bun/resolve/toml/crash/toml-crash.test.ts",
-    "regression/issue/013880.test.ts",
-    "js/bun/util/exotic-global-mutable-prototype.test.ts",
-    "js/bun/jsc/native-constructor-identity.test.ts",
-    "js/bun/empty-file.test.ts",
-    "js/bun/test/expect-type-global.test.ts",
-    "js/bun/test/expect-type.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -41907,24 +41889,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[54]);
     try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[55]);
     try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[56]);
-    try std.testing.expectEqualStrings("internal/powershell-escape.test.ts", filesForSubset(.minimal_js)[57]);
-    try std.testing.expectEqualStrings("js/node/assert/assert.test.cjs", filesForSubset(.minimal_js)[58]);
-    try std.testing.expectEqualStrings("js/node/assert/assert-match.test.cjs", filesForSubset(.minimal_js)[59]);
-    try std.testing.expectEqualStrings("js/node/assert/assert-doesNotMatch.test.cjs", filesForSubset(.minimal_js)[60]);
-    try std.testing.expectEqualStrings("js/node/path/posix-exists.test.js", filesForSubset(.minimal_js)[61]);
-    try std.testing.expectEqualStrings("js/node/path/win32-exists.test.js", filesForSubset(.minimal_js)[62]);
-    try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[63]);
-    try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[64]);
-    try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[65]);
-    try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[66]);
-    try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[67]);
-    try std.testing.expectEqualStrings("js/bun/resolve/toml/crash/toml-crash.test.ts", filesForSubset(.minimal_js)[68]);
-    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[69]);
-    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[70]);
-    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[71]);
-    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[72]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[73]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[74]);
+    try std.testing.expectEqual(@as(usize, 57), filesForSubset(.minimal_js).len);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -55094,6 +55059,56 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "HTTP/web tail queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors minimal core tail utility mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "internal/powershell-escape.test.ts", .passed = 1 },
+        .{ .path = "js/node/assert/assert.test.cjs", .passed = 2 },
+        .{ .path = "js/node/assert/assert-match.test.cjs", .passed = 3 },
+        .{ .path = "js/node/assert/assert-doesNotMatch.test.cjs", .passed = 3 },
+        .{ .path = "js/node/path/posix-exists.test.js", .passed = 1 },
+        .{ .path = "js/node/path/win32-exists.test.js", .passed = 1 },
+        .{ .path = "js/node/path/15704.test.js", .passed = 1 },
+        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "integration/bun-types/fixture/23347.test.ts", .passed = 6 },
+        .{ .path = "js/bun/resolve/toml/toml-parse.test.ts", .passed = 1 },
+        .{ .path = "js/bun/resolve/toml/crash/toml-crash.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/013880.test.ts", .passed = 1 },
+        .{ .path = "js/bun/util/exotic-global-mutable-prototype.test.ts", .passed = 1 },
+        .{ .path = "js/bun/jsc/native-constructor-identity.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/empty-file.test.ts", .passed = 0 },
+        .{ .path = "js/bun/test/expect-type-global.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/expect-type.test.ts", .passed = 1 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "minimal core tail utility corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
