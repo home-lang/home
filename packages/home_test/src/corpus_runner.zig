@@ -29627,6 +29627,33 @@ const harness_prelude =
     \\  if (globalThis.__home_modules[resolved] || globalThis.__home_cjs_factories[resolved] || __home_build_read_text(resolved) !== null) return resolved;
     \\  throw new Error("Cannot find module: " + String(specifier));
     \\};
+    \\function __home_cjs_package_type_module(resolved) {
+    \\  const parts = String(resolved).split("/");
+    \\  for (let i = parts.length - 1; i > 0; i--) {
+    \\    const dir = parts.slice(0, i).join("/");
+    \\    const packageText = __home_build_read_text(__home_build_join(dir, "package.json"));
+    \\    if (packageText === null) continue;
+    \\    try {
+    \\      const pkg = __home_parse_package_json_text(packageText);
+    \\      return !!(pkg && pkg.type === "module");
+    \\    } catch (error) {
+    \\      return false;
+    \\    }
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_import_cjs_namespace(specifier) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  const value = globalThis.require(resolved);
+    \\  const namespace = { default: value };
+    \\  const isObject = value !== null && (typeof value === "object" || typeof value === "function");
+    \\  if (__home_cjs_package_type_module(resolved)) {
+    \\    if (isObject && Object.prototype.hasOwnProperty.call(value, "__esModule")) namespace.__esModule = value.__esModule;
+    \\  } else if (isObject && value.__esModule === true && Object.prototype.hasOwnProperty.call(value, "default")) {
+    \\    namespace.default = value.default;
+    \\  }
+    \\  return namespace;
+    \\}
     \\function __home_header_validate_name(name) {
     \\  const key = String(name).toLowerCase();
     \\  if (key.length === 0) throw new TypeError("Invalid header name");
@@ -35791,6 +35818,55 @@ fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
+fn rewriteEsModuleAnnotationCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{
+            .needle = "import * as WithTypeModuleExportEsModuleAnnotationMissingDefault from \"./with-type-module/export-esModule-annotation-empty.cjs\";",
+            .replacement = "const WithTypeModuleExportEsModuleAnnotationMissingDefault = globalThis.__home_import_cjs_namespace(\"./with-type-module/export-esModule-annotation-empty.cjs\");",
+        },
+        .{
+            .needle = "import * as WithTypeModuleExportEsModuleAnnotationNoDefault from \"./with-type-module/export-esModule-annotation-no-default.cjs\";",
+            .replacement = "const WithTypeModuleExportEsModuleAnnotationNoDefault = globalThis.__home_import_cjs_namespace(\"./with-type-module/export-esModule-annotation-no-default.cjs\");",
+        },
+        .{
+            .needle = "import * as WithTypeModuleExportEsModuleAnnotation from \"./with-type-module/export-esModule-annotation.cjs\";",
+            .replacement = "const WithTypeModuleExportEsModuleAnnotation = globalThis.__home_import_cjs_namespace(\"./with-type-module/export-esModule-annotation.cjs\");",
+        },
+        .{
+            .needle = "import * as WithTypeModuleExportEsModuleNoAnnotation from \"./with-type-module/export-esModule-no-annotation.cjs\";",
+            .replacement = "const WithTypeModuleExportEsModuleNoAnnotation = globalThis.__home_import_cjs_namespace(\"./with-type-module/export-esModule-no-annotation.cjs\");",
+        },
+        .{
+            .needle = "import * as WithoutTypeModuleExportEsModuleAnnotationMissingDefault from \"./without-type-module/export-esModule-annotation-empty.cjs\";",
+            .replacement = "const WithoutTypeModuleExportEsModuleAnnotationMissingDefault = globalThis.__home_import_cjs_namespace(\"./without-type-module/export-esModule-annotation-empty.cjs\");",
+        },
+        .{
+            .needle = "import * as WithoutTypeModuleExportEsModuleAnnotationNoDefault from \"./without-type-module/export-esModule-annotation-no-default.cjs\";",
+            .replacement = "const WithoutTypeModuleExportEsModuleAnnotationNoDefault = globalThis.__home_import_cjs_namespace(\"./without-type-module/export-esModule-annotation-no-default.cjs\");",
+        },
+        .{
+            .needle = "import * as WithoutTypeModuleExportEsModuleAnnotation from \"./without-type-module/export-esModule-annotation.cjs\";",
+            .replacement = "const WithoutTypeModuleExportEsModuleAnnotation = globalThis.__home_import_cjs_namespace(\"./without-type-module/export-esModule-annotation.cjs\");",
+        },
+        .{
+            .needle = "import * as WithoutTypeModuleExportEsModuleNoAnnotation from \"./without-type-module/export-esModule-no-annotation.cjs\";",
+            .replacement = "const WithoutTypeModuleExportEsModuleNoAnnotation = globalThis.__home_import_cjs_namespace(\"./without-type-module/export-esModule-no-annotation.cjs\");",
+        },
+    };
+
+    var rewritten = try allocator.dupe(u8, source);
+    errdefer allocator.free(rewritten);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, rewritten, replacement.needle, replacement.replacement);
+        allocator.free(rewritten);
+        rewritten = next;
+    }
+    return rewritten;
+}
+
 fn rewriteLoadSameJsFileCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const smaller_count = try std.mem.replaceOwned(
         u8,
@@ -38682,7 +38758,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/build-error.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.build BuildMessage native error objects")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule-annotation.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "CommonJS __esModule annotation namespace interop")
+        try rewriteEsModuleAnnotationCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "ES module namespace __esModule mutation interop")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-custom-condition.test.ts"))
@@ -53562,6 +53638,33 @@ test "bootstrap runner mirrors PNG import loader corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors CommonJS esModule annotation corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/esModule-annotation.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/esModule-annotation.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "CommonJS __esModule annotation namespace interop") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_cjs_namespace(\"./with-type-module/export-esModule-annotation.cjs\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as WithTypeModuleExportEsModuleAnnotation") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors import-query resolver corpus" {
