@@ -29591,7 +29591,7 @@ const harness_prelude =
     \\    const denoInternal = Symbol("Deno[internal]");
     \\    globalThis.Deno = {
     \\      test: denoTest,
-    \\      inspect() { throw new Error("Deno.inspect()"); },
+    \\      inspect(value) { return __home_deno_inspect(value); },
     \\      internal: denoInternal,
     \\      [denoInternal]: new Proxy({}, {
     \\        get(target, property) {
@@ -34809,6 +34809,71 @@ const harness_prelude =
     \\  CloseEvent.prototype.constructor = CloseEvent;
     \\  CloseEvent.prototype.toString = function() { return "[object CloseEvent]"; };
     \\}
+    \\if (typeof ProgressEvent !== "function") {
+    \\  var ProgressEvent = function(type, init) {
+    \\    const options = init || {};
+    \\    Event.call(this, type, options);
+    \\    this.lengthComputable = !!options.lengthComputable;
+    \\    this.loaded = options.loaded === undefined ? 0 : Number(options.loaded);
+    \\    this.total = options.total === undefined ? 0 : Number(options.total);
+    \\  };
+    \\  ProgressEvent.prototype = Object.create(Event.prototype);
+    \\  ProgressEvent.prototype.constructor = ProgressEvent;
+    \\  ProgressEvent.prototype.toString = function() { return "[object ProgressEvent]"; };
+    \\}
+    \\function __home_deno_inspect_scalar(value) {
+    \\  if (value === null) return "null";
+    \\  if (value === undefined) return "undefined";
+    \\  if (typeof value === "string") return JSON.stringify(value);
+    \\  return String(value);
+    \\}
+    \\function __home_deno_inspect_event_common(name, event) {
+    \\  return name + " {\n" +
+    \\    "  bubbles: " + __home_deno_inspect_scalar(!!event.bubbles) + ",\n" +
+    \\    "  cancelable: " + __home_deno_inspect_scalar(!!event.cancelable) + ",\n" +
+    \\    "  composed: " + __home_deno_inspect_scalar(!!event.composed) + ",\n" +
+    \\    "  currentTarget: " + __home_deno_inspect_scalar(event.currentTarget || null) + ",\n" +
+    \\    "  defaultPrevented: " + __home_deno_inspect_scalar(!!event.defaultPrevented) + ",\n" +
+    \\    "  eventPhase: " + __home_deno_inspect_scalar(event.eventPhase || 0) + ",\n" +
+    \\    "  srcElement: " + __home_deno_inspect_scalar(event.srcElement || null) + ",\n" +
+    \\    "  target: " + __home_deno_inspect_scalar(event.target || null) + ",\n" +
+    \\    "  returnValue: " + __home_deno_inspect_scalar(event.returnValue !== false) + ",\n" +
+    \\    "  timeStamp: " + __home_deno_inspect_scalar(event.timeStamp) + ",\n" +
+    \\    "  type: " + __home_deno_inspect_scalar(event.type);
+    \\}
+    \\function __home_deno_inspect_event(value) {
+    \\  if (value === Event.prototype) return "Event {\n  bubbles: [Getter],\n  cancelable: [Getter],\n  composed: [Getter],\n  currentTarget: [Getter],\n  defaultPrevented: [Getter],\n  eventPhase: [Getter],\n  srcElement: [Getter/Setter],\n  target: [Getter],\n  returnValue: [Getter/Setter],\n  timeStamp: [Getter],\n  type: [Getter]\n}";
+    \\  const isError = typeof ErrorEvent === "function" && value instanceof ErrorEvent;
+    \\  const isClose = typeof CloseEvent === "function" && value instanceof CloseEvent;
+    \\  const isCustom = typeof CustomEvent === "function" && value instanceof CustomEvent;
+    \\  const isProgress = typeof ProgressEvent === "function" && value instanceof ProgressEvent;
+    \\  if (!(value instanceof Event)) return null;
+    \\  const name = isError ? "ErrorEvent" : isClose ? "CloseEvent" : isCustom ? "CustomEvent" : isProgress ? "ProgressEvent" : "Event";
+    \\  let output = __home_deno_inspect_event_common(name, value);
+    \\  if (isError) {
+    \\    output += ",\n  message: " + __home_deno_inspect_scalar(value.message || "") +
+    \\      ",\n  filename: " + __home_deno_inspect_scalar(value.filename || "") +
+    \\      ",\n  lineno: " + __home_deno_inspect_scalar(value.lineno || 0) +
+    \\      ",\n  colno: " + __home_deno_inspect_scalar(value.colno || 0) +
+    \\      ",\n  error: " + __home_deno_inspect_scalar(value.error == null ? undefined : value.error);
+    \\  } else if (isClose) {
+    \\    output += ",\n  wasClean: " + __home_deno_inspect_scalar(!!value.wasClean) +
+    \\      ",\n  code: " + __home_deno_inspect_scalar(value.code || 0) +
+    \\      ",\n  reason: " + __home_deno_inspect_scalar(value.reason || "");
+    \\  } else if (isCustom) {
+    \\    output += ",\n  detail: " + __home_deno_inspect_scalar(value.detail == null ? undefined : value.detail);
+    \\  } else if (isProgress) {
+    \\    output += ",\n  lengthComputable: " + __home_deno_inspect_scalar(!!value.lengthComputable) +
+    \\      ",\n  loaded: " + __home_deno_inspect_scalar(value.loaded || 0) +
+    \\      ",\n  total: " + __home_deno_inspect_scalar(value.total || 0);
+    \\  }
+    \\  return output + "\n}";
+    \\}
+    \\function __home_deno_inspect(value) {
+    \\  const eventOutput = __home_deno_inspect_event(value);
+    \\  if (eventOutput !== null) return eventOutput;
+    \\  return __home_format(value);
+    \\}
     \\if (typeof EventTarget !== "function") {
     \\  var EventTarget = function() {
     \\    this.__home_listeners = Object.create(null);
@@ -36613,6 +36678,10 @@ fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![
 }
 
 fn rewriteDenoEncodingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
+}
+
+fn rewriteDenoEventCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
 
@@ -39323,6 +39392,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeInternalInspectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/encoding/encoding.test.ts"))
         try rewriteDenoEncodingCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/event/event.test.ts"))
+        try rewriteDenoEventCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -53858,7 +53929,7 @@ test "bootstrap runner covers Deno Event behavior and ignored tests" {
 
     const source =
         \\import { createDenoTest } from "deno:harness";
-        \\const { test, assert, assertEquals } = createDenoTest(import.meta.path);
+        \\const { test, assert, assertEquals, assertStringIncludes } = createDenoTest(import.meta.path);
         \\test(function eventBehavior() {
         \\  const normal = new Event("click");
         \\  assertEquals(normal.composedPath(), []);
@@ -53878,8 +53949,9 @@ test "bootstrap runner covers Deno Event behavior and ignored tests" {
         \\  assertEquals(typeof desc1!.get, "function");
         \\  assertEquals(desc1!.get, desc2!.get);
         \\});
-        \\test.ignore(function ignored() {
-        \\  throw new Error("must not execute");
+        \\test(function eventInspect() {
+        \\  assertStringIncludes(Deno.inspect(new Event("inspect")), `Event {
+        \\  bubbles: false,`);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/event/event.test.ts");
@@ -53891,8 +53963,8 @@ test "bootstrap runner covers Deno Event behavior and ignored tests" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner covers Deno harness options and todo calls" {
@@ -56986,7 +57058,7 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         todo: usize = 0,
     }{
         .{ .path = "js/deno/event/custom-event.test.ts", .passed = 2 },
-        .{ .path = "js/deno/event/event.test.ts", .passed = 8, .todo = 2 },
+        .{ .path = "js/deno/event/event.test.ts", .passed = 10 },
         .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
         .{ .path = "js/deno/event/event-target.test.ts", .passed = 14, .todo = 1 },
         .{ .path = "js/deno/fetch/request.test.ts", .passed = 5, .todo = 2 },
@@ -57026,6 +57098,34 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
+}
+
+test "bootstrap runner mirrors Deno event inspect corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/event/event.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/event/event.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_event") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ProgressEvent") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors buffer test utility tail mini-suite" {
