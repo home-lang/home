@@ -457,7 +457,6 @@ pub const minimal_js_files = [_][]const u8{
     "bake/dev/hot.test.ts",
     "bake/dev/html.test.ts",
     "bake/dev/import-meta-inline.test.ts",
-    "bake/dev/import-meta-inline-negative.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -46393,7 +46392,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bake/dev/hot.test.ts",
         "bake/dev/html.test.ts",
         "bake/dev/import-meta-inline.test.ts",
-        "bake/dev/import-meta-inline-negative.test.ts",
         "js/bun/test/skip-test-fixture.js",
         "js/bun/test/expect-type-doctest.test.ts",
         "js/bun/test/todo-test-fixture.js",
@@ -47112,6 +47110,7 @@ test "bootstrap runner mirrors bake import-meta negative corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors bake framework router corpus" {
