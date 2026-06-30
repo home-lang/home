@@ -29595,7 +29595,7 @@ const harness_prelude =
     \\      internal: denoInternal,
     \\      [denoInternal]: new Proxy({}, {
     \\        get(target, property) {
-    \\          if (property === "inspectArgs") return function(args) { return __home_format(args && args.length === 1 ? args[0] : args) + "\n"; };
+    \\          if (property === "inspectArgs") return function(args) { return (args && args.length === 1 ? __home_deno_inspect(args[0]) : __home_format(args)) + "\n"; };
     \\          if (property === "core") return { ops: denoCoreOps };
     \\          throw new Error("Deno[Deno.internal]." + String(property));
     \\        },
@@ -34875,11 +34875,60 @@ const harness_prelude =
     \\  if (value instanceof Blob) return "Blob { size: " + String(value.size || 0) + ", type: " + JSON.stringify(value.type || "") + " }";
     \\  return null;
     \\}
+    \\function __home_deno_inspect_headers(value, omitRequestDefaults) {
+    \\  if (typeof Headers !== "function") return null;
+    \\  if (value === Headers.prototype) return "Headers";
+    \\  if (!(value instanceof Headers)) return null;
+    \\  const entries = Array.from(value.entries()).map(([key, item]) => [String(key).toLowerCase(), String(item)]).filter(([key, item]) => {
+    \\    return !(omitRequestDefaults && key === "user-agent" && item === "Bun/0.0.0-home");
+    \\  }).filter(([key, item]) => {
+    \\    return !(omitRequestDefaults && key === "content-length" && item === "0");
+    \\  });
+    \\  entries.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
+    \\  if (entries.length === 0) return "Headers {}";
+    \\  return "Headers { " + entries.map(([key, item]) => JSON.stringify(key) + ": " + JSON.stringify(item)).join(", ") + " }";
+    \\}
+    \\function __home_deno_inspect_request_url(value) {
+    \\  try { return new URL(String(value || "")).href; } catch (error) { return String(value || ""); }
+    \\}
+    \\function __home_deno_inspect_request(value) {
+    \\  if (typeof Request !== "function") return null;
+    \\  if (value === Request.prototype) return "Request";
+    \\  if (!(value instanceof Request)) return null;
+    \\  return "Request {\n" +
+    \\    "  bodyUsed: " + __home_deno_inspect_scalar(!!value.bodyUsed) + ",\n" +
+    \\    "  headers: " + __home_deno_inspect_headers(value.headers, true) + ",\n" +
+    \\    "  method: " + __home_deno_inspect_scalar(value.method || "GET") + ",\n" +
+    \\    "  redirect: " + __home_deno_inspect_scalar(value.redirect || "follow") + ",\n" +
+    \\    "  url: " + __home_deno_inspect_scalar(__home_deno_inspect_request_url(value.url)) + "\n" +
+    \\    "}";
+    \\}
+    \\function __home_deno_inspect_response(value) {
+    \\  if (typeof Response !== "function") return null;
+    \\  if (value === Response.prototype) return "Response";
+    \\  if (!(value instanceof Response)) return null;
+    \\  return "Response {\n" +
+    \\    "  body: " + __home_deno_inspect_scalar(value.body == null ? null : value.body) + ",\n" +
+    \\    "  bodyUsed: " + __home_deno_inspect_scalar(!!value.bodyUsed) + ",\n" +
+    \\    "  headers: " + __home_deno_inspect_headers(value.headers, true) + ",\n" +
+    \\    "  ok: " + __home_deno_inspect_scalar(!!value.ok) + ",\n" +
+    \\    "  redirected: " + __home_deno_inspect_scalar(!!value.redirected) + ",\n" +
+    \\    "  status: " + __home_deno_inspect_scalar(value.status || 0) + ",\n" +
+    \\    "  statusText: " + __home_deno_inspect_scalar(value.statusText || "") + ",\n" +
+    \\    "  url: " + __home_deno_inspect_scalar(value.url || "") + "\n" +
+    \\    "}";
+    \\}
     \\function __home_deno_inspect(value) {
     \\  const eventOutput = __home_deno_inspect_event(value);
     \\  if (eventOutput !== null) return eventOutput;
     \\  const blobOutput = __home_deno_inspect_blob(value);
     \\  if (blobOutput !== null) return blobOutput;
+    \\  const headersOutput = __home_deno_inspect_headers(value);
+    \\  if (headersOutput !== null) return headersOutput;
+    \\  const requestOutput = __home_deno_inspect_request(value);
+    \\  if (requestOutput !== null) return requestOutput;
+    \\  const responseOutput = __home_deno_inspect_response(value);
+    \\  if (responseOutput !== null) return responseOutput;
     \\  return __home_format(value);
     \\}
     \\if (typeof EventTarget !== "function") {
@@ -36733,6 +36782,36 @@ fn rewriteDenoFetchBlobCorpus(allocator: std.mem.Allocator, source: []const u8) 
         source,
         "test.ignore(function blobCustomInspectFunction() {",
         "test(function blobCustomInspectFunction() {",
+    );
+}
+
+fn rewriteDenoFetchRequestCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.ignore(function customInspectFunction() {",
+        "test(function customInspectFunction() {",
+    );
+}
+
+fn rewriteDenoFetchHeadersCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.ignore(function customInspectReturnsCorrectHeadersFormat() {",
+        "test(function customInspectReturnsCorrectHeadersFormat() {",
+    );
+}
+
+fn rewriteDenoFetchResponseCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.ignore(function customInspectFunction() {",
+        "test(function customInspectFunction() {",
     );
 }
 
@@ -39447,8 +39526,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteDenoEventCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event-target.test.ts"))
         try rewriteDenoEventTargetCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/fetch/request.test.ts"))
+        try rewriteDenoFetchRequestCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/blob.test.ts"))
         try rewriteDenoFetchBlobCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/fetch/headers.test.ts"))
+        try rewriteDenoFetchHeadersCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/fetch/response.test.ts"))
+        try rewriteDenoFetchResponseCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -57116,11 +57201,11 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         .{ .path = "js/deno/event/event.test.ts", .passed = 10 },
         .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
         .{ .path = "js/deno/event/event-target.test.ts", .passed = 15 },
-        .{ .path = "js/deno/fetch/request.test.ts", .passed = 5, .todo = 2 },
+        .{ .path = "js/deno/fetch/request.test.ts", .passed = 6, .todo = 1 },
         .{ .path = "js/deno/fetch/body.test.ts", .passed = 3, .todo = 2 },
         .{ .path = "js/deno/fetch/blob.test.ts", .passed = 10 },
-        .{ .path = "js/deno/fetch/headers.test.ts", .passed = 26, .todo = 1 },
-        .{ .path = "js/deno/fetch/response.test.ts", .passed = 8, .todo = 1 },
+        .{ .path = "js/deno/fetch/headers.test.ts", .passed = 27 },
+        .{ .path = "js/deno/fetch/response.test.ts", .passed = 9 },
         .{ .path = "js/deno/url/urlsearchparams.test.ts", .passed = 32 },
         .{ .path = "js/deno/crypto/random.test.ts", .passed = 10 },
         .{ .path = "regression/issue/08040.test.ts", .passed = 1 },
@@ -57235,6 +57320,64 @@ test "bootstrap runner mirrors Deno blob inspect corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Deno fetch inspect corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        ignored_needle: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{
+            .path = "js/deno/fetch/request.test.ts",
+            .ignored_needle = "test.ignore(function customInspectFunction",
+            .passed = 6,
+            .todo = 1,
+        },
+        .{
+            .path = "js/deno/fetch/headers.test.ts",
+            .ignored_needle = "test.ignore(function customInspectReturnsCorrectHeadersFormat",
+            .passed = 27,
+        },
+        .{
+            .path = "js/deno/fetch/response.test.ts",
+            .ignored_needle = "test.ignore(function customInspectFunction",
+            .passed = 9,
+        },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        const corpus_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        defer std.testing.allocator.free(corpus_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, corpus_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.ignored_needle) == null);
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_headers") != null);
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_request") != null);
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_response") != null);
+
+        var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+        defer runtime.deinit();
+
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(case.passed, file_run.result.passed);
+        try std.testing.expectEqual(case.todo, file_run.result.todo);
+    }
 }
 
 test "bootstrap runner mirrors buffer test utility tail mini-suite" {
