@@ -85,29 +85,6 @@ pub const Summary = struct {
 };
 
 pub const minimal_js_files = [_][]const u8{
-    "snippets/segfault-todo.test.js",
-    "js/web/util/atob.test.js",
-    "regression/issue/23723.test.js",
-    "regression/issue/12650.test.js",
-    "js/node/domexception-node.test.js",
-    "js/bun/jsc/shadow.test.js",
-    "js/node/dirname.test.js",
-    "regression/issue/03091.test.ts",
-    "regression/issue/15326.test.ts",
-    "regression/issue/15314.test.ts",
-    "regression/issue/02005.test.ts",
-    "bundler/transpiler_constant_fold_eqeq.test.ts",
-    "regression/issue/19107.test.ts",
-    "cli/test/expectations.test.ts",
-    "regression/issue/prepare-stack-trace-crash.test.ts",
-    "js/bun/test/nested-describes.test.ts",
-    "regression/issue/issue-12276.test.ts",
-    "regression/issue/27014.test.ts",
-    "regression/issue/21257.test.ts",
-    "regression/issue/07397.test.ts",
-    "js/bun/test/expect-unreaachable.test.ts",
-    "regression/issue/06467.test.ts",
-    "regression/issue/11677.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -41797,31 +41774,8 @@ test "esbuild extra helper signature lowers to plain JavaScript" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function add(n, files)") != null);
 }
 
-test "minimal JS subset starts with the todo smoke" {
-    try std.testing.expectEqualStrings("snippets/segfault-todo.test.js", filesForSubset(.minimal_js)[0]);
-    try std.testing.expectEqualStrings("js/web/util/atob.test.js", filesForSubset(.minimal_js)[1]);
-    try std.testing.expectEqualStrings("regression/issue/23723.test.js", filesForSubset(.minimal_js)[2]);
-    try std.testing.expectEqualStrings("regression/issue/12650.test.js", filesForSubset(.minimal_js)[3]);
-    try std.testing.expectEqualStrings("js/node/domexception-node.test.js", filesForSubset(.minimal_js)[4]);
-    try std.testing.expectEqualStrings("js/bun/jsc/shadow.test.js", filesForSubset(.minimal_js)[5]);
-    try std.testing.expectEqualStrings("js/node/dirname.test.js", filesForSubset(.minimal_js)[6]);
-    try std.testing.expectEqualStrings("regression/issue/03091.test.ts", filesForSubset(.minimal_js)[7]);
-    try std.testing.expectEqualStrings("regression/issue/15326.test.ts", filesForSubset(.minimal_js)[8]);
-    try std.testing.expectEqualStrings("regression/issue/15314.test.ts", filesForSubset(.minimal_js)[9]);
-    try std.testing.expectEqualStrings("regression/issue/02005.test.ts", filesForSubset(.minimal_js)[10]);
-    try std.testing.expectEqualStrings("bundler/transpiler_constant_fold_eqeq.test.ts", filesForSubset(.minimal_js)[11]);
-    try std.testing.expectEqualStrings("regression/issue/19107.test.ts", filesForSubset(.minimal_js)[12]);
-    try std.testing.expectEqualStrings("cli/test/expectations.test.ts", filesForSubset(.minimal_js)[13]);
-    try std.testing.expectEqualStrings("regression/issue/prepare-stack-trace-crash.test.ts", filesForSubset(.minimal_js)[14]);
-    try std.testing.expectEqualStrings("js/bun/test/nested-describes.test.ts", filesForSubset(.minimal_js)[15]);
-    try std.testing.expectEqualStrings("regression/issue/issue-12276.test.ts", filesForSubset(.minimal_js)[16]);
-    try std.testing.expectEqualStrings("regression/issue/27014.test.ts", filesForSubset(.minimal_js)[17]);
-    try std.testing.expectEqualStrings("regression/issue/21257.test.ts", filesForSubset(.minimal_js)[18]);
-    try std.testing.expectEqualStrings("regression/issue/07397.test.ts", filesForSubset(.minimal_js)[19]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-unreaachable.test.ts", filesForSubset(.minimal_js)[20]);
-    try std.testing.expectEqualStrings("regression/issue/06467.test.ts", filesForSubset(.minimal_js)[21]);
-    try std.testing.expectEqualStrings("regression/issue/11677.test.ts", filesForSubset(.minimal_js)[22]);
-    try std.testing.expectEqual(@as(usize, 23), filesForSubset(.minimal_js).len);
+test "minimal JS subset has been retired into mirrors" {
+    try std.testing.expectEqual(@as(usize, 0), filesForSubset(.minimal_js).len);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -55145,6 +55099,61 @@ test "bootstrap runner mirrors buffer test utility tail mini-suite" {
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors final minimal core smoke mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "snippets/segfault-todo.test.js", .passed = 1, .todo = 2 },
+        .{ .path = "js/web/util/atob.test.js", .passed = 2 },
+        .{ .path = "regression/issue/23723.test.js", .passed = 1 },
+        .{ .path = "regression/issue/12650.test.js", .passed = 2 },
+        .{ .path = "js/node/domexception-node.test.js", .passed = 7 },
+        .{ .path = "js/bun/jsc/shadow.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/dirname.test.js", .passed = 2 },
+        .{ .path = "regression/issue/03091.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/15326.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/15314.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/02005.test.ts", .passed = 1 },
+        .{ .path = "bundler/transpiler_constant_fold_eqeq.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/19107.test.ts", .passed = 1 },
+        .{ .path = "cli/test/expectations.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/prepare-stack-trace-crash.test.ts", .passed = 3 },
+        .{ .path = "js/bun/test/nested-describes.test.ts", .passed = 3 },
+        .{ .path = "regression/issue/issue-12276.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/27014.test.ts", .passed = 6 },
+        .{ .path = "regression/issue/21257.test.ts", .passed = 3 },
+        .{ .path = "regression/issue/07397.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/expect-unreaachable.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/06467.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/11677.test.ts", .passed = 9 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "final minimal core smoke corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
 }
