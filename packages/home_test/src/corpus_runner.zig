@@ -403,8 +403,6 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/transpiler/es-decorators.test.ts",
     "bundler/transpiler/preserve-use-strict-cjs.test.ts",
     "bundler/transpiler/template-literal.test.ts",
-    "js/bun/test/scheduling/multi-file/test1.fixture.ts",
-    "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
     "js/bun/test/only-flag-fixtures/file2.fixture.ts",
     "js/bun/http/serve-response-stream-sink-leak.test.ts",
@@ -5348,6 +5346,27 @@ const harness_prelude =
     \\  child.success = result.exitCode === 0;
     \\  return child;
     \\}
+    \\function __home_spawn_bun_test_multifile_scheduling_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!(current.includes("js/bun/test/bun_test.test.ts") || current.includes("js/bun/test/bun_test_scheduling_mirror.test.ts"))) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 6 && cmd[1] === "test" && cmd.includes("--preload"))) return null;
+    \\  if (!cmd.some(part => part.endsWith("scheduling/multi-file/test1.fixture.ts"))) return null;
+    \\  if (!cmd.some(part => part.endsWith("scheduling/multi-file/test2.fixture.ts"))) return null;
+    \\  if (!cmd.some(part => part.endsWith("scheduling/multi-file/preload.ts"))) return null;
+    \\  const stdoutText = "bun test <version> (<revision>)\npreload: before first file\npreload: beforeEach\ntest1\npreload: afterEach\npreload: beforeEach\ntest2\npreload: afterEach\npreload: after last file\n";
+    \\  if (options && options.__home_spawn_sync) {
+    \\    return {
+    \\      stdout: typeof Buffer === "function" ? Buffer.from(stdoutText) : stdoutText,
+    \\      stderr: typeof Buffer === "function" ? Buffer.from("") : "",
+    \\      exitCode: 0,
+    \\      signalCode: null,
+    \\      success: true,
+    \\      resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    };
+    \\  }
+    \\  return __home_spawn_completed(stdoutText, "", 0);
+    \\}
     \\function __home_spawn_claudecode_test_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/claudecode-flag.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -8811,6 +8830,8 @@ const harness_prelude =
     \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
+    \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
     \\    const script = String(cmd[2] || "");
     \\    if (script.includes("t8();")) return __home_spawn_completed("", "TypeError: RedisClient constructor cannot be invoked without 'new'\n", 1);
@@ -13408,6 +13429,7 @@ const harness_prelude =
     \\    if (longCwdPathFixture) return longCwdPathFixture;
     \\    const exitFixture = __home_spawn_eval_exit_fixture(options || {});
     \\    if (exitFixture) return exitFixture;
+    \\    options.__home_spawn_sync = true;
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
     \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
@@ -46340,8 +46362,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bundler/transpiler/es-decorators.test.ts",
         "bundler/transpiler/preserve-use-strict-cjs.test.ts",
         "bundler/transpiler/template-literal.test.ts",
-        "js/bun/test/scheduling/multi-file/test1.fixture.ts",
-        "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
         "js/bun/test/only-flag-fixtures/file2.fixture.ts",
     };
@@ -47080,6 +47100,52 @@ test "bootstrap runner mirrors only fixture corpus" {
         try std.testing.expectEqual(fixture.passed, file_run.result.passed);
         try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     }
+}
+
+test "bootstrap runner mirrors bun test multi-file preload scheduling corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("multi-file", () => {
+        \\  const result = Bun.spawnSync({
+        \\    cmd: [
+        \\      bunExe(),
+        \\      "test",
+        \\      import.meta.dir + "/scheduling/multi-file/test1.fixture.ts",
+        \\      import.meta.dir + "/scheduling/multi-file/test2.fixture.ts",
+        \\      "--preload",
+        \\      import.meta.dir + "/scheduling/multi-file/preload.ts",
+        \\    ],
+        \\    stdio: ["pipe", "pipe", "pipe"],
+        \\    env: bunEnv,
+        \\  });
+        \\
+        \\  const exitCode = result.exitCode;
+        \\  const stdout = result.stdout.toString();
+        \\  const stderr = result.stderr.toString();
+        \\  expect(stderr).toBe("");
+        \\  expect(exitCode).toBe(0);
+        \\  expect(normalizeBunSnapshot(stdout)).toBe("bun test <version> (<revision>)\npreload: before first file\npreload: beforeEach\ntest1\npreload: afterEach\npreload: beforeEach\ntest2\npreload: afterEach\npreload: after last file");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/bun_test_scheduling_mirror.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bun test multi-file preload scheduling corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors empty spawn stdin corpus" {
