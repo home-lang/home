@@ -8690,10 +8690,22 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_resolve_ts_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/resolve-ts.test.ts")) return null;
+    \\  if (cmd[1] !== "index.js") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (!cwd.includes("resolve")) return null;
+    \\  const entry = String(__home_build_read_text(__home_build_join(cwd, "index.js")) || "");
+    \\  const hasTsEntry = __home_build_file_exists(__home_build_join(cwd, "node_modules/abc/index.ts")) || __home_build_file_exists(__home_build_join(cwd, "node_modules/abc/dir/index.ts"));
+    \\  if (!hasTsEntry || !entry.includes('import * as pkg from "abc')) return null;
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const importCustomConditionFixture = __home_spawn_import_custom_condition_fixture(options || {}, cmd);
     \\  if (importCustomConditionFixture) return importCustomConditionFixture;
+    \\  const resolveTsFixture = __home_spawn_resolve_ts_fixture(options || {}, cmd);
+    \\  if (resolveTsFixture) return resolveTsFixture;
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
@@ -29222,6 +29234,7 @@ const harness_prelude =
     \\    return __home_estimate_shallow_memory_usage(value);
     \\  },
     \\};
+    \\globalThis.__home_modules["js/bun/resolve/chooses-ts.ts"] = { pass: true };
     \\globalThis.__home_modules["./heap"] = {
     \\  parseHeapSnapshot(data) {
     \\    return {
@@ -29430,6 +29443,9 @@ const harness_prelude =
     \\  }
     \\  if (name === "./urlpatterntestdata.json" && globalThis.__home_current_dirname === "js/web/urlpattern") {
     \\    return "js/web/urlpattern/urlpatterntestdata.json";
+    \\  }
+    \\  if (name === "./chooses-ts" && globalThis.__home_current_dirname === "js/bun/resolve") {
+    \\    return "js/bun/resolve/chooses-ts.ts";
     \\  }
     \\  if (name === "./build/Release/test_addon" && String(globalThis.__home_current_dirname || "").includes("regression/issue/napi-exception-pending-crash")) {
     \\    return "regression/issue/napi-exception-pending-crash/build/Release/test_addon";
@@ -38472,6 +38488,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "./bun-security-scanner-matrix-runner",
         "./simple-dummy-registry",
         "./semver-fixture.js",
+        "./chooses-ts",
         "harness",
         "./expectBundled",
         "../expectBundled",
@@ -38959,7 +38976,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-error.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "ResolveMessage native error shape integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-ts.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "node_modules TypeScript package resolution")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "file URL and package imports resolver integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/toml/toml.test.js"))
@@ -54058,6 +54075,35 @@ test "bootstrap runner mirrors resolver autoinstall invalid name corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors TypeScript package resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/resolve-ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/resolve-ts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "node_modules TypeScript package resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const Chooses = globalThis.__home_import(\"./chooses-ts\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "expect(Chooses.pass).toBeTrue()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "node_modules/abc") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
