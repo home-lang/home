@@ -261,26 +261,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/fuzzer-ENG-22942.test.ts",
     "bundler/transpiler/function-tostring-require.test.ts",
     "bundler/transpiler/export-default.test.js",
-    "regression/issue/20092.fixture.ts",
-    "regression/issue/21680.test.ts",
-    "regression/issue/22243.test.ts",
-    "regression/issue/22317.test.ts",
-    "regression/issue/22656.test.ts",
-    "regression/issue/23077/a.fixture.ts",
-    "regression/issue/23077/b.fixture.ts",
-    "regression/issue/23275.test.ts",
-    "regression/issue/23287-array-comma-value.test.ts",
-    "regression/issue/23865.fixture.ts",
-    "regression/issue/24157.test.ts",
-    "regression/issue/24234.test.ts",
-    "regression/issue/25398.test.ts",
-    "regression/issue/25609.test.ts",
-    "regression/issue/25622.test.ts",
-    "regression/issue/25707.test.ts",
-    "regression/issue/25831.test.ts",
-    "regression/issue/26411.test.ts",
-    "regression/issue/comma-operator-this-binding.test.ts",
-    "regression/issue/08794.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -46504,25 +46484,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/s3/s3-fd-validation.test.ts",
         "regression/issue/ENG-24434.test.ts",
         "regression/issue/fuzzer-ENG-22942.test.ts",
-        "regression/issue/20092.fixture.ts",
-        "regression/issue/21680.test.ts",
-        "regression/issue/22243.test.ts",
-        "regression/issue/22317.test.ts",
-        "regression/issue/22656.test.ts",
-        "regression/issue/23077/a.fixture.ts",
-        "regression/issue/23077/b.fixture.ts",
-        "regression/issue/23275.test.ts",
-        "regression/issue/23287-array-comma-value.test.ts",
-        "regression/issue/23865.fixture.ts",
-        "regression/issue/24157.test.ts",
-        "regression/issue/24234.test.ts",
-        "regression/issue/25398.test.ts",
-        "regression/issue/25609.test.ts",
-        "regression/issue/25622.test.ts",
-        "regression/issue/25707.test.ts",
-        "regression/issue/25831.test.ts",
-        "regression/issue/26411.test.ts",
-        "regression/issue/comma-operator-this-binding.test.ts",
     };
 
     for (expected) |path| {
@@ -54906,6 +54867,58 @@ test "bootstrap runner mirrors issue regression queue mini-suite" {
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "issue regression queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors late issue regression queue mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "regression/issue/20092.fixture.ts", .passed = 2 },
+        .{ .path = "regression/issue/21680.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/22243.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/22317.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/22656.test.ts", .passed = 5 },
+        .{ .path = "regression/issue/23077/a.fixture.ts", .passed = 1 },
+        .{ .path = "regression/issue/23077/b.fixture.ts", .passed = 1 },
+        .{ .path = "regression/issue/23275.test.ts", .passed = 3 },
+        .{ .path = "regression/issue/23287-array-comma-value.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/23865.fixture.ts", .passed = 1 },
+        .{ .path = "regression/issue/24157.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/24234.test.ts", .passed = 5 },
+        .{ .path = "regression/issue/25398.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/25609.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/25622.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/25707.test.ts", .passed = 3 },
+        .{ .path = "regression/issue/25831.test.ts", .passed = 4 },
+        .{ .path = "regression/issue/26411.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/comma-operator-this-binding.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/08794.test.ts", .passed = 1 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "late issue regression queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
