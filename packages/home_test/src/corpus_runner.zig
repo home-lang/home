@@ -108,21 +108,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-unreaachable.test.ts",
     "regression/issue/06467.test.ts",
     "regression/issue/11677.test.ts",
-    "js/node/buffer-utf16.test.ts",
-    "js/bun/test/expect-extend-asymmetric-match-throw.test.ts",
-    "regression/issue/23133.test.ts",
-    "regression/issue/2993.test.ts",
-    "regression/issue/04947.test.js",
-    "js/node/buffer-compare-bounds.test.ts",
-    "regression/issue/014865.test.ts",
-    "regression/issue/07736.test.ts",
-    "js/node/buffer-inspectmaxbytes.test.ts",
-    "js/web/workers/message-event.test.ts",
-    "js/bun/test/bun-test.test.ts",
-    "regression/issue/16007.test.ts",
-    "js/bun/util/wrapAnsi.test.ts",
-    "js/bun/test/test-retry-repeats-basic.test.ts",
-    "regression/issue23966.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -41836,22 +41821,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/test/expect-unreaachable.test.ts", filesForSubset(.minimal_js)[20]);
     try std.testing.expectEqualStrings("regression/issue/06467.test.ts", filesForSubset(.minimal_js)[21]);
     try std.testing.expectEqualStrings("regression/issue/11677.test.ts", filesForSubset(.minimal_js)[22]);
-    try std.testing.expectEqualStrings("js/node/buffer-utf16.test.ts", filesForSubset(.minimal_js)[23]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-extend-asymmetric-match-throw.test.ts", filesForSubset(.minimal_js)[24]);
-    try std.testing.expectEqualStrings("regression/issue/23133.test.ts", filesForSubset(.minimal_js)[25]);
-    try std.testing.expectEqualStrings("regression/issue/2993.test.ts", filesForSubset(.minimal_js)[26]);
-    try std.testing.expectEqualStrings("regression/issue/04947.test.js", filesForSubset(.minimal_js)[27]);
-    try std.testing.expectEqualStrings("js/node/buffer-compare-bounds.test.ts", filesForSubset(.minimal_js)[28]);
-    try std.testing.expectEqualStrings("regression/issue/014865.test.ts", filesForSubset(.minimal_js)[29]);
-    try std.testing.expectEqualStrings("regression/issue/07736.test.ts", filesForSubset(.minimal_js)[30]);
-    try std.testing.expectEqualStrings("js/node/buffer-inspectmaxbytes.test.ts", filesForSubset(.minimal_js)[31]);
-    try std.testing.expectEqualStrings("js/web/workers/message-event.test.ts", filesForSubset(.minimal_js)[32]);
-    try std.testing.expectEqualStrings("js/bun/test/bun-test.test.ts", filesForSubset(.minimal_js)[33]);
-    try std.testing.expectEqualStrings("regression/issue/16007.test.ts", filesForSubset(.minimal_js)[34]);
-    try std.testing.expectEqualStrings("js/bun/util/wrapAnsi.test.ts", filesForSubset(.minimal_js)[35]);
-    try std.testing.expectEqualStrings("js/bun/test/test-retry-repeats-basic.test.ts", filesForSubset(.minimal_js)[36]);
-    try std.testing.expectEqualStrings("regression/issue23966.test.ts", filesForSubset(.minimal_js)[37]);
-    try std.testing.expectEqual(@as(usize, 38), filesForSubset(.minimal_js).len);
+    try std.testing.expectEqual(@as(usize, 23), filesForSubset(.minimal_js).len);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -55129,6 +55099,52 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors buffer test utility tail mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+    }{
+        .{ .path = "js/node/buffer-utf16.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/expect-extend-asymmetric-match-throw.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/23133.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/2993.test.ts", .passed = 7 },
+        .{ .path = "regression/issue/04947.test.js", .passed = 1 },
+        .{ .path = "js/node/buffer-compare-bounds.test.ts", .passed = 13 },
+        .{ .path = "regression/issue/014865.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/07736.test.ts", .passed = 4 },
+        .{ .path = "js/node/buffer-inspectmaxbytes.test.ts", .passed = 1 },
+        .{ .path = "js/web/workers/message-event.test.ts", .passed = 10 },
+        .{ .path = "js/bun/test/bun-test.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/16007.test.ts", .passed = 1 },
+        .{ .path = "js/bun/util/wrapAnsi.test.ts", .passed = 35 },
+        .{ .path = "js/bun/test/test-retry-repeats-basic.test.ts", .passed = 12 },
+        .{ .path = "regression/issue23966.test.ts", .passed = 20 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print(
+                "buffer/test utility tail corpus mismatch in {s}: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
 }
