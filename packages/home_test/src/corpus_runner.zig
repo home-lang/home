@@ -425,15 +425,12 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/http/serve-stream-reject-flush-leak.test.ts",
     "js/node/process/process-signal-windows.test.ts",
     "js/node/url/url-parse-invalid-input.test.js",
-    "js/node/vm/sourcetextmodule-link-gc.test.ts",
     "js/web/url/url.windows.test.js",
-    "bundler/bundler_plugin_chain.test.ts",
     "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
     "js/bun/test/skip-test-fixture.js",
     "js/bun/test/expect-type-doctest.test.ts",
     "js/bun/test/todo-test-fixture.js",
     "js/bun/test/mock-disposable.test.ts",
-    "js/web/websocket/error-event.test.ts",
     "cli/test/test-randomize.fixture.ts",
     "bundler/bun-build-api.test.ts",
 };
@@ -47910,6 +47907,31 @@ test "bootstrap runner mirrors node url parse format corpus" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
+test "bootstrap runner mirrors VM SourceTextModule GC corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/vm/sourcetextmodule-link-gc.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/vm/sourcetextmodule-link-gc.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("VM SourceTextModule GC corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
 test "bootstrap runner mirrors bun-types issue 5396 fixture" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -52252,6 +52274,31 @@ test "bootstrap runner covers WebSocket ErrorEvent snapshot nucleus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors WebSocket ErrorEvent corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/websocket/error-event.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/error-event.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("WebSocket ErrorEvent corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner covers Deno AbortController behavior" {
