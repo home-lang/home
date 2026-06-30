@@ -29476,6 +29476,9 @@ const harness_prelude =
     \\    const text = __home_build_read_text(resolved);
     \\    if (text !== null) module = { default: __home_parse_json_module_text(text, resolved) };
     \\  }
+    \\  if (!module && /\.(?:svg|png|jpe?g|gif|webp|ico)$/i.test(resolved) && __home_build_read_text(resolved) !== null) {
+    \\    module = { default: resolved };
+    \\  }
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
     \\};
@@ -36758,6 +36761,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const html = globalThis.__home_import(\"./index.html\").default;",
         },
         .{
+            .needle = "import MyPNG from \"./test-png.png\";",
+            .replacement = "const MyPNG = globalThis.__home_import(\"./test-png.png\").default;",
+        },
+        .{
             .needle = "import assert from \"assert/strict\";",
             .replacement = "const assert = globalThis.__home_import(\"assert/strict\");",
         },
@@ -38695,7 +38702,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/lower-using-bun-target.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler using declaration target lowering")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/png/test-png-import.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "PNG asset import loader resolution")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/require-esm-gc-roots.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "require(esm) synchronous loader GC rooting")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/require.test.ts"))
@@ -53528,6 +53535,33 @@ test "bootstrap runner mirrors empty-file import attribute loaders" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors PNG import loader corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/png/test-png-import.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/png/test-png-import.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "PNG asset import loader resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const MyPNG = globalThis.__home_import(\"./test-png.png\").default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import MyPNG from \"./test-png.png\";") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors import-query resolver corpus" {
