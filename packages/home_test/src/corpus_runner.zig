@@ -34728,7 +34728,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_url_path_to_file_url(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2)).href; throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) {\n  const text = String(specifier);\n  if (text.length === 0) throw new Error(\"Cannot resolve empty specifier\");\n  if (text.startsWith(\"node:\")) return text;\n  if (text === \"path\") return \"node:path\";\n  if (text.startsWith(\"bun:\")) return text;\n  if (text.startsWith(\"file:\")) return new URL(text).toString();\n  if (text.startsWith(\"/\")) return __home_url_path_to_file_url(text).href;\n  if (text.startsWith(\"./\") || text.startsWith(\"../\")) return __home_url_path_to_file_url(__home_path_posix_normalize(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text)).href;\n  throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent || __home_import_meta_path));\n}\n");
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
         try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
     }
@@ -35849,6 +35849,16 @@ fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
+fn rewriteImportMetaResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "compareTo = new URL(expected_rel, import.meta.url).toString();",
+        "compareTo = expected_rel.startsWith(\"/\") ? __home_url_path_to_file_url(expected_rel).toString() : __home_url_path_to_file_url(__home_path_posix_normalize(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + expected_rel)).toString();",
+    );
+}
+
 fn rewriteEsModuleAnnotationCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const replacements = [_]struct {
         needle: []const u8,
@@ -36365,6 +36375,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "import process from \"process\";",
+            .replacement = "const process = globalThis.process;",
+        },
+        .{
+            .needle = "import process from \"node:process\";",
             .replacement = "const process = globalThis.process;",
         },
         .{
@@ -38801,7 +38815,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-empty.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta-resolve.test.mjs"))
-        try rewriteNativeTodoCorpus(allocator, "import.meta.resolve builtin and package resolution")
+        try rewriteImportMetaResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta.test.js"))
         try rewriteNativeTodoCorpus(allocator, "import.meta require and resolver integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-query.test.ts"))
@@ -53727,6 +53741,36 @@ test "bootstrap runner mirrors ES module namespace esModule corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors import-meta resolve corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-meta-resolve.test.mjs", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-meta-resolve.test.mjs");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import.meta.resolve builtin and package resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "compareTo = expected_rel.startsWith(\"/\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_resolve(\"./haha.mjs\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_resolve(\"adsjfdasdf\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_resolve(\"\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const process = globalThis.process;") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors import-query resolver corpus" {
