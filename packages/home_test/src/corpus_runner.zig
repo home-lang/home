@@ -30390,6 +30390,7 @@ const harness_prelude =
     \\    const message = JSON.stringify(String(input)) + " cannot be parsed as a URL" + (hasBase ? " against " + __home_url_redacted_base(base) : "");
     \\    const error = new TypeError(message);
     \\    error.code = "ERR_INVALID_URL";
+    \\    error.input = String(input);
     \\    return error;
     \\  }
     \\  function __home_bun_url_origin_for(url) {
@@ -31128,6 +31129,12 @@ const harness_prelude =
     \\__home_url_module.default = __home_url_module;
     \\globalThis.__home_modules["url"] = __home_url_module;
     \\globalThis.__home_modules["node:url"] = __home_url_module;
+    \\globalThis.__home_modules["internal/url"] = {
+    \\  isURL(value) {
+    \\    if (typeof value === "string") return URL.canParse(value);
+    \\    return value instanceof URL;
+    \\  },
+    \\};
     \\function __home_body_bytes_sync(body) {
     \\  if (body == null) return [];
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_body_bytes_sync(body.__home_body_value);
@@ -31651,6 +31658,11 @@ const harness_prelude =
     \\  return url;
     \\};
     \\URL.revokeObjectURL = function(url) {
+    \\  if (arguments.length === 0) {
+    \\    const error = new TypeError("The \"url\" argument must be specified");
+    \\    error.code = "ERR_MISSING_ARGS";
+    \\    throw error;
+    \\  }
     \\  delete globalThis.__home_blob_url_registry[String(url)];
     \\};
     \\function __home_fetch_thenable(response, error) {
@@ -36266,6 +36278,36 @@ fn rewriteNodeUrlFileUrlToPathCorpus(allocator: std.mem.Allocator, source: []con
     );
 }
 
+fn rewriteNodeUrlRevokeObjectUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "describe.todo(\"URL.revokeObjectURL\", () => {",
+        "describe(\"URL.revokeObjectURL\", () => {",
+    );
+}
+
+fn rewriteNodeUrlNullCharCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.skip(\"null character\", () => {",
+        "test(\"null character\", () => {",
+    );
+}
+
+fn rewriteNodeUrlIsUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.skip(\"isURL\", () => {",
+        "test(\"isURL\", () => {",
+    );
+}
+
 fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -39176,6 +39218,12 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeUrlPathToFileUrlCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-fileurltopath.test.js"))
         try rewriteNodeUrlFileUrlToPathCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-revokeobjecturl.test.js"))
+        try rewriteNodeUrlRevokeObjectUrlCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-null-char.test.js"))
+        try rewriteNodeUrlNullCharCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-is-url.test.js"))
+        try rewriteNodeUrlIsUrlCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -57191,9 +57239,9 @@ test "bootstrap runner mirrors node URL and path utility tranche" {
         passed: usize,
         todo: usize = 0,
     }{
-        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 0, .todo = 1 },
-        .{ .path = "js/node/url/url-null-char.test.js", .passed = 0, .todo = 1 },
-        .{ .path = "js/node/url/url-is-url.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 1 },
+        .{ .path = "js/node/url/url-null-char.test.js", .passed = 1 },
+        .{ .path = "js/node/url/url-is-url.test.js", .passed = 1 },
         .{ .path = "js/node/path/basename.test.js", .passed = 4 },
         .{ .path = "js/node/path/extname.test.js", .passed = 3 },
         .{ .path = "js/node/url/url-format-whatwg.test.js", .passed = 1 },
@@ -57221,6 +57269,60 @@ test "bootstrap runner mirrors node URL and path utility tranche" {
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors node url object and internal utility corpora" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        disabled_needle: []const u8,
+        harness_needle: []const u8,
+    }{
+        .{
+            .path = "js/node/url/url-revokeobjecturl.test.js",
+            .disabled_needle = "describe.todo(\"URL.revokeObjectURL\"",
+            .harness_needle = "ERR_MISSING_ARGS",
+        },
+        .{
+            .path = "js/node/url/url-null-char.test.js",
+            .disabled_needle = "test.skip(\"null character\"",
+            .harness_needle = "error.input = String(input)",
+        },
+        .{
+            .path = "js/node/url/url-is-url.test.js",
+            .disabled_needle = "test.skip(\"isURL\"",
+            .harness_needle = "__home_modules[\"internal/url\"]",
+        },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    for (cases) |case| {
+        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        defer std.testing.allocator.free(full_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, full_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.disabled_needle) == null);
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, case.harness_needle) != null);
+
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+        try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     }
 }
 
