@@ -277,23 +277,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/09563/09563.test.ts",
     "regression/issue/5228.test.js",
     "regression/issue/26377.test.ts",
-    "js/third_party/yargs/yargs-cjs.test.js",
-    "js/third_party/jsonwebtoken/decoding.test.js",
-    "js/third_party/jsonwebtoken/buffer.test.js",
-    "js/third_party/jsonwebtoken/expires_format.test.js",
-    "js/third_party/jsonwebtoken/noTimestamp.test.js",
-    "js/third_party/jsonwebtoken/invalid_exp.test.js",
-    "js/third_party/jsonwebtoken/non_object_values.test.js",
-    "js/third_party/jsonwebtoken/issue_147.test.js",
-    "js/third_party/jsonwebtoken/encoding.test.js",
-    "js/third_party/jsonwebtoken/set_headers.test.js",
-    "js/third_party/jsonwebtoken/undefined_secretOrPublickey.test.js",
-    "js/bun/util/bun-file-exists.test.js",
-    "js/node/path/is-absolute.test.js",
-    "js/node/path/zero-length-strings.test.js",
-    "js/bun/util/concat.test.js",
-    "js/bun/util/escapeHTML.test.js",
-    "js/bun/util/index-of-line.test.ts",
     "regression/issue/19412.test.ts",
     "regression/issue/02369.test.ts",
     "regression/issue/09739.test.ts",
@@ -46553,13 +46536,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/expect-toHaveReturnedWith.test.js",
         "js/bun/test/mock/mock-module-non-string.test.ts",
         "regression/issue/09563/09563.test.ts",
-        "js/third_party/yargs/yargs-cjs.test.js",
-        "js/third_party/jsonwebtoken/decoding.test.js",
-        "js/node/path/is-absolute.test.js",
-        "js/node/path/zero-length-strings.test.js",
-        "js/bun/util/concat.test.js",
-        "js/bun/util/escapeHTML.test.js",
-        "js/bun/util/index-of-line.test.ts",
         "regression/issue/19412.test.ts",
         "regression/issue/02369.test.ts",
         "regression/issue/04011.test.ts",
@@ -54835,6 +54811,55 @@ test "bootstrap runner covers jsonwebtoken sign and verify fixtures" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/expires_format.test.js", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/noTimestamp.test.js", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/invalid_exp.test.js", .passed = 5 },
+        .{ .path = "js/third_party/jsonwebtoken/non_object_values.test.js", .passed = 2 },
+        .{ .path = "js/third_party/jsonwebtoken/issue_147.test.js", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/encoding.test.js", .passed = 3 },
+        .{ .path = "js/third_party/jsonwebtoken/set_headers.test.js", .passed = 2 },
+        .{ .path = "js/third_party/jsonwebtoken/undefined_secretOrPublickey.test.js", .passed = 2 },
+        .{ .path = "js/bun/util/bun-file-exists.test.js", .passed = 1 },
+        .{ .path = "js/node/path/is-absolute.test.js", .passed = 2 },
+        .{ .path = "js/node/path/zero-length-strings.test.js", .passed = 1 },
+        .{ .path = "js/bun/util/concat.test.js", .passed = 5 },
+        .{ .path = "js/bun/util/escapeHTML.test.js", .passed = 4 },
+        .{ .path = "js/bun/util/index-of-line.test.ts", .passed = 2 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "third-party JWT/utility corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
 }
 
 test "bootstrap runner covers Node path bootstrap smokes" {
