@@ -253,7 +253,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/dns/dns-tcp-bidirectional-poll.test.ts",
     "js/node/dns/dns-lookup-keepalive.test.ts",
     "js/bun/jsc/string-noAtomize.test.ts",
-    "js/bun/test/only-fixture-4.ts",
     "regression/issue/21177.fixture.ts",
     "regression/issue/5738.fixture.ts",
     "js/bun/test/printing/dots/dots1.fixture.ts",
@@ -408,11 +407,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
     "js/bun/test/only-flag-fixtures/file2.fixture.ts",
-    "js/bun/test/only-fixture-1.ts",
-    "js/bun/test/only-fixture-2.ts",
-    "js/bun/test/only-fixture-3.ts",
-    "js/bun/test/only-flag-fixtures/file1.fixture.ts",
-    "js/bun/test/only-inside-only.fixture.ts",
     "js/bun/http/serve-response-stream-sink-leak.test.ts",
     "js/bun/http/serve-stream-reject-flush-leak.test.ts",
 };
@@ -46222,7 +46216,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/readline/readline_never_unrefs.test.ts",
         "js/node/dns/dns-tcp-bidirectional-poll.test.ts",
         "js/bun/jsc/string-noAtomize.test.ts",
-        "js/bun/test/only-fixture-4.ts",
         "regression/issue/21177.fixture.ts",
         "regression/issue/5738.fixture.ts",
         "js/bun/test/printing/dots/dots1.fixture.ts",
@@ -46351,11 +46344,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
         "js/bun/test/only-flag-fixtures/file2.fixture.ts",
-        "js/bun/test/only-fixture-1.ts",
-        "js/bun/test/only-fixture-2.ts",
-        "js/bun/test/only-fixture-3.ts",
-        "js/bun/test/only-flag-fixtures/file1.fixture.ts",
-        "js/bun/test/only-inside-only.fixture.ts",
     };
 
     for (expected) |path| {
@@ -47049,6 +47037,49 @@ test "bootstrap runner mirrors failure skip fixture corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors only fixture corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const fixtures = [_]struct {
+        path: []const u8,
+        passed: usize,
+    }{
+        .{ .path = "js/bun/test/only-fixture-1.ts", .passed = 1 },
+        .{ .path = "js/bun/test/only-fixture-2.ts", .passed = 1 },
+        .{ .path = "js/bun/test/only-fixture-3.ts", .passed = 1 },
+        .{ .path = "js/bun/test/only-fixture-4.ts", .passed = 3 },
+        .{ .path = "js/bun/test/only-flag-fixtures/file1.fixture.ts", .passed = 1 },
+        .{ .path = "js/bun/test/only-inside-only.fixture.ts", .passed = 1 },
+    };
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    for (fixtures) |fixture| {
+        const absolute = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{fixture.path});
+        defer std.testing.allocator.free(absolute);
+        const source = try Io.Dir.cwd().readFileAlloc(io, absolute, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, fixture.path);
+        defer prepared.deinit(std.testing.allocator);
+        try std.testing.expect(prepared.unsupported_reason == null);
+
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+
+        if (file_run.result.status() != .passed) {
+            std.debug.print("only fixture corpus failure ({s}): {s}\n", .{ fixture.path, file_run.result.first_failure_message });
+        }
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(fixture.passed, file_run.result.passed);
+        try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    }
 }
 
 test "bootstrap runner mirrors empty spawn stdin corpus" {
