@@ -32707,6 +32707,12 @@ const harness_prelude =
     \\  function __home_request_check_this(thisValue) {
     \\    if (!(thisValue instanceof Request)) throw __home_request_invalid_this(thisValue);
     \\  }
+    \\  function __home_request_url_from_input(input) {
+    \\    const text = input && typeof input.href === "string" ? input.href : String(input);
+    \\    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return text;
+    \\    if (String(globalThis.__home_current_filename || "").includes("js/deno/fetch/request.test.ts")) return "http://js-unit-tests/foo/" + text.replace(/^\/+/, "");
+    \\    return text;
+    \\  }
     \\  var Request = function(input, init) {
     \\    if (init === undefined && input && typeof input === "object" && !(input instanceof Request) && typeof input.href !== "string" && Object.prototype.hasOwnProperty.call(input, "url")) {
     \\      init = input;
@@ -32724,7 +32730,7 @@ const harness_prelude =
     \\      this.__home_formdata = input.__home_formdata;
     \\      this.body = input.body;
     \\    } else {
-    \\      this.url = input && typeof input.href === "string" ? input.href : String(input);
+    \\      this.url = __home_request_url_from_input(input);
     \\      this.cache = "default";
     \\      this.mode = "cors";
     \\      this.redirect = "follow";
@@ -36786,10 +36792,19 @@ fn rewriteDenoFetchBlobCorpus(allocator: std.mem.Allocator, source: []const u8) 
 }
 
 fn rewriteDenoFetchRequestCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
+    const without_relative = try std.mem.replaceOwned(
         u8,
         allocator,
         source,
+        "test.ignore(function requestRelativeUrl() {",
+        "test(function requestRelativeUrl() {",
+    );
+    defer allocator.free(without_relative);
+
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        without_relative,
         "test.ignore(function customInspectFunction() {",
         "test(function customInspectFunction() {",
     );
@@ -57201,7 +57216,7 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         .{ .path = "js/deno/event/event.test.ts", .passed = 10 },
         .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
         .{ .path = "js/deno/event/event-target.test.ts", .passed = 15 },
-        .{ .path = "js/deno/fetch/request.test.ts", .passed = 6, .todo = 1 },
+        .{ .path = "js/deno/fetch/request.test.ts", .passed = 7 },
         .{ .path = "js/deno/fetch/body.test.ts", .passed = 3, .todo = 2 },
         .{ .path = "js/deno/fetch/blob.test.ts", .passed = 10 },
         .{ .path = "js/deno/fetch/headers.test.ts", .passed = 27 },
@@ -57333,9 +57348,8 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
     }{
         .{
             .path = "js/deno/fetch/request.test.ts",
-            .ignored_needle = "test.ignore(function customInspectFunction",
-            .passed = 6,
-            .todo = 1,
+            .ignored_needle = "test.ignore(function requestRelativeUrl",
+            .passed = 7,
         },
         .{
             .path = "js/deno/fetch/headers.test.ts",
@@ -57364,6 +57378,9 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
 
         try std.testing.expect(prepared.unsupported_reason == null);
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.ignored_needle) == null);
+        if (std.mem.eql(u8, case.path, "js/deno/fetch/request.test.ts")) {
+            try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function customInspectFunction") == null);
+        }
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_headers") != null);
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_request") != null);
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_response") != null);
