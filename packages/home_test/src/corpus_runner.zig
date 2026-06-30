@@ -39157,7 +39157,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/shadow.test.js"))
         try rewriteNativeTodoCorpus(allocator, "JSC shadow realm integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/string-noAtomize.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "JSC no-atomize string behavior")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/json5/json5-test-suite.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.JSON5 parser official suite")
     else if (std.mem.eql(u8, relative_path, "js/bun/json5/json5.test.ts"))
@@ -54579,6 +54579,34 @@ test "bootstrap runner mirrors TOML resolve import loader corpus" {
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors JSC no-atomize string corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/jsc/string-noAtomize.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsc/string-noAtomize.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSC no-atomize string behavior") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.jest(import.meta.path)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.jest(__home_import_meta_path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "structuredClone(str)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner covers mock.module validation and imports" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -56406,7 +56434,7 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         .{ .path = "js/node/readline/readline_never_unrefs.test.ts", .passed = 1 },
         .{ .path = "js/node/dns/dns-tcp-bidirectional-poll.test.ts", .passed = 1 },
         .{ .path = "js/node/dns/dns-lookup-keepalive.test.ts", .passed = 1 },
-        .{ .path = "js/bun/jsc/string-noAtomize.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/jsc/string-noAtomize.test.ts", .passed = 1 },
         .{ .path = "regression/issue/21177.fixture.ts", .passed = 2 },
         .{ .path = "regression/issue/5738.fixture.ts", .passed = 2 },
         .{ .path = "js/bun/test/printing/dots/dots1.fixture.ts", .passed = 22 },
