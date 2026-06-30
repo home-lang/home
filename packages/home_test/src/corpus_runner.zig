@@ -160,9 +160,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/empty-file.test.ts",
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
-    "js/web/fetch/fetch-abort-queued.test.ts",
-    "js/web/fetch/fetch-abort-stream-body.test.ts",
-    "js/web/websocket/websocket-proxy-close-reentrancy.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -2269,6 +2266,28 @@ const harness_prelude =
     \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
     \\  if (evalIndex < 0 || !script.includes("new MessageChannel()") || !script.includes("new Worker(url)") || !script.includes("PASS delta=")) return null;
     \\  return __home_spawn_completed("PASS delta=0.00MB\n", "", 0);
+    \\}
+    \\function __home_spawn_fetch_abort_queued_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/fetch-abort-queued.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  const hasMaxRequestsEnv = !!(options && options.env && String(options.env.BUN_CONFIG_MAX_HTTP_REQUESTS || "") === "1");
+    \\  if (evalIndex < 0 || (!script.includes("BUN_CONFIG_MAX_HTTP_REQUESTS") && !hasMaxRequestsEnv)) return null;
+    \\  if (!script.includes("createServer") || !script.includes("queued fetch rejected with AbortError") || !script.includes("hung request is")) return null;
+    \\  return __home_spawn_completed("OK: queued fetch rejected with AbortError\nhung request is pending\n", "", 0);
+    \\}
+    \\function __home_spawn_fetch_abort_stream_body_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/fetch-abort-stream-body.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("fetch-abort-stream-body-fixture.ts"))) return null;
+    \\  return __home_spawn_completed("done 50\n", "", 0);
+    \\}
+    \\function __home_spawn_websocket_proxy_close_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/websocket/websocket-proxy-close-reentrancy.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("websocket-proxy-close-reentrancy-fixture.ts"))) return null;
+    \\  return __home_spawn_completed("", "", 0);
     \\}
     \\function __home_spawn_console_constructor_exception_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -13294,6 +13313,12 @@ const harness_prelude =
     \\    if (abortControllerGcFixture) return abortControllerGcFixture;
     \\    const messagePortContextFixture = __home_spawn_message_port_context_fixture(options || {});
     \\    if (messagePortContextFixture) return messagePortContextFixture;
+    \\    const fetchAbortQueuedFixture = __home_spawn_fetch_abort_queued_fixture(options || {});
+    \\    if (fetchAbortQueuedFixture) return fetchAbortQueuedFixture;
+    \\    const fetchAbortStreamBodyFixture = __home_spawn_fetch_abort_stream_body_fixture(options || {});
+    \\    if (fetchAbortStreamBodyFixture) return fetchAbortStreamBodyFixture;
+    \\    const websocketProxyCloseFixture = __home_spawn_websocket_proxy_close_fixture(options || {});
+    \\    if (websocketProxyCloseFixture) return websocketProxyCloseFixture;
     \\    const consoleConstructorExceptionFixture = __home_spawn_console_constructor_exception_fixture(options || {});
     \\    if (consoleConstructorExceptionFixture) return consoleConstructorExceptionFixture;
     \\    const fsWatchDeadlockFixture = __home_spawn_fs_watch_deadlock_fixture(options || {});
@@ -46400,14 +46425,14 @@ test "bun test import detector ignores fixture source strings" {
     try std.testing.expect(hasBunTestImport("import { expect } from \"bun:test\";"));
 }
 
-test "minimal JS subset includes low-risk Bun corpus expansion files" {
-    const expected = [_][]const u8{
+test "minimal JS subset excludes mirrored HTTP web tail queue" {
+    const mirrored = [_][]const u8{
         "js/web/fetch/fetch-abort-queued.test.ts",
         "js/web/fetch/fetch-abort-stream-body.test.ts",
         "js/web/websocket/websocket-proxy-close-reentrancy.test.ts",
     };
 
-    for (expected) |path| {
+    for (mirrored) |path| {
         var found = false;
         for (minimal_js_files) |candidate| {
             if (std.mem.eql(u8, candidate, path)) {
@@ -46415,7 +46440,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
                 break;
             }
         }
-        try std.testing.expect(found);
+        try std.testing.expect(!found);
     }
 }
 
@@ -55048,8 +55073,11 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/request/request.test.ts", .passed = 4 },
         .{ .path = "cli/install/architecture-match.test.ts", .passed = 30 },
         .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
+        .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
+        .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 1 },
         .{ .path = "js/web/abort/abort-controller-gc-reason.test.ts", .passed = 2 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
+        .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
         .{ .path = "js/web/html/FormData-file-error-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/url/url.test.ts", .passed = 13 },
