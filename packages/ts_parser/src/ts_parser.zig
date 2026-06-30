@@ -1699,6 +1699,7 @@ pub const Parser = struct {
             const close = self.findJSDocTypeArgumentClose(i, end) orelse continue;
             const first_arg = firstNonWhitespace(self.source, i + 1, close);
             if (first_arg == close) {
+                if (self.isAllowedJSDocEmptyClosureTypeArguments(i, start)) continue;
                 try self.reportCodeAt(@intCast(i), self.lineAt(@intCast(i)), 1099, "Type argument list cannot be empty.");
                 continue;
             }
@@ -1725,9 +1726,24 @@ pub const Parser = struct {
         return null;
     }
 
+    fn isAllowedJSDocEmptyClosureTypeArguments(self: *const Parser, open: usize, start: usize) bool {
+        var before_open = open;
+        while (before_open > start and isWhitespaceByte(self.source[before_open - 1])) : (before_open -= 1) {}
+        if (before_open == start or self.source[before_open - 1] != '.') return false;
+
+        var name_end = before_open - 1;
+        while (name_end > start and isWhitespaceByte(self.source[name_end - 1])) : (name_end -= 1) {}
+
+        var name_start = name_end;
+        while (name_start > start and isJSDocIdentifierChar(self.source[name_start - 1])) : (name_start -= 1) {}
+
+        const name = self.source[name_start..name_end];
+        return std.mem.eql(u8, name, "Array");
+    }
+
     fn firstNonWhitespace(source: []const u8, start: usize, end: usize) usize {
         var i = start;
-        while (i < end and (source[i] == ' ' or source[i] == '\t' or source[i] == '\r' or source[i] == '\n')) : (i += 1) {}
+        while (i < end and isWhitespaceByte(source[i])) : (i += 1) {}
         return i;
     }
 
@@ -1747,9 +1763,13 @@ pub const Parser = struct {
         var i = end;
         while (i > start) {
             i -= 1;
-            if (source[i] != ' ' and source[i] != '\t' and source[i] != '\r' and source[i] != '\n') return i;
+            if (!isWhitespaceByte(source[i])) return i;
         }
         return null;
+    }
+
+    fn isWhitespaceByte(c: u8) bool {
+        return c == ' ' or c == '\t' or c == '\r' or c == '\n';
     }
 
     fn sourceHasTopLevelExternalModuleIndicator(self: *const Parser) bool {
@@ -26908,6 +26928,17 @@ test "parser: JSDoc Closure type arguments report empty and trailing-comma diagn
     try T.expectEqual(@as(u32, 1009), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[0].pos);
     try T.expectEqual(@as(u32, 44), s.parser.diagnostics.items[1].pos);
+}
+
+test "parser: JSDoc Array empty Closure type arguments default to any" {
+    var s = try newTestSetup(
+        \\/** @return {(Array.<> | null)} */
+        \\function z() { return null; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: qualified JSDoc param requires object-typed parent" {
