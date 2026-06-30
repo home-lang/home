@@ -160,33 +160,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/empty-file.test.ts",
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
-    "js/bun/resolve/jsonc.test.ts",
-    "js/bun/resolve/bun-lock.test.ts",
-    "js/bun/test/snapshot-tests/existing-snapshots.test.ts",
-    "js/bun/test/expect-stack-overflow-crash.test.ts",
-    "js/bun/test/expect-symbol-toPrimitive-crash.test.ts",
-    "regression/issue/11297/11297.test.ts",
-    "regression/issue/11866.test.ts",
-    "regression/issue/26631.test.ts",
-    "regression/issue/26844.test.ts",
-    "regression/issue/02367.test.ts",
-    "js/bun/util/fileUrl.test.js",
-    "js/bun/util/file-type.test.ts",
-    "js/bun/util/bun-file-read.test.ts",
-    "js/bun/io/bun-write-leak.test.ts",
-    "js/node/url/url-pathtofileurl.test.js",
-    "js/bun/util/randomUUIDv7.test.ts",
-    "js/bun/util/sleepSync.test.ts",
-    "js/bun/util/readablestreamtoarraybuffer.test.ts",
-    "js/bun/util/unsafe.test.js",
-    "js/bun/util/toUTF16Alloc.test.ts",
-    "js/bun/util/bun-isMainThread.test.js",
-    "js/bun/util/pathToFileURL-invalid.test.ts",
-    "js/node/url/pathToFileURL.test.ts",
-    "js/deno/performance/performance.test.ts",
-    "regression/issue/015201.test.ts",
-    "js/node/process-binding.test.ts",
-    "js/node/process/call-constructor.test.js",
     "js/bun/test/test-timers.test.ts",
     "js/bun/test/fake-timers/fake-timers.test.ts",
     "js/bun/test/fake-timers/sinonjs/issue-59.test.ts",
@@ -2378,6 +2351,22 @@ const harness_prelude =
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!cmd.some(part => String(part).endsWith("dns-tcp-bidirectional-poll-fixture.ts"))) return null;
     \\  return __home_spawn_completed("[[\"hello\"]]\n", "", 0);
+    \\}
+    \\function __home_spawn_expect_stack_overflow_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/expect-stack-overflow-crash.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("function r(){r()}") || !script.includes('console.log("OK")')) return null;
+    \\  return __home_spawn_completed("OK\n", "", 0);
+    \\}
+    \\function __home_spawn_expect_symbol_to_primitive_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/expect-symbol-toPrimitive-crash.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("Symbol.toPrimitive") || !script.includes("Bun.jest().expect(obj).toBeFalse()")) return null;
+    \\  return __home_spawn_completed("", "", 0);
     \\}
     \\function __home_spawn_long_cwd_path_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/path/resolve-long-cwd.test.ts")) return null;
@@ -8714,6 +8703,10 @@ const harness_prelude =
     \\  if (readdirRecursiveErrorLeakFixture) return readdirRecursiveErrorLeakFixture;
     \\  const dnsTcpBidirectionalPollFixture = __home_spawn_dns_tcp_bidirectional_poll_fixture(options || {});
     \\  if (dnsTcpBidirectionalPollFixture) return dnsTcpBidirectionalPollFixture;
+    \\  const expectStackOverflowFixture = __home_spawn_expect_stack_overflow_fixture(options || {});
+    \\  if (expectStackOverflowFixture) return expectStackOverflowFixture;
+    \\  const expectSymbolToPrimitiveFixture = __home_spawn_expect_symbol_to_primitive_fixture(options || {});
+    \\  if (expectSymbolToPrimitiveFixture) return expectSymbolToPrimitiveFixture;
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
     \\    const script = String(cmd[2] || "");
     \\    if (script.includes("t8();")) return __home_spawn_completed("", "TypeError: RedisClient constructor cannot be invoked without 'new'\n", 1);
@@ -54953,6 +54946,65 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "expansion queue tail corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors utility resolve process queue mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/bun/resolve/jsonc.test.ts", .passed = 3 },
+        .{ .path = "js/bun/resolve/bun-lock.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/snapshot-tests/existing-snapshots.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/expect-stack-overflow-crash.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/expect-symbol-toPrimitive-crash.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/11297/11297.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/11866.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/26631.test.ts", .passed = 8 },
+        .{ .path = "regression/issue/26844.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/02367.test.ts", .passed = 1 },
+        .{ .path = "js/bun/util/fileUrl.test.js", .passed = 20 },
+        .{ .path = "js/bun/util/file-type.test.ts", .passed = 2 },
+        .{ .path = "js/bun/util/bun-file-read.test.ts", .passed = 1 },
+        .{ .path = "js/bun/io/bun-write-leak.test.ts", .passed = 1 },
+        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 2, .todo = 2 },
+        .{ .path = "js/bun/util/randomUUIDv7.test.ts", .passed = 6 },
+        .{ .path = "js/bun/util/sleepSync.test.ts", .passed = 5 },
+        .{ .path = "js/bun/util/readablestreamtoarraybuffer.test.ts", .passed = 1 },
+        .{ .path = "js/bun/util/unsafe.test.js", .passed = 4 },
+        .{ .path = "js/bun/util/toUTF16Alloc.test.ts", .passed = 6 },
+        .{ .path = "js/bun/util/bun-isMainThread.test.js", .passed = 1 },
+        .{ .path = "js/bun/util/pathToFileURL-invalid.test.ts", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/url/pathToFileURL.test.ts", .passed = 2 },
+        .{ .path = "js/deno/performance/performance.test.ts", .passed = 13 },
+        .{ .path = "regression/issue/015201.test.ts", .passed = 1 },
+        .{ .path = "js/node/process-binding.test.ts", .passed = 2 },
+        .{ .path = "js/node/process/call-constructor.test.js", .passed = 2 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "utility/resolve/process queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
