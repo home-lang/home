@@ -337,18 +337,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/26411.test.ts",
     "regression/issue/comma-operator-this-binding.test.ts",
     "regression/issue/08794.test.ts",
-    "js/node/path/normalize.test.js",
-    "js/node/path/join.test.js",
-    "js/node/path/dirname.test.js",
-    "js/node/path/browserify.test.js",
-    "js/node/path/parse-format.test.js",
-    "js/node/path/relative.test.js",
-    "js/node/path/path.test.js",
-    "js/node/path/posix-relative-on-windows.test.js",
-    "js/node/path/resolve.test.js",
-    "js/node/path/to-namespaced-path.test.js",
-    "js/node/path/matches-glob.test.ts",
-    "js/node/path/resolve-long-cwd.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -46620,17 +46608,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/25831.test.ts",
         "regression/issue/26411.test.ts",
         "regression/issue/comma-operator-this-binding.test.ts",
-        "js/node/path/normalize.test.js",
-        "js/node/path/join.test.js",
-        "js/node/path/dirname.test.js",
-        "js/node/path/browserify.test.js",
-        "js/node/path/parse-format.test.js",
-        "js/node/path/relative.test.js",
-        "js/node/path/path.test.js",
-        "js/node/path/posix-relative-on-windows.test.js",
-        "js/node/path/resolve.test.js",
-        "js/node/path/matches-glob.test.ts",
-        "js/node/path/resolve-long-cwd.test.ts",
     };
 
     for (expected) |path| {
@@ -55047,6 +55024,50 @@ test "bootstrap Bun.file exposes explicit and inferred file types" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors node path corpus tranche" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/node/path/normalize.test.js", .passed = 3 },
+        .{ .path = "js/node/path/join.test.js", .passed = 1 },
+        .{ .path = "js/node/path/dirname.test.js", .passed = 3 },
+        .{ .path = "js/node/path/browserify.test.js", .passed = 52 },
+        .{ .path = "js/node/path/parse-format.test.js", .passed = 1 },
+        .{ .path = "js/node/path/relative.test.js", .passed = 2 },
+        .{ .path = "js/node/path/path.test.js", .passed = 3 },
+        .{ .path = "js/node/path/posix-relative-on-windows.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/path/resolve.test.js", .passed = 4 },
+        .{ .path = "js/node/path/to-namespaced-path.test.js", .passed = 4 },
+        .{ .path = "js/node/path/matches-glob.test.ts", .passed = 31 },
+        .{ .path = "js/node/path/resolve-long-cwd.test.ts", .passed = 3 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "node path corpus mismatch in {s}: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
 }
 
 test "bootstrap node url pathToFileURL handles POSIX path encoding" {
