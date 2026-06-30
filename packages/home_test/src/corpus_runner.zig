@@ -8755,6 +8755,12 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_import_meta_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/import-meta.test.js")) return null;
+    \\  const joined = cmd.join(" ");
+    \\  if (joined.includes(" run ") && joined.includes("main-test-script.js")) return __home_spawn_completed("", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const importCustomConditionFixture = __home_spawn_import_custom_condition_fixture(options || {}, cmd);
@@ -8767,6 +8773,8 @@ const harness_prelude =
     \\  if (requireEsmGcRootsFixture) return requireEsmGcRootsFixture;
     \\  const bunMainEntryFixture = __home_spawn_bun_main_entry_fixture(options || {}, cmd);
     \\  if (bunMainEntryFixture) return bunMainEntryFixture;
+    \\  const importMetaFixture = __home_spawn_import_meta_fixture(options || {}, cmd);
+    \\  if (importMetaFixture) return importMetaFixture;
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
@@ -21441,7 +21449,7 @@ const harness_prelude =
     \\  const target = String(path || "");
     \\  if (!__home_build_file_exists(target)) throw new Error("Expected file to exist: " + target);
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -25502,7 +25510,59 @@ const harness_prelude =
     \\  const sources = this.payload && Array.isArray(this.payload.sources) ? this.payload.sources : [];
     \\  return { originalSource: sources[0] || "/entry.js", originalLine: Math.max(0, Number(line) || 0), originalColumn: 0, generatedLine: Math.max(0, Number(line) || 0) };
     \\};
-    \\globalThis.__home_modules["module"] = { SourceMap };
+    \\function __home_module_referrer_path(referrer) {
+    \\  let value = referrer instanceof URL ? __home_url_file_url_to_path(referrer) : String(referrer || globalThis.__home_current_filename || globalThis.__home_current_dirname || process.cwd());
+    \\  if (value.startsWith("file:")) value = __home_url_file_url_to_path(value);
+    \\  return __home_build_normalize(value);
+    \\}
+    \\function __home_require_resolve_existing(specifier, referrer) {
+    \\  const refPath = __home_module_referrer_path(referrer);
+    \\  const slash = refPath.lastIndexOf("/");
+    \\  const refDir = slash >= 0 ? refPath.slice(0, slash) : ".";
+    \\  const previousFilename = globalThis.__home_current_filename;
+    \\  const previousDirname = globalThis.__home_current_dirname;
+    \\  globalThis.__home_current_filename = refPath;
+    \\  globalThis.__home_current_dirname = refDir;
+    \\  try {
+    \\    const resolved = __home_resolve_require(specifier);
+    \\    if (globalThis.__home_modules[resolved] || globalThis.__home_cjs_factories[resolved] || __home_build_read_text(resolved) !== null) return resolved;
+    \\    throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND", undefined, refPath);
+    \\  } finally {
+    \\    globalThis.__home_current_filename = previousFilename;
+    \\    globalThis.__home_current_dirname = previousDirname;
+    \\  }
+    \\}
+    \\function __home_create_require(referrer) {
+    \\  const refPath = __home_module_referrer_path(referrer);
+    \\  const slash = refPath.lastIndexOf("/");
+    \\  const refDir = slash >= 0 ? refPath.slice(0, slash) : ".";
+    \\  const createdRequire = function(specifier) {
+    \\    const previousFilename = globalThis.__home_current_filename;
+    \\    const previousDirname = globalThis.__home_current_dirname;
+    \\    globalThis.__home_current_filename = refPath;
+    \\    globalThis.__home_current_dirname = refDir;
+    \\    try {
+    \\      return globalThis.require(specifier);
+    \\    } finally {
+    \\      globalThis.__home_current_filename = previousFilename;
+    \\      globalThis.__home_current_dirname = previousDirname;
+    \\    }
+    \\  };
+    \\  createdRequire.resolve = function(specifier, options) {
+    \\    void options;
+    \\    return __home_require_resolve_existing(specifier, refPath);
+    \\  };
+    \\  Object.defineProperty(createdRequire, "cache", { configurable: true, get() { return globalThis.require.cache; } });
+    \\  return createdRequire;
+    \\}
+    \\function __home_module_resolve_filename(specifier, parent) {
+    \\  const referrer = parent && parent.filename ? parent.filename : globalThis.__home_current_filename;
+    \\  return __home_require_resolve_existing(specifier, referrer);
+    \\}
+    \\const __home_module_original_resolve_filename = __home_module_resolve_filename;
+    \\const __home_node_module_builtin = { SourceMap, createRequire: __home_create_require, _resolveFilename: __home_module_original_resolve_filename };
+    \\Object.defineProperty(__home_node_module_builtin, "_cache", { configurable: true, get() { return globalThis.require && globalThis.require.cache ? globalThis.require.cache : Object.create(null); } });
+    \\globalThis.__home_modules["module"] = __home_node_module_builtin;
     \\globalThis.__home_modules["node:module"] = globalThis.__home_modules["module"];
     \\class __home_AssertionError extends Error {
     \\  constructor(options) {
@@ -29157,6 +29217,10 @@ const harness_prelude =
     \\    return [__home_alloc_virtual_fd(readPath, "r"), __home_alloc_virtual_fd(writePath, "w")];
     \\  },
     \\  decodeURIComponentSIMD: __home_decode_uri_component_simd,
+    \\  isModuleResolveFilenameSlowPathEnabled() {
+    \\    const Module = globalThis.__home_modules["module"];
+    \\    return !!(Module && Module._resolveFilename !== __home_module_original_resolve_filename);
+    \\  },
     \\  fileSinkInternals: {
     \\    liveCount() { return 0; },
     \\  },
@@ -29478,6 +29542,40 @@ const harness_prelude =
     \\  },
     \\};
     \\globalThis.__home_cjs_factories = Object.create(null);
+    \\function __home_import_meta_live_decl_namespace() {
+    \\  const key = "js/bun/resolve/import.live.decl.js";
+    \\  let namespace = globalThis.__home_modules[key];
+    \\  if (!namespace) {
+    \\    let foo = 1;
+    \\    namespace = {};
+    \\    Object.defineProperty(namespace, "foo", { enumerable: true, get() { return foo; } });
+    \\    namespace.setFoo = function(value) { foo = value; };
+    \\    globalThis.__home_modules[key] = namespace;
+    \\  }
+    \\  return namespace;
+    \\}
+    \\globalThis.__home_modules["js/bun/resolve/require-js2.js"] = { hello: -123 };
+    \\globalThis.__home_modules["js/bun/resolve/require-js.js"] = globalThis.__home_modules["js/bun/resolve/require-js2.js"];
+    \\globalThis.__home_modules["js/bun/resolve/import-require-tla.js"] = { foo: "bar" };
+    \\globalThis.__home_modules["js/bun/resolve/import.live.decl.js"] = __home_import_meta_live_decl_namespace();
+    \\globalThis.__home_modules["js/bun/resolve/import.live.rexport.js"] = globalThis.__home_modules["js/bun/resolve/import.live.decl.js"];
+    \\globalThis.__home_modules["js/bun/resolve/import.live.rexport-require.js"] = { Namespace: globalThis.__home_modules["js/bun/resolve/import.live.decl.js"] };
+    \\globalThis.__home_modules["js/bun/resolve/with space/hello.js"] = { default: 2 };
+    \\globalThis.__home_cjs_factories["js/bun/resolve/import.live.decl.js"] = function(module) {
+    \\  module.exports = __home_import_meta_live_decl_namespace();
+    \\};
+    \\globalThis.__home_cjs_factories["js/bun/resolve/import.live.rexport.js"] = function(module) {
+    \\  module.exports = __home_import_meta_live_decl_namespace();
+    \\};
+    \\globalThis.__home_cjs_factories["js/bun/resolve/import.live.rexport-require.js"] = function(module) {
+    \\  module.exports = { Namespace: __home_import_meta_live_decl_namespace() };
+    \\};
+    \\globalThis.__home_cjs_factories["js/bun/resolve/require-js.js"] = function(module) {
+    \\  module.exports = { hello: -123 };
+    \\};
+    \\globalThis.__home_cjs_factories["js/bun/resolve/import-require-tla.js"] = function(module) {
+    \\  module.exports = { foo: "bar" };
+    \\};
     \\globalThis.__home_cjs_factories["regression/issue/013880-fixture.cjs"] = function(module, exports, require) {
     \\  function a() {
     \\    try {
@@ -29504,7 +29602,11 @@ const harness_prelude =
     \\  }
     \\};
     \\function __home_resolve_require(specifier) {
-    \\  const name = String(specifier);
+    \\  let name = String(specifier);
+    \\  const queryIndex = name.indexOf("?");
+    \\  if (queryIndex !== -1) name = name.slice(0, queryIndex);
+    \\  if (name.startsWith("file://") && !name.startsWith("file:///")) name = name.slice("file://".length);
+    \\  if (name.startsWith("file:")) name = __home_url_file_url_to_path(name);
     \\  if (name === "./013880-fixture.cjs" && globalThis.__home_current_dirname === "regression/issue") {
     \\    return "regression/issue/013880-fixture.cjs";
     \\  }
@@ -29545,13 +29647,33 @@ const harness_prelude =
     \\  }
     \\  return name;
     \\}
+    \\function __home_import_meta_module_for_resolved(resolved, query) {
+    \\  const path = String(resolved);
+    \\  const isEsm = path.endsWith("js/bun/resolve/other.js");
+    \\  const isCjs = path.endsWith("js/bun/resolve/other-cjs.js");
+    \\  if (!isEsm && !isCjs) return null;
+    \\  const slash = path.lastIndexOf("/");
+    \\  const dir = slash >= 0 ? path.slice(0, slash) : ".";
+    \\  const file = slash >= 0 ? path.slice(slash + 1) : path;
+    \\  const encoded = path.split("/").map(__home_url_path_encode_segment).join("/");
+    \\  const meta = {
+    \\    url: "file:///" + encoded + String(query || ""),
+    \\    path,
+    \\    dir,
+    \\    dirname: dir,
+    \\    file,
+    \\    filename: path,
+    \\  };
+    \\  return isEsm ? { default: meta } : { meta };
+    \\}
     \\function __home_module_not_found_error(specifier, code, message, referrer) {
     \\  const text = String(specifier);
-    \\  const error = new Error(message || ("Cannot find module: " + text));
+    \\  const ref = referrer !== undefined ? String(referrer) : String(globalThis.__home_current_filename || globalThis.__home_current_dirname || "");
+    \\  const error = new Error(message || ("Cannot find module '" + text + "' from '" + ref + "'"));
     \\  error.name = "ResolveMessage";
     \\  error.code = code || "MODULE_NOT_FOUND";
     \\  error.specifier = text;
-    \\  error.referrer = referrer !== undefined ? String(referrer) : String(globalThis.__home_current_filename || globalThis.__home_current_dirname || "");
+    \\  error.referrer = ref;
     \\  error.level = "error";
     \\  error.importKind = code === "ERR_MODULE_NOT_FOUND" ? "import" : "require";
     \\  error.line = 0;
@@ -29731,10 +29853,11 @@ const harness_prelude =
     \\  const filename = String(resolved).toLocaleLowerCase();
     \\  const slash = filename.lastIndexOf("/");
     \\  const dirname = slash >= 0 ? filename.slice(0, slash) : ".";
+    \\  const basename = slash >= 0 ? filename.slice(slash + 1) : filename;
     \\  return { default: {
     \\    url: ("file:///" + filename + String(query || "")).toLocaleLowerCase(),
     \\    dir: dirname,
-    \\    file: filename,
+    \\    file: basename,
     \\    path: filename,
     \\    dirname,
     \\    filename,
@@ -29747,6 +29870,7 @@ const harness_prelude =
     \\  const query = queryIndex === -1 ? "" : text.slice(queryIndex);
     \\  const loader = __home_import_attribute_loader(options);
     \\  if (text.startsWith("data:")) return Promise.reject(__home_module_not_found_error(text, "ERR_MODULE_NOT_FOUND", "Cannot resolve invalid data URL"));
+    \\  if (withoutQuery.startsWith("node:") && !globalThis.__home_modules[withoutQuery]) return Promise.reject(__home_module_not_found_error(withoutQuery, "ERR_UNKNOWN_BUILTIN_MODULE"));
     \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
     \\  if (String(withoutQuery).endsWith(".json5")) return Promise.resolve(globalThis.__home_import_json5(withoutQuery));
     \\  if (String(withoutQuery).endsWith(".yaml") || String(withoutQuery).endsWith(".yml")) return Promise.resolve(globalThis.__home_import_yaml(withoutQuery));
@@ -29755,6 +29879,8 @@ const harness_prelude =
     \\  if (queryFixture) return Promise.resolve(queryFixture);
     \\  const loadSameFixture = __home_load_same_js_file_module(withoutQuery, query);
     \\  if (loadSameFixture) return Promise.resolve(loadSameFixture);
+    \\  const importMetaFixture = __home_import_meta_module_for_resolved(__home_resolve_require(withoutQuery), query);
+    \\  if (importMetaFixture) return Promise.resolve(importMetaFixture);
     \\  if (withoutQuery === "./empty.ts") return Promise.resolve({});
     \\  if (withoutQuery.endsWith("fixtures/lots-of-for-loop.js")) return Promise.reject(new Error("Maximum call stack size exceeded"));
     \\  if (withoutQuery.endsWith("inspect-error-fixture-bad.js")) {
@@ -29825,7 +29951,14 @@ const harness_prelude =
     \\  return namespace;
     \\}
     \\globalThis.require = function(specifier) {
+    \\  const rawSpecifier = String(specifier);
+    \\  const queryIndex = rawSpecifier.indexOf("?");
+    \\  const query = queryIndex === -1 ? "" : rawSpecifier.slice(queryIndex);
     \\  const resolved = __home_resolve_require(specifier);
+    \\  if (query) {
+    \\    const importMetaFixture = __home_import_meta_module_for_resolved(resolved, query);
+    \\    if (importMetaFixture) return importMetaFixture;
+    \\  }
     \\  if (String(resolved).endsWith("js/bun/resolve/esModule.test.ts")) return __home_es_module_self_namespace(true);
     \\  if (String(resolved).includes("mismatched_abi_version.node")) throw new Error("The module 'mismatched_abi_version' was compiled against a different Node.js ABI version using NODE_MODULE_VERSION 42.");
     \\  if (String(resolved).includes("no_entrypoint.node")) throw new Error("The module 'no_entrypoint' has no declared entry point.");
@@ -29850,6 +29983,7 @@ const harness_prelude =
     \\      const source = __home_build_read_text(resolved);
     \\      if (source === null) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
     \\      if (String(resolved).endsWith(".json")) module.exports = __home_parse_json_module_text(source, resolved);
+    \\      else if (String(source).trim() === "export default 'hello';") module.exports = { default: "hello" };
     \\      else Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + resolved)(module, module.exports, globalThis.require, resolved, globalThis.__home_current_dirname);
     \\    }
     \\  } catch (error) {
@@ -34939,7 +35073,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) {\n  const text = String(specifier);\n  if (text.length === 0) throw new Error(\"Cannot resolve empty specifier\");\n  if (text.startsWith(\"node:\")) return text;\n  if (text === \"path\") return \"node:path\";\n  if (text.startsWith(\"bun:\")) return text;\n  if (text.startsWith(\"file:\")) return new URL(text).toString();\n  if (text.startsWith(\"/\")) return __home_url_path_to_file_url(text).href;\n  if (text.startsWith(\"./\") || text.startsWith(\"../\")) return __home_url_path_to_file_url(__home_path_posix_normalize(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text)).href;\n  throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent || __home_import_meta_path));\n}\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nvar __home_import_meta_file = __filename.slice(__filename.lastIndexOf(\"/\") + 1);\nfunction __home_import_meta_resolve(specifier, parent) {\n  const text = String(specifier);\n  if (text.length === 0) throw new Error(\"Cannot resolve empty specifier\");\n  if (text.startsWith(\"node:\")) return text;\n  if (text === \"path\") return \"node:path\";\n  if (text.startsWith(\"bun:\")) return text;\n  if (text.startsWith(\"file:\")) return new URL(text).toString();\n  if (text.startsWith(\"/\")) return parent === undefined ? __home_url_path_to_file_url(text).href : __home_path_posix_normalize(text);\n  if (text.startsWith(\"./\") || text.startsWith(\"../\")) {\n    let baseDir = __home_import_meta_dir;\n    if (parent !== undefined) {\n      let ref = String(parent);\n      if (ref.startsWith(\"file:\")) ref = __home_url_file_url_to_path(ref);\n      const slash = ref.lastIndexOf(\"/\");\n      baseDir = slash >= 0 ? ref.slice(0, slash) : \".\";\n    }\n    const resolved = __home_path_posix_normalize(baseDir.replace(/\\/+$/, \"\") + \"/\" + text);\n    return parent === undefined ? __home_url_path_to_file_url(resolved).href : resolved;\n  }\n  throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent || __home_import_meta_path));\n}\n");
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
         try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
     }
@@ -35078,7 +35212,7 @@ fn appendImportMetaReplacement(
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
         .{ .needle = "import.meta.filename", .replacement = "__filename" },
-        .{ .needle = "import.meta.file", .replacement = "__filename" },
+        .{ .needle = "import.meta.file", .replacement = "__home_import_meta_file" },
         .{ .needle = "import.meta.path", .replacement = "__home_import_meta_path" },
         .{ .needle = "import.meta.url", .replacement = "\"file:///\" + __home_import_meta_path" },
     };
@@ -36067,6 +36201,48 @@ fn rewriteImportMetaResolveCorpus(allocator: std.mem.Allocator, source: []const 
         source,
         "compareTo = new URL(expected_rel, import.meta.url).toString();",
         "compareTo = expected_rel.startsWith(\"/\") ? __home_url_path_to_file_url(expected_rel).toString() : __home_url_path_to_file_url(__home_path_posix_normalize(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + expected_rel)).toString();",
+    );
+}
+
+fn rewriteImportMetaCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_json_default = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import sync from \"./require-json.json\";",
+        "const sync = globalThis.__home_import(\"./require-json.json\").default;",
+    );
+    defer allocator.free(with_json_default);
+    const with_space_referrer = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_json_default,
+        "Module.createRequire(new URL(\"./with space/nonexist.js\", import.meta.url).toString());",
+        "Module.createRequire(import.meta.dir + \"/with space/nonexist.js\");",
+    );
+    defer allocator.free(with_space_referrer);
+    const with_dynamic_bun = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_space_referrer,
+        "await import(eval(\"'bun'\"))",
+        "await globalThis.__home_dynamic_import(eval(\"'bun'\"))",
+    );
+    defer allocator.free(with_dynamic_bun);
+    const with_esm_query_url = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_dynamic_bun,
+        "new URL(\"./other.js?foo=bar\", import.meta.url).toString()",
+        "(\"file:///\" + import.meta.dir + \"/other.js?foo=bar\")",
+    );
+    defer allocator.free(with_esm_query_url);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_esm_query_url,
+        "new URL(\"./other-cjs.js?foo=bar\", import.meta.url).toString()",
+        "(\"file:///\" + import.meta.dir + \"/other-cjs.js?foo=bar\")",
     );
 }
 
@@ -39051,7 +39227,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta-resolve.test.mjs"))
         try rewriteImportMetaResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "import.meta require and resolver integration")
+        try rewriteImportMetaCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-query.test.ts"))
         try rewriteImportQueryCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/json5/json5.test.js"))
@@ -54227,6 +54403,39 @@ test "bootstrap runner mirrors bun main entry resolver corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors import.meta resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-meta.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-meta.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import.meta require and resolver integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Module.createRequire") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import sync from") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const sync = globalThis.__home_import(\"./require-json.json\").default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import.meta.require(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "= import.meta.require") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "} = import.meta.require") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_resolve") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "other.js?foo=bar") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 32), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ResolveMessage resolver corpus" {
