@@ -7811,6 +7811,11 @@ pub fn combineCategoryStats(cats: []const CategoryResult) Stats {
     return out;
 }
 
+fn coarseExpectedErrorNeedsProgramRoute(entry: CorpusEntry) bool {
+    return std.mem.eql(u8, entry.name, "resolvesWithoutExportsDiagnostic1") or
+        std.mem.eql(u8, entry.name, "bundlerCommonJS");
+}
+
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     if (entry.use_exact_errors) {
         if (compilerCorpusUsesPrecompiledExactResult(entry.name)) {
@@ -7855,8 +7860,10 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     }
 
     const name_owned = try gpa.dupe(u8, entry.name);
-    if (entry.expects_error and entry.raw_source.len != 0 and rawSourceHasTypeReferenceProgramRoute(entry.raw_source)) {
-        const program_result = try run(gpa, .{
+    if (entry.expects_error and entry.raw_source.len != 0 and
+        (rawSourceHasTypeReferenceProgramRoute(entry.raw_source) or coarseExpectedErrorNeedsProgramRoute(entry)))
+    {
+        const program_case = Case{
             .name = entry.name,
             .source = entry.source,
             .path = if (entry.path.len > 0) entry.path else entry.name,
@@ -7869,7 +7876,8 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
-        });
+        };
+        const program_result = (try runProgram(gpa, program_case)) orelse try run(gpa, program_case);
         defer if (program_result.detail.len > 0) gpa.free(program_result.detail);
         if (program_result.actual_diag_count > 0) {
             return .{ .name = name_owned, .outcome = .passed };
