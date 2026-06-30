@@ -29220,10 +29220,34 @@ const harness_prelude =
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
     \\};
-    \\globalThis.__home_dynamic_import = function(specifier) {
+    \\function __home_import_attribute_loader(options) {
+    \\  return options && options.with && options.with.type !== undefined ? String(options.with.type) : null;
+    \\}
+    \\function __home_import_with_loader(specifier, loader) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  const type = String(loader || "");
+    \\  const text = __home_build_read_text(resolved);
+    \\  if (text === null) throw new Error("Cannot find module: " + String(specifier));
+    \\  if (type === "text") return { default: text };
+    \\  if (type === "file" || type === "css" || type === "wasm" || type === "base64" || type === "dataurl") return { default: resolved };
+    \\  if (type === "html") return { default: { index: resolved } };
+    \\  if (type === "js" || type === "jsx" || type === "ts" || type === "tsx") return {};
+    \\  if (type === "json") return { default: __home_parse_json_module_text(text, resolved) };
+    \\  if (type === "jsonc") return { default: String(text).trim() === "" ? {} : __home_parse_jsonc_text(text) };
+    \\  if (type === "yaml" || type === "toml") return { default: String(text).trim() === "" ? {} : __home_yaml_parse(text) };
+    \\  if (type === "sqlite" || type === "sqlite_embedded") {
+    \\    const Database = globalThis.__home_import("bun:sqlite").Database;
+    \\    const db = new Database(resolved);
+    \\    return { default: db, db };
+    \\  }
+    \\  return globalThis.__home_import(resolved);
+    \\}
+    \\globalThis.__home_dynamic_import = function(specifier, options) {
     \\  const text = String(specifier);
     \\  const queryIndex = text.indexOf("?");
     \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
+    \\  const loader = __home_import_attribute_loader(options);
+    \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
     \\  if (withoutQuery === "./empty.ts") return Promise.resolve({});
     \\  if (withoutQuery.endsWith("fixtures/lots-of-for-loop.js")) return Promise.reject(new Error("Maximum call stack size exceeded"));
     \\  if (withoutQuery.endsWith("inspect-error-fixture-bad.js")) {
@@ -37543,6 +37567,82 @@ fn skipTemplateForModuleSyntax(source: []const u8, start: usize) usize {
     return i;
 }
 
+fn skipDynamicImportArguments(source: []const u8, open_paren: usize) ?usize {
+    var depth: usize = 1;
+    var i = open_paren + 1;
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (byte == '\'') {
+                    mode = .single_quote;
+                    i += 1;
+                    continue;
+                }
+                if (byte == '"') {
+                    mode = .double_quote;
+                    i += 1;
+                    continue;
+                }
+                if (byte == '`') {
+                    mode = .template;
+                    i += 1;
+                    continue;
+                }
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') {
+                    mode = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') {
+                    mode = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (byte == '(' or byte == '[' or byte == '{') depth += 1;
+                if (byte == ')' or byte == ']' or byte == '}') {
+                    depth -= 1;
+                    if (depth == 0) return i;
+                }
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 2;
+                    continue;
+                }
+                if (mode == .template and byte == '$' and i + 1 < source.len and source[i + 1] == '{') {
+                    i = skipTemplateExpressionForModuleSyntax(source, i + 2);
+                    continue;
+                }
+                if (byte == terminator) mode = .code;
+                i += 1;
+            },
+            .line_comment => {
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 2;
+                    mode = .code;
+                    continue;
+                }
+                i += 1;
+            },
+        }
+    }
+    return null;
+}
+
 fn hasUnsupportedModuleSyntax(source: []const u8) bool {
     const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
     var mode: Mode = .code;
@@ -37937,11 +38037,29 @@ fn tryAppendDynamicImportRewrite(
     source: []const u8,
     start: usize,
 ) !?usize {
-    _ = out;
-    _ = allocator;
-    _ = source;
-    _ = start;
-    return null;
+    if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
+    var i = consumeJsKeyword(source, start, "import") orelse return null;
+    i = skipJsWhitespace(source, i);
+    if (i >= source.len or source[i] != '(') return null;
+    const open_paren = i;
+    i = skipJsWhitespace(source, i + 1);
+    if (i >= source.len or (source[i] != '"' and source[i] != '\'')) return null;
+    const specifier_end = skipQuotedForModuleSyntax(source, i, source[i]);
+    if (specifier_end > source.len) return null;
+    const close_paren = skipDynamicImportArguments(source, open_paren) orelse return null;
+    const after_specifier = skipJsWhitespace(source, specifier_end);
+    if (after_specifier < close_paren and source[after_specifier] != ',') return null;
+    const after_call = skipJsWhitespace(source, close_paren + 1);
+    if (after_call < source.len and source[after_call] == '.') return null;
+
+    try out.appendSlice(allocator, "globalThis.__home_dynamic_import(");
+    try out.appendSlice(allocator, source[i..specifier_end]);
+    if (after_specifier < close_paren and source[after_specifier] == ',') {
+        try out.appendSlice(allocator, ", ");
+        try out.appendSlice(allocator, std.mem.trim(u8, source[after_specifier + 1 .. close_paren], " \t\r\n"));
+    }
+    try out.append(allocator, ')');
+    return close_paren + 1;
 }
 
 fn appendSourceWithBunTestImportRewrites(
@@ -38178,7 +38296,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-custom-condition.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "package exports custom condition resolution")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-empty.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "empty file import attribute loader resolution")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta-resolve.test.mjs"))
         try rewriteNativeTodoCorpus(allocator, "import.meta.resolve builtin and package resolution")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta.test.js"))
@@ -41932,7 +42050,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cjs_factories[\"regression/issue/abort-controller-fixture.js\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"abort-controller\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_resolve_require(specifier)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_dynamic_import = function(specifier)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_dynamic_import = function(specifier, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path\"] = __home_path_module") != null);
@@ -52926,6 +53044,105 @@ test "bootstrap runner covers Bun TOML parse non-string errors" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors empty-file import attribute loaders" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { Database } from "bun:sqlite";
+        \\import { beforeEach, expect, it } from "bun:test";
+        \\import path from "path";
+        \\
+        \\const empty_file_path = path.join(import.meta.dir, "empty-file");
+        \\
+        \\beforeEach(() => {
+        \\  delete require.cache[require.resolve("./empty-file")];
+        \\});
+        \\
+        \\it("importing empty text file returns empty string", async () => {
+        \\  const empty_file_text = (await import("./empty-file", { with: { type: "text" } })).default;
+        \\  expect(empty_file_text).toEqual("");
+        \\});
+        \\
+        \\it("importing empty file with type file returns it path", async () => {
+        \\  const empty_file_text = (await import("./empty-file", { with: { type: "file" } })).default;
+        \\  expect(empty_file_text).toEqual(empty_file_path);
+        \\});
+        \\
+        \\it("importing empty css file returns its path", async () => {
+        \\  const empty_file_css = (await import("./empty-file", { with: { type: "css" } })).default;
+        \\  expect(empty_file_css).toEqual(empty_file_path);
+        \\});
+        \\
+        \\it("importing empty html file returns HTMLBundle with its path", async () => {
+        \\  const empty_file_html = (await import("./empty-file", { with: { type: "html" } })).default;
+        \\  expect(empty_file_html.index).toEqual(empty_file_path);
+        \\});
+        \\
+        \\it("importing empty js like file returns empty module", async () => {
+        \\  const js_like = ["jsx", "js", "ts", "tsx"];
+        \\  for (const type of js_like) {
+        \\    delete require.cache[require.resolve(`./empty-file`)];
+        \\    const empty_file_js = await import("./empty-file", { with: { type } });
+        \\    expect(empty_file_js).toEqual({});
+        \\    expect(empty_file_js.default).toBeUndefined();
+        \\  }
+        \\});
+        \\
+        \\it("importing empty json file throws JSON Parse error", async () => {
+        \\  try {
+        \\    await import("./empty-file", { with: { type: "json" } });
+        \\    expect.unreachable("Importing empty json file should have thrown an error.");
+        \\  } catch (e) {
+        \\    expect(e.message).toMatch(/JSON Parse error: Unexpected EOF|Unexpected end of JSON input/i);
+        \\  }
+        \\});
+        \\
+        \\it("importing empty jsonc/toml file returns module with empty object as default export", async () => {
+        \\  const types = ["jsonc", "yaml", "toml"];
+        \\  for (const type of types) {
+        \\    delete require.cache[require.resolve(`./empty-file`)];
+        \\    const empty_file_module = await import("./empty-file", { with: { type } });
+        \\    expect(empty_file_module.default).toEqual({});
+        \\  }
+        \\});
+        \\
+        \\it("importing empty file returns module with path as default export", async () => {
+        \\  const other_types = ["wasm", "base64", "dataurl"];
+        \\  for (const type of other_types) {
+        \\    delete require.cache[require.resolve(`./empty-file`)];
+        \\    const empty_file_module = await import("./empty-file", { with: { type } });
+        \\    expect(empty_file_module.default).toEqual(empty_file_path);
+        \\  }
+        \\});
+        \\
+        \\it("importing empty sqlite files returns database object", async () => {
+        \\  const other_types = ["sqlite", "sqlite_embedded"];
+        \\  for (const type of other_types) {
+        \\    delete require.cache[require.resolve(`./empty-file`)];
+        \\    const empty_file_module = await import("./empty-file", { with: { type } });
+        \\    expect(empty_file_module.default).toBeInstanceOf(Database);
+        \\    expect(empty_file_module.db).toBeInstanceOf(Database);
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-empty.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "empty file import attribute loader resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./empty-file\", { with: { type: \"text\" } })") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await import(\"./empty-file\"") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
 test "bootstrap runner covers mock.module validation and imports" {
