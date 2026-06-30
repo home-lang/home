@@ -30466,7 +30466,11 @@ const harness_prelude =
     \\  }).join("");
     \\}
     \\function __home_url_path_to_file_url(path) {
-    \\  if (typeof path !== "string") throw new TypeError('The "path" argument must be of type string');
+    \\  if (typeof path !== "string") {
+    \\    const error = new TypeError('The "path" argument must be of type string');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
     \\  let text = path;
     \\  const trailingSlash = text.endsWith("/");
     \\  if (!text.startsWith("/") && text !== process.cwd() && text !== globalThis.__home_current_filename) text = __home_build_join(process.cwd(), text);
@@ -36184,6 +36188,24 @@ fn rewriteUrlParseQueryCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
+fn rewriteNodeUrlPathToFileUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_unc_paths = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.todo(\"UNC paths\", () => {",
+        "test(\"UNC paths\", () => {",
+    );
+    defer allocator.free(with_unc_paths);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_unc_paths,
+        "test.todo(\"non-string parameter\", () => {",
+        "test(\"non-string parameter\", () => {",
+    );
+}
+
 fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -39086,6 +39108,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteGlobMatchCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
         try rewriteUrlParseQueryCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-pathtofileurl.test.js"))
+        try rewriteNodeUrlPathToFileUrlCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -56489,7 +56513,7 @@ test "bootstrap runner mirrors utility resolve process queue mini-suite" {
         .{ .path = "js/bun/util/file-type.test.ts", .passed = 2 },
         .{ .path = "js/bun/util/bun-file-read.test.ts", .passed = 1 },
         .{ .path = "js/bun/io/bun-write-leak.test.ts", .passed = 1 },
-        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 2, .todo = 2 },
+        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 4 },
         .{ .path = "js/bun/util/randomUUIDv7.test.ts", .passed = 6 },
         .{ .path = "js/bun/util/sleepSync.test.ts", .passed = 5 },
         .{ .path = "js/bun/util/readablestreamtoarraybuffer.test.ts", .passed = 1 },
@@ -57118,6 +57142,33 @@ test "bootstrap node url pathToFileURL handles POSIX path encoding" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors node url pathToFileURL corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-pathtofileurl.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-pathtofileurl.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"UNC paths\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"non-string parameter\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_TYPE\"") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap matcher toBeEmpty accepts strings and collections" {
