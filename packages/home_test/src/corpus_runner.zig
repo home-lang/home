@@ -261,20 +261,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/fuzzer-ENG-22942.test.ts",
     "bundler/transpiler/function-tostring-require.test.ts",
     "bundler/transpiler/export-default.test.js",
-    "regression/issue/19412.test.ts",
-    "regression/issue/02369.test.ts",
-    "regression/issue/09739.test.ts",
-    "regression/issue/04011.test.ts",
-    "regression/issue/06946/06946.test.ts",
-    "regression/issue/08965/08965.test.ts",
-    "regression/issue/10887.test.ts",
-    "regression/issue/11100.test.ts",
-    "regression/issue/12034/12034.fixture.ts",
-    "regression/issue/12034/12034.test.js",
-    "regression/issue/12548.test.ts",
-    "regression/issue/12910/12910.test.ts",
-    "regression/issue/13316.test.ts",
-    "regression/issue/15276.test.ts",
     "regression/issue/20092.fixture.ts",
     "regression/issue/21680.test.ts",
     "regression/issue/22243.test.ts",
@@ -46518,18 +46504,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/s3/s3-fd-validation.test.ts",
         "regression/issue/ENG-24434.test.ts",
         "regression/issue/fuzzer-ENG-22942.test.ts",
-        "regression/issue/19412.test.ts",
-        "regression/issue/02369.test.ts",
-        "regression/issue/04011.test.ts",
-        "regression/issue/06946/06946.test.ts",
-        "regression/issue/08965/08965.test.ts",
-        "regression/issue/10887.test.ts",
-        "regression/issue/11100.test.ts",
-        "regression/issue/12034/12034.fixture.ts",
-        "regression/issue/12548.test.ts",
-        "regression/issue/12910/12910.test.ts",
-        "regression/issue/13316.test.ts",
-        "regression/issue/15276.test.ts",
         "regression/issue/20092.fixture.ts",
         "regression/issue/21680.test.ts",
         "regression/issue/22243.test.ts",
@@ -54891,6 +54865,52 @@ test "bootstrap runner mirrors mixed runtime regression mini-suite" {
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expect(passed_matches);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors issue regression queue mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "regression/issue/19412.test.ts", .passed = 2, .todo = 3 },
+        .{ .path = "regression/issue/02369.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/09739.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/04011.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/06946/06946.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/08965/08965.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/10887.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/11100.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/12034/12034.fixture.ts", .passed = 9 },
+        .{ .path = "regression/issue/12034/12034.test.js", .passed = 10 },
+        .{ .path = "regression/issue/12548.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/12910/12910.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/13316.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "regression/issue/15276.test.ts", .passed = 1 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "issue regression queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
