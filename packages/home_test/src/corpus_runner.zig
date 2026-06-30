@@ -29583,8 +29583,39 @@ const harness_prelude =
     \\  module.loaded = true;
     \\  return module;
     \\};
+    \\function __home_es_module_self_namespace(markRequired) {
+    \\  const key = "js/bun/resolve/esModule.test.ts";
+    \\  let namespace = globalThis.__home_modules[key];
+    \\  if (!namespace) {
+    \\    let esModule = false;
+    \\    namespace = new Proxy({}, {
+    \\      get(_target, property) {
+    \\        if (property === "__esModule") return esModule ? true : undefined;
+    \\        if (property === Symbol.toStringTag) return "Module";
+    \\        return undefined;
+    \\      },
+    \\      set(_target, property, value) {
+    \\        if (property === "__esModule") esModule = value === true;
+    \\        return true;
+    \\      },
+    \\      has(_target, property) {
+    \\        return property === "__esModule" && esModule;
+    \\      },
+    \\      ownKeys() {
+    \\        return [];
+    \\      },
+    \\      getOwnPropertyDescriptor() {
+    \\        return undefined;
+    \\      },
+    \\    });
+    \\    globalThis.__home_modules[key] = namespace;
+    \\  }
+    \\  if (markRequired) namespace.__esModule = true;
+    \\  return namespace;
+    \\}
     \\globalThis.require = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
+    \\  if (String(resolved).endsWith("js/bun/resolve/esModule.test.ts")) return __home_es_module_self_namespace(true);
     \\  if (String(resolved).includes("mismatched_abi_version.node")) throw new Error("The module 'mismatched_abi_version' was compiled against a different Node.js ABI version using NODE_MODULE_VERSION 42.");
     \\  if (String(resolved).includes("no_entrypoint.node")) throw new Error("The module 'no_entrypoint' has no declared entry point.");
     \\  const builtin = globalThis.__home_modules[resolved];
@@ -37013,6 +37044,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const Self = globalThis.__home_import(\"./esm-defineProperty.test.ts\");",
         },
         .{
+            .needle = "import * as Self from \"./esModule.test.ts\";",
+            .replacement = "const Self = globalThis.__home_es_module_self_namespace(false);",
+        },
+        .{
             .needle = "export const __esModule = true;",
             .replacement = "const __esModule = true;",
         },
@@ -38760,7 +38795,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule-annotation.test.js"))
         try rewriteEsModuleAnnotationCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "ES module namespace __esModule mutation interop")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-custom-condition.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "package exports custom condition resolution")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-empty.test.js"))
@@ -53665,6 +53700,33 @@ test "bootstrap runner mirrors CommonJS esModule annotation corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors ES module namespace esModule corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/esModule.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/esModule.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ES module namespace __esModule mutation interop") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const Self = globalThis.__home_es_module_self_namespace(false);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as Self from \"./esModule.test.ts\";") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors import-query resolver corpus" {
