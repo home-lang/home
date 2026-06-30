@@ -26334,6 +26334,60 @@ const harness_prelude =
     \\  const digits = sign ? text.slice(1) : text;
     \\  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, "_");
     \\}
+    \\function __home_util_html_escape(value) {
+    \\  let out = "";
+    \\  for (const ch of String(value)) {
+    \\    if (ch === "&") out += "&amp;";
+    \\    else if (ch === "<") out += "&lt;";
+    \\    else if (ch === ">") out += "&gt;";
+    \\    else if (ch === "'") out += "&apos;";
+    \\    else if (ch === "\xA0") out += "&nbsp;";
+    \\    else if (ch === "/") out += "&#47;";
+    \\    else if (ch === ";") out += "&#59;";
+    \\    else if (ch === "(") out += "&#40;";
+    \\    else if (ch === ")") out += "&#41;";
+    \\    else out += ch;
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_util_stylize_with_html(value, styleType) {
+    \\  const style = styleType === "number" || styleType === "boolean" ? "yellow" : "green";
+    \\  return '<span style="color:' + style + ';">' + __home_util_html_escape(value) + '</span>';
+    \\}
+    \\function __home_util_inspect_html_key(key) {
+    \\  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) return key;
+    \\  return __home_util_stylize_with_html("'" + key + "'", "string");
+    \\}
+    \\function __home_util_inspect_html_value(value, indent) {
+    \\  const pad = " ".repeat(indent || 0);
+    \\  const childPad = " ".repeat((indent || 0) + 2);
+    \\  if (typeof value === "number") return __home_util_stylize_with_html(String(value), "number");
+    \\  if (typeof value === "boolean") return __home_util_stylize_with_html(String(value), "boolean");
+    \\  if (typeof value === "string") return __home_util_stylize_with_html("'" + value + "'", "string");
+    \\  if (typeof value === "symbol") return __home_util_stylize_with_html(String(value), "symbol");
+    \\  if (value instanceof Uint8Array) {
+    \\    const lines = [value.constructor.name + "(" + value.length + ") ["];
+    \\    for (let i = 0; i < value.length; i++) lines.push(childPad + __home_util_inspect_html_value(value[i], (indent || 0) + 2) + (i + 1 < value.length ? "," : ""));
+    \\    lines.push(pad + "]");
+    \\    return lines.join("\n");
+    \\  }
+    \\  if (value && typeof value === "object") {
+    \\    const lines = ["{"];
+    \\    const keys = Object.keys(value);
+    \\    for (let i = 0; i < keys.length; i++) {
+    \\      const key = keys[i];
+    \\      lines.push(childPad + __home_util_inspect_html_key(key) + ": " + __home_util_inspect_html_value(value[key], (indent || 0) + 2) + ",");
+    \\    }
+    \\    const symbols = Object.getOwnPropertySymbols(value);
+    \\    for (let i = 0; i < symbols.length; i++) {
+    \\      const symbol = symbols[i];
+    \\      lines.push(childPad + "[" + __home_util_inspect_html_value(symbol, (indent || 0) + 2) + "]: " + __home_util_inspect_html_value(value[symbol], (indent || 0) + 2) + (i + 1 < symbols.length ? "," : ""));
+    \\    }
+    \\    lines.push(pad + "}");
+    \\    return lines.join("\n");
+    \\  }
+    \\  return __home_util_html_escape(String(value));
+    \\}
     \\function __home_util_inspect_value(value, options, seen) {
     \\  if (value === null) return "null";
     \\  if (typeof value === "number") return __home_util_inspect_number(value, options);
@@ -26365,6 +26419,7 @@ const harness_prelude =
     \\  return String(value);
     \\}
     \\function __home_util_inspect(value, options) {
+    \\  if (options && options.stylize === __home_util_stylize_with_html) return __home_util_inspect_html_value(value, 0);
     \\  return __home_util_inspect_value(value, options || {}, new Set());
     \\}
     \\function __home_util_formatWithOptions(options, format) {
@@ -26385,7 +26440,7 @@ const harness_prelude =
     \\function __home_util_format() {
     \\  return __home_util_formatWithOptions.apply(null, [{}].concat(Array.prototype.slice.call(arguments)));
     \\}
-    \\const __home_util_module = { format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, inspect: __home_util_inspect, promisify: __home_util_promisify };
+    \\const __home_util_module = { format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, inspect: __home_util_inspect, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html };
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -36308,6 +36363,16 @@ fn rewriteNodeUrlIsUrlCorpus(allocator: std.mem.Allocator, source: []const u8) !
     );
 }
 
+fn rewriteNodeInternalInspectCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.skip(\"util.stylizeWithHTML\", () => {",
+        "test(\"util.stylizeWithHTML\", () => {",
+    );
+}
+
 fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -39224,6 +39289,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeUrlNullCharCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-is-url.test.js"))
         try rewriteNodeUrlIsUrlCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/util/node-inspect-tests/internal-inspect.test.js"))
+        try rewriteNodeInternalInspectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -56563,7 +56630,7 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         .{ .path = "js/node/module/module-sourcemap.test.js", .passed = 3 },
         .{ .path = "js/node/console/console-constructor-exception.test.ts", .passed = 1 },
         .{ .path = "js/node/util/node-inspect-tests/import.test.mjs", .passed = 1 },
-        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 2 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs", .passed = 1 },
         .{ .path = "js/node/watch/fs.watch.deadlock.test.ts", .passed = 1 },
         .{ .path = "js/node/worker_threads/15787.test.ts", .passed = 1 },
@@ -56603,6 +56670,33 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
+}
+
+test "bootstrap runner mirrors node util internal inspect corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/util/node-inspect-tests/internal-inspect.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/util/node-inspect-tests/internal-inspect.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"util.stylizeWithHTML\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stylizeWithHTML: __home_util_stylize_with_html") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors utility resolve process queue mini-suite" {
