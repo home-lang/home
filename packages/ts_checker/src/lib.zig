@@ -735,6 +735,8 @@ pub fn arrayGlobal(
     cache: *LibCache,
     ti: *interner_mod.Interner,
     sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
 ) !TypeId {
     if (cache.array_global != types.Primitive.none) return cache.array_global;
 
@@ -742,6 +744,10 @@ pub fn arrayGlobal(
     const boolean_t = types.Primitive.boolean_t;
     const sig_is_array = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
     const any_arr = try ti.internArrayType(sint, any_t);
+    const sig_array_call = try ti.internSignature(&[_]TypeId{any_arr}, any_arr, false);
+    const sig_array_construct = try ti.internSignature(&[_]TypeId{any_arr}, any_arr, true);
+    try rest_set.put(gpa, sig_array_call, {});
+    try rest_set.put(gpa, sig_array_construct, {});
     // `Array.from` / `Array.of` — modeled loosely as `(...args: any[]): any[]`.
     // The real lib.d.ts signatures are generic and overloaded; the
     // checker just needs the member to exist so call sites typecheck
@@ -751,6 +757,8 @@ pub fn arrayGlobal(
     const sig_from = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
     const sig_of = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
     const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_array_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("__construct"), .type = sig_array_construct, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("isArray"), .type = sig_is_array, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("from"), .type = sig_from, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("of"), .type = sig_of, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -1451,8 +1459,11 @@ test "lib: arrayGlobal exposes isArray" {
     defer ti.deinit();
     var cache: LibCache = .{};
     defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
 
-    const ag = try arrayGlobal(&cache, &ti, &sint);
+    const ag = try arrayGlobal(&cache, &ti, &sint, T.allocator, &rest_set);
+    try T.expect(ti.objectMember(ag, try sint.intern("__call")) != null);
     try T.expect(ti.objectMember(ag, try sint.intern("isArray")) != null);
     try T.expect(ti.objectMember(ag, try sint.intern("prototype")) != null);
     // `Array.from` / `Array.of` — needed by fixtures that funnel the
