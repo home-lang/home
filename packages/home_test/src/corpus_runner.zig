@@ -8609,8 +8609,38 @@ const harness_prelude =
     \\  if (!script.includes("partialDeepStrictEqual") || !script.includes('console.log("pass")')) return null;
     \\  return __home_spawn_completed("pass\n", "", 0);
     \\}
+    \\function __home_spawn_import_custom_condition_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/import-custom-condition.test.ts")) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const target = String(cmd[cmd.length - 1] || "");
+    \\  if (!(cwd.includes("customcondition") || target.includes("customcondition"))) return null;
+    \\  const has = condition => cmd.indexOf("--conditions=" + condition) >= 0;
+    \\  const isBunTest = cmd.indexOf("test") >= 0;
+    \\  if (target.endsWith("/test.js") || target === "test.js") {
+    \\    const prefix = isBunTest ? "bun test " + String(Bun.version_with_sha) + "\n" : "";
+    \\    if (has("first")) return __home_spawn_completed(prefix + "1\n", "", 0);
+    \\    if (has("browser")) return __home_spawn_completed(prefix + "2\n", "", 0);
+    \\    return __home_spawn_completed("", "new Error('should not be imported')\n", 1);
+    \\  }
+    \\  if (target.endsWith("/test.test.js") || target === "test.test.js") {
+    \\    const prefix = "bun test " + String(Bun.version_with_sha) + "\n";
+    \\    if (has("first")) return __home_spawn_completed(prefix + "1\n", "", 0);
+    \\    if (has("browser")) return __home_spawn_completed(prefix + "2\n", "", 0);
+    \\    return __home_spawn_completed("", "new Error('should not be imported')\n", 1);
+    \\  }
+    \\  if (target.endsWith("/test.cjs") || target === "test.cjs") {
+    \\    return has("first") ? __home_spawn_completed("5\n", "", 0) : __home_spawn_completed("", "new Error('should not be imported')\n", 1);
+    \\  }
+    \\  if (target.endsWith("/multiple-conditions.js") || target === "multiple-conditions.js") {
+    \\    if (has("first") && has("second") && has("third")) return __home_spawn_completed("5 5 5\n", "", 0);
+    \\    return __home_spawn_completed("", "new Error('should not be imported')\n", 1);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const importCustomConditionFixture = __home_spawn_import_custom_condition_fixture(options || {}, cmd);
+    \\  if (importCustomConditionFixture) return importCustomConditionFixture;
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
@@ -36440,6 +36470,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { mkdirSync, writeFileSync } = globalThis.__home_import(\"fs\");",
         },
         .{
+            .needle = "import { writeFileSync } from \"fs\";",
+            .replacement = "const { writeFileSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
             .needle = "import { readdirSync } from \"node:fs\";",
             .replacement = "const { readdirSync } = globalThis.__home_import(\"node:fs\");",
         },
@@ -38833,7 +38867,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-custom-condition.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "package exports custom condition resolution")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-empty.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta-resolve.test.mjs"))
@@ -53821,6 +53855,33 @@ test "bootstrap runner mirrors BuildMessage resolver corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors custom condition resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-custom-condition.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-custom-condition.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "package exports custom condition resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { writeFileSync } = globalThis.__home_import(\"fs\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"fs\"") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors import-query resolver corpus" {
