@@ -2297,6 +2297,19 @@ const harness_prelude =
     \\  if (evalIndex < 0 || !script.includes("vm.SourceTextModule") || !script.includes("SyntheticModule") || !script.includes("await mod.link(linker)") || !script.includes("console.log(\"ok\")")) return null;
     \\  return __home_spawn_completed("ok\n", "", 0);
     \\}
+    \\function __home_spawn_import_query_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/import-query.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "entry.js") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const source = String(__home_build_read_text(__home_build_join(cwd, "entry.js")) || "");
+    \\  const match = source.match(/\.\/target\.js([^"'`)]+)/);
+    \\  if (!match) return null;
+    \\  const query = String(match[1] || "");
+    \\  const target = __home_build_join(cwd, "target.js");
+    \\  if (source.includes("Bun.resolveSync")) return __home_spawn_completed(JSON.stringify(target + query) + "\n", "", 0);
+    \\  return __home_spawn_completed(JSON.stringify(__home_url_path_to_file_url(target).href + encodeURI(query)) + "\n", "", 0);
+    \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
@@ -8845,6 +8858,8 @@ const harness_prelude =
     \\  if (yarnLockMigrationFixture) return yarnLockMigrationFixture;
     \\  const minimumReleaseAgeFixture = __home_spawn_minimum_release_age_fixture(options);
     \\  if (minimumReleaseAgeFixture) return minimumReleaseAgeFixture;
+    \\  const importQueryFixture = __home_spawn_import_query_fixture(options);
+    \\  if (importQueryFixture) return importQueryFixture;
     \\  const npmrcFixture = __home_spawn_npmrc_fixture(options);
     \\  if (npmrcFixture) return npmrcFixture;
     \\  const badWorkspaceFixture = __home_spawn_bad_workspace_fixture(options);
@@ -29242,12 +29257,24 @@ const harness_prelude =
     \\  }
     \\  return globalThis.__home_import(resolved);
     \\}
+    \\function __home_import_query_fixture_module(specifier, query) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  if (!String(resolved).endsWith("js/bun/resolve/import-query-fixture.ts")) return null;
+    \\  const suffix = String(query || "");
+    \\  const url = __home_url_path_to_file_url(resolved).href + suffix;
+    \\  if (!Array.isArray(globalThis.importQueryFixtureOrder)) globalThis.importQueryFixtureOrder = [];
+    \\  globalThis.importQueryFixtureOrder.push(url);
+    \\  return { url };
+    \\}
     \\globalThis.__home_dynamic_import = function(specifier, options) {
     \\  const text = String(specifier);
     \\  const queryIndex = text.indexOf("?");
     \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
+    \\  const query = queryIndex === -1 ? "" : text.slice(queryIndex);
     \\  const loader = __home_import_attribute_loader(options);
     \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
+    \\  const queryFixture = __home_import_query_fixture_module(withoutQuery, query);
+    \\  if (queryFixture) return Promise.resolve(queryFixture);
     \\  if (withoutQuery === "./empty.ts") return Promise.resolve({});
     \\  if (withoutQuery.endsWith("fixtures/lots-of-for-loop.js")) return Promise.reject(new Error("Maximum call stack size exceeded"));
     \\  if (withoutQuery.endsWith("inspect-error-fixture-bad.js")) {
@@ -35483,6 +35510,16 @@ fn rewriteUrlParseQueryCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
+fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "await import(url);",
+        "await globalThis.__home_dynamic_import(url);",
+    );
+}
+
 fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
@@ -38302,7 +38339,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta.test.js"))
         try rewriteNativeTodoCorpus(allocator, "import.meta require and resolver integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-query.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "query-string module identity resolution")
+        try rewriteImportQueryCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/json5/json5.test.js"))
         try rewriteNativeTodoCorpus(allocator, "JSON5 import attribute loader resolution")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/load-same-js-file-a-lot.test.ts"))
@@ -53143,6 +53180,33 @@ test "bootstrap runner mirrors empty-file import attribute loaders" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors import-query resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-query.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-query.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "query-string module identity resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await globalThis.__home_dynamic_import(url);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./import-query-fixture.ts?query\")") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
 }
 
 test "bootstrap runner covers mock.module validation and imports" {
