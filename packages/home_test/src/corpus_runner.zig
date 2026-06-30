@@ -34923,9 +34923,32 @@ const harness_prelude =
     \\  EventTarget.prototype.toString = function() { return "[object EventTarget]"; };
     \\}
     \\const __home_global_event_target = new EventTarget();
+    \\if (!globalThis.window || typeof globalThis.window !== "object") globalThis.window = {};
+    \\if (!globalThis.window.crypto) globalThis.window.crypto = globalThis.crypto;
     \\if (typeof globalThis.addEventListener !== "function") globalThis.addEventListener = function(type, callback, options) { return __home_global_event_target.addEventListener(type, callback, options); };
     \\if (typeof globalThis.removeEventListener !== "function") globalThis.removeEventListener = function(type, callback, options) { return __home_global_event_target.removeEventListener(type, callback, options); };
     \\if (typeof globalThis.dispatchEvent !== "function") globalThis.dispatchEvent = function(event) { return __home_global_event_target.dispatchEvent(event); };
+    \\if (typeof globalThis.window.addEventListener !== "function") globalThis.window.addEventListener = function(type, callback, options) { return __home_global_event_target.addEventListener(type, callback, options); };
+    \\if (typeof globalThis.window.removeEventListener !== "function") globalThis.window.removeEventListener = function(type, callback, options) { return __home_global_event_target.removeEventListener(type, callback, options); };
+    \\if (typeof globalThis.window.dispatchEvent !== "function") globalThis.window.dispatchEvent = function(event) { return __home_global_event_target.dispatchEvent(event); };
+    \\if (typeof EventTarget === "function" && EventTarget.prototype && !EventTarget.prototype.__home_default_window_target) {
+    \\  const __home_event_target_add = EventTarget.prototype.addEventListener;
+    \\  const __home_event_target_remove = EventTarget.prototype.removeEventListener;
+    \\  const __home_event_target_dispatch = EventTarget.prototype.dispatchEvent;
+    \\  function __home_event_target_receiver(receiver) {
+    \\    return receiver == null || receiver === globalThis || receiver === globalThis.window || receiver === EventTarget.prototype ? __home_global_event_target : receiver;
+    \\  }
+    \\  EventTarget.prototype.addEventListener = function(type, callback, options) {
+    \\    return __home_event_target_add.call(__home_event_target_receiver(this), type, callback, options);
+    \\  };
+    \\  EventTarget.prototype.removeEventListener = function(type, callback, options) {
+    \\    return __home_event_target_remove.call(__home_event_target_receiver(this), type, callback, options);
+    \\  };
+    \\  EventTarget.prototype.dispatchEvent = function(event) {
+    \\    return __home_event_target_dispatch.call(__home_event_target_receiver(this), event);
+    \\  };
+    \\  Object.defineProperty(EventTarget.prototype, "__home_default_window_target", { configurable: true, value: true });
+    \\}
     \\if (typeof AbortSignal !== "function") {
     \\  var AbortSignal = function() {
     \\    EventTarget.call(this);
@@ -36683,6 +36706,16 @@ fn rewriteDenoEncodingCorpus(allocator: std.mem.Allocator, source: []const u8) !
 
 fn rewriteDenoEventCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
+}
+
+fn rewriteDenoEventTargetCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.ignore(function eventTargetThisShouldDefaultToWindow() {",
+        "test(function eventTargetThisShouldDefaultToWindow() {",
+    );
 }
 
 fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -39394,6 +39427,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteDenoEncodingCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event.test.ts"))
         try rewriteDenoEventCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/event/event-target.test.ts"))
+        try rewriteDenoEventTargetCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -57060,7 +57095,7 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         .{ .path = "js/deno/event/custom-event.test.ts", .passed = 2 },
         .{ .path = "js/deno/event/event.test.ts", .passed = 10 },
         .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
-        .{ .path = "js/deno/event/event-target.test.ts", .passed = 14, .todo = 1 },
+        .{ .path = "js/deno/event/event-target.test.ts", .passed = 15 },
         .{ .path = "js/deno/fetch/request.test.ts", .passed = 5, .todo = 2 },
         .{ .path = "js/deno/fetch/body.test.ts", .passed = 3, .todo = 2 },
         .{ .path = "js/deno/fetch/blob.test.ts", .passed = 9, .todo = 1 },
@@ -57125,6 +57160,33 @@ test "bootstrap runner mirrors Deno event inspect corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Deno event target window default corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/event/event-target.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/event/event-target.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function eventTargetThisShouldDefaultToWindow") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_default_window_target") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
