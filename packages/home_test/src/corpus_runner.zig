@@ -160,27 +160,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/empty-file.test.ts",
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
-    "js/bun/test/test-timers.test.ts",
-    "js/bun/test/fake-timers/fake-timers.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-59.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-67.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-73.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-187.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-207.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-276.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-315.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-347.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-368.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-437.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-504.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-516.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-1852.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts",
-    "js/bun/test/fake-timers/sinonjs/issue-2449.test.ts",
-    "internal/highlighter.test.ts",
-    "js/bun/util/highlighter.test.ts",
-    "internal/int_from_float.test.ts",
-    "cli/test/pass-with-no-tests.test.ts",
     "js/bun/http/bun-serve-body-json-async.test.ts",
     "js/bun/http/req-url-leak.test.ts",
     "js/bun/http/leaks-test.test.ts",
@@ -55005,6 +54984,59 @@ test "bootstrap runner mirrors utility resolve process queue mini-suite" {
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "utility/resolve/process queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors timers and highlighter queue mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/bun/test/test-timers.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/fake-timers.test.ts", .passed = 30 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-59.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-67.test.ts", .passed = 4 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-73.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-187.test.ts", .passed = 2 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-207.test.ts", .passed = 10 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-276.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-315.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-347.test.ts", .passed = 2 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-368.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-437.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-504.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-516.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-1852.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/issue-2449.test.ts", .passed = 4 },
+        .{ .path = "internal/highlighter.test.ts", .passed = 1 },
+        .{ .path = "js/bun/util/highlighter.test.ts", .passed = 1 },
+        .{ .path = "internal/int_from_float.test.ts", .passed = 4 },
+        .{ .path = "cli/test/pass-with-no-tests.test.ts", .passed = 5 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "timers/highlighter queue corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
