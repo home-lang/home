@@ -293,16 +293,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
     "js/bun/util/escapeHTML.test.js",
-    "js/node/url/url-revokeobjecturl.test.js",
-    "js/node/url/url-null-char.test.js",
-    "js/node/url/url-is-url.test.js",
-    "js/node/path/basename.test.js",
-    "js/node/path/extname.test.js",
     "js/bun/util/index-of-line.test.ts",
-    "js/node/url/url-format-whatwg.test.js",
-    "js/node/url/url-domain-ascii-unicode.test.js",
-    "js/node/url/url-format.test.js",
-    "js/node/url/url-fileurltopath.test.js",
     "regression/issue/19412.test.ts",
     "regression/issue/02369.test.ts",
     "regression/issue/09739.test.ts",
@@ -46568,15 +46559,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/zero-length-strings.test.js",
         "js/bun/util/concat.test.js",
         "js/bun/util/escapeHTML.test.js",
-        "js/node/url/url-revokeobjecturl.test.js",
-        "js/node/url/url-null-char.test.js",
-        "js/node/url/url-is-url.test.js",
-        "js/node/path/basename.test.js",
-        "js/node/path/extname.test.js",
         "js/bun/util/index-of-line.test.ts",
-        "js/node/url/url-format-whatwg.test.js",
-        "js/node/url/url-domain-ascii-unicode.test.js",
-        "js/node/url/url-format.test.js",
         "regression/issue/19412.test.ts",
         "regression/issue/02369.test.ts",
         "regression/issue/04011.test.ts",
@@ -55060,6 +55043,47 @@ test "bootstrap runner mirrors node path corpus tranche" {
             std.debug.print(
                 "node path corpus mismatch in {s}: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors node URL and path utility tranche" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-null-char.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-is-url.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/path/basename.test.js", .passed = 4 },
+        .{ .path = "js/node/path/extname.test.js", .passed = 3 },
+        .{ .path = "js/node/url/url-format-whatwg.test.js", .passed = 1 },
+        .{ .path = "js/node/url/url-domain-ascii-unicode.test.js", .passed = 130 },
+        .{ .path = "js/node/url/url-format.test.js", .passed = 1 },
+        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 1, .todo = 1 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "node URL/path utility corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
