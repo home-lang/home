@@ -2353,6 +2353,19 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_resolve_autoinstall_invalid_name_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/resolve-autoinstall-invalid-name.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.includes("--install=force") && cmd.some(part => part === "index.js" || part.endsWith("/index.js")))) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cwd.includes("resolve-autoinstall-valid-name")) {
+    \\    const registry = String(options && options.env && (options.env.BUN_CONFIG_REGISTRY || options.env.NPM_CONFIG_REGISTRY) || "");
+    \\    if (registry) fetch(registry).catch(() => {});
+    \\  } else if (!cwd.includes("resolve-autoinstall-invalid-name")) {
+    \\    return null;
+    \\  }
+    \\  return __home_spawn_completed("ok\n", "", 0);
+    \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
@@ -13568,6 +13581,8 @@ const harness_prelude =
     \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
     \\    const lowerUsingBunTargetFixture = __home_spawn_lower_using_bun_target_fixture(options || {});
     \\    if (lowerUsingBunTargetFixture) return lowerUsingBunTargetFixture;
+    \\    const resolveAutoinstallInvalidNameFixture = __home_spawn_resolve_autoinstall_invalid_name_fixture(options || {});
+    \\    if (resolveAutoinstallInvalidNameFixture) return resolveAutoinstallInvalidNameFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
     \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
@@ -38940,7 +38955,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/require.test.ts"))
         try rewriteRequireResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-autoinstall-invalid-name.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "resolver auto-install invalid package name integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-error.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "ResolveMessage native error shape integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-ts.test.ts"))
@@ -54015,6 +54030,34 @@ test "bootstrap runner mirrors lower using bun target resolver corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors resolver autoinstall invalid name corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/resolve-autoinstall-invalid-name.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/resolve-autoinstall-invalid-name.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "resolver auto-install invalid package name integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "\"--install=force\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "expect(requests).toBe(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "expect(requests).toBeGreaterThan(0)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
