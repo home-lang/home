@@ -123,25 +123,6 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/wrapAnsi.test.ts",
     "js/bun/test/test-retry-repeats-basic.test.ts",
     "regression/issue23966.test.ts",
-    "js/deno/event/custom-event.test.ts",
-    "js/deno/event/event.test.ts",
-    "js/deno/abort/abort-controller.test.ts",
-    "js/deno/event/event-target.test.ts",
-    "js/deno/fetch/request.test.ts",
-    "js/deno/fetch/body.test.ts",
-    "js/deno/fetch/blob.test.ts",
-    "js/deno/fetch/headers.test.ts",
-    "js/deno/fetch/response.test.ts",
-    "js/deno/url/urlsearchparams.test.ts",
-    "js/deno/crypto/random.test.ts",
-    "regression/issue/08040.test.ts",
-    "regression/issue/09778.test.ts",
-    "regression/issue/18820.test.ts",
-    "regression/issue/23382.test.js",
-    "js/bun/util/escapeRegExp.test.ts",
-    "regression/issue/24045.test.ts",
-    "regression/issue/07324.test.ts",
-    "regression/issue/07827.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -41870,26 +41851,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/util/wrapAnsi.test.ts", filesForSubset(.minimal_js)[35]);
     try std.testing.expectEqualStrings("js/bun/test/test-retry-repeats-basic.test.ts", filesForSubset(.minimal_js)[36]);
     try std.testing.expectEqualStrings("regression/issue23966.test.ts", filesForSubset(.minimal_js)[37]);
-    try std.testing.expectEqualStrings("js/deno/event/custom-event.test.ts", filesForSubset(.minimal_js)[38]);
-    try std.testing.expectEqualStrings("js/deno/event/event.test.ts", filesForSubset(.minimal_js)[39]);
-    try std.testing.expectEqualStrings("js/deno/abort/abort-controller.test.ts", filesForSubset(.minimal_js)[40]);
-    try std.testing.expectEqualStrings("js/deno/event/event-target.test.ts", filesForSubset(.minimal_js)[41]);
-    try std.testing.expectEqualStrings("js/deno/fetch/request.test.ts", filesForSubset(.minimal_js)[42]);
-    try std.testing.expectEqualStrings("js/deno/fetch/body.test.ts", filesForSubset(.minimal_js)[43]);
-    try std.testing.expectEqualStrings("js/deno/fetch/blob.test.ts", filesForSubset(.minimal_js)[44]);
-    try std.testing.expectEqualStrings("js/deno/fetch/headers.test.ts", filesForSubset(.minimal_js)[45]);
-    try std.testing.expectEqualStrings("js/deno/fetch/response.test.ts", filesForSubset(.minimal_js)[46]);
-    try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[47]);
-    try std.testing.expectEqualStrings("js/deno/crypto/random.test.ts", filesForSubset(.minimal_js)[48]);
-    try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[49]);
-    try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[50]);
-    try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[51]);
-    try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[52]);
-    try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[53]);
-    try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[54]);
-    try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[55]);
-    try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[56]);
-    try std.testing.expectEqual(@as(usize, 57), filesForSubset(.minimal_js).len);
+    try std.testing.expectEqual(@as(usize, 38), filesForSubset(.minimal_js).len);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -55109,6 +55071,57 @@ test "bootstrap runner mirrors minimal core tail utility mini-suite" {
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "minimal core tail utility corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors Deno web regression tail mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/deno/event/custom-event.test.ts", .passed = 2 },
+        .{ .path = "js/deno/event/event.test.ts", .passed = 8, .todo = 2 },
+        .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
+        .{ .path = "js/deno/event/event-target.test.ts", .passed = 14, .todo = 1 },
+        .{ .path = "js/deno/fetch/request.test.ts", .passed = 5, .todo = 2 },
+        .{ .path = "js/deno/fetch/body.test.ts", .passed = 3, .todo = 2 },
+        .{ .path = "js/deno/fetch/blob.test.ts", .passed = 9, .todo = 1 },
+        .{ .path = "js/deno/fetch/headers.test.ts", .passed = 26, .todo = 1 },
+        .{ .path = "js/deno/fetch/response.test.ts", .passed = 8, .todo = 1 },
+        .{ .path = "js/deno/url/urlsearchparams.test.ts", .passed = 32 },
+        .{ .path = "js/deno/crypto/random.test.ts", .passed = 10 },
+        .{ .path = "regression/issue/08040.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/09778.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/18820.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/23382.test.js", .passed = 1 },
+        .{ .path = "js/bun/util/escapeRegExp.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/24045.test.ts", .passed = 6 },
+        .{ .path = "regression/issue/07324.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/07827.test.ts", .passed = 1 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "Deno web regression tail corpus mismatch in {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
             );
         }
