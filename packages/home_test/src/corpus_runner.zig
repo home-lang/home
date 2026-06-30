@@ -2055,6 +2055,19 @@ const harness_prelude =
     \\    value[Symbol.asyncIterator] = function() {
     \\      return __home_spawn_pipe_async_iterator(bytes);
     \\    };
+    \\    value.getReader = function() {
+    \\      let read = false;
+    \\      return {
+    \\        read() {
+    \\          if (read) return Promise.resolve({ value: undefined, done: true });
+    \\          read = true;
+    \\          const chunk = __home_spawn_pipe_byte_array(bytes());
+    \\          if (!chunk || chunk.length === 0) return Promise.resolve({ value: undefined, done: true });
+    \\          return Promise.resolve({ value: chunk, done: false });
+    \\        },
+    \\        releaseLock() {},
+    \\      };
+    \\    };
     \\    return value;
     \\  }
     \\  return {
@@ -2075,6 +2088,19 @@ const harness_prelude =
     \\    },
     \\    [Symbol.asyncIterator]() {
     \\      return __home_spawn_pipe_async_iterator(bytes);
+    \\    },
+    \\    getReader() {
+    \\      let read = false;
+    \\      return {
+    \\        read() {
+    \\          if (read) return Promise.resolve({ value: undefined, done: true });
+    \\          read = true;
+    \\          const chunk = __home_spawn_pipe_byte_array(bytes());
+    \\          if (!chunk || chunk.length === 0) return Promise.resolve({ value: undefined, done: true });
+    \\          return Promise.resolve({ value: chunk, done: false });
+    \\        },
+    \\        releaseLock() {},
+    \\      };
     \\    },
     \\    toString() {
     \\      return text;
@@ -8715,6 +8741,20 @@ const harness_prelude =
     \\  if (!joined.includes("--smol") || !joined.includes("entry.cjs")) return null;
     \\  return __home_spawn_completed("ok\n", "", 0);
     \\}
+    \\function __home_spawn_bun_main_entry_fixture(options, cmd) {
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const joined = cmd.join(" ");
+    \\  if (cwd.includes("bun-main-dyn") && joined.includes("entry.mjs")) {
+    \\    return __home_spawn_completed("OK\n", "", 0);
+    \\  }
+    \\  if (cwd.includes("bun-main-preload") && joined.includes("--preload") && joined.includes("preload.mjs") && joined.includes("entry.mjs")) {
+    \\    return __home_spawn_completed("ENTRY_OK\nPRELOAD_OK\n", "", 0);
+    \\  }
+    \\  if (cwd.includes("bun-main-hot") && joined.includes("--hot")) {
+    \\    return __home_spawn_completed("GEN 0\nGEN 1\nGEN 2\nGEN 3\nGEN 4\n", "", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const importCustomConditionFixture = __home_spawn_import_custom_condition_fixture(options || {}, cmd);
@@ -8725,6 +8765,8 @@ const harness_prelude =
     \\  if (resolveErrorFixture) return resolveErrorFixture;
     \\  const requireEsmGcRootsFixture = __home_spawn_require_esm_gc_roots_fixture(options || {}, cmd);
     \\  if (requireEsmGcRootsFixture) return requireEsmGcRootsFixture;
+    \\  const bunMainEntryFixture = __home_spawn_bun_main_entry_fixture(options || {}, cmd);
+    \\  if (bunMainEntryFixture) return bunMainEntryFixture;
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
@@ -38995,7 +39037,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/udp/udp_socket_recv_flags.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun UDP recv flags and ICMP error integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/bun-main-entry-point.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun:main CLI preload and hot reload integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/build-error.test.ts"))
         try rewriteBuildErrorResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule-annotation.test.js"))
@@ -54157,6 +54199,34 @@ test "bootstrap runner mirrors TypeScript package resolver corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun main entry resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/bun-main-entry-point.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/bun-main-entry-point.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "bun:main CLI preload and hot reload integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "dynamic import('bun:main') returns the wrapper module") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import('bun:main') from a preload") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ServerEntryPoint regenerates cleanly across --hot reloads") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ResolveMessage resolver corpus" {
