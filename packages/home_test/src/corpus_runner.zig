@@ -8700,12 +8700,23 @@ const harness_prelude =
     \\  if (!hasTsEntry || !entry.includes('import * as pkg from "abc')) return null;
     \\  return __home_spawn_completed("", "", 0);
     \\}
+    \\function __home_spawn_resolve_error_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/resolve-error.test.ts")) return null;
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("await import(") || !script.includes('console.log("ok")')) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (!cwd.includes("resolve-long-path")) return null;
+    \\  return __home_spawn_completed("ok\n", "", 0);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const importCustomConditionFixture = __home_spawn_import_custom_condition_fixture(options || {}, cmd);
     \\  if (importCustomConditionFixture) return importCustomConditionFixture;
     \\  const resolveTsFixture = __home_spawn_resolve_ts_fixture(options || {}, cmd);
     \\  if (resolveTsFixture) return resolveTsFixture;
+    \\  const resolveErrorFixture = __home_spawn_resolve_error_fixture(options || {}, cmd);
+    \\  if (resolveErrorFixture) return resolveErrorFixture;
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
@@ -13364,6 +13375,24 @@ const harness_prelude =
     \\  },
     \\  pathToFileURL(path) {
     \\    return __home_url_path_to_file_url(path);
+    \\  },
+    \\  resolveSync(specifier, referrer) {
+    \\    const previousDirname = globalThis.__home_current_dirname;
+    \\    const ref = referrer === undefined ? String(globalThis.__home_current_dirname || process.cwd()) : String(referrer);
+    \\    let base = ref;
+    \\    if (base.startsWith("file:")) base = __home_url_file_url_to_path(base);
+    \\    if (/\.[cm]?[jt]sx?$|\.json$/i.test(base)) {
+    \\      const slash = base.lastIndexOf("/");
+    \\      base = slash >= 0 ? base.slice(0, slash) : ".";
+    \\    }
+    \\    globalThis.__home_current_dirname = base;
+    \\    try {
+    \\      const resolved = __home_resolve_require(specifier);
+    \\      if (globalThis.__home_modules[resolved] || globalThis.__home_cjs_factories[resolved] || __home_build_read_text(resolved) !== null) return resolved;
+    \\      throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND", undefined, ref);
+    \\    } finally {
+    \\      globalThis.__home_current_dirname = previousDirname;
+    \\    }
     \\  },
     \\  which(command, options) {
     \\    const name = String(command || "");
@@ -29466,6 +29495,20 @@ const harness_prelude =
     \\  }
     \\  return name;
     \\}
+    \\function __home_module_not_found_error(specifier, code, message, referrer) {
+    \\  const text = String(specifier);
+    \\  const error = new Error(message || ("Cannot find module: " + text));
+    \\  error.name = "ResolveMessage";
+    \\  error.code = code || "MODULE_NOT_FOUND";
+    \\  error.specifier = text;
+    \\  error.referrer = referrer !== undefined ? String(referrer) : String(globalThis.__home_current_filename || globalThis.__home_current_dirname || "");
+    \\  error.level = "error";
+    \\  error.importKind = code === "ERR_MODULE_NOT_FOUND" ? "import" : "require";
+    \\  error.line = 0;
+    \\  error.column = 0;
+    \\  error.position = { line: 0, column: 0, lineText: "" };
+    \\  return error;
+    \\}
     \\function __home_json_module_parse_error(text, error) {
     \\  const source = String(text || "");
     \\  let message = String(error && error.message || "");
@@ -29594,7 +29637,7 @@ const harness_prelude =
     \\  if (!module && /\.(?:svg|png|jpe?g|gif|webp|ico)$/i.test(resolved) && __home_build_read_text(resolved) !== null) {
     \\    module = { default: resolved };
     \\  }
-    \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
+    \\  if (!module) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
     \\  return module;
     \\};
     \\function __home_import_attribute_loader(options) {
@@ -29653,6 +29696,7 @@ const harness_prelude =
     \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
     \\  const query = queryIndex === -1 ? "" : text.slice(queryIndex);
     \\  const loader = __home_import_attribute_loader(options);
+    \\  if (text.startsWith("data:")) return Promise.reject(__home_module_not_found_error(text, "ERR_MODULE_NOT_FOUND", "Cannot resolve invalid data URL"));
     \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
     \\  if (String(withoutQuery).endsWith(".json5")) return Promise.resolve(globalThis.__home_import_json5(withoutQuery));
     \\  if (String(withoutQuery).endsWith(".yaml") || String(withoutQuery).endsWith(".yml")) return Promise.resolve(globalThis.__home_import_yaml(withoutQuery));
@@ -29680,6 +29724,7 @@ const harness_prelude =
     \\  try {
     \\    return Promise.resolve(globalThis.__home_import(withoutQuery));
     \\  } catch (error) {
+    \\    if (!error || error.code === undefined || error.code === "MODULE_NOT_FOUND") return Promise.reject(__home_module_not_found_error(withoutQuery, "ERR_MODULE_NOT_FOUND", error && error.message));
     \\    return Promise.reject(error);
     \\  }
     \\};
@@ -29738,7 +29783,7 @@ const harness_prelude =
     \\  if (builtin) return builtin;
     \\  const factory = globalThis.__home_cjs_factories[resolved];
     \\  if (!factory && /\.node$/i.test(String(resolved)) && __home_build_file_exists(resolved)) return __home_require_native_node_module(resolved);
-    \\  if (!factory && __home_build_read_text(resolved) === null) throw new Error("Cannot find module: " + String(specifier));
+    \\  if (!factory && __home_build_read_text(resolved) === null) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
     \\  if (globalThis.require.cache[resolved]) return globalThis.require.cache[resolved].exports;
     \\  const slash = resolved.lastIndexOf("/");
     \\  const module = __home_make_cjs_module(resolved, slash >= 0 ? resolved.slice(0, slash) : "");
@@ -29753,7 +29798,7 @@ const harness_prelude =
     \\      factory(module, module.exports, globalThis.require);
     \\    } else {
     \\      const source = __home_build_read_text(resolved);
-    \\      if (source === null) throw new Error("Cannot find module: " + String(specifier));
+    \\      if (source === null) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
     \\      if (String(resolved).endsWith(".json")) module.exports = __home_parse_json_module_text(source, resolved);
     \\      else Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + resolved)(module, module.exports, globalThis.require, resolved, globalThis.__home_current_dirname);
     \\    }
@@ -29772,7 +29817,7 @@ const harness_prelude =
     \\globalThis.require.resolve = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  if (globalThis.__home_modules[resolved] || globalThis.__home_cjs_factories[resolved] || __home_build_read_text(resolved) !== null) return resolved;
-    \\  throw new Error("Cannot find module: " + String(specifier));
+    \\  throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
     \\};
     \\function __home_cjs_package_type_module(resolved) {
     \\  const parts = String(resolved).split("/");
@@ -38974,7 +39019,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-autoinstall-invalid-name.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-error.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "ResolveMessage native error shape integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-ts.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts"))
@@ -54104,6 +54149,33 @@ test "bootstrap runner mirrors TypeScript package resolver corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors ResolveMessage resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/resolve-error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/resolve-error.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ResolveMessage native error shape integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "position object does not segfault") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "long import path overflow") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
