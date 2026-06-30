@@ -30480,9 +30480,27 @@ const harness_prelude =
     \\  return new URL("file://" + (encoded.startsWith("/") ? "" : "/") + encoded);
     \\}
     \\function __home_url_file_url_to_path(value) {
-    \\  if (!(typeof value === "string" || value instanceof URL)) throw new TypeError('The "path" argument must be of type string or an instance of URL');
+    \\  if (!(typeof value === "string" || value instanceof URL)) {
+    \\    const error = new TypeError('The "path" argument must be of type string or an instance of URL');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
     \\  const url = value instanceof URL ? value : new URL(value);
-    \\  if (url.protocol !== "file:") throw new TypeError("The URL must be of scheme file");
+    \\  if (url.protocol !== "file:") {
+    \\    const error = new TypeError("The URL must be of scheme file");
+    \\    error.code = "ERR_INVALID_URL_SCHEME";
+    \\    throw error;
+    \\  }
+    \\  if (url.hostname && process.platform !== "win32") {
+    \\    const error = new TypeError("File URL host must be localhost or empty on this platform");
+    \\    error.code = "ERR_INVALID_FILE_URL_HOST";
+    \\    throw error;
+    \\  }
+    \\  if (/%2f/i.test(url.pathname) || (process.platform === "win32" && /%5c/i.test(url.pathname))) {
+    \\    const error = new TypeError("File URL path must not include encoded path separators");
+    \\    error.code = "ERR_INVALID_FILE_URL_PATH";
+    \\    throw error;
+    \\  }
     \\  const decoded = decodeURIComponent(url.pathname);
     \\  if (decoded === "/" + globalThis.__home_current_filename) return globalThis.__home_current_filename;
     \\  return decoded;
@@ -36206,6 +36224,16 @@ fn rewriteNodeUrlPathToFileUrlCorpus(allocator: std.mem.Allocator, source: []con
     );
 }
 
+fn rewriteNodeUrlFileUrlToPathCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.todo(\"invalid input\", () => {",
+        "test(\"invalid input\", () => {",
+    );
+}
+
 fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -39110,6 +39138,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteUrlParseQueryCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-pathtofileurl.test.js"))
         try rewriteNodeUrlPathToFileUrlCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-fileurltopath.test.js"))
+        try rewriteNodeUrlFileUrlToPathCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -57093,7 +57123,7 @@ test "bootstrap runner mirrors node URL and path utility tranche" {
         .{ .path = "js/node/url/url-format-whatwg.test.js", .passed = 1 },
         .{ .path = "js/node/url/url-domain-ascii-unicode.test.js", .passed = 130 },
         .{ .path = "js/node/url/url-format.test.js", .passed = 1 },
-        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 2 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -57169,6 +57199,34 @@ test "bootstrap runner mirrors node url pathToFileURL corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors node url fileURLToPath corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-fileurltopath.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-fileurltopath.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"invalid input\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_URL_SCHEME") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_FILE_URL_HOST") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_FILE_URL_PATH") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap matcher toBeEmpty accepts strings and collections" {
