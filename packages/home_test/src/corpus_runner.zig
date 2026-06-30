@@ -1869,6 +1869,9 @@ const harness_prelude =
     \\    if (String(source || "").trim() === "#") {
     \\      return __home_build_fail([__home_build_error("error: Syntax Error", { line: 1, column: 1, lineText: "#" })], shouldThrow, pluginOnEnd);
     \\    }
+    \\    if (String(source || "").includes("function bad( {")) {
+    \\      return __home_build_fail([__home_build_error("Expected identifier but found \"{\"", { line: 1, column: 15, lineText: "function bad( {" })], shouldThrow, pluginOnEnd);
+    \\    }
     \\    const resolverBundle = __home_build_resolver_bundle_text(entrypoint);
     \\    if (resolverBundle && !resolverBundle.success) {
     \\      return __home_build_fail([__home_build_error("ModuleNotFound: Could not resolve imports for " + entrypoint, null)], shouldThrow, pluginOnEnd);
@@ -29551,6 +29554,7 @@ const harness_prelude =
     \\  if (withoutQuery.endsWith("inspect-error-fixture-bad.js")) {
     \\    const dir = String(globalThis.__home_current_dirname || "js/bun/util").replace(/\\/g, "/");
     \\    const error = new Error("\"duplicateConstDecl\" has already been declared");
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/resolve/build-error.test.ts")) error.name = "BuildMessage";
     \\    error.__home_inspect = "2 | const duplicateConstDecl = 456;\n" +
     \\      "          ^\n" +
     \\      "error: \"duplicateConstDecl\" has already been declared\n" +
@@ -35859,6 +35863,24 @@ fn rewriteImportMetaResolveCorpus(allocator: std.mem.Allocator, source: []const 
     );
 }
 
+fn rewriteBuildErrorResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const dynamic_import = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "await import(\"../util/inspect-error-fixture-bad.js\");",
+        "await globalThis.__home_dynamic_import(\"../util/inspect-error-fixture-bad.js\");",
+    );
+    defer allocator.free(dynamic_import);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        dynamic_import,
+        "using dir = tempDir(\"build-message-finalize\", { \"bad.js\": \"function bad( {\" });",
+        "const dir = tempDir(\"build-message-finalize\", { \"bad.js\": \"function bad( {\" });",
+    );
+}
+
 fn rewriteEsModuleAnnotationCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const replacements = [_]struct {
         needle: []const u8,
@@ -38805,7 +38827,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/bun-main-entry-point.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun:main CLI preload and hot reload integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/build-error.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.build BuildMessage native error objects")
+        try rewriteBuildErrorResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule-annotation.test.js"))
         try rewriteEsModuleAnnotationCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/esModule.test.ts"))
@@ -53771,6 +53793,34 @@ test "bootstrap runner mirrors import-meta resolve corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors BuildMessage resolver corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/build-error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/build-error.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.build BuildMessage native error objects") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await globalThis.__home_dynamic_import(\"../util/inspect-error-fixture-bad.js\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const dir = tempDir(\"build-message-finalize\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using dir =") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors import-query resolver corpus" {
