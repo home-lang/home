@@ -36948,6 +36948,16 @@ fn rewriteSnapshotTestCorpus(allocator: std.mem.Allocator, source: []const u8) !
     );
 }
 
+fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.todo(\"snapshots in different directory\", () => {",
+        "test(\"snapshots in different directory\", () => {",
+    );
+}
+
 fn rewriteTestFailingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const without_subprocess_pass = try std.mem.replaceOwned(
         u8,
@@ -39949,6 +39959,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test diff printer subprocess snapshot")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/new-snapshot.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test snapshot file update workflow")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts"))
+        try rewriteDifferentDirectorySnapshotCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts"))
         try rewriteSnapshotTestCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/spyMatchers.test.ts"))
@@ -49898,6 +49910,36 @@ test "bootstrap runner mirrors snapshot serialization corpus" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
+test "bootstrap runner mirrors different-directory snapshot corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"snapshots in different directory\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "snapshots in different directory 14") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Different-directory snapshot corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
 test "bootstrap runner mirrors Node HTTP early hints CRLF corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -56732,7 +56774,7 @@ test "bootstrap runner mirrors mixed runtime regression mini-suite" {
         .{ .path = "regression/issue/012039.test.ts", .passed = 3 },
         .{ .path = "js/web/html/html-rewriter-doctype.test.ts", .passed = 1 },
         .{ .path = "js/bun/jsonc/jsonc.test.ts", .passed = 13 },
-        .{ .path = "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", .passed = 1 },
         .{ .path = "js/bun/test/jest-each.test.ts", .passed = 25 },
         .{ .path = "regression/issue/htmlrewriter-additional-bugs.test.ts", .passed = 7 },
         .{ .path = "regression/issue/24191.test.ts", .passed = 2 },
