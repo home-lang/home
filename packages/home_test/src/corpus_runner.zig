@@ -10993,6 +10993,113 @@ const harness_prelude =
     \\  if (/^0o[0-7]+$/i.test(value)) return parseInt(value.slice(2), 8);
     \\  return value;
     \\}
+    \\function __home_yaml_strip_comment(line) {
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  for (let i = 0; i < line.length; i++) {
+    \\    const ch = line[i];
+    \\    if (quote) {
+    \\      if (escaped) escaped = false;
+    \\      else if (ch === "\\") escaped = true;
+    \\      else if (ch === quote) quote = "";
+    \\      continue;
+    \\    }
+    \\    if (ch === "\"" || ch === "'") {
+    \\      quote = ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === "#") return line.slice(0, i);
+    \\  }
+    \\  return line;
+    \\}
+    \\function __home_yaml_next_content(lines, start) {
+    \\  for (let i = start; i < lines.length; i++) {
+    \\    const raw = __home_yaml_strip_comment(lines[i]).replace(/\t/g, "  ");
+    \\    if (raw.trim() === "" || raw.trim() === "---" || raw.trim() === "...") continue;
+    \\    const indent = raw.match(/^ */)[0].length;
+    \\    return { index: i, indent, text: raw.trim() };
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_yaml_parse_block(lines, start, indent) {
+    \\  const first = __home_yaml_next_content(lines, start);
+    \\  if (!first || first.indent < indent) return { value: null, next: start };
+    \\  const isArray = first.indent === indent && first.text.startsWith("- ");
+    \\  const out = isArray ? [] : {};
+    \\  let i = start;
+    \\  while (i < lines.length) {
+    \\    const current = __home_yaml_next_content(lines, i);
+    \\    if (!current) return { value: out, next: lines.length };
+    \\    if (current.indent < indent) return { value: out, next: current.index };
+    \\    if (current.indent > indent) {
+    \\      i = current.index + 1;
+    \\      continue;
+    \\    }
+    \\    if (isArray) {
+    \\      if (!current.text.startsWith("- ")) return { value: out, next: current.index };
+    \\      const itemText = current.text.slice(2).trim();
+    \\      if (itemText === "") {
+    \\        const nested = __home_yaml_parse_block(lines, current.index + 1, indent + 2);
+    \\        out.push(nested.value);
+    \\        i = nested.next;
+    \\        continue;
+    \\      }
+    \\      const colon = __home_yaml_colon_index(itemText);
+    \\      if (colon > 0) {
+    \\        const item = {};
+    \\        const key = __home_yaml_unquote(itemText.slice(0, colon));
+    \\        const rest = itemText.slice(colon + 1).trim();
+    \\        if (rest === "") {
+    \\          const nested = __home_yaml_parse_block(lines, current.index + 1, indent + 2);
+    \\          item[key] = nested.value;
+    \\          i = nested.next;
+    \\        } else {
+    \\          item[key] = __home_yaml_parse_scalar(rest);
+    \\          i = current.index + 1;
+    \\        }
+    \\        while (true) {
+    \\          const next = __home_yaml_next_content(lines, i);
+    \\          if (!next || next.indent <= indent) break;
+    \\          if (next.indent === indent + 2 && !next.text.startsWith("- ")) {
+    \\            const nextColon = __home_yaml_colon_index(next.text);
+    \\            if (nextColon <= 0) break;
+    \\            const nextKey = __home_yaml_unquote(next.text.slice(0, nextColon));
+    \\            const nextRest = next.text.slice(nextColon + 1).trim();
+    \\            if (nextRest === "") {
+    \\              const nested = __home_yaml_parse_block(lines, next.index + 1, next.indent + 2);
+    \\              item[nextKey] = nested.value;
+    \\              i = nested.next;
+    \\            } else {
+    \\              item[nextKey] = __home_yaml_parse_scalar(nextRest);
+    \\              i = next.index + 1;
+    \\            }
+    \\            continue;
+    \\          }
+    \\          break;
+    \\        }
+    \\        out.push(item);
+    \\        continue;
+    \\      }
+    \\      out.push(__home_yaml_parse_scalar(itemText));
+    \\      i = current.index + 1;
+    \\      continue;
+    \\    }
+    \\    if (current.text.startsWith("- ")) return { value: out, next: current.index };
+    \\    const colon = __home_yaml_colon_index(current.text);
+    \\    if (colon <= 0) throw __home_yaml_syntax_error("Invalid YAML line");
+    \\    const key = __home_yaml_unquote(current.text.slice(0, colon));
+    \\    const rest = current.text.slice(colon + 1).trim();
+    \\    if (rest === "") {
+    \\      const nested = __home_yaml_parse_block(lines, current.index + 1, indent + 2);
+    \\      out[key] = nested.value;
+    \\      i = nested.next;
+    \\    } else {
+    \\      out[key] = __home_yaml_parse_scalar(rest);
+    \\      i = current.index + 1;
+    \\    }
+    \\  }
+    \\  return { value: out, next: i };
+    \\}
     \\function __home_yaml_parse(value) {
     \\  const text = __home_build_file_value_to_text(value).replace(/\r\n?/g, "\n");
     \\  const trimmed = text.trim();
@@ -11007,6 +11114,7 @@ const harness_prelude =
     \\  const lines = text.split("\n").map(line => line.replace(/#.*$/, "").trim()).filter(Boolean);
     \\  if (lines.length === 0) return null;
     \\  if (lines.every(line => line.startsWith("- "))) return lines.map(line => __home_yaml_parse_scalar(line.slice(2)));
+    \\  if (/\n[ \t]+(?:[^ \t#-]|\-\s)/.test(text)) return __home_yaml_parse_block(text.split("\n"), 0, 0).value;
     \\  const out = {};
     \\  let sawMap = false;
     \\  for (const line of lines) {
@@ -29231,6 +29339,12 @@ const harness_prelude =
     \\  if (text === null) throw new Error("Cannot find module: " + String(specifier));
     \\  return { default: __home_parse_json5_module_text(text) };
     \\};
+    \\globalThis.__home_import_yaml = function(specifier) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  const text = __home_build_read_text(resolved);
+    \\  if (text === null) throw new Error("Cannot find module: " + String(specifier));
+    \\  return { default: __home_yaml_parse(text) };
+    \\};
     \\globalThis.__home_import = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[resolved];
@@ -29262,6 +29376,7 @@ const harness_prelude =
     \\  if (type === "json") return { default: __home_parse_json_module_text(text, resolved) };
     \\  if (type === "jsonc") return { default: String(text).trim() === "" ? {} : __home_parse_jsonc_text(text) };
     \\  if (type === "json5") return globalThis.__home_import_json5(resolved);
+    \\  if (type === "yaml") return String(text).trim() === "" ? { default: {} } : globalThis.__home_import_yaml(resolved);
     \\  if (type === "yaml" || type === "toml") return { default: String(text).trim() === "" ? {} : __home_yaml_parse(text) };
     \\  if (type === "sqlite" || type === "sqlite_embedded") {
     \\    const Database = globalThis.__home_import("bun:sqlite").Database;
@@ -29303,6 +29418,7 @@ const harness_prelude =
     \\  const loader = __home_import_attribute_loader(options);
     \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
     \\  if (String(withoutQuery).endsWith(".json5")) return Promise.resolve(globalThis.__home_import_json5(withoutQuery));
+    \\  if (String(withoutQuery).endsWith(".yaml") || String(withoutQuery).endsWith(".yml")) return Promise.resolve(globalThis.__home_import_yaml(withoutQuery));
     \\  const queryFixture = __home_import_query_fixture_module(withoutQuery, query);
     \\  if (queryFixture) return Promise.resolve(queryFixture);
     \\  const loadSameFixture = __home_load_same_js_file_module(withoutQuery, query);
@@ -35596,6 +35712,24 @@ fn rewriteJson5ResolveCorpus(allocator: std.mem.Allocator, source: []const u8) !
     );
 }
 
+fn rewriteYamlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const empty_import = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import emptyYaml from \"./yaml-empty.yaml\";",
+        "const emptyYaml = globalThis.__home_import_yaml(\"./yaml-empty.yaml\").default;",
+    );
+    defer allocator.free(empty_import);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        empty_import,
+        "import yamlFromCustomTypeAttribute from \"./yaml-fixture.yaml.txt\" with { type: \"yaml\" };",
+        "const yamlFromCustomTypeAttribute = globalThis.__home_import_yaml(\"./yaml-fixture.yaml.txt\").default;",
+    );
+}
+
 fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
@@ -38439,7 +38573,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/toml/toml.test.js"))
         try rewriteNativeTodoCorpus(allocator, "TOML import attribute loader resolution")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/yaml/yaml.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "YAML import attribute loader resolution")
+        try rewriteYamlResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun-error RuntimeError package integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-stream-cancel-leak.test.ts"))
@@ -53339,6 +53473,35 @@ test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors YAML resolve import loader corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/yaml/yaml.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/yaml/yaml.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "YAML import attribute loader resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_yaml(\"./yaml-empty.yaml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"yaml\" }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./yaml-fixture.yaml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./yaml-fixture.yml\")") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner covers mock.module validation and imports" {
