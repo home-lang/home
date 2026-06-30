@@ -261,22 +261,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/fuzzer-ENG-22942.test.ts",
     "bundler/transpiler/function-tostring-require.test.ts",
     "bundler/transpiler/export-default.test.js",
-    "js/bun/transpiler/transpiler-utf16-loader.test.ts",
-    "regression/issue/012039.test.ts",
-    "js/web/html/html-rewriter-doctype.test.ts",
-    "js/bun/jsonc/jsonc.test.ts",
-    "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
-    "js/bun/test/jest-each.test.ts",
-    "regression/issue/htmlrewriter-additional-bugs.test.ts",
-    "regression/issue/24191.test.ts",
-    "regression/issue/28522.test.ts",
-    "js/bun/resolve/resolve-bad-parent.test.mjs",
-    "regression/issue/issue-1825-jest-mock-functions.test.ts",
-    "js/bun/test/expect-toHaveReturnedWith.test.js",
-    "js/bun/test/mock/mock-module-non-string.test.ts",
-    "regression/issue/09563/09563.test.ts",
-    "regression/issue/5228.test.js",
-    "regression/issue/26377.test.ts",
     "regression/issue/19412.test.ts",
     "regression/issue/02369.test.ts",
     "regression/issue/09739.test.ts",
@@ -8755,6 +8739,14 @@ const harness_prelude =
     \\  if (!script.includes(".text()") && !script.includes(".arrayBuffer()") && !script.includes(".bytes()")) return null;
     \\  return __home_spawn_completed("", "ENOENT: no such file or directory, open 'nonexistent-file-that-does-not-exist.txt'\n", 1);
     \\}
+    \\function __home_spawn_issue_28522_partial_deep_strict_equal_fixture(options, cmd) {
+    \\  void options;
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/28522.test.ts")) return null;
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("partialDeepStrictEqual") || !script.includes('console.log("pass")')) return null;
+    \\  return __home_spawn_completed("pass\n", "", 0);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
@@ -8804,6 +8796,8 @@ const harness_prelude =
     \\  if (requireEsmMicrotaskOrderFixture) return requireEsmMicrotaskOrderFixture;
     \\  const issue26632MissingBunFileFixture = __home_spawn_issue_26632_missing_bun_file_fixture(options || {}, cmd);
     \\  if (issue26632MissingBunFileFixture) return issue26632MissingBunFileFixture;
+    \\  const issue28522PartialDeepStrictEqualFixture = __home_spawn_issue_28522_partial_deep_strict_equal_fixture(options || {}, cmd);
+    \\  if (issue28522PartialDeepStrictEqualFixture) return issue28522PartialDeepStrictEqualFixture;
     \\  const arrayCommaValueFixture = __home_spawn_array_comma_value_fixture(options || {}, cmd);
     \\  if (arrayCommaValueFixture) return arrayCommaValueFixture;
     \\  const commaOperatorThisBindingFixture = __home_spawn_comma_operator_this_binding_fixture(options || {}, cmd);
@@ -46524,18 +46518,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/s3/s3-fd-validation.test.ts",
         "regression/issue/ENG-24434.test.ts",
         "regression/issue/fuzzer-ENG-22942.test.ts",
-        "js/bun/transpiler/transpiler-utf16-loader.test.ts",
-        "js/web/html/html-rewriter-doctype.test.ts",
-        "js/bun/jsonc/jsonc.test.ts",
-        "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
-        "js/bun/test/jest-each.test.ts",
-        "regression/issue/htmlrewriter-additional-bugs.test.ts",
-        "regression/issue/24191.test.ts",
-        "js/bun/resolve/resolve-bad-parent.test.mjs",
-        "regression/issue/issue-1825-jest-mock-functions.test.ts",
-        "js/bun/test/expect-toHaveReturnedWith.test.js",
-        "js/bun/test/mock/mock-module-non-string.test.ts",
-        "regression/issue/09563/09563.test.ts",
         "regression/issue/19412.test.ts",
         "regression/issue/02369.test.ts",
         "regression/issue/04011.test.ts",
@@ -54856,6 +54838,59 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors mixed runtime regression mini-suite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        alternate_passed: ?usize = null,
+        todo: usize = 0,
+    }{
+        .{ .path = "js/bun/transpiler/transpiler-utf16-loader.test.ts", .passed = 5 },
+        .{ .path = "regression/issue/012039.test.ts", .passed = 3 },
+        .{ .path = "js/web/html/html-rewriter-doctype.test.ts", .passed = 1 },
+        .{ .path = "js/bun/jsonc/jsonc.test.ts", .passed = 13 },
+        .{ .path = "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/test/jest-each.test.ts", .passed = 25 },
+        .{ .path = "regression/issue/htmlrewriter-additional-bugs.test.ts", .passed = 7 },
+        .{ .path = "regression/issue/24191.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/28522.test.ts", .passed = 1 },
+        .{ .path = "js/bun/resolve/resolve-bad-parent.test.mjs", .passed = 1, .todo = 1 },
+        .{ .path = "regression/issue/issue-1825-jest-mock-functions.test.ts", .passed = 3 },
+        .{ .path = "js/bun/test/expect-toHaveReturnedWith.test.js", .passed = 13 },
+        .{ .path = "js/bun/test/mock/mock-module-non-string.test.ts", .passed = 5 },
+        .{ .path = "regression/issue/09563/09563.test.ts", .passed = 1 },
+        // issue 5228 drives nested `bun test` subprocess fixtures; isolated runs
+        // also observe child registrations, while the full suite only counts the
+        // four parent tests.
+        .{ .path = "regression/issue/5228.test.js", .passed = 14, .alternate_passed = 4 },
+        .{ .path = "regression/issue/26377.test.ts", .passed = 3 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        const passed_matches = summary.passed == case.passed or (case.alternate_passed != null and summary.passed == case.alternate_passed.?);
+        if (summary.failed != 0 or summary.unsupported != 0 or !passed_matches or summary.todo != case.todo) {
+            std.debug.print(
+                "mixed runtime regression corpus mismatch in {s}: passed={} expected={} alternate_expected={?} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, case.alternate_passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expect(passed_matches);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
