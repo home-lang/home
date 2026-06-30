@@ -6794,6 +6794,7 @@ fn hasNoLibReferenceLib(source: []const u8) bool {
 
 fn hasCompilerOptionCompatibilityDiagnostic(source: []const u8) bool {
     if ((directiveBool(source, "allowJs") orelse false) and
+        !(directiveBool(source, "suppressOutputPathCheck") orelse false) and
         !(directiveBool(source, "noEmit") orelse false) and
         !(directiveBool(source, "emitDeclarationOnly") orelse false) and
         directiveValue(source, "outdir") == null and
@@ -53830,6 +53831,25 @@ test "conformance: option-validation diagnostic filter recognizes outFile/AMD" {
         .code = @as(u32, 2322),
         .message = @as([]const u8, "Type X is not assignable to type Y."),
     }));
+}
+
+test "conformance: suppressOutputPathCheck suppresses allowJs virtual output-path model" {
+    const base =
+        \\// @allowJs: true
+        \\// @filename: 0.js
+        \\// @ts-check
+        \\const x = 1;
+    ;
+    try T.expect(hasCompilerOptionCompatibilityDiagnostic(base));
+
+    const suppressed =
+        \\// @allowJs: true
+        \\// @suppressOutputPathCheck: true
+        \\// @filename: 0.js
+        \\// @ts-check
+        \\const x = 1;
+    ;
+    try T.expect(!hasCompilerOptionCompatibilityDiagnostic(suppressed));
 }
 
 test "conformance: exact-error path honors modeled Node resolver bucket" {
