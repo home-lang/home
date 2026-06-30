@@ -29579,6 +29579,14 @@ const harness_prelude =
     \\      delay,
     \\      concat(...buffers) { return __home_concat_array_buffers(buffers, Infinity, true); },
     \\    };
+    \\    const denoCoreOps = {
+    \\      op_encode_binary_string(input) {
+    \\        const bytes = ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input || []);
+    \\        let output = "";
+    \\        for (let i = 0; i < bytes.length; i++) output += String.fromCodePoint(bytes[i] & 0xff);
+    \\        return output;
+    \\      },
+    \\    };
     \\    globalThis.window = globalThis.window || { crypto: globalThis.crypto };
     \\    const denoInternal = Symbol("Deno[internal]");
     \\    globalThis.Deno = {
@@ -29588,7 +29596,7 @@ const harness_prelude =
     \\      [denoInternal]: new Proxy({}, {
     \\        get(target, property) {
     \\          if (property === "inspectArgs") return function(args) { return __home_format(args && args.length === 1 ? args[0] : args) + "\n"; };
-    \\          if (property === "core") return { ops: {} };
+    \\          if (property === "core") return { ops: denoCoreOps };
     \\          throw new Error("Deno[Deno.internal]." + String(property));
     \\        },
     \\      }),
@@ -33685,12 +33693,30 @@ const harness_prelude =
     \\  };
     \\  return Object.prototype.hasOwnProperty.call(labels, raw) ? labels[raw] : raw;
     \\}
+    \\function __home_is_supported_text_encoding_label(label, normalized) {
+    \\  if (label === undefined) return true;
+    \\  const raw = String(label).trim().toLowerCase();
+    \\  if (raw !== normalized) return true;
+    \\  return [
+    \\    "utf-8", "ibm866", "iso-8859-3", "iso-8859-6", "iso-8859-7", "iso-8859-8", "iso-8859-8-i",
+    \\    "koi8-u", "windows-874", "windows-1252", "windows-1253", "windows-1255", "windows-1257",
+    \\    "utf-16be", "utf-16le", "x-user-defined", "replacement", "big5", "euc-jp", "iso-2022-jp",
+    \\    "shift_jis", "euc-kr", "gbk", "gb18030",
+    \\  ].includes(normalized);
+    \\}
     \\if (typeof TextDecoder === "function" && !TextDecoder.__home_constructor_normalized) {
     \\  const __home_NativeTextDecoder = TextDecoder;
     \\  TextDecoder = function(label, options) {
     \\    if (options && typeof options.ignoreBOM === "object" && options.ignoreBOM !== null) throw new TypeError("TextDecoder ignoreBOM must be boolean-convertible");
     \\    const normalized = __home_normalize_text_encoding_label(label);
-    \\    const decoder = new __home_NativeTextDecoder(normalized === "replacement" ? "utf-8" : normalized, options);
+    \\    if (!__home_is_supported_text_encoding_label(label, normalized)) throw new TypeError("The encoding label provided ('" + String(label) + "') is invalid.");
+    \\    let decoder;
+    \\    try {
+    \\      decoder = new __home_NativeTextDecoder(normalized === "replacement" ? "utf-8" : normalized, options);
+    \\    } catch (error) {
+    \\      if (label !== undefined) throw new TypeError("The encoding label provided ('" + String(label) + "') is invalid.");
+    \\      throw error;
+    \\    }
     \\    try { Object.defineProperty(decoder, "encoding", { configurable: true, value: normalized }); } catch (error) {}
     \\    try { Object.defineProperty(decoder, "fatal", { configurable: true, value: !!(options && options.fatal) }); } catch (error) {}
     \\    try { Object.defineProperty(decoder, "ignoreBOM", { configurable: true, value: !!(options && options.ignoreBOM) }); } catch (error) {}
@@ -36586,6 +36612,10 @@ fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
 
+fn rewriteDenoEncodingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
+}
+
 fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -39291,6 +39321,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeUrlIsUrlCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/util/node-inspect-tests/internal-inspect.test.js"))
         try rewriteNodeInternalInspectCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/encoding/encoding.test.ts"))
+        try rewriteDenoEncodingCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
@@ -56625,7 +56657,7 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         .{ .path = "js/web/encoding/text-decoder.test.js", .passed = 77 },
         .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 7 },
         .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
-        .{ .path = "js/deno/encoding/encoding.test.ts", .passed = 21, .todo = 2 },
+        .{ .path = "js/deno/encoding/encoding.test.ts", .passed = 23 },
         .{ .path = "regression/issue/fix-bindings-stack-trace.test.ts", .passed = 2 },
         .{ .path = "js/node/module/module-sourcemap.test.js", .passed = 3 },
         .{ .path = "js/node/console/console-constructor-exception.test.ts", .passed = 1 },
@@ -56670,6 +56702,34 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
+}
+
+test "bootstrap runner mirrors Deno encoding corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/encoding/encoding.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/encoding/encoding.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "op_encode_binary_string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "The encoding label provided") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors node util internal inspect corpus" {
