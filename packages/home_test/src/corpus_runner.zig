@@ -29219,6 +29219,18 @@ const harness_prelude =
     \\    throw __home_json_module_parse_error(text, error);
     \\  }
     \\}
+    \\function __home_parse_json5_module_text(text) {
+    \\  const source = String(text || "");
+    \\  const cleaned = __home_strip_json_comments(source).trim();
+    \\  if (cleaned.length === 0) return null;
+    \\  return Function("\"use strict\"; return (" + cleaned + "\n);")();
+    \\}
+    \\globalThis.__home_import_json5 = function(specifier) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  const text = __home_build_read_text(resolved);
+    \\  if (text === null) throw new Error("Cannot find module: " + String(specifier));
+    \\  return { default: __home_parse_json5_module_text(text) };
+    \\};
     \\globalThis.__home_import = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[resolved];
@@ -29249,6 +29261,7 @@ const harness_prelude =
     \\  if (type === "js" || type === "jsx" || type === "ts" || type === "tsx") return {};
     \\  if (type === "json") return { default: __home_parse_json_module_text(text, resolved) };
     \\  if (type === "jsonc") return { default: String(text).trim() === "" ? {} : __home_parse_jsonc_text(text) };
+    \\  if (type === "json5") return globalThis.__home_import_json5(resolved);
     \\  if (type === "yaml" || type === "toml") return { default: String(text).trim() === "" ? {} : __home_yaml_parse(text) };
     \\  if (type === "sqlite" || type === "sqlite_embedded") {
     \\    const Database = globalThis.__home_import("bun:sqlite").Database;
@@ -29289,6 +29302,7 @@ const harness_prelude =
     \\  const query = queryIndex === -1 ? "" : text.slice(queryIndex);
     \\  const loader = __home_import_attribute_loader(options);
     \\  if (loader !== null) return Promise.resolve(__home_import_with_loader(withoutQuery, loader));
+    \\  if (String(withoutQuery).endsWith(".json5")) return Promise.resolve(globalThis.__home_import_json5(withoutQuery));
     \\  const queryFixture = __home_import_query_fixture_module(withoutQuery, query);
     \\  if (queryFixture) return Promise.resolve(queryFixture);
     \\  const loadSameFixture = __home_load_same_js_file_module(withoutQuery, query);
@@ -35564,6 +35578,24 @@ fn rewriteLoadSameJsFileCorpus(allocator: std.mem.Allocator, source: []const u8)
     );
 }
 
+fn rewriteJson5ResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const empty_import = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import emptyJson5 from \"./json5-empty.json5\";",
+        "const emptyJson5 = globalThis.__home_import_json5(\"./json5-empty.json5\").default;",
+    );
+    defer allocator.free(empty_import);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        empty_import,
+        "import json5FromCustomTypeAttribute from \"./json5-fixture.json5.txt\" with { type: \"json5\" };",
+        "const json5FromCustomTypeAttribute = globalThis.__home_import_json5(\"./json5-fixture.json5.txt\").default;",
+    );
+}
+
 fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
@@ -38385,7 +38417,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-query.test.ts"))
         try rewriteImportQueryCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/json5/json5.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "JSON5 import attribute loader resolution")
+        try rewriteJson5ResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/load-same-js-file-a-lot.test.ts"))
         try rewriteLoadSameJsFileCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/lower-using-bun-target.test.ts"))
@@ -53279,6 +53311,34 @@ test "bootstrap runner mirrors load-same query-qualified JS corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/json5/json5.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/json5/json5.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSON5 import attribute loader resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_json5(\"./json5-empty.json5\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"json5\" }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./json5-fixture.json5\")") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner covers mock.module validation and imports" {
