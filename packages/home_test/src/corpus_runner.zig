@@ -39652,7 +39652,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/native-constructor-identity.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/shadow.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "JSC shadow realm integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/string-noAtomize.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/json5/json5-test-suite.test.ts"))
@@ -53741,6 +53741,36 @@ test "bootstrap runner mirrors native constructor identity corpus" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
+test "bootstrap runner mirrors ShadowRealm corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/jsc/shadow.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsc/shadow.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSC shadow realm integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "class HomeShadowRealm") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("ShadowRealm corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
 test "bootstrap rewrite preserves ternary false branches named like types" {
     const source =
         \\import { expect, test } from "bun:test";
@@ -57584,7 +57614,7 @@ test "bootstrap runner mirrors final minimal core smoke mini-suite" {
         .{ .path = "regression/issue/23723.test.js", .passed = 1 },
         .{ .path = "regression/issue/12650.test.js", .passed = 2 },
         .{ .path = "js/node/domexception-node.test.js", .passed = 7 },
-        .{ .path = "js/bun/jsc/shadow.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/jsc/shadow.test.js", .passed = 1 },
         .{ .path = "js/node/dirname.test.js", .passed = 2 },
         .{ .path = "regression/issue/03091.test.ts", .passed = 1 },
         .{ .path = "regression/issue/15326.test.ts", .passed = 1 },
