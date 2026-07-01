@@ -2901,7 +2901,7 @@ pub fn moduleExportsValueSpaceName(
     }
     const id = compilation.interner.lookup(name) orelse return false;
     const sym = compilation.module.root.values.get(id) orelse return false;
-    if (sym.flags.is_type or !sym.flags.is_export) return false;
+    if (sym.flags.is_type) return false;
     return moduleRootHasExportedRuntimeValue(&compilation.hir, compilation.root, id);
 }
 
@@ -3042,8 +3042,21 @@ fn moduleRootHasExportedRuntimeValue(hir: *const hir_mod_ns.Hir, root: hir_mod_n
         for (hir_mod_ns.exportNamed(hir, stmt)) |spec_node| {
             if (hir.kindOf(spec_node) != .import_specifier) continue;
             const sp = hir_mod_ns.importSpecifierOf(hir, spec_node);
-            if (sp.local == name or sp.imported == name) return true;
+            if (sp.local == name or sp.imported == name) {
+                return moduleRootLocalNameCreatesRuntimeValue(hir, root, sp.imported);
+            }
         }
+    }
+    return false;
+}
+
+fn moduleRootLocalNameCreatesRuntimeValue(hir: *const hir_mod_ns.Hir, root: hir_mod_ns.NodeId, name: hir_mod_ns.StringId) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        if (hir.kindOf(raw) == .import_decl) continue;
+        const stmt = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (stmt == hir_mod_ns.none_node_id) continue;
+        if (declarationName(hir, stmt) == name and declCreatesRuntimeValue(hir, stmt)) return true;
     }
     return false;
 }
@@ -4794,9 +4807,11 @@ test "moduleExportsValueSpaceName: exported value-space names exclude interfaces
     try T.expect(moduleExportsValueSpaceName(T.allocator, "export enum E { A }", "E", false));
     try T.expect(moduleExportsValueSpaceName(T.allocator, "export const v = 1;", "v", false));
     try T.expect(moduleExportsValueSpaceName(T.allocator, "export function f() {}", "f", false));
+    try T.expect(moduleExportsValueSpaceName(T.allocator, "const A = {}; export { A };", "A", false));
     try T.expect(moduleExportsValueSpaceName(T.allocator, "export namespace N { export const v = 1; }", "N", false));
     try T.expect(!moduleExportsValueSpaceName(T.allocator, "export interface I {}", "I", false));
     try T.expect(!moduleExportsValueSpaceName(T.allocator, "export type A = number;", "A", false));
+    try T.expect(!moduleExportsValueSpaceName(T.allocator, "namespace A {} export { A };", "A", false));
     try T.expect(!moduleExportsValueSpaceName(T.allocator, "export namespace N { export type T = any; }", "N", false));
 }
 

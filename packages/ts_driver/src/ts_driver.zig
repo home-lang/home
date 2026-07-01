@@ -281,6 +281,10 @@ pub const CompileOptions = struct {
     /// when `--jsx` is absent, but the checker must report TS17004
     /// when JSX syntax is actually used in that state.
     jsx_option_present: bool = false,
+    /// Effective `jsx: preserve` mode when the caller already resolved
+    /// conformance directives or tsconfig. The checker uses this for
+    /// emitted-extension suggestions in Node ESM module resolution.
+    jsx_preserve_option: bool = false,
     /// Treat the source as a declaration file. Declaration files allow
     /// ambient forms such as `export const x: T;` without initializers.
     is_declaration_file: bool = false,
@@ -1910,6 +1914,7 @@ pub fn compileSource(
     // the checker whether the parser produced syntactic diagnostics.
     checker.setHasParseDiagnostics(parser.diagnostics.items.len > 0);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
+    checker.setJsxPreserveOption(options.jsx_preserve_option);
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
     checker.setJsxFragmentFactoryContext(
         jsxTransformEnabled(options),

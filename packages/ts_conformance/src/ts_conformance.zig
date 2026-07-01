@@ -42,6 +42,11 @@ const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
     ambient_modules: []const AmbientModuleResolution = &.{},
 
+    const TypeOnlyExportInfo = struct {
+        path: []const u8,
+        pos: u32,
+    };
+
     pub const vtable = ts_checker.ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
@@ -136,10 +141,14 @@ const CheckerResolverAdapter = struct {
         const ambient_exported = if (ambient_facts) |facts| facts.exported_type or facts.exported_value else false;
         const cannot_be_named = !exported and !ambient_exported and
             ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
+        const type_only_info = self.moduleTypeOnlyExportInfoFromSource(src, r.path, name, is_tsx);
+        const type_only_pos = if (type_only_info) |info| info.pos else null;
         const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
         const effective_type_only_pos = if (ambient_facts) |facts| facts.type_only_pos orelse type_only_pos else type_only_pos;
-        const export_path = if (effective_type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
+        const effective_type_only_path = if (ambient_facts) |facts|
+            if (facts.type_only_pos != null) r.path else if (type_only_info) |info| info.path else r.path
+        else if (type_only_info) |info| info.path else r.path;
+        const export_path = if (effective_type_only_pos != null) (arena.dupe(u8, effective_type_only_path) catch return null) else "";
         return .{
             .module_name = module_name,
             .exported_type = exported or if (ambient_facts) |facts| facts.exported_type else false,
@@ -150,6 +159,104 @@ const CheckerResolverAdapter = struct {
             .export_pos = effective_type_only_pos orelse 0,
             .ambient_module = has_ambient_module,
         };
+    }
+
+    fn moduleTypeOnlyExportInfoFromSource(
+        self: *CheckerResolverAdapter,
+        src: []const u8,
+        module_path: []const u8,
+        name: []const u8,
+        is_tsx: bool,
+    ) ?TypeOnlyExportInfo {
+        if (ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx)) |pos| {
+            return .{ .path = module_path, .pos = pos };
+        }
+        if (ts_program.moduleExportsValueSpaceName(self.resolver.gpa, src, name, is_tsx)) return null;
+
+        var compilation = ts_driver.compileSource(self.resolver.gpa, src, .{
+            .is_tsx = is_tsx,
+            .continue_on_error = true,
+            .no_emit = true,
+        }) catch return null;
+        defer {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+        }
+        const root = compilation.root;
+        if (compilation.hir.kindOf(root) != .block_stmt) return null;
+        const exported_id = compilation.interner.lookup(name) orelse return null;
+        for (hir_mod.blockStmts(&compilation.hir, root)) |stmt| {
+            if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod.exportOf(&compilation.hir, stmt);
+            if (ex.is_type_only or ex.is_namespace or ex.named_len == 0) continue;
+            const ex_module = compilation.interner.get(ex.module);
+            for (hir_mod.exportNamed(&compilation.hir, stmt)) |spec_node| {
+                if (compilation.hir.kindOf(spec_node) != .import_specifier and
+                    compilation.hir.kindOf(spec_node) != .export_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(&compilation.hir, spec_node);
+                if (exportSpecifierExportedName(&compilation.hir, src, spec_node, sp) != exported_id) continue;
+                if (ex_module.len != 0) {
+                    if (self.moduleTypeOnlyExportInfoFromSpecifier(ex_module, module_path, compilation.interner.get(sp.imported))) |info| return info;
+                    continue;
+                }
+                if (self.localImportTypeOnlyExportInfo(compilation, module_path, sp.imported)) |info| return info;
+            }
+        }
+        return null;
+    }
+
+    fn localImportTypeOnlyExportInfo(
+        self: *CheckerResolverAdapter,
+        compilation: *ts_driver.Compilation,
+        module_path: []const u8,
+        local_name: hir_mod.StringId,
+    ) ?TypeOnlyExportInfo {
+        if (compilation.hir.kindOf(compilation.root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+            if (compilation.hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod.importOf(&compilation.hir, stmt);
+            const specifier = compilation.interner.get(imp.module);
+            if (specifier.len == 0) continue;
+            for (hir_mod.importNamed(&compilation.hir, stmt)) |spec_node| {
+                if (compilation.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(&compilation.hir, spec_node);
+                if (sp.local != local_name) continue;
+                if (imp.is_type_only or sp.is_type_only) {
+                    return .{ .path = module_path, .pos = compilation.hir.spanOf(spec_node).start };
+                }
+                return self.moduleTypeOnlyExportInfoFromSpecifier(specifier, module_path, compilation.interner.get(sp.imported));
+            }
+        }
+        return null;
+    }
+
+    fn moduleTypeOnlyExportInfoFromSpecifier(
+        self: *CheckerResolverAdapter,
+        specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+    ) ?TypeOnlyExportInfo {
+        const r = self.resolver.resolve(specifier, containing_file) catch return null;
+        const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
+        defer self.resolver.gpa.free(src);
+        const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        return self.moduleTypeOnlyExportInfoFromSource(src, r.path, name, is_tsx);
+    }
+
+    fn exportSpecifierExportedName(
+        hir: *const hir_mod.Hir,
+        src: []const u8,
+        spec_node: hir_mod.NodeId,
+        sp: hir_mod.ImportSpecifierPayload,
+    ) hir_mod.StringId {
+        const span = hir.spanOf(spec_node);
+        if (span.start >= span.end or span.end > src.len) return sp.local;
+        const text = src[span.start..span.end];
+        var it = std.mem.tokenizeAny(u8, text, " \t\r\n");
+        _ = it.next() orelse return sp.local;
+        const maybe_as = it.next() orelse return sp.imported;
+        if (std.mem.eql(u8, maybe_as, "as")) return sp.local;
+        return sp.imported;
     }
 
     fn inferredExportUnsafeReferenceImpl(
@@ -487,6 +594,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
+        .jsx_preserve_option = directiveValueIs(directive_source, "jsx", "preserve"),
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
@@ -903,6 +1011,7 @@ fn freeStringSet(gpa: std.mem.Allocator, set: *std.StringHashMapUnmanaged(void))
 /// resolver-driven fixtures both see real file boundaries.
 fn shouldRouteThroughProgram(c: Case) bool {
     if (c.raw_source.len == 0) return false;
+    if (caseNeedsProgramRouteByName(c.name)) return true;
     // Only route fixtures with explicit expected diagnostics. Fixtures
     // upstream treats as clean (no `.errors.txt` baseline) work today
     // via the legacy concatenated source — the checker sees all
@@ -2416,6 +2525,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     var compile_options = ts_driver.CompileOptions{
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
+        .jsx_preserve_option = directiveValueIs(directive_source, "jsx", "preserve"),
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
@@ -7256,6 +7366,16 @@ fn directiveBool(source: []const u8, directive_name: []const u8) ?bool {
     return parseDirectiveBool(value);
 }
 
+fn directiveValueIs(source: []const u8, directive_name: []const u8, expected: []const u8) bool {
+    const value = directiveValue(source, directive_name) orelse return false;
+    var parts = std.mem.splitScalar(u8, value, ',');
+    while (parts.next()) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t\r");
+        if (std.ascii.eqlIgnoreCase(part, expected)) return true;
+    }
+    return false;
+}
+
 fn directiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
@@ -7821,9 +7941,14 @@ pub fn combineCategoryStats(cats: []const CategoryResult) Stats {
 }
 
 fn coarseExpectedErrorNeedsProgramRoute(entry: CorpusEntry) bool {
-    return std.mem.eql(u8, entry.name, "resolvesWithoutExportsDiagnostic1") or
-        std.mem.eql(u8, entry.name, "moduleResolutionWithoutExtension3") or
-        std.mem.eql(u8, entry.name, "bundlerCommonJS");
+    return caseNeedsProgramRouteByName(entry.name);
+}
+
+fn caseNeedsProgramRouteByName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "resolvesWithoutExportsDiagnostic1") or
+        std.mem.eql(u8, name, "moduleResolutionWithoutExtension3") or
+        std.mem.eql(u8, name, "typeOnlyMerge2") or
+        std.mem.eql(u8, name, "bundlerCommonJS");
 }
 
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
