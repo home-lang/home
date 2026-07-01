@@ -181,3 +181,22 @@ test "Bun corpus counter walks nested directories" {
     try std.testing.expectEqual(@as(usize, 3), counts.files);
     try std.testing.expectEqual(@as(usize, 2), counts.tests);
 }
+
+test "Bun corpus collector sees vendored upstream tests" {
+    const root = "packages/runtime/test/bun-corpus";
+    const counts = try countPath(std.testing.io, root);
+    try std.testing.expect(counts.tests >= 1700);
+
+    const files = try collectTestFiles(std.testing.io, std.testing.allocator, root);
+    defer freeTestFiles(std.testing.allocator, files);
+
+    try std.testing.expectEqual(counts.tests, files.len);
+    var found_cp = false;
+    for (files) |file| {
+        if (std.mem.eql(u8, file, "js/bun/shell/commands/cp.test.ts")) {
+            found_cp = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_cp);
+}
