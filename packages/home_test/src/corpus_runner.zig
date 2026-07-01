@@ -39604,7 +39604,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch TLS proxy server integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/req-url-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve req.url subprocess memory leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/request-smuggling.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve raw TCP request smuggling integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-body-leak.test.ts"))
@@ -57233,7 +57233,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         todo: usize = 0,
     }{
         .{ .path = "js/bun/http/bun-serve-body-json-async.test.ts", .passed = 1 },
-        .{ .path = "js/bun/http/req-url-leak.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/http/req-url-leak.test.ts", .passed = 1 },
         .{ .path = "js/bun/http/leaks-test.test.ts", .passed = 3 },
         .{ .path = "js/third_party/prompts/prompts.test.ts", .passed = 1 },
         .{ .path = "js/web/timers/microtask.test.js", .passed = 1 },
@@ -57553,6 +57553,52 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
         try std.testing.expectEqual(case.passed, file_run.result.passed);
         try std.testing.expectEqual(case.todo, file_run.result.todo);
     }
+}
+
+test "bootstrap runner mirrors req.url leak fixture smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\import path from "path";
+        \\test("req.url leak fixture smoke", async () => {
+        \\  const { promise, resolve } = Promise.withResolvers();
+        \\  await using process = Bun.spawn({
+        \\    cmd: [bunExe(), path.join(import.meta.dir, "req-url-leak-fixture.js")],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    ipc(message, child) {
+        \\      if (message.url) resolve(message.url);
+        \\    },
+        \\  });
+        \\  const baseURL = await promise;
+        \\  const response = await fetch(new URL("smoke", baseURL));
+        \\  const rss = Number(await response.text());
+        \\  expect(Number.isSafeInteger(rss)).toBe(true);
+        \\  expect(rss).toBeLessThan(1024 * 1024 * 150);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/req-url-leak.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "req-url-leak-fixture.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "isReqUrlLeakFixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("req.url leak fixture smoke failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors buffer test utility tail mini-suite" {
