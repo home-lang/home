@@ -39650,7 +39650,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/heapStats-mimalloc.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "JSC mimalloc heap stats integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/native-constructor-identity.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "JSC native constructor identity")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/shadow.test.js"))
         try rewriteNativeTodoCorpus(allocator, "JSC shadow realm integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/string-noAtomize.test.ts"))
@@ -53711,6 +53711,36 @@ test "bootstrap rewrite erases as any assertions" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const invalidValues = [true, false, \"hi\", {}, [], undefined, null];") != null);
 }
 
+test "bootstrap runner mirrors native constructor identity corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/jsc/native-constructor-identity.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsc/native-constructor-identity.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSC native constructor identity") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new (BigInt)(1)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("native constructor identity corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
 test "bootstrap rewrite preserves ternary false branches named like types" {
     const source =
         \\import { expect, test } from "bun:test";
@@ -57242,7 +57272,7 @@ test "bootstrap runner mirrors minimal core tail utility mini-suite" {
         .{ .path = "js/bun/resolve/toml/crash/toml-crash.test.ts", .passed = 1 },
         .{ .path = "regression/issue/013880.test.ts", .passed = 1 },
         .{ .path = "js/bun/util/exotic-global-mutable-prototype.test.ts", .passed = 1 },
-        .{ .path = "js/bun/jsc/native-constructor-identity.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/bun/jsc/native-constructor-identity.test.ts", .passed = 4 },
         .{ .path = "js/bun/empty-file.test.ts", .passed = 0 },
         .{ .path = "js/bun/test/expect-type-global.test.ts", .passed = 1 },
         .{ .path = "js/bun/test/expect-type.test.ts", .passed = 1 },
