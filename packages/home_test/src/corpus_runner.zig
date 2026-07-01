@@ -29466,6 +29466,7 @@ const harness_prelude =
     \\};
     \\globalThis.__home_modules["deno:harness"] = {
     \\  createDenoTest(path, defaultTimeout) {
+    \\    if (globalThis.PORT === undefined) globalThis.PORT = 4545;
     \\    function __home_deno_name(fn) {
     \\      return fn && fn.name ? fn.name : String(path || "deno:harness");
     \\    }
@@ -31890,6 +31891,17 @@ const harness_prelude =
     \\  }
     \\  if (href === "http://example.com/" || href === "http://example.com") {
     \\    return __home_fetch_thenable(new Response("<!doctype html><title>Example Domain</title><p>Example Domain</p>", { headers: { "Content-Type": "text/html" } }), null);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("js/deno/fetch/body.test.ts")) {
+    \\    const denoBodyPath = (() => { try { return new URL(href).pathname; } catch (error) { return ""; } })();
+    \\    if (denoBodyPath === "/multipart_form_data.txt") {
+    \\      const boundary = "home-deno-body-boundary";
+    \\      const body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"field_1\"\r\n\r\nvalue_1 \r\n\r\n\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"field_2\"\r\n\r\nvalue_2\r\n--" + boundary + "--\r\n";
+    \\      return __home_fetch_thenable(new Response(body, { headers: { "Content-Type": "multipart/form-data; boundary=" + boundary } }), null);
+    \\    }
+    \\    if (denoBodyPath === "/subdir/form_urlencoded.txt") {
+    \\      return __home_fetch_thenable(new Response("field_1=Hi&field_2=%3CDeno%3E", { headers: { "Content-Type": "application/x-www-form-urlencoded" } }), null);
+    \\    }
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && fetchMethod === "PUT" && /\/-\/user\/org\.couchdb\.user:/.test(href)) {
     \\    const username = decodeURIComponent(String(href).split("org.couchdb.user:").pop() || "user");
@@ -36810,6 +36822,16 @@ fn rewriteDenoFetchRequestCorpus(allocator: std.mem.Allocator, source: []const u
     );
 }
 
+fn rewriteDenoFetchBodyCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "ignore: true",
+        "ignore: false",
+    );
+}
+
 fn rewriteDenoFetchHeadersCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -39553,6 +39575,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteDenoEventTargetCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/request.test.ts"))
         try rewriteDenoFetchRequestCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/fetch/body.test.ts"))
+        try rewriteDenoFetchBodyCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/blob.test.ts"))
         try rewriteDenoFetchBlobCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/headers.test.ts"))
@@ -57259,7 +57283,7 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
         .{ .path = "js/deno/event/event-target.test.ts", .passed = 15 },
         .{ .path = "js/deno/fetch/request.test.ts", .passed = 7 },
-        .{ .path = "js/deno/fetch/body.test.ts", .passed = 3, .todo = 2 },
+        .{ .path = "js/deno/fetch/body.test.ts", .passed = 5 },
         .{ .path = "js/deno/fetch/blob.test.ts", .passed = 10 },
         .{ .path = "js/deno/fetch/headers.test.ts", .passed = 27 },
         .{ .path = "js/deno/fetch/response.test.ts", .passed = 9 },
@@ -57376,6 +57400,38 @@ test "bootstrap runner mirrors Deno blob inspect corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Deno body form data corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/fetch/body.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/fetch/body.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ignore: true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "multipart_form_data.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "form_urlencoded.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.PORT") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Deno body form-data corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
