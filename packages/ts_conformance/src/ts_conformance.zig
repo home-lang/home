@@ -86,6 +86,8 @@ const CheckerResolverAdapter = struct {
             .alternate_result = r.alternate_result,
             .project_reference_output = r.project_reference_output,
             .blocked_by_exports_null = r.blocked_by_exports_null,
+            .package_json_map = r.package_json_map,
+            .package_imports_pattern = r.package_imports_pattern,
         };
     }
 
@@ -598,6 +600,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
+        .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
@@ -2529,6 +2532,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
+        .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,

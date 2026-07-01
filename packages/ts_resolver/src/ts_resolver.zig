@@ -176,6 +176,12 @@ pub const Resolution = struct {
     /// that as a hard module-resolution failure even if the `types`
     /// condition can name a declaration file.
     blocked_by_exports_null: bool = false,
+    /// True when resolution went through package.json `exports` or
+    /// `imports`.
+    package_json_map: bool = false,
+    /// True only when a package.json `imports` wildcard pattern resolved
+    /// this specifier. Used by rewriteRelativeImportExtensions diagnostics.
+    package_imports_pattern: bool = false,
     /// tsc's package identity string for node_modules resolutions when
     /// the owning package.json has both `name` and `version`.
     package_id: ?[]const u8 = null,
@@ -841,6 +847,7 @@ pub const Resolver = struct {
                 .is_declaration = r.is_declaration,
                 .alternate_result = r.alternate_result,
                 .project_reference_output = r.project_reference_output,
+                .package_json_map = true,
                 .package_id = r.package_id,
             },
             .blocked, .none => return null,
@@ -881,9 +888,15 @@ pub const Resolver = struct {
                     return null; // hard rejection
                 },
                 .matched => |m| {
-                    const joined = try self.joinPath(scope.dir, m);
+                    const joined = try self.joinPath(scope.dir, m.target);
                     if (try self.tryFileWithExtensions(joined)) |r| {
-                        return .{ .path = r.path, .source = .package_exports, .is_declaration = r.is_declaration };
+                        return .{
+                            .path = r.path,
+                            .source = .package_exports,
+                            .is_declaration = r.is_declaration,
+                            .package_json_map = true,
+                            .package_imports_pattern = m.is_pattern,
+                        };
                     }
                     return null;
                 },
@@ -1911,7 +1924,7 @@ pub const Resolver = struct {
                     switch (target) {
                         .matched_null => return .blocked, // hard rejection
                         .matched => |m| {
-                            const joined = try self.joinPath(pkg_dir, m);
+                            const joined = try self.joinPath(pkg_dir, m.target);
                             // TS2209 — under `outDir`/`declarationDir`, tsc
                             // tries to map the exports target back to its
                             // source input *before* loading it directly, but
@@ -1936,12 +1949,14 @@ pub const Resolver = struct {
                                 try self.tracePackagePeerDependencies(pkg_dir, obj);
                                 var out = r;
                                 out.blocked_by_exports_null = active_null;
+                                out.package_json_map = true;
                                 return .{ .resolved = out };
                             }
                             if (try self.tryLoadInputFileForPath(joined)) |r| {
                                 try self.tracePackagePeerDependencies(pkg_dir, obj);
                                 var out = r;
                                 out.blocked_by_exports_null = active_null;
+                                out.package_json_map = true;
                                 return .{ .resolved = out };
                             }
                             // The exports map matched but the target file
@@ -2071,7 +2086,10 @@ pub const Resolver = struct {
         not_matched,
         matched_null,
         invalid_target,
-        matched: []const u8,
+        matched: struct {
+            target: []const u8,
+            is_pattern: bool = false,
+        },
     };
 
     fn lookupExports(
@@ -2089,7 +2107,7 @@ pub const Resolver = struct {
         if (node == .string) {
             if (std.mem.eql(u8, key, ".")) {
                 self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, node.string });
-                return .{ .matched = node.string };
+                return .{ .matched = .{ .target = node.string } };
             }
             return .not_matched;
         }
@@ -2097,7 +2115,7 @@ pub const Resolver = struct {
             if (std.mem.eql(u8, key, ".")) {
                 if (try self.resolveConditional(node, kind, scope_dir, key)) |resolved| {
                     if (resolved == .matched) {
-                        self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched });
+                        self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched.target });
                     }
                     return resolved;
                 }
@@ -2126,26 +2144,26 @@ pub const Resolver = struct {
             if (obj.get(key)) |entry| {
                 if (try self.resolveConditional(entry, kind, scope_dir, key)) |resolved| {
                     if (resolved == .matched) {
-                        self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched });
+                        self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched.target });
                     }
                     return resolved;
                 }
                 return null;
             }
-            // Pattern match (e.g. `./*` or `./foo/*`).
+            // Pattern match (e.g. `./*`, `./foo/*`, or `./*.ts`).
             var best_prefix_len: usize = 0;
             var best_entry: ?std.json.Value = null;
             var best_substitution: []const u8 = "";
             var it = obj.iterator();
             while (it.next()) |e| {
                 const pat = e.key_ptr.*;
-                if (!std.mem.endsWith(u8, pat, "*")) continue;
-                const prefix = pat[0 .. pat.len - 1];
-                if (!std.mem.startsWith(u8, key, prefix)) continue;
+                const star_at = std.mem.indexOfScalar(u8, pat, '*') orelse continue;
+                const substitution = matchPattern(pat, key) orelse continue;
+                const prefix = pat[0..star_at];
                 if (prefix.len < best_prefix_len) continue;
                 best_prefix_len = prefix.len;
                 best_entry = e.value_ptr.*;
-                best_substitution = key[prefix.len..];
+                best_substitution = substitution;
             }
             if (best_entry) |entry| {
                 const conditional = try self.resolveConditional(entry, kind, scope_dir, key);
@@ -2159,12 +2177,12 @@ pub const Resolver = struct {
                         // per side and substitutes positionally — e.g.
                         // `./types/*.d.ts` with capture `"sub"` becomes
                         // `./types/sub.d.ts`.
-                        if (std.mem.indexOfScalar(u8, m, '*')) |star_at| {
-                            const expanded = try std.fmt.allocPrint(self.ar(), "{s}{s}{s}", .{ m[0..star_at], best_substitution, m[star_at + 1 ..] });
+                        if (std.mem.indexOfScalar(u8, m.target, '*')) |star_at| {
+                            const expanded = try std.fmt.allocPrint(self.ar(), "{s}{s}{s}", .{ m.target[0..star_at], best_substitution, m.target[star_at + 1 ..] });
                             self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, expanded });
-                            return .{ .matched = expanded };
+                            return .{ .matched = .{ .target = expanded, .is_pattern = true } };
                         }
-                        self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, m });
+                        self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, m.target });
                         return c;
                     },
                     .not_matched => return .not_matched,
@@ -2176,7 +2194,7 @@ pub const Resolver = struct {
         if (std.mem.eql(u8, key, ".")) {
             if (try self.resolveConditional(node, kind, scope_dir, key)) |resolved| {
                 if (resolved == .matched) {
-                    self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched });
+                    self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched.target });
                 }
                 return resolved;
             }
@@ -2197,7 +2215,7 @@ pub const Resolver = struct {
         specifier: []const u8,
     ) ResolveError!?ExportsLookup {
         if (node == .null) return .matched_null;
-        if (node == .string) return .{ .matched = node.string };
+        if (node == .string) return .{ .matched = .{ .target = node.string } };
         if (node == .array) {
             if (node.array.items.len == 0) {
                 self.traceInvalidPackageJsonTarget(scope_dir, specifier);
@@ -2313,7 +2331,7 @@ pub const Resolver = struct {
         var it_exact = map.iterator();
         while (it_exact.next()) |e| {
             const pat = e.key_ptr.*;
-            if (std.mem.endsWith(u8, pat, "*")) continue;
+            if (std.mem.indexOfScalar(u8, pat, '*') != null) continue;
             if (!std.mem.eql(u8, pat, lookup_key)) continue;
             const targets = e.value_ptr.*;
             if (targets != .array) continue;
@@ -2334,11 +2352,11 @@ pub const Resolver = struct {
         var it_wild = map.iterator();
         while (it_wild.next()) |e| {
             const pat = e.key_ptr.*;
-            if (!std.mem.endsWith(u8, pat, "*")) continue;
+            const star_at = std.mem.indexOfScalar(u8, pat, '*') orelse continue;
             const targets = e.value_ptr.*;
             if (targets != .array) continue;
             const captured = matchPattern(pat, lookup_key) orelse continue;
-            const prefix_len = pat.len - 1;
+            const prefix_len = star_at;
             if (found_any and prefix_len < best_prefix_len) continue;
             found_any = true;
             best_prefix_len = prefix_len;
@@ -2688,27 +2706,26 @@ fn stripLastSegment(path: []u8) []u8 {
     return path[0..0];
 }
 
-/// Match `pattern` (which may end in `*`) against `s`. Returns the
+/// Match `pattern` (which may contain one `*`) against `s`. Returns the
 /// substring that bound to `*`, or null on mismatch. Empty pattern
 /// matches anything.
 pub fn matchPattern(pattern: []const u8, s: []const u8) ?[]const u8 {
-    if (std.mem.endsWith(u8, pattern, "*")) {
-        const prefix = pattern[0 .. pattern.len - 1];
+    if (std.mem.indexOfScalar(u8, pattern, '*')) |star_at| {
+        const prefix = pattern[0..star_at];
+        const suffix = pattern[star_at + 1 ..];
         if (!std.mem.startsWith(u8, s, prefix)) return null;
-        return s[prefix.len..];
+        if (!std.mem.endsWith(u8, s, suffix)) return null;
+        if (s.len < prefix.len + suffix.len) return null;
+        return s[prefix.len .. s.len - suffix.len];
     }
     if (std.mem.eql(u8, pattern, s)) return "";
     return null;
 }
 
-/// Expand a path-mapping target. If `target` ends in `*`, replace
+/// Expand a path-mapping target. If `target` contains `*`, replace
 /// with `substitution`. Otherwise return as-is.
 pub fn expandTarget(gpa: std.mem.Allocator, target: []const u8, substitution: []const u8) ![]const u8 {
-    if (std.mem.endsWith(u8, target, "*")) {
-        const prefix = target[0 .. target.len - 1];
-        return std.fmt.allocPrint(gpa, "{s}{s}", .{ prefix, substitution });
-    }
-    return gpa.dupe(u8, target);
+    return try substituteFirstStar(gpa, target, substitution);
 }
 
 /// Replace the first `*` in `target` with `substitution`. Matches
@@ -2910,7 +2927,9 @@ test "isRelative / isAbsolute" {
 test "matchPattern: wildcard suffix" {
     try T.expectEqualStrings("foo", matchPattern("@app/*", "@app/foo").?);
     try T.expectEqualStrings("a/b", matchPattern("@app/*", "@app/a/b").?);
+    try T.expectEqualStrings("foo", matchPattern("./*.ts", "./foo.ts").?);
     try T.expect(matchPattern("@app/*", "@other/foo") == null);
+    try T.expect(matchPattern("./*.ts", "./foo.js") == null);
     try T.expectEqualStrings("", matchPattern("exact", "exact").?);
     try T.expect(matchPattern("exact", "exactish") == null);
 }
@@ -5222,6 +5241,43 @@ test "Resolver: #imports — exact key beats node_modules and never walks it" {
     defer r.deinit();
     const res = try r.resolve("#dep", "/proj/src/main.ts");
     try T.expectEqualStrings("/proj/shim.d.ts", res.path);
+}
+
+test "Resolver: package maps resolve TS source targets for rewrite extension checks" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "name": "pkg",
+        \\  "type": "module",
+        \\  "imports": {
+        \\    "#foo.ts": "./foo.ts",
+        \\    "#internal/*": "./internal/*"
+        \\  },
+        \\  "exports": {
+        \\    "./*.ts": {
+        \\      "source": "./*.ts",
+        \\      "default": "./*.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/foo.ts", "export {};");
+    try vfs.addFile("/internal/foo.ts", "export {};");
+    try vfs.addFile("/index.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16, .conditions = &.{"source"} });
+    defer r.deinit();
+    const internal = try r.resolve("#internal/foo.ts", "/index.ts");
+    try T.expectEqualStrings("/internal/foo.ts", internal.path);
+    try T.expect(!internal.is_declaration);
+    try T.expect(internal.package_json_map);
+    try T.expect(internal.package_imports_pattern);
+    const self_ref = try r.resolve("pkg/foo.ts", "/index.ts");
+    try T.expectEqualStrings("/foo.ts", self_ref.path);
+    try T.expect(!self_ref.is_declaration);
+    try T.expect(self_ref.package_json_map);
+    try T.expect(!self_ref.package_imports_pattern);
 }
 
 test "Resolver: #imports — invalid target traces TS6275" {

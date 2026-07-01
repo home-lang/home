@@ -291,6 +291,8 @@ pub const CompileOptions = struct {
     /// Compiler option `alwaysStrict`: parse the file under strict-mode
     /// early-error rules even when it has no `"use strict"` prologue.
     always_strict: bool = false,
+    /// Effective `rewriteRelativeImportExtensions` option.
+    rewrite_relative_import_extensions: bool = false,
     /// True when the parser should apply ES2015+ contextual-reserved
     /// word rules such as rejecting `yield` as a binding/function name.
     syntax_target_es2015: bool = false,
@@ -1930,6 +1932,7 @@ pub fn compileSource(
     checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
+    checker.setRewriteRelativeImportExtensionsEnabled(options.rewrite_relative_import_extensions);
     if (options.external_resolver) |er| checker.setExternalResolver(er);
     if (options.script_object_expandos.len > 0) {
         checker.setScriptObjectExpandos(options.script_object_expandos);
