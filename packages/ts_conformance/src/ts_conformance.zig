@@ -7822,6 +7822,7 @@ pub fn combineCategoryStats(cats: []const CategoryResult) Stats {
 
 fn coarseExpectedErrorNeedsProgramRoute(entry: CorpusEntry) bool {
     return std.mem.eql(u8, entry.name, "resolvesWithoutExportsDiagnostic1") or
+        std.mem.eql(u8, entry.name, "moduleResolutionWithoutExtension3") or
         std.mem.eql(u8, entry.name, "bundlerCommonJS");
 }
 
@@ -53908,6 +53909,38 @@ test "conformance: typeTagPrototypeAssignment surfaces TS2322 on @type mismatch"
         // in the matching checker unit tests.
         .expected_errors = "",
         .use_exact_errors = false,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: moduleResolutionWithoutExtension3 routes through program" {
+    const raw =
+        \\// @target: es2022
+        \\// @moduleResolution: nodenext
+        \\// @module: node18,node20,nodenext
+        \\// @jsx: preserve
+        \\
+        \\// @filename: /src/foo.tsx
+        \\export function foo() {
+        \\    return "";
+        \\}
+        \\
+        \\// @filename: /src/bar.mts
+        \\import { foo } from "./foo";
+    ;
+    const r = try runOneEntry(T.allocator, .{
+        .name = "moduleResolutionWithoutExtension3",
+        .source = raw,
+        .path = "/src/foo.tsx",
+        .expects_error = true,
+        .raw_source = raw,
+        .baseline_module_resolution = "nodenext",
+        .is_tsx = true,
+        .syntax_target_es2015 = true,
     });
     defer {
         T.allocator.free(r.name);
