@@ -2820,6 +2820,9 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source
     if (code == ts_checker.check.TsCodes.multiple_default_exports) {
         return !sourceExplicitlyDisablesCheckJs(source);
     }
+    if (code == ts_checker.check.TsCodes.subsequent_var_type_mismatch) {
+        return virtualFilenameHasTs(source) and !sourceExplicitlyDisablesCheckJs(source);
+    }
     return false;
 }
 
@@ -2890,6 +2893,23 @@ fn virtualFilenameIsJs(source: []const u8) bool {
         fallback_is_js = is_js;
     }
     return fallback_is_js;
+}
+
+fn virtualFilenameHasTs(source: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const marker = directiveValueStart(line, "filename") orelse continue;
+        const value = std.mem.trim(u8, marker, " \t");
+        if (std.mem.endsWith(u8, value, ".ts") or
+            std.mem.endsWith(u8, value, ".tsx") or
+            std.mem.endsWith(u8, value, ".mts") or
+            std.mem.endsWith(u8, value, ".cts"))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn pathIsJsLike(path: []const u8) bool {
