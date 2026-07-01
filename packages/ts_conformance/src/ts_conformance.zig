@@ -500,6 +500,8 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "noImplicitReturns") or
         std.ascii.eqlIgnoreCase(key, "noImplicitThis") or
         std.ascii.eqlIgnoreCase(key, "noPropertyAccessFromIndexSignature") or
+        std.ascii.eqlIgnoreCase(key, "noTypes") or
+        std.ascii.eqlIgnoreCase(key, "noTypesAndSymbols") or
         std.ascii.eqlIgnoreCase(key, "noUncheckedIndexedAccess") or
         std.ascii.eqlIgnoreCase(key, "noUnusedLocals") or
         std.ascii.eqlIgnoreCase(key, "noUnusedParameters") or

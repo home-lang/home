@@ -7150,6 +7150,18 @@ pub const Parser = struct {
             owns_tps = true;
         }
         defer if (owns_tps) self.gpa.free(type_params);
+        if (self.peek().kind == .semicolon or self.peek().kind == .eof or self.peek().flags.preceded_by_newline) {
+            const anchor = self.peek();
+            try self.reportCodeAt(anchor.span.start, anchor.line, 1005, "'=' expected.");
+            if (self.peek().kind == .semicolon) _ = self.advance();
+            const end_pos = self.tokens[self.cursor - 1].span.end;
+            return try self.builder.addTypeAlias(
+                .{ .start = start.span.start, .end = end_pos },
+                name_node,
+                type_params,
+                try self.typeRefName("unknown", .{ .start = anchor.span.start, .end = anchor.span.start }),
+            );
+        }
         _ = try self.expect(.equal, "'=' in type alias");
         const aliased = try self.parseTypeAnnotation();
         try self.consumeStatementTerminator();
