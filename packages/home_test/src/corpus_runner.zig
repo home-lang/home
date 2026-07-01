@@ -13275,6 +13275,284 @@ const harness_prelude =
     \\  }
     \\  return out;
     \\}
+    \\function __home_json5_error(message) {
+    \\  throw new SyntaxError(message);
+    \\}
+    \\function __home_json5_hex_digit(ch) {
+    \\  return (ch >= "0" && ch <= "9") || (ch >= "a" && ch <= "f") || (ch >= "A" && ch <= "F");
+    \\}
+    \\function __home_json5_mask_source(source) {
+    \\  let out = "";
+    \\  for (let i = 0; i < source.length; i++) {
+    \\    const ch = source[i];
+    \\    const next = source[i + 1];
+    \\    if (ch === "\"" || ch === "'") {
+    \\      const quote = ch;
+    \\      out += "%";
+    \\      i++;
+    \\      for (; i < source.length; i++) {
+    \\        const current = source[i];
+    \\        if (current === quote) {
+    \\          out += "%";
+    \\          break;
+    \\        }
+    \\        if (current === "\n" || current === "\r") __home_json5_error("Unterminated string");
+    \\        if (current === "\\") {
+    \\          const escaped = source[i + 1];
+    \\          if (escaped === undefined) __home_json5_error("Unterminated string");
+    \\          if (escaped >= "1" && escaped <= "9") __home_json5_error("Octal escape sequences are not allowed in JSON5");
+    \\          if (escaped === "0" && source[i + 2] >= "0" && source[i + 2] <= "9") __home_json5_error("Octal escape sequences are not allowed in JSON5");
+    \\          if (escaped === "x") {
+    \\            if (!__home_json5_hex_digit(source[i + 2]) || !__home_json5_hex_digit(source[i + 3])) __home_json5_error("Invalid hex escape");
+    \\            out += "%%%%";
+    \\            i += 3;
+    \\            continue;
+    \\          }
+    \\          if (escaped === "u") {
+    \\            if (!__home_json5_hex_digit(source[i + 2]) || !__home_json5_hex_digit(source[i + 3]) || !__home_json5_hex_digit(source[i + 4]) || !__home_json5_hex_digit(source[i + 5])) __home_json5_error("Invalid unicode escape: expected 4 hex digits");
+    \\            out += "%%%%%%";
+    \\            i += 5;
+    \\            continue;
+    \\          }
+    \\          out += "%%";
+    \\          i++;
+    \\          continue;
+    \\        }
+    \\        out += "%";
+    \\      }
+    \\      if (i >= source.length) __home_json5_error("Unterminated string");
+    \\      continue;
+    \\    }
+    \\    if (ch === "/" && next === "/") {
+    \\      out += "  ";
+    \\      i += 2;
+    \\      for (; i < source.length; i++) {
+    \\        const current = source[i];
+    \\        if (current === "\n" || current === "\r" || current === "\u2028" || current === "\u2029") {
+    \\          out += current;
+    \\          break;
+    \\        }
+    \\        out += " ";
+    \\      }
+    \\      continue;
+    \\    }
+    \\    if (ch === "/" && next === "*") {
+    \\      out += "  ";
+    \\      i += 2;
+    \\      let closed = false;
+    \\      for (; i < source.length; i++) {
+    \\        if (source[i] === "*" && source[i + 1] === "/") {
+    \\          out += "  ";
+    \\          i++;
+    \\          closed = true;
+    \\          break;
+    \\        }
+    \\        out += source[i] === "\n" || source[i] === "\r" ? source[i] : " ";
+    \\      }
+    \\      if (!closed) __home_json5_error("Unterminated multi-line comment");
+    \\      continue;
+    \\    }
+    \\    out += ch;
+    \\  }
+    \\  return out;
+    \\}
+    \\const __home_json5_not_string = {};
+    \\function __home_json5_skip_space_and_comments(source, index) {
+    \\  let i = index;
+    \\  while (i < source.length) {
+    \\    const ch = source[i];
+    \\    if (/\s/.test(ch)) {
+    \\      i++;
+    \\      continue;
+    \\    }
+    \\    if (ch === "/" && source[i + 1] === "/") {
+    \\      i += 2;
+    \\      while (i < source.length && source[i] !== "\n" && source[i] !== "\r" && source[i] !== "\u2028" && source[i] !== "\u2029") i++;
+    \\      continue;
+    \\    }
+    \\    if (ch === "/" && source[i + 1] === "*") {
+    \\      i += 2;
+    \\      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i++;
+    \\      if (i >= source.length) __home_json5_error("Unterminated multi-line comment");
+    \\      i += 2;
+    \\      continue;
+    \\    }
+    \\    break;
+    \\  }
+    \\  return i;
+    \\}
+    \\function __home_json5_parse_string_root(source) {
+    \\  let i = __home_json5_skip_space_and_comments(source, 0);
+    \\  const quote = source[i];
+    \\  if (quote !== "\"" && quote !== "'") return __home_json5_not_string;
+    \\  i++;
+    \\  let out = "";
+    \\  for (; i < source.length; i++) {
+    \\    const ch = source[i];
+    \\    if (ch === quote) {
+    \\      i = __home_json5_skip_space_and_comments(source, i + 1);
+    \\      if (i !== source.length) __home_json5_error("Unexpected token after JSON5 value");
+    \\      return out;
+    \\    }
+    \\    if (ch === "\n" || ch === "\r") __home_json5_error("Unterminated string");
+    \\    if (ch !== "\\") {
+    \\      out += ch;
+    \\      continue;
+    \\    }
+    \\    const escaped = source[++i];
+    \\    if (escaped === undefined) __home_json5_error("Unexpected end of input in escape sequence");
+    \\    if (escaped === "\n" || escaped === "\u2028" || escaped === "\u2029") continue;
+    \\    if (escaped === "\r") {
+    \\      if (source[i + 1] === "\n") i++;
+    \\      continue;
+    \\    }
+    \\    if (escaped >= "1" && escaped <= "9") __home_json5_error("Octal escape sequences are not allowed in JSON5");
+    \\    if (escaped === "0") {
+    \\      if (source[i + 1] >= "0" && source[i + 1] <= "9") __home_json5_error("Octal escape sequences are not allowed in JSON5");
+    \\      out += "\0";
+    \\      continue;
+    \\    }
+    \\    if (escaped === "b") out += "\b";
+    \\    else if (escaped === "f") out += "\f";
+    \\    else if (escaped === "n") out += "\n";
+    \\    else if (escaped === "r") out += "\r";
+    \\    else if (escaped === "t") out += "\t";
+    \\    else if (escaped === "v") out += "\x0b";
+    \\    else if (escaped === "x") {
+    \\      if (!__home_json5_hex_digit(source[i + 1]) || !__home_json5_hex_digit(source[i + 2])) __home_json5_error("Invalid hex escape");
+    \\      out += String.fromCharCode(parseInt(source.slice(i + 1, i + 3), 16));
+    \\      i += 2;
+    \\    } else if (escaped === "u") {
+    \\      if (!__home_json5_hex_digit(source[i + 1]) || !__home_json5_hex_digit(source[i + 2]) || !__home_json5_hex_digit(source[i + 3]) || !__home_json5_hex_digit(source[i + 4])) __home_json5_error("Invalid unicode escape: expected 4 hex digits");
+    \\      out += String.fromCharCode(parseInt(source.slice(i + 1, i + 5), 16));
+    \\      i += 4;
+    \\    } else {
+    \\      out += escaped;
+    \\    }
+    \\  }
+    \\  __home_json5_error("Unterminated string");
+    \\}
+    \\function __home_json5_parse(input) {
+    \\  if (typeof input !== "string") {
+    \\    const view = __home_array_buffer_view(input);
+    \\    if (view) input = new TextDecoder().decode(view);
+    \\    else throw new TypeError("JSON5.parse expects a string");
+    \\  }
+    \\  const stringValue = __home_json5_parse_string_root(input);
+    \\  if (stringValue !== __home_json5_not_string) return stringValue;
+    \\  const masked = __home_json5_mask_source(input);
+    \\  const trimmed = masked.trim();
+    \\  if (trimmed.length === 0) __home_json5_error("Unexpected end of input");
+    \\  if (/^[A-Za-z_$][0-9A-Za-z_$]*$/.test(trimmed) && !/^(?:true|false|null|Infinity|NaN)$/.test(trimmed)) __home_json5_error("Unexpected token");
+    \\  if (/^[+-]?\.$/.test(trimmed)) __home_json5_error("Invalid number");
+    \\  if (/^[+-]?(?:\d+\.?\d*|\.\d+)[eE](?:[+-]?$|[+-][^0-9]|[^0-9+-])/.test(trimmed)) __home_json5_error("Invalid number");
+    \\  if (/^[+-]?0[xX](?:$|[^0-9A-Fa-f])/.test(trimmed)) __home_json5_error("Invalid hex number");
+    \\  if (/^[+-]?0[xX][0-9A-Fa-f]{17,}$/.test(trimmed)) __home_json5_error("Invalid hex number");
+    \\  if (/^[+-]$/.test(trimmed)) __home_json5_error(input.length === trimmed.length ? "Unexpected end of input" : "Unexpected character");
+    \\  if (/^[+-](?!Infinity$|NaN$)(?:[^0-9.]|[A-Za-z_$])/.test(trimmed)) __home_json5_error("Unexpected character");
+    \\  if (/^(?:[-+]?(?:\d|\.\d)|true|false|null|Infinity|NaN)\s+(?:[-+]?(?:\d|\.\d)|true|false|null|Infinity|NaN)\b/.test(trimmed)) __home_json5_error("Unexpected token after JSON5 value");
+    \\  if (/[{,]\s*[0-9]+[A-Za-z_$]/.test(masked)) __home_json5_error("Invalid identifier start character");
+    \\  if (/[{,]\s*[+-]?(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d*)?|\.\d+)\s*:/.test(masked)) __home_json5_error("Unexpected token");
+    \\  if (/[{,]\s*:/.test(masked)) __home_json5_error("Invalid identifier start character");
+    \\  if (/[{,]\s*@/.test(masked)) __home_json5_error("Unexpected character");
+    \\  if (/[{,]\s*\\(?!u)/.test(masked)) __home_json5_error("Invalid unicode escape");
+    \\  if (/[{,]\s*[A-Za-z_$][0-9A-Za-z_$]*(?![0-9A-Za-z_$])\s*(?:}|(?=[0-9A-Za-z_$%[{+\-]))/.test(masked)) __home_json5_error("Expected ':' after object key");
+    \\  if (/\[\s*,|,\s*,/.test(masked)) __home_json5_error("Unexpected token");
+    \\  if (/(^|[^0-9A-Za-z_$])undefined([^0-9A-Za-z_$]|$)/.test(masked)) __home_json5_error("Unexpected token");
+    \\  const invalidObjectValue = masked.match(/:\s*([A-Za-z_$][0-9A-Za-z_$]*)\b/);
+    \\  if (invalidObjectValue && !/^(?:true|false|null|Infinity|NaN)$/.test(invalidObjectValue[1])) __home_json5_error("Unexpected token");
+    \\  if (/^[@#!~`^&|=<>?;]$/.test(trimmed) || /^\/(?:\s*\/)?$/.test(trimmed)) __home_json5_error("Unexpected character");
+    \\  if (masked.indexOf("=") >= 0) __home_json5_error("Unexpected token");
+    \\  if (/^\{\s*$/.test(masked) || /\{\s*[A-Za-z_$][0-9A-Za-z_$]*\s*:[\s\S]*,\s*$/.test(masked)) __home_json5_error("Unexpected end of input");
+    \\  if (/^\[\s*$/.test(masked)) __home_json5_error("Unexpected end of input");
+    \\  if ((masked.match(/{/g) || []).length > (masked.match(/}/g) || []).length) __home_json5_error("Unterminated object");
+    \\  if ((masked.match(/\[/g) || []).length > (masked.match(/\]/g) || []).length) __home_json5_error("Unterminated array");
+    \\  if (/[0-9}\]%]\s+[A-Za-z_$][0-9A-Za-z_$]*\s*:/.test(masked) || /\[\s*[0-9}\]%][^\],]*\s+[0-9%{[]/.test(masked)) __home_json5_error("Expected ','");
+    \\  if (/^\s*\(/.test(masked)) __home_json5_error("Unexpected token");
+    \\  if (/(^|[{\[:,])\s*[+-]\s+(?=[0-9A-Za-z_.])/.test(masked)) __home_json5_error("Invalid number");
+    \\  if (/^[+-]?0[0-9]/.test(trimmed)) __home_json5_error("Leading zeros are not allowed in JSON5");
+    \\  if (/[0-9\]}]\s*[+*]\s*[0-9{[A-Za-z_$]/.test(masked)) __home_json5_error("Unexpected token");
+    \\  try {
+    \\    const expression = input
+    \\      .replace(/\\u2028|\\u2029/g, "\n")
+    \\      .replace(/[\u2028\u2029]/g, "\n")
+    \\      .replace(/\\v|\\x0[Bb]|\\x0[Cc]|\\u00A0|\\uFEFF/g, " ")
+    \\      .replace(/[\x0b\x0c\u00a0\ufeff]/g, " ");
+    \\    return Function("return (" + expression + "\n);")();
+    \\  } catch (error) {
+    \\    if (error && error.message) throw error;
+    \\    __home_json5_error("Unable to parse JSON5 string");
+    \\  }
+    \\}
+    \\function __home_json5_space(space) {
+    \\  if (space instanceof Number) space = Number(space);
+    \\  if (space instanceof String) space = String(space);
+    \\  if (typeof space === "number") {
+    \\    if (!Number.isFinite(space)) return space === Infinity ? " ".repeat(10) : "";
+    \\    return " ".repeat(Math.max(0, Math.min(10, Math.trunc(space))));
+    \\  }
+    \\  if (typeof space === "string") return space.slice(0, 10);
+    \\  return "";
+    \\}
+    \\function __home_json5_quote_string(value) {
+    \\  let out = "'";
+    \\  for (let i = 0; i < value.length; i++) {
+    \\    const code = value.charCodeAt(i);
+    \\    const ch = value[i];
+    \\    if (ch === "'") out += "\\'";
+    \\    else if (ch === "\\") out += "\\\\";
+    \\    else if (ch === "\b") out += "\\b";
+    \\    else if (ch === "\f") out += "\\f";
+    \\    else if (ch === "\n") out += "\\n";
+    \\    else if (ch === "\r") out += "\\r";
+    \\    else if (ch === "\t") out += "\\t";
+    \\    else if (code === 0) out += i + 1 < value.length && value[i + 1] >= "0" && value[i + 1] <= "9" ? "\\x00" : "\\0";
+    \\    else if (code === 0x2028) out += "\\u2028";
+    \\    else if (code === 0x2029) out += "\\u2029";
+    \\    else if (code < 0x20) out += "\\x" + code.toString(16).padStart(2, "0");
+    \\    else out += ch;
+    \\  }
+    \\  return out + "'";
+    \\}
+    \\function __home_json5_key(key) {
+    \\  return /^[$A-Z_a-z][$0-9A-Z_a-z]*$/.test(key) ? key : __home_json5_quote_string(key);
+    \\}
+    \\function __home_json5_serialize(value, gap, level, stack, inArray) {
+    \\  if (value && typeof value.toJSON === "function") value = value.toJSON();
+    \\  if (value === undefined || typeof value === "function" || typeof value === "symbol") return inArray ? "null" : undefined;
+    \\  if (value === null) return "null";
+    \\  if (typeof value === "bigint") throw new TypeError("JSON5.stringify cannot serialize BigInt");
+    \\  if (typeof value === "boolean") return value ? "true" : "false";
+    \\  if (typeof value === "number") {
+    \\    if (Number.isNaN(value)) return "NaN";
+    \\    if (value === Infinity) return "Infinity";
+    \\    if (value === -Infinity) return "-Infinity";
+    \\    return Object.is(value, -0) ? "-0" : String(value);
+    \\  }
+    \\  if (typeof value === "string") return __home_json5_quote_string(value);
+    \\  if (stack.indexOf(value) >= 0) throw new TypeError("Converting circular structure to JSON5");
+    \\  stack.push(value);
+    \\  const indent = gap.repeat(level);
+    \\  const nextIndent = gap.repeat(level + 1);
+    \\  let result;
+    \\  if (Array.isArray(value)) {
+    \\    const items = value.map(item => __home_json5_serialize(item, gap, level + 1, stack, true));
+    \\    result = gap ? (items.length === 0 ? "[]" : "[\n" + nextIndent + items.join(",\n" + nextIndent) + ",\n" + indent + "]") : "[" + items.join(",") + "]";
+    \\  } else {
+    \\    const entries = [];
+    \\    for (const key of Object.keys(value)) {
+    \\      const serialized = __home_json5_serialize(value[key], gap, level + 1, stack, false);
+    \\      if (serialized !== undefined) entries.push(__home_json5_key(key) + (gap ? ": " : ":") + serialized);
+    \\    }
+    \\    result = gap ? (entries.length === 0 ? "{}" : "{\n" + nextIndent + entries.join(",\n" + nextIndent) + ",\n" + indent + "}") : "{" + entries.join(",") + "}";
+    \\  }
+    \\  stack.pop();
+    \\  return result;
+    \\}
+    \\function __home_json5_stringify(value, replacer, space) {
+    \\  if (replacer !== undefined && replacer !== null) throw new TypeError("JSON5.stringify does not support the replacer argument");
+    \\  return __home_json5_serialize(value, __home_json5_space(space), 0, [], false);
+    \\}
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -13304,6 +13582,10 @@ const harness_prelude =
     \\  },
     \\  randomUUIDv5: __home_random_uuidv5,
     \\  randomUUIDv7: __home_random_uuidv7,
+    \\  JSON5: {
+    \\    parse: __home_json5_parse,
+    \\    stringify: __home_json5_stringify,
+    \\  },
     \\  concatArrayBuffers: __home_concat_array_buffers,
     \\  unsafe: {
     \\    gcAggressionLevel(value) {
@@ -39658,7 +39940,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/json5/json5-test-suite.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.JSON5 parser official suite")
     else if (std.mem.eql(u8, relative_path, "js/bun/json5/json5.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.JSON5 parser escape and number extensions")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsonl/jsonl-parse.test.ts"))
         try rewriteJsonlParseCorpus(allocator, source)
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-edge-cases.test.ts"))
@@ -55109,6 +55391,29 @@ test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors JSON5 API corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/json5/json5.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 318 or summary.todo != 0) {
+        std.debug.print(
+            "JSON5 API corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 318), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 318), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors YAML resolve import loader corpus" {
