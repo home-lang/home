@@ -2905,6 +2905,47 @@ pub fn moduleExportsValueSpaceName(
     return moduleRootHasExportedRuntimeValue(&compilation.hir, compilation.root, id);
 }
 
+/// True when `module_source` exports `name` as an ambient const enum. This is
+/// still a value-space export, but TypeScript rejects value imports/re-exports
+/// of it under isolatedModules-like flags because the member values require
+/// cross-file inlining.
+pub fn moduleExportsAmbientConstEnumName(
+    gpa: std.mem.Allocator,
+    module_source: []const u8,
+    module_path: []const u8,
+    name: []const u8,
+    is_tsx: bool,
+) bool {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return false;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    const id = compilation.interner.lookup(name) orelse return false;
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return false;
+    const is_declaration_file = declarationFilenameLike(module_path);
+    for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |raw| {
+        if (compilation.hir.kindOf(raw) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(&compilation.hir, raw);
+        if (ex.decl != hir_mod_ns.none_node_id and
+            ambientConstEnumDeclNamed(&compilation.hir, ex.decl, id, is_declaration_file))
+        {
+            return true;
+        }
+        for (hir_mod_ns.exportNamed(&compilation.hir, raw)) |spec_node| {
+            if (compilation.hir.kindOf(spec_node) != .import_specifier) continue;
+            const sp = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
+            if (sp.local != id and sp.imported != id) continue;
+            if (moduleRootLocalAmbientConstEnum(&compilation.hir, compilation.root, sp.imported, is_declaration_file)) return true;
+        }
+    }
+    return false;
+}
+
 /// True when `module_source` declares `name` as an exported namespace whose
 /// body contributes no runtime values. TypeScript treats these as type-only
 /// declarations for verbatim-module named-import checks.
@@ -2939,6 +2980,7 @@ pub fn moduleExportsTypeOnlyNamespaceName(
 pub const ModuleExportFacts = struct {
     exported_type: bool = false,
     exported_value: bool = false,
+    ambient_const_enum: bool = false,
     type_only_pos: ?u32 = null,
 };
 
@@ -2970,7 +3012,7 @@ pub fn ambientModuleExportFacts(
         const lit = hir_mod_ns.literalStringOf(&compilation.hir, ns.name);
         if (!moduleNameMatchesSpecifier(compilation.interner.get(lit.value), specifier)) continue;
         found_module = true;
-        collectAmbientModuleExportFacts(&compilation.hir, name_id, hir_mod_ns.namespaceBody(&compilation.hir, stmt), &facts);
+        collectAmbientModuleExportFacts(&compilation.hir, name_id, hir_mod_ns.namespaceBody(&compilation.hir, stmt), true, &facts);
     }
     return if (found_module) facts else null;
 }
@@ -2990,6 +3032,7 @@ fn collectAmbientModuleExportFacts(
     hir: *const hir_mod_ns.Hir,
     name: hir_mod_ns.StringId,
     stmts: []const hir_mod_ns.NodeId,
+    is_ambient: bool,
     facts: *ModuleExportFacts,
 ) void {
     for (stmts) |stmt| {
@@ -3007,10 +3050,10 @@ fn collectAmbientModuleExportFacts(
                 }
             }
             if (ex.decl == hir_mod_ns.none_node_id) continue;
-            collectAmbientModuleExportDeclFacts(hir, name, ex.decl, ex.is_type_only, facts);
+            collectAmbientModuleExportDeclFacts(hir, name, ex.decl, ex.is_type_only, is_ambient, facts);
             continue;
         }
-        collectAmbientModuleExportDeclFacts(hir, name, stmt, false, facts);
+        collectAmbientModuleExportDeclFacts(hir, name, stmt, false, is_ambient, facts);
     }
 }
 
@@ -3019,10 +3062,12 @@ fn collectAmbientModuleExportDeclFacts(
     name: hir_mod_ns.StringId,
     decl: hir_mod_ns.NodeId,
     is_type_only: bool,
+    is_ambient: bool,
     facts: *ModuleExportFacts,
 ) void {
     if (declarationName(hir, decl) != name) return;
     if (declCreatesTypeSpaceName(hir, decl)) facts.exported_type = true;
+    if (ambientConstEnumDeclNamed(hir, decl, name, is_ambient)) facts.ambient_const_enum = true;
     if (is_type_only) {
         facts.type_only_pos = 0;
     } else if (declCreatesRuntimeValue(hir, decl)) {
@@ -3046,6 +3091,39 @@ fn moduleRootHasExportedRuntimeValue(hir: *const hir_mod_ns.Hir, root: hir_mod_n
                 return moduleRootLocalNameCreatesRuntimeValue(hir, root, sp.imported);
             }
         }
+    }
+    return false;
+}
+
+fn declarationFilenameLike(filename: []const u8) bool {
+    if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
+    if (std.mem.endsWith(u8, filename, ".d.mts")) return true;
+    if (std.mem.endsWith(u8, filename, ".d.cts")) return true;
+    return std.mem.endsWith(u8, filename, ".ts") and std.mem.indexOf(u8, filename, ".d.") != null;
+}
+
+fn ambientConstEnumDeclNamed(
+    hir: *const hir_mod_ns.Hir,
+    decl: hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+    is_ambient: bool,
+) bool {
+    if (!is_ambient or hir.kindOf(decl) != .enum_decl) return false;
+    const e = hir_mod_ns.enumOf(hir, decl);
+    return e.is_const and declarationName(hir, decl) == name;
+}
+
+fn moduleRootLocalAmbientConstEnum(
+    hir: *const hir_mod_ns.Hir,
+    root: hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+    is_ambient: bool,
+) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        const stmt = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (stmt == hir_mod_ns.none_node_id) continue;
+        if (ambientConstEnumDeclNamed(hir, stmt, name, is_ambient)) return true;
     }
     return false;
 }

@@ -125,6 +125,7 @@ const CheckerResolverAdapter = struct {
         const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx) or
             ts_program.moduleExportsTypeOnlyNamespaceName(self.resolver.gpa, src, name, is_tsx);
         const exported_value = ts_program.moduleExportsValueSpaceName(self.resolver.gpa, src, name, is_tsx);
+        const ambient_const_enum = ts_program.moduleExportsAmbientConstEnumName(self.resolver.gpa, src, r.path, name, is_tsx);
         const has_ambient_module = self.ambientModulePathForSpecifier(specifier, containing) != null;
         var ambient_src_owned: ?[]const u8 = null;
         defer if (ambient_src_owned) |owned| self.resolver.gpa.free(owned);
@@ -155,6 +156,7 @@ const CheckerResolverAdapter = struct {
             .module_name = module_name,
             .exported_type = exported or if (ambient_facts) |facts| facts.exported_type else false,
             .exported_value = exported_value or if (ambient_facts) |facts| facts.exported_value else false,
+            .ambient_const_enum = ambient_const_enum or if (ambient_facts) |facts| facts.ambient_const_enum else false,
             .cannot_be_named = cannot_be_named,
             .type_only_export = effective_type_only_pos != null,
             .export_path = export_path,
