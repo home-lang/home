@@ -2799,6 +2799,31 @@ pub const jsc = struct {
             string: StringValue,
             buffer: BufferValue,
             file: BlobValue,
+
+            /// One element of a cert/key/ca array: a PEM string, a buffer
+            /// (typed-array/ArrayBuffer), or a Bun.file() Blob. Returns null for
+            /// anything else (the caller skips it), since this union has no
+            /// `.none`. The string variant owns a WTF ref (deinit derefs).
+            pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!?SSLConfigSingleFile {
+                if (value.isString()) {
+                    var s = try value.toBunString(globalObject);
+                    if (s.isEmpty()) {
+                        s.deref();
+                        return null;
+                    }
+                    s.toWTF();
+                    if (s.tag == .WTFStringImpl) return .{ .string = .{ .value = s.value.WTFStringImpl } };
+                    s.deref();
+                    return null;
+                }
+                if (value.as(WebCore.Blob)) |blob| return .{ .file = .{ .value = blob } };
+                if (value.asArrayBuffer(globalObject)) |ab| return .{ .buffer = .{ .value = ab } };
+                return null;
+            }
+
+            pub fn deinit(this: *SSLConfigSingleFile) void {
+                if (this.* == .string) this.string.value.deref();
+            }
         };
 
         pub const SSLConfigFile = union(enum) {
@@ -2830,15 +2855,54 @@ pub const jsc = struct {
                     return .none;
                 }
                 if (value.as(WebCore.Blob)) |blob| return .{ .file = .{ .value = blob } };
+                if (value.isArray()) return try fromJSArray(globalObject, value);
                 if (value.asArrayBuffer(globalObject)) |ab| return .{ .buffer = .{ .value = ab } };
                 return .none;
             }
 
-            pub fn deinit(this: *SSLConfigFile) void {
-                if (this.* == .string) {
-                    this.string.value.deref();
-                    this.* = .none;
+            /// Parse a JS array of cert/key/ca entries (multiple PEMs) into an
+            /// owned `GeneratedList`. Non-string/buffer/Blob elements are skipped;
+            /// an empty or all-skipped array degrades to `.none`.
+            fn fromJSArray(globalObject: *JSGlobalObject, value: JSValue) JSError!SSLConfigFile {
+                const arr_len: usize = @intCast(try value.getLength(globalObject));
+                if (arr_len == 0) return .none;
+                const list = try default_allocator.alloc(SSLConfigSingleFile, arr_len);
+                var count: usize = 0;
+                errdefer {
+                    for (list[0..count]) |*e| e.deinit();
+                    default_allocator.free(list);
                 }
+                var i: u32 = 0;
+                while (i < arr_len) : (i += 1) {
+                    const elem = try value.getIndex(globalObject, i);
+                    if (try SSLConfigSingleFile.fromJS(globalObject, elem)) |single| {
+                        list[count] = single;
+                        count += 1;
+                    }
+                }
+                if (count == 0) {
+                    default_allocator.free(list);
+                    return .none;
+                }
+                if (count == arr_len) return .{ .array = .{ .values = list } };
+                // Some elements were skipped: shrink to an exact-length allocation
+                // so deinit frees the right slice.
+                const exact = try default_allocator.alloc(SSLConfigSingleFile, count);
+                @memcpy(exact, list[0..count]);
+                default_allocator.free(list);
+                return .{ .array = .{ .values = exact } };
+            }
+
+            pub fn deinit(this: *SSLConfigFile) void {
+                switch (this.*) {
+                    .string => this.string.value.deref(),
+                    .array => |*arr| {
+                        for (@constCast(arr.values)) |*e| e.deinit();
+                        default_allocator.free(@constCast(arr.values));
+                    },
+                    else => {},
+                }
+                this.* = .none;
             }
         };
 
