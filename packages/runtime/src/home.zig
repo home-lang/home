@@ -4874,7 +4874,13 @@ pub const c = struct {
     // libc fns + C types/constants the copied source spells as `bun.c.X`.
     pub const F_DUPFD_CLOEXEC = if (@hasDecl(std.c, "F_DUPFD_CLOEXEC")) std.c.F_DUPFD_CLOEXEC else 67;
     pub const IF_NAMESIZE = 16;
-    pub const MSG_DONTWAIT: c_int = 0x40;
+    // macOS and Linux disagree: 0x40 is MSG_DONTWAIT on Linux but MSG_WAITALL
+    // on Darwin (where MSG_DONTWAIT is 0x80). Using the Linux value on macOS
+    // made nonblocking recv() ask to fill the whole buffer (MSG_WAITALL), so it
+    // returned EAGAIN whenever fewer bytes were available than the buffer size —
+    // e.g. subprocess socketpair stdout never delivered incrementally, only on
+    // EOF.
+    pub const MSG_DONTWAIT: c_int = if (Environment.isMac) 0x80 else 0x40;
     pub const MSG_NOSIGNAL: c_int = 0x4000;
     pub const O_EVTONLY: c_int = 0x8000;
     pub const getuid = std.c.getuid;
