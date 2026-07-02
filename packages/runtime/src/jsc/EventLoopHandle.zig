@@ -133,10 +133,10 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
-    pub fn enqueueTaskConcurrent(this: EventLoopHandle, task: EventLoopTask) void {
+    pub fn enqueueTaskConcurrent(this: EventLoopHandle, context: EventLoopTaskPtr) void {
         switch (this) {
-            .js => this.js.enqueueTaskConcurrent(task.js),
-            .mini => this.mini.enqueueTaskConcurrent(task.mini),
+            .js => this.js.enqueueTaskConcurrent(context.js),
+            .mini => this.mini.enqueueTaskConcurrent(context.mini),
         }
     }
 
@@ -157,13 +157,19 @@ pub const EventLoopHandle = union(EventLoopKind) {
 };
 
 pub const EventLoopTask = union(EventLoopKind) {
-    js: *ConcurrentTask,
-    mini: *AnyTaskWithExtraContext,
+    // These are embedded *values*, not pointers: callers (e.g. the shell)
+    // fill them in place via `task.js.from(ctx, ...)`, which takes the address
+    // of the embedded task. Storing a bare `*ConcurrentTask` here (initialized
+    // to a `0xdead_bee0` poison sentinel) made `from()` write to the sentinel
+    // address on the WorkPool thread — the external-command shell UAF. Mirror
+    // upstream and hold the task by value.
+    js: ConcurrentTask,
+    mini: AnyTaskWithExtraContext,
 
     pub fn init(kind: EventLoopKind) EventLoopTask {
         return switch (kind) {
-            .js => .{ .js = @ptrFromInt(std.mem.alignForward(usize, 0xdead_bee0, @alignOf(ConcurrentTask))) },
-            .mini => .{ .mini = @ptrFromInt(std.mem.alignForward(usize, 0xdead_bee8, @alignOf(AnyTaskWithExtraContext))) },
+            .js => .{ .js = .{} },
+            .mini => .{ .mini = .{} },
         };
     }
 
