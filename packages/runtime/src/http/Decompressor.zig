@@ -24,7 +24,14 @@ pub const Decompressor = union(enum) {
     pub fn deinit(this: *Decompressor) void {
         switch (this.*) {
             inline .brotli, .zlib, .zstd => |that| {
-                that.deinit();
+                // Robustness guard: an all-zero Decompressor reads as the first
+                // union tag (`.zlib`) with a null reader pointer. That happens
+                // when a not-yet-initialized HTTPClient's `state` (which lives in
+                // `undefined` memory until init) is torn down on the HTTP Client
+                // thread — a release-only, timing-flaky crash on the in-process
+                // serve+fetch path. A live reader is never null, so skipping the
+                // deinit here only affects the uninitialized/zeroed case.
+                if (@intFromPtr(that) != 0) that.deinit();
                 this.* = .{ .none = {} };
             },
             .none => {},
