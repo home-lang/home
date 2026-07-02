@@ -518,6 +518,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "suppressImplicitAnyIndexErrors") or
         std.ascii.eqlIgnoreCase(key, "target") or
         std.ascii.eqlIgnoreCase(key, "types") or
+        std.ascii.eqlIgnoreCase(key, "useDefineForClassFields") or
         std.ascii.eqlIgnoreCase(key, "useUnknownInCatchVariables") or
         std.ascii.eqlIgnoreCase(key, "verbatimModuleSyntax");
 }
