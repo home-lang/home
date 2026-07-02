@@ -2013,7 +2013,6 @@ pub fn compileSource(
             error.OutOfMemory => return error.OutOfMemory,
         };
     }
-    const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
     var has_invalid_character_diagnostic = false;
     for (c.diagnostics.items) |existing| {
         if (existing.code == 1127) {
@@ -2022,6 +2021,9 @@ pub fn compileSource(
         }
     }
     for (checker.diagnostics.items) |d| {
+        const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
+        const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or
+            sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js);
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, d.message, source)) continue;
         if (has_invalid_character_diagnostic and d.code == ts_checker.check.TsCodes.variable_implicitly_any_declaration) continue;
         // Suggestion-category diagnostics (TS7043-TS7050) only surface
@@ -2031,7 +2033,6 @@ pub fn compileSource(
         // them when `include_suggestions` set the corresponding flag.
         const is_suggestion = d.category == .suggestion;
         if (is_suggestion and !options.include_suggestions) continue;
-        const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
         const diag_span_len = diagnosticSpanLen(&c.hir, d.node, diag_pos);
 
         // TS2300 (parser) vs TS2451 (checker) coalesce: tsc emits ONLY
@@ -2777,11 +2778,16 @@ fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
 }
 
 fn sourceIsUncheckedJs(source: []const u8) bool {
-    const allow_js = directiveBool(source, "allowJs") orelse false;
+    return sourceIsUncheckedJsAtPos(source, 0, false);
+}
+
+fn sourceIsUncheckedJsAtPos(source: []const u8, pos: usize, allow_js_enabled: bool) bool {
+    const allow_js = allow_js_enabled or (directiveBool(source, "allowJs") orelse false);
     if (!allow_js) return false;
     if (directiveBool(source, "checkJs") orelse false) return false;
     if (sourceHasTsCheck(source)) return false;
-    return virtualFilenameIsJs(source);
+    const filename = virtualFilenameAtPos(source, pos) orelse return virtualFilenameIsJs(source);
+    return virtualFilenameValueIsJsLike(filename);
 }
 
 /// True when the fixture sets `// @checkJS: false` (or `@checkJs: false`)
@@ -2894,19 +2900,45 @@ fn virtualFilenameIsJs(source: []const u8) bool {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         const marker = directiveValueStart(line, "filename") orelse continue;
         const value = std.mem.trim(u8, marker, " \t");
-        const is_js = std.mem.endsWith(u8, value, ".js") or std.mem.endsWith(u8, value, ".jsx");
-        const is_code = is_js or
-            std.mem.endsWith(u8, value, ".ts") or
-            std.mem.endsWith(u8, value, ".tsx") or
-            std.mem.endsWith(u8, value, ".mts") or
-            std.mem.endsWith(u8, value, ".cts") or
-            std.mem.endsWith(u8, value, ".hm") or
-            std.mem.endsWith(u8, value, ".home");
-        if (!is_code) continue;
+        if (!virtualFilenameValueIsCode(value)) continue;
+        const is_js = virtualFilenameValueIsJsLike(value);
         if (!virtualPathIsNodeModules(value)) return is_js;
         fallback_is_js = is_js;
     }
     return fallback_is_js;
+}
+
+fn virtualFilenameAtPos(source: []const u8, pos: usize) ?[]const u8 {
+    var offset: usize = 0;
+    var last_filename: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        if (offset > pos) break;
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (directiveValueStart(line, "filename")) |marker| {
+            const value = std.mem.trim(u8, marker, " \t");
+            if (virtualFilenameValueIsCode(value)) last_filename = value;
+        }
+        offset += raw_line.len + 1;
+    }
+    return last_filename;
+}
+
+fn virtualFilenameValueIsCode(value: []const u8) bool {
+    return virtualFilenameValueIsJsLike(value) or
+        std.mem.endsWith(u8, value, ".ts") or
+        std.mem.endsWith(u8, value, ".tsx") or
+        std.mem.endsWith(u8, value, ".mts") or
+        std.mem.endsWith(u8, value, ".cts") or
+        std.mem.endsWith(u8, value, ".hm") or
+        std.mem.endsWith(u8, value, ".home");
+}
+
+fn virtualFilenameValueIsJsLike(value: []const u8) bool {
+    return std.mem.endsWith(u8, value, ".js") or
+        std.mem.endsWith(u8, value, ".jsx") or
+        std.mem.endsWith(u8, value, ".mjs") or
+        std.mem.endsWith(u8, value, ".cjs");
 }
 
 fn virtualFilenameHasTs(source: []const u8) bool {
