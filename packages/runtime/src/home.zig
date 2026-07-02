@@ -2769,8 +2769,11 @@ pub const jsc = struct {
         };
 
         pub const BufferValue = struct {
-            value: *JSCArrayBuffer,
-            pub fn get(this: *const BufferValue) *JSCArrayBuffer {
+            // A view-resolved ArrayBuffer (asArrayBuffer handles typed-array
+            // offset/length). Borrows JS-owned bytes; consumers copy them out
+            // synchronously during fromGenerated, so no ref is held.
+            value: AlpnArrayBuffer,
+            pub fn get(this: *const BufferValue) AlpnArrayBuffer {
                 return this.value;
             }
         };
@@ -2805,11 +2808,14 @@ pub const jsc = struct {
             file: BlobValue,
             array: GeneratedList(SSLConfigSingleFile),
 
-            /// A cert/key/ca value: an inline PEM string, or a `Bun.file()`
-            /// BunFile (Blob). Buffers/arrays aren't handled by this hand-mirror
-            /// yet (fall through to `.none`). The string variant owns a WTF ref
-            /// (deinit derefs); the file variant borrows the *Blob (alive for the
-            /// duration of SSLConfig.fromJS).
+            /// A cert/key/ca value: an inline PEM string, a wire/PEM buffer
+            /// (typed-array or ArrayBuffer — the common `readFileSync(...)`
+            /// case), or a `Bun.file()` BunFile (Blob). JS-array forms (multiple
+            /// PEMs) aren't handled by this hand-mirror yet (fall through to
+            /// `.none`). The string variant owns a WTF ref (deinit derefs); the
+            /// buffer variant borrows JS bytes (copied out synchronously) and the
+            /// file variant borrows the *Blob (alive for the duration of
+            /// SSLConfig.fromJS).
             pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!SSLConfigFile {
                 if (value.isUndefinedOrNull()) return .none;
                 if (value.isString()) {
@@ -2824,6 +2830,7 @@ pub const jsc = struct {
                     return .none;
                 }
                 if (value.as(WebCore.Blob)) |blob| return .{ .file = .{ .value = blob } };
+                if (value.asArrayBuffer(globalObject)) |ab| return .{ .buffer = .{ .value = ab } };
                 return .none;
             }
 

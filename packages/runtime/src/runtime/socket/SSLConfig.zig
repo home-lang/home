@@ -536,16 +536,13 @@ fn handleSingleFile(
     global: *jsc.JSGlobalObject,
     file: union(enum) {
         string: bun.string.WTFStringImpl,
-        buffer: *jsc.JSCArrayBuffer,
+        buffer: jsc.ArrayBuffer,
         file: *bun.webcore.Blob,
     },
 ) ReadFromBlobError![:0]const u8 {
     return switch (file) {
         .string => |string| string.toOwnedSliceZ(bun.default_allocator),
-        .buffer => |jsc_buffer| blk: {
-            const buffer: jsc.ArrayBuffer = jsc_buffer.asArrayBuffer();
-            break :blk try bun.default_allocator.dupeZ(u8, buffer.byteSlice());
-        },
+        .buffer => |buffer| try bun.default_allocator.dupeZ(u8, buffer.byteSlice()),
         .file => |blob| try readFromBlob(global, blob),
     };
 }
