@@ -26,14 +26,19 @@ const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 
 // JSObject is required only for the slow path's `JSObject.getIndex(arr, ...)`
-// hop. Keep the opaque so the iterator's signature stays usable; the slow
-// path returns `error.JSError` until the real bridge lands.
-const JSObject = struct {
-    pub fn getIndex(_: JSValue, _: *JSGlobalObject, _: u32) bun.JSError!JSValue {
-        // Slow-path JSC call. See note on JSValue.getLength above.
-        return error.JSError;
-    }
-};
+// hop (arrays that are not plain Int32/Contiguous — e.g. frozen/CopyOnWrite
+// template `.raw` arrays). With `-Denable_jsc` use the real bridge; the stub
+// (which returns `error.JSError` WITHOUT a pending exception, and therefore
+// crashes the exception machinery — the `$\`cmd\`` tagged-template segfault)
+// is kept only for the JSC-less standalone build.
+const JSObject = if (@import("build_options").enable_jsc)
+    jsc.JSObject
+else
+    struct {
+        pub fn getIndex(_: JSValue, _: *JSGlobalObject, _: u32) bun.JSError!JSValue {
+            return error.JSError;
+        }
+    };
 
 pub const JSArrayIterator = struct {
     i: u32 = 0,
