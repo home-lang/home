@@ -2941,6 +2941,14 @@ pub const jsc = struct {
                 if (try value.get(globalObject, "ca")) |v| result.ca = try SSLConfigFile.fromJS(globalObject, v);
                 if (try value.get(globalObject, "passphrase")) |v| result.passphrase = try MaybeString.fromJS(globalObject, v);
                 if (try value.get(globalObject, "serverName")) |v| result.server_name = try MaybeString.fromJS(globalObject, v);
+                // The bindgen field is `serverName` with altName `servername`;
+                // node:tls (and Bun.connect) pass the lowercase form, so fall
+                // back to it when the camelCase key is absent. Without this the
+                // client sends no SNI and server-side addContext() selection
+                // never matches (breaks per-hostname SecureContexts).
+                if (result.server_name.value == null) {
+                    if (try value.get(globalObject, "servername")) |v| result.server_name = try MaybeString.fromJS(globalObject, v);
+                }
                 if (try value.get(globalObject, "dhParamsFile")) |v| result.dh_params_file = try MaybeString.fromJS(globalObject, v);
                 if (try value.get(globalObject, "keyFile")) |v| result.key_file = try MaybeString.fromJS(globalObject, v);
                 if (try value.get(globalObject, "certFile")) |v| result.cert_file = try MaybeString.fromJS(globalObject, v);
