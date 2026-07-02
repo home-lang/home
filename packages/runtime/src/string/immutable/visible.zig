@@ -1422,13 +1422,19 @@ fn Bun__isEmojiPresentation(cp: u32) callconv(.c) bool {
 }
 
 comptime {
+    // Exported unconditionally: these string-width/grapheme functions are
+    // referenced by Bun's linked C++ (console formatting, string inspect).
+    // In the JSC build they used to come from Bun's own zig object, but a
+    // freshly-compiled pinned obj (C++ only) lacks them, so Home provides its
+    // ports — `icu_hasBinaryProperty` (the only external dep) is supplied by
+    // Bun's `workaround-missing-symbols.cpp.o`.
+    @export(&Bun__visibleWidthExcludeANSI_utf16, .{ .name = "Bun__visibleWidthExcludeANSI_utf16" });
+    @export(&Bun__visibleWidthExcludeANSI_latin1, .{ .name = "Bun__visibleWidthExcludeANSI_latin1" });
+    @export(&Bun__codepointWidth, .{ .name = "Bun__codepointWidth" });
+    @export(&Bun__graphemeBreak, .{ .name = "Bun__graphemeBreak" });
+    @export(&Bun__isEmojiPresentation, .{ .name = "Bun__isEmojiPresentation" });
     if (!build_options.enable_jsc) {
         @export(&Bun__visibleWidthExcludeANSI_utf8, .{ .name = "Bun__visibleWidthExcludeANSI_utf8" });
-        @export(&Bun__visibleWidthExcludeANSI_utf16, .{ .name = "Bun__visibleWidthExcludeANSI_utf16" });
-        @export(&Bun__visibleWidthExcludeANSI_latin1, .{ .name = "Bun__visibleWidthExcludeANSI_latin1" });
-        @export(&Bun__codepointWidth, .{ .name = "Bun__codepointWidth" });
-        @export(&Bun__graphemeBreak, .{ .name = "Bun__graphemeBreak" });
-        @export(&Bun__isEmojiPresentation, .{ .name = "Bun__isEmojiPresentation" });
     }
 }
 

@@ -35,7 +35,9 @@ comptime {
     @export(&noopSize, .{ .name = "NetworkSink__memoryCost" });
     @export(&noopBool, .{ .name = "Bun__CryptoHasherExtern__isXof" });
     @export(&noopBool, .{ .name = "Bun__streamIterEnabled" });
-    @export(&icuHasBinaryProperty, .{ .name = "icu_hasBinaryProperty" });
+    // `icu_hasBinaryProperty` is provided by Bun's linked
+    // `workaround-missing-symbols.cpp.o` (real ICU `u_hasBinaryProperty` via
+    // WebKit); exporting Home's stub here duplicate-clashes with it.
 
     for ([_][]const u8{
         "ArrayBufferSink__controllerDetached",
