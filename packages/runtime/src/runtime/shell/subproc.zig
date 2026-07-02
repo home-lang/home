@@ -735,7 +735,13 @@ pub const ShellSubprocess = struct {
         ) void {
             const allocator = this.arena.allocator();
             this.override_env = true;
-            bun.handleOom(this.env_array.ensureTotalCapacityPrecise(allocator, env_iter.len));
+            // Reserve one extra slot for the null terminator that
+            // spawnMaybeSyncImpl appends later. Without it that append grows the
+            // list, and because it runs with spawnAsync's *separate* arena (not
+            // `this.arena`, which owns this buffer), Zig 0.17's
+            // ArenaAllocator.resize hits `loadFirstNode().?` on the empty foreign
+            // arena and panics ("attempt to use null value").
+            bun.handleOom(this.env_array.ensureTotalCapacityPrecise(allocator, env_iter.len + 1));
 
             if (disable_path_lookup_for_arv0) {
                 // If the env object does not include a $PATH, it must disable path lookup for argv[0]
@@ -803,7 +809,11 @@ pub const ShellSubprocess = struct {
         if (!spawn_args.override_env and spawn_args.env_array.items.len == 0) {
             // spawn_args.env_array.items = bun.handleOom(jsc_vm.transpiler.env.map.createNullDelimitedEnvMap(allocator));
             spawn_args.env_array.items = bun.handleOom(event_loop.createNullDelimitedEnvMap(allocator));
-            spawn_args.env_array.capacity = spawn_args.env_array.items.len;
+            // The allocation from createNullDelimitedEnvMap includes the null
+            // sentinel slot (len + 1), so advertise capacity for it. Otherwise
+            // spawnMaybeSyncImpl's later `append(allocator, null)` grows the list
+            // and Zig 0.17's ArenaAllocator.resize panics on the foreign arena.
+            spawn_args.env_array.capacity = spawn_args.env_array.items.len + 1;
         }
 
         // Until ownership transfers into Writable/Readable, deinit any caller-provided

@@ -245,7 +245,10 @@ pub fn init(
         .state = .idle,
     };
     cmd.spawn_arena = bun.ArenaAllocator.init(cmd.base.allocator());
-    cmd.args = bun.handleOom(std.array_list.Managed(?[*:0]const u8).initCapacity(cmd.base.allocator(), node.name_and_args.len));
+    // +1 so the terminating `args.append(null)` in initSubproc fits without a
+    // grow: that grow would call Zig 0.17's ArenaAllocator.resize on a buffer
+    // that may not be the arena's last allocation, which panics.
+    cmd.args = bun.handleOom(std.array_list.Managed(?[*:0]const u8).initCapacity(cmd.base.allocator(), node.name_and_args.len + 1));
     cmd.redirection_file = std.array_list.Managed(u8).init(cmd.spawn_arena.allocator());
 
     return cmd;
