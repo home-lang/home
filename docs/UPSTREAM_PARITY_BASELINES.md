@@ -12,9 +12,10 @@ how to triage the result.
 
 ## Bun
 
-**Pin is real and the delta is large.** As of the last capture, `~/Code/bun`
-`origin/main` was at `7dd427e7ad`, **425 commits** ahead of the pinned
-`fd0b6f1a27`. Full snapshot of the range:
+**Pin is real and the delta is large — and growing.** As of 2026-07-02,
+`~/Code/bun` `origin/main` is at `1498d7b77a`, **634 commits** ahead of the
+pinned `fd0b6f1a27` (was 425 on 2026-06-23 — Bun moves ~15 commits/day). The
+pin has NOT advanced. Full snapshot + engine-vs-Rust-side triage:
 [`BUN_UPSTREAM_DIFF_fd0b6f1a27.md`](./BUN_UPSTREAM_DIFF_fd0b6f1a27.md).
 
 Regenerate the live delta:
