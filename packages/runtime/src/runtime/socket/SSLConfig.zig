@@ -431,10 +431,7 @@ pub fn fromGenerated(
     const protocols = switch (generated.alpn_protocols) {
         .none => null,
         .string => |*val| val.get().toOwnedSliceZ(bun.default_allocator),
-        .buffer => |*val| blk: {
-            const buffer: jsc.ArrayBuffer = val.get().asArrayBuffer();
-            break :blk try bun.default_allocator.dupeZ(u8, buffer.byteSlice());
-        },
+        .buffer => |*val| try bun.default_allocator.dupeZ(u8, val.byteSlice()),
     };
     if (protocols) |some_protocols| {
         result.protos = some_protocols;

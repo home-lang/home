@@ -2728,6 +2728,7 @@ pub const jsc = struct {
     // `bindgen_generated/` subtree that codegen has not emitted into the tree yet.
     pub const generated = struct {
         const WTFStringImpl = @import("string/string.zig").WTFStringImpl;
+        const AlpnArrayBuffer = @import("jsc/array_buffer.zig").ArrayBuffer;
 
         pub const BinaryType = enum { arraybuffer, buffer, uint8array };
 
@@ -2848,7 +2849,7 @@ pub const jsc = struct {
             key_file: MaybeString = .{},
             cert_file: MaybeString = .{},
             ca_file: MaybeString = .{},
-            alpn_protocols: union(enum) { none, string: StringValue, buffer: BufferValue } = .none,
+            alpn_protocols: union(enum) { none, string: StringValue, buffer: AlpnArrayBuffer } = .none,
             ciphers: MaybeString = .{},
             client_renegotiation_limit: u32 = 0,
             client_renegotiation_window: u32 = 0,
@@ -2858,8 +2859,9 @@ pub const jsc = struct {
                 // (socket/SSLConfig.zig) reads these and returns non-null when any
                 // is set, which is what flips a server to https. Covers the common
                 // cert/key/ca (string or Bun.file) + passphrase/serverName/ciphers
-                // + scalar options; buffer/array cert forms and ALPN are left
-                // default (.none) for now.
+                // + scalar options + ALPNProtocols (string or wire-format
+                // buffer/typed-array); buffer/array cert forms are left default
+                // (.none) for now.
                 var result: SSLConfig = .{};
                 errdefer result.deinit();
                 if (!value.isObject()) return result;
@@ -2881,6 +2883,31 @@ pub const jsc = struct {
                 if (try value.get(globalObject, "secureOptions")) |v| {
                     if (v.isNumber()) result.secure_options = v.toInt32();
                 }
+                // ALPNProtocols: node:tls converts the user's protocol list to a
+                // wire-format Buffer (length-prefixed) before it reaches native, so
+                // the common case is a typed-array/ArrayBuffer. A plain string is
+                // also accepted. `asArrayBuffer` resolves views to the correct
+                // offset/length; the borrowed bytes stay valid because fromGenerated
+                // copies them out synchronously before returning.
+                if (try value.get(globalObject, "ALPNProtocols")) |v| {
+                    if (!v.isUndefinedOrNull()) {
+                        if (v.isString()) {
+                            var s = try v.toBunString(globalObject);
+                            if (s.isEmpty()) {
+                                s.deref();
+                            } else {
+                                s.toWTF();
+                                if (s.tag == .WTFStringImpl) {
+                                    result.alpn_protocols = .{ .string = .{ .value = s.value.WTFStringImpl } };
+                                } else {
+                                    s.deref();
+                                }
+                            }
+                        } else if (v.asArrayBuffer(globalObject)) |ab| {
+                            result.alpn_protocols = .{ .buffer = ab };
+                        }
+                    }
+                }
                 return result;
             }
 
@@ -2895,6 +2922,12 @@ pub const jsc = struct {
                 this.ca.deinit();
                 this.cert.deinit();
                 this.key.deinit();
+                // The string variant owns a WTF ref; the buffer variant borrows
+                // JS-owned bytes (nothing to release).
+                if (this.alpn_protocols == .string) {
+                    this.alpn_protocols.string.value.deref();
+                    this.alpn_protocols = .none;
+                }
             }
         };
 
