@@ -7553,6 +7553,20 @@ fn directiveTargetDeprecated(source: []const u8) bool {
     return false;
 }
 
+/// True when the fixture selects a deprecated `module` value (`amd`,
+/// `system`, `umd`) via a `// @module:` directive. The driver emits TS5107
+/// for these (`ts_driver.zig` module-deprecation block), but that is an
+/// option-validation diagnostic which coarse mode filters out of the error
+/// count; mirroring `directiveTargetDeprecated` lets a coarse expected-error
+/// fixture whose only diagnostic is the module deprecation still register an
+/// error. Pins `option-deprecation diagnostic alone passes coarse expected-error`.
+fn directiveModuleDeprecated(source: []const u8) bool {
+    const mod_raw = directiveValue(source, "module") orelse return false;
+    return std.ascii.eqlIgnoreCase(mod_raw, "amd") or
+        std.ascii.eqlIgnoreCase(mod_raw, "system") or
+        std.ascii.eqlIgnoreCase(mod_raw, "umd");
+}
+
 fn strictFlagsFromStrict(strict_on: bool) ts_driver.StrictFlags {
     return strictFlagsFromState(.{}, strict_on);
 }
@@ -8148,6 +8162,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         hasNoLibReferenceLib(entry.source) or
         hasCompilerOptionCompatibilityDiagnostic(entry.source) or
         (entry.expects_error and directiveTargetDeprecated(entry.source)) or
+        (entry.expects_error and directiveModuleDeprecated(entry.source)) or
         (entry.expects_error and hasHarnessModeledExpectedError(entry.name, entry.source)));
     const first_actual_detail: ?[]u8 = if (firstNonOptionValidationDiagnostic(compilation, entry.expects_error)) |d| blk: {
         const pos = ts_diagnostics.positionToLineCol(entry.source, d.pos);
