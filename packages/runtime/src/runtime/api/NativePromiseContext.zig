@@ -58,9 +58,22 @@ pub const Tag = enum(u8) {
 };
 
 // Soft-linked through fn-ptr indirection so the file builds standalone
-// without dragging the JSC link into unit tests.
-var Bun__NativePromiseContext__create_fn: *const fn (global: *jsc.JSGlobalObject, ctx: *anyopaque, tag: u8) callconv(.c) jsc.JSValue = stub_create;
-var Bun__NativePromiseContext__take_fn: *const fn (value: jsc.JSValue) callconv(.c) ?*anyopaque = stub_take;
+// without dragging the JSC link into unit tests. With `-Denable_jsc` the
+// real C++ cell factory in the linked Bun object is used; otherwise (JSC-less
+// unit-test gate) the stubs keep the file self-contained.
+//
+// Wiring these to the real externs is load-bearing: without it, create()
+// returns a `.zero` cell and take() always returns null, so any async server
+// handler whose Promise settles on a *later* event-loop tick (a timer,
+// async file/network I/O — anything but a synchronously-resolved microtask)
+// silently drops its Response and the request hangs forever.
+extern fn Bun__NativePromiseContext__create(global: *jsc.JSGlobalObject, ctx: *anyopaque, tag: u8) callconv(.c) jsc.JSValue;
+extern fn Bun__NativePromiseContext__take(value: jsc.JSValue) callconv(.c) ?*anyopaque;
+
+var Bun__NativePromiseContext__create_fn: *const fn (global: *jsc.JSGlobalObject, ctx: *anyopaque, tag: u8) callconv(.c) jsc.JSValue =
+    if (build_options.enable_jsc) &Bun__NativePromiseContext__create else &stub_create;
+var Bun__NativePromiseContext__take_fn: *const fn (value: jsc.JSValue) callconv(.c) ?*anyopaque =
+    if (build_options.enable_jsc) &Bun__NativePromiseContext__take else &stub_take;
 
 fn stub_create(_: *jsc.JSGlobalObject, _: *anyopaque, _: u8) callconv(.c) jsc.JSValue {
     return .zero;
@@ -160,6 +173,7 @@ pub const DeferredDerefTask = struct {
 
 const std = @import("std");
 const home_rt = @import("home");
+const build_options = @import("build_options");
 
 // ============================================================================
 // Local stubs (re-attach when the matching home_rt surfaces land)
