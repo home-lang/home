@@ -936,6 +936,13 @@ pub fn fromJS(
                     }
                 }
             } else {
+                // A truthy non-array `tls` must be a dictionary. Upstream's
+                // bindgen SSLConfig conversion throws this (from userFacingName
+                // "TLSOptions"); the hand-mirror parser silently returns an empty
+                // config for non-objects, so validate explicitly here.
+                if (!tls.isObject()) {
+                    return global.throwInvalidArguments("TLSOptions must be an object", .{});
+                }
                 if (try SSLConfig.fromJS(vm, global, tls)) |ssl_config| {
                     args.ssl_config = ssl_config;
                 }
