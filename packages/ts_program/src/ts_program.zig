@@ -348,6 +348,10 @@ pub const Program = struct {
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
+        const program_umd_globals = try self.collectProgramUmdGlobals();
+        defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
+        const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
+        defer self.gpa.free(merged_program_umd_globals);
         const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len + options.known_reference_paths.len);
         defer self.gpa.free(known_reference_paths);
         for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
@@ -362,6 +366,7 @@ pub const Program = struct {
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+            per_file.program_umd_globals = merged_program_umd_globals;
             per_file.known_reference_paths = known_reference_paths;
             per_file.suppress_import_helper_diagnostics = true;
             // Per-file declaration-file flag. Multi-file fixtures
@@ -421,6 +426,10 @@ pub const Program = struct {
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
+        const program_umd_globals = try self.collectProgramUmdGlobals();
+        defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
+        const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
+        defer self.gpa.free(merged_program_umd_globals);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             if (f.compilation != null) {
@@ -438,6 +447,7 @@ pub const Program = struct {
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+            per_file.program_umd_globals = merged_program_umd_globals;
             per_file.suppress_import_helper_diagnostics = true;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
@@ -555,6 +565,49 @@ pub const Program = struct {
             try collectAmbientModuleInterfaceExportsFromSource(self.gpa, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramUmdGlobals(self: *const Program) ProgramError![]const ts_driver.ProgramUmdGlobal {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal) = .empty;
+        errdefer {
+            for (out.items) |item| self.gpa.free(item.name);
+            out.deinit(self.gpa);
+        }
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(self.gpa);
+        for (self.files.items) |f| {
+            if (f.redirect_target != null or !f.is_declaration) continue;
+            try collectProgramUmdGlobalsFromSource(self.gpa, f.source, &out, &seen);
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramUmdGlobalsFromSource(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal),
+        seen: *std.StringHashMapUnmanaged(void),
+    ) ProgramError!void {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "export")) |export_pos| {
+            search_start = export_pos + "export".len;
+            if (!identifierKeywordAt(source, export_pos, "export")) continue;
+            var as_pos = export_pos + "export".len;
+            while (as_pos < source.len and std.ascii.isWhitespace(source[as_pos])) : (as_pos += 1) {}
+            if (!identifierKeywordAt(source, as_pos, "as")) continue;
+            var namespace_pos = as_pos + "as".len;
+            while (namespace_pos < source.len and std.ascii.isWhitespace(source[namespace_pos])) : (namespace_pos += 1) {}
+            if (!identifierKeywordAt(source, namespace_pos, "namespace")) continue;
+            var name_start = namespace_pos + "namespace".len;
+            while (name_start < source.len and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
+            const name_end = parseIdentifierEnd(source, name_start, source.len) orelse continue;
+            const name = source[name_start..name_end];
+            if (seen.contains(name)) continue;
+            const owned = try gpa.dupe(u8, name);
+            errdefer gpa.free(owned);
+            try seen.put(gpa, owned, {});
+            try out.append(gpa, .{ .name = owned });
+        }
     }
 
     fn collectAmbientModuleInterfaceExportsFromSource(
@@ -1534,6 +1587,34 @@ pub const Program = struct {
         if (items.len > 0) gpa.free(items);
     }
 
+    fn freeProgramUmdGlobals(gpa: std.mem.Allocator, items: []const ts_driver.ProgramUmdGlobal) void {
+        for (items) |item| gpa.free(item.name);
+        gpa.free(items);
+    }
+
+    fn mergeProgramUmdGlobals(
+        gpa: std.mem.Allocator,
+        collected: []const ts_driver.ProgramUmdGlobal,
+        provided: []const ts_driver.ProgramUmdGlobal,
+    ) ProgramError![]const ts_driver.ProgramUmdGlobal {
+        if (provided.len == 0) return try gpa.dupe(ts_driver.ProgramUmdGlobal, collected);
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal) = .empty;
+        errdefer out.deinit(gpa);
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(gpa);
+        for (collected) |item| {
+            if (seen.contains(item.name)) continue;
+            try seen.put(gpa, item.name, {});
+            try out.append(gpa, item);
+        }
+        for (provided) |item| {
+            if (seen.contains(item.name)) continue;
+            try seen.put(gpa, item.name, {});
+            try out.append(gpa, item);
+        }
+        return try out.toOwnedSlice(gpa);
+    }
+
     /// One `declare global { … }` block discovered at a file's top
     /// level. The eventual cross-file symbol-table merge — driven by
     /// `binder.Module.augment` — needs to know which files contribute
@@ -1650,10 +1731,15 @@ pub const Program = struct {
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
+        const program_umd_globals = try self.collectProgramUmdGlobals();
+        defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
+        const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
+        defer self.gpa.free(merged_program_umd_globals);
         var shared_options = options;
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+        shared_options.program_umd_globals = merged_program_umd_globals;
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const n = workers orelse @min(cpu_count, 8);
 

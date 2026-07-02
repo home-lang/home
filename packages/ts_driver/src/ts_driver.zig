@@ -29,6 +29,7 @@ pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
 pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
 pub const ProgramAmbientModuleInterfaceExport = ts_checker.ProgramAmbientModuleInterfaceExport;
+pub const ProgramUmdGlobal = ts_checker.ProgramUmdGlobal;
 pub const ProgramAmbientInterfaceMember = ts_checker.ProgramAmbientInterfaceMember;
 
 /// One nested elaboration entry under a unified diagnostic, mirroring
@@ -353,6 +354,8 @@ pub const CompileOptions = struct {
     /// Program-level exported interfaces declared inside ambient external
     /// modules in sibling files.
     program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
+    /// Program-level UMD globals exported from sibling declaration files.
+    program_umd_globals: []const ProgramUmdGlobal = &.{},
     /// Program-level virtual file paths that are known to exist. Used
     /// to satisfy per-file triple-slash path diagnostics after a
     /// multi-file fixture has been split into individual sources.
@@ -1948,6 +1951,9 @@ pub fn compileSource(
     }
     if (options.program_ambient_module_interface_exports.len > 0) {
         checker.setProgramAmbientModuleInterfaceExports(options.program_ambient_module_interface_exports);
+    }
+    if (options.program_umd_globals.len > 0) {
+        checker.setProgramUmdGlobals(options.program_umd_globals);
     }
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);

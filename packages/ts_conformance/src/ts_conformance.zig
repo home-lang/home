@@ -1387,6 +1387,66 @@ fn canonicalVfsPath(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fmt.allocPrint(gpa, "/{s}", .{p});
 }
 
+fn collectUmdGlobalsFromVirtualFiles(
+    gpa: std.mem.Allocator,
+    files: []const VirtualFile,
+    out: *std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal),
+) !void {
+    for (files) |f| {
+        if (!virtualPathIsDeclarationFile(f.path)) continue;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, f.source, search_start, "export")) |export_pos| {
+            search_start = export_pos + "export".len;
+            if (!conformanceIdentifierKeywordAt(f.source, export_pos, "export")) continue;
+            var as_pos = export_pos + "export".len;
+            while (as_pos < f.source.len and std.ascii.isWhitespace(f.source[as_pos])) : (as_pos += 1) {}
+            if (!conformanceIdentifierKeywordAt(f.source, as_pos, "as")) continue;
+            var namespace_pos = as_pos + "as".len;
+            while (namespace_pos < f.source.len and std.ascii.isWhitespace(f.source[namespace_pos])) : (namespace_pos += 1) {}
+            if (!conformanceIdentifierKeywordAt(f.source, namespace_pos, "namespace")) continue;
+            var name_start = namespace_pos + "namespace".len;
+            while (name_start < f.source.len and std.ascii.isWhitespace(f.source[name_start])) : (name_start += 1) {}
+            if (name_start >= f.source.len or !conformanceAsciiIdentifierStart(f.source[name_start])) continue;
+            var name_end = name_start + 1;
+            while (name_end < f.source.len and conformanceAsciiIdentifierContinue(f.source[name_end])) : (name_end += 1) {}
+            const name = f.source[name_start..name_end];
+            var exists = false;
+            for (out.items) |global| {
+                if (std.mem.eql(u8, global.name, name)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (exists) continue;
+            const owned = try gpa.dupe(u8, name);
+            errdefer gpa.free(owned);
+            try out.append(gpa, .{ .name = owned });
+        }
+    }
+}
+
+fn virtualPathIsDeclarationFile(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".d.ts") or
+        std.mem.endsWith(u8, path, ".d.mts") or
+        std.mem.endsWith(u8, path, ".d.cts");
+}
+
+fn conformanceIdentifierKeywordAt(source: []const u8, pos: usize, keyword: []const u8) bool {
+    if (pos + keyword.len > source.len) return false;
+    if (!std.mem.eql(u8, source[pos .. pos + keyword.len], keyword)) return false;
+    if (pos > 0 and conformanceAsciiIdentifierContinue(source[pos - 1])) return false;
+    const end = pos + keyword.len;
+    return end >= source.len or !conformanceAsciiIdentifierContinue(source[end]);
+}
+
+fn conformanceAsciiIdentifierStart(c: u8) bool {
+    return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or c == '_' or c == '$';
+}
+
+fn conformanceAsciiIdentifierContinue(c: u8) bool {
+    return conformanceAsciiIdentifierStart(c) or (c >= '0' and c <= '9');
+}
+
 fn dirnameSlice(path: []const u8) []const u8 {
     const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return "";
     if (slash == 0) return "/";
@@ -2493,6 +2553,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         try known_reference_paths.append(gpa, canon);
     }
 
+    var known_umd_globals: std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal) = .empty;
+    defer {
+        for (known_umd_globals.items) |global| gpa.free(global.name);
+        known_umd_globals.deinit(gpa);
+    }
+    try collectUmdGlobalsFromVirtualFiles(gpa, virtual_files.items, &known_umd_globals);
+
     var known_type_reference_names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (known_type_reference_names.items) |name| gpa.free(name);
@@ -2560,6 +2627,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .module_kind = module_kind_label,
         .known_reference_paths = known_reference_paths.items,
         .known_type_reference_names = known_type_reference_names.items,
+        .program_umd_globals = known_umd_globals.items,
     };
     compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse false;
     if (std.ascii.eqlIgnoreCase(module_kind_label, "commonjs") or

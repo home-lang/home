@@ -46,6 +46,7 @@ pub const ProgramExportedClass = check.ProgramExportedClass;
 pub const ProgramExportedClassMember = check.ProgramExportedClassMember;
 pub const ProgramAmbientModuleInterfaceExport = check.ProgramAmbientModuleInterfaceExport;
 pub const ProgramAmbientInterfaceMember = check.ProgramAmbientInterfaceMember;
+pub const ProgramUmdGlobal = check.ProgramUmdGlobal;
 pub const renderType = render.renderType;
 
 const std = @import("std");
