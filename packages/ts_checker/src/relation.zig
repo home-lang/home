@@ -651,6 +651,24 @@ pub const Engine = struct {
         return source_operand == target_operand;
     }
 
+    fn typeParameterAssignableToPlainHomomorphicMappedTarget(self: *Engine, source: TypeId, target: TypeId) bool {
+        if (source >= self.pool().typeCount() or target >= self.pool().typeCount()) return false;
+        if (!self.pool().flagsOf(source).is_type_parameter) return false;
+        if (!self.pool().flagsOf(target).is_mapped) return false;
+        const mapped = self.interner.mappedPayload(target);
+        if (mapped.readonly != .none or mapped.optional != .none) return false;
+        if (mapped.constraint >= self.pool().typeCount()) return false;
+        if (!self.pool().flagsOf(mapped.constraint).is_keyof) return false;
+        const keyof_payload = self.pool().keyof_payloads.items[self.pool().payloadOf(mapped.constraint)];
+        if (keyof_payload.operand != source) return false;
+        if (mapped.template >= self.pool().typeCount()) return false;
+        if (!self.pool().flagsOf(mapped.template).is_indexed_access) return false;
+        const indexed = self.pool().indexed_access_payloads.items[self.pool().payloadOf(mapped.template)];
+        if (indexed.object != source) return false;
+        if (indexed.index >= self.pool().typeCount()) return false;
+        return self.pool().flagsOf(indexed.index).is_type_parameter;
+    }
+
     fn homomorphicMappedOperand(self: *Engine, mapped_t: TypeId) ?TypeId {
         if (mapped_t >= self.pool().typeCount()) return null;
         if (!self.pool().flagsOf(mapped_t).is_mapped) return null;
@@ -888,6 +906,8 @@ pub const Engine = struct {
         }
         if ((sf.is_template_literal or sf.is_string_mapping) and target == Primitive.string_t) return true;
         if (tf.is_template_literal or tf.is_string_mapping) return false;
+
+        if (self.typeParameterAssignableToPlainHomomorphicMappedTarget(source, target)) return true;
 
         if (sf.is_mapped and tf.is_mapped and self.homomorphicMappedOperandsMatch(source, target)) {
             const source_m = self.interner.mappedPayload(source);
