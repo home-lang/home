@@ -348,9 +348,10 @@ pub const Program = struct {
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
-        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len);
+        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len + options.known_reference_paths.len);
         defer self.gpa.free(known_reference_paths);
         for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
+        for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             if (f.compilation != null) continue;

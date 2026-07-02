@@ -2482,6 +2482,17 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
 
     if (program_files.items.len == 0) return null;
 
+    var known_reference_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (known_reference_paths.items) |path| gpa.free(path);
+        known_reference_paths.deinit(gpa);
+    }
+    for (virtual_files.items) |f| {
+        const canon = try canonicalVfsPath(gpa, f.path);
+        errdefer gpa.free(canon);
+        try known_reference_paths.append(gpa, canon);
+    }
+
     var known_type_reference_names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (known_type_reference_names.items) |name| gpa.free(name);
@@ -2547,6 +2558,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .external_resolver = external,
         .module_resolution = module_resolution_label,
         .module_kind = module_kind_label,
+        .known_reference_paths = known_reference_paths.items,
         .known_type_reference_names = known_type_reference_names.items,
     };
     compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse false;
