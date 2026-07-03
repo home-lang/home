@@ -8466,12 +8466,9 @@ pub const Printer = struct {
 
     fn printArrayLiteral(self: *Printer, node: NodeId) !void {
         const elements = hir_mod.arrayLiteralElements(self.hir, node);
-        // §4.A — array spread `[...a]` is an ES2015 feature. Below
-        // that we lower a pure single-spread `[...a]` to `a.slice()`,
-        // matching tsc's downlevel shape. Mixed/multi-spread cases
-        // (e.g. `[...a, b]`, `[...a, ...b]`) and call-site spread
-        // (`f(...args)` → `f.apply(null, args)`) are not yet lowered
-        // and fall through to native-syntax emission for now.
+        // §4.A — array spread `[...a]` is an ES2015 feature. Below that we
+        // lower a pure single-spread `[...a]` to `a.slice()` (a fresh copy),
+        // matching tsc's helper-free downlevel shape.
         if (self.options.es_target == .es5 and
             elements.len == 1 and
             elements[0] != hir_mod.none_node_id and
@@ -8481,6 +8478,25 @@ pub const Printer = struct {
             try self.printExpression(sp.expression);
             try self.write(".slice()");
             return;
+        }
+        // Mixed/multi-spread `[...a, b]` / `[x, ...a]` / `[...a, ...b]` lower
+        // to a `.concat` chain (`a.concat([b])`, `[x].concat(a)`), reusing the
+        // same helper-free part-builder as ES5 call-site spread. Deferred for
+        // arrays containing holes (`[...a, , b]`), which fall through native.
+        if (self.options.es_target == .es5) {
+            var has_spread = false;
+            var has_hole = false;
+            for (elements) |e| {
+                if (e == hir_mod.none_node_id) {
+                    has_hole = true;
+                } else if (self.hir.kindOf(e) == .spread) {
+                    has_spread = true;
+                }
+            }
+            if (has_spread and !has_hole) {
+                try self.printEs5SpreadArgsArray(elements);
+                return;
+            }
         }
         try self.write("[");
         for (elements, 0..) |e, i| {
@@ -12665,6 +12681,36 @@ test "emit: call-site spread preserved natively at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "f(...a)") != null);
     try T.expect(std.mem.indexOf(u8, out, ".apply(") == null);
+}
+
+test "emit: mixed array spread lowers to concat() at es5" {
+    // spread-then-element: `[...a, b]` -> `a.concat([b])`.
+    const out1 = try emitWithOpts("let r = [...a, b];", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "a.concat([b])") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "[...") == null);
+
+    // element-then-spread: `[x, ...a]` -> `[x].concat(a)`.
+    const out2 = try emitWithOpts("let r = [x, ...a];", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "[x].concat(a)") != null);
+
+    // two spreads: `[...a, ...b]` -> `a.concat(b)`.
+    const out3 = try emitWithOpts("let r = [...a, ...b];", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "a.concat(b)") != null);
+
+    // single spread still copies via slice (unchanged).
+    const out4 = try emitWithOpts("let r = [...a];", .{ .es_target = .es5 });
+    defer T.allocator.free(out4);
+    try T.expect(std.mem.indexOf(u8, out4, "a.slice()") != null);
+}
+
+test "emit: mixed array spread preserved natively at es2015+" {
+    const out = try emitWithOpts("let r = [...a, b];", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "[...a, b]") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".concat(") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
