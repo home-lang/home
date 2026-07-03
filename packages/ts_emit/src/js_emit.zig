@@ -85,6 +85,12 @@ pub const EsTarget = enum {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2016);
     }
 
+    /// Object spread `{ ...a }` is an ES2018 feature. Below that tsc lowers
+    /// it to a left-folded `__assign(...)` chain.
+    pub fn supportsObjectSpread(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2018);
+    }
+
     /// Native `async`/`await` is an ES2017 feature. Below that we
     /// downlevel async functions to a `__awaiter`-wrapped generator
     /// and rewrite `await E` inside the body to `yield E`.
@@ -463,7 +469,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __rest, __runInitializers, __values } from \"tslib\";");
+            try self.write("import { __assign, __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __rest, __runInitializers, __values } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -8614,6 +8620,14 @@ pub const Printer = struct {
             try self.write("{}");
             return;
         }
+        // §4.A — object spread `{ ...a }` is an ES2018 feature. Below that tsc
+        // lowers it to a left-folded `__assign(...)` chain (helper-based, like
+        // the sibling object-rest `__rest`), e.g. `{ a: 1, ...r, c: 2 }` ->
+        // `__assign(__assign({ a: 1 }, r), { c: 2 })`.
+        if (!self.options.es_target.supportsObjectSpread() and objectHasSpread(self.hir, props)) {
+            try self.printObjectSpreadAssign(props);
+            return;
+        }
         try self.write("{ ");
         for (props, 0..) |p, i| {
             if (i > 0) try self.write(", ");
@@ -8623,48 +8637,39 @@ pub const Printer = struct {
                 try self.printExpr(hir_mod.spreadOf(self.hir, p).expression, .comma);
                 continue;
             }
-            if (self.hir.kindOf(p) != .object_property) {
-                try self.printExpression(p);
-                continue;
-            }
-            const op = hir_mod.objectPropertyOf(self.hir, p);
-            if (op.is_shorthand) {
-                // `{ foo }` shorthand is ES2015; below that tsc expands it to
-                // the full `{ foo: foo }` form.
+            try self.printObjectProp(p);
+        }
+        try self.write(" }");
+    }
+
+    fn objectHasSpread(hir: *const hir_mod.Hir, props: []const NodeId) bool {
+        for (props) |p| {
+            if (hir.kindOf(p) == .spread) return true;
+        }
+        return false;
+    }
+
+    /// Emit a single non-spread object-literal property: shorthand `{ foo }`
+    /// (expanded to `foo: foo` at ES5), method shorthand `{ foo() {} }`,
+    /// computed `{ [k]: v }`, or regular `key: value`.
+    fn printObjectProp(self: *Printer, p: NodeId) !void {
+        if (self.hir.kindOf(p) != .object_property) {
+            try self.printExpression(p);
+            return;
+        }
+        const op = hir_mod.objectPropertyOf(self.hir, p);
+        if (op.is_shorthand) {
+            // `{ foo }` shorthand is ES2015; below that tsc expands it to
+            // the full `{ foo: foo }` form.
+            try self.printExpression(op.key);
+            if (self.options.es_target == .es5) {
+                try self.write(": ");
                 try self.printExpression(op.key);
-                if (self.options.es_target == .es5) {
-                    try self.write(": ");
-                    try self.printExpression(op.key);
-                }
-            } else if (op.is_method) {
-                // Object literal method shorthand: `{ foo() { … } }`.
-                // The HIR stores the property name on `op.key` and the
-                // method body on `op.value` (a `fn_expr` with
-                // `is_method = true`, `name = none`). At ES2015+ we emit
-                // the native shorthand `[get|set|async|*] key(params)
-                // { body }`; at ES5 we lower to `key: function (…) {…}`.
-                if (self.options.es_target == .es5) {
-                    if (op.is_computed) {
-                        try self.write("[");
-                        try self.printExpression(op.key);
-                        try self.write("]");
-                    } else {
-                        try self.printExpression(op.key);
-                    }
-                    try self.write(": function ");
-                } else {
-                    // Accessor / async / generator keywords precede the key.
-                    try self.writeMethodPrefix(op.value);
-                    if (op.is_computed) {
-                        try self.write("[");
-                        try self.printExpression(op.key);
-                        try self.write("]");
-                    } else {
-                        try self.printExpression(op.key);
-                    }
-                }
-                try self.printObjectMethodBody(op.value);
-            } else {
+            }
+        } else if (op.is_method) {
+            // Object literal method shorthand: `{ foo() { … } }`. At ES2015+
+            // emit native shorthand; at ES5 lower to `key: function (…) {…}`.
+            if (self.options.es_target == .es5) {
                 if (op.is_computed) {
                     try self.write("[");
                     try self.printExpression(op.key);
@@ -8672,11 +8677,104 @@ pub const Printer = struct {
                 } else {
                     try self.printExpression(op.key);
                 }
-                try self.write(": ");
-                try self.printExpr(op.value, .comma);
+                try self.write(": function ");
+            } else {
+                // Accessor / async / generator keywords precede the key.
+                try self.writeMethodPrefix(op.value);
+                if (op.is_computed) {
+                    try self.write("[");
+                    try self.printExpression(op.key);
+                    try self.write("]");
+                } else {
+                    try self.printExpression(op.key);
+                }
             }
+            try self.printObjectMethodBody(op.value);
+        } else {
+            if (op.is_computed) {
+                try self.write("[");
+                try self.printExpression(op.key);
+                try self.write("]");
+            } else {
+                try self.printExpression(op.key);
+            }
+            try self.write(": ");
+            try self.printExpr(op.value, .comma);
+        }
+    }
+
+    /// Emit a run of non-spread props as an object literal `{ ... }` — used as
+    /// an argument chunk in the ES5 object-spread `__assign` lowering.
+    fn printObjectChunk(self: *Printer, chunk: []const NodeId) !void {
+        if (chunk.len == 0) {
+            try self.write("{}");
+            return;
+        }
+        try self.write("{ ");
+        for (chunk, 0..) |p, i| {
+            if (i > 0) try self.write(", ");
+            try self.printObjectProp(p);
         }
         try self.write(" }");
+    }
+
+    /// Lower an object literal containing spread(s) to tsc's `__assign` chain
+    /// for targets below ES2018. Consecutive non-spread props form object
+    /// chunks; each spread becomes a bare argument; parts fold left. A leading
+    /// spread uses an empty `{}` base (`{ ...r }` -> `__assign({}, r)`).
+    fn printObjectSpreadAssign(self: *Printer, props: []const NodeId) !void {
+        var part_count: usize = 0;
+        var leading_spread = false;
+        {
+            var i: usize = 0;
+            var first = true;
+            while (i < props.len) {
+                if (self.hir.kindOf(props[i]) == .spread) {
+                    if (first) leading_spread = true;
+                    part_count += 1;
+                    i += 1;
+                } else {
+                    while (i < props.len and self.hir.kindOf(props[i]) != .spread) i += 1;
+                    part_count += 1;
+                }
+                first = false;
+            }
+        }
+        const fold_count = if (leading_spread) part_count else part_count - 1;
+        var f: usize = 0;
+        while (f < fold_count) : (f += 1) try self.write("__assign(");
+        var is_base = true;
+        if (leading_spread) {
+            try self.write("{}");
+            is_base = false;
+        }
+        var idx: usize = 0;
+        while (idx < props.len) {
+            if (self.hir.kindOf(props[idx]) == .spread) {
+                const expr = hir_mod.spreadOf(self.hir, props[idx]).expression;
+                if (is_base) {
+                    try self.printExpr(expr, .comma);
+                    is_base = false;
+                } else {
+                    try self.write(", ");
+                    try self.printExpr(expr, .comma);
+                    try self.write(")");
+                }
+                idx += 1;
+            } else {
+                var re = idx;
+                while (re < props.len and self.hir.kindOf(props[re]) != .spread) re += 1;
+                if (is_base) {
+                    try self.printObjectChunk(props[idx..re]);
+                    is_base = false;
+                } else {
+                    try self.write(", ");
+                    try self.printObjectChunk(props[idx..re]);
+                    try self.write(")");
+                }
+                idx = re;
+            }
+        }
     }
 
     /// Emit `(params) { body }` for an object-literal method value.
@@ -10329,7 +10427,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __rest, __runInitializers, __values } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __assign, __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __rest, __runInitializers, __values } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
@@ -12875,6 +12973,31 @@ test "emit: exponentiation preserved natively at es2016+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "2 ** 3") != null);
     try T.expect(std.mem.indexOf(u8, out, "Math.pow") == null);
+}
+
+test "emit: object spread lowers to __assign below es2018" {
+    // leading spread uses an empty `{}` base.
+    const out1 = try emitWithOpts("let o = { ...rest };", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "__assign({}, rest)") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "{ ...") == null);
+
+    // interior spread: fold left with object-literal chunks on both sides.
+    const out2 = try emitWithOpts("let o = { a: 1, ...rest, c: 2 };", .{ .es_target = .es2017 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "__assign(__assign({ a: 1 }, rest), { c: 2 })") != null);
+
+    // leading spread then a prop.
+    const out3 = try emitWithOpts("let o = { ...a, b: 2 };", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "__assign(__assign({}, a), { b: 2 })") != null);
+}
+
+test "emit: object spread preserved natively at es2018+" {
+    const out = try emitWithOpts("let o = { ...rest };", .{ .es_target = .es2018 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "{ ...rest }") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__assign") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
