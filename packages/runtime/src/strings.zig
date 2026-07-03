@@ -8,6 +8,8 @@
 const std = @import("std");
 
 pub const repeatingAlloc = @import("string/immutable.zig").repeatingAlloc;
+pub const escapeRegExp = @import("string/escapeRegExp.zig").escapeRegExp;
+pub const escapeRegExpForPackageNameMatching = @import("string/escapeRegExp.zig").escapeRegExpForPackageNameMatching;
 
 pub fn indexOfNotChar(haystack: []const u8, char: u8) ?usize {
     for (haystack, 0..) |c, i| {

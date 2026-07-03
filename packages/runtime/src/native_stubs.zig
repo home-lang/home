@@ -143,8 +143,7 @@ comptime {
         "JS2Zig___src_css_jsc_css_internals_zig__testWithOptions",
         "JS2Zig___src_http_H_Client_zig__TestingAPIs_liveCounts",
         "JS2Zig___src_http_H_Client_zig__TestingAPIs_quicLiveCounts",
-        "JS2Zig___src_ini_ini_zig__IniTestingAPIs_loadNpmrcFromJS",
-        "JS2Zig___src_ini_ini_zig__IniTestingAPIs_parse",
+        // ini IniTestingAPIs now have real exports in js2native_workarounds.zig.
         "JS2Zig___src_install_dependency_zig__Version_Tag_inferFromJS",
         "JS2Zig___src_install_dependency_zig__fromJS",
         "JS2Zig___src_install_hosted_git_info_zig__TestingAPIs_jsFromUrl",

@@ -63,6 +63,7 @@ pub const bun_cli_spawn_process_fs_file = @import("bun/cli_spawn_process_fs_file
 // that copied source needs to compile. Each function mirrors the
 // upstream semantics — see file-level docs for divergences.
 pub const strings = @import("strings.zig");
+pub const ini = @import("ini/ini.zig");
 pub const copyFile = @import("sys/copy_file.zig").copyFile;
 pub const copyFileWithState = @import("sys/copy_file.zig").copyFileWithState;
 pub const CopyFileState = @import("sys/copy_file.zig").CopyFileState;
