@@ -57,6 +57,7 @@ const IniTestingAPIs = @import("../install_jsc/ini_jsc.zig").IniTestingAPIs;
 const InternalSourceMapTestingAPIs = @import("../sourcemap_jsc/internal_jsc.zig").TestingAPIs;
 const hosted_git_info_jsc = @import("../install_jsc/hosted_git_info_jsc.zig");
 const npm_jsc = @import("../install_jsc/npm_jsc.zig");
+const PatchTestingAPIs = @import("../patch_jsc/testing.zig").TestingAPIs;
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -226,6 +227,12 @@ comptime {
     // (architecture-match.test.ts was 0/30).
     @export(&host_fn.toJSHostFn(npm_jsc.architectureIsMatch), .{ .name = "JS2Zig___src_install_npm_zig__Architecture_jsFunctionArchitectureIsMatch" });
     @export(&host_fn.toJSHostFn(npm_jsc.operatingSystemIsMatch), .{ .name = "JS2Zig___src_install_npm_zig__OperatingSystem_jsFunctionOperatingSystemIsMatch" });
+
+    // ---- patch TestingAPIs apply/parse (bun:internal-for-testing patchInternals)
+    // makeDiff stays noop'd (patch.zig's git-diff shell-out uses Zig-0.16
+    // std.process.Child.init). apply/parse are pure file/parse ops — wire them.
+    @export(&host_fn.toJSHostFn(PatchTestingAPIs.apply), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_apply" });
+    @export(&host_fn.toJSHostFn(PatchTestingAPIs.parse), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_parse" });
 
     // ---- string escapeRegExp TestingAPIs (bun:internal-for-testing) -----
     @export(&host_fn.toJSHostFn(escapeRegExp.jsEscapeRegExp), .{ .name = "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExp" });

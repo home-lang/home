@@ -158,9 +158,7 @@ comptime {
         "JS2Zig___src_runtime_api_bun_subprocess_zig__TestingAPIs_injectStdioReadError",
         // patch TestingAPIs stay noop'd: patch.zig's makeDiff uses Zig-0.16
         // std.process.Child.init (removed in 0.17) so the impl doesn't compile.
-        "JS2Zig___src_patch_patch_zig__TestingAPIs_apply",
         "JS2Zig___src_patch_patch_zig__TestingAPIs_makeDiff",
-        "JS2Zig___src_patch_patch_zig__TestingAPIs_parse",
         "JS2Zig___src_runtime_bake_FrameworkRouter_zig__JSFrameworkRouter_getBindings_workaround",
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
