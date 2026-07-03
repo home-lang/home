@@ -100,6 +100,72 @@ fn bindgen_NodeModuleModule_dispatch_stat1_impl(
     return true;
 }
 
+// The bindgen `Formatter` string-enum ("highlight-javascript",
+// "escape-powershell"). VALUES must match the pin's generated
+// GeneratedBindings.zig `Formatter` (escape_powershell=0, highlight_javascript=1),
+// because the linked pin C++ (`bindgen_Fmt_jsc_jsFmtString`) marshals the JS
+// string arg to those numeric values before calling the dispatch below. (Home's
+// jsc/fmt_jsc.zig declares its own Formatter in the opposite order for its
+// name-locking tests — do NOT reuse it here; only the C-ABI value matters.)
+const FmtFormatter = enum(u8) { escape_powershell = 0, highlight_javascript = 1 };
+
+fn fmtStringImpl(global: *JSGlobalObject, code: []const u8, formatter: FmtFormatter) bun.JSError!bun.String {
+    var buffer = bun.MutableString.initEmpty(bun.default_allocator);
+    defer buffer.deinit();
+    var w = buffer.bufferedWriter();
+    switch (formatter) {
+        // `bun.fmt.fmtJavaScript` is Home's pared-down highlighter (the full
+        // `bun_core/fmt.zig` one needs unported `strings.startsWith{Secret,UUID}`).
+        .highlight_javascript => {
+            const f = bun.fmt.fmtJavaScript(code, .{ .enable_colors = true });
+            w.writer().print("{f}", .{f}) catch |err| return global.throwError(err, "while formatting");
+        },
+        // Inlined `bun_core/fmt.zig`'s escapePowershellImpl (prefix `"` and `` ` ``
+        // with a backtick) — self-contained, avoids importing the whole file.
+        .escape_powershell => {
+            var remain = code;
+            while (bun.strings.indexOfAny(remain, "\"`")) |i| {
+                w.writer().print("{s}`{s}", .{ remain[0..i], remain[i .. i + 1] }) catch |err| return global.throwError(err, "while formatting");
+                remain = remain[i + 1 ..];
+            }
+            w.writer().print("{s}", .{remain}) catch |err| return global.throwError(err, "while formatting");
+        },
+    }
+    w.flush() catch |err| return global.throwError(err, "while formatting");
+    return bun.String.cloneUTF8(buffer.list.items);
+}
+
+/// Real Zig dispatch for `fmtString` (bun:internal-for-testing `highlightJavaScript`
+/// / `escapePowershell`). The pinned-obj C++ wrapper `bindgen_Fmt_jsc_jsFmtString`
+/// marshals (code, formatter) and calls this. native_stubs noop-stubbed it, so the
+/// out-param was never written. Mirrors the pin's generated dispatch.
+fn bindgen_Fmt_jsc_dispatchFmtString1_impl(
+    arg_global: *JSGlobalObject,
+    arg_code: *const bun.String,
+    arg_formatter: *const FmtFormatter,
+    out: *bun.String,
+) callconv(.c) bool {
+    const code_utf8 = arg_code.toUTF8(bun.default_allocator);
+    defer code_utf8.deinit();
+    // On error the pending JS exception is already set (fmtStringImpl routes every
+    // failure through global.throwError / throwOutOfMemory); signal failure via the
+    // bool return, matching the pin's dispatch contract.
+    out.* = fmtStringImpl(arg_global, code_utf8.slice(), arg_formatter.*) catch {
+        return false;
+    };
+    return true;
+}
+
+const jsFmtString = @extern(*const host_fn.JSHostFn, .{ .name = "bindgen_Fmt_jsc_jsFmtString" });
+
+/// Lazy binding for `$bindgenFn("fmt_jsc.bind.ts", "fmtString")` — returns the
+/// `fmtString` host function. native_stubs noop-stubbed this so the JS side got
+/// globalThis back ("fmtBinding is not a function"). Mirrors the pin's
+/// `createFmtStringCallback`.
+fn js2native_bindgen_fmt_jsc_fmtString_impl(global: *JSGlobalObject) callconv(jsc.conv) JSValue {
+    return host_fn.NewRuntimeFunction(global, jsc.ZigString.static("fmtString"), 3, jsFmtString, false, null);
+}
+
 /// Wrap a `fn(*GlobalObject) JSValue` lazy binding as a C-ABI thunk.
 fn lazy(comptime f: fn (*JSGlobalObject) callconv(.auto) JSValue) fn (*JSGlobalObject) callconv(jsc.conv) JSValue {
     return struct {
@@ -124,6 +190,10 @@ comptime {
     @export(&bindgen_BunObject_dispatchBraces1_impl, .{ .name = "bindgen_BunObject_dispatchBraces1" });
     @export(&bindgen_BunObject_dispatchGc1_impl, .{ .name = "bindgen_BunObject_dispatchGc1" });
     @export(&bindgen_NodeModuleModule_dispatch_stat1_impl, .{ .name = "bindgen_NodeModuleModule_dispatch_stat1" });
+
+    // ---- fmt_jsc fmtString (bun:internal-for-testing highlightJavaScript) ----
+    @export(&bindgen_Fmt_jsc_dispatchFmtString1_impl, .{ .name = "bindgen_Fmt_jsc_dispatchFmtString1" });
+    @export(&js2native_bindgen_fmt_jsc_fmtString_impl, .{ .name = "js2native_bindgen_fmt_jsc_fmtString" });
 
     // ---- shell TestingAPIs (bun:internal-for-testing shellInternals) ----
     // Real exports for the shell lexer/parser test hooks. native_stubs had

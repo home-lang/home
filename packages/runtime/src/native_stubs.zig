@@ -183,7 +183,9 @@ comptime {
         // `$.braces(...)` yielded globalThis; `Bun.gc()` yielded an
         // uninitialized heap-size (the out-param was never written).
         "bindgen_DevServer_dispatchGetDeinitCountForTesting1",
-        "bindgen_Fmt_jsc_dispatchFmtString1",
+        // bindgen_Fmt_jsc_dispatchFmtString1 + js2native_bindgen_fmt_jsc_fmtString
+        // now have real exports in jsc/js2native_workarounds.zig (the noops made
+        // highlightJavaScript throw "fmtBinding is not a function").
         // bindgen_NodeModuleModule_dispatch_stat1 now has its real export in
         // jsc/js2native_workarounds.zig — the noop left Module._stat's i32
         // out-param uninitialized (garbage file/dir kind for the CJS resolver).
@@ -202,7 +204,6 @@ comptime {
         "bindgen_Node_os_dispatchUserInfo1",
         "bindgen_Node_os_dispatchVersion1",
         "js2native_bindgen_DevServer_getDeinitCountForTesting",
-        "js2native_bindgen_fmt_jsc_fmtString",
         "lol_html_attribute_name_get",
         "lol_html_attribute_value_get",
         "lol_html_attributes_iterator_free",
