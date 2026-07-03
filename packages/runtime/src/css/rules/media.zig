@@ -8,7 +8,7 @@
 // `dest.writeStr`, `dest.indent`, etc.) and trip `@compileError` if invoked.
 // `deepClone` re-uses `implementDeepClone` (shallow copy under stub).
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const MediaList = css.MediaList;
 const RealMediaList = @import("../media_query.zig").MediaList;
 const RealCssRuleList = @import("./rules.zig").CssRuleList;
@@ -32,10 +32,22 @@ pub fn MediaRule(comptime R: type) type {
             return css.implementDeepClone(@This(), this, allocator);
         }
 
-        pub fn toCss(this: *const @This(), dest: anytype) !void {
-            _ = this;
+        pub fn toCss(this: *const This, dest: *Printer) PrintErr!void {
+            // If minifying and the query always matches, omit the `@media` wrapper.
+            if (dest.minify and this.query.alwaysMatches()) {
+                try this.rules.toCss(dest);
+                return;
+            }
             try dest.writeStr("@media ");
-            try dest.writeStr("all");
+            try this.query.toCss(dest);
+            try dest.whitespace();
+            try dest.writeChar('{');
+            dest.indent();
+            try dest.newline();
+            try this.rules.toCss(dest);
+            dest.dedent();
+            try dest.newline();
+            return dest.writeChar('}');
         }
 
         pub fn minify(_: *@This(), _: anytype, _: bool) !bool {
