@@ -3898,14 +3898,7 @@ pub const runtime = struct {
         pub const escapeBunStr = @import("runtime/shell/shell.zig").escapeBunStr;
         pub const needsEscapeBunstr = @import("runtime/shell/shell.zig").needsEscapeBunstr;
         pub const shellCmdFromJS = @import("runtime/shell/shell.zig").shellCmdFromJS;
-        pub const ShellSubprocess = struct {
-            pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
-                _ = this;
-                _ = process;
-                _ = status;
-                _ = rusage;
-            }
-        };
+        pub const ShellSubprocess = subproc.ShellSubprocess;
     };
 };
 
