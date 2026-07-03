@@ -149,18 +149,18 @@ comptime {
         // hostedGitInfo fromUrl/parseUrl now have real exports in
         // jsc/js2native_workarounds.zig (the noops returned globalThis).
         "JS2Zig___src_install_jsc_install_binding_zig__bun_install_js_bindings_generate_workaround",
-        "JS2Zig___src_install_npm_zig__Architecture_jsFunctionArchitectureIsMatch",
-        "JS2Zig___src_install_npm_zig__OperatingSystem_jsFunctionOperatingSystemIsMatch",
         "JS2Zig___src_install_npm_zig__PackageManifest_bindings_generate_workaround",
         "JS2Zig___src_jsc_Counters_zig__createCountersObject",
         "JS2Zig___src_jsc_bindgen_test_zig__getBindgenTestFunctions_workaround",
         "JS2Zig___src_jsc_event_loop_zig__getActiveTasks",
         "JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage",
         "JS2Zig___src_jsc_virtual_machine_exports_zig__Bun__setSyntheticAllocationLimitForTesting",
+        "JS2Zig___src_runtime_api_bun_subprocess_zig__TestingAPIs_injectStdioReadError",
+        // patch TestingAPIs stay noop'd: patch.zig's makeDiff uses Zig-0.16
+        // std.process.Child.init (removed in 0.17) so the impl doesn't compile.
         "JS2Zig___src_patch_patch_zig__TestingAPIs_apply",
         "JS2Zig___src_patch_patch_zig__TestingAPIs_makeDiff",
         "JS2Zig___src_patch_patch_zig__TestingAPIs_parse",
-        "JS2Zig___src_runtime_api_bun_subprocess_zig__TestingAPIs_injectStdioReadError",
         "JS2Zig___src_runtime_bake_FrameworkRouter_zig__JSFrameworkRouter_getBindings_workaround",
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",

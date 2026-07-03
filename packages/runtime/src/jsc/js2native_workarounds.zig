@@ -56,6 +56,7 @@ const bun_string_jsc = @import("bun_string_jsc.zig");
 const IniTestingAPIs = @import("../install_jsc/ini_jsc.zig").IniTestingAPIs;
 const InternalSourceMapTestingAPIs = @import("../sourcemap_jsc/internal_jsc.zig").TestingAPIs;
 const hosted_git_info_jsc = @import("../install_jsc/hosted_git_info_jsc.zig");
+const npm_jsc = @import("../install_jsc/npm_jsc.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -219,6 +220,12 @@ comptime {
     // was 0/649).
     @export(&host_fn.toJSHostFn(hosted_git_info_jsc.jsFromUrl), .{ .name = "JS2Zig___src_install_hosted_git_info_zig__TestingAPIs_jsFromUrl" });
     @export(&host_fn.toJSHostFn(hosted_git_info_jsc.jsParseUrl), .{ .name = "JS2Zig___src_install_hosted_git_info_zig__TestingAPIs_jsParseUrl" });
+
+    // ---- npm os/arch match TestingAPIs (bun:internal-for-testing) --------
+    // isArchitectureMatch/isOperatingSystemMatch — noop'd → returned globalThis
+    // (architecture-match.test.ts was 0/30).
+    @export(&host_fn.toJSHostFn(npm_jsc.architectureIsMatch), .{ .name = "JS2Zig___src_install_npm_zig__Architecture_jsFunctionArchitectureIsMatch" });
+    @export(&host_fn.toJSHostFn(npm_jsc.operatingSystemIsMatch), .{ .name = "JS2Zig___src_install_npm_zig__OperatingSystem_jsFunctionOperatingSystemIsMatch" });
 
     // ---- string escapeRegExp TestingAPIs (bun:internal-for-testing) -----
     @export(&host_fn.toJSHostFn(escapeRegExp.jsEscapeRegExp), .{ .name = "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExp" });
