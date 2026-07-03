@@ -49,6 +49,7 @@ const Stat = @import("../runtime/node/Stat.zig");
 const error_jsc = @import("../sys_jsc/error_jsc.zig");
 const secure_context = @import("../runtime/api/bun/SecureContext.zig");
 const BunObject = @import("../runtime/api/BunObject.zig");
+const shell = @import("../runtime/shell/shell.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -87,6 +88,14 @@ fn lazyErr(comptime f: fn (*JSGlobalObject) callconv(.auto) bun.JSError!JSValue)
 comptime {
     // ---- bindgen dispatches (real, replacing native_stubs no-ops) -------
     @export(&bindgen_BunObject_dispatchBraces1_impl, .{ .name = "bindgen_BunObject_dispatchBraces1" });
+
+    // ---- shell TestingAPIs (bun:internal-for-testing shellInternals) ----
+    // Real exports for the shell lexer/parser test hooks. native_stubs had
+    // these noop-stubbed, so `shellInternals.lex/parse/disabledOnPosix` in
+    // lex.test.ts / parse.test.ts returned garbage and the files were skipped.
+    @export(&host_fn.toJSHostFn(shell.TestingAPIs.shellLex), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellLex" });
+    @export(&host_fn.toJSHostFn(shell.TestingAPIs.shellParse), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellParse" });
+    @export(&host_fn.toJSHostFn(shell.TestingAPIs.disabledOnThisPlatform), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_disabledOnThisPlatform" });
 
     // ---- Lazy bindings (`..._workaround`) -------------------------------
     @export(&lazyErr(node_os.createNodeOsBinding), .{ .name = "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround" });

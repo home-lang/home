@@ -165,9 +165,9 @@ comptime {
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
         // getBunServerAllClosedPromise now has a real export in js2native_workarounds.zig.
-        "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_disabledOnThisPlatform",
-        "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellLex",
-        "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellParse",
+        // shell TestingAPIs (shellLex/shellParse/disabledOnThisPlatform) now
+        // have real exports in jsc/js2native_workarounds.zig — the noops made
+        // lex.test.ts / parse.test.ts skip (garbage return from the hooks).
         "JS2Zig___src_runtime_webcore_FileSink_zig__TestingAPIs_fileSinkLiveCount",
         "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_find",
         "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_fromVLQ",
