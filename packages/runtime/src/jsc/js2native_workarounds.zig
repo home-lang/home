@@ -66,6 +66,20 @@ fn bindgen_BunObject_dispatchBraces1_impl(
     return jsc.toJSHostCall(global, @src(), BunObject.braces, .{ global, input.*, options.* });
 }
 
+/// Real Zig dispatch for `Bun.gc(force)`. The pinned-obj C++ wrapper
+/// `bindgen_BunObject_jsGc` passes `&force` in and `&out` for the heap size,
+/// then encodes `out` as the JS return. native_stubs noop-stubbed this, so the
+/// out-param was never written — `Bun.gc()` returned uninitialized stack garbage
+/// (a pointer-sized number) instead of the reported heap size. Mirrors the pin.
+fn bindgen_BunObject_dispatchGc1_impl(
+    global: *JSGlobalObject,
+    arg_force: *const bool,
+    out: *usize,
+) callconv(.c) bool {
+    out.* = BunObject.gc(global.bunVM(), arg_force.*);
+    return true;
+}
+
 /// Wrap a `fn(*GlobalObject) JSValue` lazy binding as a C-ABI thunk.
 fn lazy(comptime f: fn (*JSGlobalObject) callconv(.auto) JSValue) fn (*JSGlobalObject) callconv(jsc.conv) JSValue {
     return struct {
@@ -88,6 +102,7 @@ fn lazyErr(comptime f: fn (*JSGlobalObject) callconv(.auto) bun.JSError!JSValue)
 comptime {
     // ---- bindgen dispatches (real, replacing native_stubs no-ops) -------
     @export(&bindgen_BunObject_dispatchBraces1_impl, .{ .name = "bindgen_BunObject_dispatchBraces1" });
+    @export(&bindgen_BunObject_dispatchGc1_impl, .{ .name = "bindgen_BunObject_dispatchGc1" });
 
     // ---- shell TestingAPIs (bun:internal-for-testing shellInternals) ----
     // Real exports for the shell lexer/parser test hooks. native_stubs had

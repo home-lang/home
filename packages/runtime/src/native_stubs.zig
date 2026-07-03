@@ -177,10 +177,10 @@ comptime {
         "JS2Zig___src_sys_sys_zig__TestingAPIs_sigactionLayout",
         "bindgen_Bindgen_test_dispatchAdd1",
         "bindgen_Bindgen_test_dispatchRequiredAndOptionalArg1",
-        // bindgen_BunObject_dispatchBraces1 now has its real export in
-        // jsc/js2native_workarounds.zig (forwards to BunObject.braces). The noop
-        // returned garbage — `$.braces(...)` yielded globalThis, not the array.
-        "bindgen_BunObject_dispatchGc1",
+        // bindgen_BunObject_dispatch{Braces1,Gc1} now have real exports in
+        // jsc/js2native_workarounds.zig. The noops returned garbage —
+        // `$.braces(...)` yielded globalThis; `Bun.gc()` yielded an
+        // uninitialized heap-size (the out-param was never written).
         "bindgen_DevServer_dispatchGetDeinitCountForTesting1",
         "bindgen_Fmt_jsc_dispatchFmtString1",
         "bindgen_NodeModuleModule_dispatch_stat1",
