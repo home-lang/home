@@ -10,6 +10,8 @@ const Location = css.css_rules.Location;
 
 pub fn StyleRule(comptime R: type) type {
     return struct {
+        const This = @This();
+
         /// The selectors for the style rule.
         selectors: css.selector.parser.SelectorList,
         /// A vendor prefix override, used during selector printing.
@@ -25,8 +27,115 @@ pub fn StyleRule(comptime R: type) type {
             return css.implementDeepClone(@This(), this, allocator);
         }
 
-        pub fn toCss(_: *const @This(), _: anytype) PrintErr!void {
-            return;
+        pub fn toCss(this: *const This, dest: *Printer) PrintErr!void {
+            if (this.vendor_prefix.isEmpty()) {
+                try this.toCssBase(dest);
+            } else {
+                var first_rule = true;
+                inline for (css.VendorPrefix.FIELDS) |field| {
+                    if (@field(this.vendor_prefix, field)) {
+                        if (first_rule) {
+                            first_rule = false;
+                        } else {
+                            if (!dest.minify) {
+                                try dest.writeChar('\n'); // no indent
+                            }
+                            try dest.newline();
+                        }
+                        const prefix = css.VendorPrefix.fromName(field);
+                        dest.vendor_prefix = prefix;
+                        try this.toCssBase(dest);
+                    }
+                }
+                dest.vendor_prefix = .{};
+            }
+        }
+
+        fn toCssBase(this: *const This, dest: *Printer) PrintErr!void {
+            // If supported, or there are no targets, preserve nesting. Otherwise, write nested rules after parent.
+            const supports_nesting = this.rules.v.items.len == 0 or
+                !css.Targets.shouldCompileSame(&dest.targets, .nesting);
+
+            const len = this.declarations.declarations.items.len + this.declarations.important_declarations.items.len;
+            const has_declarations = supports_nesting or len > 0 or this.rules.v.items.len == 0;
+
+            if (has_declarations) {
+                try css.selector.serialize.serializeSelectorList(this.selectors.v.slice(), dest, dest.context(), false);
+                try dest.whitespace();
+                try dest.writeChar('{');
+                dest.indent();
+
+                var i: usize = 0;
+                const DECLS = .{ "declarations", "important_declarations" };
+                inline for (DECLS) |decl_field_name| {
+                    const important = comptime std.mem.eql(u8, decl_field_name, "important_declarations");
+                    const decls = &@field(this.declarations, decl_field_name);
+
+                    for (decls.items) |*decl| {
+                        // The CSS modules `composes` property is handled specially, and omitted during printing.
+                        if (decl.* == .composes) {
+                            const composes = &decl.composes;
+                            if (dest.isNested() and dest.css_module != null) {
+                                return dest.newError(css.PrinterErrorKind.invalid_composes_nesting, composes.cssparser_loc);
+                            }
+
+                            if (dest.css_module) |*css_module| {
+                                if (css_module.handleComposes(
+                                    dest,
+                                    &this.selectors,
+                                    composes,
+                                    this.loc.source_index,
+                                ).asErr()) |error_kind| {
+                                    return dest.newError(error_kind, composes.cssparser_loc);
+                                }
+                                continue;
+                            }
+                        }
+
+                        try dest.newline();
+                        try decl.toCss(dest, important);
+                        if (i != len - 1 or !dest.minify or (supports_nesting and this.rules.v.items.len > 0)) {
+                            try dest.writeChar(';');
+                        }
+
+                        i += 1;
+                    }
+                }
+            }
+
+            const Helpers = struct {
+                pub fn newline(self: *const This, d: *Printer, supports_nesting2: bool, len1: usize) PrintErr!void {
+                    if (!d.minify and (supports_nesting2 or len1 > 0) and self.rules.v.items.len > 0) {
+                        if (len1 > 0) {
+                            try d.writeChar('\n');
+                        }
+                        try d.newline();
+                    }
+                }
+
+                pub fn end(d: *Printer, has_decls: bool) PrintErr!void {
+                    if (has_decls) {
+                        d.dedent();
+                        try d.newline();
+                        try d.writeChar('}');
+                    }
+                }
+            };
+
+            // Write nested rules after the parent.
+            if (supports_nesting) {
+                try Helpers.newline(this, dest, supports_nesting, len);
+                try this.rules.toCss(dest);
+                try Helpers.end(dest, has_declarations);
+            } else {
+                try Helpers.end(dest, has_declarations);
+                try Helpers.newline(this, dest, supports_nesting, len);
+                try dest.withContext(&this.selectors, this, struct {
+                    pub fn toCss(self: *const This, d: *Printer) PrintErr!void {
+                        return self.rules.toCss(d);
+                    }
+                }.toCss);
+            }
         }
 
         pub fn minify(_: *@This(), _: anytype, _: bool) !bool {

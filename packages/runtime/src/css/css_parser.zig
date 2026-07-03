@@ -2655,10 +2655,10 @@ pub fn NestedRuleParser(comptime T: type) type {
 
                 this.rules.v.append(this.allocator, .{
                     .style = StyleRule(AtRuleT){
-                        .selectors = .{},
+                        .selectors = selectors,
                         .vendor_prefix = VendorPrefix{},
-                        .declarations = .{},
-                        .rules = .{},
+                        .declarations = declarations,
+                        .rules = result[1],
                         .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                     },
                 }) catch |err| bun.handleOom(err);
