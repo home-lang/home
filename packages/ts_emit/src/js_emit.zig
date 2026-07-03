@@ -6749,6 +6749,77 @@ pub const Printer = struct {
     ///     Cls.prototype.method = function () { /* ... */ };
     ///     return Cls;
     ///   })(SuperClass);
+    /// Emit `function (params) body` for an ES5 accessor member (the value
+    /// side of a `get`/`set` in an `Object.defineProperty` descriptor).
+    fn printEs5AccessorFn(self: *Printer, node: NodeId) anyerror!void {
+        const fd = hir_mod.fnDeclOf(self.hir, node);
+        try self.write("function (");
+        const params = hir_mod.fnParams(self.hir, node);
+        try self.printRuntimeParams(params);
+        try self.write(") ");
+        if (fd.body != hir_mod.none_node_id) {
+            if (self.hasDefaultParam(params) or self.hasDestructuringParam(params)) {
+                try self.printFnBodyWithDefaults(params, fd.body);
+            } else {
+                try self.printStatementInline(fd.body);
+            }
+        } else {
+            try self.write("{}");
+        }
+    }
+
+    /// Lower a class getter/setter to `Object.defineProperty`, merging a
+    /// get+set pair for the same (identifier) key + static-ness into one
+    /// call: `Object.defineProperty(C.prototype, "x", { get: function () {…},
+    /// set: function (v) {…}, enumerable: false, configurable: true });`.
+    /// Only emits at the first accessor of the key (a later pair member is
+    /// skipped by the caller-visible early return).
+    fn printEs5ClassAccessor(self: *Printer, class_name: NodeId, members: []const NodeId, m: NodeId, fd: hir_mod.FnDeclPayload) anyerror!void {
+        const name = self.interner.get(hir_mod.identifierOf(self.hir, fd.name).name);
+        const is_static = fd.flags.is_static;
+        // Skip if an earlier accessor already emitted this (name, static) pair.
+        for (members) |prev| {
+            if (prev == m) break;
+            const pk = self.hir.kindOf(prev);
+            if (pk != .fn_decl and pk != .fn_expr) continue;
+            const pfd = hir_mod.fnDeclOf(self.hir, prev);
+            if (!(pfd.flags.is_getter or pfd.flags.is_setter)) continue;
+            if (self.hir.kindOf(pfd.name) != .identifier) continue;
+            if (pfd.flags.is_static != is_static) continue;
+            if (std.mem.eql(u8, self.interner.get(hir_mod.identifierOf(self.hir, pfd.name).name), name)) return;
+        }
+        // Collect the get and set nodes for this key.
+        var get_node: NodeId = hir_mod.none_node_id;
+        var set_node: NodeId = hir_mod.none_node_id;
+        for (members) |mm| {
+            const mk = self.hir.kindOf(mm);
+            if (mk != .fn_decl and mk != .fn_expr) continue;
+            const mfd = hir_mod.fnDeclOf(self.hir, mm);
+            if (self.hir.kindOf(mfd.name) != .identifier) continue;
+            if (mfd.flags.is_static != is_static) continue;
+            if (!std.mem.eql(u8, self.interner.get(hir_mod.identifierOf(self.hir, mfd.name).name), name)) continue;
+            if (mfd.flags.is_getter and get_node == hir_mod.none_node_id) get_node = mm;
+            if (mfd.flags.is_setter and set_node == hir_mod.none_node_id) set_node = mm;
+        }
+        try self.write("Object.defineProperty(");
+        try self.printExpression(class_name);
+        if (!is_static) try self.write(".prototype");
+        try self.write(", \"");
+        try self.write(name);
+        try self.write("\", { ");
+        if (get_node != hir_mod.none_node_id) {
+            try self.write("get: ");
+            try self.printEs5AccessorFn(get_node);
+            try self.write(", ");
+        }
+        if (set_node != hir_mod.none_node_id) {
+            try self.write("set: ");
+            try self.printEs5AccessorFn(set_node);
+            try self.write(", ");
+        }
+        try self.write("enumerable: false, configurable: true }); ");
+    }
+
     fn printClassDeclEs5(self: *Printer, node: NodeId) anyerror!void {
         const c = hir_mod.classOf(self.hir, node);
         if (c.name == hir_mod.none_node_id) return; // anonymous class — fall back
@@ -6843,6 +6914,13 @@ pub const Printer = struct {
             const fd = hir_mod.fnDeclOf(self.hir, m);
             if (fd.flags.is_constructor) continue;
             if (fd.name == hir_mod.none_node_id) continue;
+            // Getters/setters lower to `Object.defineProperty` (merging a
+            // get+set pair for the same key into one call — separate calls
+            // would clobber each other). Computed accessor names are deferred.
+            if ((fd.flags.is_getter or fd.flags.is_setter) and self.hir.kindOf(fd.name) == .identifier) {
+                try self.printEs5ClassAccessor(c.name, members, m, fd);
+                continue;
+            }
             try self.printExpression(c.name);
             if (fd.flags.is_static) {
                 try self.write(".");
@@ -12998,6 +13076,41 @@ test "emit: object spread preserved natively at es2018+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "{ ...rest }") != null);
     try T.expect(std.mem.indexOf(u8, out, "__assign") == null);
+}
+
+test "emit: es5 class instance getter lowers to defineProperty" {
+    const out = try emitWithOpts("class C { get prop() { return 1; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    // Structural checks — function bodies are emitted multi-line, matching
+    // home's existing method-body convention.
+    try T.expect(std.mem.indexOf(u8, out, "Object.defineProperty(C.prototype, \"prop\", { get: function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "enumerable: false, configurable: true });") != null);
+    try T.expect(std.mem.indexOf(u8, out, "C.prototype.prop = function") == null);
+}
+
+test "emit: es5 class getter+setter merge into one defineProperty" {
+    const out = try emitWithOpts("class C { get prop() { return this._p; } set prop(v) { this._p = v; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    // both accessors share a single defineProperty call, get before set.
+    try T.expect(std.mem.indexOf(u8, out, "Object.defineProperty(C.prototype, \"prop\", { get: function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "set: function (v) {") != null);
+    // exactly one defineProperty for this key (no duplicate that would clobber).
+    const first = std.mem.indexOf(u8, out, "Object.defineProperty(C.prototype, \"prop\"").?;
+    try T.expect(std.mem.indexOf(u8, out[first + 10 ..], "Object.defineProperty(C.prototype, \"prop\"") == null);
+}
+
+test "emit: es5 class static getter targets the constructor" {
+    const out = try emitWithOpts("class C { static get prop() { return 1; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "Object.defineProperty(C, \"prop\", { get: function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "C.prototype") == null);
+}
+
+test "emit: es2015+ class accessors stay native" {
+    const out = try emitWithOpts("class C { get prop() { return 1; } }", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "get prop()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "defineProperty") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
