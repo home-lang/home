@@ -8597,7 +8597,13 @@ pub const Printer = struct {
             }
             const op = hir_mod.objectPropertyOf(self.hir, p);
             if (op.is_shorthand) {
+                // `{ foo }` shorthand is ES2015; below that tsc expands it to
+                // the full `{ foo: foo }` form.
                 try self.printExpression(op.key);
+                if (self.options.es_target == .es5) {
+                    try self.write(": ");
+                    try self.printExpression(op.key);
+                }
             } else if (op.is_method) {
                 // Object literal method shorthand: `{ foo() { … } }`.
                 // The HIR stores the property name on `op.key` and the
@@ -12798,6 +12804,21 @@ test "emit: new-with-spread preserved natively at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "new C(...a)") != null);
     try T.expect(std.mem.indexOf(u8, out, "bind.apply") == null);
+}
+
+test "emit: object shorthand expands at es5" {
+    // `{ foo }` shorthand is ES2015; at es5 -> `{ foo: foo }`.
+    const out = try emitWithOpts("let o = { foo, bar };", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "foo: foo") != null);
+    try T.expect(std.mem.indexOf(u8, out, "bar: bar") != null);
+}
+
+test "emit: object shorthand preserved natively at es2015+" {
+    const out = try emitWithOpts("let o = { foo };", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "{ foo }") != null);
+    try T.expect(std.mem.indexOf(u8, out, "foo: foo") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
