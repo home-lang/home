@@ -8245,6 +8245,14 @@ pub const Printer = struct {
             try self.write(")");
             return;
         }
+        // §4.A — ES5 call-site spread. `f(...a)` -> `f.apply(void 0, a)`,
+        // `o.m(a, ...b)` -> `o.m.apply(o, [a].concat(b))`. Deferred (native
+        // fall-through) for callee shapes whose receiver can't be repeated
+        // safely — handled inside `printEs5SpreadCall`.
+        const es5_args = hir_mod.callArgs(self.hir, node);
+        if (self.options.es_target == .es5 and callArgsHaveSpread(self.hir, es5_args)) {
+            if (try self.printEs5SpreadCall(p.callee, es5_args, wrap_call)) return;
+        }
         // The call target binds at `.postfix`, so a looser callee is
         // parenthesized (`(a || b)()`, `(a, b)()`). Arguments are printed at
         // `.comma` so only a top-level sequence argument wraps.
@@ -8258,6 +8266,105 @@ pub const Printer = struct {
         }
         try self.write(")");
         if (wrap_call) try self.write(")");
+    }
+
+    fn callArgsHaveSpread(hir: *const hir_mod.Hir, args: []const NodeId) bool {
+        for (args) |a| {
+            if (a != hir_mod.none_node_id and hir.kindOf(a) == .spread) return true;
+        }
+        return false;
+    }
+
+    /// ES5 downlevel of a call whose arguments contain a spread. Emits
+    /// `callee.apply(thisArg, argsArray)`. Returns false (caller falls back
+    /// to native emission) when the callee is a member access on a
+    /// side-effecting receiver, since repeating it as the `thisArg` would
+    /// double-evaluate it — tsc caches it in a temp there, which this first
+    /// increment does not yet do.
+    fn printEs5SpreadCall(self: *Printer, callee: NodeId, args: []const NodeId, wrap_call: bool) !bool {
+        const callee_kind = self.hir.kindOf(callee);
+        var object_node: NodeId = hir_mod.none_node_id;
+        if (callee_kind == .member_access) {
+            const m = hir_mod.memberOf(self.hir, callee);
+            if (m.optional) return false;
+            const ok_recv = m.object != hir_mod.none_node_id and
+                (self.hir.kindOf(m.object) == .identifier or self.hir.kindOf(m.object) == .this_expr);
+            if (!ok_recv) return false;
+            object_node = m.object;
+        } else if (callee_kind != .identifier) {
+            return false;
+        }
+        if (wrap_call) try self.write("(");
+        try self.printExpr(callee, .postfix);
+        try self.write(".apply(");
+        if (object_node != hir_mod.none_node_id) {
+            try self.printExpr(object_node, .comma);
+        } else {
+            try self.write("void 0");
+        }
+        try self.write(", ");
+        try self.printEs5SpreadArgsArray(args);
+        try self.write(")");
+        if (wrap_call) try self.write(")");
+        return true;
+    }
+
+    /// Emit the argument array for an ES5 `.apply`, lowering spreads via
+    /// `.concat`: `...a` alone -> `a`; `a, ...b, c` -> `[a].concat(b, [c])`;
+    /// `...a, ...b` -> `a.concat(b)`.
+    fn printEs5SpreadArgsArray(self: *Printer, args: []const NodeId) !void {
+        // A "part" is either a run of non-spread args (an array literal) or a
+        // single spread expression. Count parts first so the base part's
+        // precedence is correct: `.postfix` when a trailing `.concat` follows,
+        // `.comma` when it is the lone part.
+        var part_count: usize = 0;
+        var scan: usize = 0;
+        while (scan < args.len) {
+            if (self.hir.kindOf(args[scan]) == .spread) {
+                part_count += 1;
+                scan += 1;
+            } else {
+                while (scan < args.len and self.hir.kindOf(args[scan]) != .spread) scan += 1;
+                part_count += 1;
+            }
+        }
+        const base_prec: Level = if (part_count > 1) .postfix else .comma;
+        var idx: usize = 0;
+        var part_index: usize = 0;
+        var opened_concat = false;
+        while (idx < args.len) {
+            if (self.hir.kindOf(args[idx]) != .spread) {
+                var run_end = idx;
+                while (run_end < args.len and self.hir.kindOf(args[run_end]) != .spread) run_end += 1;
+                try self.es5ArgsPartSep(part_index, &opened_concat);
+                try self.write("[");
+                var k = idx;
+                while (k < run_end) : (k += 1) {
+                    if (k > idx) try self.write(", ");
+                    try self.printExpr(args[k], .comma);
+                }
+                try self.write("]");
+                part_index += 1;
+                idx = run_end;
+            } else {
+                const sp = hir_mod.spreadOf(self.hir, args[idx]);
+                try self.es5ArgsPartSep(part_index, &opened_concat);
+                try self.printExpr(sp.expression, if (part_index == 0) base_prec else .comma);
+                part_index += 1;
+                idx += 1;
+            }
+        }
+        if (opened_concat) try self.write(")");
+    }
+
+    fn es5ArgsPartSep(self: *Printer, part_index: usize, opened_concat: *bool) !void {
+        if (part_index == 0) return;
+        if (!opened_concat.*) {
+            try self.write(".concat(");
+            opened_concat.* = true;
+        } else {
+            try self.write(", ");
+        }
     }
 
     fn printNew(self: *Printer, node: NodeId) !void {
@@ -12528,6 +12635,36 @@ test "emit: array spread lowers to slice() at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "a.slice()") != null);
     try T.expect(std.mem.indexOf(u8, out, "[...") == null);
+}
+
+test "emit: call-site spread lowers to apply() at es5" {
+    // `f(...a)` -> `f.apply(void 0, a)`; no leftover native spread.
+    const out1 = try emitWithOpts("f(...a);", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "f.apply(void 0, a)") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "f(...") == null);
+
+    // method call keeps the receiver as thisArg: `o.m(...a)` -> `o.m.apply(o, a)`.
+    const out2 = try emitWithOpts("o.m(...a);", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "o.m.apply(o, a)") != null);
+
+    // mixed args build the array via concat: `f(a, ...b)` -> `f.apply(void 0, [a].concat(b))`.
+    const out3 = try emitWithOpts("f(a, ...b);", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "f.apply(void 0, [a].concat(b))") != null);
+
+    // leading spread then arg: `f(...a, b)` -> `f.apply(void 0, a.concat([b]))`.
+    const out4 = try emitWithOpts("f(...a, b);", .{ .es_target = .es5 });
+    defer T.allocator.free(out4);
+    try T.expect(std.mem.indexOf(u8, out4, "f.apply(void 0, a.concat([b]))") != null);
+}
+
+test "emit: call-site spread preserved natively at es2015+" {
+    const out = try emitWithOpts("f(...a);", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "f(...a)") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".apply(") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
