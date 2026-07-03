@@ -146,8 +146,8 @@ comptime {
         // ini IniTestingAPIs now have real exports in js2native_workarounds.zig.
         "JS2Zig___src_install_dependency_zig__Version_Tag_inferFromJS",
         "JS2Zig___src_install_dependency_zig__fromJS",
-        "JS2Zig___src_install_hosted_git_info_zig__TestingAPIs_jsFromUrl",
-        "JS2Zig___src_install_hosted_git_info_zig__TestingAPIs_jsParseUrl",
+        // hostedGitInfo fromUrl/parseUrl now have real exports in
+        // jsc/js2native_workarounds.zig (the noops returned globalThis).
         "JS2Zig___src_install_jsc_install_binding_zig__bun_install_js_bindings_generate_workaround",
         "JS2Zig___src_install_npm_zig__Architecture_jsFunctionArchitectureIsMatch",
         "JS2Zig___src_install_npm_zig__OperatingSystem_jsFunctionOperatingSystemIsMatch",

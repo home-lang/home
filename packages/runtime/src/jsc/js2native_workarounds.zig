@@ -55,6 +55,7 @@ const escapeRegExp = @import("../string/escapeRegExp.zig");
 const bun_string_jsc = @import("bun_string_jsc.zig");
 const IniTestingAPIs = @import("../install_jsc/ini_jsc.zig").IniTestingAPIs;
 const InternalSourceMapTestingAPIs = @import("../sourcemap_jsc/internal_jsc.zig").TestingAPIs;
+const hosted_git_info_jsc = @import("../install_jsc/hosted_git_info_jsc.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -211,6 +212,13 @@ comptime {
     @export(&host_fn.toJSHostFn(InternalSourceMapTestingAPIs.fromVLQ), .{ .name = "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_fromVLQ" });
     @export(&host_fn.toJSHostFn(InternalSourceMapTestingAPIs.toVLQ), .{ .name = "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_toVLQ" });
     @export(&host_fn.toJSHostFn(InternalSourceMapTestingAPIs.find), .{ .name = "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_find" });
+
+    // ---- hostedGitInfo TestingAPIs (bun:internal-for-testing) -----------
+    // fromUrl/parseUrl for the npm-style git-URL parser. native_stubs noop'd
+    // these, so `hostedGitInfo.fromUrl(...)` returned globalThis (from-url.test.ts
+    // was 0/649).
+    @export(&host_fn.toJSHostFn(hosted_git_info_jsc.jsFromUrl), .{ .name = "JS2Zig___src_install_hosted_git_info_zig__TestingAPIs_jsFromUrl" });
+    @export(&host_fn.toJSHostFn(hosted_git_info_jsc.jsParseUrl), .{ .name = "JS2Zig___src_install_hosted_git_info_zig__TestingAPIs_jsParseUrl" });
 
     // ---- string escapeRegExp TestingAPIs (bun:internal-for-testing) -----
     @export(&host_fn.toJSHostFn(escapeRegExp.jsEscapeRegExp), .{ .name = "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExp" });
