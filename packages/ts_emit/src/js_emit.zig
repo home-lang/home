@@ -6895,7 +6895,26 @@ pub const Printer = struct {
         // contains a `super(...)` call which will be lowered to
         // `_super.call(this, ...)` by `printCall`.
         if (has_extends and ctor == null) {
-            try self.write("_super.call(this); ");
+            // An implicit derived constructor forwards its args to the base.
+            // With no instance-field initializers this is exactly tsc's
+            // `return _super !== null && _super.apply(this, arguments) || this;`
+            // form (the old `_super.call(this)` dropped the arguments). When
+            // there ARE field inits the byte-exact tsc shape needs a `_this`
+            // capture (temp infra) — deferred; keep the in-place form there.
+            var has_instance_field = false;
+            for (members) |m| {
+                if (self.hir.kindOf(m) != .object_property) continue;
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                if (op.is_static) continue;
+                if (op.value == hir_mod.none_node_id) continue;
+                has_instance_field = true;
+                break;
+            }
+            if (has_instance_field) {
+                try self.write("_super.call(this); ");
+            } else {
+                try self.write("return _super !== null && _super.apply(this, arguments) || this; ");
+            }
         }
         // Class fields with initializers go inside the ctor body.
         for (members) |m| {
@@ -9618,11 +9637,12 @@ test "emit: class downlevels to function-with-prototype at es5" {
     try T.expect(std.mem.indexOf(u8, out, "class ") == null);
 }
 
-test "emit: class with extends emits __extends + super.call at es5" {
+test "emit: class with extends emits __extends + super forwarding at es5" {
     const out = try emitWithOpts("class B extends A { }", .{ .es_target = .es5 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__extends(B, _super)") != null);
-    try T.expect(std.mem.indexOf(u8, out, "_super.call(this)") != null);
+    // Implicit derived ctor forwards args: `return _super.apply(this, arguments) || this`.
+    try T.expect(std.mem.indexOf(u8, out, "return _super !== null && _super.apply(this, arguments) || this;") != null);
 }
 
 test "emit: class field initializer goes inside ctor at es5" {
@@ -9638,7 +9658,7 @@ test "emit: plain class extends at es5 emits __extends helper call" {
     try T.expect(std.mem.indexOf(u8, out, "var B = (function (_super)") != null);
     try T.expect(std.mem.indexOf(u8, out, "__extends(B, _super)") != null);
     try T.expect(std.mem.indexOf(u8, out, "function B()") != null);
-    try T.expect(std.mem.indexOf(u8, out, "_super.call(this)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return _super !== null && _super.apply(this, arguments) || this;") != null);
     try T.expect(std.mem.indexOf(u8, out, "return B;") != null);
     try T.expect(std.mem.indexOf(u8, out, "})(A)") != null);
     // No leftover `class` keyword.
@@ -13147,6 +13167,21 @@ test "emit: es2017+ async arrow stays native" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "async ") != null);
     try T.expect(std.mem.indexOf(u8, out, "__awaiter") == null);
+}
+
+test "emit: es5 implicit derived constructor forwards args to base" {
+    const out = try emitWithOpts("class Base {} class Derived extends Base {}", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return _super !== null && _super.apply(this, arguments) || this;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_super.call(this);") == null);
+}
+
+test "emit: es5 derived with instance field keeps in-place super call" {
+    // Field-bearing derived classes still need a _this capture (deferred);
+    // they keep the in-place `_super.call(this)` form for now.
+    const out = try emitWithOpts("class Base {} class D extends Base { x = 1; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_super.call(this);") != null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
