@@ -79,6 +79,12 @@ pub const EsTarget = enum {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2021);
     }
 
+    /// The exponentiation operator (`a ** b`, `a **= b`) is an ES2016
+    /// feature. Below that tsc lowers it to `Math.pow(a, b)`.
+    pub fn supportsExponentiation(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2016);
+    }
+
     /// Native `async`/`await` is an ES2017 feature. Below that we
     /// downlevel async functions to a `__awaiter`-wrapped generator
     /// and rewrite `await E` inside the body to `yield E`.
@@ -7920,6 +7926,17 @@ pub const Printer = struct {
 
     fn printBinop(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.binopOf(self.hir, node);
+        // `a ** b` (ES2016) downlevels to `Math.pow(a, b)` below es2016. The
+        // result is a call expression, which binds tighter than any binary
+        // operator, so no outer parens are needed regardless of `level`.
+        if (p.op == .pow and !self.options.es_target.supportsExponentiation()) {
+            try self.write("Math.pow(");
+            try self.printExpr(p.lhs, .comma);
+            try self.write(", ");
+            try self.printExpr(p.rhs, .comma);
+            try self.write(")");
+            return;
+        }
         const e_level = binOpLevel(p.op);
         const wrap = level.gte(e_level);
         if (wrap) try self.write("(");
@@ -8096,6 +8113,21 @@ pub const Printer = struct {
                     return;
                 }
             }
+        }
+        // `a **= b` (ES2016) downlevels to `a = Math.pow(a, b)` below es2016,
+        // re-evaluating the target (matching the logical-assignment downlevel
+        // style above; a side-effecting target would double-evaluate).
+        if (p.op == .pow and !self.options.es_target.supportsExponentiation()) {
+            const wrap_pow = level.gte(.assign);
+            if (wrap_pow) try self.write("(");
+            try self.printExpr(p.target, .assign);
+            try self.write(" = Math.pow(");
+            try self.printExpression(p.target);
+            try self.write(", ");
+            try self.printExpression(p.value);
+            try self.write(")");
+            if (wrap_pow) try self.write(")");
+            return;
         }
         // Assignment is right-associative at `.assign`: the target sits at
         // `.assign` and the value one level below, so `a = b = c` nests
@@ -12819,6 +12851,30 @@ test "emit: object shorthand preserved natively at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "{ foo }") != null);
     try T.expect(std.mem.indexOf(u8, out, "foo: foo") == null);
+}
+
+test "emit: exponentiation lowers to Math.pow below es2016" {
+    const out1 = try emitWithOpts("let r = 2 ** 3;", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "Math.pow(2, 3)") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "**") == null);
+
+    // right-associative nesting: `2 ** 3 ** 4` -> `Math.pow(2, Math.pow(3, 4))`.
+    const out2 = try emitWithOpts("let r = 2 ** 3 ** 4;", .{ .es_target = .es2015 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "Math.pow(2, Math.pow(3, 4))") != null);
+
+    // compound `x **= 2` -> `x = Math.pow(x, 2)`.
+    const out3 = try emitWithOpts("x **= 2;", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "x = Math.pow(x, 2)") != null);
+}
+
+test "emit: exponentiation preserved natively at es2016+" {
+    const out = try emitWithOpts("let r = 2 ** 3;", .{ .es_target = .es2016 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "2 ** 3") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Math.pow") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
