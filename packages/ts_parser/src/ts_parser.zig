@@ -10806,7 +10806,7 @@ pub const Parser = struct {
             } else if ((saw_label_before_type or saw_label_after_rest) and trailing_optional) {
                 try self.reportCodeAt(elem_start, elem_line, 5086, "A labeled tuple element is declared as optional with a question mark after the name and before the colon, rather than after the type.");
             }
-            const is_definite_rest = has_rest and self.hir.kindOf(e) == .array_type;
+            const is_definite_rest = has_rest and self.tupleRestOperandIsDefiniteArray(e);
             if (!reported_tuple_order_error and has_rest) {
                 if (saw_definite_rest) {
                     reported_tuple_order_error = true;
@@ -10852,6 +10852,19 @@ pub const Parser = struct {
             break :blk pos;
         };
         return try self.builder.addTupleType(.{ .start = open.span.start, .end = end_pos }, elems.items);
+    }
+
+    fn tupleRestOperandIsDefiniteArray(self: *Parser, node: NodeId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .array_type => true,
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                if (r.qualifier_len != 0) break :blk false;
+                const name = self.interner.get(r.name);
+                break :blk std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray");
+            },
+            else => false,
+        };
     }
 
     /// `{ ...members... }` — object type literal. Phase 6 lowers to
@@ -20570,6 +20583,17 @@ test "parser: tuple rest element cannot follow rest element emits TS1265" {
             try T.expectEqualStrings("A rest element cannot follow another rest element.", diag.message);
         }
         try T.expect(diag.code != 1266);
+    }
+    try T.expect(found);
+}
+
+test "parser: tuple Array rest element cannot follow rest element emits TS1265" {
+    var s = try newTestSetup("type T = [...Array<string>, ...number[]];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |diag| {
+        if (diag.code == 1265) found = true;
     }
     try T.expect(found);
 }
