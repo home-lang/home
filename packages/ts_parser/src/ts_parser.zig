@@ -10787,6 +10787,16 @@ pub const Parser = struct {
             }
             var e = try self.parseTypeAnnotation();
             const trailing_optional = self.match(.question); // optional element marker
+            if (has_rest and trailing_optional) {
+                const elem_span = self.hir.spanOf(e);
+                const base_text = self.source[elem_span.start..elem_span.end];
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'?' at the end of a type is not valid TypeScript syntax. Did you mean to write '{s} | undefined'?",
+                    .{base_text},
+                );
+                try self.reportCodeAt(elem_span.start, self.lineAt(elem_span.start), 17019, msg);
+            }
             const this_optional = labeled_optional or rest_label_optional or trailing_optional;
             if (rest_label_optional) {
                 try self.reportCodeAt(rest_tok.span.start, rest_tok.line, 5085, "A tuple member cannot be both optional and rest.");
@@ -20483,6 +20493,16 @@ test "parser: labeled tuple optional type marker emits TS5086" {
     const diag = s.parser.diagnostics.items[0];
     try T.expectEqual(@as(u32, 5086), diag.code);
     try T.expectEqualStrings("A labeled tuple element is declared as optional with a question mark after the name and before the colon, rather than after the type.", diag.message);
+}
+
+test "parser: rest tuple postfix optional marker emits TS17019" {
+    var s = try newTestSetup("type T = [...string?];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const diag = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 17019), diag.code);
+    try T.expectEqualStrings("'?' at the end of a type is not valid TypeScript syntax. Did you mean to write 'string | undefined'?", diag.message);
 }
 
 test "parser: labeled tuple rest type marker emits TS5087" {
