@@ -272,7 +272,13 @@ pub fn next(this: *Expansion) Yield {
                             expanded_strings[i].deinit();
                         },
                         .moved => {
-                            expanded_strings[i].clearRetainingCapacity();
+                            // The buffer was moved into `this.out` (e.g. argv, which
+                            // aliases it by pointer). Re-init to a fresh empty list
+                            // rather than `clearRetainingCapacity()`: Zig 0.17's
+                            // clearRetainingCapacity `@memset(items, undefined)`s the
+                            // buffer first, poisoning the moved-out contents (0xAA in
+                            // debug) that the consumer still points at.
+                            expanded_strings[i] = std.array_list.Managed(u8).init(this.base.allocator());
                         },
                     }
                 }
