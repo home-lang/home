@@ -50,6 +50,7 @@ const error_jsc = @import("../sys_jsc/error_jsc.zig");
 const secure_context = @import("../runtime/api/bun/SecureContext.zig");
 const BunObject = @import("../runtime/api/BunObject.zig");
 const shell = @import("../runtime/shell/shell.zig");
+const NodeModuleModule = @import("NodeModuleModule.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -80,6 +81,22 @@ fn bindgen_BunObject_dispatchGc1_impl(
     return true;
 }
 
+/// Real Zig dispatch for `Module._stat(path)` (node:module). The pinned-obj C++
+/// wrapper `bindgen_NodeModuleModule_js_stat` passes `&path` in and `&out` (i32)
+/// for the result (0=file, 1=dir, -1=missing). native_stubs noop-stubbed this,
+/// so the out-param was never written — `Module._stat(...)` returned garbage,
+/// which the CJS resolver reads as a bogus file/dir kind. Mirrors the pin.
+fn bindgen_NodeModuleModule_dispatch_stat1_impl(
+    _: *JSGlobalObject,
+    arg_str: *const bun.String,
+    out: *i32,
+) callconv(.c) bool {
+    const utf8 = arg_str.toUTF8(bun.default_allocator);
+    defer utf8.deinit();
+    out.* = NodeModuleModule._stat(utf8.slice());
+    return true;
+}
+
 /// Wrap a `fn(*GlobalObject) JSValue` lazy binding as a C-ABI thunk.
 fn lazy(comptime f: fn (*JSGlobalObject) callconv(.auto) JSValue) fn (*JSGlobalObject) callconv(jsc.conv) JSValue {
     return struct {
@@ -103,6 +120,7 @@ comptime {
     // ---- bindgen dispatches (real, replacing native_stubs no-ops) -------
     @export(&bindgen_BunObject_dispatchBraces1_impl, .{ .name = "bindgen_BunObject_dispatchBraces1" });
     @export(&bindgen_BunObject_dispatchGc1_impl, .{ .name = "bindgen_BunObject_dispatchGc1" });
+    @export(&bindgen_NodeModuleModule_dispatch_stat1_impl, .{ .name = "bindgen_NodeModuleModule_dispatch_stat1" });
 
     // ---- shell TestingAPIs (bun:internal-for-testing shellInternals) ----
     // Real exports for the shell lexer/parser test hooks. native_stubs had

@@ -183,7 +183,9 @@ comptime {
         // uninitialized heap-size (the out-param was never written).
         "bindgen_DevServer_dispatchGetDeinitCountForTesting1",
         "bindgen_Fmt_jsc_dispatchFmtString1",
-        "bindgen_NodeModuleModule_dispatch_stat1",
+        // bindgen_NodeModuleModule_dispatch_stat1 now has its real export in
+        // jsc/js2native_workarounds.zig — the noop left Module._stat's i32
+        // out-param uninitialized (garbage file/dir kind for the CJS resolver).
         "bindgen_Node_os_dispatchCpus1",
         "bindgen_Node_os_dispatchFreemem1",
         "bindgen_Node_os_dispatchGetPriority1",
