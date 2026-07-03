@@ -869,10 +869,25 @@ pub const ShellSubprocess = struct {
             return .{ .err = .{ .custom = bun.handleOom(bun.default_allocator.dupe(u8, "out of memory")) } };
         };
 
-        spawn_args.env_array.append(allocator, null) catch {
-            spawn_options.deinit();
-            return .{ .err = .{ .custom = bun.handleOom(bun.default_allocator.dupe(u8, "out of memory")) } };
-        };
+        // Append the null terminator. On a freshly built env_array the +1 slot
+        // was reserved (fillEnv / createNullDelimitedEnvMap), so this is a plain
+        // in-place write. But some paths leave capacity == items.len (e.g. an
+        // env iterator whose `.len` under-reports, or a reused SpawnArgs), and
+        // growing there would call ArrayList.resize on `allocator` —
+        // spawnAsync's freshly-created arena. Zig 0.17's ArenaAllocator.resize
+        // panics (`loadFirstNode().?`) on an arena that has not allocated yet,
+        // so when there is no spare slot, copy into a fresh, guaranteed
+        // null-terminated buffer via `alloc` (which creates the arena's first
+        // node) rather than growing in place.
+        if (spawn_args.env_array.capacity > spawn_args.env_array.items.len) {
+            spawn_args.env_array.appendAssumeCapacity(null);
+        } else {
+            const n = spawn_args.env_array.items.len;
+            const buf = bun.handleOom(allocator.alloc(?[*:0]const u8, n + 1));
+            @memcpy(buf[0..n], spawn_args.env_array.items[0..n]);
+            buf[n] = null;
+            spawn_args.env_array = .{ .items = buf[0 .. n + 1], .capacity = n + 1 };
+        }
 
         var spawn_result = switch (bun.spawn.spawnProcess(
             &spawn_options,
