@@ -58,6 +58,7 @@ const InternalSourceMapTestingAPIs = @import("../sourcemap_jsc/internal_jsc.zig"
 const hosted_git_info_jsc = @import("../install_jsc/hosted_git_info_jsc.zig");
 const npm_jsc = @import("../install_jsc/npm_jsc.zig");
 const PatchTestingAPIs = @import("../patch_jsc/testing.zig").TestingAPIs;
+const css_internals = @import("../css_jsc/css_internals.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -233,6 +234,16 @@ comptime {
     // std.process.Child.init). apply/parse are pure file/parse ops — wire them.
     @export(&host_fn.toJSHostFn(PatchTestingAPIs.apply), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_apply" });
     @export(&host_fn.toJSHostFn(PatchTestingAPIs.parse), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_parse" });
+
+    // ---- css_internals TestingAPIs (bun:internal-for-testing cssInternals) --
+    @export(&host_fn.toJSHostFn(css_internals.minifyTest), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__minifyTest" });
+    @export(&host_fn.toJSHostFn(css_internals.minifyTestWithOptions), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__minifyTestWithOptions" });
+    @export(&host_fn.toJSHostFn(css_internals.minifyErrorTestWithOptions), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__minifyErrorTestWithOptions" });
+    @export(&host_fn.toJSHostFn(css_internals.prefixTest), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__prefixTest" });
+    @export(&host_fn.toJSHostFn(css_internals.prefixTestWithOptions), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__prefixTestWithOptions" });
+    @export(&host_fn.toJSHostFn(css_internals.testWithOptions), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__testWithOptions" });
+    @export(&host_fn.toJSHostFn(css_internals._test), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig___test" });
+    @export(&host_fn.toJSHostFn(css_internals.attrTest), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__attrTest" });
 
     // ---- string escapeRegExp TestingAPIs (bun:internal-for-testing) -----
     @export(&host_fn.toJSHostFn(escapeRegExp.jsEscapeRegExp), .{ .name = "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExp" });

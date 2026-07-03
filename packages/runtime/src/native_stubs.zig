@@ -133,14 +133,6 @@ comptime {
         // jsc/js2native_workarounds.zig — the noop returned garbage.
         "JS2Zig___src_bun_zig__getUseSystemCA",
         "JS2Zig___src_crash_handler_crash_handler_zig__js_bindings_generate_workaround",
-        "JS2Zig___src_css_jsc_css_internals_zig___test",
-        "JS2Zig___src_css_jsc_css_internals_zig__attrTest",
-        "JS2Zig___src_css_jsc_css_internals_zig__minifyErrorTestWithOptions",
-        "JS2Zig___src_css_jsc_css_internals_zig__minifyTest",
-        "JS2Zig___src_css_jsc_css_internals_zig__minifyTestWithOptions",
-        "JS2Zig___src_css_jsc_css_internals_zig__prefixTest",
-        "JS2Zig___src_css_jsc_css_internals_zig__prefixTestWithOptions",
-        "JS2Zig___src_css_jsc_css_internals_zig__testWithOptions",
         "JS2Zig___src_http_H_Client_zig__TestingAPIs_liveCounts",
         "JS2Zig___src_http_H_Client_zig__TestingAPIs_quicLiveCounts",
         // ini IniTestingAPIs now have real exports in js2native_workarounds.zig.

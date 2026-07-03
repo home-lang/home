@@ -61,9 +61,10 @@ pub fn Err(comptime T: type) type {
             @compileError("format not implemented for " ++ @typeName(T));
         }
 
-        pub fn toErrorInstance(_: @This(), _: anytype, _: anytype) void {
-            @compileError("css_jsc error bridge is not ported in Home runtime yet");
-        }
+        // Bridge a css `Err(T)` to a JS Error instance (formats `.kind` into the
+        // message). The real impl lives in css_jsc/error_jsc.zig — mirror the
+        // pin's `css/error.zig` which re-exports it the same way.
+        pub const toErrorInstance = @import("../css_jsc/error_jsc.zig").toErrorInstance;
 
         pub fn fromParseError(err: ParseError(ParserError), filename: []const u8) Err(ParserError) {
             if (T != ParserError) {

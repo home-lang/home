@@ -5870,6 +5870,13 @@ pub const platform = struct {
 // lands. Strategy A (self-contained-only) per agent #5's analysis.
 pub const css = struct {
     pub const BundlerStyleSheet = @import("css/css_parser.zig").BundlerStyleSheet;
+    // Generic StyleSheet + DefaultAtRule for the css_internals test hooks
+    // (`StyleSheet(DefaultAtRule)`); BundlerStyleSheet already proves the
+    // generic instantiates and compiles.
+    pub const StyleSheet = @import("css/css_parser.zig").StyleSheet;
+    pub const DefaultAtRule = @import("css/css_parser.zig").DefaultAtRule;
+    pub const LocalsResultsMap = @import("css/css_parser.zig").LocalsResultsMap;
+    pub const StyleAttribute = @import("css/css_parser.zig").StyleAttribute;
     pub const ParserOptions = @import("css/css_parser.zig").ParserOptions;
     pub const CssModuleConfig = @import("css/css_parser.zig").CssModuleConfig;
     pub const ImportConditions = @import("css/css_parser.zig").ImportConditions;
