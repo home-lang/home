@@ -1811,7 +1811,12 @@ pub const Printer = struct {
             // simpler `function () { ... }.bind(this)` shape; it has
             // the same observable behavior modulo `prototype`.
             if (self.options.es_target == .es5) {
-                if (f.flags.is_async) try self.write("async ");
+                // An async arrow additionally lowers via `__awaiter` (async is
+                // not ES5): `async () => { await x }` ->
+                // `function () { return __awaiter(this, void 0, void 0,
+                // function* () { yield x; }); }.bind(this)`. Home always binds
+                // `this` for arrows, so the `__awaiter` this-arg is `this`.
+                const async_downlevel = f.flags.is_async and !self.options.es_target.supportsNativeAsync();
                 try self.write("function (");
                 const params = hir_mod.fnParams(self.hir, node);
                 try self.printRuntimeParams(params);
@@ -1829,6 +1834,10 @@ pub const Printer = struct {
                     try self.writeDestructuringParamShims(params);
                     try self.write(" ");
                 }
+                if (async_downlevel) {
+                    try self.write("return __awaiter(this, void 0, void 0, function* () { ");
+                    self.in_async_downlevel = true;
+                }
                 if (f.body != hir_mod.none_node_id) {
                     if (self.hir.kindOf(f.body) == .block_stmt) {
                         const stmts = hir_mod.blockStmts(self.hir, f.body);
@@ -1842,7 +1851,12 @@ pub const Printer = struct {
                         try self.write(";");
                     }
                 }
-                try self.write(" }.bind(this)");
+                if (async_downlevel) {
+                    self.in_async_downlevel = false;
+                    try self.write(" }); }.bind(this)");
+                } else {
+                    try self.write(" }.bind(this)");
+                }
                 return;
             }
             if (f.flags.is_async) try self.write("async ");
@@ -13111,6 +13125,28 @@ test "emit: es2015+ class accessors stay native" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "get prop()") != null);
     try T.expect(std.mem.indexOf(u8, out, "defineProperty") == null);
+}
+
+test "emit: es5 async arrow lowers via __awaiter" {
+    // block body: `await x` -> `yield x` inside the __awaiter generator.
+    const out1 = try emitWithOpts("let f = async () => { await x; };", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "return __awaiter(this, void 0, void 0, function* () {") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "yield x;") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "}); }.bind(this)") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "async function") == null);
+
+    // expression body returns from the generator.
+    const out2 = try emitWithOpts("let f = async () => x;", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "return __awaiter(this, void 0, void 0, function* () { return x; }); }.bind(this)") != null);
+}
+
+test "emit: es2017+ async arrow stays native" {
+    const out = try emitWithOpts("let f = async () => x;", .{ .es_target = .es2017 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "async ") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__awaiter") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
