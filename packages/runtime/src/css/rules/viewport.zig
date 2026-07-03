@@ -13,7 +13,7 @@
 // a sibling module via `--dep` (see PORTING_STATUS.md for the verifier
 // command); the aggregator build (`zig build test`) is the canonical CI gate.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 const Location = css.Location;

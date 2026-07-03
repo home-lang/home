@@ -4,7 +4,7 @@
 // `CssRuleList(R)` resolves via the stub. Body method calls trip
 // `@compileError` until css_parser ports.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 const Location = css.css_rules.Location;

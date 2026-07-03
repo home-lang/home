@@ -2344,13 +2344,10 @@ pub fn NestedRuleParser(comptime T: type) type {
                     .viewport => {
                         this.rules.v.append(input.allocator(), .{
                             .viewport = css_rules.viewport.ViewportRule{
-                                .vendor_prefix = @import("./css_parser_stub.zig").VendorPrefix{},
-                                .declarations = brk: {
-                                    _ = switch (DeclarationBlock.parse(input, this.options)) {
-                                        .err => |e| return .{ .err = e },
-                                        .result => |v| v,
-                                    };
-                                    break :brk .{};
+                                .vendor_prefix = VendorPrefix{},
+                                .declarations = switch (DeclarationBlock.parse(input, this.options)) {
+                                    .err => |e| return .{ .err = e },
+                                    .result => |v| v,
                                 },
                                 .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                             },
@@ -2450,7 +2447,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         return .{ .err = input.newUnexpectedTokenError(.open_curly) };
                     },
                     .starting_style => {
-                        _ = switch (this.parseStyleBlock(input)) {
+                        const nested_rules = switch (this.parseStyleBlock(input)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
@@ -2458,7 +2455,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                             input.allocator(),
                             .{
                                 .starting_style = css_rules.starting_style.StartingStyleRule(T.CustomAtRuleParser.AtRule){
-                                    .rules = .{},
+                                    .rules = nested_rules,
                                     .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
