@@ -8369,6 +8369,26 @@ pub const Printer = struct {
 
     fn printNew(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
+        // §4.A — ES5 `new` with spread args: `new C(...a)` ->
+        // `new (C.bind.apply(C, [void 0].concat(a)))()`. Only for a
+        // side-effect-free constructor (identifier / this) that can be
+        // repeated as both the `.bind` receiver and `.apply` thisArg;
+        // side-effecting constructors need a temp (deferred), so those fall
+        // through to native emission.
+        const new_args = hir_mod.callArgs(self.hir, node);
+        if (self.options.es_target == .es5 and callArgsHaveSpread(self.hir, new_args)) {
+            const ck = self.hir.kindOf(p.callee);
+            if (ck == .identifier or ck == .this_expr) {
+                try self.write("new (");
+                try self.printExpr(p.callee, .postfix);
+                try self.write(".bind.apply(");
+                try self.printExpr(p.callee, .comma);
+                try self.write(", ");
+                try self.printEs5NewArgsArray(new_args);
+                try self.write("))()");
+                return;
+            }
+        }
         try self.write("new ");
         // The constructor target binds at `.new`; arguments at `.comma`.
         // `forbid_call` parenthesizes any call reached on the target spine.
@@ -8381,6 +8401,48 @@ pub const Printer = struct {
         for (args, 0..) |a, i| {
             if (i > 0) try self.write(", ");
             try self.printExpr(a, .comma);
+        }
+        try self.write(")");
+    }
+
+    /// Argument array for an ES5 `new`-spread — the array passed to
+    /// `Ctor.bind.apply(Ctor, …)`. Prepends `void 0` (the ignored bind
+    /// `this`) to the leading array-literal part: `new C(...a)` ->
+    /// `[void 0].concat(a)`, `new C(1, ...a, b)` -> `[void 0, 1].concat(a, [b])`.
+    fn printEs5NewArgsArray(self: *Printer, args: []const NodeId) !void {
+        // Leading run of non-spread args shares the base `[void 0, …]` literal.
+        var run_end: usize = 0;
+        while (run_end < args.len and self.hir.kindOf(args[run_end]) != .spread) run_end += 1;
+        try self.write("[void 0");
+        var k: usize = 0;
+        while (k < run_end) : (k += 1) {
+            try self.write(", ");
+            try self.printExpr(args[k], .comma);
+        }
+        try self.write("]");
+        var idx = run_end;
+        if (idx >= args.len) return;
+        try self.write(".concat(");
+        var first = true;
+        while (idx < args.len) {
+            if (!first) try self.write(", ");
+            first = false;
+            if (self.hir.kindOf(args[idx]) == .spread) {
+                const sp = hir_mod.spreadOf(self.hir, args[idx]);
+                try self.printExpr(sp.expression, .comma);
+                idx += 1;
+            } else {
+                var re = idx;
+                while (re < args.len and self.hir.kindOf(args[re]) != .spread) re += 1;
+                try self.write("[");
+                var j = idx;
+                while (j < re) : (j += 1) {
+                    if (j > idx) try self.write(", ");
+                    try self.printExpr(args[j], .comma);
+                }
+                try self.write("]");
+                idx = re;
+            }
         }
         try self.write(")");
     }
@@ -12711,6 +12773,31 @@ test "emit: mixed array spread preserved natively at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "[...a, b]") != null);
     try T.expect(std.mem.indexOf(u8, out, ".concat(") == null);
+}
+
+test "emit: new-with-spread lowers to bind.apply() at es5" {
+    // `new C(...a)` -> `new (C.bind.apply(C, [void 0].concat(a)))()`.
+    const out1 = try emitWithOpts("new C(...a);", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "new (C.bind.apply(C, [void 0].concat(a)))()") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "new C(...") == null);
+
+    // leading fixed args merge into the base literal after void 0.
+    const out2 = try emitWithOpts("new C(1, 2, ...a);", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "new (C.bind.apply(C, [void 0, 1, 2].concat(a)))()") != null);
+
+    // trailing fixed arg after the spread.
+    const out3 = try emitWithOpts("new C(...a, b);", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "new (C.bind.apply(C, [void 0].concat(a, [b])))()") != null);
+}
+
+test "emit: new-with-spread preserved natively at es2015+" {
+    const out = try emitWithOpts("new C(...a);", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "new C(...a)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "bind.apply") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
