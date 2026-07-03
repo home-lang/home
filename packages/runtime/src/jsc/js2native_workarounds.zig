@@ -54,6 +54,7 @@ const NodeModuleModule = @import("NodeModuleModule.zig");
 const escapeRegExp = @import("../string/escapeRegExp.zig");
 const bun_string_jsc = @import("bun_string_jsc.zig");
 const IniTestingAPIs = @import("../install_jsc/ini_jsc.zig").IniTestingAPIs;
+const InternalSourceMapTestingAPIs = @import("../sourcemap_jsc/internal_jsc.zig").TestingAPIs;
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -202,6 +203,14 @@ comptime {
     @export(&host_fn.toJSHostFn(shell.TestingAPIs.shellLex), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellLex" });
     @export(&host_fn.toJSHostFn(shell.TestingAPIs.shellParse), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellParse" });
     @export(&host_fn.toJSHostFn(shell.TestingAPIs.disabledOnThisPlatform), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_disabledOnThisPlatform" });
+
+    // ---- InternalSourceMap TestingAPIs (bun:internal-for-testing) --------
+    // Real exports for the VLQ round-trip / find test hooks. native_stubs had
+    // these noop-stubbed, so fromVLQ/toVLQ/find returned garbage (byteLength /
+    // generatedLine came back undefined) and the roundtrip file was 0/3.
+    @export(&host_fn.toJSHostFn(InternalSourceMapTestingAPIs.fromVLQ), .{ .name = "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_fromVLQ" });
+    @export(&host_fn.toJSHostFn(InternalSourceMapTestingAPIs.toVLQ), .{ .name = "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_toVLQ" });
+    @export(&host_fn.toJSHostFn(InternalSourceMapTestingAPIs.find), .{ .name = "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_find" });
 
     // ---- string escapeRegExp TestingAPIs (bun:internal-for-testing) -----
     @export(&host_fn.toJSHostFn(escapeRegExp.jsEscapeRegExp), .{ .name = "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExp" });

@@ -169,9 +169,9 @@ comptime {
         // have real exports in jsc/js2native_workarounds.zig — the noops made
         // lex.test.ts / parse.test.ts skip (garbage return from the hooks).
         "JS2Zig___src_runtime_webcore_FileSink_zig__TestingAPIs_fileSinkLiveCount",
-        "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_find",
-        "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_fromVLQ",
-        "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_toVLQ",
+        // InternalSourceMap fromVLQ/toVLQ/find now have real exports in
+        // jsc/js2native_workarounds.zig (the noops returned garbage — byteLength
+        // / generatedLine came back undefined in the roundtrip test).
         // jsEscapeRegExp{,ForPackageNameMatching} now have real exports in
         // jsc/js2native_workarounds.zig — the noops returned garbage (globalThis)
         // from Bun.escapeRegExp / the internal-for-testing bindings.
