@@ -177,7 +177,9 @@ comptime {
         "JS2Zig___src_sys_sys_zig__TestingAPIs_sigactionLayout",
         "bindgen_Bindgen_test_dispatchAdd1",
         "bindgen_Bindgen_test_dispatchRequiredAndOptionalArg1",
-        "bindgen_BunObject_dispatchBraces1",
+        // bindgen_BunObject_dispatchBraces1 now has its real export in
+        // jsc/js2native_workarounds.zig (forwards to BunObject.braces). The noop
+        // returned garbage — `$.braces(...)` yielded globalThis, not the array.
         "bindgen_BunObject_dispatchGc1",
         "bindgen_DevServer_dispatchGetDeinitCountForTesting1",
         "bindgen_Fmt_jsc_dispatchFmtString1",

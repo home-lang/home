@@ -48,6 +48,22 @@ const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 const error_jsc = @import("../sys_jsc/error_jsc.zig");
 const secure_context = @import("../runtime/api/bun/SecureContext.zig");
+const BunObject = @import("../runtime/api/BunObject.zig");
+
+/// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
+/// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
+/// had noop-stubbed it, so `$.braces(...)` returned garbage (the noop leaves the
+/// return register holding globalThis). Mirrors the pin's generated dispatch
+/// (GeneratedBindings.zig): forward to `BunObject.braces` via `toJSHostCall`,
+/// which turns a thrown JSError into `.zero`. `BracesOptions` layout is the
+/// hand-mirror in runtime/node/GeneratedBindings.zig (`bun.gen.BunObject`).
+fn bindgen_BunObject_dispatchBraces1_impl(
+    global: *JSGlobalObject,
+    input: *const bun.String,
+    options: *const bun.gen.BunObject.BracesOptions,
+) callconv(.c) JSValue {
+    return jsc.toJSHostCall(global, @src(), BunObject.braces, .{ global, input.*, options.* });
+}
 
 /// Wrap a `fn(*GlobalObject) JSValue` lazy binding as a C-ABI thunk.
 fn lazy(comptime f: fn (*JSGlobalObject) callconv(.auto) JSValue) fn (*JSGlobalObject) callconv(jsc.conv) JSValue {
@@ -69,6 +85,9 @@ fn lazyErr(comptime f: fn (*JSGlobalObject) callconv(.auto) bun.JSError!JSValue)
 }
 
 comptime {
+    // ---- bindgen dispatches (real, replacing native_stubs no-ops) -------
+    @export(&bindgen_BunObject_dispatchBraces1_impl, .{ .name = "bindgen_BunObject_dispatchBraces1" });
+
     // ---- Lazy bindings (`..._workaround`) -------------------------------
     @export(&lazyErr(node_os.createNodeOsBinding), .{ .name = "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround" });
     @export(&lazy(node_fs_binding.createBinding), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createBinding_workaround" });

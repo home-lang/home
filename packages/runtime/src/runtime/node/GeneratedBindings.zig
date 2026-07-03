@@ -28,6 +28,20 @@ fn fn0(comptime name: [:0]const u8, comptime host: host_fn.JSHostFnZig) fn (*JSG
     }.create;
 }
 
+/// Hand-mirror of the bindgen-generated `bun.gen.BunObject` namespace. Only the
+/// pieces Home references are provided. `BunObject.braces` takes
+/// `gen.BracesOptions`; the pinned-obj C++ wrapper `bindgen_BunObject_jsBraces`
+/// marshals JS args and passes this struct by pointer to the Zig dispatch
+/// `bindgen_BunObject_dispatchBraces1` (real export in js2native_workarounds.zig).
+/// Layout MUST match the C++ header `struct BracesOptions { bool parse; bool
+/// tokenize; }` (GeneratedBunObject.h) — both fields are one byte, order matters.
+pub const BunObject = struct {
+    pub const BracesOptions = extern struct {
+        parse: bool,
+        tokenize: bool,
+    };
+};
+
 pub const node_os = struct {
     // userInfo's options are currently ignored by the implementation.
     pub const UserInfoOptions = struct {
