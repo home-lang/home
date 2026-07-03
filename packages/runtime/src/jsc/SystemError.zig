@@ -27,11 +27,11 @@ const JSPromise = @import("./JSPromise.zig").JSPromise;
 // reference it directly so SystemError fields share its type identity.
 const String = @import("home").String;
 
-// `bun.sys.E` errno enum stubbed — re-attaches with the sys layer.
-pub const SysE = enum(i32) {
-    SUCCESS = 0,
-    _,
-};
+// `bun.sys.E` errno enum — now live via the sys layer. Must be the real
+// per-platform enum (not a `{ SUCCESS = 0, _ }` stub): getErrno()'s result is
+// passed to `@tagName` in log/format paths, which panics in debug builds on an
+// unnamed value (e.g. EPIPE=32) if the enum has no matching tag.
+pub const SysE = @import("home").sys.E;
 
 pub const SystemError = extern struct {
     errno: c_int = 0,
