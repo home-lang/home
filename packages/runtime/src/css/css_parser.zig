@@ -2324,7 +2324,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         return .success;
                     },
                     .scope => {
-                        _ = switch (this.parseStyleBlock(input)) {
+                        const nested_rules = switch (this.parseStyleBlock(input)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
@@ -2332,9 +2332,9 @@ pub fn NestedRuleParser(comptime T: type) type {
                             input.allocator(),
                             .{
                                 .scope = css_rules.scope.ScopeRule(T.CustomAtRuleParser.AtRule){
-                                    .scope_start = null,
-                                    .scope_end = null,
-                                    .rules = .{},
+                                    .scope_start = prelude.scope.scope_start,
+                                    .scope_end = prelude.scope.scope_end,
+                                    .rules = nested_rules,
                                     .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },

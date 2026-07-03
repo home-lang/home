@@ -103,7 +103,7 @@ pub fn CssRule(comptime Rule: type) type {
                 .property => |x| x.toCss(dest),
                 .starting_style => |x| x.toCss(dest),
                 .container => |x| x.toCss(dest),
-                .scope => {},
+                .scope => |x| x.toCss(dest),
                 .unknown => {},
                 .custom => |x| x.toCss(dest) catch return dest.addFmtError(),
                 .ignored => {},

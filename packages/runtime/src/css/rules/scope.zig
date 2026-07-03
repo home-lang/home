@@ -8,7 +8,7 @@
 // (`scope_start`, `scope_end`, `rules`, `loc`) lands. `deepClone` uses
 // `implementDeepClone` (shallow under stub).
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 const Location = css.css_rules.Location;
@@ -31,6 +31,44 @@ pub fn ScopeRule(comptime R: type) type {
         loc: Location,
 
         const This = @This();
+
+        pub fn toCss(this: *const This, dest: *Printer) PrintErr!void {
+            try dest.writeStr("@scope");
+            try dest.whitespace();
+            if (this.scope_start) |*scope_start| {
+                try dest.writeChar('(');
+                try css.selector.serialize.serializeSelectorList(scope_start.v.slice(), dest, dest.context(), false);
+                try dest.writeChar(')');
+                try dest.whitespace();
+            }
+            if (this.scope_end) |*scope_end| {
+                if (dest.minify) {
+                    try dest.writeChar(' ');
+                }
+                try dest.writeStr("to (");
+                // <scope-start> is treated as an ancestor of scope end.
+                if (this.scope_start) |*scope_start| {
+                    try dest.withContext(scope_start, scope_end, struct {
+                        pub fn toCssFn(scope_end_: *const css.selector.parser.SelectorList, d: *Printer) PrintErr!void {
+                            return css.selector.serialize.serializeSelectorList(scope_end_.v.slice(), d, d.context(), false);
+                        }
+                    }.toCssFn);
+                } else {
+                    return css.selector.serialize.serializeSelectorList(scope_end.v.slice(), dest, dest.context(), false);
+                }
+                try dest.writeChar(')');
+                try dest.whitespace();
+            }
+            try dest.writeChar('{');
+            dest.indent();
+            try dest.newline();
+            // Nested style rules within @scope are implicitly relative to the
+            // <scope-start>, so clear the style context while printing them.
+            try dest.withClearedContext(&this.rules, CssRuleList(R).toCss);
+            dest.dedent();
+            try dest.newline();
+            try dest.writeChar('}');
+        }
 
         pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) This {
             return css.implementDeepClone(@This(), this, allocator);
