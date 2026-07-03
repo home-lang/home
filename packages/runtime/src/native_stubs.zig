@@ -129,7 +129,8 @@ comptime {
 
     for ([_][]const u8{
         "ConcurrentCppTask__createAndRun",
-        "JS2Zig___src_bun_core_string_immutable_unicode_zig__TestingAPIs_toUTF__AllocSentinel",
+        // toUTF16AllocSentinel now has its real export in
+        // jsc/js2native_workarounds.zig — the noop returned garbage.
         "JS2Zig___src_bun_zig__getUseSystemCA",
         "JS2Zig___src_crash_handler_crash_handler_zig__js_bindings_generate_workaround",
         "JS2Zig___src_css_jsc_css_internals_zig___test",

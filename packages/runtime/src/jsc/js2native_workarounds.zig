@@ -52,6 +52,7 @@ const BunObject = @import("../runtime/api/BunObject.zig");
 const shell = @import("../runtime/shell/shell.zig");
 const NodeModuleModule = @import("NodeModuleModule.zig");
 const escapeRegExp = @import("../string/escapeRegExp.zig");
+const bun_string_jsc = @import("bun_string_jsc.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -134,6 +135,9 @@ comptime {
     // ---- string escapeRegExp TestingAPIs (bun:internal-for-testing) -----
     @export(&host_fn.toJSHostFn(escapeRegExp.jsEscapeRegExp), .{ .name = "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExp" });
     @export(&host_fn.toJSHostFn(escapeRegExp.jsEscapeRegExpForPackageNameMatching), .{ .name = "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExpForPackageNameMatching" });
+
+    // ---- strings.toUTF16AllocSentinel TestingAPI (stringsInternals) -----
+    @export(&host_fn.toJSHostFn(bun_string_jsc.UnicodeTestingAPIs.toUTF16AllocSentinel), .{ .name = "JS2Zig___src_bun_core_string_immutable_unicode_zig__TestingAPIs_toUTF__AllocSentinel" });
 
     // ---- Lazy bindings (`..._workaround`) -------------------------------
     @export(&lazyErr(node_os.createNodeOsBinding), .{ .name = "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround" });
