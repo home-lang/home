@@ -172,8 +172,9 @@ comptime {
         "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_find",
         "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_fromVLQ",
         "JS2Zig___src_sourcemap_InternalSourceMap_zig__TestingAPIs_toVLQ",
-        "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExp",
-        "JS2Zig___src_string_escapeRegExp_zig__jsEscapeRegExpForPackageNameMatching",
+        // jsEscapeRegExp{,ForPackageNameMatching} now have real exports in
+        // jsc/js2native_workarounds.zig — the noops returned garbage (globalThis)
+        // from Bun.escapeRegExp / the internal-for-testing bindings.
         "JS2Zig___src_sys_sys_zig__TestingAPIs_sigactionLayout",
         "bindgen_Bindgen_test_dispatchAdd1",
         "bindgen_Bindgen_test_dispatchRequiredAndOptionalArg1",
