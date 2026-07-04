@@ -35,9 +35,9 @@ comptime {
     @export(&noopSize, .{ .name = "NetworkSink__memoryCost" });
     @export(&noopBool, .{ .name = "Bun__CryptoHasherExtern__isXof" });
     @export(&noopBool, .{ .name = "Bun__streamIterEnabled" });
-    // `icu_hasBinaryProperty` is provided by Bun's linked
-    // `workaround-missing-symbols.cpp.o` (real ICU `u_hasBinaryProperty` via
-    // WebKit); exporting Home's stub here duplicate-clashes with it.
+    // Bun object sets differ on whether workaround-missing-symbols.cpp.o
+    // exports this wrapper, so Home keeps a weak bridge to ICU.
+    @export(&icuHasBinaryProperty, .{ .name = "icu_hasBinaryProperty", .linkage = .weak });
 
     for ([_][]const u8{
         "ArrayBufferSink__controllerDetached",
