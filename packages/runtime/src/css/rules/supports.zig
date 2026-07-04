@@ -211,12 +211,32 @@ pub const SupportsCondition = union(enum) {
 
     pub fn toCss(this: *const SupportsCondition, dest: anytype) !void {
         switch (this.*) {
-            .unknown, .selector => |text| try dest.writeStr(text),
-            .declaration => |decl| try dest.writeStr(decl.value),
-            .not => |condition| try condition.toCss(dest),
-            .@"and", .@"or" => |list| {
+            .unknown => |text| try dest.writeStr(text),
+            .selector => |sel| {
+                try dest.writeStr("selector(");
+                try dest.writeStr(sel);
+                try dest.writeChar(')');
+            },
+            .declaration => |decl| {
+                try dest.writeChar('(');
+                css.serializer.serializeName(decl.property_id.name(), dest) catch return dest.addFmtError();
+                try dest.delim(':', false);
+                try dest.writeStr(decl.value);
+                try dest.writeChar(')');
+            },
+            .not => |condition| {
+                try dest.writeStr("not ");
+                try condition.toCss(dest);
+            },
+            .@"and" => |list| {
                 for (list.items, 0..) |*condition, i| {
                     if (i > 0) try dest.writeStr(" and ");
+                    try condition.toCss(dest);
+                }
+            },
+            .@"or" => |list| {
+                for (list.items, 0..) |*condition, i| {
+                    if (i > 0) try dest.writeStr(" or ");
                     try condition.toCss(dest);
                 }
             },
