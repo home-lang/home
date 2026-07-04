@@ -17,7 +17,7 @@
 // `SupportsRule(R)` keeps `condition`/`rules: CssRuleList(R)`/`loc`. `toCss`/
 // `minify` stripped.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -73,12 +73,136 @@ pub const SupportsCondition = union(enum) {
 
     pub fn deinit(_: *const SupportsCondition, _: std.mem.Allocator) void {}
 
-    pub fn parse(_: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(SupportsCondition) {
-        return .{ .result = .{ .unknown = "" } };
+    const SeenDeclKey = struct {
+        css.PropertyId,
+        []const u8,
+    };
+
+    pub fn parse(input: *css.Parser) css.Result(SupportsCondition) {
+        if (input.tryParse(css.Parser.expectIdentMatching, .{"not"}).isOk()) {
+            const in_parens = switch (SupportsCondition.parseInParens(input)) {
+                .result => |vv| vv,
+                .err => |e| return .{ .err = e },
+            };
+            return .{ .result = .{ .not = bun.create(input.allocator(), SupportsCondition, in_parens) } };
+        }
+
+        const in_parens: SupportsCondition = switch (SupportsCondition.parseInParens(input)) {
+            .result => |vv| vv,
+            .err => |e| return .{ .err = e },
+        };
+        var expected_type: ?i32 = null;
+        var conditions: ArrayList(SupportsCondition) = .empty;
+
+        while (true) {
+            const Closure = struct {
+                expected_type: *?i32,
+                pub fn tryParseFn(i: *css.Parser, this: *@This()) css.Result(SupportsCondition) {
+                    const location = i.currentSourceLocation();
+                    const s = switch (i.expectIdent()) {
+                        .result => |vv| vv,
+                        .err => |e| return .{ .err = e },
+                    };
+                    const found_type: i32 = found_type: {
+                        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength("and", s)) break :found_type 1;
+                        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength("or", s)) break :found_type 2;
+                        return .{ .err = location.newUnexpectedTokenError(.{ .ident = s }) };
+                    };
+
+                    if (this.expected_type.*) |expected| {
+                        if (found_type != expected) return .{ .err = location.newUnexpectedTokenError(.{ .ident = s }) };
+                    } else {
+                        this.expected_type.* = found_type;
+                    }
+
+                    return SupportsCondition.parseInParens(i);
+                }
+            };
+            var closure = Closure{ .expected_type = &expected_type };
+            const _condition = input.tryParse(Closure.tryParseFn, .{&closure});
+
+            switch (_condition) {
+                .result => |condition| {
+                    if (conditions.items.len == 0) {
+                        bun.handleOom(conditions.append(input.allocator(), in_parens.deepClone(input.allocator())));
+                    }
+                    bun.handleOom(conditions.append(input.allocator(), condition));
+                },
+                else => break,
+            }
+        }
+
+        if (conditions.items.len == 1) {
+            const ret = conditions.pop().?;
+            conditions.deinit(input.allocator());
+            return .{ .result = ret };
+        }
+
+        if (expected_type == 1) return .{ .result = .{ .@"and" = conditions } };
+        if (expected_type == 2) return .{ .result = .{ .@"or" = conditions } };
+        return .{ .result = in_parens };
     }
 
-    pub fn parseDeclaration(_: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(SupportsCondition) {
-        return .{ .result = .{ .unknown = "" } };
+    pub fn parseDeclaration(input: *css.Parser) css.Result(SupportsCondition) {
+        const property_id = switch (css.PropertyId.parse(input)) {
+            .result => |v| v,
+            .err => |e| return .{ .err = e },
+        };
+        if (input.expectColon().asErr()) |e| return .{ .err = e };
+        input.skipWhitespace();
+        const pos = input.position();
+        if (input.expectNoErrorToken().asErr()) |e| return .{ .err = e };
+        return .{ .result = SupportsCondition{ .declaration = .{
+            .property_id = property_id,
+            .value = input.sliceFrom(pos),
+        } } };
+    }
+
+    fn parseInParens(input: *css.Parser) css.Result(SupportsCondition) {
+        input.skipWhitespace();
+        const location = input.currentSourceLocation();
+        const pos = input.position();
+        const tok = switch (input.next()) {
+            .result => |vv| vv,
+            .err => |e| return .{ .err = e },
+        };
+        switch (tok.*) {
+            .function => |f| {
+                if (bun.strings.eqlCaseInsensitiveASCIIICheckLength("selector", f)) {
+                    const Fn = struct {
+                        pub fn tryParseFn(i: *css.Parser) css.Result(SupportsCondition) {
+                            return i.parseNestedBlock(SupportsCondition, {}, @This().parseNestedBlockFn);
+                        }
+                        pub fn parseNestedBlockFn(_: void, i: *css.Parser) css.Result(SupportsCondition) {
+                            const p = i.position();
+                            if (i.expectNoErrorToken().asErr()) |e| return .{ .err = e };
+                            return .{ .result = SupportsCondition{ .selector = i.sliceFrom(p) } };
+                        }
+                    };
+                    const res = input.tryParse(Fn.tryParseFn, .{});
+                    if (res.isOk()) return res;
+                }
+            },
+            .open_paren => {
+                const res = input.tryParse(struct {
+                    pub fn parseFn(i: *css.Parser) css.Result(SupportsCondition) {
+                        return i.parseNestedBlock(SupportsCondition, {}, css.voidWrap(SupportsCondition, parse));
+                    }
+                }.parseFn, .{});
+                if (res.isOk()) return res;
+            },
+            else => return .{ .err = location.newUnexpectedTokenError(tok.*) },
+        }
+
+        if (input.parseNestedBlock(void, {}, struct {
+            pub fn parseFn(_: void, i: *css.Parser) css.Result(void) {
+                return i.expectNoErrorToken();
+            }
+        }.parseFn).asErr()) |err| {
+            return .{ .err = err };
+        }
+
+        return .{ .result = SupportsCondition{ .unknown = input.sliceFrom(pos) } };
     }
 
     pub fn cloneWithImportRecords(this: *const SupportsCondition, allocator: std.mem.Allocator, _: anytype) SupportsCondition {
@@ -114,8 +238,17 @@ pub fn SupportsRule(comptime R: type) type {
             return css.implementDeepClone(@This(), this, allocator);
         }
 
-        pub fn toCss(_: *const @This(), _: anytype) PrintErr!void {
-            return;
+        pub fn toCss(this: *const @This(), dest: anytype) PrintErr!void {
+            try dest.writeStr("@supports ");
+            try this.condition.toCss(dest);
+            try dest.whitespace();
+            try dest.writeChar('{');
+            dest.indent();
+            try dest.newline();
+            try this.rules.toCss(dest);
+            dest.dedent();
+            try dest.newline();
+            try dest.writeChar('}');
         }
 
         pub fn minify(_: *@This(), _: anytype, _: bool) !bool {
@@ -157,3 +290,4 @@ test "SupportsRule(void) keeps the three fields" {
 }
 
 const std = @import("std");
+const bun = @import("bun");
