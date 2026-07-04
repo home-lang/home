@@ -19,6 +19,7 @@ const PrintErr = css.PrintErr;
 const number = @import("./number.zig");
 const CSSNumber = number.CSSNumber;
 const CSSNumberFns = number.CSSNumberFns;
+const Calc = @import("./calc.zig").Calc;
 
 /// A CSS [`<time>`](https://www.w3.org/TR/css-values-4/#time) value, in either
 /// seconds or milliseconds.
@@ -97,6 +98,12 @@ pub const Time = union(Tag) {
     }
 
     pub fn parse(input: *css.Parser) css.Result(Time) {
+        if (input.tryParse(Calc(Time).parse, .{}).asValue()) |calc_value| {
+            if (calc_value == .value) return .{ .result = calc_value.value.* };
+            // Time is always compatible, so they will always compute to a value.
+            return .{ .err = input.newErrorForNextToken() };
+        }
+
         const location = input.currentSourceLocation();
         const token = switch (input.next()) {
             .result => |vv| vv,
