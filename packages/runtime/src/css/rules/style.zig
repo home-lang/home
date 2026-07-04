@@ -172,8 +172,8 @@ pub fn StyleRule(comptime R: type) type {
             return true;
         }
 
-        pub fn isEmpty(_: *const @This()) bool {
-            return false;
+        pub fn isEmpty(this: *const This) bool {
+            return this.selectors.v.isEmpty() or (this.declarations.isEmpty() and this.rules.v.items.len == 0);
         }
 
         pub fn hashKey(_: *const @This()) u64 {
