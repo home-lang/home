@@ -20,7 +20,7 @@ This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in sur
 ## Hard rules for every copy
 
 1. **Zig 0.17 dev compatibility is non-negotiable.** Every copied file must compile under Pantry-managed `0.17.0-dev.263+0add2dfc4`. Bun upstream targets a more recent Zig; some files use APIs that moved between 0.16 → 0.17 (e.g. `std.array_list.Managed(T)` is 0.17+, `std.heap.stackFallback` was relocated, `std.io.fixedBufferStream` was removed in favor of `std.Io.Writer.fixed`, `Child.init` was replaced by `process.spawn`). Files that don't compile under 0.17 must be tracked as integration blockers with a `// Zig 0.17 compat: ...` note near the blocked import or adapter; they do not count as integrated until the adapter lands and the file is build-wired.
-2. Verify `git -C ~/Code/bun rev-parse HEAD` matches `UPSTREAM_SHA.txt` before copying. If they diverge, rewind Bun or update the SHA in a **separate** commit.
+2. Verify `git -C ~/Code/bun rev-parse HEAD` matches `UPSTREAM_SHA.txt` before copying runtime source. Test-corpus syncs use `test/bun-corpus/UPSTREAM_SHA.txt` instead, so the executable Bun suite can track the local Bun checkout independently while source ports keep their own audit anchor.
 3. Rewrite `@import("bun")` → `@import("home_rt")` and every `bun.X` → `home_rt.X` at copy time. **No semantic edits in the same commit.**
 4. Drop JSC-bridge re-exports (`.toJS`, `.fromJS`, `Bun__X` externs) with a `// JSC-bridge X omitted — re-lands in Phase 12.2` note.
 5. Every copied file must add **at least one** inline `test "..."` that exercises a method or invariant.
@@ -35,7 +35,7 @@ are exported, build-wired, and tested.
 
 ## Upstream pin
 
-`UPSTREAM_SHA.txt` holds the exact Bun commit our copy is anchored against. Today: `fd0b6f1a271fca0b8124b69f230b100f4d636af6` (`http: port fetch TCP keepalive to on_open in lib.rs`).
+`UPSTREAM_SHA.txt` holds the exact Bun commit the runtime source port is anchored against. Today: `fd0b6f1a271fca0b8124b69f230b100f4d636af6` (`http: port fetch TCP keepalive to on_open in lib.rs`). The Bun test corpus has its own pin at `test/bun-corpus/UPSTREAM_SHA.txt`.
 
 ## Why local copy and not vendoring
 

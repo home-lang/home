@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUN_REPO="${BUN_REPO:-${HOME}/Code/bun}"
 DEST="${REPO_ROOT}/packages/runtime/test/bun-corpus"
-PIN_FILE="${REPO_ROOT}/packages/runtime/UPSTREAM_SHA.txt"
+PIN_FILE="${DEST}/UPSTREAM_SHA.txt"
 
 if [[ ! -d "${BUN_REPO}/.git" ]]; then
   echo "error: Bun checkout not found at ${BUN_REPO}" >&2

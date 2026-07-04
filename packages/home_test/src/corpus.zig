@@ -21,6 +21,12 @@ pub fn isTestFile(name: []const u8) bool {
         ".test.jsx",
         ".test.mjs",
         ".test.cjs",
+        ".spec.ts",
+        ".spec.tsx",
+        ".spec.js",
+        ".spec.jsx",
+        ".spec.mjs",
+        ".spec.cjs",
     };
 
     for (test_exts) |ext| {
@@ -123,6 +129,8 @@ test "Bun corpus test-file classifier matches Bun-style names" {
     try std.testing.expect(isTestFile("math.test.tsx"));
     try std.testing.expect(isTestFile("math.test.js"));
     try std.testing.expect(isTestFile("math.test.mjs"));
+    try std.testing.expect(isTestFile("math.spec.ts"));
+    try std.testing.expect(isTestFile("math.spec.js"));
     try std.testing.expect(isTestFile("test-fs.js"));
     try std.testing.expect(isTestFile("node-test-runner.mjs"));
     try std.testing.expect(!isTestFile("helper.ts"));
@@ -185,18 +193,21 @@ test "Bun corpus counter walks nested directories" {
 test "Bun corpus collector sees vendored upstream tests" {
     const root = "packages/runtime/test/bun-corpus";
     const counts = try countPath(std.testing.io, root);
-    try std.testing.expect(counts.tests >= 1700);
+    try std.testing.expectEqual(@as(usize, 4019), counts.tests);
 
     const files = try collectTestFiles(std.testing.io, std.testing.allocator, root);
     defer freeTestFiles(std.testing.allocator, files);
 
     try std.testing.expectEqual(counts.tests, files.len);
     var found_cp = false;
+    var found_spec = false;
     for (files) |file| {
         if (std.mem.eql(u8, file, "js/bun/shell/commands/cp.test.ts")) {
             found_cp = true;
-            break;
+        } else if (std.mem.eql(u8, file, "js/node/assert/assert.spec.ts")) {
+            found_spec = true;
         }
     }
     try std.testing.expect(found_cp);
+    try std.testing.expect(found_spec);
 }
