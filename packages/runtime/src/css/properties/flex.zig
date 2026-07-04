@@ -658,8 +658,17 @@ pub const BoxAlign = enum {
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 
-    pub fn fromStandard(_: anytype) ?BoxAlign {
-        return null;
+    pub fn fromStandard(@"align": *const css.css_properties.@"align".AlignItems) ?BoxAlign {
+        return switch (@"align".*) {
+            .self_position => |sp| if (sp.overflow == null) switch (sp.value) {
+                .start, .@"flex-start" => .start,
+                .end, .@"flex-end" => .end,
+                .center => .center,
+                else => null,
+            } else null,
+            .stretch => .stretch,
+            else => null,
+        };
     }
 };
 
@@ -677,8 +686,19 @@ pub const BoxPack = enum {
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 
-    pub fn fromStandard(_: anytype) ?BoxPack {
-        return null;
+    pub fn fromStandard(justify: *const css.css_properties.@"align".JustifyContent) ?BoxPack {
+        return switch (justify.*) {
+            .content_distribution => |cd| switch (cd) {
+                .@"space-between" => .justify,
+                else => null,
+            },
+            .content_position => |cp| if (cp.overflow == null) switch (cp.value) {
+                .start, .@"flex-start" => .start,
+                .end, .@"flex-end" => .end,
+                .center => .center,
+            } else null,
+            else => null,
+        };
     }
 };
 
@@ -718,8 +738,20 @@ pub const FlexPack = enum {
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 
-    pub fn fromStandard(_: anytype) ?FlexPack {
-        return null;
+    pub fn fromStandard(justify: *const css.css_properties.@"align".JustifyContent) ?FlexPack {
+        return switch (justify.*) {
+            .content_distribution => |cd| switch (cd) {
+                .@"space-between" => .justify,
+                .@"space-around" => .distribute,
+                else => null,
+            },
+            .content_position => |cp| if (cp.overflow == null) switch (cp.value) {
+                .start, .@"flex-start" => .start,
+                .end, .@"flex-end" => .end,
+                .center => .center,
+            } else null,
+            else => null,
+        };
     }
 };
 
@@ -739,8 +771,18 @@ pub const FlexItemAlign = enum {
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 
-    pub fn fromStandard(_: anytype) ?FlexItemAlign {
-        return null;
+    pub fn fromStandard(justify: *const css.css_properties.@"align".AlignSelf) ?FlexItemAlign {
+        return switch (justify.*) {
+            .auto => .auto,
+            .stretch => .stretch,
+            .self_position => |sp| if (sp.overflow == null) switch (sp.value) {
+                .start, .@"flex-start" => .start,
+                .end, .@"flex-end" => .end,
+                .center => .center,
+                else => null,
+            } else null,
+            else => null,
+        };
     }
 };
 
@@ -760,8 +802,21 @@ pub const FlexLinePack = enum {
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 
-    pub fn fromStandard(_: anytype) ?FlexLinePack {
-        return null;
+    pub fn fromStandard(justify: *const css.css_properties.@"align".AlignContent) ?FlexLinePack {
+        return switch (justify.*) {
+            .content_distribution => |cd| switch (cd) {
+                .@"space-between" => .justify,
+                .@"space-around" => .distribute,
+                .stretch => .stretch,
+                else => null,
+            },
+            .content_position => |cp| if (cp.overflow == null) switch (cp.value) {
+                .start, .@"flex-start" => .start,
+                .end, .@"flex-end" => .end,
+                .center => .center,
+            } else null,
+            else => null,
+        };
     }
 };
 
