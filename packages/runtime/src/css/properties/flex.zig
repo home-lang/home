@@ -537,9 +537,16 @@ pub const FlexFlow = struct {
     }
 
     pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
-        try this.direction.toCss(dest);
-        if (this.wrap != FlexWrap.default()) {
-            try dest.writeChar(' ');
+        var needs_space = false;
+        if (!this.direction.eql(&FlexDirection.default()) or this.wrap.eql(&FlexWrap.default())) {
+            try this.direction.toCss(dest);
+            needs_space = true;
+        }
+
+        if (!this.wrap.eql(&FlexWrap.default())) {
+            if (needs_space) {
+                try dest.writeStr(" ");
+            }
             try this.wrap.toCss(dest);
         }
     }
@@ -575,16 +582,41 @@ pub const Flex = struct {
     };
 
     pub fn parse(input: *css.Parser) css.Result(Flex) {
-        const grow = switch (CSSNumberFns.parse(input)) {
-            .result => |value| value,
-            .err => |e| return .{ .err = e },
-        };
-        const shrink = input.tryParse(CSSNumberFns.parse, .{}).unwrapOr(1.0);
-        const basis = input.tryParse(LengthPercentageOrAuto.parse, .{}).unwrapOr(.auto);
+        if (input.tryParse(css.Parser.expectIdentMatching, .{"none"}).isOk()) {
+            return .{ .result = .{
+                .grow = 0.0,
+                .shrink = 0.0,
+                .basis = LengthPercentageOrAuto.auto,
+            } };
+        }
+
+        var grow: ?CSSNumber = null;
+        var shrink: ?CSSNumber = null;
+        var basis: ?LengthPercentageOrAuto = null;
+
+        while (true) {
+            if (grow == null) {
+                if (input.tryParse(CSSNumberFns.parse, .{}).asValue()) |value| {
+                    grow = value;
+                    shrink = input.tryParse(CSSNumberFns.parse, .{}).asValue();
+                    continue;
+                }
+            }
+
+            if (basis == null) {
+                if (input.tryParse(LengthPercentageOrAuto.parse, .{}).asValue()) |value| {
+                    basis = value;
+                    continue;
+                }
+            }
+
+            break;
+        }
+
         return .{ .result = .{
-            .grow = grow,
-            .shrink = shrink,
-            .basis = basis,
+            .grow = grow orelse 1.0,
+            .shrink = shrink orelse 1.0,
+            .basis = basis orelse LengthPercentageOrAuto{ .length = LengthPercentage{ .percentage = .{ .v = 0.0 } } },
         } };
     }
 
