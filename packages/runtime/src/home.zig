@@ -6049,6 +6049,9 @@ pub const md = struct {
     pub const renderWithRenderer = @import("md/root.zig").renderWithRenderer;
     pub const renderToAnsi = @import("md/root.zig").renderToAnsi;
     pub const detectLightBackground = @import("md/root.zig").detectLightBackground;
+    pub const BLOCK_FENCED_CODE = @import("md/root.zig").BLOCK_FENCED_CODE;
+    pub const helpers = @import("md/helpers.zig");
+    pub const types = @import("md/types.zig");
     pub const unicode = @import("md/unicode.zig");
     pub const entity = @import("md/entity.zig");
 };
