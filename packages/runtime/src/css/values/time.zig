@@ -61,17 +61,26 @@ pub const Time = union(Tag) {
     }
 
     pub fn toCss(this: *const Time, dest: anytype) PrintErr!void {
-        var buf: [64]u8 = undefined;
+        // 0.1s is shorter than 100ms
+        // anything smaller is longer
         switch (this.*) {
-            .seconds => |v| {
-                const text = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return dest.addFmtError();
-                try dest.writeStr(text);
-                try dest.writeChar('s');
+            .seconds => |s| {
+                if (s > 0.0 and s < 0.1) {
+                    try CSSNumberFns.toCss(&(s * 1000.0), dest);
+                    try dest.writeStr("ms");
+                } else {
+                    try CSSNumberFns.toCss(&s, dest);
+                    try dest.writeChar('s');
+                }
             },
-            .milliseconds => |v| {
-                const text = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return dest.addFmtError();
-                try dest.writeStr(text);
-                try dest.writeStr("ms");
+            .milliseconds => |ms| {
+                if (ms == 0.0 or ms >= 100.0) {
+                    try CSSNumberFns.toCss(&(ms / 1000.0), dest);
+                    try dest.writeChar('s');
+                } else {
+                    try CSSNumberFns.toCss(&ms, dest);
+                    try dest.writeStr("ms");
+                }
             },
         }
     }
