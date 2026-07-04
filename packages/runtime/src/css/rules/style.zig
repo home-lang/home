@@ -184,7 +184,12 @@ pub fn StyleRule(comptime R: type) type {
             return false;
         }
 
-        pub fn updatePrefix(_: *@This(), _: anytype) void {}
+        pub fn updatePrefix(this: *This, context: *css.MinifyContext) void {
+            this.vendor_prefix = css.selector.getPrefix(&this.selectors);
+            if (this.vendor_prefix.none and context.targets.shouldCompileSelectors()) {
+                this.vendor_prefix = css.selector.downlevelSelectors(context.allocator, this.selectors.v.slice_mut(), context.targets.*);
+            }
+        }
     };
 }
 
