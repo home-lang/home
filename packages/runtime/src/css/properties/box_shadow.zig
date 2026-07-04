@@ -219,13 +219,14 @@ pub const BoxShadow = struct {
         try this.x_offset.toCss(dest);
         try dest.writeChar(' ');
         try this.y_offset.toCss(dest);
-        if (!this.blur.isZero()) {
+        if (!this.blur.isZero() or !this.spread.isZero()) {
             try dest.writeChar(' ');
             try this.blur.toCss(dest);
-        }
-        if (!this.spread.isZero()) {
-            try dest.writeChar(' ');
-            try this.spread.toCss(dest);
+
+            if (!this.spread.isZero()) {
+                try dest.writeChar(' ');
+                try this.spread.toCss(dest);
+            }
         }
         if (this.color != .current_color) {
             try dest.writeChar(' ');
