@@ -10,8 +10,8 @@
 // `css.generic.partialCmpF32`/`CSSNumberFns.toCss` etc. (none of which are
 // ported) and are stripped here. The original `Tag` enum is retained.
 
-pub const css = @import("../css_parser_stub.zig");
-const bun = @import("home");
+pub const css = @import("../css_parser.zig");
+const bun = @import("bun");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -87,12 +87,24 @@ pub const Time = union(Tag) {
         } };
     }
 
-    pub fn parse(input: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(Time) {
-        const value = switch (CSSNumberFns.parse(input)) {
-            .result => |v| v,
+    pub fn parse(input: *css.Parser) css.Result(Time) {
+        const location = input.currentSourceLocation();
+        const token = switch (input.next()) {
+            .result => |vv| vv,
             .err => |e| return .{ .err = e },
         };
-        return .{ .result = .{ .seconds = value } };
+        switch (token.*) {
+            .dimension => |*dim| {
+                if (bun.strings.eqlCaseInsensitiveASCIIICheckLength("s", dim.unit)) {
+                    return .{ .result = .{ .seconds = dim.num.value } };
+                } else if (bun.strings.eqlCaseInsensitiveASCIIICheckLength("ms", dim.unit)) {
+                    return .{ .result = .{ .milliseconds = dim.num.value } };
+                } else {
+                    return .{ .err = location.newUnexpectedTokenError(css.Token{ .ident = dim.unit }) };
+                }
+            },
+            else => return .{ .err = location.newUnexpectedTokenError(token.*) },
+        }
     }
 
     pub fn mulF32(this: Time, _: std.mem.Allocator, other: f32) Time {
