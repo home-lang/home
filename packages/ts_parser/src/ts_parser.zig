@@ -10812,7 +10812,7 @@ pub const Parser = struct {
             }
             const is_definite_rest = has_rest and self.tupleRestOperandIsDefiniteArray(e);
             if (!reported_tuple_order_error and has_rest) {
-                if (saw_definite_rest) {
+                if (saw_definite_rest and is_definite_rest) {
                     reported_tuple_order_error = true;
                     try self.reportCodeAt(rest_tok.span.start, rest_tok.line, 1265, "A rest element cannot follow another rest element.");
                 }
@@ -20617,6 +20617,15 @@ test "parser: tuple Array rest element cannot follow rest element emits TS1265" 
         if (diag.code == 1265) found = true;
     }
     try T.expect(found);
+}
+
+test "parser: tuple generic rest can follow definite rest" {
+    var s = try newTestSetup("type T<U extends unknown[]> = [string, ...U, ...number[], ...U];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |diag| {
+        try T.expect(diag.code != 1265);
+    }
 }
 
 test "parser: generic variadic tuple rest can precede inferred rest" {
