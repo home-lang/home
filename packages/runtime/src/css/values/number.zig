@@ -29,9 +29,21 @@ pub const CSSNumberFns = struct {
     }
 
     pub fn toCss(this: *const CSSNumber, dest: anytype) PrintErr!void {
-        var buf: [64]u8 = undefined;
-        const text = std.fmt.bufPrint(&buf, "{d}", .{this.*}) catch return dest.addFmtError();
-        try dest.writeStr(text);
+        const number: f32 = this.*;
+        if (number != 0.0 and @abs(number) < 1.0) {
+            var dtoa_buf: [129]u8 = undefined;
+            const str, _ = try css.dtoa_short(&dtoa_buf, number, 6);
+            if (number < 0.0) {
+                try dest.writeChar('-');
+                try dest.writeStr(bun.strings.trimLeadingPattern2(str, '-', '0'));
+            } else {
+                try dest.writeStr(bun.strings.trimLeadingChar(str, '0'));
+            }
+        } else {
+            return css.to_css.float32(number, dest) catch {
+                return dest.addFmtError();
+            };
+        }
     }
 };
 
@@ -75,3 +87,4 @@ test "CSSNumberFns.sign returns -1 for negative" {
 }
 
 const std = @import("std");
+const bun = @import("bun");
