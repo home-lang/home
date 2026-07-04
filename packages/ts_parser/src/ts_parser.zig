@@ -10790,10 +10790,14 @@ pub const Parser = struct {
             if (has_rest and trailing_optional) {
                 const elem_span = self.hir.spanOf(e);
                 const base_text = self.source[elem_span.start..elem_span.end];
+                const suggestion = if (rest_type_after_label)
+                    base_text
+                else
+                    try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} | undefined", .{base_text});
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
-                    "'?' at the end of a type is not valid TypeScript syntax. Did you mean to write '{s} | undefined'?",
-                    .{base_text},
+                    "'?' at the end of a type is not valid TypeScript syntax. Did you mean to write '{s}'?",
+                    .{suggestion},
                 );
                 try self.reportCodeAt(elem_span.start, self.lineAt(elem_span.start), 17019, msg);
             }
@@ -20516,6 +20520,23 @@ test "parser: rest tuple postfix optional marker emits TS17019" {
     const diag = s.parser.diagnostics.items[0];
     try T.expectEqual(@as(u32, 17019), diag.code);
     try T.expectEqualStrings("'?' at the end of a type is not valid TypeScript syntax. Did you mean to write 'string | undefined'?", diag.message);
+}
+
+test "parser: labeled rest tuple postfix optional marker suggests base array type" {
+    var s = try newTestSetup("type T = [first: string, rest: ...string[]?];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found_rest_label = false;
+    var found_postfix_optional = false;
+    for (s.parser.diagnostics.items) |diag| {
+        if (diag.code == 5087) found_rest_label = true;
+        if (diag.code == 17019) {
+            found_postfix_optional = true;
+            try T.expectEqualStrings("'?' at the end of a type is not valid TypeScript syntax. Did you mean to write 'string[]'?", diag.message);
+        }
+    }
+    try T.expect(found_rest_label);
+    try T.expect(found_postfix_optional);
 }
 
 test "parser: labeled tuple rest type marker emits TS5087" {
