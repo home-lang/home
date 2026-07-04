@@ -36,6 +36,10 @@ pub fn Size2D(comptime T: type) type {
             return css.implementDeepClone(@This(), this, allocator);
         }
 
+        pub fn isCompatible(this: *const @This(), browsers: css.targets.Browsers) bool {
+            return this.a.isCompatible(browsers) and this.b.isCompatible(browsers);
+        }
+
         pub inline fn valEql(lhs: *const T, rhs: *const T) bool {
             return switch (T) {
                 f32 => lhs.* == rhs.*,
