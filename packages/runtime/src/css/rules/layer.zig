@@ -15,7 +15,7 @@
 // `toCss` strips (Printer methods trip `@compileError`). `LayerStatementRule`
 // keeps `names: SmallList(LayerName, 1)` + `loc`; `toCss` stripped as well.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Location = @import("./rules.zig").Location;
 const CssRuleList = @import("./rules.zig").CssRuleList;
 const SmallList = @import("../small_list.zig").SmallList;
@@ -50,8 +50,47 @@ pub const LayerName = struct {
         return this.deepClone(allocator);
     }
 
-    pub fn parse(_: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(LayerName) {
-        return .{ .result = .{} };
+    pub fn parse(input: *css.Parser) css.Result(LayerName) {
+        var parts: css.SmallList([]const u8, 1) = .{};
+        const ident = switch (input.expectIdent()) {
+            .result => |v| v,
+            .err => |e| return .{ .err = e },
+        };
+        parts.append(input.allocator(), ident);
+
+        const Fn = struct {
+            pub fn tryParseFn(i: *css.Parser) css.Result([]const u8) {
+                {
+                    const start_location = i.currentSourceLocation();
+                    const tok = switch (i.nextIncludingWhitespace()) {
+                        .err => |e| return .{ .err = e },
+                        .result => |vvv| vvv,
+                    };
+                    if (!(tok.* == .delim and tok.delim == '.')) {
+                        return .{ .err = start_location.newBasicUnexpectedTokenError(tok.*) };
+                    }
+                }
+                const start_location = i.currentSourceLocation();
+                const tok = switch (i.nextIncludingWhitespace()) {
+                    .err => |e| return .{ .err = e },
+                    .result => |vvv| vvv,
+                };
+                if (tok.* == .ident) {
+                    return .{ .result = tok.ident };
+                }
+                return .{ .err = start_location.newBasicUnexpectedTokenError(tok.*) };
+            }
+        };
+
+        while (true) {
+            const name = switch (input.tryParse(Fn.tryParseFn, .{})) {
+                .err => break,
+                .result => |vvv| vvv,
+            };
+            parts.append(input.allocator(), name);
+        }
+
+        return .{ .result = LayerName{ .v = parts } };
     }
 };
 
@@ -64,6 +103,22 @@ pub fn LayerBlockRule(comptime R: type) type {
         rules: CssRuleList(R),
         /// The location of the rule in the source file.
         loc: Location,
+
+        pub fn toCss(this: *const @This(), dest: anytype) !void {
+            try dest.writeStr("@layer");
+            if (this.name) |*name| {
+                try dest.writeChar(' ');
+                try name.toCss(dest);
+            }
+            try dest.whitespace();
+            try dest.writeChar('{');
+            dest.indent();
+            try dest.newline();
+            try this.rules.toCss(dest);
+            dest.dedent();
+            try dest.newline();
+            try dest.writeChar('}');
+        }
 
         pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
             return css.implementDeepClone(@This(), this, allocator);
@@ -79,6 +134,22 @@ pub const LayerStatementRule = struct {
     names: SmallList(LayerName, 1),
     /// The location of the rule in the source file.
     loc: Location,
+
+    pub fn toCss(this: *const @This(), dest: anytype) !void {
+        if (this.names.len() > 0) {
+            try dest.writeStr("@layer ");
+            for (this.names.slice(), 0..) |*name, i| {
+                if (i > 0) {
+                    try dest.writeChar(',');
+                    try dest.whitespace();
+                }
+                try name.toCss(dest);
+            }
+            try dest.writeChar(';');
+        } else {
+            try dest.writeStr("@layer;");
+        }
+    }
 
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
         return css.implementDeepClone(@This(), this, allocator);
