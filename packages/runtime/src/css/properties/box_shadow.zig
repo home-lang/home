@@ -12,12 +12,136 @@ const Length = css.css_values.length.Length;
 
 const VendorPrefix = css.VendorPrefix;
 
+const Property = css.css_properties.Property;
+const SmallList = css.SmallList;
+const Feature = css.prefixes.Feature;
+
 pub const BoxShadowHandler = struct {
-    pub fn handleProperty(_: *BoxShadowHandler, _: anytype, _: anytype, _: anytype) bool {
-        return false;
+    box_shadows: ?struct { SmallList(BoxShadow, 1), VendorPrefix } = null,
+    flushed: bool = false,
+
+    pub fn handleProperty(this: *@This(), property: *const Property, dest: *css.DeclarationList, context: *css.PropertyHandlerContext) bool {
+        switch (property.*) {
+            .@"box-shadow" => |*b| {
+                const box_shadows: *const SmallList(BoxShadow, 1) = &b.*[0];
+                const prefix: VendorPrefix = b.*[1];
+                if (this.box_shadows != null and context.targets.browsers != null and !box_shadows.isCompatible(context.targets.browsers.?)) {
+                    this.flush(dest, context);
+                }
+
+                if (this.box_shadows) |*bxs| {
+                    const val: *SmallList(BoxShadow, 1) = &bxs.*[0];
+                    const prefixes: *VendorPrefix = &bxs.*[1];
+                    if (!val.eql(box_shadows) and !bun.bits.contains(VendorPrefix, prefixes.*, prefix)) {
+                        this.flush(dest, context);
+                        this.box_shadows = .{
+                            box_shadows.deepClone(context.allocator),
+                            prefix,
+                        };
+                    } else {
+                        val.* = box_shadows.deepClone(context.allocator);
+                        bun.bits.insert(VendorPrefix, prefixes, prefix);
+                    }
+                } else {
+                    this.box_shadows = .{
+                        box_shadows.deepClone(context.allocator),
+                        prefix,
+                    };
+                }
+            },
+            .unparsed => |unp| {
+                if (unp.property_id == .@"box-shadow") {
+                    this.flush(dest, context);
+
+                    var unparsed = unp.deepClone(context.allocator);
+                    context.addUnparsedFallbacks(&unparsed);
+                    bun.handleOom(dest.append(context.allocator, .{ .unparsed = unparsed }));
+                    this.flushed = true;
+                } else return false;
+            },
+            else => return false,
+        }
+
+        return true;
     }
 
-    pub fn finalize(_: *BoxShadowHandler, _: anytype, _: anytype) void {}
+    pub fn finalize(this: *@This(), dest: *css.DeclarationList, context: *css.PropertyHandlerContext) void {
+        this.flush(dest, context);
+        this.flushed = false;
+    }
+
+    pub fn flush(this: *@This(), dest: *css.DeclarationList, context: *css.PropertyHandlerContext) void {
+        if (this.box_shadows == null) return;
+
+        const box_shadows: SmallList(BoxShadow, 1), const prefixes2: VendorPrefix = bun.take(&this.box_shadows) orelse {
+            this.flushed = true;
+            return;
+        };
+
+        if (!this.flushed) {
+            const ColorFallbackKind = css.ColorFallbackKind;
+            var prefixes = context.targets.prefixes(prefixes2, Feature.box_shadow);
+            var fallbacks = ColorFallbackKind{};
+            for (box_shadows.slice()) |*shadow| {
+                bun.bits.insert(ColorFallbackKind, &fallbacks, shadow.color.getNecessaryFallbacks(context.targets));
+            }
+
+            if (fallbacks.rgb) {
+                var rgb = SmallList(BoxShadow, 1).initCapacity(context.allocator, box_shadows.len());
+                rgb.setLen(box_shadows.len());
+                for (box_shadows.slice(), rgb.slice_mut()) |*input, *output| {
+                    output.color = input.color.toRGB(context.allocator) orelse input.color.deepClone(context.allocator);
+                    const fields = std.meta.fields(BoxShadow);
+                    inline for (fields) |field| {
+                        if (comptime std.mem.eql(u8, field.name, "color")) continue;
+                        @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
+                    }
+                }
+
+                bun.handleOom(dest.append(context.allocator, .{ .@"box-shadow" = .{ rgb, prefixes } }));
+                if (prefixes.none) {
+                    prefixes = VendorPrefix.NONE;
+                } else {
+                    // Only output RGB for prefixed property (e.g. -webkit-box-shadow)
+                    return;
+                }
+            }
+
+            if (fallbacks.p3) {
+                var p3 = SmallList(BoxShadow, 1).initCapacity(context.allocator, box_shadows.len());
+                p3.setLen(box_shadows.len());
+                for (box_shadows.slice(), p3.slice_mut()) |*input, *output| {
+                    output.color = input.color.toP3(context.allocator) orelse input.color.deepClone(context.allocator);
+                    const fields = std.meta.fields(BoxShadow);
+                    inline for (fields) |field| {
+                        if (comptime std.mem.eql(u8, field.name, "color")) continue;
+                        @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
+                    }
+                }
+                bun.handleOom(dest.append(context.allocator, .{ .@"box-shadow" = .{ p3, VendorPrefix.NONE } }));
+            }
+
+            if (fallbacks.lab) {
+                var lab = SmallList(BoxShadow, 1).initCapacity(context.allocator, box_shadows.len());
+                lab.setLen(box_shadows.len());
+                for (box_shadows.slice(), lab.slice_mut()) |*input, *output| {
+                    output.color = input.color.toLAB(context.allocator) orelse input.color.deepClone(context.allocator);
+                    const fields = std.meta.fields(BoxShadow);
+                    inline for (fields) |field| {
+                        if (comptime std.mem.eql(u8, field.name, "color")) continue;
+                        @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
+                    }
+                }
+                bun.handleOom(dest.append(context.allocator, .{ .@"box-shadow" = .{ lab, VendorPrefix.NONE } }));
+            } else {
+                bun.handleOom(dest.append(context.allocator, .{ .@"box-shadow" = .{ box_shadows, prefixes } }));
+            }
+        } else {
+            bun.handleOom(dest.append(context.allocator, .{ .@"box-shadow" = .{ box_shadows, prefixes2 } }));
+        }
+
+        this.flushed = true;
+    }
 };
 
 /// A value for the [box-shadow](https://drafts.csswg.org/css-backgrounds/#box-shadow) property.
@@ -116,6 +240,14 @@ pub const BoxShadow = struct {
     pub fn eql(lhs: *const @This(), rhs: *const @This()) bool {
         return css.implementEql(@This(), lhs, rhs);
     }
+
+    pub fn isCompatible(this: *const @This(), browsers: css.targets.Browsers) bool {
+        return this.color.isCompatible(browsers) and
+            this.x_offset.isCompatible(browsers) and
+            this.y_offset.isCompatible(browsers) and
+            this.blur.isCompatible(browsers) and
+            this.spread.isCompatible(browsers);
+    }
 };
 
 test "BoxShadow holds pure-data fields" {
@@ -158,3 +290,4 @@ test "BoxShadow.deepClone is a shallow copy" {
 }
 
 const std = @import("std");
+const bun = @import("bun");
