@@ -589,11 +589,42 @@ pub const Flex = struct {
     }
 
     pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
-        try CSSNumberFns.toCss(&this.grow, dest);
-        try dest.writeChar(' ');
-        try CSSNumberFns.toCss(&this.shrink, dest);
-        try dest.writeChar(' ');
-        try this.basis.toCss(dest);
+        if (this.grow == 0.0 and this.shrink == 0.0 and this.basis == .auto) {
+            try dest.writeStr("none");
+            return;
+        }
+
+        const ZeroKind = enum {
+            NonZero,
+            Length,
+            Percentage,
+        };
+
+        // If the basis is unitless 0, we must write all three components to disambiguate.
+        // If the basis is 0%, we can omit the basis.
+        const basis_kind = switch (this.basis) {
+            .length => |lp| brk: {
+                if (lp == .dimension and lp.dimension.isZero()) break :brk ZeroKind.Length;
+                if (lp == .percentage and lp.percentage.isZero()) break :brk ZeroKind.Percentage;
+                break :brk ZeroKind.NonZero;
+            },
+            else => ZeroKind.NonZero,
+        };
+
+        if (this.grow != 1.0 or this.shrink != 1.0 or basis_kind != .NonZero) {
+            try CSSNumberFns.toCss(&this.grow, dest);
+            if (this.shrink != 1.0 or basis_kind == .Length) {
+                try dest.writeStr(" ");
+                try CSSNumberFns.toCss(&this.shrink, dest);
+            }
+        }
+
+        if (basis_kind != .Percentage) {
+            if (this.grow != 1.0 or this.shrink != 1.0 or basis_kind == .Length) {
+                try dest.writeStr(" ");
+            }
+            try this.basis.toCss(dest);
+        }
     }
 
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
