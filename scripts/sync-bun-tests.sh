@@ -68,10 +68,10 @@ FILTERED_FILE="${DEST}/FILTERED_FILES.txt"
   echo "# such as .png and .wasm are preserved so the corpus remains executable."
   echo
   comm -23 \
-    <(cd "${BUN_REPO}/test" && find . -type f | sort) \
-    <(cd "${DEST}" && find . -type f ! -name 'FILTERED_FILES.txt' | sort)
+    <(cd "${BUN_REPO}/test" && find . \( -type f -o -type l \) | sort) \
+    <(cd "${DEST}" && find . \( -type f -o -type l \) ! -name 'FILTERED_FILES.txt' | sort)
 } > "${FILTERED_FILE}"
 
-COUNT="$(find "${DEST}" -type f ! -name 'UPSTREAM_SHA.txt' ! -name 'FILTERED_FILES.txt' | wc -l | tr -d ' ')"
+COUNT="$(find "${DEST}" \( -type f -o -type l \) ! -name 'UPSTREAM_SHA.txt' ! -name 'FILTERED_FILES.txt' | wc -l | tr -d ' ')"
 SIZE="$(du -sh "${DEST}" | awk '{print $1}')"
 echo "synced ${COUNT} upstream corpus files (${SIZE}) into ${DEST}"

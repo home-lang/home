@@ -6,6 +6,7 @@
 //! activation; this module makes the preflight deterministic and reusable.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 
 pub const Counts = struct {
@@ -52,7 +53,7 @@ pub fn countOpenDir(io: Io, dir: *Io.Dir, counts: *Counts) !void {
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
         switch (entry.kind) {
-            .file => {
+            .file, .sym_link => {
                 counts.files += 1;
                 if (isTestFile(entry.name)) counts.tests += 1;
             },
@@ -101,7 +102,7 @@ fn collectOpenDir(
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
         switch (entry.kind) {
-            .file => {
+            .file, .sym_link => {
                 if (!isTestFile(entry.name)) continue;
                 const relative = if (prefix.len == 0)
                     try allocator.dupe(u8, entry.name)
@@ -147,6 +148,8 @@ test "Bun corpus collector returns sorted relative test paths" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.test.js", .data = "" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "js/node/fs/test-readfile.js", .data = "" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "js/node/fs/helper.ts", .data = "" });
+    const have_symlink = builtin.os.tag != .windows and builtin.os.tag != .wasi;
+    if (have_symlink) try tmp.dir.symLink(std.testing.io, "a.test.js", "linked.spec.js", .{});
 
     var files = std.ArrayList([]const u8).empty;
     defer {
@@ -168,10 +171,15 @@ test "Bun corpus collector returns sorted relative test paths" {
         }
     }.lessThan);
 
-    try std.testing.expectEqual(@as(usize, 3), owned.len);
+    try std.testing.expectEqual(@as(usize, if (have_symlink) 4 else 3), owned.len);
     try std.testing.expectEqualStrings("a.test.js", owned[0]);
     try std.testing.expectEqualStrings("js/node/fs/test-readfile.js", owned[1]);
-    try std.testing.expectEqualStrings("z.test.ts", owned[2]);
+    if (have_symlink) {
+        try std.testing.expectEqualStrings("linked.spec.js", owned[2]);
+        try std.testing.expectEqualStrings("z.test.ts", owned[3]);
+    } else {
+        try std.testing.expectEqualStrings("z.test.ts", owned[2]);
+    }
 }
 
 test "Bun corpus counter walks nested directories" {
@@ -183,11 +191,13 @@ test "Bun corpus counter walks nested directories" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "package-json-lint.test.ts", .data = "" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "js/node/fs/test-readfile.js", .data = "" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "js/node/fs/helper.ts", .data = "" });
+    const have_symlink = builtin.os.tag != .windows and builtin.os.tag != .wasi;
+    if (have_symlink) try tmp.dir.symLink(std.testing.io, "package-json-lint.test.ts", "linked.spec.js", .{});
 
     var counts = Counts{};
     try countOpenDir(std.testing.io, &tmp.dir, &counts);
-    try std.testing.expectEqual(@as(usize, 3), counts.files);
-    try std.testing.expectEqual(@as(usize, 2), counts.tests);
+    try std.testing.expectEqual(@as(usize, if (have_symlink) 4 else 3), counts.files);
+    try std.testing.expectEqual(@as(usize, if (have_symlink) 3 else 2), counts.tests);
 }
 
 test "Bun corpus collector sees vendored upstream tests" {
