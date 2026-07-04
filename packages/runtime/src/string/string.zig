@@ -508,7 +508,7 @@ pub const String = extern struct {
     /// - Never allocates or copies any memory
     /// - Does not increment reference counts
     pub fn fromBytes(value: []const u8) String {
-        return String.init(ZigString.init(value));
+        return String.init(ZigString.fromBytes(value));
     }
 
     pub fn format(self: String, writer: *std.Io.Writer) !void {
