@@ -203,7 +203,7 @@ test "Bun corpus counter walks nested directories" {
 test "Bun corpus collector sees vendored upstream tests" {
     const root = "packages/runtime/test/bun-corpus";
     const counts = try countPath(std.testing.io, root);
-    try std.testing.expectEqual(@as(usize, 4019), counts.tests);
+    try std.testing.expectEqual(@as(usize, 4708), counts.tests);
 
     const files = try collectTestFiles(std.testing.io, std.testing.allocator, root);
     defer freeTestFiles(std.testing.allocator, files);
