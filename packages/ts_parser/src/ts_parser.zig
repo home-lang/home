@@ -17576,7 +17576,61 @@ pub const Parser = struct {
             // (matching upstream tsc's TS2698 column position).
             if (self.match(.dot_dot_dot)) {
                 const dot_tok = self.tokens[self.cursor - 1];
+                if (self.peek().kind == .identifier and
+                    self.peekAt(1).kind == .question and
+                    self.peekAt(2).kind == .close_brace)
+                {
+                    const ident_tok = self.advance();
+                    const ident_id = try self.internToken(ident_tok);
+                    const value = try self.builder.addIdentifier(tokenSpan(ident_tok), ident_id);
+                    const question_tok = self.advance();
+                    try self.reportCodeAt(question_tok.span.start + 2, question_tok.line, 1109, "Expression expected.");
+                    const spread_node = try self.builder.addSpread(
+                        .{ .start = dot_tok.span.start, .end = self.hir.spanOf(value).end },
+                        value,
+                    );
+                    try props.append(self.gpa, spread_node);
+                    if (!self.match(.comma)) break;
+                    continue;
+                }
+                if (self.peek().kind == .asterisk) {
+                    try self.reportCodeAt(dot_tok.span.start, dot_tok.line, 2698, "Spread types may only be created from object types.");
+                    const star_tok = self.advance();
+                    try self.reportCodeAt(star_tok.span.start, star_tok.line, 1109, "Expression expected.");
+                    const value = self.parseAssignmentExpression() catch try self.missingIdentifierAt(star_tok.span.end);
+                    const spread_node = try self.builder.addSpread(
+                        .{ .start = dot_tok.span.start, .end = self.hir.spanOf(value).end },
+                        value,
+                    );
+                    try props.append(self.gpa, spread_node);
+                    if (!self.match(.comma)) break;
+                    continue;
+                }
+                if (self.peek().kind == .kw_get and self.peekAt(1).kind == .identifier) {
+                    const get_tok = self.advance();
+                    try self.reportCodeAt(get_tok.span.start, get_tok.line, 2304, "Cannot find name 'get'.");
+                    const value = try self.builder.addObjectLiteral(tokenSpan(get_tok), &.{});
+                    const name_tok = self.peek();
+                    try self.reportCodeAt(name_tok.span.start, name_tok.line, 1005, "',' expected.");
+                    while (self.peek().kind != .eof and self.peek().kind != .close_brace) _ = self.advance();
+                    if (self.peek().kind == .close_brace and self.peekAt(1).kind == .close_brace) _ = self.advance();
+                    const spread_node = try self.builder.addSpread(
+                        .{ .start = dot_tok.span.start, .end = self.hir.spanOf(value).end },
+                        value,
+                    );
+                    try props.append(self.gpa, spread_node);
+                    if (!self.match(.comma)) break;
+                    continue;
+                }
                 const value = try self.parseAssignmentExpression();
+                if (self.peek().kind == .open_brace) {
+                    const body_open = self.advance();
+                    try self.reportCodeAt(body_open.span.start, body_open.line, 1005, "',' expected.");
+                    if (self.peek().kind == .close_brace and self.peekAt(1).kind == .close_brace) {
+                        const body_close = self.advance();
+                        try self.reportCodeAt(body_close.span.start + 1, body_close.line, 1128, "Declaration or statement expected.");
+                    }
+                }
                 const value_end = self.hir.spanOf(value).end;
                 const spread_node = try self.builder.addSpread(
                     .{ .start = dot_tok.span.start, .end = value_end },
