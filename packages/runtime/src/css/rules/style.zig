@@ -138,7 +138,33 @@ pub fn StyleRule(comptime R: type) type {
             }
         }
 
-        pub fn minify(_: *@This(), _: anytype, _: bool) !bool {
+        pub fn minify(this: *This, context: *css.MinifyContext, parent_is_unused: bool) css.MinifyErr!bool {
+            var unused = false;
+            if (context.unused_symbols.count() > 0) {
+                if (css.selector.isUnused(this.selectors.v.slice(), context.unused_symbols, &context.extra.symbols, parent_is_unused)) {
+                    if (this.rules.v.items.len == 0) {
+                        return true;
+                    }
+                    this.declarations.declarations.clearRetainingCapacity();
+                    this.declarations.important_declarations.clearRetainingCapacity();
+                    unused = true;
+                }
+            }
+
+            context.handler_context.context = .style_rule;
+            this.declarations.minify(context.handler, context.important_handler, &context.handler_context);
+            context.handler_context.context = .none;
+
+            if (this.rules.v.items.len > 0) {
+                var handler_context = context.handler_context.child(.style_rule);
+                std.mem.swap(css.PropertyHandlerContext, &context.handler_context, &handler_context);
+                try this.rules.minify(context, unused);
+                std.mem.swap(css.PropertyHandlerContext, &context.handler_context, &handler_context);
+                if (unused and this.rules.v.items.len == 0) {
+                    return true;
+                }
+            }
+
             return false;
         }
 
