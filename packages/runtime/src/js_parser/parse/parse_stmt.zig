@@ -186,12 +186,17 @@ pub fn ParseStmt(
                     }
 
                     if (p.lexer.token == .t_function or p.lexer.token == .t_class or p.lexer.isContextualKeyword("interface")) {
+                        const is_default_interface = p.lexer.isContextualKeyword("interface");
                         var _opts = ParseStatementOptions{
                             .ts_decorators = opts.ts_decorators,
                             .is_name_optional = true,
                             .lexical_decl = .allow_all,
                         };
                         const stmt = try p.parseStmt(&_opts);
+                        if (is_default_interface and @as(Stmt.Tag, stmt.data) != .s_type_script) {
+                            try p.log.addErrorFmt(p.source, defaultLoc, p.allocator, "Unexpected \"interface\"", .{});
+                            return error.SyntaxError;
+                        }
 
                         const default_name: js_ast.LocRef = default_name_getter: {
                             switch (stmt.data) {
@@ -228,7 +233,7 @@ pub fn ParseStmt(
                     const expr = try p.parseExpr(.comma);
 
                     // Handle the default export of an abstract class in TypeScript
-                    if (is_typescript_enabled and is_identifier and (p.lexer.token == .t_class or opts.ts_decorators != null) and strings.eqlComptime(name, "abstract")) {
+                    if (is_typescript_enabled and is_identifier and p.lexer.token == .t_class and !p.lexer.has_newline_before and strings.eqlComptime(name, "abstract")) {
                         switch (expr.data) {
                             .e_identifier => {
                                 var stmtOpts = ParseStatementOptions{
@@ -264,9 +269,13 @@ pub fn ParseStmt(
                                 return p.s(S.ExportDefault{ .default_name = default_name, .value = js_ast.StmtOrExpr{ .stmt = stmt } }, loc);
                             },
                             else => {
-                                p.panic("internal error: unexpected", .{});
+                                try p.lexer.expected(.t_class);
+                                return error.SyntaxError;
                             },
                         }
+                    } else if (is_typescript_enabled and is_identifier and opts.ts_decorators != null and strings.eqlComptime(name, "abstract")) {
+                        try p.lexer.expected(.t_class);
+                        return error.SyntaxError;
                     }
 
                     try p.lexer.expectOrInsertSemicolon();
@@ -1210,7 +1219,7 @@ pub fn ParseStmt(
                     else => {},
                 }
 
-                if (is_typescript_enabled) {
+                if (is_typescript_enabled and std.meta.activeTag(expr.data) == .e_identifier) {
                     if (js_lexer.TypescriptStmtKeyword.List.get(name)) |ts_stmt| {
                         switch (ts_stmt) {
                             .ts_stmt_type => {
@@ -1234,14 +1243,16 @@ pub fn ParseStmt(
                                 }
                             },
                             .ts_stmt_interface => {
-                                // "interface Foo {}"
-                                var stmtOpts = ParseStatementOptions{ .is_module_scope = opts.is_module_scope };
+                                if (p.lexer.token == .t_identifier and !p.lexer.has_newline_before) {
+                                    // "interface Foo {}"
+                                    var stmtOpts = ParseStatementOptions{ .is_module_scope = opts.is_module_scope };
 
-                                try p.skipTypeScriptInterfaceStmt(&stmtOpts);
-                                return p.s(S.TypeScript{}, loc);
+                                    try p.skipTypeScriptInterfaceStmt(&stmtOpts);
+                                    return p.s(S.TypeScript{}, loc);
+                                }
                             },
                             .ts_stmt_abstract => {
-                                if (p.lexer.token == .t_class or opts.ts_decorators != null) {
+                                if ((p.lexer.token == .t_class or opts.ts_decorators != null) and !p.lexer.has_newline_before) {
                                     return try p.parseClassStmt(loc, opts);
                                 }
                             },
@@ -1254,7 +1265,17 @@ pub fn ParseStmt(
                                     return p.s(S.TypeScript{}, loc);
                                 }
                             },
-                            .ts_stmt_declare => {
+                            .ts_stmt_declare => declare_stmt: {
+                                if (p.lexer.token != .t_identifier and
+                                    p.lexer.token != .t_var and
+                                    p.lexer.token != .t_const and
+                                    p.lexer.token != .t_function and
+                                    p.lexer.token != .t_class and
+                                    p.lexer.token != .t_enum)
+                                {
+                                    break :declare_stmt;
+                                }
+
                                 opts.lexical_decl = .allow_all;
                                 opts.is_typescript_declare = true;
 
