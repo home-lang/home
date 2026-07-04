@@ -181,6 +181,10 @@ pub const QuickAndDirtyJavaScriptSyntaxHighlighter = struct {
 
     pub const Options = struct {
         enable_colors: bool = false,
+        // Accepted for source-compatibility with bun_core/fmt.zig's richer
+        // highlighter (the markdown ANSI renderer passes this). This stub
+        // does not syntax-highlight, so the flag has no effect here.
+        check_for_unhighlighted_write: bool = false,
         redact_sensitive_information: bool = false,
     };
 

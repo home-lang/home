@@ -118,8 +118,52 @@ pub fn renderToHTML(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!
 /// highlighter), so wiring it would drag in non-compiling code. Throw cleanly
 /// until that lands — NOT `.zero` (which would crash via the host-call assert).
 pub fn renderToAnsi(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = callframe;
-    return globalThis.throwTODO("Bun.markdown.ansi is not implemented yet");
+    const input_value, const theme_value = callframe.argumentsAsArray(2);
+
+    if (input_value.isEmptyOrUndefinedOrNull()) {
+        return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
+    }
+
+    var arena: bun.ArenaAllocator = .init(bun.default_allocator);
+    defer arena.deinit();
+
+    const buffer = try jsc.Node.StringOrBuffer.fromJS(globalThis, arena.allocator(), input_value) orelse {
+        return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
+    };
+
+    const input = buffer.slice();
+
+    var theme: md.AnsiTheme = .{
+        .colors = true,
+        .hyperlinks = false,
+        .kitty_graphics = false,
+        .light = md.detectLightBackground(),
+        .columns = 80,
+    };
+    if (theme_value.isObject()) {
+        if (try theme_value.getBooleanLoose(globalThis, "colors")) |v| theme.colors = v;
+        if (try theme_value.getBooleanLoose(globalThis, "hyperlinks")) |v| theme.hyperlinks = v;
+        if (try theme_value.getBooleanLoose(globalThis, "kittyGraphics")) |v| theme.kitty_graphics = v;
+        if (try theme_value.getBooleanLoose(globalThis, "light")) |v| theme.light = v;
+        if (try theme_value.get(globalThis, "columns")) |cols| {
+            if (cols.isNumber()) {
+                const n = cols.toInt32();
+                theme.columns = if (n <= 0) 0 else @intCast(@min(n, std.math.maxInt(u16)));
+            }
+        }
+    }
+
+    const result = md.renderToAnsi(input, arena.allocator(), .terminal, theme) catch |err| switch (err) {
+        error.OutOfMemory => return globalThis.throwOutOfMemory(),
+        error.StackOverflow => return globalThis.throwStackOverflow(),
+    } orelse {
+        // The parser can only return null via JSError / JSTerminated
+        // from a renderer callback; the ANSI renderer has none, so this
+        // path is unreachable but handle it safely.
+        return globalThis.throwOutOfMemory();
+    };
+
+    return bun.String.createUTF8ForJS(globalThis, result);
 }
 
 fn parseOptions(globalThis: *JSGlobalObject, opts_value: JSValue) JSError!md.Options {
