@@ -254,7 +254,21 @@ pub const Lowerer = struct {
         const ext = try self.lower(c.extends);
         const tt = try self.lower(c.true_branch);
         const ff = try self.lower(c.false_branch);
-        return self.interner.internConditional(check, ext, tt, ff) catch error.OutOfMemory;
+        const is_distributive = self.conditionalCheckNodeIsNakedTypeParameter(c.check, check);
+        return self.interner.internConditionalWithDistribution(check, ext, tt, ff, is_distributive) catch error.OutOfMemory;
+    }
+
+    fn conditionalCheckNodeIsNakedTypeParameter(self: *Lowerer, check_node: NodeId, check_t: TypeId) bool {
+        if (check_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(check_t).is_type_parameter) return false;
+        return switch (self.hir.kindOf(check_node)) {
+            .identifier => true,
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, check_node);
+                break :blk r.qualifier_len == 0 and r.args_len == 0;
+            },
+            else => false,
+        };
     }
 
     fn lowerLiteralType(self: *Lowerer, node: NodeId) LowerError!TypeId {

@@ -618,11 +618,23 @@ pub const Interner = struct {
         true_branch: TypeId,
         false_branch: TypeId,
     ) !TypeId {
+        return try self.internConditionalWithDistribution(check, extends_t, true_branch, false_branch, true);
+    }
+
+    pub fn internConditionalWithDistribution(
+        self: *Interner,
+        check: TypeId,
+        extends_t: TypeId,
+        true_branch: TypeId,
+        false_branch: TypeId,
+        is_distributive: bool,
+    ) !TypeId {
         const payload: types.ConditionalPayload = .{
             .check_type = check,
             .extends_type = extends_t,
             .true_branch = true_branch,
             .false_branch = false_branch,
+            .is_distributive = is_distributive,
         };
         const key: TypeKey = .{ .conditional = payload };
         return try self.internKey(key, .{ .is_conditional = true });

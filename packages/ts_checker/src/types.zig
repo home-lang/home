@@ -168,6 +168,10 @@ pub const ConditionalPayload = struct {
     extends_type: TypeId,
     true_branch: TypeId,
     false_branch: TypeId,
+    /// True when the conditional was introduced with a naked type
+    /// parameter check type (`T extends U ? ...`) and should distribute
+    /// over substitutions of `T`.
+    is_distributive: bool = true,
 };
 
 pub const MappedPayload = struct {
