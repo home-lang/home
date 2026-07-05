@@ -11679,7 +11679,15 @@ pub const Parser = struct {
         const m = hir_mod.memberOf(self.hir, key_expr);
         if (self.hir.kindOf(m.object) != .identifier) return null;
         const obj = hir_mod.identifierOf(self.hir, m.object);
-        if (!std.mem.eql(u8, self.interner.get(obj.name), "Symbol")) return null;
+        if (!std.mem.eql(u8, self.interner.get(obj.name), "Symbol")) {
+            const sp = self.hir.spanOf(key_expr);
+            if (sp.end > self.source.len or sp.start >= sp.end) return null;
+            const raw = std.mem.trim(u8, self.source[sp.start..sp.end], " \t\r\n");
+            if (!self.sourceHasNamespaceUniqueSymbolConst(raw)) return null;
+            const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{raw});
+            defer self.gpa.free(synthetic);
+            return self.interner.intern(synthetic) catch return error.OutOfMemory;
+        }
         const prop = self.interner.get(m.name);
         const synthetic = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{prop});
         defer self.gpa.free(synthetic);
@@ -11731,12 +11739,40 @@ pub const Parser = struct {
     }
 
     fn sourceHasUniqueSymbolConst(self: *Parser, name: []const u8) bool {
+        return sourceSliceHasUniqueSymbolConst(self.source, name);
+    }
+
+    fn sourceHasNamespaceUniqueSymbolConst(self: *Parser, name: []const u8) bool {
+        const dot = std.mem.indexOfScalar(u8, name, '.') orelse return false;
+        if (dot == 0 or dot + 1 >= name.len) return false;
+        const namespace_name = name[0..dot];
+        const member_name = name[dot + 1 ..];
         var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, self.source, search_start, "const")) |const_pos| {
+        while (sourceIndexOfNamespaceKeywordParser(self.source, search_start)) |kw| {
+            search_start = kw.end;
+            var p = kw.end;
+            while (p < self.source.len and std.ascii.isWhitespace(self.source[p])) : (p += 1) {}
+            if (p + namespace_name.len > self.source.len) continue;
+            if (!std.mem.eql(u8, self.source[p .. p + namespace_name.len], namespace_name)) continue;
+            const ns_end = p + namespace_name.len;
+            if (ns_end < self.source.len and sourceIdentChar(self.source[ns_end])) continue;
+            var open = ns_end;
+            while (open < self.source.len and self.source[open] != '{') : (open += 1) {}
+            if (open >= self.source.len) continue;
+            const close = sourceMatchingBraceParser(self.source, open) orelse continue;
+            if (sourceSliceHasUniqueSymbolConst(self.source[open + 1 .. close], member_name)) return true;
+            search_start = close + 1;
+        }
+        return false;
+    }
+
+    fn sourceSliceHasUniqueSymbolConst(src: []const u8, name: []const u8) bool {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "const")) |const_pos| {
             search_start = const_pos + "const".len;
-            if (const_pos > 0 and sourceIdentChar(self.source[const_pos - 1])) continue;
-            if (search_start < self.source.len and sourceIdentChar(self.source[search_start])) continue;
-            const after_const = std.mem.trim(u8, self.source[search_start..], " \t\r\n");
+            if (const_pos > 0 and sourceIdentChar(src[const_pos - 1])) continue;
+            if (search_start < src.len and sourceIdentChar(src[search_start])) continue;
+            const after_const = std.mem.trim(u8, src[search_start..], " \t\r\n");
             if (!std.mem.startsWith(u8, after_const, name)) continue;
             if (after_const.len > name.len and sourceIdentChar(after_const[name.len])) continue;
             const line_end = std.mem.indexOfScalar(u8, after_const, '\n') orelse after_const.len;
@@ -11747,6 +11783,45 @@ pub const Parser = struct {
             if (std.mem.eql(u8, type_text, "unique symbol")) return true;
         }
         return false;
+    }
+
+    const SourceKeywordHitParser = struct {
+        start: usize,
+        end: usize,
+    };
+
+    fn sourceIndexOfNamespaceKeywordParser(src: []const u8, start: usize) ?SourceKeywordHitParser {
+        var search_start = start;
+        while (search_start < src.len) {
+            const ns_pos = std.mem.indexOfPos(u8, src, search_start, "namespace");
+            const mod_pos = std.mem.indexOfPos(u8, src, search_start, "module");
+            const pos = if (ns_pos) |n|
+                if (mod_pos) |m| @min(n, m) else n
+            else
+                mod_pos orelse return null;
+            const keyword = if (std.mem.startsWith(u8, src[pos..], "namespace")) "namespace" else "module";
+            const end = pos + keyword.len;
+            search_start = end;
+            if (pos > 0 and sourceIdentChar(src[pos - 1])) continue;
+            if (end < src.len and sourceIdentChar(src[end])) continue;
+            return .{ .start = pos, .end = end };
+        }
+        return null;
+    }
+
+    fn sourceMatchingBraceParser(src: []const u8, open: usize) ?usize {
+        if (open >= src.len or src[open] != '{') return null;
+        var depth: usize = 0;
+        var i = open;
+        while (i < src.len) : (i += 1) {
+            if (src[i] == '{') {
+                depth += 1;
+            } else if (src[i] == '}') {
+                depth -= 1;
+                if (depth == 0) return i;
+            }
+        }
+        return null;
     }
 
     fn computedTypeMemberIdentifierIsDeclaredValue(self: *Parser, key_expr: NodeId) bool {
@@ -11768,7 +11843,7 @@ pub const Parser = struct {
         const id = hir_mod.identifierOf(self.hir, key_expr);
         const raw = self.interner.get(id.name);
         if (std.mem.eql(u8, raw, "Symbol")) return true;
-        const keywords = [_][]const u8{ "var", "let", "const", "function", "class", "enum" };
+        const keywords = [_][]const u8{ "var", "let", "const", "function", "class", "enum", "namespace", "module" };
         for (keywords) |kw| {
             var search_start: usize = 0;
             while (std.mem.indexOfPos(u8, self.source, search_start, kw)) |kw_pos| {
