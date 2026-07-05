@@ -2928,19 +2928,10 @@ fn NewPrinter(
                 },
                 .e_identifier => |e| {
                     const name = p.renamer.nameForSymbol(e.ref);
-                    const wrap = p.writer.written == p.for_of_init_start and strings.eqlComptime(name, "let");
-
-                    if (wrap) {
-                        p.print("(");
-                    }
 
                     p.printSpaceBeforeIdentifier();
                     p.addSourceMapping(expr.loc);
                     p.printIdentifier(name);
-
-                    if (wrap) {
-                        p.print(")");
-                    }
                 },
                 .e_import_identifier => |e| {
                     // Potentially use a property access instead of an identifier
@@ -5040,6 +5031,22 @@ fn NewPrinter(
         pub fn printForLoopInit(p: *Printer, initSt: Stmt) void {
             switch (initSt.data) {
                 .s_expr => |s| {
+                    if (p.writer.written == p.for_of_init_start) {
+                        if (s.value.data.as(.e_identifier)) |id| {
+                            const name = p.renamer.nameForSymbol(id.ref);
+                            if (strings.eqlComptime(name, "let") or strings.eqlComptime(name, "async")) {
+                                p.print("(");
+                                p.printExpr(
+                                    s.value,
+                                    .lowest,
+                                    ExprFlag.Set.init(.{ .forbid_in = true, .expr_result_is_unused = true }),
+                                );
+                                p.print(")");
+                                return;
+                            }
+                        }
+                    }
+
                     p.printExpr(
                         s.value,
                         .lowest,

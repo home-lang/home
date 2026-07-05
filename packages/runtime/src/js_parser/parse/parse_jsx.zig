@@ -35,11 +35,9 @@ pub fn ParseJSXElement(
                 var spread_loc: logger.Loc = logger.Loc.Empty;
                 var props = ListManaged(G.Property).init(p.allocator);
                 var first_spread_prop_i: i32 = -1;
-                var i: i32 = 0;
                 parse_attributes: while (true) {
                     switch (p.lexer.token) {
                         .t_identifier => {
-                            defer i += 1;
                             // Parse the prop name
                             const key_range = p.lexer.range();
                             const prop_name_literal = p.lexer.identifier;
@@ -54,7 +52,7 @@ pub fn ParseJSXElement(
                                     continue;
                                 }
 
-                                key_prop_i = i;
+                                key_prop_i = @intCast(props.items.len);
                             }
 
                             const prop_name = p.newExpr(E.String{ .data = prop_name_literal }, key_range.loc);
@@ -73,7 +71,6 @@ pub fn ParseJSXElement(
                             try props.append(G.Property{ .key = prop_name, .value = value });
                         },
                         .t_open_brace => {
-                            defer i += 1;
                             // Use Next() not ExpectInsideJSXElement() so we can parse "..."
                             try p.lexer.next();
 
@@ -81,7 +78,7 @@ pub fn ParseJSXElement(
                                 .t_dot_dot_dot => {
                                     try p.lexer.next();
 
-                                    if (first_spread_prop_i == -1) first_spread_prop_i = i;
+                                    if (first_spread_prop_i == -1) first_spread_prop_i = @intCast(props.items.len);
                                     spread_loc = p.lexer.loc();
                                     try props.append(G.Property{ .value = try p.parseExpr(.comma), .kind = .spread });
                                 },

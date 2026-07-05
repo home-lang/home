@@ -2553,6 +2553,11 @@ fn NewLexer_(
                         break :brk strings.unicode_replacement;
                     };
 
+                    if (cursor.c < 0 or cursor.c > 0x10FFFF) {
+                        lexer.addError(lexer.start, "JSX entity escape is too big: {s}", .{entity}, false);
+                        cursor.c = strings.unicode_replacement;
+                    }
+
                     cursor.i += @as(u32, @intCast(length)) + 1;
                     cursor.width = 1;
                 } else if (tables.jsxEntity.get(entity)) |ent| {

@@ -511,6 +511,7 @@ const TranspilerHandle = struct {
     emit_decorator_metadata: bool = false,
     tree_shaking: bool = false,
     trim_unused_imports: bool = false,
+    auto_import_jsx: bool = false,
     define_pairs: std.ArrayList([]const u8) = .empty,
     eliminate_exports: std.ArrayList([]const u8) = .empty,
 
@@ -629,6 +630,7 @@ fn transpilerCreateNative(
     const emit_decorator_metadata = argument_count >= 8 and arguments[7] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[7]);
     const trim_unused_imports = argument_count >= 10 and arguments[9] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[9]);
     const tree_shaking = argument_count >= 11 and arguments[10] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[10]);
+    const auto_import_jsx = argument_count >= 13 and arguments[12] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[12]);
 
     var define_pairs: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -669,6 +671,7 @@ fn transpilerCreateNative(
         .emit_decorator_metadata = emit_decorator_metadata,
         .tree_shaking = tree_shaking,
         .trim_unused_imports = trim_unused_imports,
+        .auto_import_jsx = auto_import_jsx,
         .define_pairs = define_pairs,
         .eliminate_exports = eliminate_exports,
     };
@@ -903,6 +906,9 @@ fn transpileSource(
 
 fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
     if (std.mem.indexOfScalar(u8, source_text, '#') != null) return true;
+    if (std.mem.indexOf(u8, source_text, "\\u") != null) return true;
+    if (std.mem.indexOf(u8, source_text, " of ") != null) return true;
+    if (std.mem.indexOf(u8, source_text, " in ") != null) return true;
     if (handle.minify_syntax or handle.minify_whitespace or handle.minify_identifiers) return true;
     if (std.mem.indexOf(u8, source_text, "/*") != null) return true;
     if (loader == .js and std.mem.indexOf(u8, source_text, "String.raw`") != null) return true;
@@ -948,6 +954,7 @@ fn transpileSourceWithBunParser(
     parser_options.features.emit_decorator_metadata = handle.emit_decorator_metadata;
     parser_options.features.standard_decorators = !runtime_loader.isTypeScript() or !(handle.experimental_decorators or handle.emit_decorator_metadata);
     parser_options.features.trim_unused_imports = handle.trim_unused_imports;
+    parser_options.features.auto_import_jsx = handle.auto_import_jsx;
     parser_options.features.no_macros = true;
     parser_options.features.top_level_await = true;
     parser_options.features.minify_syntax = handle.minify_syntax;
@@ -4497,7 +4504,7 @@ fn rewriteHomeEvalInvocation(
     home_eval_counter += 1;
     const relative_script_path = try std.fmt.allocPrint(
         allocator,
-        ".zig-cache/home-corpus-eval-{d}-{d}.js",
+        ".zig-cache/home-corpus-eval-{d}-{d}.tsx",
         .{ pid, home_eval_counter },
     );
     defer allocator.free(relative_script_path);

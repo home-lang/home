@@ -385,7 +385,16 @@ pub fn SkipTypescript(
                                 if ((p.lexer.token != .t_colon and p.lexer.token != .t_in) or (!opts.contains(.is_index_signature) and !opts.contains(.allow_tuple_labels))) {
                                     try p.lexer.expect(.t_identifier);
                                     if (p.lexer.token == .t_extends) {
-                                        _ = p.trySkipTypeScriptConstraintOfInferTypeWithBacktracking(opts);
+                                        if (opts.contains(.disallow_conditional_types)) {
+                                            _ = p.trySkipTypeScriptConstraintOfInferTypeWithBacktracking(opts);
+                                        } else {
+                                            const key = P.InferConstraintBacktrackKey.init(p.lexer.start, opts);
+                                            if (!p.infer_constraint_backtrack_failures.contains(key)) {
+                                                if (!p.trySkipTypeScriptConstraintOfInferTypeWithBacktracking(opts)) {
+                                                    try p.infer_constraint_backtrack_failures.put(p.allocator, key, {});
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 

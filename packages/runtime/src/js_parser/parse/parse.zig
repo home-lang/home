@@ -650,6 +650,9 @@ pub fn Parse(
                 if (opts.is_export) {
                     try p.log.addError(p.source, token_range.loc, "Cannot use \"export\" with a \"using\" declaration");
                 }
+                if (opts.is_typescript_declare) {
+                    try p.log.addError(p.source, token_range.loc, "Cannot use \"declare\" with a \"using\" declaration");
+                }
 
                 try p.lexer.next();
 
@@ -692,7 +695,10 @@ pub fn Parse(
                     // const using_loc = p.saveExprCommentsHere();
                     const using_range = p.lexer.range();
                     try p.lexer.next();
-                    if (p.lexer.token == .t_identifier and !p.lexer.has_newline_before) {
+                    if (p.lexer.token == .t_identifier and !js_lexer.Keywords.has(p.lexer.raw()) and !p.lexer.has_newline_before) {
+                        if (opts.is_typescript_declare) {
+                            try p.log.addError(p.source, token_range.loc, "Cannot use \"declare\" with an \"await using\" declaration");
+                        }
                         // It's an "await using" declaration if we get here
                         if (opts.lexical_decl != .allow_all) {
                             try p.forbidLexicalDecl(using_range.loc);
@@ -716,7 +722,7 @@ pub fn Parse(
                         };
                     }
                     break :value Expr{
-                        .data = .{ .e_identifier = .{ .ref = try p.storeNameInRef(raw) } },
+                        .data = .{ .e_identifier = .{ .ref = try p.storeNameInRef(raw2) } },
                         // TODO: implement saveExprCommentsHere and use using_loc here
                         .loc = using_range.loc,
                     };

@@ -37,6 +37,22 @@ pub fn NewParser_(
         pub const track_symbol_usage_during_parse_pass = only_scan_imports_and_do_not_visit and is_typescript_enabled;
         const ParsePassSymbolUsageType = if (track_symbol_usage_during_parse_pass) *ScanPassResult.ParsePassSymbolUsageMap else void;
 
+        pub const InferConstraintBacktrackKey = struct {
+            start: usize,
+            is_return_type: bool,
+            is_index_signature: bool,
+            allow_tuple_labels: bool,
+
+            pub fn init(start: usize, flags: TypeScript.SkipTypeOptions.Bitset) InferConstraintBacktrackKey {
+                return .{
+                    .start = start,
+                    .is_return_type = flags.contains(.is_return_type),
+                    .is_index_signature = flags.contains(.is_index_signature),
+                    .allow_tuple_labels = flags.contains(.allow_tuple_labels),
+                };
+            }
+        };
+
         pub const parser_features: ParserFeatures = js_parser_features;
         const P = @This();
         pub const jsx_transform_type: JSXTransformType = js_parser_jsx;
@@ -275,6 +291,7 @@ pub fn NewParser_(
         emitted_namespace_vars: RefMap = RefMap{},
         is_exported_inside_namespace: RefRefMap = .{},
         local_type_names: StringBoolMap = StringBoolMap{},
+        infer_constraint_backtrack_failures: std.AutoHashMapUnmanaged(InferConstraintBacktrackKey, void) = .{},
 
         // This is the reference to the generated function argument for the namespace,
         // which is different than the reference to the namespace itself:
@@ -3135,7 +3152,7 @@ pub fn NewParser_(
                         .b_identifier => |ident| {
                             const r = js_lexer.rangeOfIdentifier(p.source, decl.binding.loc);
                             try p.log.addRangeErrorFmt(p.source, r, p.allocator, "The " ++ what ++ " \"{s}\" must be initialized", .{
-                                p.symbols.items[ident.ref.innerIndex()].original_name,
+                                p.loadNameFromRef(ident.ref),
                             });
                             // return;/
                         },
@@ -3333,6 +3350,16 @@ pub fn NewParser_(
                 var symbol: *Symbol = &p.symbols.items[existing.ref.innerIndex()];
 
                 if (comptime !is_generated) {
+                    if (comptime is_typescript_enabled) {
+                        if (!p.options.features.trim_unused_imports and
+                            symbol.kind != .unbound and
+                            (symbol.kind == .import or kind == .import))
+                        {
+                            try p.log.addSymbolAlreadyDeclaredError(p.allocator, p.source, symbol.original_name, loc, existing.loc);
+                            return existing.ref;
+                        }
+                    }
+
                     switch (scope.canMergeSymbols(symbol.kind, kind, is_typescript_enabled)) {
                         .forbidden => {
                             try p.log.addSymbolAlreadyDeclaredError(p.allocator, p.source, symbol.original_name, loc, existing.loc);

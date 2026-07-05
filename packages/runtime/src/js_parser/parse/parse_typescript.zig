@@ -280,14 +280,28 @@ pub fn ParseTypescript(
                 //     console.log(foo_1.foo);
                 //   })(foo || (foo = {}));
                 //
-                if (p.current_scope.members.contains(name_text)) {
-                    // Add a "_" to make tests easier to read, since non-bundler tests don't
-                    // run the renamer. For external-facing things the renamer will avoid
-                    // collisions automatically so this isn't important for correctness.
-                    arg_ref = p.newSymbol(.hoisted, strings.cat(p.allocator, "_", name_text) catch unreachable) catch unreachable;
+                var arg_name = name_text;
+                if (p.current_scope.members.contains(arg_name)) {
+                    var underscore_count: usize = 1;
+                    while (true) : (underscore_count += 1) {
+                        const generated_name = p.allocator.alloc(u8, underscore_count + name_text.len) catch unreachable;
+                        @memset(generated_name[0..underscore_count], '_');
+                        @memcpy(generated_name[underscore_count..], name_text);
+                        arg_name = generated_name;
+
+                        if (!p.current_scope.members.contains(arg_name)) {
+                            break;
+                        }
+                    }
+
+                    // Add "_" prefixes to make tests easier to read, since non-bundler
+                    // tests don't run the renamer. For external-facing things the renamer
+                    // will avoid collisions automatically so this isn't important for
+                    // correctness.
+                    arg_ref = p.newSymbol(.hoisted, arg_name) catch unreachable;
                     bun.handleOom(p.current_scope.generated.append(p.allocator, arg_ref));
                 } else {
-                    arg_ref = p.newSymbol(.hoisted, name_text) catch unreachable;
+                    arg_ref = p.newSymbol(.hoisted, arg_name) catch unreachable;
                 }
                 ts_namespace.arg_ref = arg_ref;
             }
