@@ -7102,6 +7102,7 @@ pub const Parser = struct {
 
     fn parseTypeAlias(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // type
+        var alias_name_is_void = false;
         // Accept primitive-type keywords (`any`, `string`, `number`,
         // …) as the alias-name token so we can emit the upstream
         // TS2457 ("Type alias name cannot be '<reserved>'.") at the
@@ -7128,6 +7129,7 @@ pub const Parser = struct {
             // `reservedNamesInAliases.ts` lines 2-7.
             const name_text = self.source[name_tok.span.start..name_tok.span.end];
             if (isReservedTypeAliasName(name_text)) {
+                alias_name_is_void = std.mem.eql(u8, name_text, "void");
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Type alias name cannot be '{s}'.",
@@ -7162,8 +7164,22 @@ pub const Parser = struct {
                 try self.typeRefName("unknown", .{ .start = anchor.span.start, .end = anchor.span.start }),
             );
         }
-        _ = try self.expect(.equal, "'=' in type alias");
+        const equal_tok = try self.expect(.equal, "'=' in type alias");
+        const aliased_start = self.peek();
         const aliased = try self.parseTypeAnnotation();
+        if (alias_name_is_void) {
+            try self.reportCodeAt(start.span.start, start.line, 2304, "Cannot find name 'type'.");
+            try self.reportCodeAt(equal_tok.span.start, equal_tok.line, 1109, "Expression expected.");
+            if (aliased_start.kind == .identifier) {
+                const rhs_name = self.source[aliased_start.span.start..aliased_start.span.end];
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' only refers to a type, but is being used as a value here.",
+                    .{rhs_name},
+                );
+                try self.reportCodeAt(aliased_start.span.start, aliased_start.line, 2693, msg);
+            }
+        }
         try self.consumeStatementTerminator();
         const end_pos = self.tokens[self.cursor - 1].span.end;
         return try self.builder.addTypeAlias(
