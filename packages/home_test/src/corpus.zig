@@ -9,6 +9,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 
+pub const default_root = "packages/runtime/test/bun-corpus";
+pub const expected_copied_bun_test_files = 4708;
+
 pub const Counts = struct {
     files: usize = 0,
     tests: usize = 0,
@@ -201,11 +204,10 @@ test "Bun corpus counter walks nested directories" {
 }
 
 test "Bun corpus collector sees vendored upstream tests" {
-    const root = "packages/runtime/test/bun-corpus";
-    const counts = try countPath(std.testing.io, root);
-    try std.testing.expectEqual(@as(usize, 4708), counts.tests);
+    const counts = try countPath(std.testing.io, default_root);
+    try std.testing.expectEqual(@as(usize, expected_copied_bun_test_files), counts.tests);
 
-    const files = try collectTestFiles(std.testing.io, std.testing.allocator, root);
+    const files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
     defer freeTestFiles(std.testing.allocator, files);
 
     try std.testing.expectEqual(counts.tests, files.len);
