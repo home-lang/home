@@ -2025,6 +2025,15 @@ pub const Engine = struct {
                     return false;
                 } else {
                     for (source_members_for_index) |sm| {
+                        if (self.string_interner) |sint| {
+                            if (sint.getOptional(sm.name)) |name_bytes| {
+                                if (std.mem.startsWith(u8, name_bytes, "Symbol.") or
+                                    std.mem.startsWith(u8, name_bytes, "[computed:"))
+                                {
+                                    continue;
+                                }
+                            }
+                        }
                         if (!try self.isAssignableTo(sm.type, target_str_idx)) return false;
                     }
                 }
@@ -2060,8 +2069,21 @@ pub const Engine = struct {
                 }
             }
             if (target_sym_idx != Primitive.none) {
-                if (source_sym_idx == Primitive.none) return false;
-                if (!try self.isAssignableTo(source_sym_idx, target_sym_idx)) return false;
+                if (source_sym_idx != Primitive.none) {
+                    if (!try self.isAssignableTo(source_sym_idx, target_sym_idx)) return false;
+                } else if (self.string_interner) |sint| {
+                    var saw_symbol_member = false;
+                    for (source_members_for_index) |sm| {
+                        const name_bytes = sint.getOptional(sm.name) orelse continue;
+                        if (!std.mem.startsWith(u8, name_bytes, "Symbol.") and
+                            !std.mem.startsWith(u8, name_bytes, "[computed:")) continue;
+                        saw_symbol_member = true;
+                        if (!try self.isAssignableTo(sm.type, target_sym_idx)) return false;
+                    }
+                    if (!saw_symbol_member) return false;
+                } else {
+                    return false;
+                }
             }
         }
         const stable_target_members = try self.gpa.dupe(types.ObjectMember, target_members);

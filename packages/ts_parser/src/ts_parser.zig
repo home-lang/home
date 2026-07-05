@@ -11600,9 +11600,22 @@ pub const Parser = struct {
                 const r = hir_mod.typeRefOf(self.hir, key_type);
                 if (r.qualifier_len != 0 or r.args_len != 0) return false;
                 const name = self.interner.get(r.name);
-                return std.mem.eql(u8, name, "string") or
+                if (std.mem.eql(u8, name, "string") or
                     std.mem.eql(u8, name, "number") or
-                    std.mem.eql(u8, name, "symbol");
+                    std.mem.eql(u8, name, "symbol")) return true;
+                if (std.mem.eql(u8, name, "boolean") or
+                    std.mem.eql(u8, name, "bigint") or
+                    std.mem.eql(u8, name, "object") or
+                    std.mem.eql(u8, name, "any") or
+                    std.mem.eql(u8, name, "unknown") or
+                    std.mem.eql(u8, name, "never") or
+                    std.mem.eql(u8, name, "void") or
+                    std.mem.eql(u8, name, "null") or
+                    std.mem.eql(u8, name, "undefined")) return false;
+                // Defer semantic names (`T`, `Error`, aliases) to the checker:
+                // type parameters become TS1337, ordinary object types become
+                // TS1268, and branded string aliases are accepted.
+                return true;
             },
             .template_literal_type => return true,
             // Unions/intersections of valid key types are themselves
@@ -11969,7 +11982,7 @@ pub const Parser = struct {
         // upstream message) needs checker context to know which
         // type-refs resolve to params; deferred.
         if (key_type != hir_mod.none_node_id and
-            self.hir.kindOf(key_type) == .type_literal)
+            self.indexSignatureKeyTypeContainsLiteral(key_type))
         {
             try self.reportCodeAt(id1.span.start, id1.line, 1337, "An index signature parameter type cannot be a literal type or generic type. Consider using a mapped object type instead.");
         }
@@ -12009,7 +12022,9 @@ pub const Parser = struct {
             }
         }
         const key_type_valid = key_type != hir_mod.none_node_id and self.indexSignatureKeyTypeIsValid(key_type);
-        if (!key_type_valid and key_type != hir_mod.none_node_id) {
+        if (!key_type_valid and key_type != hir_mod.none_node_id and
+            !self.indexSignatureKeyTypeContainsLiteral(key_type))
+        {
             // Only emit TS1268 when there IS a key type and it's of the
             // wrong shape. The missing-key-type case already surfaced
             // TS1022 above; suppressing TS1268 here keeps the diagnostic
@@ -12051,6 +12066,26 @@ pub const Parser = struct {
         const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly, is_static, key_name);
         try out.append(self.gpa, node);
         return true;
+    }
+
+    fn indexSignatureKeyTypeContainsLiteral(self: *const Parser, key_type: NodeId) bool {
+        if (key_type == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(key_type)) {
+            .type_literal => true,
+            .union_type => blk: {
+                for (hir_mod.unionTypeMembers(self.hir, key_type)) |member| {
+                    if (self.indexSignatureKeyTypeContainsLiteral(member)) break :blk true;
+                }
+                break :blk false;
+            },
+            .intersection_type => blk: {
+                for (hir_mod.intersectionTypeMembers(self.hir, key_type)) |member| {
+                    if (self.indexSignatureKeyTypeContainsLiteral(member)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
     }
 
     fn skipUntilTypeMemberSeparator(self: *Parser) ParseError!void {
