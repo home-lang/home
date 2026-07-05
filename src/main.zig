@@ -1546,6 +1546,8 @@ fn findBunBinary() ![]const u8 {
 
 fn findPantryBinary() ![]const u8 {
     const candidates = [_][]const u8{
+        "/Users/chris/Code/pantry/packages/zig/zig-out/bin/pantry",
+        "/Users/chris/Code/pantry/packages/zig/packages/zig/bin/pantry",
         "/Users/chrisbreuer/.local/share/pantry/global/bin/pantry",
         "/usr/local/bin/pantry",
         "/opt/homebrew/bin/pantry",
@@ -1655,7 +1657,7 @@ fn execBunCommand(allocator: std.mem.Allocator, bun_subcommand: []const u8, extr
 
 fn execPantryCommand(allocator: std.mem.Allocator, pantry_subcommand: []const u8, extra_args: []const [:0]const u8) !void {
     const pantry_path = findPantryBinary() catch {
-        std.debug.print("{s}Error:{s} `home {s}` requires the Pantry CLI (~/Code/Tools/pantry).\n", .{ Color.Red.code(), Color.Reset.code(), pantry_subcommand });
+        std.debug.print("{s}Error:{s} `home {s}` requires the Pantry CLI (~/Code/pantry).\n", .{ Color.Red.code(), Color.Reset.code(), pantry_subcommand });
         std.process.exit(1);
     };
 
@@ -4469,7 +4471,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ---- Bun-compatible CLI surface (Phase 12 in progress) ----
     // `home add`, `home install`, `home remove`, `home update` route to
-    // Pantry (Home's package manager + registry, lives at ~/Code/Tools/pantry).
+    // Pantry (Home's package manager + registry, lives at ~/Code/pantry).
     if (std.mem.eql(u8, command, "add") or std.mem.eql(u8, command, "i")) {
         try execPantryCommand(allocator, "add", args[2..]);
         return;

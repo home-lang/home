@@ -15,7 +15,7 @@
 > [`docs/PARITY-NODE.md`](../../docs/PARITY-NODE.md). Live recount:
 > `scripts/measure-parity.sh --values`.
 
-This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in surface area. Once complete, `home run app.ts`, `home test`, `home x <pkg>`, `home build src/index.ts --target=native`, `home add <pkg>`, etc. all work natively, with package management deferring to Pantry (`~/Code/Tools/pantry`).
+This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in surface area. Once complete, `home run app.ts`, `home test`, `home x <pkg>`, `home build src/index.ts --target=native`, `home add <pkg>`, etc. all work natively, with package management deferring to Pantry (`~/Code/pantry`).
 
 ## Hard rules for every copy
 
@@ -47,7 +47,7 @@ Per user direction: "build it natively as if it was ours, bc bun is MIT code." B
 
 ## Pantry replaces `bun install`
 
-`bun install` is not copied. `home add <pkg>` / `home install` / `home remove` / `home update` route through the Pantry CLI at `~/Code/Tools/pantry`, which is Home's package manager and registry. The Pantry CLI is independently maintained; Home talks to it via a thin Zig shim.
+`bun install` is not copied. `home add <pkg>` / `home install` / `home remove` / `home update` route through the Pantry CLI at `~/Code/pantry`, which is Home's package manager and registry. The Pantry CLI is independently maintained; Home talks to it via a thin Zig shim.
 
 ## Acceptance gate — Bun test suite must pass 100 %
 
