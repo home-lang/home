@@ -66,15 +66,12 @@ pub const List = struct {
     }
 
     pub fn satisfies(list: *const List, version: Version, list_buf: string, version_buf: string) bool {
-        return list.head.satisfies(
-            version,
-            list_buf,
-            version_buf,
-        ) or (list.next orelse return false).satisfies(
-            version,
-            list_buf,
-            version_buf,
-        );
+        var current: ?*const List = list;
+        while (current) |node| {
+            if (node.head.satisfies(version, list_buf, version_buf)) return true;
+            current = node.next;
+        }
+        return false;
     }
 
     pub fn satisfiesPre(list: *const List, version: Version, list_buf: string, version_buf: string) bool {
@@ -87,17 +84,13 @@ pub const List = struct {
         // - if it does, also needs to match major, minor, patch with at least one of the other versions
         //   with a prerelease
         // https://github.com/npm/node-semver/blob/ac9b35769ab0ddfefd5a3af4a3ecaf3da2012352/classes/range.js#L505
-        var pre_matched = false;
-        return (list.head.satisfiesPre(
-            version,
-            list_buf,
-            version_buf,
-            &pre_matched,
-        ) and pre_matched) or (list.next orelse return false).satisfiesPre(
-            version,
-            list_buf,
-            version_buf,
-        );
+        var current: ?*const List = list;
+        while (current) |node| {
+            var pre_matched = false;
+            if (node.head.satisfiesPre(version, list_buf, version_buf, &pre_matched) and pre_matched) return true;
+            current = node.next;
+        }
+        return false;
     }
 
     pub fn eql(lhs: *const List, rhs: *const List) bool {
@@ -316,32 +309,24 @@ pub fn eql(lhs: *const Query, rhs: *const Query) bool {
 }
 
 pub fn satisfies(query: *const Query, version: Version, query_buf: string, version_buf: string) bool {
-    return query.range.satisfies(
-        version,
-        query_buf,
-        version_buf,
-    ) and (query.next orelse return true).satisfies(
-        version,
-        query_buf,
-        version_buf,
-    );
+    var current: ?*const Query = query;
+    while (current) |node| {
+        if (!node.range.satisfies(version, query_buf, version_buf)) return false;
+        current = node.next;
+    }
+    return true;
 }
 
 pub fn satisfiesPre(query: *const Query, version: Version, query_buf: string, version_buf: string, pre_matched: *bool) bool {
     if (comptime Environment.allow_assert) {
         assert(version.tag.hasPre());
     }
-    return query.range.satisfiesPre(
-        version,
-        query_buf,
-        version_buf,
-        pre_matched,
-    ) and (query.next orelse return true).satisfiesPre(
-        version,
-        query_buf,
-        version_buf,
-        pre_matched,
-    );
+    var current: ?*const Query = query;
+    while (current) |node| {
+        if (!node.range.satisfiesPre(version, query_buf, version_buf, pre_matched)) return false;
+        current = node.next;
+    }
+    return true;
 }
 
 pub const Token = struct {
@@ -574,7 +559,7 @@ pub fn parse(
     var token = Token{};
     var prev_token = Token{};
 
-    var count: u8 = 0;
+    var count: usize = 0;
     var skip_round = false;
     var is_or = false;
 
@@ -639,6 +624,8 @@ pub fn parse(
             '-' => {
                 i += 1;
                 while (i < input.len and input[i] == ' ') : (i += 1) {}
+                token.tag = Token.Tag.none;
+                skip_round = true;
             },
             ' ' => {
                 i += 1;
