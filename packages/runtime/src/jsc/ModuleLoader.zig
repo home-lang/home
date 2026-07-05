@@ -1152,11 +1152,20 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
             }
             return jsSyntheticModule(.@"bun:internal-for-testing", specifier);
         },
-        .@"bun:wrap" => .{
-            .allocator = null,
-            .source_code = String.init(Runtime.Runtime.sourceCode()),
-            .specifier = specifier,
-            .source_url = specifier,
+        .@"bun:wrap" => {
+            const source = bun.handleOom(std.fmt.allocPrint(
+                jsc_vm.allocator,
+                "{s}\n{s}",
+                .{ Runtime.Runtime.sourceCode(), Runtime.Runtime.usingHelperSource },
+            ));
+            defer jsc_vm.allocator.free(source);
+            return .{
+                .allocator = null,
+                .source_code = bun.String.cloneUTF8(source),
+                .specifier = specifier,
+                .source_url = specifier,
+                .source_code_needs_deref = true,
+            };
         },
         // Every other hardcoded module is an InternalModuleRegistry entry: pass
         // its per-module tag (the HardcodedModule tag name matches a Tag name) so

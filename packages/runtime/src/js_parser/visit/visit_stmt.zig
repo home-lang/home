@@ -1315,12 +1315,14 @@ pub fn VisitStmt(
             }
             pub fn s_switch(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Switch) !void {
                 data.test_ = p.visitExpr(data.test_);
+                var using_ctx: ?P.LowerUsingDeclarationsContext = null;
                 {
                     p.pushScopeForVisitPass(.block, data.body_loc) catch unreachable;
                     defer p.popScope();
                     const old_is_inside_Swsitch = p.fn_or_arrow_data_visit.is_inside_switch;
                     p.fn_or_arrow_data_visit.is_inside_switch = true;
                     defer p.fn_or_arrow_data_visit.is_inside_switch = old_is_inside_Swsitch;
+                    var has_using = false;
                     for (data.cases, 0..) |case, i| {
                         if (case.value) |val| {
                             data.cases[i].value = p.visitExpr(val);
@@ -1329,13 +1331,29 @@ pub fn VisitStmt(
                             //                 p.warnAboutTypeofAndString(s.Test, *c.Value)
                         }
                         var _stmts = ListManaged(Stmt).fromOwnedSlice(p.allocator, case.body);
-                        p.visitStmts(&_stmts, StmtsKind.none) catch unreachable;
+                        p.visitStmts(&_stmts, StmtsKind.switch_stmt) catch unreachable;
+                        has_using = has_using or p.shouldLowerUsingDeclarations(_stmts.items);
                         data.cases[i].body = _stmts.items;
+                    }
+
+                    if (has_using) {
+                        var ctx = try P.LowerUsingDeclarationsContext.init(p);
+                        for (data.cases) |case| {
+                            ctx.scanStmts(p, case.body);
+                        }
+                        using_ctx = ctx;
                     }
                 }
                 // TODO: duplicate case checker
 
-                try stmts.append(stmt.*);
+                if (using_ctx) |*ctx| {
+                    const switch_stmt = bun.handleOom(p.allocator.alloc(Stmt, 1));
+                    switch_stmt[0] = stmt.*;
+                    const lowered = ctx.finalize(p, switch_stmt, p.current_scope.parent == null);
+                    try stmts.appendSlice(lowered.items);
+                } else {
+                    try stmts.append(stmt.*);
+                }
             }
 
             pub fn s_enum(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Enum, was_after_after_const_local_prefix: bool) !void {

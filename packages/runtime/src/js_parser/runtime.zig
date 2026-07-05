@@ -133,6 +133,44 @@ pub const Fallback = struct {
 };
 
 pub const Runtime = struct {
+    pub const usingHelperSource =
+        \\var __dispose = Symbol.dispose || /* @__PURE__ */ Symbol.for('Symbol.dispose');
+        \\var __asyncDispose = Symbol.asyncDispose || /* @__PURE__ */ Symbol.for('Symbol.asyncDispose');
+        \\
+        \\export var __using = (stack, value, async) => {
+        \\  if (value != null) {
+        \\    if (typeof value !== 'object' && typeof value !== 'function') throw TypeError('Object expected to be assigned to "using" declaration')
+        \\    var dispose
+        \\    if (async) dispose = value[__asyncDispose]
+        \\    if (dispose === void 0) dispose = value[__dispose]
+        \\    if (typeof dispose !== 'function') throw TypeError('Object not disposable')
+        \\    stack.push([async, dispose, value])
+        \\  } else if (async) {
+        \\    stack.push([async])
+        \\  }
+        \\  return value
+        \\}
+        \\
+        \\export var __callDispose = (stack, error, hasError) => {
+        \\  var E = typeof SuppressedError === 'function' ? SuppressedError :
+        \\    function (e, s, m, _) { return _ = Error(m), _.name = 'SuppressedError', _.error = e, _.suppressed = s, _ },
+        \\    fail = e => error = hasError ? new E(e, error, 'An error was suppressed during disposal') : (hasError = true, e),
+        \\    next = (it) => {
+        \\      while (it = stack.pop()) {
+        \\        try {
+        \\          var result = it[1] && it[1].call(it[2])
+        \\          if (it[0]) return Promise.resolve(result).then(next, (e) => (fail(e), next()))
+        \\        } catch (e) {
+        \\          fail(e)
+        \\        }
+        \\      }
+        \\      if (hasError) throw error
+        \\    }
+        \\  return next()
+        \\}
+        \\
+    ;
+
     pub fn sourceCode() string {
         return if (Environment.codegen_embed)
             @embedFile("runtime.out.js")

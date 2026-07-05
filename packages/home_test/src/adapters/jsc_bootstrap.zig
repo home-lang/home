@@ -907,6 +907,7 @@ fn transpileSource(
 fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
     if (std.mem.indexOfScalar(u8, source_text, '#') != null) return true;
     if (std.mem.indexOf(u8, source_text, "\\u") != null) return true;
+    if (std.mem.indexOf(u8, source_text, "using") != null) return true;
     if (std.mem.indexOf(u8, source_text, " of ") != null) return true;
     if (std.mem.indexOf(u8, source_text, " in ") != null) return true;
     if (std.mem.indexOf(u8, source_text, "static {") != null) return true;
