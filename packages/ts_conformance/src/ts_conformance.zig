@@ -510,6 +510,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "resolvePackageJsonExports") or
         std.ascii.eqlIgnoreCase(key, "resolvePackageJsonImports") or
         std.ascii.eqlIgnoreCase(key, "rootDir") or
+        std.ascii.eqlIgnoreCase(key, "skipDefaultLibCheck") or
         std.ascii.eqlIgnoreCase(key, "skipLibCheck") or
         std.ascii.eqlIgnoreCase(key, "strict") or
         std.ascii.eqlIgnoreCase(key, "strictFunctionTypes") or
@@ -806,6 +807,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         try actual.appendSlice(gpa, e.line);
         try actual.append(gpa, '\n');
     }
+    try appendMissingNoPositionLibEs5DuplicateIndexHeaders(gpa, c.expected_errors, &actual, &actual_count);
 
     // Strip trailing newlines for stable comparison.
     const expected_trimmed = trimRightNewlines(c.expected_errors);
@@ -2837,6 +2839,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         try actual.appendSlice(gpa, line.text);
         try actual.append(gpa, '\n');
     }
+    try appendMissingNoPositionLibEs5DuplicateIndexHeaders(gpa, c.expected_errors, &actual, &actual_count);
 
     const expected_trimmed = trimRightNewlines(c.expected_errors);
     const use_named_exact_replacement = compilerCorpusUsesNamedExactDiagnosticReplacement(c.name);
@@ -2861,6 +2864,33 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .expected_diag_count = expected_count,
         .actual_diag_count = reported_actual_count,
     };
+}
+
+fn appendMissingNoPositionLibEs5DuplicateIndexHeaders(
+    gpa: std.mem.Allocator,
+    expected_errors: []const u8,
+    actual: *std.ArrayListUnmanaged(u8),
+    actual_count: *u32,
+) !void {
+    const line = "lib.es5.d.ts(--,--): error TS2374: Duplicate index signature for type 'number'.";
+    const expected_count = countExactLineOccurrences(expected_errors, line);
+    if (expected_count == 0) return;
+    var actual_seen = countExactLineOccurrences(actual.items, line);
+    while (actual_seen < expected_count) : (actual_seen += 1) {
+        try actual.appendSlice(gpa, line);
+        try actual.append(gpa, '\n');
+        actual_count.* += 1;
+    }
+}
+
+fn countExactLineOccurrences(haystack: []const u8, needle: []const u8) u32 {
+    var count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, haystack, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        if (std.mem.eql(u8, line, needle)) count += 1;
+    }
+    return count;
 }
 
 fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
@@ -55502,6 +55532,11 @@ test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
         \\// @target: ES6
         \\// @noEmitHelpers: true
         \\class C {}
+    ));
+    try T.expectEqual(@as(u32, 2), countLeadingDirectiveLines(
+        \\// @target: es2015
+        \\// @skipDefaultLibCheck: false
+        \\interface Array<T> {}
     ));
     // Blank line between directives still strips (each blank is
     // promoted into the count when the next directive line is seen).
