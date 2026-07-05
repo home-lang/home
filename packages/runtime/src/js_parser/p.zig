@@ -3124,10 +3124,9 @@ pub fn NewParser_(
                 1 => {
                     if (decls[0].value) |value| {
                         if (is_var) {
-
                             // This is a weird special case. Initializers are allowed in "var"
                             // statements with identifier bindings.
-                            return;
+                            if (decls[0].binding.data == .b_identifier) return;
                         }
 
                         try p.log.addError(p.source, value.loc, comptime std.fmt.comptimePrint("for-{s} loop variables cannot have an initializer", .{loop_type}));

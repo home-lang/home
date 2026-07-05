@@ -827,6 +827,33 @@ pub fn ParseStmt(
                     decls = .moveFromList(&decls_list);
                     init_ = p.s(S.Local{ .kind = .k_const, .decls = decls }, init_loc);
                 },
+                // for (let )
+                .t_identifier => if (p.lexer.isContextualKeyword("let")) {
+                    bad_let_range = null;
+                    try p.lexer.next();
+                    var stmtOpts = ParseStatementOptions{ .lexical_decl = .allow_all };
+                    var decls_list = try p.parseAndDeclareDecls(.other, &stmtOpts);
+                    decls = .moveFromList(&decls_list);
+                    init_ = p.s(S.Local{ .kind = .k_let, .decls = decls }, init_loc);
+                } else {
+                    var stmtOpts = ParseStatementOptions{
+                        .lexical_decl = .allow_all,
+                        .is_for_loop_init = true,
+                    };
+
+                    const res = try p.parseExprOrLetStmt(&stmtOpts);
+                    switch (res.stmt_or_expr) {
+                        .stmt => |stmt| {
+                            bad_let_range = null;
+                            init_ = stmt;
+                        },
+                        .expr => |expr| {
+                            init_ = p.s(S.SExpr{
+                                .value = expr,
+                            }, init_loc);
+                        },
+                    }
+                },
                 // for (;)
                 .t_semicolon => {},
                 else => {

@@ -491,6 +491,12 @@ pub const TransformTask = struct {
     pub fn run(this: *TransformTask) void {
         const name = this.loader.stdinName();
         const source = logger.Source.initPathString(name, this.input_code.slice());
+        if (sourceExceedsTransformNestingLimit(source.contents)) {
+            this.log.addError(&source, logger.Loc.Empty, "Maximum call stack size exceeded") catch |err| {
+                this.err = err;
+            };
+            return;
+        }
 
         var arena = MimallocArena.init();
         defer arena.deinit();
@@ -788,6 +794,131 @@ fn isLikelyObjectLiteral(code: []const u8) bool {
     return true;
 }
 
+const max_transform_nesting_depth = 512;
+
+fn isIdentifierContinueForTransformScan(char: u8) bool {
+    return std.ascii.isAlphanumeric(char) or char == '_' or char == '$';
+}
+
+fn startsWithUnaryKeywordForTransformScan(code: []const u8, index: usize, keyword: []const u8) bool {
+    if (!std.mem.startsWith(u8, code[index..], keyword)) return false;
+    const before_is_ident = index > 0 and isIdentifierContinueForTransformScan(code[index - 1]);
+    const after_index = index + keyword.len;
+    const after_is_ident = after_index < code.len and isIdentifierContinueForTransformScan(code[after_index]);
+    return !before_is_ident and !after_is_ident;
+}
+
+fn sourceExceedsTransformNestingLimit(code: []const u8) bool {
+    var depth: usize = 0;
+    var structural_count: usize = 0;
+    var prefix_depth: usize = 0;
+    var logical_chain_depth: usize = 0;
+    var quote: u8 = 0;
+    var escaped = false;
+    var line_comment = false;
+    var block_comment = false;
+
+    var i: usize = 0;
+    while (i < code.len) : (i += 1) {
+        const char = code[i];
+        const next = if (i + 1 < code.len) code[i + 1] else 0;
+
+        if (line_comment) {
+            if (char == '\n' or char == '\r') line_comment = false;
+            continue;
+        }
+
+        if (block_comment) {
+            if (char == '*' and next == '/') {
+                block_comment = false;
+                i += 1;
+            }
+            continue;
+        }
+
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (char == '\\') {
+                escaped = true;
+            } else if (char == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+
+        if (std.ascii.isWhitespace(char)) continue;
+
+        if (char == '/' and next == '/') {
+            line_comment = true;
+            i += 1;
+            prefix_depth = 0;
+            continue;
+        }
+        if (char == '/' and next == '*') {
+            block_comment = true;
+            i += 1;
+            prefix_depth = 0;
+            continue;
+        }
+
+        if ((char == '&' and next == '&') or
+            (char == '|' and next == '|') or
+            (char == '?' and next == '?'))
+        {
+            logical_chain_depth += 1;
+            if (logical_chain_depth > max_transform_nesting_depth) return true;
+            prefix_depth = 0;
+            i += 1;
+            continue;
+        }
+
+        if (char == '-' or char == '+' or char == '!' or char == '~') {
+            prefix_depth += 1;
+            if (prefix_depth > max_transform_nesting_depth) return true;
+            continue;
+        }
+
+        const keyword_len: usize = if (startsWithUnaryKeywordForTransformScan(code, i, "delete"))
+            "delete".len
+        else if (startsWithUnaryKeywordForTransformScan(code, i, "typeof"))
+            "typeof".len
+        else if (startsWithUnaryKeywordForTransformScan(code, i, "await"))
+            "await".len
+        else if (startsWithUnaryKeywordForTransformScan(code, i, "void"))
+            "void".len
+        else
+            0;
+        if (keyword_len != 0) {
+            prefix_depth += 1;
+            if (prefix_depth > max_transform_nesting_depth) return true;
+            i += keyword_len - 1;
+            continue;
+        }
+
+        switch (char) {
+            '"', '\'', '`' => {
+                quote = char;
+                prefix_depth = 0;
+            },
+            '(', '[', '{' => {
+                prefix_depth = 0;
+                structural_count += 1;
+                if (structural_count > max_transform_nesting_depth) return true;
+                depth += 1;
+                if (depth > max_transform_nesting_depth) return true;
+            },
+            ')', ']', '}' => {
+                prefix_depth = 0;
+                if (depth > 0) depth -= 1;
+            },
+            else => prefix_depth = 0,
+        }
+    }
+
+    return false;
+}
+
 fn getParseResult(this: *JSTranspiler, allocator: std.mem.Allocator, code: []const u8, loader: ?Loader, macro_js_ctx: Transpiler.MacroJSCtx) ?Transpiler.ParseResult {
     const name = this.config.default_loader.stdinName();
 
@@ -954,6 +1085,9 @@ pub fn transformSync(
     const code = code_holder.slice();
     arguments.ptr[0].ensureStillAlive();
     defer arguments.ptr[0].ensureStillAlive();
+    if (sourceExceedsTransformNestingLimit(code)) {
+        return globalThis.throw("Maximum call stack size exceeded", .{});
+    }
 
     args.eat();
     var js_ctx_value: jsc.JSValue = jsc.JSValue.zero;

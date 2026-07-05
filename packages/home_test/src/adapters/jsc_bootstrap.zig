@@ -909,6 +909,7 @@ fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoa
     if (std.mem.indexOf(u8, source_text, "\\u") != null) return true;
     if (std.mem.indexOf(u8, source_text, " of ") != null) return true;
     if (std.mem.indexOf(u8, source_text, " in ") != null) return true;
+    if (std.mem.indexOf(u8, source_text, "static {") != null) return true;
     if (handle.minify_syntax or handle.minify_whitespace or handle.minify_identifiers) return true;
     if (std.mem.indexOf(u8, source_text, "/*") != null) return true;
     if (loader == .js and std.mem.indexOf(u8, source_text, "String.raw`") != null) return true;
@@ -5249,9 +5250,9 @@ test "adapter routes type export declarations through Bun parser path" {
     for (cases) |case| {
         try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
-        const output = try transpileSource(std.testing.allocator, &default_handle, case.source, .ts);
-        defer std.testing.allocator.free(output);
-        try std.testing.expectEqualStrings(case.output, output);
+        const ts_output = try transpileSource(std.testing.allocator, &default_handle, case.source, .ts);
+        defer std.testing.allocator.free(ts_output);
+        try std.testing.expectEqualStrings(case.output, ts_output);
     }
 }
 
@@ -5270,9 +5271,13 @@ test "adapter routes class static blocks through Bun parser path" {
     for (cases) |case| {
         try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
-        const output = try transpileSource(std.testing.allocator, &default_handle, case.source, .ts);
-        defer std.testing.allocator.free(output);
-        try std.testing.expectEqualStrings(case.output, output);
+        const ts_output = try transpileSource(std.testing.allocator, &default_handle, case.source, .ts);
+        defer std.testing.allocator.free(ts_output);
+        try std.testing.expectEqualStrings(case.output, ts_output);
+
+        const js_output = try transpileSource(std.testing.allocator, &default_handle, case.source, .js);
+        defer std.testing.allocator.free(js_output);
+        try std.testing.expectEqualStrings(case.output, js_output);
     }
 }
 
