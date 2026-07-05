@@ -906,6 +906,7 @@ fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoa
     if (handle.minify_syntax or handle.minify_whitespace or handle.minify_identifiers) return true;
     if (std.mem.indexOf(u8, source_text, "/*") != null) return true;
     if (loader == .js and std.mem.indexOf(u8, source_text, "String.raw`") != null) return true;
+    if (loader == .js and std.mem.indexOf(u8, source_text, "export default interface") != null) return true;
     return switch (loader) {
         .ts, .tsx => true,
         else => false,
@@ -1206,6 +1207,8 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         output: []const u8,
     };
     const fixtures = [_]Fixture{
+        .{ .source = "new C<T>`ok`", .output = "new C`ok`;\n" },
+        .{ .source = "f<T>`ok`", .output = "f`ok`;\n" },
         .{ .source = "const a = {...b}[0];", .output = "const a = { ...b }[0];\n" },
         .{ .source = "const a = [\"hey\"][0];", .output = "const a = \"hey\";\n" },
         .{ .source = "const a = [\"hey\"][0][0];", .output = "const a = \"h\";\n" },
@@ -2336,6 +2339,9 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         .{ .source = "function:", .message = "Parse error" },
         .{ .source = "function a() {function:}", .message = "Parse error" },
         .{ .source = "const x: Foo<> = {}", .message = "Unexpected >" },
+        .{ .source = "new C<T>\n`", .message = "Unterminated string literal" },
+        .{ .source = "new C<T>`", .message = "Unterminated string literal" },
+        .{ .source = "f<T>`", .message = "Unterminated string literal" },
         .{ .source = "export default class {\n  W\xc2\x81;\n}", .message = "Unexpected \"W\"" },
         .{ .source = "/x/msuygig", .message = "Duplicate flag \"g\" in regular expression" },
         .{ .source = "var var", .message = "Expected identifier but found \"var\"" },
@@ -5132,6 +5138,31 @@ test "adapter rejects bare async const type parameter ambiguity like Bun.Transpi
     try std.testing.expect(transpileParseErrorMessage("export let f = async <const T>() => {}") == null);
 }
 
+test "adapter rejects unterminated templates after type arguments like Bun.Transpiler" {
+    try std.testing.expectEqualStrings(
+        "Unterminated string literal",
+        transpileParseErrorMessage("new C<T>\n`").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Unterminated string literal",
+        transpileParseErrorMessage("new C<T>`").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Unterminated string literal",
+        transpileParseErrorMessage("f<T>`").?,
+    );
+}
+
+test "adapter strips type arguments from tagged template calls like Bun.Transpiler" {
+    const new_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "new C<T>`ok`")).?;
+    defer std.testing.allocator.free(new_output);
+    try std.testing.expectEqualStrings("new C`ok`;\n", new_output);
+
+    const call_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "f<T>`ok`")).?;
+    defer std.testing.allocator.free(call_output);
+    try std.testing.expectEqualStrings("f`ok`;\n", call_output);
+}
+
 test "adapter rejects unparenthesized unary exponentiation like Bun.Transpiler" {
     try std.testing.expectEqualStrings("Unexpected **", transpileParseErrorMessage("-x ** 2").?);
     try std.testing.expectEqualStrings("Unexpected **", transpileParseErrorMessage("delete x?.prop ** 0").?);
@@ -5169,6 +5200,7 @@ test "adapter routes TypeScript transforms through the native parser path" {
     try std.testing.expect(shouldUseBunParserForTranspile("let x: number = y", .tsx, &default_handle));
     try std.testing.expect(shouldUseBunParserForTranspile("const source = \"enum ABC { A }\";", .ts, &default_handle));
     try std.testing.expect(shouldUseBunParserForTranspile("class Foo { #foo }", .js, &default_handle));
+    try std.testing.expect(shouldUseBunParserForTranspile("export default interface=2", .js, &default_handle));
     try std.testing.expect(!shouldUseBunParserForTranspile("enum ABC { A }", .js, &default_handle));
 
     const tree_shaking_handle = TranspilerHandle{ .tree_shaking = true };

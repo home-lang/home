@@ -293,7 +293,7 @@ pub fn ParseStmt(
                     );
                 },
                 T.t_asterisk => {
-                    if (!opts.is_module_scope and !(opts.is_namespace_scope or !opts.is_typescript_declare)) {
+                    if (!opts.is_module_scope and !(opts.is_namespace_scope and opts.is_typescript_declare)) {
                         try p.lexer.unexpected();
                         return error.SyntaxError;
                     }
@@ -348,7 +348,7 @@ pub fn ParseStmt(
                     }, loc);
                 },
                 T.t_open_brace => {
-                    if (!opts.is_module_scope and !(opts.is_namespace_scope or !opts.is_typescript_declare)) {
+                    if (!opts.is_module_scope and !(opts.is_namespace_scope and opts.is_typescript_declare)) {
                         try p.lexer.unexpected();
                         return error.SyntaxError;
                     }
