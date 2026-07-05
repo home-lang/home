@@ -71,9 +71,14 @@ unique files: 66 unique bundler files inside `minimal-js`, 5 more in
 `bundler-core-itbundled`, and 17 more unique files from the executable
 22-file `bundler-transpiler-bootstrap` tranche, plus
 `bundler/native-plugin.test.ts` promoted through the real native bridge.
-The copied Bun corpus is exact against upstream Bun for `.test.ts` /
-`.test.js` files in this worktree: 1720 upstream paths, 1720 copied
-paths, zero missing, and zero extras. The former exact 2-file frontier
+The copied Bun corpus is exact against upstream Bun for
+`*.test.{ts,js,mjs,cjs}` files in this worktree: 1800 upstream paths,
+1800 copied paths, zero missing, and zero extras. The broader Home
+`corpus.zig` discovery guard currently sees 4708 Bun-style test files
+under `packages/runtime/test/bun-corpus`, including `test-*` and
+`*.spec.*` forms, and `home test packages/runtime/test/bun-corpus` walks
+those copied source files through the JSC bootstrap. The former exact
+2-file frontier
 (`bundler/transpiler/decorators.test.ts` and
 `bundler/transpiler/transpiler.test.js`) now executes cleanly through
 `home-debug`; native transpiler parity credit remains limited by the
@@ -100,7 +105,7 @@ Read-only corpus inventory on 2026-05-26, counted from
 | `bake/` | 24 | Server-heavy tranche after bundler completion |
 | `integration/` | 20 | Cross-surface follow-up tranche |
 | Small buckets | 11 | `internal` 7 plus one each for `config`, `package-json-lint`, `snippets`, and `v8` |
-| Total audited by these file patterns | 1735 | Separate from the broader 4013-file Bun-style discovery denominator |
+| Total audited by these file patterns | 1800 | Separate from the broader 4708-file Bun-style discovery denominator |
 
 Large-agent handoff for the current bundler frontier:
 

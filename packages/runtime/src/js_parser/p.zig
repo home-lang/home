@@ -6594,45 +6594,69 @@ pub fn NewParser_(
             var top_level_symbols_to_parts = js_ast.Ast.TopLevelSymbolToParts{};
             var top_level = &top_level_symbols_to_parts;
 
-            if (p.options.bundle) {
-                const Ctx = struct {
-                    allocator: std.mem.Allocator,
-                    top_level_symbols_to_parts: *js_ast.Ast.TopLevelSymbolToParts,
-                    symbols: []const js_ast.Symbol,
-                    part_index: u32,
+            const Ctx = struct {
+                allocator: std.mem.Allocator,
+                top_level_symbols_to_parts: *js_ast.Ast.TopLevelSymbolToParts,
+                symbols: []const js_ast.Symbol,
+                part_index: u32,
 
-                    pub fn next(ctx: @This(), input: Ref) void {
-                        // If this symbol was merged, use the symbol at the end of the
-                        // linked list in the map. This is the case for multiple "var"
-                        // declarations with the same name, for example.
-                        var ref = input;
-                        var symbol_ref = &ctx.symbols[ref.innerIndex()];
-                        while (symbol_ref.hasLink()) : (symbol_ref = &ctx.symbols[ref.innerIndex()]) {
-                            ref = symbol_ref.link;
-                        }
-
-                        var entry = ctx.top_level_symbols_to_parts.getOrPut(ctx.allocator, ref) catch unreachable;
-                        if (!entry.found_existing) {
-                            entry.value_ptr.* = .{};
-                        }
-
-                        bun.handleOom(entry.value_ptr.append(ctx.allocator, @as(u32, @truncate(ctx.part_index))));
+                pub fn next(ctx: @This(), input: Ref) void {
+                    // If this symbol was merged, use the symbol at the end of the
+                    // linked list in the map. This is the case for multiple "var"
+                    // declarations with the same name, for example.
+                    var ref = input;
+                    var symbol_ref = &ctx.symbols[ref.innerIndex()];
+                    while (symbol_ref.hasLink()) : (symbol_ref = &ctx.symbols[ref.innerIndex()]) {
+                        ref = symbol_ref.link;
                     }
+
+                    var entry = ctx.top_level_symbols_to_parts.getOrPut(ctx.allocator, ref) catch unreachable;
+                    if (!entry.found_existing) {
+                        entry.value_ptr.* = .{};
+                    }
+
+                    bun.handleOom(entry.value_ptr.append(ctx.allocator, @as(u32, @truncate(ctx.part_index))));
+                }
+            };
+
+            // Each part tracks the other parts it depends on within this file.
+            for (parts.items, 0..) |*part, part_index| {
+                const decls = &part.declared_symbols;
+                const ctx = Ctx{
+                    .allocator = p.allocator,
+                    .top_level_symbols_to_parts = top_level,
+                    .symbols = p.symbols.items,
+                    .part_index = @as(u32, @truncate(part_index)),
                 };
 
-                // Each part tracks the other parts it depends on within this file
-                for (parts.items, 0..) |*part, part_index| {
-                    const decls = &part.declared_symbols;
-                    const ctx = Ctx{
-                        .allocator = p.allocator,
-                        .top_level_symbols_to_parts = top_level,
-                        .symbols = p.symbols.items,
-                        .part_index = @as(u32, @truncate(part_index)),
-                    };
+                DeclaredSymbol.forEachTopLevelSymbol(decls, ctx, Ctx.next);
+            }
 
-                    DeclaredSymbol.forEachTopLevelSymbol(decls, ctx, Ctx.next);
+            if (!is_typescript_enabled) {
+                var export_iter = p.named_exports.iterator();
+                while (export_iter.next()) |entry| {
+                    const export_ref = entry.value_ptr.ref;
+                    if (!export_ref.isSymbol()) continue;
+
+                    var ref = export_ref;
+                    var symbol_ref = &p.symbols.items[ref.innerIndex()];
+                    while (symbol_ref.hasLink()) : (symbol_ref = &p.symbols.items[ref.innerIndex()]) {
+                        ref = symbol_ref.link;
+                    }
+                    if (symbol_ref.kind == .unbound) continue;
+                    if (!top_level.contains(ref)) {
+                        try p.log.addRangeErrorFmt(
+                            p.source,
+                            js_lexer.rangeOfIdentifier(p.source, entry.value_ptr.alias_loc),
+                            p.allocator,
+                            "\"{s}\" is not declared in this file",
+                            .{entry.key_ptr.*},
+                        );
+                    }
                 }
+            }
 
+            if (p.options.bundle) {
                 // Pulling in the exports of this module always pulls in the export part
 
                 {

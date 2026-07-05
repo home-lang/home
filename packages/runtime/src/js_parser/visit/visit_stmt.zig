@@ -84,6 +84,7 @@ pub fn VisitStmt(
                         }
 
                         item.name.ref = ref;
+                        if (p.named_exports.getPtr(item.alias)) |exported| exported.ref = ref;
                         data.items[end] = item.*;
                         end += 1;
                     }
@@ -106,6 +107,7 @@ pub fn VisitStmt(
                         }
 
                         item.name.ref = ref;
+                        if (p.named_exports.getPtr(item.alias)) |exported| exported.ref = ref;
                         data.items[end] = item.*;
                         end += 1;
                     }
