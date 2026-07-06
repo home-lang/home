@@ -263,6 +263,10 @@ pub const Printer = struct {
     /// is spliced in at `mark` so it lands at the function/module top,
     /// matching tsc's temp placement.
     temp_scopes: std.ArrayListUnmanaged(TempScope) = .empty,
+    /// One-shot marker consumed by `printBlock`: the next block printed is a
+    /// FUNCTION body, so it opens its own temp-hoist scope (temps allocated
+    /// inside splice at that function's top rather than module scope).
+    next_block_is_fn_body: bool = false,
     options: Options,
     depth: u32,
     /// True when the previous token-output ended with a position where
@@ -449,6 +453,29 @@ pub const Printer = struct {
         }
         try decl.appendSlice(self.gpa, ";");
         try decl.appendSlice(self.gpa, sep);
+        try self.out.insertSlice(self.gpa, scope.mark, decl.items);
+    }
+
+    /// Close the current temp scope inside a multi-line block body: the
+    /// `var _a, _b;` splices in as the block's first line (newline + indent
+    /// at the current depth), matching tsc's function-top temp placement.
+    /// Call while `depth` is still the block's inner depth.
+    fn popTempScopeAtBlockTop(self: *Printer) !void {
+        const scope = self.temp_scopes.pop() orelse return;
+        if (scope.count == 0) return;
+        var decl: std.ArrayListUnmanaged(u8) = .empty;
+        defer decl.deinit(self.gpa);
+        try decl.appendSlice(self.gpa, self.options.newline);
+        var d: u32 = 0;
+        while (d < self.depth) : (d += 1) try decl.appendSlice(self.gpa, self.options.indent);
+        try decl.appendSlice(self.gpa, "var ");
+        var i: usize = 0;
+        while (i < scope.count) : (i += 1) {
+            if (i > 0) try decl.appendSlice(self.gpa, ", ");
+            var b: [16]u8 = undefined;
+            try decl.appendSlice(self.gpa, writeTempName(&b, i));
+        }
+        try decl.appendSlice(self.gpa, ";");
         try self.out.insertSlice(self.gpa, scope.mark, decl.items);
     }
 
@@ -1351,6 +1378,12 @@ pub const Printer = struct {
     }
 
     fn printBlock(self: *Printer, node: NodeId) !void {
+        // §4.A.31 — a function body opens its own temp-hoist scope so temps
+        // allocated by downlevel transforms inside splice in at the function
+        // top. Ordinary (if/for/…) blocks share the enclosing scope. The
+        // one-shot flag is consumed here so nested blocks don't inherit it.
+        const fn_body_scope = self.next_block_is_fn_body;
+        self.next_block_is_fn_body = false;
         try self.write("{");
         const stmts = hir_mod.blockStmts(self.hir, node);
         if (stmts.len == 0) {
@@ -1358,10 +1391,12 @@ pub const Printer = struct {
             return;
         }
         self.depth += 1;
+        if (fn_body_scope) try self.pushTempScope();
         for (stmts) |stmt| {
             try self.write(self.options.newline);
             try self.printStatement(stmt);
         }
+        if (fn_body_scope) try self.popTempScopeAtBlockTop();
         self.depth -= 1;
         try self.writeNewlineIndent();
         try self.write("}");
@@ -1895,6 +1930,9 @@ pub const Printer = struct {
                 const params = hir_mod.fnParams(self.hir, node);
                 try self.printRuntimeParams(params);
                 try self.write(") { ");
+                // §4.A.31 — inline-style temp scope for the lowered arrow body
+                // (`{ var _a; … }`); popped before the branch returns below.
+                try self.pushTempScope();
                 // §4.A — inject `if (x === void 0) { x = ...; }` shims
                 // for any default-parameter, before the user body.
                 if (self.hasDefaultParam(params)) {
@@ -1931,6 +1969,7 @@ pub const Printer = struct {
                 } else {
                     try self.write(" }.bind(this)");
                 }
+                try self.popTempScope(" ");
                 return;
             }
             if (f.flags.is_async) try self.write("async ");
@@ -1940,6 +1979,7 @@ pub const Printer = struct {
             try self.write(") => ");
             if (f.body != hir_mod.none_node_id) {
                 if (self.hir.kindOf(f.body) == .block_stmt) {
+                    self.next_block_is_fn_body = true;
                     try self.printBlock(f.body);
                 } else {
                     // An object-literal concise body must be parenthesized,
@@ -2054,6 +2094,7 @@ pub const Printer = struct {
                 // the parameter list.
                 try self.printFnBodyWithDefaults(params, f.body);
             } else {
+                self.next_block_is_fn_body = self.hir.kindOf(f.body) == .block_stmt;
                 try self.printStatementInline(f.body);
             }
         } else {
@@ -2083,6 +2124,7 @@ pub const Printer = struct {
         self.in_async_downlevel = true;
         defer self.in_async_downlevel = prev;
         if (self.hir.kindOf(body) == .block_stmt) {
+            self.next_block_is_fn_body = true;
             try self.printBlock(body);
         } else {
             try self.write("{ return ");
@@ -6849,6 +6891,7 @@ pub const Printer = struct {
             if (self.hasDefaultParam(params) or self.hasDestructuringParam(params)) {
                 try self.printFnBodyWithDefaults(params, fd.body);
             } else {
+                self.next_block_is_fn_body = self.hir.kindOf(fd.body) == .block_stmt;
                 try self.printStatementInline(fd.body);
             }
         } else {
@@ -7045,6 +7088,7 @@ pub const Printer = struct {
                     // lowering for class methods.
                     try self.printFnBodyWithDefaults(params, fd.body);
                 } else {
+                    self.next_block_is_fn_body = self.hir.kindOf(fd.body) == .block_stmt;
                     try self.printStatementInline(fd.body);
                 }
             } else {
@@ -9039,6 +9083,7 @@ pub const Printer = struct {
             } else if (self.options.es_target == .es5 and (self.hasDefaultParam(params) or self.hasDestructuringParam(params))) {
                 try self.printFnBodyWithDefaults(params, f.body);
             } else {
+                self.next_block_is_fn_body = self.hir.kindOf(f.body) == .block_stmt;
                 try self.printStatementInline(f.body);
             }
         } else {
@@ -13106,6 +13151,38 @@ test "emit: es5 complex-receiver spread caches receiver in a hoisted temp" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "var _a;") != null);
     try T.expect(std.mem.indexOf(u8, out, "(_a = o[1]).foo.apply(_a, a)") != null);
+}
+
+test "emit: es5 in-function temp hoists to the function top, not module" {
+    // Temps allocated inside a function body place at that function's top
+    // (tsc's shape), not at module scope (§4.A.31 follow-up a).
+    const out = try emitWithOpts("function f() { o[1].foo(...a); }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    const fn_pos = std.mem.indexOf(u8, out, "function f() {").?;
+    const var_pos = std.mem.indexOf(u8, out, "var _a;").?;
+    try T.expect(var_pos > fn_pos);
+    try T.expect(std.mem.indexOf(u8, out, "(_a = o[1]).foo.apply(_a, a)") != null);
+    // exactly one declaration — the module scope stays temp-free.
+    try T.expect(std.mem.indexOf(u8, out[var_pos + 1 ..], "var _a;") == null);
+}
+
+test "emit: es5 arrow-body temp stays inside the lowered function" {
+    const out = try emitWithOpts("let g = () => { o[1].foo(...a); };", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    const fn_pos = std.mem.indexOf(u8, out, "function () {").?;
+    const var_pos = std.mem.indexOf(u8, out, "var _a;").?;
+    try T.expect(var_pos > fn_pos);
+    try T.expect(std.mem.indexOf(u8, out, "(_a = o[1]).foo.apply(_a, a)") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".bind(this)") != null);
+}
+
+test "emit: es5 sibling functions get independent temp counters" {
+    // Each function scope restarts at `_a` — no cross-function bleed.
+    const out = try emitWithOpts("function f() { o[1].foo(...a); } function g() { p[2].bar(...b); }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "(_a = o[1]).foo.apply(_a, a)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "(_a = p[2]).bar.apply(_a, b)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_b") == null);
 }
 
 test "emit: call-site spread preserved natively at es2015+" {
