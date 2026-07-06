@@ -6974,6 +6974,24 @@ pub const Printer = struct {
         // Find the constructor; emit a function `<Name>(...)` for it
         // (or a no-arg default).
         const members = hir_mod.classMembers(self.hir, node);
+        // §4.A.31 — computed INSTANCE-field keys evaluate once at class-eval
+        // time. Pre-allocate a hoisted temp per key (from the enclosing
+        // scope, NOT a ctor-local one — the ctor reads it, the IIFE body
+        // assigns it after the ctor definition): `class C { [i] = 1 }` ->
+        // ctor `this[_a] = 1;` + `_a = i;` before the methods. Computed
+        // STATIC keys are single-use and evaluate inline (`C[j] = 2`).
+        const ComputedTemp = struct { member: NodeId, buf: [16]u8, len: u8 };
+        var computed_temps: std.ArrayListUnmanaged(ComputedTemp) = .empty;
+        defer computed_temps.deinit(self.gpa);
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (!op.is_computed or op.is_static) continue;
+            if (op.value == hir_mod.none_node_id) continue;
+            var nb: [16]u8 = undefined;
+            const nm = self.allocTemp(&nb);
+            try computed_temps.append(self.gpa, .{ .member = m, .buf = nb, .len = @intCast(nm.len) });
+        }
         var ctor: ?NodeId = null;
         for (members) |m| {
             const k = self.hir.kindOf(m);
@@ -7041,6 +7059,20 @@ pub const Printer = struct {
             const op = hir_mod.objectPropertyOf(self.hir, m);
             if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
+            if (op.is_computed) {
+                // `this[_a] = v;` — the key temp is assigned once in the
+                // IIFE body (after the ctor definition, before any `new`).
+                for (computed_temps.items) |ct| {
+                    if (ct.member != m) continue;
+                    try self.write(if (use_this_var) "_this[" else "this[");
+                    try self.write(ct.buf[0..ct.len]);
+                    try self.write("] = ");
+                    try self.printExpression(op.value);
+                    try self.write("; ");
+                    break;
+                }
+                continue;
+            }
             try self.write(if (use_this_var) "_this." else "this.");
             try self.printExpression(op.key);
             try self.write(" = ");
@@ -7060,6 +7092,16 @@ pub const Printer = struct {
             }
         }
         try self.write("} ");
+        // §4.A.31 — assign the computed instance-field key temps, in decl
+        // order, at class-eval time (after the ctor definition so the
+        // hoisted function can reference them, before any construction).
+        for (computed_temps.items) |ct| {
+            const op = hir_mod.objectPropertyOf(self.hir, ct.member);
+            try self.write(ct.buf[0..ct.len]);
+            try self.write(" = ");
+            try self.printExpression(op.key);
+            try self.write("; ");
+        }
         // Methods → prototype assignments.
         for (members) |m| {
             const k = self.hir.kindOf(m);
@@ -7106,8 +7148,16 @@ pub const Printer = struct {
             const op = hir_mod.objectPropertyOf(self.hir, m);
             if (!op.is_static or op.value == hir_mod.none_node_id) continue;
             try self.printExpression(c.name);
-            try self.write(".");
-            try self.printExpression(op.key);
+            if (op.is_computed) {
+                // §4.A.31 — a computed static key is single-use: evaluate it
+                // inline in the bracket (`C[j] = 2`), no temp needed.
+                try self.write("[");
+                try self.printExpression(op.key);
+                try self.write("]");
+            } else {
+                try self.write(".");
+                try self.printExpression(op.key);
+            }
             try self.write(" = ");
             try self.printExpression(op.value);
             try self.write("; ");
@@ -13692,6 +13742,36 @@ test "emit: destructuring assignment stays native at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "({ a } = x)") != null);
     try T.expect(std.mem.indexOf(u8, out, "_a =") == null);
+}
+
+test "emit: es5 computed instance class-field key evaluates once via temp" {
+    // `class C { [i] = 1; }` -> ctor reads `this[_a]`, `_a = i;` assigned in
+    // the IIFE body at class-eval time, `var _a;` hoisted (§4.A.31 b).
+    const out = try emitWithOpts("class C { [i] = 1; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _a;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this[_a] = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_a = i;") != null);
+    // the key assignment happens before the IIFE returns the class.
+    const assign_pos = std.mem.indexOf(u8, out, "_a = i;").?;
+    const return_pos = std.mem.indexOf(u8, out, "return C;").?;
+    try T.expect(assign_pos < return_pos);
+    // no bogus dotted form.
+    try T.expect(std.mem.indexOf(u8, out, "this.i =") == null);
+}
+
+test "emit: es5 computed static class-field key evaluates inline" {
+    const out = try emitWithOpts("class C { static [j] = 2; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "C[j] = 2;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "C.j =") == null);
+}
+
+test "emit: es2015+ computed class-field keys stay native" {
+    const out = try emitWithOpts("class C { [i] = 1; }", .{ .es_target = .es2022 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "[i] = 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this[_a]") == null);
 }
 
 test "emit: es5 non-derived class fields keep plain this" {
