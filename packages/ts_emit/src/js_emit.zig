@@ -7102,6 +7102,7 @@ pub const Printer = struct {
         defer static_privates.deinit(self.gpa);
         var private_accessors: std.ArrayListUnmanaged([]const u8) = .empty;
         defer private_accessors.deinit(self.gpa);
+        var has_instance_accessor = false;
         var has_instance_pm = false;
         for (class_members_pre) |m| {
             const k = self.hir.kindOf(m);
@@ -7109,8 +7110,9 @@ pub const Printer = struct {
                 const fd = hir_mod.fnDeclOf(self.hir, m);
                 if (fd.flags.is_constructor) continue;
                 const pm = self.privateFieldName(fd.name) orelse continue;
-                if ((fd.flags.is_getter or fd.flags.is_setter) and !fd.flags.is_static) {
-                    // Private accessor pair — record the name once.
+                if (fd.flags.is_getter or fd.flags.is_setter) {
+                    // Private accessor pair — record the name once. Static
+                    // accessors also join the identity-brand list.
                     var seen = false;
                     for (private_accessors.items) |n| {
                         if (std.mem.eql(u8, n, pm)) {
@@ -7118,7 +7120,14 @@ pub const Printer = struct {
                             break;
                         }
                     }
-                    if (!seen) try private_accessors.append(self.gpa, pm);
+                    if (!seen) {
+                        try private_accessors.append(self.gpa, pm);
+                        if (fd.flags.is_static) {
+                            try static_privates.append(self.gpa, pm);
+                        } else {
+                            has_instance_accessor = true;
+                        }
+                    }
                     continue;
                 }
                 try private_methods.append(self.gpa, pm);
@@ -7139,7 +7148,7 @@ pub const Printer = struct {
                 try self.write("; ");
             }
         }
-        const needs_instance_brand = has_instance_pm or private_accessors.items.len > 0;
+        const needs_instance_brand = has_instance_pm or has_instance_accessor;
         if (needs_instance_brand) {
             try self.write("var ");
             try self.writeWeakMapName(c.name, "instances");
@@ -7332,11 +7341,11 @@ pub const Printer = struct {
             // Getters/setters lower to `Object.defineProperty` (merging a
             // get+set pair for the same key into one call — separate calls
             // would clobber each other). Computed accessor names are deferred.
-            if ((fd.flags.is_getter or fd.flags.is_setter) and !fd.flags.is_static) {
+            if (fd.flags.is_getter or fd.flags.is_setter) {
                 if (self.privateFieldName(fd.name)) |pa| {
-                    // §4.A.7 — private accessor: paired hoisted fns
-                    // (`_C_x_get` / `_C_x_set`); reads/writes route through
-                    // `.call` in printMember / printAssignment.
+                    // §4.A.7 — private accessor (instance or static): paired
+                    // hoisted fns (`_C_x_get` / `_C_x_set`); reads/writes
+                    // route through `.call` in printMember / printAssignment.
                     try self.write("var ");
                     try self.writeWeakMapName(c.name, pa);
                     try self.write(if (fd.flags.is_getter) "_get = function (" else "_set = function (");
@@ -14307,6 +14316,16 @@ test "emit: es5 private accessor lowers to paired hoisted fns" {
     // accessors brand instances for `in` checks.
     try T.expect(std.mem.indexOf(u8, out, "var _C_instances = new WeakSet();") != null);
     try T.expect(std.mem.indexOf(u8, out, "_C_instances.add(this);") != null);
+}
+
+test "emit: es5 static private accessor lowers with class receiver" {
+    const out = try emitWithOpts("class C { static get #x() { return 1; } static r() { return C.#x; } static w(v: number) { C.#x = v; } static set #x(v: number) { use(v); } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_x_get = function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_x_get.call(C)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_x_set.call(C, v)") != null);
+    // static-only privates need no instance brand.
+    try T.expect(std.mem.indexOf(u8, out, "WeakSet") == null);
 }
 
 test "emit: es5 static private field lowers to a bare var" {
