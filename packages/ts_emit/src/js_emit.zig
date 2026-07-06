@@ -6410,6 +6410,15 @@ pub const Printer = struct {
         return s[1..];
     }
 
+    /// Like `writeWeakMapName` but from an interned class-name StringId
+    /// (the form `current_class_name` carries): `_<Class>_<field>`.
+    fn writePrivateMapNameById(self: *Printer, class_name: StringId, field: []const u8) !void {
+        try self.write("_");
+        try self.write(self.interner.get(class_name));
+        try self.write("_");
+        try self.write(field);
+    }
+
     /// Emit the WeakMap variable name for a private field on this class
     /// — `_<ClassName>_<field>`, matching tsc's mangling.
     fn writeWeakMapName(self: *Printer, class_name_node: NodeId, field: []const u8) !void {
@@ -8589,33 +8598,55 @@ pub const Printer = struct {
                 const m = hir_mod.memberOf(self.hir, p.target);
                 const name_str = self.interner.get(m.name);
                 if (name_str.len > 0 and name_str[0] == '#') {
-                    const arith_ok = if (p.op) |op| switch (op) {
-                        .logical_or, .logical_and, .nullish_coalesce, .pow => false,
-                        else => self.hir.kindOf(m.object) == .identifier or
-                            self.hir.kindOf(m.object) == .this_expr,
-                    } else true;
-                    if (arith_ok) {
-                        try self.write("_");
-                        try self.write(self.interner.get(class_name));
-                        try self.write("_");
-                        try self.write(name_str[1..]);
-                        try self.write(".set(");
-                        try self.printExpr(m.object, .comma);
-                        try self.write(", ");
-                        if (p.op) |op| {
-                            try self.write("_");
-                            try self.write(self.interner.get(class_name));
-                            try self.write("_");
-                            try self.write(name_str[1..]);
+                    const obj_simple = self.hir.kindOf(m.object) == .identifier or
+                        self.hir.kindOf(m.object) == .this_expr;
+                    const logical_ls: ?[]const u8 = if (p.op) |op| switch (op) {
+                        .logical_or => " || ",
+                        .logical_and => " && ",
+                        .nullish_coalesce => " ?? ",
+                        else => null,
+                    } else null;
+                    if (logical_ls) |lls| {
+                        if (obj_simple) {
+                            // `this.#f ||= v` -> `(_C_f.get(this) || _C_f.set(this, v))`
+                            // — read once, write only when the short-circuit fires
+                            // (previously fell through to the generic path, which
+                            // emitted the invalid `_C_f.get(this) = v` target).
+                            try self.write("(");
+                            try self.writePrivateMapNameById(class_name, name_str[1..]);
                             try self.write(".get(");
                             try self.printExpr(m.object, .comma);
-                            try self.write(") ");
-                            try self.write(binOpString(op));
-                            try self.write(" ");
+                            try self.write(")");
+                            try self.write(lls);
+                            try self.writePrivateMapNameById(class_name, name_str[1..]);
+                            try self.write(".set(");
+                            try self.printExpr(m.object, .comma);
+                            try self.write(", ");
+                            try self.printExpr(p.value, .comma);
+                            try self.write("))");
+                            return;
                         }
-                        try self.printExpr(p.value, .comma);
-                        try self.write(")");
-                        return;
+                    } else {
+                        // Plain `=` is always safe (receiver printed once);
+                        // arithmetic compounds need a repeatable receiver.
+                        const arith_ok = if (p.op) |op| (op != .pow and obj_simple) else true;
+                        if (arith_ok) {
+                            try self.writePrivateMapNameById(class_name, name_str[1..]);
+                            try self.write(".set(");
+                            try self.printExpr(m.object, .comma);
+                            try self.write(", ");
+                            if (p.op) |op| {
+                                try self.writePrivateMapNameById(class_name, name_str[1..]);
+                                try self.write(".get(");
+                                try self.printExpr(m.object, .comma);
+                                try self.write(") ");
+                                try self.write(binOpString(op));
+                                try self.write(" ");
+                            }
+                            try self.printExpr(p.value, .comma);
+                            try self.write(")");
+                            return;
+                        }
                     }
                 }
             }
@@ -13954,6 +13985,19 @@ test "emit: private field assignment routes through WeakMap.set" {
     const out2 = try emitWithOpts("class C { #f = 1; m() { this.#f += 3; } }", .{ .es_target = .es2021 });
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "_C_f.set(this, _C_f.get(this) + 3)") != null);
+}
+
+test "emit: private field logical assignment short-circuits through WeakMap" {
+    // `this.#f ||= 5` -> `(_C_f.get(this) || _C_f.set(this, 5))` — the write
+    // only fires when the short-circuit does (was an invalid `.get(this) = 5`).
+    const out1 = try emitWithOpts("class C { #f = 0; m() { this.#f ||= 5; } }", .{ .es_target = .es2021 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "(_C_f.get(this) || _C_f.set(this, 5))") != null);
+    try T.expect(std.mem.indexOf(u8, out1, ".get(this) =") == null);
+
+    const out2 = try emitWithOpts("class C { #f = 1; m() { this.#f &&= 7; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "(_C_f.get(this) && _C_f.set(this, 7))") != null);
 }
 
 test "emit: es2015+ computed class-field keys stay native" {
