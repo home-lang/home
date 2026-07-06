@@ -8354,6 +8354,36 @@ pub const Printer = struct {
             };
             if (logical_str) |ls| {
                 if (!self.options.es_target.supportsLogicalAssignment()) {
+                    // §4.A.31 — a member target on a side-effecting receiver
+                    // caches the receiver in a hoisted temp so it evaluates
+                    // once: `a.b().c ||= v` -> `((_a = a.b()).c || (_a.c = v))`.
+                    if (self.hir.kindOf(p.target) == .member_access) {
+                        const m = hir_mod.memberOf(self.hir, p.target);
+                        const obj_kind = self.hir.kindOf(m.object);
+                        const name_str = self.interner.get(m.name);
+                        const needs_temp = !m.optional and
+                            obj_kind != .identifier and obj_kind != .this_expr and
+                            (name_str.len == 0 or name_str[0] != '#');
+                        if (needs_temp) {
+                            var buf: [16]u8 = undefined;
+                            const t = self.allocTemp(&buf);
+                            try self.write("((");
+                            try self.write(t);
+                            try self.write(" = ");
+                            try self.printExpr(m.object, .comma);
+                            try self.write(").");
+                            try self.write(name_str);
+                            try self.write(ls);
+                            try self.write("(");
+                            try self.write(t);
+                            try self.write(".");
+                            try self.write(name_str);
+                            try self.write(" = ");
+                            try self.printExpression(p.value);
+                            try self.write("))");
+                            return;
+                        }
+                    }
                     try self.write("(");
                     try self.printExpression(p.target);
                     try self.write(ls);
@@ -13283,6 +13313,26 @@ test "emit: computed object keys stay native at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "[key]: value") != null);
     try T.expect(std.mem.indexOf(u8, out, "_a") == null);
+}
+
+test "emit: logical assignment side-effecting target caches receiver" {
+    // `o.m().c ||= 1` must evaluate `o.m()` once (§4.A.31 b):
+    // `((_a = o.m()).c || (_a.c = 1))` with a hoisted `var _a;`.
+    const out1 = try emitWithOpts("o.m().c ||= 1;", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "var _a;") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "((_a = o.m()).c || (_a.c = 1))") != null);
+
+    // `&&=` rides the same path.
+    const out2 = try emitWithOpts("o.m().c &&= 1;", .{ .es_target = .es2020 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "((_a = o.m()).c && (_a.c = 1))") != null);
+
+    // a simple identifier target keeps the temp-free re-evaluation form.
+    const out3 = try emitWithOpts("a ||= b;", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "(a || (a = b))") != null);
+    try T.expect(std.mem.indexOf(u8, out3, "_a") == null);
 }
 
 test "emit: call-site spread preserved natively at es2015+" {
