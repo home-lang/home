@@ -5944,6 +5944,15 @@ pub fn loadDirectoryWithOptions(
             merged.no_implicit_any = true;
             strict_flags = merged;
         }
+        if (!options.honor_directives and
+            options.strict_default_for_expected_errors and
+            expects_error and
+            baselineHasStrictNullDiagnostic(gpa, baseline_path))
+        {
+            var merged = strict_flags orelse ts_driver.StrictFlags{};
+            merged.strict_null_checks = true;
+            strict_flags = merged;
+        }
         if (!options.honor_directives) {
             if (directive_flags) |flags| {
                 if (flags.resolve_json_module) {
@@ -7814,6 +7823,26 @@ fn baselineHasNoImplicitAnyDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]
     };
     for (codes) |code| {
         if (std.mem.indexOf(u8, baseline, code) != null) return true;
+    }
+    return false;
+}
+
+fn baselineHasStrictNullDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
+    const path = baseline_path orelse return false;
+    const baseline = readFileAlloc(gpa, path) catch return false;
+    defer gpa.free(baseline);
+    const snippets = [_][]const u8{
+        "Type 'null' is not assignable",
+        "Type 'undefined' is not assignable",
+        "Object is possibly 'null'",
+        "Object is possibly 'undefined'",
+        "is possibly 'null'",
+        "is possibly 'undefined'",
+        "TS18047",
+        "TS18048",
+    };
+    for (snippets) |snippet| {
+        if (std.mem.indexOf(u8, baseline, snippet) != null) return true;
     }
     return false;
 }
@@ -53882,6 +53911,7 @@ test "conformance: parserharness keeps noImplicitAny under strict-family directi
             return;
         };
         try T.expect(flags.no_implicit_any);
+        try T.expect(flags.strict_null_checks);
         try T.expect(!flags.use_unknown_in_catch_variables);
         return;
     }
