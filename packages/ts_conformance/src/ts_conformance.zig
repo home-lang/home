@@ -5935,6 +5935,15 @@ pub fn loadDirectoryWithOptions(
             merged.no_implicit_any = false;
             strict_flags = merged;
         }
+        if (!options.honor_directives and
+            options.strict_default_for_expected_errors and
+            expects_error and
+            baselineHasNoImplicitAnyDiagnostic(gpa, baseline_path))
+        {
+            var merged = strict_flags orelse ts_driver.StrictFlags{};
+            merged.no_implicit_any = true;
+            strict_flags = merged;
+        }
         if (!options.honor_directives) {
             if (directive_flags) |flags| {
                 if (flags.resolve_json_module) {
@@ -7787,6 +7796,26 @@ fn baselineLacksDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8, c
     const baseline = readFileAlloc(gpa, path) catch return false;
     defer gpa.free(baseline);
     return std.mem.indexOf(u8, baseline, code) == null;
+}
+
+fn baselineHasNoImplicitAnyDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
+    const path = baseline_path orelse return false;
+    const baseline = readFileAlloc(gpa, path) catch return false;
+    defer gpa.free(baseline);
+    const codes = [_][]const u8{
+        "TS7005",
+        "TS7006",
+        "TS7008",
+        "TS7010",
+        "TS7019",
+        "TS7020",
+        "TS7031",
+        "TS7034",
+    };
+    for (codes) |code| {
+        if (std.mem.indexOf(u8, baseline, code) != null) return true;
+    }
+    return false;
 }
 
 /// Parse `"strict": true|false` out of the first
@@ -53820,6 +53849,43 @@ test "conformance: bare variable scan detects TS7005 shape" {
     ));
     try T.expect(!sourceHasBareVariableWithoutTypeOrInitializer("let x: number;"));
     try T.expect(!sourceHasBareVariableWithoutTypeOrInitializer("const x = 1;"));
+}
+
+test "conformance: parserharness keeps noImplicitAny under strict-family directive inference" {
+    const paths = (try resolveTsCorpusPaths(T.allocator)) orelse return;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+
+    const dir_path = try std.fmt.allocPrint(
+        T.allocator,
+        "{s}/parser/ecmascript5/RealWorld",
+        .{paths.cases},
+    );
+    defer T.allocator.free(dir_path);
+
+    const corpus = try loadDirectoryWithOptions(T.allocator, dir_path, .{
+        .baseline_root = paths.baselines,
+        .strict_default_for_expected_errors = true,
+        .exact_error_headers = true,
+    });
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+
+    for (corpus) |entry| {
+        if (!std.mem.eql(u8, entry.name, "parserharness")) continue;
+        const flags = entry.strict_flags orelse {
+            try T.expect(false);
+            return;
+        };
+        try T.expect(flags.no_implicit_any);
+        try T.expect(!flags.use_unknown_in_catch_variables);
+        return;
+    }
+    try T.expect(false);
 }
 
 test "conformance: Node resolver fixtures stay in full-program harness bucket" {
