@@ -8896,6 +8896,16 @@ pub const Printer = struct {
             try self.printObjectSpreadAssign(props);
             return;
         }
+        // §4.A.31 — computed property keys are ES2015; at ES5 the literal
+        // lowers to a comma-sequence through a hoisted temp:
+        // `{ a: 1, [k]: v }` -> `(_a = { a: 1 }, _a[k] = v, _a)`.
+        if (self.options.es_target == .es5 and
+            objectAllPlainProps(self.hir, props) and
+            objectHasComputed(self.hir, props))
+        {
+            try self.printEs5ComputedObject(props);
+            return;
+        }
         try self.write("{ ");
         for (props, 0..) |p, i| {
             if (i > 0) try self.write(", ");
@@ -8908,6 +8918,70 @@ pub const Printer = struct {
             try self.printObjectProp(p);
         }
         try self.write(" }");
+    }
+
+    fn objectHasComputed(hir: *const hir_mod.Hir, props: []const NodeId) bool {
+        for (props) |p| {
+            if (hir.kindOf(p) != .object_property) continue;
+            if (hir_mod.objectPropertyOf(hir, p).is_computed) return true;
+        }
+        return false;
+    }
+
+    fn objectAllPlainProps(hir: *const hir_mod.Hir, props: []const NodeId) bool {
+        for (props) |p| {
+            if (hir.kindOf(p) != .object_property) return false;
+        }
+        return true;
+    }
+
+    /// §4.A.31 — ES5 lowering for object literals with computed keys:
+    /// `{ a: 1, [k]: v, b: 2 }` -> `(_a = { a: 1 }, _a[k] = v, _a.b = 2, _a)`.
+    /// Props before the first computed key stay in the seed literal; the rest
+    /// become assignments through a hoisted temp (tsc's shape). The sequence
+    /// is always parenthesized, so no outer precedence wrapping is needed.
+    fn printEs5ComputedObject(self: *Printer, props: []const NodeId) anyerror!void {
+        var first_computed: usize = 0;
+        while (first_computed < props.len) : (first_computed += 1) {
+            if (hir_mod.objectPropertyOf(self.hir, props[first_computed]).is_computed) break;
+        }
+        var buf: [16]u8 = undefined;
+        const t = self.allocTemp(&buf);
+        try self.write("(");
+        try self.write(t);
+        try self.write(" = ");
+        try self.printObjectChunk(props[0..first_computed]);
+        var i = first_computed;
+        while (i < props.len) : (i += 1) {
+            const op = hir_mod.objectPropertyOf(self.hir, props[i]);
+            try self.write(", ");
+            try self.write(t);
+            if (op.is_computed) {
+                try self.write("[");
+                try self.printExpression(op.key);
+                try self.write("]");
+            } else if (self.hir.kindOf(op.key) == .identifier) {
+                try self.write(".");
+                try self.printExpression(op.key);
+            } else {
+                // String/number-literal key after a computed one: bracket form.
+                try self.write("[");
+                try self.printExpression(op.key);
+                try self.write("]");
+            }
+            try self.write(" = ");
+            if (op.is_method) {
+                try self.write("function ");
+                try self.printObjectMethodBody(op.value);
+            } else if (op.is_shorthand) {
+                try self.printExpression(op.key);
+            } else {
+                try self.printExpr(op.value, .comma);
+            }
+        }
+        try self.write(", ");
+        try self.write(t);
+        try self.write(")");
     }
 
     fn objectHasSpread(hir: *const hir_mod.Hir, props: []const NodeId) bool {
@@ -13183,6 +13257,32 @@ test "emit: es5 sibling functions get independent temp counters" {
     try T.expect(std.mem.indexOf(u8, out, "(_a = o[1]).foo.apply(_a, a)") != null);
     try T.expect(std.mem.indexOf(u8, out, "(_a = p[2]).bar.apply(_a, b)") != null);
     try T.expect(std.mem.indexOf(u8, out, "_b") == null);
+}
+
+test "emit: es5 object literal computed key lowers to temp sequence" {
+    // `{ [key]: value }` -> `(_a = {}, _a[key] = value, _a)` (§4.A.31 b).
+    const out1 = try emitWithOpts("let obj = { [key]: value };", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "var _a;") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "(_a = {}, _a[key] = value, _a)") != null);
+
+    // props before the first computed key seed the literal; later plain
+    // props become dot-assignments.
+    const out2 = try emitWithOpts("let obj = { a: 1, [k]: v, b: 2 };", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "(_a = { a: 1 }, _a[k] = v, _a.b = 2, _a)") != null);
+
+    // computed method keys ride the same lowering.
+    const out3 = try emitWithOpts("let obj = { [key]() { return 1; } };", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "(_a = {}, _a[key] = function () {") != null);
+}
+
+test "emit: computed object keys stay native at es2015+" {
+    const out = try emitWithOpts("let obj = { [key]: value };", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "[key]: value") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_a") == null);
 }
 
 test "emit: call-site spread preserved natively at es2015+" {
