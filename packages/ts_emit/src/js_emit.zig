@@ -270,6 +270,11 @@ pub const Printer = struct {
     /// FUNCTION body, so it opens its own temp-hoist scope (temps allocated
     /// inside splice at that function's top rather than module scope).
     next_block_is_fn_body: bool = false,
+    /// Names (sans `#`) of the current class's private METHODS while the ES5
+    /// IIFE path emits its body — distinguishes hoisted-function privates
+    /// (`_C_m`, invoked via `.call`) from WeakMap field privates
+    /// (`_C_f.get`/`.set`). Null outside such a class.
+    current_private_methods: ?[]const []const u8 = null,
     options: Options,
     depth: u32,
     /// True when the previous token-output ended with a position where
@@ -6410,6 +6415,16 @@ pub const Printer = struct {
         return s[1..];
     }
 
+    /// True when `name` (sans `#`) is a private METHOD of the class whose
+    /// ES5 body is currently being emitted.
+    fn isPrivateMethod(self: *const Printer, name: []const u8) bool {
+        const list = self.current_private_methods orelse return false;
+        for (list) |n| {
+            if (std.mem.eql(u8, n, name)) return true;
+        }
+        return false;
+    }
+
     /// Like `writeWeakMapName` but from an interned class-name StringId
     /// (the form `current_class_name` carries): `_<Class>_<field>`.
     fn writePrivateMapNameById(self: *Printer, class_name: StringId, field: []const u8) !void {
@@ -7049,6 +7064,27 @@ pub const Printer = struct {
             try self.writeWeakMapName(c.name, pf);
             try self.write(" = new WeakMap(); ");
         }
+        // §4.A.7 — private METHODS: hoisted `var _C_m = function` inside the
+        // IIFE plus a `_C_instances` WeakSet brand (added per-instance in the
+        // ctor) so `#m in o` checks work. Instance methods only.
+        var private_methods: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer private_methods.deinit(self.gpa);
+        for (class_members_pre) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr) continue;
+            const fd = hir_mod.fnDeclOf(self.hir, m);
+            if (fd.flags.is_constructor or fd.flags.is_static) continue;
+            const pm = self.privateFieldName(fd.name) orelse continue;
+            try private_methods.append(self.gpa, pm);
+        }
+        if (private_methods.items.len > 0) {
+            try self.write("var ");
+            try self.writeWeakMapName(c.name, "instances");
+            try self.write(" = new WeakSet(); ");
+        }
+        const prev_pm = self.current_private_methods;
+        self.current_private_methods = if (private_methods.items.len > 0) private_methods.items else null;
+        defer self.current_private_methods = prev_pm;
         const prev_class = self.current_class_name;
         if (self.hir.kindOf(c.name) == .identifier) {
             self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
@@ -7152,6 +7188,12 @@ pub const Printer = struct {
                 try self.write("return _super !== null && _super.apply(this, arguments) || this; ");
             }
         }
+        // Brand each instance for `#m in o` checks when the class has
+        // private methods.
+        if (self.current_private_methods != null) {
+            try self.writeWeakMapName(c.name, "instances");
+            try self.write(if (use_this_var) ".add(_this); " else ".add(this); ");
+        }
         // Class fields with initializers go inside the ctor body.
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
@@ -7223,6 +7265,30 @@ pub const Printer = struct {
             if ((fd.flags.is_getter or fd.flags.is_setter) and self.hir.kindOf(fd.name) == .identifier) {
                 try self.printEs5ClassAccessor(c.name, members, m, fd);
                 continue;
+            }
+            if (!fd.flags.is_static) {
+                if (self.privateFieldName(fd.name)) |pm| {
+                    // §4.A.7 — private method: a hoisted function var inside
+                    // the IIFE; call sites lower to `_C_m.call(this, …)`.
+                    try self.write("var ");
+                    try self.writeWeakMapName(c.name, pm);
+                    try self.write(" = function (");
+                    const pparams = hir_mod.fnParams(self.hir, m);
+                    try self.printRuntimeParams(pparams);
+                    try self.write(") ");
+                    if (fd.body != hir_mod.none_node_id) {
+                        if (self.hasDefaultParam(pparams) or self.hasDestructuringParam(pparams)) {
+                            try self.printFnBodyWithDefaults(pparams, fd.body);
+                        } else {
+                            self.next_block_is_fn_body = self.hir.kindOf(fd.body) == .block_stmt;
+                            try self.printStatementInline(fd.body);
+                        }
+                    } else {
+                        try self.write("{}");
+                    }
+                    try self.write("; ");
+                    continue;
+                }
             }
             try self.printExpression(c.name);
             if (fd.flags.is_static) {
@@ -8340,10 +8406,13 @@ pub const Printer = struct {
         if (p.op == .in and !self.options.es_target.supportsNativePrivateFields()) {
             if (self.privateFieldName(p.lhs)) |field| {
                 if (self.current_class_name) |class_name| {
+                    // Method brand-checks test the per-class instances
+                    // WeakSet; field checks test the field's own WeakMap.
+                    const brand: []const u8 = if (self.isPrivateMethod(field)) "instances" else field;
                     try self.write("_");
                     try self.write(self.interner.get(class_name));
                     try self.write("_");
-                    try self.write(field);
+                    try self.write(brand);
                     try self.write(".has(");
                     try self.printExpression(p.rhs);
                     try self.write(")");
@@ -8854,6 +8923,36 @@ pub const Printer = struct {
                 }
             }
         }
+        // §4.A.7 — private METHOD call `this.#m(args)` lowers to
+        // `_C_m.call(this, args)` (hoisted-function private; spread args go
+        // through `.apply` with the §4.A spread array form).
+        if (!p.optional and self.hir.kindOf(p.callee) == .member_access) {
+            const pm_m = hir_mod.memberOf(self.hir, p.callee);
+            const pm_name = self.interner.get(pm_m.name);
+            if (pm_name.len > 1 and pm_name[0] == '#' and self.isPrivateMethod(pm_name[1..])) {
+                if (self.current_class_name) |cls| {
+                    const pm_args = hir_mod.callArgs(self.hir, node);
+                    if (wrap_call) try self.write("(");
+                    try self.writePrivateMapNameById(cls, pm_name[1..]);
+                    if (callArgsHaveSpread(self.hir, pm_args)) {
+                        try self.write(".apply(");
+                        try self.printExpr(pm_m.object, .comma);
+                        try self.write(", ");
+                        try self.printEs5SpreadArgsArray(pm_args);
+                    } else {
+                        try self.write(".call(");
+                        try self.printExpr(pm_m.object, .comma);
+                        for (pm_args) |a| {
+                            try self.write(", ");
+                            try self.printExpr(a, .comma);
+                        }
+                    }
+                    try self.write(")");
+                    if (wrap_call) try self.write(")");
+                    return;
+                }
+            }
+        }
         // Optional call `f?.(args)`. Below ES2020, downlevel to
         // `(f === null || f === void 0 ? void 0 : f(args))` (re-evaluating
         // the callee, matching printMember's `?.` downlevel style); at
@@ -9142,6 +9241,9 @@ pub const Printer = struct {
                 try self.write(self.interner.get(class_name));
                 try self.write("_");
                 try self.write(name_str[1..]);
+                // A private METHOD read yields the hoisted function itself;
+                // fields read through the WeakMap.
+                if (self.isPrivateMethod(name_str[1..])) return;
                 try self.write(".get(");
                 try self.printExpression(p.object);
                 try self.write(")");
@@ -13998,6 +14100,23 @@ test "emit: private field logical assignment short-circuits through WeakMap" {
     const out2 = try emitWithOpts("class C { #f = 1; m() { this.#f &&= 7; } }", .{ .es_target = .es5 });
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "(_C_f.get(this) && _C_f.set(this, 7))") != null);
+}
+
+test "emit: es5 private method lowers to hoisted function + call" {
+    const out = try emitWithOpts("class C { #m(x) { return x + 1; } callIt() { return this.#m(2); } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_instances = new WeakSet();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_instances.add(this);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_m = function (x) {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_m.call(this, 2)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#m") == null);
+}
+
+test "emit: es5 private-method brand check uses the instances WeakSet" {
+    const out = try emitWithOpts("class C { #m() { return 1; } isC(o: C) { return #m in o; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_C_instances.has(o)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_m.has") == null);
 }
 
 test "emit: es2015+ computed class-field keys stay native" {
