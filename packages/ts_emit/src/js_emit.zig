@@ -8054,6 +8054,23 @@ pub const Printer = struct {
             try self.write(")");
             return;
         }
+        // §4.A.7 — the private-field brand check `#f in o` lowers to
+        // `_<Class>_f.has(o)` below ES2022, reusing the per-class WeakMap
+        // storage. `has(...)` is a call, so no outer parens are needed.
+        if (p.op == .in and !self.options.es_target.supportsNativePrivateFields()) {
+            if (self.privateFieldName(p.lhs)) |field| {
+                if (self.current_class_name) |class_name| {
+                    try self.write("_");
+                    try self.write(self.interner.get(class_name));
+                    try self.write("_");
+                    try self.write(field);
+                    try self.write(".has(");
+                    try self.printExpression(p.rhs);
+                    try self.write(")");
+                    return;
+                }
+            }
+        }
         const e_level = binOpLevel(p.op);
         const wrap = level.gte(e_level);
         if (wrap) try self.write("(");
@@ -13182,6 +13199,23 @@ test "emit: es5 derived with instance field keeps in-place super call" {
     const out = try emitWithOpts("class Base {} class D extends Base { x = 1; }", .{ .es_target = .es5 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "_super.call(this);") != null);
+}
+
+test "emit: private-field brand check lowers to WeakMap.has below es2022" {
+    // The private-field WeakMap weave is active at es2015–es2021; the ES5
+    // class-IIFE path doesn't downlevel privates (separate gap), so this
+    // brand-check lowering targets the range where `_C_f` storage exists.
+    const out = try emitWithOpts("class C { #f = 1; m(o: C) { return #f in o; } }", .{ .es_target = .es2021 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_C_f.has(o)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#f in o") == null);
+}
+
+test "emit: private-field brand check stays native at es2022+" {
+    const out = try emitWithOpts("class C { #f = 1; m(o: C) { return #f in o; } }", .{ .es_target = .esnext });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "#f in o") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".has(") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
