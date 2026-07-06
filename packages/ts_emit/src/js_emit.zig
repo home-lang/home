@@ -247,11 +247,22 @@ pub const Options = struct {
 
 const source_map_mod = @import("source_map.zig");
 
+/// One entry on the expression-context temp-hoist stack (§4.A.31). `mark`
+/// is the byte offset in `out` where this scope's `var _a, _b;` declaration
+/// gets spliced in (right after the function's / module's opening), and
+/// `count` is how many `_a`-style temps have been allocated in the scope.
+const TempScope = struct { mark: usize, count: usize };
+
 pub const Printer = struct {
     gpa: std.mem.Allocator,
     hir: *const Hir,
     interner: *const string_interner.Interner,
     out: std.ArrayListUnmanaged(u8),
+    /// Stack of function/module temp scopes for the ES-downlevel
+    /// expression-context temp-hoist. On scope exit a `var _a, _b; ` decl
+    /// is spliced in at `mark` so it lands at the function/module top,
+    /// matching tsc's temp placement.
+    temp_scopes: std.ArrayListUnmanaged(TempScope) = .empty,
     options: Options,
     depth: u32,
     /// True when the previous token-output ended with a position where
@@ -382,6 +393,63 @@ pub const Printer = struct {
 
     pub fn deinit(self: *Printer) void {
         self.out.deinit(self.gpa);
+        self.temp_scopes.deinit(self.gpa);
+    }
+
+    // ── Expression-context temp-hoist (§4.A.31) ───────────────────────────
+    // A downlevel transform deep inside an expression can need a scratch
+    // variable (`(_a = x, a = _a.a)`). We allocate `_a`, `_b`, … per enclosing
+    // function/module and splice the `var _a, _b;` declaration in at the
+    // scope's top on exit, matching tsc's placement.
+
+    /// Write the `_a`-style temp name for `idx` (0→`_a` … 25→`_z`, 26→`_0`, …).
+    fn writeTempName(buf: []u8, idx: usize) []const u8 {
+        if (idx < 26) {
+            buf[0] = '_';
+            buf[1] = @as(u8, 'a') + @as(u8, @intCast(idx));
+            return buf[0..2];
+        }
+        buf[0] = '_';
+        const n = std.fmt.bufPrint(buf[1..], "{d}", .{idx - 26}) catch unreachable;
+        return buf[0 .. 1 + n.len];
+    }
+
+    /// Open a temp scope, recording the current `out` position as the splice
+    /// mark. Call right after emitting the function/module body opener.
+    fn pushTempScope(self: *Printer) !void {
+        try self.temp_scopes.append(self.gpa, .{ .mark = self.out.items.len, .count = 0 });
+    }
+
+    /// Allocate a fresh temp in the current scope and write its name into
+    /// `buf`, returning the slice. Falls back to a bare `_a` if (defensively)
+    /// no scope is open.
+    fn allocTemp(self: *Printer, buf: []u8) []const u8 {
+        if (self.temp_scopes.items.len == 0) return writeTempName(buf, 0);
+        const scope = &self.temp_scopes.items[self.temp_scopes.items.len - 1];
+        const idx = scope.count;
+        scope.count += 1;
+        return writeTempName(buf, idx);
+    }
+
+    /// Close the current temp scope; if any temps were allocated, splice a
+    /// `var _a, _b; ` declaration in at the scope's mark so it lands at the
+    /// function/module top. `sep` is appended after the `;` (a space inside a
+    /// function body, a newline at module top).
+    fn popTempScope(self: *Printer, sep: []const u8) !void {
+        const scope = self.temp_scopes.pop() orelse return;
+        if (scope.count == 0) return;
+        var decl: std.ArrayListUnmanaged(u8) = .empty;
+        defer decl.deinit(self.gpa);
+        try decl.appendSlice(self.gpa, "var ");
+        var i: usize = 0;
+        while (i < scope.count) : (i += 1) {
+            if (i > 0) try decl.appendSlice(self.gpa, ", ");
+            var b: [16]u8 = undefined;
+            try decl.appendSlice(self.gpa, writeTempName(&b, i));
+        }
+        try decl.appendSlice(self.gpa, ";");
+        try decl.appendSlice(self.gpa, sep);
+        try self.out.insertSlice(self.gpa, scope.mark, decl.items);
     }
 
     pub fn toOwnedSlice(self: *Printer) ![]u8 {
@@ -487,6 +555,10 @@ pub const Printer = struct {
             try self.write(helpers);
             try self.write(self.options.newline);
         }
+        // §4.A.31 — open the module-level temp-hoist scope after imports so a
+        // downlevel transform in a top-level statement can allocate a `_a`
+        // temp whose `var _a;` declaration lands here.
+        try self.pushTempScope();
         var i: usize = 0;
         while (i < stmts.len) : (i += 1) {
             const stmt = stmts[i];
@@ -543,6 +615,8 @@ pub const Printer = struct {
             try self.emitLeadingJsDoc(stmt);
             try self.printStatement(stmt);
         }
+        // §4.A.31 — flush any module-level temps (`var _a, _b;`) after imports.
+        try self.popTempScope(self.options.newline);
         // Source-map fallback: if a SourceMap is attached but no
         // per-token mappings were recorded (e.g. caller didn't supply
         // source bytes via `setSource`), populate a basic line-level
@@ -8449,26 +8523,48 @@ pub const Printer = struct {
     /// increment does not yet do.
     fn printEs5SpreadCall(self: *Printer, callee: NodeId, args: []const NodeId, wrap_call: bool) !bool {
         const callee_kind = self.hir.kindOf(callee);
-        var object_node: NodeId = hir_mod.none_node_id;
         if (callee_kind == .member_access) {
             const m = hir_mod.memberOf(self.hir, callee);
             if (m.optional) return false;
-            const ok_recv = m.object != hir_mod.none_node_id and
+            const simple_recv = m.object != hir_mod.none_node_id and
                 (self.hir.kindOf(m.object) == .identifier or self.hir.kindOf(m.object) == .this_expr);
-            if (!ok_recv) return false;
-            object_node = m.object;
-        } else if (callee_kind != .identifier) {
-            return false;
+            if (simple_recv) {
+                // `o.m(...a)` -> `o.m.apply(o, a)` — the receiver is a bare
+                // identifier / `this`, so repeating it is side-effect-free.
+                if (wrap_call) try self.write("(");
+                try self.printExpr(callee, .postfix);
+                try self.write(".apply(");
+                try self.printExpr(m.object, .comma);
+                try self.write(", ");
+                try self.printEs5SpreadArgsArray(args);
+                try self.write(")");
+                if (wrap_call) try self.write(")");
+                return true;
+            }
+            // §4.A.31 — side-effecting receiver: cache it in a hoisted temp.
+            // `o[1].m(...a)` -> `(_a = o[1]).m.apply(_a, a)`.
+            var buf: [16]u8 = undefined;
+            const t = self.allocTemp(&buf);
+            if (wrap_call) try self.write("(");
+            try self.write("(");
+            try self.write(t);
+            try self.write(" = ");
+            try self.printExpr(m.object, .comma);
+            try self.write(").");
+            try self.write(self.interner.get(m.name));
+            try self.write(".apply(");
+            try self.write(t);
+            try self.write(", ");
+            try self.printEs5SpreadArgsArray(args);
+            try self.write(")");
+            if (wrap_call) try self.write(")");
+            return true;
         }
+        if (callee_kind != .identifier) return false;
+        // `f(...a)` -> `f.apply(void 0, a)`.
         if (wrap_call) try self.write("(");
         try self.printExpr(callee, .postfix);
-        try self.write(".apply(");
-        if (object_node != hir_mod.none_node_id) {
-            try self.printExpr(object_node, .comma);
-        } else {
-            try self.write("void 0");
-        }
-        try self.write(", ");
+        try self.write(".apply(void 0, ");
         try self.printEs5SpreadArgsArray(args);
         try self.write(")");
         if (wrap_call) try self.write(")");
@@ -13001,6 +13097,15 @@ test "emit: call-site spread lowers to apply() at es5" {
     const out4 = try emitWithOpts("f(...a, b);", .{ .es_target = .es5 });
     defer T.allocator.free(out4);
     try T.expect(std.mem.indexOf(u8, out4, "f.apply(void 0, a.concat([b]))") != null);
+}
+
+test "emit: es5 complex-receiver spread caches receiver in a hoisted temp" {
+    // `o[1].foo(...a)` -> `var _a; (_a = o[1]).foo.apply(_a, a);` — the
+    // side-effecting receiver is evaluated once via a module-top temp (§4.A.31).
+    const out = try emitWithOpts("o[1].foo(...a);", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _a;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "(_a = o[1]).foo.apply(_a, a)") != null);
 }
 
 test "emit: call-site spread preserved natively at es2015+" {
