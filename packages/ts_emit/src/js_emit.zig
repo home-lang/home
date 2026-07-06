@@ -6999,6 +6999,12 @@ pub const Printer = struct {
         try self.write(" = (function (");
         if (has_extends) try self.write("_super");
         try self.write(") { ");
+        // §4.A.31 (d) — the class IIFE is a function scope: temps allocated
+        // during the body emission (ctor field inits, methods fall through
+        // here when not block-scoped) declare inline at the IIFE top instead
+        // of module level. Shadow-safe naming offsets them past any
+        // module-level allocations (e.g. computed-field key temps).
+        try self.pushTempScope();
         if (has_extends) {
             try self.write("__extends(");
             try self.printExpression(c.name);
@@ -7209,6 +7215,7 @@ pub const Printer = struct {
         try self.write("; })(");
         if (c.extends != hir_mod.none_node_id) try self.printHeritageExpression(c.extends);
         try self.write(");");
+        try self.popTempScope(" ");
     }
 
     fn printHeritageExpression(self: *Printer, node: NodeId) anyerror!void {
@@ -13807,6 +13814,17 @@ test "emit: es5 computed static class-field key evaluates inline" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "C[j] = 2;") != null);
     try T.expect(std.mem.indexOf(u8, out, "C.j =") == null);
+}
+
+test "emit: es5 class-body temps declare at the IIFE top" {
+    // A downlevel temp inside a ctor field init lands inside the class IIFE
+    // (§4.A.31 d), not at module level.
+    const out = try emitWithOpts("class C { x = o[1].foo(...a); }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    const iife_pos = std.mem.indexOf(u8, out, "(function (").?;
+    const var_pos = std.mem.indexOf(u8, out, "var _a;").?;
+    try T.expect(var_pos > iife_pos);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = (_a = o[1]).foo.apply(_a, a);") != null);
 }
 
 test "emit: es5 class private field lowers through WeakMap" {
