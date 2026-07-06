@@ -8523,6 +8523,52 @@ pub const Printer = struct {
             if (wrap) try self.write(")");
             return;
         }
+        // §4.A.7 / item 33 — a #private member target routes through the
+        // per-class WeakMap: `this.#f = v` -> `_C_f.set(this, v)`; arithmetic
+        // compounds read-modify-write (`this.#f += v` ->
+        // `_C_f.set(this, _C_f.get(this) + v)`, identifier/this receivers
+        // only so the receiver isn't double-evaluated). Note `.set` returns
+        // the map, not the value — statement-position use is exact; rare
+        // value-position use diverges (tsc's __classPrivateFieldSet returns
+        // the value). Logical compounds / ** fall through (status quo).
+        if (!self.options.es_target.supportsNativePrivateFields() and
+            self.hir.kindOf(p.target) == .member_access)
+        {
+            if (self.current_class_name) |class_name| {
+                const m = hir_mod.memberOf(self.hir, p.target);
+                const name_str = self.interner.get(m.name);
+                if (name_str.len > 0 and name_str[0] == '#') {
+                    const arith_ok = if (p.op) |op| switch (op) {
+                        .logical_or, .logical_and, .nullish_coalesce, .pow => false,
+                        else => self.hir.kindOf(m.object) == .identifier or
+                            self.hir.kindOf(m.object) == .this_expr,
+                    } else true;
+                    if (arith_ok) {
+                        try self.write("_");
+                        try self.write(self.interner.get(class_name));
+                        try self.write("_");
+                        try self.write(name_str[1..]);
+                        try self.write(".set(");
+                        try self.printExpr(m.object, .comma);
+                        try self.write(", ");
+                        if (p.op) |op| {
+                            try self.write("_");
+                            try self.write(self.interner.get(class_name));
+                            try self.write("_");
+                            try self.write(name_str[1..]);
+                            try self.write(".get(");
+                            try self.printExpr(m.object, .comma);
+                            try self.write(") ");
+                            try self.write(binOpString(op));
+                            try self.write(" ");
+                        }
+                        try self.printExpr(p.value, .comma);
+                        try self.write(")");
+                        return;
+                    }
+                }
+            }
+        }
         // §4.A.31 — destructuring ASSIGNMENT below ES2015: an object/array
         // literal target lowers to a temp-sequence with plain member/index
         // reads — `({ a } = x)` -> `(_a = x, a = _a.a, _a)`, `[a, b] = x` ->
@@ -13844,6 +13890,19 @@ test "emit: es5 private brand check works in the class-IIFE path" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "_C_f.has(o)") != null);
     try T.expect(std.mem.indexOf(u8, out, "#f in o") == null);
+}
+
+test "emit: private field assignment routes through WeakMap.set" {
+    // method-body writes previously emitted the invalid `_C_f.get(this) = 2`.
+    const out1 = try emitWithOpts("class C { #f = 1; m() { this.#f = 2; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "_C_f.set(this, 2)") != null);
+    try T.expect(std.mem.indexOf(u8, out1, ".get(this) =") == null);
+
+    // arithmetic compound: read-modify-write through the map.
+    const out2 = try emitWithOpts("class C { #f = 1; m() { this.#f += 3; } }", .{ .es_target = .es2021 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "_C_f.set(this, _C_f.get(this) + 3)") != null);
 }
 
 test "emit: es2015+ computed class-field keys stay native" {
