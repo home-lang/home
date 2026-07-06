@@ -8327,6 +8327,85 @@ pub const Printer = struct {
         return .{ .is_inc = (op == .add), .is_prefix = is_prefix_shape };
     }
 
+    /// §4.A.31 — ES5 object destructuring ASSIGNMENT:
+    /// `({ a, b: t } = x)` -> `(_a = x, a = _a.a, t = _a.b, _a)`.
+    /// Returns false (caller falls back to native) for pattern shapes this
+    /// v1 doesn't cover: computed keys, methods, nested patterns, defaults,
+    /// rest, or #private keys.
+    fn printEs5ObjectDestructuringAssign(self: *Printer, target: NodeId, value: NodeId) anyerror!bool {
+        const props = hir_mod.objectLiteralProps(self.hir, target);
+        if (props.len == 0) return false;
+        for (props) |pp| {
+            if (self.hir.kindOf(pp) != .object_property) return false;
+            const op = hir_mod.objectPropertyOf(self.hir, pp);
+            if (op.is_computed or op.is_method) return false;
+            if (self.hir.kindOf(op.key) != .identifier) return false;
+            if (self.privateFieldName(op.key) != null) return false;
+            if (!op.is_shorthand) {
+                const vk = self.hir.kindOf(op.value);
+                if (vk != .identifier and vk != .member_access) return false;
+            }
+        }
+        var buf: [16]u8 = undefined;
+        const t = self.allocTemp(&buf);
+        try self.write("(");
+        try self.write(t);
+        try self.write(" = ");
+        try self.printExpr(value, .comma);
+        for (props) |pp| {
+            const op = hir_mod.objectPropertyOf(self.hir, pp);
+            try self.write(", ");
+            if (op.is_shorthand) {
+                try self.printExpression(op.key);
+            } else {
+                try self.printExpr(op.value, .comma);
+            }
+            try self.write(" = ");
+            try self.write(t);
+            try self.write(".");
+            try self.printExpression(op.key);
+        }
+        try self.write(", ");
+        try self.write(t);
+        try self.write(")");
+        return true;
+    }
+
+    /// §4.A.31 — ES5 array destructuring ASSIGNMENT:
+    /// `[a, b] = x` -> `(_a = x, a = _a[0], b = _a[1], _a)`. Holes skip their
+    /// index. Returns false for nested patterns / rest / non-simple targets.
+    fn printEs5ArrayDestructuringAssign(self: *Printer, target: NodeId, value: NodeId) anyerror!bool {
+        const elems = hir_mod.arrayLiteralElements(self.hir, target);
+        if (elems.len == 0) return false;
+        for (elems) |e| {
+            if (e == hir_mod.none_node_id) continue;
+            const ek = self.hir.kindOf(e);
+            if (ek != .identifier and ek != .member_access) return false;
+        }
+        var buf: [16]u8 = undefined;
+        const t = self.allocTemp(&buf);
+        try self.write("(");
+        try self.write(t);
+        try self.write(" = ");
+        try self.printExpr(value, .comma);
+        for (elems, 0..) |e, i| {
+            if (e == hir_mod.none_node_id) continue;
+            try self.write(", ");
+            try self.printExpr(e, .comma);
+            try self.write(" = ");
+            try self.write(t);
+            try self.write("[");
+            var nb: [20]u8 = undefined;
+            const n = std.fmt.bufPrint(&nb, "{d}", .{i}) catch unreachable;
+            try self.write(n);
+            try self.write("]");
+        }
+        try self.write(", ");
+        try self.write(t);
+        try self.write(")");
+        return true;
+    }
+
     fn printAssignment(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.assignmentOf(self.hir, node);
         // Reconstruct `++`/`--` lowered to `+= 1` / `-= 1` by the parser.
@@ -8344,6 +8423,22 @@ pub const Printer = struct {
             }
             if (wrap) try self.write(")");
             return;
+        }
+        // §4.A.31 — destructuring ASSIGNMENT below ES2015: an object/array
+        // literal target lowers to a temp-sequence with plain member/index
+        // reads — `({ a } = x)` -> `(_a = x, a = _a.a, _a)`, `[a, b] = x` ->
+        // `(_a = x, a = _a[0], b = _a[1], _a)`. The trailing `_a` keeps the
+        // expression's value equal to the RHS in value positions (tsc omits
+        // it at statement level; home keeps it — a harmless dead value there).
+        // Unsupported pattern shapes (nested / defaults / rest / computed)
+        // fall through to native emission.
+        if (p.op == null and self.options.es_target == .es5) {
+            const tk = self.hir.kindOf(p.target);
+            if (tk == .object_literal) {
+                if (try self.printEs5ObjectDestructuringAssign(p.target, p.value)) return;
+            } else if (tk == .array_literal) {
+                if (try self.printEs5ArrayDestructuringAssign(p.target, p.value)) return;
+            }
         }
         // Logical assignment (`a ||= b`) below ES2021 downlevels to the
         // short-circuit form `(a || (a = b))` (re-evaluating the target,
@@ -13559,6 +13654,44 @@ test "emit: es5 derived with instance field captures _this" {
     try T.expect(std.mem.indexOf(u8, out, "_this.x = 1;") != null);
     try T.expect(std.mem.indexOf(u8, out, "return _this;") != null);
     try T.expect(std.mem.indexOf(u8, out, "_super.call(this);") == null);
+}
+
+test "emit: es5 object destructuring assignment lowers via temp" {
+    // `({ a } = x)` -> `(_a = x, a = _a.a, _a)` (§4.A.31 b). The trailing
+    // `_a` keeps the expression's value equal to the RHS in value positions.
+    const out1 = try emitWithOpts("({ a } = x);", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "var _a;") != null);
+    try T.expect(std.mem.indexOf(u8, out1, "(_a = x, a = _a.a, _a)") != null);
+
+    // renamed + member targets: `({ a: obj.p, b: y } = x)`.
+    const out2 = try emitWithOpts("({ a: obj.p, b: y } = x);", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "(_a = x, obj.p = _a.a, y = _a.b, _a)") != null);
+}
+
+test "emit: es5 array destructuring assignment lowers via temp" {
+    // `[a, b] = x` -> `(_a = x, a = _a[0], b = _a[1], _a)`; the classic swap
+    // `[a, b] = [b, a]` evaluates the RHS array before any assignment.
+    const out1 = try emitWithOpts("[a, b] = x;", .{ .es_target = .es5 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "(_a = x, a = _a[0], b = _a[1], _a)") != null);
+
+    const out2 = try emitWithOpts("[a, b] = [b, a];", .{ .es_target = .es5 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "(_a = [b, a], a = _a[0], b = _a[1], _a)") != null);
+
+    // holes skip their index.
+    const out3 = try emitWithOpts("[, b] = x;", .{ .es_target = .es5 });
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "(_a = x, b = _a[1], _a)") != null);
+}
+
+test "emit: destructuring assignment stays native at es2015+" {
+    const out = try emitWithOpts("({ a } = x);", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "({ a } = x)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_a =") == null);
 }
 
 test "emit: es5 non-derived class fields keep plain this" {
