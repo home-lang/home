@@ -249,9 +249,12 @@ const source_map_mod = @import("source_map.zig");
 
 /// One entry on the expression-context temp-hoist stack (§4.A.31). `mark`
 /// is the byte offset in `out` where this scope's `var _a, _b;` declaration
-/// gets spliced in (right after the function's / module's opening), and
-/// `count` is how many `_a`-style temps have been allocated in the scope.
-const TempScope = struct { mark: usize, count: usize };
+/// gets spliced in (right after the function's / module's opening), `count`
+/// is how many temps this scope has allocated, and `start` offsets the temp
+/// NAMES past every enclosing scope's allocations so an inner `var` can
+/// never shadow an outer temp the emitted code still references (e.g. a
+/// ctor-local temp vs the enclosing computed-field key temp).
+const TempScope = struct { mark: usize, start: usize, count: usize };
 
 pub const Printer = struct {
     gpa: std.mem.Allocator,
@@ -419,9 +422,17 @@ pub const Printer = struct {
     }
 
     /// Open a temp scope, recording the current `out` position as the splice
-    /// mark. Call right after emitting the function/module body opener.
+    /// mark. Call right after emitting the function/module body opener. The
+    /// name offset starts past the enclosing scope's allocations (shadow-safe);
+    /// sibling scopes at the same nesting level still restart from the same
+    /// offset (typically `_a`).
     fn pushTempScope(self: *Printer) !void {
-        try self.temp_scopes.append(self.gpa, .{ .mark = self.out.items.len, .count = 0 });
+        var start: usize = 0;
+        if (self.temp_scopes.items.len > 0) {
+            const parent = self.temp_scopes.items[self.temp_scopes.items.len - 1];
+            start = parent.start + parent.count;
+        }
+        try self.temp_scopes.append(self.gpa, .{ .mark = self.out.items.len, .start = start, .count = 0 });
     }
 
     /// Allocate a fresh temp in the current scope and write its name into
@@ -430,7 +441,7 @@ pub const Printer = struct {
     fn allocTemp(self: *Printer, buf: []u8) []const u8 {
         if (self.temp_scopes.items.len == 0) return writeTempName(buf, 0);
         const scope = &self.temp_scopes.items[self.temp_scopes.items.len - 1];
-        const idx = scope.count;
+        const idx = scope.start + scope.count;
         scope.count += 1;
         return writeTempName(buf, idx);
     }
@@ -449,7 +460,7 @@ pub const Printer = struct {
         while (i < scope.count) : (i += 1) {
             if (i > 0) try decl.appendSlice(self.gpa, ", ");
             var b: [16]u8 = undefined;
-            try decl.appendSlice(self.gpa, writeTempName(&b, i));
+            try decl.appendSlice(self.gpa, writeTempName(&b, scope.start + i));
         }
         try decl.appendSlice(self.gpa, ";");
         try decl.appendSlice(self.gpa, sep);
@@ -473,7 +484,7 @@ pub const Printer = struct {
         while (i < scope.count) : (i += 1) {
             if (i > 0) try decl.appendSlice(self.gpa, ", ");
             var b: [16]u8 = undefined;
-            try decl.appendSlice(self.gpa, writeTempName(&b, i));
+            try decl.appendSlice(self.gpa, writeTempName(&b, scope.start + i));
         }
         try decl.appendSlice(self.gpa, ";");
         try self.out.insertSlice(self.gpa, scope.mark, decl.items);
