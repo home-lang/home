@@ -8706,11 +8706,11 @@ pub const Printer = struct {
     fn printNew(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
         // §4.A — ES5 `new` with spread args: `new C(...a)` ->
-        // `new (C.bind.apply(C, [void 0].concat(a)))()`. Only for a
-        // side-effect-free constructor (identifier / this) that can be
-        // repeated as both the `.bind` receiver and `.apply` thisArg;
-        // side-effecting constructors need a temp (deferred), so those fall
-        // through to native emission.
+        // `new (C.bind.apply(C, [void 0].concat(a)))()`. A side-effect-free
+        // constructor (identifier / this) is repeated as both the `.bind`
+        // receiver and `.apply` thisArg; any other constructor expression
+        // evaluates once via a §4.A.31 hoisted temp (tsc's shape):
+        // `new (o.C)(...a)` -> `new ((_a = o.C).bind.apply(_a, …))()`.
         const new_args = hir_mod.callArgs(self.hir, node);
         if (self.options.es_target == .es5 and callArgsHaveSpread(self.hir, new_args)) {
             const ck = self.hir.kindOf(p.callee);
@@ -8724,6 +8724,18 @@ pub const Printer = struct {
                 try self.write("))()");
                 return;
             }
+            var buf: [16]u8 = undefined;
+            const t = self.allocTemp(&buf);
+            try self.write("new ((");
+            try self.write(t);
+            try self.write(" = ");
+            try self.printExpr(p.callee, .comma);
+            try self.write(").bind.apply(");
+            try self.write(t);
+            try self.write(", ");
+            try self.printEs5NewArgsArray(new_args);
+            try self.write("))()");
+            return;
         }
         try self.write("new ");
         // The constructor target binds at `.new`; arguments at `.comma`.
@@ -13333,6 +13345,16 @@ test "emit: logical assignment side-effecting target caches receiver" {
     defer T.allocator.free(out3);
     try T.expect(std.mem.indexOf(u8, out3, "(a || (a = b))") != null);
     try T.expect(std.mem.indexOf(u8, out3, "_a") == null);
+}
+
+test "emit: es5 new-with-spread on member constructor caches callee" {
+    // `new o.C(...a)` -> `new ((_a = o.C).bind.apply(_a, [void 0].concat(a)))()`
+    // — the constructor expression evaluates once (§4.A.31 b).
+    const out = try emitWithOpts("new o.C(...a);", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _a;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "new ((_a = o.C).bind.apply(_a, [void 0].concat(a)))()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "new o.C(...") == null);
 }
 
 test "emit: call-site spread preserved natively at es2015+" {
