@@ -7011,13 +7011,14 @@ pub const Printer = struct {
         // explicit constructor — an explicit ctor body already
         // contains a `super(...)` call which will be lowered to
         // `_super.call(this, ...)` by `printCall`.
+        var use_this_var = false;
         if (has_extends and ctor == null) {
             // An implicit derived constructor forwards its args to the base.
             // With no instance-field initializers this is exactly tsc's
             // `return _super !== null && _super.apply(this, arguments) || this;`
-            // form (the old `_super.call(this)` dropped the arguments). When
-            // there ARE field inits the byte-exact tsc shape needs a `_this`
-            // capture (temp infra) — deferred; keep the in-place form there.
+            // form (the old `_super.call(this)` dropped the arguments). With
+            // field inits, capture the base result in `_this` (tsc's shape) —
+            // fields assign through `_this` and the ctor returns it.
             var has_instance_field = false;
             for (members) |m| {
                 if (self.hir.kindOf(m) != .object_property) continue;
@@ -7028,7 +7029,8 @@ pub const Printer = struct {
                 break;
             }
             if (has_instance_field) {
-                try self.write("_super.call(this); ");
+                try self.write("var _this = _super !== null && _super.apply(this, arguments) || this; ");
+                use_this_var = true;
             } else {
                 try self.write("return _super !== null && _super.apply(this, arguments) || this; ");
             }
@@ -7039,12 +7041,13 @@ pub const Printer = struct {
             const op = hir_mod.objectPropertyOf(self.hir, m);
             if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
-            try self.write("this.");
+            try self.write(if (use_this_var) "_this." else "this.");
             try self.printExpression(op.key);
             try self.write(" = ");
             try self.printExpression(op.value);
             try self.write("; ");
         }
+        if (use_this_var) try self.write("return _this; ");
         // Inline the ctor body if present.
         if (ctor) |ct| {
             const fd = hir_mod.fnDeclOf(self.hir, ct);
@@ -13547,12 +13550,22 @@ test "emit: es5 implicit derived constructor forwards args to base" {
     try T.expect(std.mem.indexOf(u8, out, "_super.call(this);") == null);
 }
 
-test "emit: es5 derived with instance field keeps in-place super call" {
-    // Field-bearing derived classes still need a _this capture (deferred);
-    // they keep the in-place `_super.call(this)` form for now.
+test "emit: es5 derived with instance field captures _this" {
+    // Field-bearing implicit derived ctors capture the base result in
+    // `_this` (tsc's shape): fields assign through it and the ctor returns it.
     const out = try emitWithOpts("class Base {} class D extends Base { x = 1; }", .{ .es_target = .es5 });
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "_super.call(this);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _this = _super !== null && _super.apply(this, arguments) || this;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_this.x = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return _this;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_super.call(this);") == null);
+}
+
+test "emit: es5 non-derived class fields keep plain this" {
+    const out = try emitWithOpts("class C { x = 1; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_this") == null);
 }
 
 test "emit: private-field brand check lowers to WeakMap.has below es2022" {
