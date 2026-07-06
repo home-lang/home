@@ -280,6 +280,10 @@ pub const Printer = struct {
     /// file-scoped vars (`var _C_x;` / hoisted fns), so member prints yield
     /// the variable and assignments ride the generic paths.
     current_static_privates: ?[]const []const u8 = null,
+    /// Names (sans `#`) of the current class's private ACCESSORS (get/set
+    /// pairs) while the ES5 IIFE path emits its body — reads route through
+    /// `_C_x_get.call(obj)` and writes through `_C_x_set.call(obj, v)`.
+    current_private_accessors: ?[]const []const u8 = null,
     options: Options,
     depth: u32,
     /// True when the previous token-output ended with a position where
@@ -6430,6 +6434,16 @@ pub const Printer = struct {
         return false;
     }
 
+    /// True when `name` (sans `#`) is a private ACCESSOR of the class whose
+    /// ES5 body is currently being emitted.
+    fn isPrivateAccessor(self: *const Printer, name: []const u8) bool {
+        const list = self.current_private_accessors orelse return false;
+        for (list) |n| {
+            if (std.mem.eql(u8, n, name)) return true;
+        }
+        return false;
+    }
+
     /// True when `name` (sans `#`) is a STATIC private (field or method) of
     /// the class whose ES5 body is currently being emitted.
     fn isStaticPrivate(self: *const Printer, name: []const u8) bool {
@@ -7086,6 +7100,8 @@ pub const Printer = struct {
         defer private_methods.deinit(self.gpa);
         var static_privates: std.ArrayListUnmanaged([]const u8) = .empty;
         defer static_privates.deinit(self.gpa);
+        var private_accessors: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer private_accessors.deinit(self.gpa);
         var has_instance_pm = false;
         for (class_members_pre) |m| {
             const k = self.hir.kindOf(m);
@@ -7093,6 +7109,18 @@ pub const Printer = struct {
                 const fd = hir_mod.fnDeclOf(self.hir, m);
                 if (fd.flags.is_constructor) continue;
                 const pm = self.privateFieldName(fd.name) orelse continue;
+                if ((fd.flags.is_getter or fd.flags.is_setter) and !fd.flags.is_static) {
+                    // Private accessor pair — record the name once.
+                    var seen = false;
+                    for (private_accessors.items) |n| {
+                        if (std.mem.eql(u8, n, pm)) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) try private_accessors.append(self.gpa, pm);
+                    continue;
+                }
                 try private_methods.append(self.gpa, pm);
                 if (fd.flags.is_static) {
                     try static_privates.append(self.gpa, pm);
@@ -7111,7 +7139,8 @@ pub const Printer = struct {
                 try self.write("; ");
             }
         }
-        if (has_instance_pm) {
+        const needs_instance_brand = has_instance_pm or private_accessors.items.len > 0;
+        if (needs_instance_brand) {
             try self.write("var ");
             try self.writeWeakMapName(c.name, "instances");
             try self.write(" = new WeakSet(); ");
@@ -7122,6 +7151,9 @@ pub const Printer = struct {
         const prev_sp = self.current_static_privates;
         self.current_static_privates = if (static_privates.items.len > 0) static_privates.items else null;
         defer self.current_static_privates = prev_sp;
+        const prev_pa = self.current_private_accessors;
+        self.current_private_accessors = if (private_accessors.items.len > 0) private_accessors.items else null;
+        defer self.current_private_accessors = prev_pa;
         const prev_class = self.current_class_name;
         if (self.hir.kindOf(c.name) == .identifier) {
             self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
@@ -7226,8 +7258,9 @@ pub const Printer = struct {
             }
         }
         // Brand each instance for `#m in o` checks when the class has
-        // INSTANCE private methods (static-only privates need no brand).
-        if (has_instance_pm) {
+        // INSTANCE private methods or accessors (static-only privates need
+        // no brand).
+        if (needs_instance_brand) {
             try self.writeWeakMapName(c.name, "instances");
             try self.write(if (use_this_var) ".add(_this); " else ".add(this); ");
         }
@@ -7299,6 +7332,31 @@ pub const Printer = struct {
             // Getters/setters lower to `Object.defineProperty` (merging a
             // get+set pair for the same key into one call — separate calls
             // would clobber each other). Computed accessor names are deferred.
+            if ((fd.flags.is_getter or fd.flags.is_setter) and !fd.flags.is_static) {
+                if (self.privateFieldName(fd.name)) |pa| {
+                    // §4.A.7 — private accessor: paired hoisted fns
+                    // (`_C_x_get` / `_C_x_set`); reads/writes route through
+                    // `.call` in printMember / printAssignment.
+                    try self.write("var ");
+                    try self.writeWeakMapName(c.name, pa);
+                    try self.write(if (fd.flags.is_getter) "_get = function (" else "_set = function (");
+                    const aparams = hir_mod.fnParams(self.hir, m);
+                    try self.printRuntimeParams(aparams);
+                    try self.write(") ");
+                    if (fd.body != hir_mod.none_node_id) {
+                        if (self.hasDefaultParam(aparams) or self.hasDestructuringParam(aparams)) {
+                            try self.printFnBodyWithDefaults(aparams, fd.body);
+                        } else {
+                            self.next_block_is_fn_body = self.hir.kindOf(fd.body) == .block_stmt;
+                            try self.printStatementInline(fd.body);
+                        }
+                    } else {
+                        try self.write("{}");
+                    }
+                    try self.write("; ");
+                    continue;
+                }
+            }
             if ((fd.flags.is_getter or fd.flags.is_setter) and self.hir.kindOf(fd.name) == .identifier) {
                 try self.printEs5ClassAccessor(c.name, members, m, fd);
                 continue;
@@ -8459,9 +8517,9 @@ pub const Printer = struct {
                         try self.write(")");
                         return;
                     }
-                    // Method brand-checks test the per-class instances
-                    // WeakSet; field checks test the field's own WeakMap.
-                    const brand: []const u8 = if (self.isPrivateMethod(field)) "instances" else field;
+                    // Method/accessor brand-checks test the per-class
+                    // instances WeakSet; field checks test the field's map.
+                    const brand: []const u8 = if (self.isPrivateMethod(field) or self.isPrivateAccessor(field)) "instances" else field;
                     try self.write("_");
                     try self.write(self.interner.get(class_name));
                     try self.write("_");
@@ -8719,13 +8777,69 @@ pub const Printer = struct {
             if (self.current_class_name) |class_name| {
                 const m = hir_mod.memberOf(self.hir, p.target);
                 const name_str = self.interner.get(m.name);
+                // §4.A.7 — a private ACCESSOR target writes through the
+                // hoisted setter: `this.#x = v` -> `_C_x_set.call(this, v)`;
+                // arithmetic compounds compose the getter
+                // (`_C_x_set.call(this, _C_x_get.call(this) + v)`), and
+                // logical compounds short-circuit on the getter read.
+                if (name_str.len > 0 and name_str[0] == '#' and
+                    self.isPrivateAccessor(name_str[1..]))
+                {
+                    if (self.current_class_name) |acls| {
+                        const aobj_simple = self.hir.kindOf(m.object) == .identifier or
+                            self.hir.kindOf(m.object) == .this_expr;
+                        const alogical: ?[]const u8 = if (p.op) |op| switch (op) {
+                            .logical_or => " || ",
+                            .logical_and => " && ",
+                            .nullish_coalesce => " ?? ",
+                            else => null,
+                        } else null;
+                        if (alogical) |lls| {
+                            if (aobj_simple) {
+                                try self.write("(");
+                                try self.writePrivateMapNameById(acls, name_str[1..]);
+                                try self.write("_get.call(");
+                                try self.printExpr(m.object, .comma);
+                                try self.write(")");
+                                try self.write(lls);
+                                try self.writePrivateMapNameById(acls, name_str[1..]);
+                                try self.write("_set.call(");
+                                try self.printExpr(m.object, .comma);
+                                try self.write(", ");
+                                try self.printExpr(p.value, .comma);
+                                try self.write("))");
+                                return;
+                            }
+                        } else {
+                            const aok = if (p.op) |op| (op != .pow and aobj_simple) else true;
+                            if (aok) {
+                                try self.writePrivateMapNameById(acls, name_str[1..]);
+                                try self.write("_set.call(");
+                                try self.printExpr(m.object, .comma);
+                                try self.write(", ");
+                                if (p.op) |op| {
+                                    try self.writePrivateMapNameById(acls, name_str[1..]);
+                                    try self.write("_get.call(");
+                                    try self.printExpr(m.object, .comma);
+                                    try self.write(") ");
+                                    try self.write(binOpString(op));
+                                    try self.write(" ");
+                                }
+                                try self.printExpr(p.value, .comma);
+                                try self.write(")");
+                                return;
+                            }
+                        }
+                    }
+                }
                 // Bare-var privates (static fields/methods, hoisted method
                 // fns) assign through the generic paths — printMember renders
                 // the target as the plain `_C_x` variable, so `=`, arithmetic
                 // compounds, and the logical downlevel are all valid on it.
                 if (name_str.len > 0 and name_str[0] == '#' and
                     !self.isStaticPrivate(name_str[1..]) and
-                    !self.isPrivateMethod(name_str[1..]))
+                    !self.isPrivateMethod(name_str[1..]) and
+                    !self.isPrivateAccessor(name_str[1..]))
                 {
                     const obj_simple = self.hir.kindOf(m.object) == .identifier or
                         self.hir.kindOf(m.object) == .this_expr;
@@ -9297,6 +9411,14 @@ pub const Printer = struct {
         if (self.current_class_name) |class_name| {
             const name_str = self.interner.get(p.name);
             if (name_str.len > 0 and name_str[0] == '#') {
+                // A private ACCESSOR read calls its hoisted getter.
+                if (self.isPrivateAccessor(name_str[1..])) {
+                    try self.writePrivateMapNameById(class_name, name_str[1..]);
+                    try self.write("_get.call(");
+                    try self.printExpression(p.object);
+                    try self.write(")");
+                    return;
+                }
                 try self.write("_");
                 try self.write(self.interner.get(class_name));
                 try self.write("_");
@@ -14171,6 +14293,20 @@ test "emit: es5 private method lowers to hoisted function + call" {
     try T.expect(std.mem.indexOf(u8, out, "var _C_m = function (x) {") != null);
     try T.expect(std.mem.indexOf(u8, out, "_C_m.call(this, 2)") != null);
     try T.expect(std.mem.indexOf(u8, out, "#m") == null);
+}
+
+test "emit: es5 private accessor lowers to paired hoisted fns" {
+    const out = try emitWithOpts("class C { get #x() { return 1; } set #x(v) { this.use(v); } r() { return this.#x; } w(v) { this.#x = v; } b() { this.#x += 2; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_x_get = function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_x_set = function (v) {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return _C_x_get.call(this);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_x_set.call(this, v)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_x_set.call(this, _C_x_get.call(this) + 2)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#x") == null);
+    // accessors brand instances for `in` checks.
+    try T.expect(std.mem.indexOf(u8, out, "var _C_instances = new WeakSet();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_instances.add(this);") != null);
 }
 
 test "emit: es5 static private field lowers to a bare var" {
