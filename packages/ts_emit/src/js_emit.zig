@@ -8822,10 +8822,21 @@ pub const Printer = struct {
                         } else {
                             const aok = if (p.op) |op| (op != .pow and aobj_simple) else true;
                             if (aok) {
+                                // Value position yields the assigned value via
+                                // a temp (the setter returns undefined) —
+                                // mirrors the field-map wrap below.
+                                const avalue_pos = level != .lowest;
+                                var avbuf: [16]u8 = undefined;
+                                const avt: []const u8 = if (avalue_pos) self.allocTemp(&avbuf) else "";
+                                if (avalue_pos) try self.write("(");
                                 try self.writePrivateMapNameById(acls, name_str[1..]);
                                 try self.write("_set.call(");
                                 try self.printExpr(m.object, .comma);
                                 try self.write(", ");
+                                if (avalue_pos) {
+                                    try self.write(avt);
+                                    try self.write(" = ");
+                                }
                                 if (p.op) |op| {
                                     try self.writePrivateMapNameById(acls, name_str[1..]);
                                     try self.write("_get.call(");
@@ -8836,6 +8847,11 @@ pub const Printer = struct {
                                 }
                                 try self.printExpr(p.value, .comma);
                                 try self.write(")");
+                                if (avalue_pos) {
+                                    try self.write(", ");
+                                    try self.write(avt);
+                                    try self.write(")");
+                                }
                                 return;
                             }
                         }
@@ -8883,10 +8899,26 @@ pub const Printer = struct {
                         // arithmetic compounds need a repeatable receiver.
                         const arith_ok = if (p.op) |op| (op != .pow and obj_simple) else true;
                         if (arith_ok) {
+                            // In value position the expression must yield the
+                            // assigned value — `.set` returns the map, which
+                            // broke chains like `this.#a = this.#b = 0`. Wrap
+                            // as `(_C_f.set(obj, _t = <rhs>), _t)` via a
+                            // §4.A.31 temp; statement position (level ==
+                            // .lowest) keeps the bare `.set`. (Bracket-index
+                            // contexts also print at .lowest — an accepted
+                            // rare divergence.)
+                            const value_pos = level != .lowest;
+                            var vbuf: [16]u8 = undefined;
+                            const vt: []const u8 = if (value_pos) self.allocTemp(&vbuf) else "";
+                            if (value_pos) try self.write("(");
                             try self.writePrivateMapNameById(class_name, name_str[1..]);
                             try self.write(".set(");
                             try self.printExpr(m.object, .comma);
                             try self.write(", ");
+                            if (value_pos) {
+                                try self.write(vt);
+                                try self.write(" = ");
+                            }
                             if (p.op) |op| {
                                 try self.writePrivateMapNameById(class_name, name_str[1..]);
                                 try self.write(".get(");
@@ -8897,6 +8929,11 @@ pub const Printer = struct {
                             }
                             try self.printExpr(p.value, .comma);
                             try self.write(")");
+                            if (value_pos) {
+                                try self.write(", ");
+                                try self.write(vt);
+                                try self.write(")");
+                            }
                             return;
                         }
                     }
@@ -14279,6 +14316,21 @@ test "emit: private field assignment routes through WeakMap.set" {
     const out2 = try emitWithOpts("class C { #f = 1; m() { this.#f += 3; } }", .{ .es_target = .es2021 });
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "_C_f.set(this, _C_f.get(this) + 3)") != null);
+}
+
+test "emit: chained private assignment yields the assigned value" {
+    // `this.#a = this.#b = 0` — the inner assignment is in VALUE position, so
+    // it wraps in a temp yielding 0 (`.set` returns the map, which previously
+    // leaked into #a). The outer, statement-position write stays bare.
+    const out1 = try emitWithOpts("class C { #a = 1; #b = 2; m() { this.#a = this.#b = 0; } }", .{ .es_target = .es2021 });
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "_C_a.set(this, (_C_b.set(this, _a = 0), _a))") != null);
+
+    // a lone statement write keeps the clean bare form — no temp.
+    const out2 = try emitWithOpts("class C { #f = 1; m() { this.#f = 2; } }", .{ .es_target = .es2021 });
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "_C_f.set(this, 2);") != null);
+    try T.expect(std.mem.indexOf(u8, out2, "var _a") == null);
 }
 
 test "emit: private field logical assignment short-circuits through WeakMap" {
