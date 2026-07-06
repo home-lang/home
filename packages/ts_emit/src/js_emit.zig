@@ -254,7 +254,7 @@ const source_map_mod = @import("source_map.zig");
 /// NAMES past every enclosing scope's allocations so an inner `var` can
 /// never shadow an outer temp the emitted code still references (e.g. a
 /// ctor-local temp vs the enclosing computed-field key temp).
-const TempScope = struct { mark: usize, start: usize, count: usize };
+const TempScope = struct { mark: usize, start: usize, count: usize, mark_line: u32, mark_col: u32 };
 
 pub const Printer = struct {
     gpa: std.mem.Allocator,
@@ -432,7 +432,56 @@ pub const Printer = struct {
             const parent = self.temp_scopes.items[self.temp_scopes.items.len - 1];
             start = parent.start + parent.count;
         }
-        try self.temp_scopes.append(self.gpa, .{ .mark = self.out.items.len, .start = start, .count = 0 });
+        try self.temp_scopes.append(self.gpa, .{
+            .mark = self.out.items.len,
+            .start = start,
+            .count = 0,
+            .mark_line = self.gen_line,
+            .mark_col = self.gen_col,
+        });
+    }
+
+    /// §4.A.31 (c) — after splicing `inserted` into `out` at a recorded mark,
+    /// shift every source-map mapping (and the live `gen_line`/`gen_col`
+    /// counters) positioned at or after the mark so they describe the
+    /// post-splice buffer. This keeps `.map` output correct without a
+    /// buffered-body printer: the splice is the only out-of-order write.
+    fn fixupAfterSplice(self: *Printer, mark_line: u32, mark_col: u32, inserted: []const u8) void {
+        var added_lines: u32 = 0;
+        var last_len: u32 = 0;
+        for (inserted) |ch| {
+            if (ch == '\n') {
+                added_lines += 1;
+                last_len = 0;
+            } else {
+                last_len += 1;
+            }
+        }
+        if (self.options.source_map) |sm| {
+            for (sm.mappings.items) |*m| {
+                if (m.gen_line > mark_line) {
+                    m.gen_line += added_lines;
+                } else if (m.gen_line == mark_line and m.gen_col >= mark_col) {
+                    if (added_lines > 0) {
+                        m.gen_line += added_lines;
+                        m.gen_col = m.gen_col - mark_col + last_len;
+                    } else {
+                        m.gen_col += last_len;
+                    }
+                }
+            }
+        }
+        // The live end-of-buffer counters shift by the same rule.
+        if (self.gen_line > mark_line) {
+            self.gen_line += added_lines;
+        } else if (self.gen_line == mark_line and self.gen_col >= mark_col) {
+            if (added_lines > 0) {
+                self.gen_line += added_lines;
+                self.gen_col = self.gen_col - mark_col + last_len;
+            } else {
+                self.gen_col += last_len;
+            }
+        }
     }
 
     /// Allocate a fresh temp in the current scope and write its name into
@@ -465,6 +514,7 @@ pub const Printer = struct {
         try decl.appendSlice(self.gpa, ";");
         try decl.appendSlice(self.gpa, sep);
         try self.out.insertSlice(self.gpa, scope.mark, decl.items);
+        self.fixupAfterSplice(scope.mark_line, scope.mark_col, decl.items);
     }
 
     /// Close the current temp scope inside a multi-line block body: the
@@ -488,6 +538,7 @@ pub const Printer = struct {
         }
         try decl.appendSlice(self.gpa, ";");
         try self.out.insertSlice(self.gpa, scope.mark, decl.items);
+        self.fixupAfterSplice(scope.mark_line, scope.mark_col, decl.items);
     }
 
     pub fn toOwnedSlice(self: *Printer) ![]u8 {
@@ -14752,6 +14803,49 @@ test "emit: source map records mappings for each statement" {
     try T.expectEqual(@as(u32, 0), first.gen_col);
     try T.expectEqual(@as(u32, 0), first.src_line);
     try T.expectEqual(@as(u32, 0), first.src_col);
+}
+
+test "emit: source map stays line-accurate across a temp splice" {
+    // §4.A.31 (c) — the function-body temp splice inserts a `var _a;` line;
+    // mappings recorded after the splice point must shift with the text.
+    const src = "function f() { o[1].foo(...a); }\nlet z = 1;";
+    const s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    var sm = source_map_mod.SourceMap.init(T.allocator, "out.js");
+    defer sm.deinit();
+    const sidx = try sm.addSource("in.ts", src);
+
+    var printer = Printer.init(T.allocator, &s.hir, &s.interner, .{
+        .es_target = .es5,
+        .source_map = &sm,
+        .source_map_src_idx = sidx,
+    });
+    defer printer.deinit();
+    printer.setSource(src);
+    try printer.printSourceFile(s.root);
+    const out = printer.out.items;
+
+    // The splice really happened.
+    try T.expect(std.mem.indexOf(u8, out, "var _a;") != null);
+    // Find where the `z` declaration actually landed in the generated text
+    // (`let` lowers to `var` at es5)...
+    const z_pos = std.mem.indexOf(u8, out, "z = 1").?;
+    var actual_line: u32 = 0;
+    for (out[0..z_pos]) |ch| {
+        if (ch == '\n') actual_line += 1;
+    }
+    // ...and assert some mapping for source line 1 (`let z = 1;`) points at
+    // exactly that generated line (it would be off by one without the
+    // post-splice fixup).
+    var found = false;
+    for (sm.mappings.items) |m| {
+        if (m.src_line == 1 and m.gen_line == actual_line) {
+            found = true;
+            break;
+        }
+    }
+    try T.expect(found);
 }
 
 test "emit: private field lowers to WeakMap below es2022" {
