@@ -5996,8 +5996,25 @@ pub const Printer = struct {
         // per-class `WeakMap`. Emit the `var _<Class>_<field> = new
         // WeakMap();` declarations *before* the class statement.
         const downlevel_private = !self.options.es_target.supportsNativePrivateFields() and
-            self.classHasPrivateField(node) and c.name != hir_mod.none_node_id;
+            (self.classHasPrivateField(node) or self.classHasPrivateFnMember(node)) and
+            c.name != hir_mod.none_node_id;
+        // §4.A.7 — native-path private METHODS / ACCESSORS: hoisted fn vars
+        // before the class statement (their bodies close over the class
+        // binding, which is live by the time they run), routed through the
+        // same three lists as the ES5 IIFE path. Instance fn-privates brand
+        // instances in a `_<C>_instances` WeakSet added in the ctor.
+        var np_methods: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer np_methods.deinit(self.gpa);
+        var np_accessors: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer np_accessors.deinit(self.gpa);
+        const prev_np_class = self.current_class_name;
+        defer self.current_class_name = prev_np_class;
+        const prev_np_m = self.current_private_methods;
+        defer self.current_private_methods = prev_np_m;
+        const prev_np_a = self.current_private_accessors;
+        defer self.current_private_accessors = prev_np_a;
         if (downlevel_private) {
+            self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
             for (members) |m| {
                 if (self.hir.kindOf(m) != .object_property) continue;
                 const op = hir_mod.objectPropertyOf(self.hir, m);
@@ -6007,7 +6024,69 @@ pub const Printer = struct {
                 try self.write(" = new WeakMap();");
                 try self.write(self.options.newline);
             }
+            var np_any_fn = false;
+            for (members) |m| {
+                const k = self.hir.kindOf(m);
+                if (k != .fn_decl and k != .fn_expr) continue;
+                const fd = hir_mod.fnDeclOf(self.hir, m);
+                if (fd.flags.is_constructor) continue;
+                const pm = self.privateFieldName(fd.name) orelse continue;
+                np_any_fn = true;
+                if (fd.flags.is_getter or fd.flags.is_setter) {
+                    var seen = false;
+                    for (np_accessors.items) |n| {
+                        if (std.mem.eql(u8, n, pm)) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) try np_accessors.append(self.gpa, pm);
+                } else {
+                    try np_methods.append(self.gpa, pm);
+                }
+            }
+            if (np_any_fn) {
+                try self.write("var ");
+                try self.writeWeakMapName(c.name, "instances");
+                try self.write(" = new WeakSet();");
+                try self.write(self.options.newline);
+            }
+            self.current_private_methods = if (np_methods.items.len > 0) np_methods.items else null;
+            self.current_private_accessors = if (np_accessors.items.len > 0) np_accessors.items else null;
+            // Emit the hoisted fn vars with the lists active so bodies that
+            // touch other privates route correctly.
+            for (members) |m| {
+                const k = self.hir.kindOf(m);
+                if (k != .fn_decl and k != .fn_expr) continue;
+                const fd = hir_mod.fnDeclOf(self.hir, m);
+                if (fd.flags.is_constructor) continue;
+                const pm = self.privateFieldName(fd.name) orelse continue;
+                try self.write("var ");
+                try self.writeWeakMapName(c.name, pm);
+                if (fd.flags.is_getter) {
+                    try self.write("_get");
+                } else if (fd.flags.is_setter) {
+                    try self.write("_set");
+                }
+                try self.write(" = function (");
+                const npparams = hir_mod.fnParams(self.hir, m);
+                try self.printRuntimeParams(npparams);
+                try self.write(") ");
+                if (fd.body != hir_mod.none_node_id) {
+                    if (self.hasDefaultParam(npparams) or self.hasDestructuringParam(npparams)) {
+                        try self.printFnBodyWithDefaults(npparams, fd.body);
+                    } else {
+                        self.next_block_is_fn_body = self.hir.kindOf(fd.body) == .block_stmt;
+                        try self.printStatementInline(fd.body);
+                    }
+                } else {
+                    try self.write("{}");
+                }
+                try self.write(";");
+                try self.write(self.options.newline);
+            }
         }
+        const np_instance_brand = downlevel_private and self.classHasInstancePrivateFn(node);
         // §4.A.9 — public class fields are an ES2022 feature. At
         // earlier ES2015–ES2021 targets we hoist `x = <init>;` into
         // the (synthesized if absent) constructor as `this.x = <init>;`,
@@ -6075,7 +6154,7 @@ pub const Printer = struct {
         // scan but don't emit a synthesized ctor.
         const stage3_instance = self.stage3_instance_extra_class != null;
         var ctor_idx: ?usize = null;
-        if (downlevel_fields or stage3_instance) {
+        if (downlevel_fields or stage3_instance or np_instance_brand) {
             for (members, 0..) |m, idx| {
                 const k = self.hir.kindOf(m);
                 if (k != .fn_decl and k != .fn_expr) continue;
@@ -6111,6 +6190,14 @@ pub const Printer = struct {
             if (downlevel_private and self.hir.kindOf(m) == .object_property) {
                 const op = hir_mod.objectPropertyOf(self.hir, m);
                 if (self.privateFieldName(op.key) != null) continue;
+            }
+            // Private methods/accessors were hoisted to fn vars before the
+            // class; the in-class member would be invalid below ES2022.
+            if (downlevel_private and
+                (self.hir.kindOf(m) == .fn_decl or self.hir.kindOf(m) == .fn_expr))
+            {
+                const pfd = hir_mod.fnDeclOf(self.hir, m);
+                if (!pfd.flags.is_constructor and self.privateFieldName(pfd.name) != null) continue;
             }
             // Public field with an initializer at sub-ES2022 — has
             // already been hoisted into the (real or synthesized) ctor.
@@ -6285,6 +6372,34 @@ pub const Printer = struct {
     /// with an initializer. Used to trigger ctor synthesis (or
     /// hoisted-fields decoration of an explicit ctor) at sub-ES2022
     /// targets so `_<Class>_<field>.set(this, <init>);` runs.
+    /// True when the class has any private METHOD or ACCESSOR member
+    /// (instance or static).
+    fn classHasPrivateFnMember(self: *Printer, class_node: NodeId) bool {
+        const cms = hir_mod.classMembers(self.hir, class_node);
+        for (cms) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr) continue;
+            const fd = hir_mod.fnDeclOf(self.hir, m);
+            if (fd.flags.is_constructor) continue;
+            if (self.privateFieldName(fd.name) != null) return true;
+        }
+        return false;
+    }
+
+    /// True when the class has an INSTANCE private method or accessor —
+    /// these brand instances in the `_<C>_instances` WeakSet.
+    fn classHasInstancePrivateFn(self: *Printer, class_node: NodeId) bool {
+        const cms = hir_mod.classMembers(self.hir, class_node);
+        for (cms) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr) continue;
+            const fd = hir_mod.fnDeclOf(self.hir, m);
+            if (fd.flags.is_constructor or fd.flags.is_static) continue;
+            if (self.privateFieldName(fd.name) != null) return true;
+        }
+        return false;
+    }
+
     fn classHasPrivateFieldInit(self: *Printer, class_node: NodeId) bool {
         const members = hir_mod.classMembers(self.hir, class_node);
         for (members) |m| {
@@ -6302,6 +6417,17 @@ pub const Printer = struct {
     /// initializer on this class. Caller is responsible for being
     /// inside a constructor body and writing surrounding indentation.
     fn writeHoistedFieldInits(self: *Printer, class_node: NodeId) !void {
+        // §4.A.7 — brand instances for `#m in o` checks when the class has
+        // instance private methods/accessors (native downlevel path).
+        if (!self.options.es_target.supportsNativePrivateFields() and
+            self.classHasInstancePrivateFn(class_node))
+        {
+            const bc = hir_mod.classOf(self.hir, class_node);
+            if (bc.name != hir_mod.none_node_id) {
+                try self.writeWeakMapName(bc.name, "instances");
+                try self.write(".add(this); ");
+            }
+        }
         const members = hir_mod.classMembers(self.hir, class_node);
         const c = hir_mod.classOf(self.hir, class_node);
         for (members) |m| {
@@ -14354,6 +14480,28 @@ test "emit: es5 private method lowers to hoisted function + call" {
     try T.expect(std.mem.indexOf(u8, out, "var _C_m = function (x) {") != null);
     try T.expect(std.mem.indexOf(u8, out, "_C_m.call(this, 2)") != null);
     try T.expect(std.mem.indexOf(u8, out, "#m") == null);
+}
+
+test "emit: native-path private method hoists before the class" {
+    // es2015–2021: the hoisted fn var precedes `class C`, the in-class member
+    // is skipped, calls route through `.call`, and instances are branded.
+    const out = try emitWithOpts("class C { #m(x: number) { return x + 1; } call() { return this.#m(2); } }", .{ .es_target = .es2021 });
+    defer T.allocator.free(out);
+    const fn_pos = std.mem.indexOf(u8, out, "var _C_m = function (x) {").?;
+    const cls_pos = std.mem.indexOf(u8, out, "class C").?;
+    try T.expect(fn_pos < cls_pos);
+    try T.expect(std.mem.indexOf(u8, out, "_C_m.call(this, 2)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_instances = new WeakSet();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_instances.add(this);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#m") == null);
+}
+
+test "emit: native-path private accessor hoists paired fns" {
+    const out = try emitWithOpts("class C { get #x() { return 1; } r() { return this.#x; } }", .{ .es_target = .es2021 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_x_get = function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return _C_x_get.call(this);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#x") == null);
 }
 
 test "emit: es5 private accessor lowers to paired hoisted fns" {
