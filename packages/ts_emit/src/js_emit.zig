@@ -6972,6 +6972,28 @@ pub const Printer = struct {
         const prev_super = self.in_es5_super_lowering;
         if (has_extends) self.in_es5_super_lowering = true;
         defer self.in_es5_super_lowering = prev_super;
+        // §4.A.7 / item 33 — wire the private-field WeakMap weave into the
+        // ES5 class-IIFE path: per-field `var _<C>_<f> = new WeakMap();`
+        // storage before the class, `current_class_name` set so printMember
+        // rewrites `<obj>.#f` reads / `#f in o` brand checks, and the ctor
+        // field loop below inits via `.set(this, v)`. Instance FIELDS only;
+        // private methods/statics keep prior behavior (documented gap, as in
+        // the es2015-2021 native path).
+        const class_members_pre = hir_mod.classMembers(self.hir, node);
+        for (class_members_pre) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.is_static) continue;
+            const pf = self.privateFieldName(op.key) orelse continue;
+            try self.write("var ");
+            try self.writeWeakMapName(c.name, pf);
+            try self.write(" = new WeakMap(); ");
+        }
+        const prev_class = self.current_class_name;
+        if (self.hir.kindOf(c.name) == .identifier) {
+            self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
+        }
+        defer self.current_class_name = prev_class;
         try self.write("var ");
         try self.printExpression(c.name);
         try self.write(" = (function (");
@@ -7070,6 +7092,15 @@ pub const Printer = struct {
             const op = hir_mod.objectPropertyOf(self.hir, m);
             if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
+            if (self.privateFieldName(op.key)) |pf| {
+                // §4.A.7 / item 33 — private field init routes through the
+                // per-class WeakMap: `#f = v` -> `_<C>_f.set(this, v);`.
+                try self.writeWeakMapName(c.name, pf);
+                try self.write(if (use_this_var) ".set(_this, " else ".set(this, ");
+                try self.printExpression(op.value);
+                try self.write("); ");
+                continue;
+            }
             if (op.is_computed) {
                 // `this[_a] = v;` — the key temp is assigned once in the
                 // IIFE body (after the ctor definition, before any `new`).
@@ -13776,6 +13807,25 @@ test "emit: es5 computed static class-field key evaluates inline" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "C[j] = 2;") != null);
     try T.expect(std.mem.indexOf(u8, out, "C.j =") == null);
+}
+
+test "emit: es5 class private field lowers through WeakMap" {
+    // item 33 — the ES5 IIFE path now carries the §4.A.7 WeakMap weave:
+    // storage decl before the class, ctor init via .set, reads via .get.
+    const out = try emitWithOpts("class C { #f = 1; getF() { return this.#f; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_f = new WeakMap();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_f.set(this, 1);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return _C_f.get(this);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#f") == null);
+}
+
+test "emit: es5 private brand check works in the class-IIFE path" {
+    // `#f in o` -> `_C_f.has(o)` now also fires at es5 (storage exists).
+    const out = try emitWithOpts("class C { #f = 1; m(o: C) { return #f in o; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_C_f.has(o)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#f in o") == null);
 }
 
 test "emit: es2015+ computed class-field keys stay native" {
