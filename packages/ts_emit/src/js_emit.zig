@@ -275,6 +275,11 @@ pub const Printer = struct {
     /// (`_C_m`, invoked via `.call`) from WeakMap field privates
     /// (`_C_f.get`/`.set`). Null outside such a class.
     current_private_methods: ?[]const []const u8 = null,
+    /// Names (sans `#`) of the current class's STATIC privates (fields and
+    /// methods) while the ES5 IIFE path emits its body. These lower to bare
+    /// file-scoped vars (`var _C_x;` / hoisted fns), so member prints yield
+    /// the variable and assignments ride the generic paths.
+    current_static_privates: ?[]const []const u8 = null,
     options: Options,
     depth: u32,
     /// True when the previous token-output ended with a position where
@@ -6425,6 +6430,16 @@ pub const Printer = struct {
         return false;
     }
 
+    /// True when `name` (sans `#`) is a STATIC private (field or method) of
+    /// the class whose ES5 body is currently being emitted.
+    fn isStaticPrivate(self: *const Printer, name: []const u8) bool {
+        const list = self.current_static_privates orelse return false;
+        for (list) |n| {
+            if (std.mem.eql(u8, n, name)) return true;
+        }
+        return false;
+    }
+
     /// Like `writeWeakMapName` but from an interned class-name StringId
     /// (the form `current_class_name` carries): `_<Class>_<field>`.
     fn writePrivateMapNameById(self: *Printer, class_name: StringId, field: []const u8) !void {
@@ -7069,15 +7084,34 @@ pub const Printer = struct {
         // ctor) so `#m in o` checks work. Instance methods only.
         var private_methods: std.ArrayListUnmanaged([]const u8) = .empty;
         defer private_methods.deinit(self.gpa);
+        var static_privates: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer static_privates.deinit(self.gpa);
+        var has_instance_pm = false;
         for (class_members_pre) |m| {
             const k = self.hir.kindOf(m);
-            if (k != .fn_decl and k != .fn_expr) continue;
-            const fd = hir_mod.fnDeclOf(self.hir, m);
-            if (fd.flags.is_constructor or fd.flags.is_static) continue;
-            const pm = self.privateFieldName(fd.name) orelse continue;
-            try private_methods.append(self.gpa, pm);
+            if (k == .fn_decl or k == .fn_expr) {
+                const fd = hir_mod.fnDeclOf(self.hir, m);
+                if (fd.flags.is_constructor) continue;
+                const pm = self.privateFieldName(fd.name) orelse continue;
+                try private_methods.append(self.gpa, pm);
+                if (fd.flags.is_static) {
+                    try static_privates.append(self.gpa, pm);
+                } else {
+                    has_instance_pm = true;
+                }
+            } else if (k == .object_property) {
+                // STATIC private fields lower to bare file-scoped vars:
+                // `var _C_x;` here, `_C_x = <init>;` in the static section.
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                if (!op.is_static) continue;
+                const spf = self.privateFieldName(op.key) orelse continue;
+                try static_privates.append(self.gpa, spf);
+                try self.write("var ");
+                try self.writeWeakMapName(c.name, spf);
+                try self.write("; ");
+            }
         }
-        if (private_methods.items.len > 0) {
+        if (has_instance_pm) {
             try self.write("var ");
             try self.writeWeakMapName(c.name, "instances");
             try self.write(" = new WeakSet(); ");
@@ -7085,6 +7119,9 @@ pub const Printer = struct {
         const prev_pm = self.current_private_methods;
         self.current_private_methods = if (private_methods.items.len > 0) private_methods.items else null;
         defer self.current_private_methods = prev_pm;
+        const prev_sp = self.current_static_privates;
+        self.current_static_privates = if (static_privates.items.len > 0) static_privates.items else null;
+        defer self.current_static_privates = prev_sp;
         const prev_class = self.current_class_name;
         if (self.hir.kindOf(c.name) == .identifier) {
             self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
@@ -7189,8 +7226,8 @@ pub const Printer = struct {
             }
         }
         // Brand each instance for `#m in o` checks when the class has
-        // private methods.
-        if (self.current_private_methods != null) {
+        // INSTANCE private methods (static-only privates need no brand).
+        if (has_instance_pm) {
             try self.writeWeakMapName(c.name, "instances");
             try self.write(if (use_this_var) ".add(_this); " else ".add(this); ");
         }
@@ -7266,29 +7303,28 @@ pub const Printer = struct {
                 try self.printEs5ClassAccessor(c.name, members, m, fd);
                 continue;
             }
-            if (!fd.flags.is_static) {
-                if (self.privateFieldName(fd.name)) |pm| {
-                    // §4.A.7 — private method: a hoisted function var inside
-                    // the IIFE; call sites lower to `_C_m.call(this, …)`.
-                    try self.write("var ");
-                    try self.writeWeakMapName(c.name, pm);
-                    try self.write(" = function (");
-                    const pparams = hir_mod.fnParams(self.hir, m);
-                    try self.printRuntimeParams(pparams);
-                    try self.write(") ");
-                    if (fd.body != hir_mod.none_node_id) {
-                        if (self.hasDefaultParam(pparams) or self.hasDestructuringParam(pparams)) {
-                            try self.printFnBodyWithDefaults(pparams, fd.body);
-                        } else {
-                            self.next_block_is_fn_body = self.hir.kindOf(fd.body) == .block_stmt;
-                            try self.printStatementInline(fd.body);
-                        }
+            if (self.privateFieldName(fd.name)) |pm| {
+                // §4.A.7 — private method (instance OR static): a hoisted
+                // function var inside the IIFE; call sites lower to
+                // `_C_m.call(this, …)` / `_C_m.call(C, …)`.
+                try self.write("var ");
+                try self.writeWeakMapName(c.name, pm);
+                try self.write(" = function (");
+                const pparams = hir_mod.fnParams(self.hir, m);
+                try self.printRuntimeParams(pparams);
+                try self.write(") ");
+                if (fd.body != hir_mod.none_node_id) {
+                    if (self.hasDefaultParam(pparams) or self.hasDestructuringParam(pparams)) {
+                        try self.printFnBodyWithDefaults(pparams, fd.body);
                     } else {
-                        try self.write("{}");
+                        self.next_block_is_fn_body = self.hir.kindOf(fd.body) == .block_stmt;
+                        try self.printStatementInline(fd.body);
                     }
-                    try self.write("; ");
-                    continue;
+                } else {
+                    try self.write("{}");
                 }
+                try self.write("; ");
+                continue;
             }
             try self.printExpression(c.name);
             if (fd.flags.is_static) {
@@ -7321,6 +7357,14 @@ pub const Printer = struct {
             if (self.hir.kindOf(m) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, m);
             if (!op.is_static or op.value == hir_mod.none_node_id) continue;
+            if (self.privateFieldName(op.key)) |spf| {
+                // Static private field init: assign the bare var.
+                try self.writeWeakMapName(c.name, spf);
+                try self.write(" = ");
+                try self.printExpression(op.value);
+                try self.write("; ");
+                continue;
+            }
             try self.printExpression(c.name);
             if (op.is_computed) {
                 // §4.A.31 — a computed static key is single-use: evaluate it
@@ -8406,6 +8450,15 @@ pub const Printer = struct {
         if (p.op == .in and !self.options.es_target.supportsNativePrivateFields()) {
             if (self.privateFieldName(p.lhs)) |field| {
                 if (self.current_class_name) |class_name| {
+                    // Static-private brand: identity with the class itself.
+                    if (self.isStaticPrivate(field)) {
+                        try self.write("(");
+                        try self.printExpr(p.rhs, .equals);
+                        try self.write(" === ");
+                        try self.write(self.interner.get(class_name));
+                        try self.write(")");
+                        return;
+                    }
                     // Method brand-checks test the per-class instances
                     // WeakSet; field checks test the field's own WeakMap.
                     const brand: []const u8 = if (self.isPrivateMethod(field)) "instances" else field;
@@ -8666,7 +8719,14 @@ pub const Printer = struct {
             if (self.current_class_name) |class_name| {
                 const m = hir_mod.memberOf(self.hir, p.target);
                 const name_str = self.interner.get(m.name);
-                if (name_str.len > 0 and name_str[0] == '#') {
+                // Bare-var privates (static fields/methods, hoisted method
+                // fns) assign through the generic paths — printMember renders
+                // the target as the plain `_C_x` variable, so `=`, arithmetic
+                // compounds, and the logical downlevel are all valid on it.
+                if (name_str.len > 0 and name_str[0] == '#' and
+                    !self.isStaticPrivate(name_str[1..]) and
+                    !self.isPrivateMethod(name_str[1..]))
+                {
                     const obj_simple = self.hir.kindOf(m.object) == .identifier or
                         self.hir.kindOf(m.object) == .this_expr;
                     const logical_ls: ?[]const u8 = if (p.op) |op| switch (op) {
@@ -9241,9 +9301,10 @@ pub const Printer = struct {
                 try self.write(self.interner.get(class_name));
                 try self.write("_");
                 try self.write(name_str[1..]);
-                // A private METHOD read yields the hoisted function itself;
-                // fields read through the WeakMap.
-                if (self.isPrivateMethod(name_str[1..])) return;
+                // A private METHOD read yields the hoisted function itself
+                // and a STATIC private reads its bare var; instance fields
+                // read through the WeakMap.
+                if (self.isPrivateMethod(name_str[1..]) or self.isStaticPrivate(name_str[1..])) return;
                 try self.write(".get(");
                 try self.printExpression(p.object);
                 try self.write(")");
@@ -14110,6 +14171,32 @@ test "emit: es5 private method lowers to hoisted function + call" {
     try T.expect(std.mem.indexOf(u8, out, "var _C_m = function (x) {") != null);
     try T.expect(std.mem.indexOf(u8, out, "_C_m.call(this, 2)") != null);
     try T.expect(std.mem.indexOf(u8, out, "#m") == null);
+}
+
+test "emit: es5 static private field lowers to a bare var" {
+    const out = try emitWithOpts("class C { static #count = 0; static bump() { C.#count += 1; return C.#count; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_count; ") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_count = 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_count += 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return _C_count;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#count") == null);
+}
+
+test "emit: es5 static private method hoists and calls with the class receiver" {
+    const out = try emitWithOpts("class C { static #make() { return 1; } static create() { return C.#make(); } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _C_make = function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_C_make.call(C)") != null);
+    // static-only privates need no instance brand.
+    try T.expect(std.mem.indexOf(u8, out, "WeakSet") == null);
+}
+
+test "emit: es5 static private brand check is class identity" {
+    const out = try emitWithOpts("class C { static #x = 1; is(o: any) { return #x in o; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "(o === C)") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".has(o)") == null);
 }
 
 test "emit: es5 private-method brand check uses the instances WeakSet" {
