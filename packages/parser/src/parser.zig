@@ -1523,6 +1523,11 @@ pub const Parser = struct {
         if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
             return_type = try self.parseTypeAnnotation();
         } else if (!self.check(.LeftBrace) and !self.check(.Requires) and !self.check(.Ensures) and
+            // Issue #17 — the Zig-style (annotation-less) return type must sit
+            // on the same line as the parameter list: otherwise a forward
+            // declaration followed by the next item (`fn f(x: u8)\nfn f...`)
+            // swallows that item as this signature's return type.
+            self.previous().line == self.peek().line and
             self.isReturnTypeStart())
         {
             return_type = try self.parseTypeAnnotation();
@@ -1586,9 +1591,16 @@ pub const Parser = struct {
             }
         }
 
+        // Issue #17 — a signature with no `{` on the same line is a FORWARD
+        // DECLARATION (`fn pci_scan_bus(bus: u8)`): parse to an empty body
+        // (like extern) and mark it so later passes bind the name without
+        // emitting a duplicate definition. A stray same-line token still
+        // falls through to blockStatement() and errors as before.
+        const is_forward_decl = !is_extern and !self.check(.LeftBrace) and
+            (self.isAtEnd() or self.previous().line != self.peek().line);
         // Parse body (only for non-extern functions)
-        // For extern functions, create an empty block
-        const body = if (is_extern)
+        // For extern functions (and forward declarations), create an empty block
+        const body = if (is_extern or is_forward_decl)
             try ast.BlockStmt.init(self.allocator, &.{}, ast.SourceLocation.fromToken(name_token))
         else
             try self.blockStatement();
@@ -1614,6 +1626,7 @@ pub const Parser = struct {
         // Set contract clauses
         fn_decl.requires_clauses = try requires_clauses.toOwnedSlice(self.allocator);
         fn_decl.ensures_clauses = try ensures_clauses.toOwnedSlice(self.allocator);
+        fn_decl.is_forward_decl = is_forward_decl;
 
         return ast.Stmt{ .FnDecl = fn_decl };
     }

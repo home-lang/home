@@ -3489,7 +3489,10 @@ pub const NativeCodegen = struct {
             .ExprStmt => |expr| {
                 _ = try self.generateExpr(expr);
             },
-            .FnDecl => |func| try self.generateFnDecl(func),
+            .FnDecl => |func| {
+                // Forward declarations (issue #17) bind the name only.
+                if (!func.is_forward_decl) try self.generateFnDecl(func);
+            },
             .ReturnStmt => |ret| {
                 // Async fast path: write result into the state struct,
                 // mark Ready, and jump to the function epilogue. The

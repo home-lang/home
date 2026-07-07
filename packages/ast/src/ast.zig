@@ -2325,6 +2325,7 @@ pub const FnDecl = struct {
     is_public: bool = false,
     is_exported: bool = false, // export keyword for C ABI exports
     is_inline: bool = false, // inline keyword for inline-hint functions
+    is_forward_decl: bool = false, // `fn name(args)` with no body (issue #17): binds the name, no definition emitted
     variadic_param: ?VariadicParam = null,
     attributes: []const Attribute = &.{}, // Attributes attached to this function
     doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)

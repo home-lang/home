@@ -214,6 +214,10 @@ pub const Interpreter = struct {
                 }
             },
             .FnDecl => |fn_decl| {
+                // Forward declarations (issue #17) bind the name only; the
+                // later definition stores the callable value (and a forward
+                // decl after a definition must not clobber it).
+                if (fn_decl.is_forward_decl) return;
                 // Store function in environment
                 const func_value = Value{
                     .Function = .{

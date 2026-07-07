@@ -179,7 +179,13 @@ pub const Aarch64NativeCodegen = struct {
             switch (stmt) {
                 .StructDecl => |decl| try self.struct_layouts.put(decl.name, decl),
                 .EnumDecl => |decl| try self.enum_layouts.put(decl.name, decl),
-                .FnDecl => |decl| try self.fn_decls.put(decl.name, decl),
+                .FnDecl => |decl| {
+                    // A forward declaration (issue #17) must not clobber a
+                    // real definition already registered under the name.
+                    if (!decl.is_forward_decl or !self.fn_decls.contains(decl.name)) {
+                        try self.fn_decls.put(decl.name, decl);
+                    }
+                },
                 else => {},
             }
         }
@@ -244,7 +250,11 @@ pub const Aarch64NativeCodegen = struct {
 
     fn generateStmt(self: *Aarch64NativeCodegen, stmt: ast.Stmt) CodegenError!void {
         switch (stmt) {
-            .FnDecl => |func| try self.generateFnDecl(func),
+            .FnDecl => |func| {
+                // Forward declarations (issue #17) bind the name only —
+                // emitting them would duplicate the later definition's symbol.
+                if (!func.is_forward_decl) try self.generateFnDecl(func);
+            },
             .StructDecl => {}, // registered in writeExecutable's pass 0
             .EnumDecl => {}, // registered in writeExecutable's pass 0
             .LetDecl => |decl| try self.generateLetDecl(decl),

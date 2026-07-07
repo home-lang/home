@@ -236,7 +236,10 @@ pub const LLVMCodegen = struct {
 
     fn generateStmt(self: *LLVMCodegen, stmt: ast.Stmt) !void {
         switch (stmt) {
-            .FnDecl => |fn_decl| try self.generateFunction(fn_decl),
+            .FnDecl => |fn_decl| {
+                // Forward declarations (issue #17) bind the name only.
+                if (!fn_decl.is_forward_decl) try self.generateFunction(fn_decl);
+            },
             .StructDecl => |struct_decl| try self.generateStruct(struct_decl),
             .LetDecl => |let_decl| try self.generateLetDecl(let_decl),
             .ReturnStmt => |ret_stmt| try self.generateReturn(ret_stmt),

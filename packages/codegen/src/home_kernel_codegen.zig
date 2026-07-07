@@ -102,6 +102,8 @@ pub const HomeKernelCodegen = struct {
     fn generateStmt(self: *HomeKernelCodegen, stmt: ast.Stmt) !void {
         switch (stmt) {
             .FnDecl => |func| {
+                // Forward declarations (issue #17) bind the name only.
+                if (func.is_forward_decl) return;
                 // Check if this is an exported function (like kernel_main)
                 // For now, export functions that start with "kernel_" or are named "main"
                 const is_export = std.mem.startsWith(u8, func.name, "kernel_") or
