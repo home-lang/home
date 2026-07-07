@@ -517,6 +517,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "strictFunctionTypes") or
         std.ascii.eqlIgnoreCase(key, "strictNullChecks") or
         std.ascii.eqlIgnoreCase(key, "strictPropertyInitialization") or
+        std.ascii.eqlIgnoreCase(key, "suppressExcessPropertyErrors") or
         std.ascii.eqlIgnoreCase(key, "suppressImplicitAnyIndexErrors") or
         std.ascii.eqlIgnoreCase(key, "target") or
         std.ascii.eqlIgnoreCase(key, "types") or
