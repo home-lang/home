@@ -506,6 +506,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "noUnusedLocals") or
         std.ascii.eqlIgnoreCase(key, "noUnusedParameters") or
         std.ascii.eqlIgnoreCase(key, "outDir") or
+        std.ascii.eqlIgnoreCase(key, "removeComments") or
         std.ascii.eqlIgnoreCase(key, "resolveJsonModule") or
         std.ascii.eqlIgnoreCase(key, "resolvePackageJsonExports") or
         std.ascii.eqlIgnoreCase(key, "resolvePackageJsonImports") or
