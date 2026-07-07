@@ -1267,7 +1267,17 @@ pub const Interner = struct {
     pub fn intersectionMembers(self: *const Interner, id: TypeId) []const TypeId {
         const flags = self.pool.flagsOf(id);
         std.debug.assert(flags.is_intersection);
-        const p = self.pool.intersection_payloads.items[self.pool.payloadOf(id)];
+        // A union header wears the OR of its members' flags (see
+        // `internUnion`), so a union CONTAINING an intersection member is
+        // flagged `is_intersection` while its payload indexes
+        // `union_payloads`. Reading `intersection_payloads` with that
+        // index is out-of-bounds (TypeGuardWithEnumUnion under exact
+        // mode) or silent garbage. Such an id is a union, not an
+        // intersection — it has no intersection members of its own.
+        if (flags.is_union) return &.{};
+        const pi = self.pool.payloadOf(id);
+        if (pi >= self.pool.intersection_payloads.items.len) return &.{};
+        const p = self.pool.intersection_payloads.items[pi];
         return self.pool.member_pool.items[p.members_start .. p.members_start + p.members_len];
     }
 
