@@ -76,6 +76,12 @@ pub const Global = @import("global.zig");
 pub const MaxHeapAllocator = @import("bun_alloc/MaxHeapAllocator.zig");
 pub const Environment = @import("environment.zig");
 comptime {
+    if (!enable_jsc_link) {
+        // Force analysis of the libc mi_* shim so its comptime @export block
+        // runs even if no Zig caller references the file (same lazy-analysis
+        // trap as string/immutable/visible.zig below).
+        _ = @import("mimalloc_shim.zig");
+    }
     if (enable_jsc_link) {
         _ = @import("jsc/virtual_machine_exports.zig");
         _ = @import("jsc/CppTask.zig");
@@ -576,12 +582,17 @@ pub const JSError = error{ JSError, OutOfMemory, JSTerminated };
 pub const JSTerminated = error{JSTerminated};
 pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
-// Must be libc malloc/free-backed: ArrayBuffer/TypedArray bytes allocated here
-// are freed pointer-only by `MarkedArrayBuffer_deallocator` → `mi_free`
-// (=`std.c.free` in Home's mimalloc shim). `std.heap.smp_allocator` is
-// page-based and can't be freed by `std.c.free` (SIGABRT in GC sweep). Upstream
-// Bun's default_allocator is mimalloc, which likewise frees by pointer.
-pub const default_allocator: std.mem.Allocator = std.heap.c_allocator;
+// Must free by pointer: ArrayBuffer/TypedArray bytes allocated here are freed
+// pointer-only by `MarkedArrayBuffer_deallocator` → `mi_free`. With
+// `-Denable_jsc` the real mimalloc links (vendor/mimalloc static.c.o) and
+// this is upstream Bun's actual default_allocator — mimalloc purges freed
+// segments back to the OS, which libc malloc does not (the serve-body-leak
+// RSS-retention failure). Without JSC, mi_* is the libc shim, so
+// std.heap.c_allocator is the same allocator and stays coherent.
+pub const default_allocator: std.mem.Allocator = if (enable_jsc_link)
+    @import("bun_alloc/basic.zig").c_allocator
+else
+    std.heap.c_allocator;
 pub const StackOverflow = error{StackOverflow};
 // Faithful to upstream `bun.zig:16`: `pub const DefaultAllocator = allocators.Default;`.
 // The default allocator *type* used by `bun.ptr.shared` / `bun.ptr.OwnedIn`.
@@ -5983,9 +5994,15 @@ pub const mimalloc_sys = struct {
     // Round-4 (2026-05-19): swap from the upstream wrapper to the libc
     // shim so `mi_malloc`/`mi_free`/`mi_calloc`/`mi_realloc` resolve at
     // link time without requiring a vendored mimalloc-bun build.
-    // The real wrapper at `mimalloc_sys/mimalloc.zig` stays on disk and
-    // re-enables when Phase 12.2 lands mimalloc-bun (revert this line).
-    pub const mimalloc = @import("mimalloc_shim.zig");
+    // Phase 12.2 re-attach: with `-Denable_jsc` the exe links the real
+    // vendor/mimalloc/src/static.c.o from the Bun obj root, so the vendored
+    // extern wrapper is the live binding and the libc shim gates itself off
+    // (see the comptime export block in mimalloc_shim.zig). Non-JSC test
+    // targets keep the shim.
+    pub const mimalloc = if (@import("build_options").enable_jsc)
+        @import("mimalloc_sys/mimalloc.zig")
+    else
+        @import("mimalloc_shim.zig");
 };
 pub const tcc_sys = struct {
     pub const tcc = @import("tcc_sys/tcc.zig");

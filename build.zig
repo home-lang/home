@@ -81,6 +81,7 @@ const link_bun_rust_archive = false;
 
 const native_vendor_roots = [_][]const u8{
     "vendor/tinycc/", // bun:ffi JIT backend (with environment.enable_tinycc)
+    "vendor/mimalloc/", // real mi_* (Phase 12.2 re-attach); shim exports gate off under enable_jsc
     "vendor/boringssl/",
     "vendor/cares/",
     "vendor/hdrhistogram/",
