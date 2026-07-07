@@ -32,7 +32,11 @@ pub const BunInfo = struct {
         return home.ast.Expr.init(home.ast.E.Object, .{}, home.logger.Loc.Empty);
     }
 };
-pub const user_agent = "Home/0.0.0";
+// Pin-faithful UA ("Bun/<version>", bun_core/Global.zig): the wire
+// User-Agent must equal navigator.userAgent ("Bun/" + version) — Bun's
+// fetch tests assert the equality, and the "Home/0.0.0" rebrand broke
+// every body-stream clone test at the first header assertion.
+pub const user_agent = @import("bun_core/Global.zig").user_agent;
 
 pub fn exit(code: u8) noreturn {
     std.process.exit(code);

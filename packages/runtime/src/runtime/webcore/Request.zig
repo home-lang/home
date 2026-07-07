@@ -948,16 +948,50 @@ pub fn setFetchHeaders(
 /// path, while `forEachHeader` reads the bytes correctly and `append` (the same
 /// path the fetch client uses) stores them correctly.
 pub fn fetchHeadersFromReqZig(req: *uws.Request) *FetchHeaders {
-    const headers = FetchHeaders.createEmpty();
-    const Ctx = struct { h: *FetchHeaders, g: *jsc.JSGlobalObject };
-    var ctx = Ctx{ .h = headers, .g = jsc.VirtualMachine.get().global };
+    // Snapshot the uws headers through the buffer+StringPointer C++ path
+    // (WebCore__FetchHeaders__createValueNotJS), which builds OWNED
+    // WTF::Strings from the buffer. The previous per-header `append` route
+    // went through Zig::toString, which wraps the passed bytes as EXTERNAL
+    // strings — those aliased the uws receive buffer and dangled once a
+    // (large) request body streamed over it, so header values read back as
+    // body garbage / null in async handlers (the body-stream clone suite's
+    // 1 MiB cases).
+    const alloc = bun.default_allocator;
+    var names: std.ArrayListUnmanaged(bun.schema.api.StringPointer) = .empty;
+    defer names.deinit(alloc);
+    var values: std.ArrayListUnmanaged(bun.schema.api.StringPointer) = .empty;
+    defer values.deinit(alloc);
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    const Ctx = struct {
+        names: *std.ArrayListUnmanaged(bun.schema.api.StringPointer),
+        values: *std.ArrayListUnmanaged(bun.schema.api.StringPointer),
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+    };
+    var ctx = Ctx{ .names = &names, .values = &values, .buf = &buf, .alloc = alloc };
     req.forEachHeader(Ctx, &ctx, struct {
         fn cb(c: *Ctx, name: []const u8, value: []const u8) void {
             if (name.len == 0) return;
-            c.h.append(&ZigString.init(name), &ZigString.init(value), c.g);
+            const name_off: u32 = @intCast(c.buf.items.len);
+            c.buf.appendSlice(c.alloc, name) catch bun.outOfMemory();
+            const value_off: u32 = @intCast(c.buf.items.len);
+            c.buf.appendSlice(c.alloc, value) catch bun.outOfMemory();
+            c.names.append(c.alloc, .{ .offset = name_off, .length = @intCast(name.len) }) catch bun.outOfMemory();
+            c.values.append(c.alloc, .{ .offset = value_off, .length = @intCast(value.len) }) catch bun.outOfMemory();
         }
     }.cb);
-    return headers;
+
+    if (names.items.len == 0) return FetchHeaders.createEmpty();
+    const buf_str = ZigString.init(buf.items);
+    return FetchHeaders.create(
+        jsc.VirtualMachine.get().global,
+        names.items.ptr,
+        values.items.ptr,
+        &buf_str,
+        @intCast(names.items.len),
+    ) orelse FetchHeaders.createEmpty();
 }
 
 pub fn ensureFetchHeaders(
