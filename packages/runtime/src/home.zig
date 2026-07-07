@@ -93,6 +93,14 @@ comptime {
         _ = @import("runtime/webcore/streams.zig").HTTPResponseSink.JSSink;
         _ = @import("runtime/webcore/streams.zig").HTTPSResponseSink.JSSink;
         _ = @import("sourcemap_jsc/CodeCoverage.zig");
+        // Width/grapheme exports consumed by sliceAnsi.cpp / wrapAnsi.cpp in
+        // the linked C++ objects. string/immutable/visible.zig carries WEAK
+        // fallback definitions for exactly this, but its lazy `const` import
+        // in immutable.zig never triggered analysis, so the exports were
+        // never emitted and the exe link failed on the 5 symbols. Force the
+        // analysis here (JSC gate only — the emoji path calls ICU's
+        // icu_hasBinaryProperty, which the -Denable_jsc=false build lacks).
+        _ = @import("string/immutable/visible.zig");
         _ = @import("native_stubs.zig");
         // Force the real ResolvePath__joinAbsStringBufCurrentPlatformBunString
         // export (jsc/resolve_path_jsc.zig) into the .Exe build — its no-op was
@@ -6795,10 +6803,11 @@ test {
     _ = @import("bun_core/string/immutable/grapheme.zig");
     _ = @import("bun_core/string/immutable/grapheme_tables.zig");
     _ = @import("bun_core/string/immutable/unicode.zig");
-    // NOTE: bun_core/string/immutable/visible.zig is NOT referenced — its
-    // width/emoji path links against ICU's `icu_hasBinaryProperty` (defined in
-    // Bun's C++), absent from the -Denable_jsc=false test gate; stubbing would
-    // falsify behavior. Tracked in docs/BUN_ZIG_SOURCE_AUDIT_2026-06-01.md.
+    // NOTE: the width/grapheme exports come from string/immutable/visible.zig,
+    // referenced in the `enable_jsc_link` comptime block above (weak-export
+    // fallbacks). bun_core/string/immutable/visible.zig stays unreferenced —
+    // the -Denable_jsc=false test gate must stay free of ICU's
+    // `icu_hasBinaryProperty`. See docs/BUN_ZIG_SOURCE_AUDIT_2026-06-01.md.
     _ = @import("highway/highway.zig");
     // Config-format parsers (2026-06-01 integration sweep). interchange.zig
     // re-exports json/json5/toml/yaml; toml pulls toml/lexer. json is already
