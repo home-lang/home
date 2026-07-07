@@ -84,9 +84,9 @@ pub const ZigException = extern struct {
             frame.deinit();
         }
 
-        // `referenced_source_provider.deref` lives on a JSC opaque pointer;
-        // upstream calls it through bun.jsc.SourceProvider. The real call
-        // re-attaches when the JSC bridge lands.
+        if (this.stack.referenced_source_provider) |source| {
+            source.deref();
+        }
     }
 
     pub const Holder = extern struct {
@@ -125,9 +125,16 @@ pub const ZigException = extern struct {
         }
 
         pub fn deinit(this: *Holder, vm: *VirtualMachine) void {
-            _ = vm; // `vm.module_loader.resetArena(vm)` re-attaches with the real VM.
             if (this.loaded) {
                 this.zig_exception.deinit();
+            }
+            // The .print_source transpile (error source-code previews) skips
+            // the normal per-fetch resetArena so its slices stay alive while
+            // the error prints; the holder owns the deferred reset. Dropping
+            // this leaked one full transpile per inspected error
+            // (inspect-error-leak: 74MB/100k iters).
+            if (this.need_to_clear_parser_arena_on_deinit) {
+                vm.module_loader.resetArena(vm);
             }
         }
 

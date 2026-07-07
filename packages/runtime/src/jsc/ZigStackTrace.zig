@@ -22,8 +22,7 @@ const ZigString = @import("./ZigString.zig").ZigString;
 
 const String = @import("home").String;
 
-// `jsc.SourceProvider` stubbed — opaque C++ type on the JSC side.
-const SourceProvider = opaque {};
+const SourceProvider = @import("SourceProvider.zig").SourceProvider;
 
 /// Represents a JavaScript stack trace
 pub const ZigStackTrace = extern struct {
