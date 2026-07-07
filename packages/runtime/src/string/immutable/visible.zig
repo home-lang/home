@@ -1422,20 +1422,13 @@ fn Bun__isEmojiPresentation(cp: u32) callconv(.c) bool {
 }
 
 comptime {
-    // Bun object sets differ on whether these string-width/grapheme helpers are
-    // defined or merely referenced. These were weak fallbacks, but zig
-    // 0.17-dev emits Mach-O weak @exports as LOCAL (`t`) symbols, so the exe
-    // link never saw them ("undefined symbol: _Bun__codepointWidth" x5 —
-    // which also proves the current obj set only references them). Export
-    // strongly; if a future obj set defines them, the duplicate-symbol error
-    // will point right back here.
-    @export(&Bun__visibleWidthExcludeANSI_utf16, .{ .name = "Bun__visibleWidthExcludeANSI_utf16" });
-    @export(&Bun__visibleWidthExcludeANSI_latin1, .{ .name = "Bun__visibleWidthExcludeANSI_latin1" });
-    @export(&Bun__codepointWidth, .{ .name = "Bun__codepointWidth" });
-    @export(&Bun__graphemeBreak, .{ .name = "Bun__graphemeBreak" });
-    @export(&Bun__isEmojiPresentation, .{ .name = "Bun__isEmojiPresentation" });
     if (!build_options.enable_jsc) {
         @export(&Bun__visibleWidthExcludeANSI_utf8, .{ .name = "Bun__visibleWidthExcludeANSI_utf8" });
+        @export(&Bun__visibleWidthExcludeANSI_utf16, .{ .name = "Bun__visibleWidthExcludeANSI_utf16" });
+        @export(&Bun__visibleWidthExcludeANSI_latin1, .{ .name = "Bun__visibleWidthExcludeANSI_latin1" });
+        @export(&Bun__codepointWidth, .{ .name = "Bun__codepointWidth" });
+        @export(&Bun__graphemeBreak, .{ .name = "Bun__graphemeBreak" });
+        @export(&Bun__isEmojiPresentation, .{ .name = "Bun__isEmojiPresentation" });
     }
 }
 
