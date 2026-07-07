@@ -10,14 +10,15 @@ target.
 
 ## Status
 
-- **Not wired into `zig build test`.** Staged only; wiring lands alongside the
-  Phase 12.8 test-runner copy.
-- `home test packages/runtime/test/bun-corpus/` is the full acceptance gate and
-  must keep failing until Home can execute 100 % of this corpus natively. It
-  now walks every discovered Bun test file through Home's native JSC
-  bootstrap and reports the first real unsupported/failing file. The 2026-07-04
-  resync to `4982b91e3702094330f3be3883354c52b8c01323` discovers `4,708`
-  Bun-style test files. A separate
+- **Wired into `zig build test` behind `HOME_BUN_CORPUS_FULL=1`.** The normal
+  suite keeps focused pins fast, while the opt-in gate walks every discovered
+  Bun-style test file from this copied corpus and fails at the first real
+  unsupported/failing file.
+- `home test packages/runtime/test/bun-corpus/` remains the end-user full
+  acceptance gate and must keep failing until Home can execute 100 % of this
+  corpus natively. The 2026-07-04 resync to
+  `4982b91e3702094330f3be3883354c52b8c01323` discovers `4,708` Bun-style test
+  files. A separate
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
