@@ -1899,9 +1899,14 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("file", file_pkg);
     release_safe_exe.root_module.addImport("network", network_pkg);
     release_safe_exe.root_module.addImport("http", http_pkg);
-    release_safe_exe.root_module.addImport("build_options", build_options.createModule());
+    release_safe_exe.root_module.addImport("build_options", build_options_module);
     release_safe_exe.root_module.addImport("home", home_rt_pkg);
     release_safe_exe.root_module.addImport("home_rt", home_rt_pkg);
+    release_safe_exe.root_module.addImport("cloud", cloud_pkg);
+    release_safe_exe.root_module.addImport("compiler", compiler_pkg);
+    release_safe_exe.root_module.addImport("home_test", home_test_pkg);
+    release_safe_exe.root_module.addImport("macros", macros_pkg);
+    release_safe_exe.root_module.addImport("optimizer", optimizer_pkg);
 
     const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
     const release_safe_step = b.step("release-safe", "Build Home compiler in ReleaseSafe mode (optimized with safety)");
@@ -1936,9 +1941,14 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("file", file_pkg);
     release_small_exe.root_module.addImport("network", network_pkg);
     release_small_exe.root_module.addImport("http", http_pkg);
-    release_small_exe.root_module.addImport("build_options", build_options.createModule());
+    release_small_exe.root_module.addImport("build_options", build_options_module);
     release_small_exe.root_module.addImport("home", home_rt_pkg);
     release_small_exe.root_module.addImport("home_rt", home_rt_pkg);
+    release_small_exe.root_module.addImport("cloud", cloud_pkg);
+    release_small_exe.root_module.addImport("compiler", compiler_pkg);
+    release_small_exe.root_module.addImport("home_test", home_test_pkg);
+    release_small_exe.root_module.addImport("macros", macros_pkg);
+    release_small_exe.root_module.addImport("optimizer", optimizer_pkg);
 
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
     const release_small_step = b.step("release-small", "Build Home compiler in ReleaseSmall mode (optimized for size)");
@@ -1978,9 +1988,14 @@ pub fn build(b: *std.Build) void {
     release_fast_exe.root_module.addImport("file", file_pkg);
     release_fast_exe.root_module.addImport("network", network_pkg);
     release_fast_exe.root_module.addImport("http", http_pkg);
-    release_fast_exe.root_module.addImport("build_options", build_options.createModule());
+    release_fast_exe.root_module.addImport("build_options", build_options_module);
     release_fast_exe.root_module.addImport("home", home_rt_pkg);
     release_fast_exe.root_module.addImport("home_rt", home_rt_pkg);
+    release_fast_exe.root_module.addImport("cloud", cloud_pkg);
+    release_fast_exe.root_module.addImport("compiler", compiler_pkg);
+    release_fast_exe.root_module.addImport("home_test", home_test_pkg);
+    release_fast_exe.root_module.addImport("macros", macros_pkg);
+    release_fast_exe.root_module.addImport("optimizer", optimizer_pkg);
     // LTO is enabled by default for ReleaseFast under modern Zig
     // (whole-program optimization across modules). The §11.11
     // Tier 1 ~10–20% speedup baseline kicks in here automatically.
