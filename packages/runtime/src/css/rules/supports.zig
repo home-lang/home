@@ -292,7 +292,7 @@ test "SupportsCondition.and is an ArrayList (empty default)" {
 
 test "SupportsCondition.declaration carries property_id + value" {
     const c: SupportsCondition = .{ .declaration = .{
-        .property_id = .{},
+        .property_id = .color,
         .value = "1px solid red",
     } };
     try std.testing.expectEqualStrings("1px solid red", c.declaration.value);
