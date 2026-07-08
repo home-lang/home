@@ -120,7 +120,7 @@ pub const StreamPriority = packed struct(u40) {
 
     pub inline fn from(dst: *StreamPriority, src: []const u8) void {
         @memcpy(@as(*[StreamPriority.byteSize]u8, @ptrCast(dst)), src);
-        std.mem.byteSwapAllFields(StreamPriority, dst);
+        h2_byteswap.byteSwapAllFields(StreamPriority, dst);
     }
 };
 
@@ -135,7 +135,7 @@ pub const FrameHeader = packed struct(u72) {
     pub inline fn from(dst: *FrameHeader, src: []const u8, offset: usize, comptime end: bool) void {
         @memcpy(@as(*[FrameHeader.byteSize]u8, @ptrCast(dst))[offset .. src.len + offset], src);
         if (comptime end) {
-            std.mem.byteSwapAllFields(FrameHeader, dst);
+            h2_byteswap.byteSwapAllFields(FrameHeader, dst);
         }
     }
 };
@@ -147,7 +147,7 @@ pub const SettingsPayloadUnit = packed struct(u48) {
     pub inline fn from(dst: *SettingsPayloadUnit, src: []const u8, offset: usize, comptime end: bool) void {
         @memcpy(@as(*[SettingsPayloadUnit.byteSize]u8, @ptrCast(dst))[offset .. src.len + offset], src);
         if (comptime end) {
-            std.mem.byteSwapAllFields(SettingsPayloadUnit, dst);
+            h2_byteswap.byteSwapAllFields(SettingsPayloadUnit, dst);
         }
     }
     pub inline fn encode(dst: *[byteSize]u8, setting: SettingsType, value: u32) void {
@@ -158,6 +158,7 @@ pub const SettingsPayloadUnit = packed struct(u48) {
 
 const home_rt = @import("home");
 const std = @import("std");
+const h2_byteswap = @import("h2_byteswap.zig");
 
 test "H2FrameParser.u32FromBytes decodes big-endian u32" {
     const bytes = [_]u8{ 0x01, 0x02, 0x03, 0x04 };

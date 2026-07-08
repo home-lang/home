@@ -219,7 +219,7 @@ pub fn writeFrame(this: *ClientSession, frame_type: wire.FrameType, flags: u8, s
         .streamIdentifier = stream_id,
         .length = @intCast(payload.len),
     };
-    std.mem.byteSwapAllFields(wire.FrameHeader, &header);
+    h2_byteswap.byteSwapAllFields(wire.FrameHeader, &header);
     this.queue(std.mem.asBytes(&header)[0..wire.FrameHeader.byteSize]);
     this.queue(payload);
 }
@@ -800,6 +800,7 @@ const encode = @import("./encode.zig");
 const lshpack = @import("../lshpack.zig");
 const std = @import("std");
 const wire = @import("../H2FrameParser.zig");
+const h2_byteswap = @import("../h2_byteswap.zig");
 
 const H2 = @import("../H2Client.zig");
 const local_initial_window_size = H2.local_initial_window_size;

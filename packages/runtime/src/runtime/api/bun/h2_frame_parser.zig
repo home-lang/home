@@ -171,14 +171,14 @@ const StreamPriority = packed struct(u40) {
     pub const byteSize: usize = 5;
     pub inline fn write(this: *StreamPriority, comptime Writer: type, writer: Writer) bool {
         var swap = this.*;
-        std.mem.byteSwapAllFields(StreamPriority, &swap);
+        h2_byteswap.byteSwapAllFields(StreamPriority, &swap);
 
         return writeBytes(writer, std.mem.asBytes(&swap)[0..StreamPriority.byteSize]);
     }
 
     pub inline fn from(dst: *StreamPriority, src: []const u8) void {
         @memcpy(@as(*[StreamPriority.byteSize]u8, @ptrCast(dst)), src);
-        std.mem.byteSwapAllFields(StreamPriority, dst);
+        h2_byteswap.byteSwapAllFields(StreamPriority, dst);
     }
 };
 
@@ -191,7 +191,7 @@ const FrameHeader = packed struct(u72) {
     pub const byteSize: usize = 9;
     pub inline fn write(this: *FrameHeader, comptime Writer: type, writer: Writer) bool {
         var swap = this.*;
-        std.mem.byteSwapAllFields(FrameHeader, &swap);
+        h2_byteswap.byteSwapAllFields(FrameHeader, &swap);
 
         return writeBytes(writer, std.mem.asBytes(&swap)[0..FrameHeader.byteSize]);
     }
@@ -199,7 +199,7 @@ const FrameHeader = packed struct(u72) {
     pub inline fn from(dst: *FrameHeader, src: []const u8, offset: usize, comptime end: bool) void {
         @memcpy(@as(*[FrameHeader.byteSize]u8, @ptrCast(dst))[offset .. src.len + offset], src);
         if (comptime end) {
-            std.mem.byteSwapAllFields(FrameHeader, dst);
+            h2_byteswap.byteSwapAllFields(FrameHeader, dst);
         }
     }
 };
@@ -211,7 +211,7 @@ const SettingsPayloadUnit = packed struct(u48) {
     pub inline fn from(dst: *SettingsPayloadUnit, src: []const u8, offset: usize, comptime end: bool) void {
         @memcpy(@as(*[SettingsPayloadUnit.byteSize]u8, @ptrCast(dst))[offset .. src.len + offset], src);
         if (comptime end) {
-            std.mem.byteSwapAllFields(SettingsPayloadUnit, dst);
+            h2_byteswap.byteSwapAllFields(SettingsPayloadUnit, dst);
         }
     }
 };
@@ -260,7 +260,7 @@ const FullSettingsPayload = packed struct(u336) {
     pub fn write(this: *FullSettingsPayload, comptime Writer: type, writer: Writer) bool {
         var swap = this.*;
 
-        std.mem.byteSwapAllFields(FullSettingsPayload, &swap);
+        h2_byteswap.byteSwapAllFields(FullSettingsPayload, &swap);
         return writeBytes(writer, std.mem.asBytes(&swap)[0..FullSettingsPayload.byteSize]);
     }
 };
@@ -532,7 +532,7 @@ pub fn jsGetPackedSettings(globalObject: *jsc.JSGlobalObject, callframe: *jsc.Ca
         }
     }
 
-    std.mem.byteSwapAllFields(FullSettingsPayload, &settings);
+    h2_byteswap.byteSwapAllFields(FullSettingsPayload, &settings);
     const bytes = std.mem.asBytes(&settings)[0..FullSettingsPayload.byteSize];
     const binary_type: BinaryType = .Buffer;
     return binary_type.toJS(bytes, globalObject);
@@ -4865,6 +4865,7 @@ extern fn Bun__wrapAbortError(globalObject: *jsc.JSGlobalObject, cause: jsc.JSVa
 
 const lshpack = @import("../../../http/lshpack.zig");
 const std = @import("std");
+const h2_byteswap = @import("../../../http/h2_byteswap.zig");
 const Allocator = std.mem.Allocator;
 
 const bun = @import("bun");
