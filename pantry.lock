@@ -2,9 +2,9 @@
   "version": "1.0.0",
   "lockfileVersion": 2,
   "packages": {
-    "ziglang.org@0.17.0-dev.263+0add2dfc4": {
+    "ziglang.org@0.17.0-dev.1275+59a628c6d": {
       "name": "ziglang.org",
-      "version": "0.17.0-dev.263+0add2dfc4",
+      "version": "0.17.0-dev.1275+59a628c6d",
       "source": "ziglang"
     }
   }

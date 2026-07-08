@@ -25,7 +25,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline_file="${repo_root}/docs/test-baseline.txt"
 log_file="${repo_root}/test-summary.log"
 count_file="${repo_root}/test-count.txt"
-expected_zig_version="0.17.0-dev.263+0add2dfc4"
+expected_zig_version="0.17.0-dev.1275+59a628c6d"
 zig_bin="${repo_root}/pantry/.bin/zig"
 
 if [[ ! -x "${zig_bin}" ]]; then

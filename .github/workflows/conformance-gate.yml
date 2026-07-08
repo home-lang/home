@@ -45,7 +45,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.263+0add2dfc4'
+          version: '0.17.0-dev.1275+59a628c6d'
 
       - name: Verify Zig installation
         run: zig version

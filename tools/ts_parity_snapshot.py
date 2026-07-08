@@ -59,7 +59,7 @@ from typing import Dict, Optional, Tuple
 # Sections we recognise. Order matters only for the human-readable diff
 # output; the JSON itself is sorted alphabetically per section.
 SECTIONS = ("smoke", "category", "baseline-aware", "diagnostic-codes")
-EXPECTED_ZIG_VERSION = "0.17.0-dev.263+0add2dfc4"
+EXPECTED_ZIG_VERSION = "0.17.0-dev.1275+59a628c6d"
 
 # Lines look like:
 #   [ts_conformance smoke] comparable: total=13 passed=13 failed=0 skipped=0 pass_rate=1.00

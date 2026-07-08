@@ -9,7 +9,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-EXPECTED_ZIG_VERSION="0.17.0-dev.263+0add2dfc4"
+EXPECTED_ZIG_VERSION="0.17.0-dev.1275+59a628c6d"
 ZIG="$ROOT/pantry/.bin/zig"
 
 if [[ -z "$ZIG" || ! -x "$ZIG" ]]; then

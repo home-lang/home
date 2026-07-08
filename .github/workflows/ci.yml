@@ -111,7 +111,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.263+0add2dfc4'
+          version: '0.17.0-dev.1275+59a628c6d'
 
       - name: Verify Zig Installation
         run: zig version
@@ -206,7 +206,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.263+0add2dfc4'
+          version: '0.17.0-dev.1275+59a628c6d'
 
       - name: Check test pass-count vs baseline
         run: |
@@ -236,7 +236,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.263+0add2dfc4'
+          version: '0.17.0-dev.1275+59a628c6d'
 
       - name: Run kernel memory tests
         run: |
@@ -290,7 +290,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.263+0add2dfc4'
+          version: '0.17.0-dev.1275+59a628c6d'
 
       - name: Build Home Compiler
         run: zig build
@@ -319,7 +319,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.263+0add2dfc4'
+          version: '0.17.0-dev.1275+59a628c6d'
 
       - name: Run filesystem tests
         run: |
@@ -337,7 +337,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.263+0add2dfc4'
+          version: '0.17.0-dev.1275+59a628c6d'
 
       - name: Run network stack tests
         run: |
