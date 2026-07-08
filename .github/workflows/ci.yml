@@ -145,6 +145,15 @@ jobs:
           chmod +x tests/integration/test_runner.sh
           ./tests/integration/test_runner.sh
 
+      # Real-runtime regression (HTTP/2 server, etc.). Self-skips on non-JSC
+      # builds, so it is safe on every target; gates hard where the JS runtime
+      # is linked (macOS).
+      - name: Run Runtime Regression Tests (Unix)
+        if: (matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')) && matrix.platform != 'windows'
+        run: |
+          chmod +x scripts/runtime-regression.sh
+          ./scripts/runtime-regression.sh
+
       - name: Test Native Codegen (Unix)
         if: (matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')) && matrix.platform != 'windows'
         run: |
