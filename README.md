@@ -21,17 +21,18 @@ file-count, or row-count measurement** against an external baseline —
 not an aspirational target. Each row cites the package, harness, or
 upstream source that produces it.
 
-> Refreshed 2026-05-30. Coarse-mode TS corpus and per-slice exact mode
+> Refreshed 2026-07-08. Coarse-mode TS corpus and per-slice exact mode
 > are regression-gated on every PR; Bun port % is file-count progress
 > over integrated Home ports, while raw source presence is reported
 > separately now that the full Bun source backlog has been staged.
-> TS diagnostic-code coverage (1,146 / 2,076 emitted) tracks the catalog-
+> TS diagnostic-code coverage (1,620 / 2,079 emitted) tracks the catalog-
 > only → emitted ratchet; each `feat(ts-parity): implement TSxxxx`
 > commit moves this row by 1. Note: faithful "100% parity" is the
-> **reachable** subset — the ~446 catalog-only codes the reference
-> compiler (typescript-go) actually emits — not all 2,076. The other
-> ~514 catalog-only codes are dead in the reference (obsolete/superseded
-> wording it never produces); see
+> **reachable** subset — the codes the reference compiler
+> (typescript-go) actually emits — and that subset is now effectively
+> complete: **0 reachable parity targets remain**. The ~455 still-
+> unemitted codes are dead in the reference (obsolete/superseded wording
+> it never produces), plus 4 blocked/subsystem-gated references; see
 > [`docs/TS_DIAGNOSTIC_REACHABILITY.md`](./docs/TS_DIAGNOSTIC_REACHABILITY.md).
 
 **Detailed per-feature breakdowns** (the README is the at-a-glance
@@ -52,18 +53,18 @@ view; these are the drill-down pages — modeled after Bun's
 | Area | Coverage | Source |
 |---|---|---|
 | **TypeScript — coarse corpus** | **5,907 / 5,907 — 100%** | `HOME_TS_CONFORMANCE_FULL=1` against upstream conformance corpus |
-| **TypeScript — exact (byte-for-byte)** | **4,203 / 5,907 — ~71.2%** | `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1`; 1,704 exact cases remain |
+| **TypeScript — exact (byte-for-byte)** | **4,220 / 5,907 — ~71.4%** | `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1`; 1,687 exact cases remain |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
-| **TypeScript — diagnostic codes emitted** | **1,146 / 2,076 — ~55.2%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 925 catalog-only remain (~446 reachable + ~514 dead-in-reference, see `docs/TS_DIAGNOSTIC_REACHABILITY.md`) |
-| **LSP wire methods** | **75 / ~80 — ~94%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/`; LSP 3.17 sync/lifecycle complete, notebook + window meta wired, workspaceSymbol/resolve + $/progress + codeAction/resolve + workspace/textDocumentContent (LSP 3.18) |
-| **Bun runtime — source files present** | **1,289 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
+| **TypeScript — diagnostic codes emitted** | **1,620 / 2,079 — ~77.9%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 459 catalog-only remain, but **0 are reachable parity targets** (the reachable subset is complete) — ~455 are dead-in-reference + 4 blocked, see `docs/TS_DIAGNOSTIC_REACHABILITY.md` |
+| **LSP wire methods** | **76 / ~80 — ~95%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/`; LSP 3.17 sync/lifecycle complete, notebook + window meta wired, workspaceSymbol/resolve + $/progress + codeAction/resolve + workspace/textDocumentContent (LSP 3.18) |
+| **Bun runtime — source files present** | **1,430 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
 | **Bun runtime — files integrated** | **552 / 1,193 — ~46.3%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
 | **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
 | **Node.js — `node:*` modules JS-callable** | **24 / 47 — ~51% (🟡 subsets)** | callable via Home's own JSC realm (`home eval` / `HOME_NATIVE_RUN`), unit-tested; see [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md). Not yet wired into the bun-corpus gate |
 | **JSC bring-up (Phase 12.2)** | **JS-callable bridge live** | `home eval` / `HOME_NATIVE_RUN` run through Home's own JSC; 24 `node:*` modules + a broad `Bun.*` surface (spawn/spawnSync/which/file/write/hash/gzipSync/Glob/…) callable & unit-tested. Native subsystems: zlib (`std.compress`), crypto HMAC/pbkdf2 (`std.crypto`), spawn (`std.process`) |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
-| **Total test count** | **7,023 / 7,025 — ~100%** (2 skipped, 0 failed) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev — full unit + integration + conformance pin suite |
+| **Total test count** | **~8,414 tests** (unit + integration + conformance-pin) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev.131. ⚠️ Not fully green at HEAD: ~58 TS-parity target tests currently fail (47 `ts_checker` + 11 `ts_conformance`, tracked parity work-in-progress), and the `home_rt` runtime target needs Bun's JSC/uWS C++ artifacts to link. |
 
 ### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
 
@@ -76,13 +77,15 @@ the same *families* of diagnostics.
 | Measurement | Pass rate | Notes |
 |---|---|---|
 | **Coarse mode (5,907 cases)** | **5,907 / 5,907 — 100%** | Saturated; remains the per-PR merge gate. |
-| **Exact mode (byte-for-byte, full corpus)** | **4,203 / 5,907 — ~71.2%** | Ratcheting weekly; 1,704 exact cases remain. |
+| **Exact mode (byte-for-byte, full corpus)** | **4,220 / 5,907 — ~71.4%** | Ratcheting weekly; 1,687 exact cases remain. |
 | Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
 | Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
 | Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
-| TS diagnostic-code catalogue | **1,146 / 2,076 emitted — ~55.2%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 925 catalog-only entries remain (~446 reachable parity targets + ~514 dead-in-reference; see `docs/TS_DIAGNOSTIC_CODE_STATUS.md` + `docs/TS_DIAGNOSTIC_REACHABILITY.md`). |
+| TS diagnostic-code catalogue | **1,620 / 2,079 emitted — ~77.9%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 459 catalog-only entries remain, but **0 are reachable parity targets** (the reachable subset is complete): ~455 are dead-in-reference + 4 blocked/subsystem-gated; see `docs/TS_DIAGNOSTIC_CODE_STATUS.md` + `docs/TS_DIAGNOSTIC_REACHABILITY.md`. |
 
-**Exact mode by 1,000-case slice (latest):**
+**Exact mode by 1,000-case slice** (snapshot; the per-slice breakdown is
+recomputed less often than the aggregate above and lags it slightly —
+re-run the command below to refresh):
 
 | Slice | Pass rate | % |
 |---|---|---|
@@ -116,12 +119,12 @@ convergence step (see [`docs/BUN_PARITY_PLAN.md`](./docs/BUN_PARITY_PLAN.md)).
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Runtime Zig source files present** | **1,289 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
+| **Runtime Zig source files present** | **1,430 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
 | **Bun source files integrated** | **552 / 1,193** | **~46.3%** |
-| Subsystems scaffolded | 85 directories under `packages/runtime/src/` | — |
+| Subsystems scaffolded | 100 directories under `packages/runtime/src/` | — |
 | Functional runtime | 🟡 JS-callable realm live (`home eval` / `HOME_NATIVE_RUN`); default `home run` + corpus gate still delegate | — |
 | JS-callable realm surface | 24 `node:*` modules + broad `Bun.*` | 🟡 subsets, unit-tested; see [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md) / [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md) |
-| JSC bring-up (Phase 12.2) | 128 files | M1-M6 + JS-callable bridge live (eval/run through Home's own JSC; realm globals: console/process/web/crypto/timers/url/webcore/fetch/Bun/require) |
+| JSC bring-up (Phase 12.2) | 151 files | M1-M6 + JS-callable bridge live (eval/run through Home's own JSC; realm globals: console/process/web/crypto/timers/url/webcore/fetch/Bun/require) |
 | `node:*` substrate (Phase 12.7) | 28 files | round-15 landed (buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty + binding files) |
 
 Upstream pinned at `fd0b6f1a` (see
@@ -136,7 +139,7 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | Sub-phase | Source under `~/Code/bun/src/` | Status |
 |---|---|---|
 | 12.1 — CLI | `cli/` | 🚧 scaffold landed |
-| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (128 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge pending |
+| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (151 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge live |
 | 12.3 — Event loop / IO / async | `event_loop/`, `io/`, `async/` | 🟡 substrate landing (~30+ leaves ported via wave-19+ grinders) |
 | 12.4 — Module loader | `resolver/`, `module_loader.zig` | 🚧 blocked on 12.2 |
 | 12.5 — Web / HTTP / DNS | `web/`, `http/`, `csrf/`, `dns/` | 🚧 blocked on 12.3 |
@@ -152,7 +155,7 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 Top-level package that re-exports the minimal Bun surface against
 Home's stdlib so vendored Bun source compiles without modification.
 The build wires `@import("bun")` to this shim (see
-[`build.zig:349-350`](./build.zig)), letting the
+[`build.zig:503-510`](./build.zig)), letting the
 [Bun bundler vendor files](./packages/bundler/src/) and the
 [Bun runtime port](./packages/runtime/src/) keep their upstream
 imports diff-clean and re-syncable.
@@ -196,7 +199,7 @@ Node's `node:*` namespace lands as part of the Bun runtime port (Bun
 ships `node:*` shims natively, which we vendor verbatim). Numbers
 below are Zig-side only; the JS-visible `node:*` surface attaches once
 JSC's JS-callable bridge ships (Phase 12.2 has reached M6 — JSON +
-Promise + Iterator + Global helpers — across 128 files).
+Promise + Iterator + Global helpers — across 151 files).
 
 | Measurement | Coverage | Notes |
 |---|---|---|
@@ -207,7 +210,7 @@ Promise + Iterator + Global helpers — across 128 files).
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Wire methods routed** | **53 / ~70** | **~76%** |
+| **Wire methods routed** | **76 / ~80** | **~95%** |
 
 Routed methods (`SUPPORTED_METHODS` in
 [`packages/ts_lsp_server/src/ts_lsp_server.zig`](./packages/ts_lsp_server/src/ts_lsp_server.zig)):
@@ -314,7 +317,7 @@ cross-file interner search.
 ### Standard library
 
 9 stdlib categories tracked in the capability matrix (the project ships
-**135 packages under `packages/`** — most are 🚧 until end-to-end validated):
+**136 packages under `packages/`** — most are 🚧 until end-to-end validated):
 
 | Status | Count | % |
 |---|---|---|
@@ -374,7 +377,7 @@ Top-level shape (each link is a Zig package with its own tests):
 - [`packages/ts_cli`](./packages/ts_cli/) — `home tsc` CLI flag surface
 - [`packages/ts_conformance`](./packages/ts_conformance/) — tsc-baseline conformance harness
 - [`packages/ts_lsp`](./packages/ts_lsp/) — Language Server query surface (hover, definition, references, completion, codeActions, semantic tokens, inlay hints, folding, document symbols, …)
-- [`packages/ts_lsp_server`](./packages/ts_lsp_server/) — JSON-RPC framing + method dispatch (53 LSP-spec methods routed; see [parity status](#lsp-coverage--home-lsp-vs-tsserver))
+- [`packages/ts_lsp_server`](./packages/ts_lsp_server/) — JSON-RPC framing + method dispatch (76 LSP-spec methods routed; see [parity status](#lsp-coverage--home-lsp-vs-tsserver))
 - [`packages/ts_cache`](./packages/ts_cache/) — content-addressed compilation cache with sharded disk persistence
 - [`packages/ts_watch`](./packages/ts_watch/) — pluggable `StatFs` + watcher driving incremental recompiles in `home-tsc --watch`
 - [`packages/d_hm`](./packages/d_hm/) — Home declaration files (the `.d.ts` analogue for `.home`)
@@ -407,7 +410,7 @@ Useful environment variables:
 git clone https://github.com/home-lang/home.git
 cd home
 pantry install        # installs the pinned Zig 0.17 dev toolchain
-./pantry/ziglang.org/v0.17.0-dev.263+0add2dfc4/zig build
+./pantry/.bin/zig build   # ./pantry/.bin/zig is a stable symlink to the pinned toolchain
 
 # Run an example
 ./zig-out/bin/home build examples/fibonacci.home
@@ -892,7 +895,7 @@ live in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md).
+Contributions welcome! See [CONTRIBUTING.md](./.github/CONTRIBUTING.md).
 
 ## License
 
