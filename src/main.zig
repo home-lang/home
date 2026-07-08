@@ -41,6 +41,8 @@ const home_rt = @import("home_rt");
 const Io = std.Io;
 var g_io: Io = undefined;
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
 /// Get monotonic timestamp in nanoseconds (Zig 0.17 compatible)
 fn getMonotonicNs() u64 {
     if (comptime native_os == .windows) {
@@ -4093,6 +4095,22 @@ pub fn main(init: std.process.Init) !void {
     // node:process reads `bun.argv[0]` (createArgv0) and would panic on an empty
     // slice; the eval/CJS realm paths pass argv explicitly and are unaffected.
     if (home_rt.argv.len == 0 and args.len > 0) home_rt.argv = @constCast(args);
+
+    // `--experimental-http{2,3}-fetch` enable h2/h3 in fetch() TLS ALPN. Home's
+    // command dispatch doesn't thread these runtime flags into the JS realm (the
+    // vendored bun.js.zig/Arguments set-sites are dead in this exe), so bridge
+    // them here — the earliest point with argv — into the equivalent
+    // BUN_FEATURE_FLAG env var the ALPN gate (http.canOfferH2) reads live via
+    // getenv. Setting the env var (vs a module global) is robust to the runtime's
+    // split http.zig module instances and matches the flag's documented meaning
+    // ("Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1").
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--experimental-http2-fetch")) {
+            _ = setenv("BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT", "1", 1);
+        } else if (std.mem.eql(u8, arg, "--experimental-http3-fetch")) {
+            _ = setenv("BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT", "1", 1);
+        }
+    }
 
     // Check if called as 'homecheck' - automatically run test mode
     const program_name = std.fs.path.basename(args[0]);
