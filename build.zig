@@ -757,7 +757,7 @@ pub fn build(b: *std.Build) void {
     const have_lolhtml = blk: {
         // Fork std: filesystem is io-parameterized (std.Io.Dir).
         const io = std.Io.Threaded.global_single_threaded.io();
-        b.build_root.handle.access(io, ".native/liblolhtml.a", .{}) catch break :blk false;
+        b.root.root_dir.handle.access(io, ".native/liblolhtml.a", .{}) catch break :blk false;
         break :blk true;
     };
     build_options.addOption(bool, "have_lolhtml", have_lolhtml);
@@ -862,9 +862,7 @@ pub fn build(b: *std.Build) void {
     // Run command
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run the Home compiler");
     run_step.dependOn(&run_cmd.step);
@@ -1212,7 +1210,11 @@ pub fn build(b: *std.Build) void {
     const run_home_rt_tests = b.addSystemCommand(&.{"/usr/bin/env"});
     run_home_rt_tests.setName("run test home_rt");
     run_home_rt_tests.addFileArg(home_rt_tests.getEmittedBin());
-    run_home_rt_tests.addArg(b.fmt("--seed=0x{x}", .{b.graph.random_seed}));
+    // NOTE: `b.graph.random_seed` is no longer exposed to build.zig's configure
+    // phase in this toolchain (the random seed is now a make-phase-only concept
+    // in the compiler's private Graph). Preserve the `--seed=` argument with the
+    // toolchain's default seed value (0) so the test runner still receives one.
+    run_home_rt_tests.addArg(b.fmt("--seed=0x{x}", .{@as(u32, 0)}));
     dependOnTest(test_step, &run_home_rt_tests.step, test_filter, "home_rt");
 
     // Modsign tests
@@ -1512,9 +1514,9 @@ pub fn build(b: *std.Build) void {
 
     const run_diag_harness = b.addRunArtifact(diag_harness);
     run_diag_harness.step.dependOn(b.getInstallStep());
-    run_diag_harness.addArg(b.build_root.path orelse ".");
+    run_diag_harness.addArg(b.root.root_dir.path orelse ".");
     run_diag_harness.addFileArg(exe.getEmittedBin());
-    if (b.args) |args| run_diag_harness.addArgs(args);
+    run_diag_harness.addPassthruArgs();
 
     const test_diagnostics_step = b.step(
         "test-diagnostics",
@@ -1557,24 +1559,24 @@ pub fn build(b: *std.Build) void {
     // step graph stays clean.
     const fuzz_lexer_run = b.addRunArtifact(fuzz_harness);
     fuzz_lexer_run.step.dependOn(b.getInstallStep());
-    fuzz_lexer_run.addArg(b.build_root.path orelse ".");
+    fuzz_lexer_run.addArg(b.root.root_dir.path orelse ".");
     fuzz_lexer_run.addFileArg(exe.getEmittedBin());
     fuzz_lexer_run.addArg("lex");
-    if (b.args) |args| fuzz_lexer_run.addArgs(args);
+    fuzz_lexer_run.addPassthruArgs();
 
     const fuzz_parser_run = b.addRunArtifact(fuzz_harness);
     fuzz_parser_run.step.dependOn(b.getInstallStep());
-    fuzz_parser_run.addArg(b.build_root.path orelse ".");
+    fuzz_parser_run.addArg(b.root.root_dir.path orelse ".");
     fuzz_parser_run.addFileArg(exe.getEmittedBin());
     fuzz_parser_run.addArg("parse");
-    if (b.args) |args| fuzz_parser_run.addArgs(args);
+    fuzz_parser_run.addPassthruArgs();
 
     const fuzz_all_run = b.addRunArtifact(fuzz_harness);
     fuzz_all_run.step.dependOn(b.getInstallStep());
-    fuzz_all_run.addArg(b.build_root.path orelse ".");
+    fuzz_all_run.addArg(b.root.root_dir.path orelse ".");
     fuzz_all_run.addFileArg(exe.getEmittedBin());
     fuzz_all_run.addArg("all");
-    if (b.args) |args| fuzz_all_run.addArgs(args);
+    fuzz_all_run.addPassthruArgs();
 
     const fuzz_lexer_step = b.step(
         "fuzz-lexer",
@@ -1640,9 +1642,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(parallel_build_demo);
 
     const run_parallel_build = b.addRunArtifact(parallel_build_demo);
-    if (b.args) |args| {
-        run_parallel_build.addArgs(args);
-    }
+    run_parallel_build.addPassthruArgs();
 
     const parallel_build_step = b.step("parallel-build", "Run parallel build demo");
     parallel_build_step.dependOn(&run_parallel_build.step);
