@@ -55,7 +55,11 @@ pub const Connection = struct {
         var db: ?*c.sqlite3 = null;
 
         // Null-terminate the path
-        const path_z = try allocator.dupeZ(u8, path);
+        const path_z = blk: {
+            const buf = try allocator.allocSentinel(u8, path.len, 0);
+            @memcpy(buf, path);
+            break :blk buf;
+        };
         defer allocator.free(path_z);
 
         const result = c.sqlite3_open(path_z.ptr, &db);
@@ -80,7 +84,11 @@ pub const Connection = struct {
     }
 
     pub fn exec(self: *Connection, sql: []const u8) !void {
-        const sql_z = try self.allocator.dupeZ(u8, sql);
+        const sql_z = blk: {
+            const buf = try self.allocator.allocSentinel(u8, sql.len, 0);
+            @memcpy(buf, sql);
+            break :blk buf;
+        };
         defer self.allocator.free(sql_z);
 
         // Must be initialized to null; if sqlite3_exec fails without
@@ -176,7 +184,11 @@ pub const Statement = struct {
     allocator: std.mem.Allocator,
 
     fn prepare(conn: *Connection, sql: []const u8) !Statement {
-        const sql_z = try conn.allocator.dupeZ(u8, sql);
+        const sql_z = blk: {
+            const buf = try conn.allocator.allocSentinel(u8, sql.len, 0);
+            @memcpy(buf, sql);
+            break :blk buf;
+        };
         defer conn.allocator.free(sql_z);
 
         var stmt: ?*c.sqlite3_stmt = null;

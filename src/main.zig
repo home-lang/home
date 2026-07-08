@@ -2088,7 +2088,11 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     if (std.c.getcwd(&cwd_buf, cwd_buf.len)) |p| {
         const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
-        ctx.args.absolute_working_dir = allocator.dupeZ(u8, cwd) catch null;
+        ctx.args.absolute_working_dir = blk: {
+            const buf = allocator.allocSentinel(u8, cwd.len, 0) catch break :blk null;
+            @memcpy(buf, cwd);
+            break :blk buf;
+        };
     }
 
     // Honor bunfig.toml's `preload` the way `bun test` does: the runner sets
@@ -4120,7 +4124,12 @@ pub fn main(init: std.process.Init) !void {
         defer test_args.deinit(allocator);
 
         try test_args.append(allocator, args[0]); // Program name
-        try test_args.append(allocator, try allocator.dupeZ(u8, "test")); // Inject 'test' command
+        try test_args.append(allocator, blk: {
+            const s = "test";
+            const buf = try allocator.allocSentinel(u8, s.len, 0);
+            @memcpy(buf, s);
+            break :blk buf;
+        }); // Inject 'test' command
 
         // Add remaining args (skip program name)
         if (args.len > 1) {

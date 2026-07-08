@@ -149,9 +149,9 @@ test "MD4 RFC 1320 test vectors" {
 }
 
 test "MD4 streaming matches one-shot across block boundary" {
-    const input = "a" ** 200;
+    const input: [200]u8 = @splat('a');
     var one: [16]u8 = undefined;
-    Md4.hash(input, &one, .{});
+    Md4.hash(&input, &one, .{});
 
     var d = Md4.init(.{});
     d.update(input[0..50]);

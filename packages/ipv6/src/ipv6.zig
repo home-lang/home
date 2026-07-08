@@ -201,8 +201,8 @@ pub const Address = struct {
     pub fn getMulticastScope(self: Address) ?MulticastScope {
         if (!self.isMulticast()) return null;
         const scope_value = self.octets[1] & 0x0F;
-        inline for (@typeInfo(MulticastScope).@"enum".fields) |field| {
-            if (scope_value == field.value) return @enumFromInt(scope_value);
+        inline for (@typeInfo(MulticastScope).@"enum".field_values) |fvalue| {
+            if (scope_value == fvalue) return @enumFromInt(scope_value);
         }
         return null;
     }

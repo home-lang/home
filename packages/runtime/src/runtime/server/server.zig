@@ -1408,7 +1408,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                     if (this.listener) |listener| {
                         port = @intCast(listener.getLocalPort());
 
-                        var buf: [64]u8 = [_]u8{0} ** 64;
+                        var buf: [64]u8 = @splat(0);
                         const address_bytes = listener.socket().localAddress(&buf) orelse return JSValue.jsNull();
                         var addr = SocketAddress.init(address_bytes, port) catch {
                             @branchHint(.unlikely);
@@ -1418,7 +1418,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                     }
                     if (comptime has_h3) if (this.h3_listener) |h3l| {
                         port = @intCast(h3l.getLocalPort());
-                        var buf: [64]u8 = [_]u8{0} ** 64;
+                        var buf: [64]u8 = @splat(0);
                         const address_bytes = h3l.getLocalAddress(&buf) orelse return JSValue.jsNull();
                         var addr = SocketAddress.init(address_bytes, port) catch {
                             @branchHint(.unlikely);
@@ -1482,7 +1482,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
             }
             {
                 if (this.listener) |listener| {
-                    var buf: [1024]u8 = [_]u8{0} ** 1024;
+                    var buf: [1024]u8 = @splat(0);
 
                     if (listener.socket().remoteAddress(buf[0..1024])) |addr| {
                         if (addr.len > 0) {

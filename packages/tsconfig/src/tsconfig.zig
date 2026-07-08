@@ -2212,12 +2212,12 @@ fn fillCompilerOptions(
 pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfig {
     var merged = base;
     // Compiler options: child overrides base on every set field.
-    const co_info = @typeInfo(CompilerOptions).@"struct".fields;
-    inline for (co_info) |f| {
-        if (comptime std.mem.eql(u8, f.name, "extra")) continue;
-        const child_v = @field(child.compiler_options, f.name);
+    const co_info = @typeInfo(CompilerOptions).@"struct".field_names;
+    inline for (co_info) |fname| {
+        if (comptime std.mem.eql(u8, fname, "extra")) continue;
+        const child_v = @field(child.compiler_options, fname);
         if (child_v != null) {
-            @field(merged.compiler_options, f.name) = child_v;
+            @field(merged.compiler_options, fname) = child_v;
         }
     }
     // For `extra`, append child's entries (last-writer-wins on key

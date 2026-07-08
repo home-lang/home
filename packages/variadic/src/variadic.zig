@@ -161,16 +161,16 @@ pub const FormatSpec = struct {
 
 /// Count the number of arguments in a variadic call
 pub fn countArgs(args: anytype) usize {
-    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
-    return fields.len;
+    const field_names = @typeInfo(@TypeOf(args)).@"struct".field_names;
+    return field_names.len;
 }
 
 /// Get type information for all arguments
 pub fn getArgTypes(comptime Args: type) []const ArgType {
-    const fields = @typeInfo(Args).@"struct".fields;
-    comptime var types: [fields.len]ArgType = undefined;
-    inline for (fields, 0..) |field, i| {
-        types[i] = ArgInfo.fromType(field.type).arg_type;
+    const info = @typeInfo(Args).@"struct";
+    comptime var types: [info.field_names.len]ArgType = undefined;
+    inline for (info.field_types, 0..) |ftype, i| {
+        types[i] = ArgInfo.fromType(ftype).arg_type;
     }
     const result = types;
     return &result;
@@ -191,19 +191,19 @@ pub fn isValidVarArg(comptime T: type) bool {
 
 /// Extract argument at index with type checking
 pub fn getArg(comptime T: type, args: anytype, index: usize) ?T {
-    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
-    if (index >= fields.len) return null;
+    const info = @typeInfo(@TypeOf(args)).@"struct";
+    if (index >= info.field_names.len) return null;
 
-    inline for (fields, 0..) |field, i| {
+    inline for (info.field_names, info.field_types, 0..) |fname, ftype, i| {
         if (i == index) {
-            const value = @field(args, field.name);
+            const value = @field(args, fname);
             // Try exact type match first
-            if (field.type == T) {
+            if (ftype == T) {
                 return value;
             }
             // Special case: allow string literals to coerce to []const u8
             if (T == []const u8) {
-                const field_info = @typeInfo(field.type);
+                const field_info = @typeInfo(ftype);
                 if (field_info == .pointer) {
                     const ptr_info = field_info.pointer;
                     // String literal: *const [N:0]u8
@@ -231,9 +231,9 @@ pub fn getArg(comptime T: type, args: anytype, index: usize) ?T {
 
 /// Iterate over all arguments
 pub fn forEachArg(args: anytype, comptime func: fn (arg: anytype) void) void {
-    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
-    inline for (fields) |field| {
-        func(@field(args, field.name));
+    const field_names = @typeInfo(@TypeOf(args)).@"struct".field_names;
+    inline for (field_names) |fname| {
+        func(@field(args, fname));
     }
 }
 

@@ -121,7 +121,7 @@ pub fn horizontalSub(comptime T: type, a: @Vector(2, T)) T {
 
 // Copy sign: magnitude of a with sign of b
 pub fn copysign(comptime T: type, magnitude: T, sign: T) T {
-    return @as(T, @bitCast(@as(std.meta.Int(.unsigned, @bitSizeOf(T)), @bitCast(magnitude)) & ~(@as(std.meta.Int(.unsigned, @bitSizeOf(T)), 1) << (@bitSizeOf(T) - 1)) | @as(std.meta.Int(.unsigned, @bitSizeOf(T)), @bitCast(sign)) & (@as(std.meta.Int(.unsigned, @bitSizeOf(T)), 1) << (@bitSizeOf(T) - 1))));
+    return @as(T, @bitCast(@as(@Int(.unsigned, @bitSizeOf(T)), @bitCast(magnitude)) & ~(@as(@Int(.unsigned, @bitSizeOf(T)), 1) << (@bitSizeOf(T) - 1)) | @as(@Int(.unsigned, @bitSizeOf(T)), @bitCast(sign)) & (@as(@Int(.unsigned, @bitSizeOf(T)), 1) << (@bitSizeOf(T) - 1))));
 }
 
 // Next representable value toward y
@@ -133,7 +133,7 @@ pub fn nextAfter(comptime T: type, x: T, y: T) T {
     if (x == y) return y;
 
     const bits = @bitSizeOf(T);
-    const UInt = std.meta.Int(.unsigned, bits);
+    const UInt = @Int(.unsigned, bits);
     var xi: UInt = @bitCast(x);
 
     if (x == 0) {
@@ -161,7 +161,7 @@ pub fn frexp(comptime T: type, value: T) struct { mantissa: T, exponent: i32 } {
     const bits = @bitSizeOf(T);
     const mantissa_bits = if (T == f32) 23 else 52;
     const exponent_bias = if (T == f32) 127 else 1023;
-    const UInt = std.meta.Int(.unsigned, bits);
+    const UInt = @Int(.unsigned, bits);
 
     const value_bits: UInt = @bitCast(value);
     const exponent_bits = (value_bits >> mantissa_bits) & ((1 << (bits - mantissa_bits - 1)) - 1);

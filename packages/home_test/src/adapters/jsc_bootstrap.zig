@@ -3436,9 +3436,13 @@ fn callNativeOnBeforeParse(
         return null;
     };
     defer allocator.free(symbol);
-    const symbol_z = allocator.dupeZ(u8, symbol) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "onBeforeParse symbol allocation failed: {s}", .{@errorName(err)});
-        return null;
+    const symbol_z = blk: {
+        const buf = allocator.allocSentinel(u8, symbol.len, 0) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "onBeforeParse symbol allocation failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        @memcpy(buf, symbol);
+        break :blk buf;
     };
     defer allocator.free(symbol_z);
 
@@ -4924,7 +4928,11 @@ fn valueToStackString(
 
 fn makeJSString(value: []const u8) !*opaques.JSString {
     const allocator = std.heap.smp_allocator;
-    const z = try allocator.dupeZ(u8, value);
+    const z = blk: {
+        const buf = try allocator.allocSentinel(u8, value.len, 0);
+        @memcpy(buf, value);
+        break :blk buf;
+    };
     defer allocator.free(z);
     return extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse error.MakeStringFailed;
 }

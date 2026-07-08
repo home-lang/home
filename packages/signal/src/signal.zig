@@ -41,8 +41,8 @@ pub const Signal = enum(i32) {
     }
 
     pub fn fromInt(value: i32) ?Signal {
-        inline for (@typeInfo(Signal).@"enum".fields) |field| {
-            if (value == field.value) return @enumFromInt(value);
+        inline for (@typeInfo(Signal).@"enum".field_values) |fvalue| {
+            if (value == fvalue) return @enumFromInt(value);
         }
         return null;
     }

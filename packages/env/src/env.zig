@@ -26,7 +26,11 @@ pub fn get(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
         return null;
     } else {
         // On POSIX (macOS etc.), use C getenv directly
-        const key_z = try allocator.dupeZ(u8, key);
+        const key_z = blk: {
+            const buf = try allocator.allocSentinel(u8, key.len, 0);
+            @memcpy(buf, key);
+            break :blk buf;
+        };
         defer allocator.free(key_z);
 
         const result = std.c.getenv(key_z.ptr);

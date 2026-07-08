@@ -126,7 +126,7 @@ pub const BMI2 = struct {
     /// MULX - Unsigned Multiply Without Affecting Flags
     pub fn mulx(comptime T: type, a: T, b: T) struct { low: T, high: T } {
         const double_width = @bitSizeOf(T) * 2;
-        const DoubleT = std.meta.Int(.unsigned, double_width);
+        const DoubleT = @Int(.unsigned, double_width);
 
         const result = @as(DoubleT, a) * @as(DoubleT, b);
         return .{

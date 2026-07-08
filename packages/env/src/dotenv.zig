@@ -147,10 +147,18 @@ pub const DotEnv = struct {
 
         var iter = self.vars.iterator();
         while (iter.next()) |entry| {
-            const key_z = try self.allocator.dupeZ(u8, entry.key_ptr.*);
+            const key_z = blk: {
+                const buf = try self.allocator.allocSentinel(u8, entry.key_ptr.*.len, 0);
+                @memcpy(buf, entry.key_ptr.*);
+                break :blk buf;
+            };
             defer self.allocator.free(key_z);
 
-            const value_z = try self.allocator.dupeZ(u8, entry.value_ptr.*);
+            const value_z = blk: {
+                const buf = try self.allocator.allocSentinel(u8, entry.value_ptr.*.len, 0);
+                @memcpy(buf, entry.value_ptr.*);
+                break :blk buf;
+            };
             defer self.allocator.free(value_z);
 
             const result = c.setenv(key_z.ptr, value_z.ptr, 0); // Don't overwrite existing
@@ -172,10 +180,18 @@ pub const DotEnv = struct {
 
         var iter = self.vars.iterator();
         while (iter.next()) |entry| {
-            const key_z = try self.allocator.dupeZ(u8, entry.key_ptr.*);
+            const key_z = blk: {
+                const buf = try self.allocator.allocSentinel(u8, entry.key_ptr.*.len, 0);
+                @memcpy(buf, entry.key_ptr.*);
+                break :blk buf;
+            };
             defer self.allocator.free(key_z);
 
-            const value_z = try self.allocator.dupeZ(u8, entry.value_ptr.*);
+            const value_z = blk: {
+                const buf = try self.allocator.allocSentinel(u8, entry.value_ptr.*.len, 0);
+                @memcpy(buf, entry.value_ptr.*);
+                break :blk buf;
+            };
             defer self.allocator.free(value_z);
 
             const result = c.setenv(key_z.ptr, value_z.ptr, 1); // Overwrite existing

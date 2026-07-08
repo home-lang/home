@@ -1607,7 +1607,7 @@ pub const Service = struct {
             const stmts = hir_mod.blockStmts(&c.hir, c.root);
             for (stmts) |s| {
                 const info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
-                if (query.len > 0 and std.ascii.indexOfIgnoreCase(info.name, query) == null) continue;
+                if (query.len > 0 and std.ascii.findIgnoreCase(info.name, query) == null) continue;
                 try out.append(gpa, info);
             }
         }
