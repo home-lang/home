@@ -7,7 +7,14 @@
 
 const std = @import("std");
 
-pub const basename = std.fs.path.basename;
+// `basename`/`dirname` delegate to resolve_path.zig — the same implementation
+// upstream exposes as `bun.path.*`. std.fs.path.basename/dirname diverge from
+// Bun (and POSIX coreutils) on the root and trailing-slash cases: e.g.
+// basename("/") is "" in std but "/" in Bun, and std.fs.path.dirname ignores
+// the platform argument every caller passes. This drove the shell
+// basename/dirname builtins to emit "" instead of "/" for `basename /`.
+pub const basename = @import("paths/resolve_path.zig").basename;
+pub const dirname = @import("paths/resolve_path.zig").dirname;
 pub const extension = std.fs.path.extension;
 pub const stem = std.fs.path.stem;
 pub const Platform = @import("paths/resolve_path.zig").Platform;
@@ -50,11 +57,6 @@ pub fn dangerouslyConvertPathToPosixInPlace(comptime T: type, path: []T) []T {
     return path;
 }
 
-pub fn dirname(path: []const u8, style: anytype) []const u8 {
-    _ = style;
-    return std.fs.path.dirname(path) orelse "";
-}
-
 pub fn join(parts: []const []const u8, comptime sep: Platform) []const u8 {
     // Join + normalize into the thread-local `join_buf`, matching upstream
     // `bun.path.join`. The previous placeholder returned `parts[0]` and dropped
@@ -68,8 +70,16 @@ pub fn relativeAlloc(allocator: std.mem.Allocator, from: []const u8, to: []const
     return std.fs.path.relative(allocator, from, null, from, to);
 }
 
-test "basename matches std.fs.path.basename" {
+test "basename matches Bun's bun.path.basename (resolve_path)" {
     try std.testing.expectEqualStrings("bash", basename("/usr/bin/bash"));
     try std.testing.expectEqualStrings("zsh", basename("/bin/zsh"));
     try std.testing.expectEqualStrings("file", basename("file"));
+    // Root/trailing-slash cases where std.fs.path.basename diverges from Bun.
+    try std.testing.expectEqualStrings("/", basename("/"));
+}
+
+test "dirname matches Bun's bun.path.dirname (resolve_path)" {
+    try std.testing.expectEqualStrings("/usr/bin", dirname("/usr/bin/bash", .posix));
+    try std.testing.expectEqualStrings("/", dirname("/", .posix));
+    try std.testing.expectEqualStrings("a/b", dirname("a/b/c", .posix));
 }
