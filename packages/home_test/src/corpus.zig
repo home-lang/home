@@ -10,7 +10,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 
 pub const default_root = "packages/runtime/test/bun-corpus";
-pub const expected_copied_bun_test_files = 4708;
+pub const expected_copied_bun_test_files = 4718;
 
 pub const Counts = struct {
     files: usize = 0,
@@ -222,4 +222,30 @@ test "Bun corpus collector sees vendored upstream tests" {
     }
     try std.testing.expect(found_cp);
     try std.testing.expect(found_spec);
+}
+
+test "Bun corpus collector includes every upstream test file" {
+    const upstream_root = "packages/runtime/upstream/test";
+    const upstream_files = collectTestFiles(std.testing.io, std.testing.allocator, upstream_root) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer freeTestFiles(std.testing.allocator, upstream_files);
+
+    const copied_files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
+    defer freeTestFiles(std.testing.allocator, copied_files);
+
+    for (upstream_files) |upstream_file| {
+        var found = false;
+        for (copied_files) |copied_file| {
+            if (std.mem.eql(u8, upstream_file, copied_file)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.debug.print("missing upstream Bun test in corpus: {s}\n", .{upstream_file});
+            try std.testing.expect(found);
+        }
+    }
 }

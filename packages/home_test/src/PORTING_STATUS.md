@@ -74,7 +74,7 @@ unique files: 66 unique bundler files inside `minimal-js`, 5 more in
 The copied Bun corpus is exact against upstream Bun for
 `*.test.{ts,js,mjs,cjs}` files in this worktree: 1800 upstream paths,
 1800 copied paths, zero missing, and zero extras. The broader Home
-`corpus.zig` discovery guard currently sees 4708 Bun-style test files
+`corpus.zig` discovery guard currently sees 4718 Bun-style test files
 under `packages/runtime/test/bun-corpus`, including `test-*` and
 `*.spec.*` forms, and `home test packages/runtime/test/bun-corpus` walks
 those copied source files through the JSC bootstrap. The former exact
@@ -105,7 +105,7 @@ Read-only corpus inventory on 2026-05-26, counted from
 | `bake/` | 24 | Server-heavy tranche after bundler completion |
 | `integration/` | 20 | Cross-surface follow-up tranche |
 | Small buckets | 11 | `internal` 7 plus one each for `config`, `package-json-lint`, `snippets`, and `v8` |
-| Total audited by these file patterns | 1800 | Separate from the broader 4708-file Bun-style discovery denominator |
+| Total audited by these file patterns | 1800 | Separate from the broader 4718-file Bun-style discovery denominator |
 
 Large-agent handoff for the current bundler frontier:
 
