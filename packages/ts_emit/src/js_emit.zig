@@ -256,6 +256,135 @@ const source_map_mod = @import("source_map.zig");
 /// ctor-local temp vs the enclosing computed-field key temp).
 const TempScope = struct { mark: usize, start: usize, count: usize, mark_line: u32, mark_col: u32 };
 
+/// Uppercase hex nibble (matches js_printer's `hex_chars`).
+fn jsHexNibble(v: u8) u8 {
+    return "0123456789ABCDEF"[v & 0xF];
+}
+
+fn jsHexValue(c: u8) ?u8 {
+    if (c >= '0' and c <= '9') return c - '0';
+    if (c >= 'a' and c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' and c <= 'F') return c - 'A' + 10;
+    return null;
+}
+
+/// Decode a raw string-literal's inner bytes to their cooked value. Mirrors the
+/// checker's `appendCookedStringText` so both stages agree on escape handling.
+fn cookStringInto(gpa: std.mem.Allocator, raw: []const u8, out: *std.ArrayListUnmanaged(u8)) !void {
+    var i: usize = 0;
+    while (i < raw.len) {
+        const c = raw[i];
+        if (c == '\r') {
+            try out.append(gpa, '\n');
+            i += if (i + 1 < raw.len and raw[i + 1] == '\n') 2 else 1;
+            continue;
+        }
+        if (c != '\\') {
+            try out.append(gpa, c);
+            i += 1;
+            continue;
+        }
+        if (i + 1 >= raw.len) {
+            try out.append(gpa, c);
+            i += 1;
+            continue;
+        }
+        const esc = raw[i + 1];
+        i += 2;
+        switch (esc) {
+            '0' => try out.append(gpa, 0),
+            'b' => try out.append(gpa, 0x08),
+            'f' => try out.append(gpa, 0x0c),
+            'n' => try out.append(gpa, '\n'),
+            'r' => try out.append(gpa, '\r'),
+            't' => try out.append(gpa, '\t'),
+            'v' => try out.append(gpa, 0x0b),
+            '\n' => {},
+            '\r' => {
+                if (i < raw.len and raw[i] == '\n') i += 1;
+            },
+            'x' => {
+                if (i + 1 < raw.len) {
+                    if (jsHexValue(raw[i])) |hi| {
+                        if (jsHexValue(raw[i + 1])) |lo| {
+                            try out.append(gpa, (hi << 4) | lo);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+                try out.appendSlice(gpa, "\\x");
+            },
+            'u' => {
+                if (try cookUnicodeEscape(gpa, raw, &i, out)) continue;
+                try out.appendSlice(gpa, "\\u");
+            },
+            else => try out.append(gpa, esc),
+        }
+    }
+}
+
+fn cookUnicodeEscape(gpa: std.mem.Allocator, raw: []const u8, index: *usize, out: *std.ArrayListUnmanaged(u8)) !bool {
+    if (index.* < raw.len and raw[index.*] == '{') {
+        var j = index.* + 1;
+        var cp: u21 = 0;
+        var saw_digit = false;
+        while (j < raw.len and raw[j] != '}') : (j += 1) {
+            const v = jsHexValue(raw[j]) orelse return false;
+            saw_digit = true;
+            const next = (@as(u32, cp) << 4) | v;
+            if (next > 0x10ffff) return false;
+            cp = @intCast(next);
+        }
+        if (!saw_digit or j >= raw.len or raw[j] != '}') return false;
+        var enc: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &enc) catch return false;
+        try out.appendSlice(gpa, enc[0..len]);
+        index.* = j + 1;
+        return true;
+    }
+    if (index.* + 3 >= raw.len) return false;
+    var cp: u21 = 0;
+    var j = index.*;
+    while (j < index.* + 4) : (j += 1) {
+        const v = jsHexValue(raw[j]) orelse return false;
+        cp = @intCast((@as(u32, cp) << 4) | v);
+    }
+    var enc: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(cp, &enc) catch return false;
+    try out.appendSlice(gpa, enc[0..len]);
+    index.* += 4;
+    return true;
+}
+
+/// Pick the JS quote char that minimizes escapes. Verbatim mirror of
+/// js_printer `bestQuoteCharForString` (backticks allowed for string literals).
+fn bestQuoteChar(cooked: []const u8) u8 {
+    var single: usize = 0;
+    var double: usize = 0;
+    var backtick: usize = 0;
+    var i: usize = 0;
+    while (i < @min(cooked.len, 1024)) : (i += 1) {
+        switch (cooked[i]) {
+            '\'' => single += 1,
+            '"' => double += 1,
+            '`' => backtick += 1,
+            '\n' => {
+                single += 1;
+                double += 1;
+            },
+            '\\' => i += 1,
+            '$' => {
+                if (i + 1 < cooked.len and cooked[i + 1] == '{') backtick += 1;
+            },
+            else => {},
+        }
+    }
+    if (backtick < @min(single, double)) return '`';
+    if (single < double) return '\'';
+    return '"';
+}
+
 pub const Printer = struct {
     gpa: std.mem.Allocator,
     hir: *const Hir,
@@ -8171,9 +8300,7 @@ pub const Printer = struct {
             },
             .literal_string => {
                 const s = hir_mod.literalStringOf(self.hir, node);
-                try self.write("\"");
-                try self.write(self.interner.get(s.value));
-                try self.write("\"");
+                try self.printQuotedString(self.interner.get(s.value));
             },
             .template_literal => try self.printTemplateLiteral(node),
             .literal_number => {
@@ -9175,6 +9302,98 @@ pub const Printer = struct {
                 },
                 else => try self.write(s[i .. i + 1]),
             }
+        }
+    }
+
+    /// Emit a string literal from its RAW inner source bytes with
+    /// Bun-compatible quote selection + escaping. Mirrors js_printer's
+    /// `bestQuoteCharForString` + `writePreQuotedString`
+    /// (packages/runtime/upstream/src/js_printer/js_printer.zig). The literal
+    /// value is stored raw (see ts_parser `internStringLiteral`), so decode to
+    /// its cooked bytes first. Previously the printer wrote the raw value
+    /// verbatim between `"` quotes, which produced INVALID JS for any string
+    /// containing a `"` (e.g. `'say "hi"'` → `"say "hi""`).
+    fn printQuotedString(self: *Printer, raw: []const u8) !void {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        const needs_decode = std.mem.indexOfScalar(u8, raw, '\\') != null or
+            std.mem.indexOfScalar(u8, raw, '\r') != null;
+        const cooked = if (needs_decode) blk: {
+            try cookStringInto(self.gpa, raw, &buf);
+            break :blk buf.items;
+        } else raw;
+
+        const q = bestQuoteChar(cooked);
+        try self.write(&[_]u8{q});
+        var i: usize = 0;
+        while (i < cooked.len) {
+            const c = cooked[i];
+            if (c >= 0x80) {
+                // Non-ASCII: emit the UTF-8 rune literally (ascii_only=false),
+                // except the chars JS string syntax can't carry raw.
+                const seq_len = std.unicode.utf8ByteSequenceLength(c) catch {
+                    try self.write(cooked[i .. i + 1]);
+                    i += 1;
+                    continue;
+                };
+                if (i + seq_len <= cooked.len) {
+                    if (std.unicode.utf8Decode(cooked[i .. i + seq_len])) |cp| {
+                        if (cp == 0x2028 or cp == 0x2029 or cp == 0xFEFF) {
+                            try self.writeUnicodeEscape(cp);
+                        } else {
+                            try self.write(cooked[i .. i + seq_len]);
+                        }
+                        i += seq_len;
+                        continue;
+                    } else |_| {}
+                }
+                try self.write(cooked[i .. i + 1]);
+                i += 1;
+                continue;
+            }
+            switch (c) {
+                0x08 => try self.write("\\b"),
+                0x09 => try self.write(if (q == '`') "\t" else "\\t"),
+                0x0a => try self.write(if (q == '`') "\n" else "\\n"),
+                0x0b => try self.write("\\v"),
+                0x0c => try self.write("\\f"),
+                0x0d => try self.write("\\r"),
+                '\\' => try self.write("\\\\"),
+                '"' => try self.write(if (q == '"') "\\\"" else "\""),
+                '\'' => try self.write(if (q == '\'') "\\'" else "'"),
+                '`' => try self.write(if (q == '`') "\\`" else "`"),
+                '$' => {
+                    if (q == '`' and i + 1 < cooked.len and cooked[i + 1] == '{') {
+                        try self.write("\\$");
+                    } else {
+                        try self.write("$");
+                    }
+                },
+                else => {
+                    if (c < 0x20) {
+                        try self.write(&[_]u8{ '\\', 'x', jsHexNibble(c >> 4), jsHexNibble(c) });
+                    } else {
+                        try self.write(cooked[i .. i + 1]);
+                    }
+                },
+            }
+            i += 1;
+        }
+        try self.write(&[_]u8{q});
+    }
+
+    /// `\uHHHH` (or a surrogate pair for astral codepoints), uppercase hex,
+    /// matching js_printer's `hex_chars`.
+    fn writeUnicodeEscape(self: *Printer, cp: u21) !void {
+        if (cp <= 0xFFFF) {
+            const k: u32 = cp;
+            try self.write(&[_]u8{ '\\', 'u', jsHexNibble(@intCast((k >> 12) & 0xF)), jsHexNibble(@intCast((k >> 8) & 0xF)), jsHexNibble(@intCast((k >> 4) & 0xF)), jsHexNibble(@intCast(k & 0xF)) });
+        } else {
+            const k: u32 = @as(u32, cp) - 0x10000;
+            const hi: u32 = 0xD800 + ((k >> 10) & 0x3FF);
+            const lo: u32 = 0xDC00 + (k & 0x3FF);
+            try self.write(&[_]u8{ '\\', 'u', jsHexNibble(@intCast((hi >> 12) & 0xF)), jsHexNibble(@intCast((hi >> 8) & 0xF)), jsHexNibble(@intCast((hi >> 4) & 0xF)), jsHexNibble(@intCast(hi & 0xF)) });
+            try self.write(&[_]u8{ '\\', 'u', jsHexNibble(@intCast((lo >> 12) & 0xF)), jsHexNibble(@intCast((lo >> 8) & 0xF)), jsHexNibble(@intCast((lo >> 4) & 0xF)), jsHexNibble(@intCast(lo & 0xF)) });
         }
     }
 
@@ -10262,6 +10481,45 @@ test "emit: string literal" {
     const out = try emit("\"hello\";");
     defer T.allocator.free(out);
     try T.expectEqualStrings("\"hello\";", out);
+}
+
+test "emit: string quote selection + escaping (matches Bun js_printer)" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        // Prefer double quotes.
+        .{ .src = "'hello';", .want = "\"hello\";" },
+        .{ .src = "'plain';", .want = "\"plain\";" },
+        // Single quote inside → double quotes (cheaper), apostrophe unescaped.
+        .{ .src = "\"it's\";", .want = "\"it's\";" },
+        // Double quotes inside, no single → single quotes (fewer escapes).
+        .{ .src = "'say \"hi\"';", .want = "'say \"hi\"';" },
+        .{ .src = "\"he said \\\"hi\\\"\";", .want = "'he said \"hi\"';" },
+        // Both single and double present → backtick (zero escapes).
+        .{ .src = "'a\\'b\"c';", .want = "`a'b\"c`;" },
+        // Escapes decode then re-emit for the chosen quote.
+        .{ .src = "'tab\\tnl\\n';", .want = "`tab\tnl\n`;" },
+        .{ .src = "'a\\\\b';", .want = "\"a\\\\b\";" },
+        // Non-ASCII passes through as UTF-8.
+        .{ .src = "'é';", .want = "\"é\";" },
+        // Backslash-escaped quotes decode, then re-quoted minimally.
+        .{ .src = "'\\'';", .want = "\"'\";" },
+        .{ .src = "\"\\\"\";", .want = "'\"';" },
+        // Empty string.
+        .{ .src = "'';", .want = "\"\";" },
+        // `${` only forces a backtick escape, so a plain string keeps `"`.
+        .{ .src = "'\\${y}';", .want = "\"${y}\";" },
+        // Control chars: null and bell → \xHH (uppercase hex).
+        .{ .src = "'a\\0b';", .want = "\"a\\x00b\";" },
+        .{ .src = "'a\\x07b';", .want = "\"a\\x07b\";" },
+        // A backtick inside keeps double quotes (backtick emitted literally).
+        .{ .src = "'back`tick';", .want = "\"back`tick\";" },
+        // A single newline makes backtick cheapest → literal newline.
+        .{ .src = "\"a\\nb\";", .want = "`a\nb`;" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
 }
 
 test "emit: arithmetic with parens for precedence" {
