@@ -137,6 +137,11 @@ pub const Status = enum(u8) {
 
 extern fn WebWorker__teardownJSCVM(*jsc.JSGlobalObject) void;
 extern fn WebWorker__dispatchExit(*anyopaque, i32) void;
+/// Remove a terminated worker's ScriptExecutionContext from the global contexts
+/// map (see napi_weak_home_dups.cpp). Guards against a use-after-free where a
+/// late cross-thread post (BroadcastChannel dispatch, MessageChannel, etc.)
+/// resolves the stale identifier and enqueues onto the worker's freed loop.
+extern fn Bun__ScriptExecutionContext__removeFromContextsMapByIdentifier(identifier: u32) void;
 extern fn WebWorker__dispatchOnline(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__fireEarlyMessages(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, JSValue) void;
@@ -707,6 +712,7 @@ fn shutdown(this: *WebWorker) noreturn {
     // ---- 2. User exit handlers -------------------------------------------
     var exit_code: i32 = 0;
     var globalObject: ?*jsc.JSGlobalObject = null;
+    var worker_ctx_id: ?bun.webcore.ScriptExecutionContext.Identifier = null;
     if (vm_to_deinit) |vm| {
         // terminate() set the JSC termination flag to interrupt running JS;
         // clear it so process.on('exit') handlers can run. teardownJSCVM
@@ -721,11 +727,24 @@ fn shutdown(this: *WebWorker) noreturn {
         if (vm.rare_data) |rare| rare.closeAllSocketGroups(vm);
         exit_code = vm.exit_handler.exit_code;
         globalObject = vm.global;
+        worker_ctx_id = vm.global.scriptExecutionContextIdentifier();
     }
 
     // ---- 3. JSC VM teardown ----------------------------------------------
     if (globalObject) |global| {
         WebWorker__teardownJSCVM(global);
+    }
+
+    // teardownJSCVM does not synchronously destroy the worker's global here
+    // (its refcount does not reach zero), so GlobalObject::~GlobalObject —
+    // which normally calls removeFromContextsMap() — has not run and the
+    // worker's ScriptExecutionContext is still registered in the global
+    // contexts map. Once the loop/VM below is freed, a late cross-thread post
+    // (e.g. BroadcastChannel dispatch from the parent) would resolve the stale
+    // identifier via ScriptExecutionContext::postTaskTo and enqueue onto the
+    // freed event loop → use-after-free. Remove it now, before the free.
+    if (worker_ctx_id) |cid| {
+        Bun__ScriptExecutionContext__removeFromContextsMapByIdentifier(@intFromEnum(cid));
     }
 
     // JSC is down; no more resolver/module-loader access past this point.
