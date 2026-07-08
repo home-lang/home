@@ -621,7 +621,15 @@ pub const HTMLString = extern struct {
     }
 
     pub fn toString(this: HTMLString) bun.String {
-        return bun.String.fromBytes(this.slice());
+        const bytes = this.slice();
+        if (bytes.len > 0 and bun.strings.isAllASCII(bytes)) {
+            // Zero-copy: transfer ownership of the lol-html allocation to the
+            // WTF::String, freed via lol_html_str_free in deinit_external. The
+            // former `bun.String.fromBytes(...)` copied AND leaked the original.
+            return bun.String.createExternal([*]u8, bytes, true, @constCast(bytes.ptr), &deinit_external);
+        }
+        defer this.deinit();
+        return bun.String.cloneUTF8(bytes);
     }
 
     pub fn toJS(this: HTMLString, globalThis: *bun.jsc.JSGlobalObject) bun.JSError!bun.jsc.JSValue {

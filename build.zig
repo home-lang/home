@@ -119,7 +119,7 @@ fn shouldLinkBunObject(path: []const u8) bool {
     return true;
 }
 
-fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, have_lolhtml: bool) void {
     m.linkSystemLibrary("c++", .{});
     m.linkSystemLibrary("uv", .{});
     if (target.result.os.tag == .macos) {
@@ -161,6 +161,17 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libJavaScriptCore.a", .{bun_webkit_lib}) });
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libWTF.a", .{bun_webkit_lib}) });
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libbmalloc.a", .{bun_webkit_lib}) });
+
+    // lol-html C API (Rust) — the 96 `lol_html_*` symbols HTMLRewriter needs.
+    // Isolated staticlib built from bun's `vendor/lolhtml/c-api`; it bundles its
+    // own Rust std and pulls in NONE of bun's ABI (only `lol_html` as a dep), so
+    // it links cleanly alongside Home's ZigGeneratedClasses (unlike the full
+    // `libbun_rust.a`, whose 2200+ symbols collide). Replaces the former
+    // native_stubs noops (kept as gated fallbacks when this lib is absent).
+    // Regenerate with `scripts/build-lolhtml.sh`.
+    if (have_lolhtml) {
+        m.addObjectFile(.{ .cwd_relative = ".native/liblolhtml.a" });
+    }
 
     // Bun's Rust static lib (bun_css/clap/etc.) is kept opt-in during the Home
     // runtime port because it also exports generated Bun ABI symbols now owned
@@ -739,6 +750,17 @@ pub fn build(b: *std.Build) void {
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
+    // Real lol-html links only when its isolated staticlib is present
+    // (build it with scripts/build-lolhtml.sh). Absent → native_stubs keeps the
+    // noop lol_html_* fallbacks so the build still succeeds (HTMLRewriter no-ops
+    // instead of failing the link on 96 undefined symbols).
+    const have_lolhtml = blk: {
+        // Fork std: filesystem is io-parameterized (std.Io.Dir).
+        const io = std.Io.Threaded.global_single_threaded.io();
+        b.build_root.handle.access(io, ".native/liblolhtml.a", .{}) catch break :blk false;
+        break :blk true;
+    };
+    build_options.addOption(bool, "have_lolhtml", have_lolhtml);
     build_options.addOption(bool, "enable_craft", enable_craft);
     build_options.addOption(bool, "debug_logging", debug_logging);
     build_options.addOption(bool, "memory_tracking", memory_tracking);
@@ -797,7 +819,7 @@ pub fn build(b: *std.Build) void {
     home_rt_pkg.linkSystemLibrary("brotlidec", .{});
     home_rt_pkg.linkSystemLibrary("brotlienc", .{});
     home_rt_pkg.linkSystemLibrary("zstd", .{});
-    if (enable_jsc) linkBunNative(b, home_rt_pkg, target);
+    if (enable_jsc) linkBunNative(b, home_rt_pkg, target, have_lolhtml);
 
     // Link Craft if enabled
     if (enable_craft) {

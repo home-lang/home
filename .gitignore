@@ -93,3 +93,6 @@ packages/runtime/test/bun-corpus/node_modules/
 js/web/html/form-data-fixture.txt
 app-with-resources
 /out
+
+# Local native build artifacts (lol-html staticlib etc.)
+.native/
