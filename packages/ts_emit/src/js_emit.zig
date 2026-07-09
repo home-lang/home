@@ -7751,13 +7751,21 @@ pub const Printer = struct {
     /// Write an enum member's name as a quoted JS string (`"A"`). Member
     /// names are identifiers or string-literal keys.
     fn writeEnumMemberName(self: *Printer, key: NodeId) !void {
-        try self.write("\"");
         switch (self.hir.kindOf(key)) {
-            .identifier => try self.write(self.interner.get(hir_mod.identifierOf(self.hir, key).name)),
-            .literal_string => try self.write(self.interner.get(hir_mod.literalStringOf(self.hir, key).value)),
-            else => try self.printExpression(key),
+            // Enum member names route through the same quote-select + escape
+            // path as a string literal. The parser stores even a string-literal
+            // key (`enum E { "say \"hi\"" }`) as an identifier whose name is the
+            // raw string content, so both arms handle it: a plain identifier `A`
+            // yields `"A"`, while a name containing `"` yields valid,
+            // Bun-matching JS (`'say "hi"'`) instead of the old `"say \"hi\""`.
+            .identifier => try self.printQuotedString(self.interner.get(hir_mod.identifierOf(self.hir, key).name)),
+            .literal_string => try self.printQuotedString(self.interner.get(hir_mod.literalStringOf(self.hir, key).value)),
+            else => {
+                try self.write("\"");
+                try self.printExpression(key);
+                try self.write("\"");
+            },
         }
-        try self.write("\"");
     }
 
     fn printEnum(self: *Printer, node: NodeId) !void {
@@ -11320,6 +11328,26 @@ test "emit: string enum members are forward-only (no reverse mapping)" {
     try T.expect(std.mem.indexOf(u8, out, "Dir[\"Down\"] = \"DOWN\";") != null);
     // No bidirectional reverse mapping for string members.
     try T.expect(std.mem.indexOf(u8, out, "Dir[Dir[\"Up\"]") == null);
+}
+
+test "emit: enum string-key member name uses quote selection (valid JS)" {
+    // A string-keyed member name containing a double quote must quote-select to
+    // single quotes (like Bun) — the old code emitted invalid `"say "hi""`.
+    const out = try emit("enum E { \"say \\\"hi\\\"\" = 1 }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "'say \"hi\"'") != null);
+    // Neither the broken (`"say "hi""`) nor the old escaped (`"say \"hi\""`) form.
+    try T.expect(std.mem.indexOf(u8, out, "\"say \\\"hi\\\"\"") == null);
+    // Single-quoted source key holding a double quote — the old code produced
+    // invalid `"say "hi""`; must now be `'say "hi"'`.
+    const outq = try emit("enum G { 'say \"hi\"' = 1 }");
+    defer T.allocator.free(outq);
+    try T.expect(std.mem.indexOf(u8, outq, "'say \"hi\"'") != null);
+    try T.expect(std.mem.indexOf(u8, outq, "\"say \"hi\"\"") == null);
+    // A simple string key (no specials) keeps double quotes.
+    const out2 = try emit("enum F { \"a-b\" = 2 }");
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"a-b\"") != null);
 }
 
 test "emit: optional call ?.() preserved natively at es2020+" {
