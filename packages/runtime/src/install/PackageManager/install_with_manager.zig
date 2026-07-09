@@ -13,7 +13,7 @@ pub fn installWithManager(
         if (manager.options.scope.url.hostname.len > 0 and !manager.options.scope.url.isIPAddress()) {
             var hostname_stack = bun.stackFallback(512, ctx.allocator);
             const allocator = hostname_stack.get();
-            const hostname = try allocator.dupeZ(u8, manager.options.scope.url.hostname);
+            const hostname = try bun.dupeZ(allocator, u8, manager.options.scope.url.hostname);
             defer allocator.free(hostname);
             bun.dns.internal.prefetch(manager.event_loop.loop(), hostname, manager.options.scope.url.getPortAuto());
         }

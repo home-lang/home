@@ -17,6 +17,7 @@
 // Phase 12.2.
 
 const std = @import("std");
+const bun = @import("bun");
 
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
@@ -83,13 +84,13 @@ pub fn deinit(this: *RefString) void {
 
 test "RefString has the expected fields in order" {
     const info = @typeInfo(RefString).@"struct";
-    try std.testing.expectEqualStrings("ptr", info.fields[0].name);
-    try std.testing.expectEqualStrings("len", info.fields[1].name);
-    try std.testing.expectEqualStrings("hash", info.fields[2].name);
-    try std.testing.expectEqualStrings("impl", info.fields[3].name);
-    try std.testing.expectEqualStrings("allocator", info.fields[4].name);
-    try std.testing.expectEqualStrings("ctx", info.fields[5].name);
-    try std.testing.expectEqualStrings("onBeforeDeinit", info.fields[6].name);
+    try std.testing.expectEqualStrings("ptr", info.field_names[0]);
+    try std.testing.expectEqualStrings("len", info.field_names[1]);
+    try std.testing.expectEqualStrings("hash", info.field_names[2]);
+    try std.testing.expectEqualStrings("impl", info.field_names[3]);
+    try std.testing.expectEqualStrings("allocator", info.field_names[4]);
+    try std.testing.expectEqualStrings("ctx", info.field_names[5]);
+    try std.testing.expectEqualStrings("onBeforeDeinit", info.field_names[6]);
 }
 
 test "RefString.Hash is u32" {
@@ -107,8 +108,8 @@ test "RefString.computeHash is deterministic for the same input" {
 test "RefString.Map is a HashMap of Hash -> *RefString with load factor 80" {
     // Probe the type for the K/V we expect.
     const M = RefString.Map;
-    try std.testing.expect(@typeInfo(M.KV).@"struct".fields[0].type == RefString.Hash);
-    try std.testing.expect(@typeInfo(M.KV).@"struct".fields[1].type == *RefString);
+    try std.testing.expect(bun.meta.fieldsOf(M.KV)[0].type == RefString.Hash);
+    try std.testing.expect(bun.meta.fieldsOf(M.KV)[1].type == *RefString);
 }
 
 test "RefString.Callback is the expected fn type" {

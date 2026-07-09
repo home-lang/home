@@ -193,7 +193,7 @@ fn parseOptions(globalThis: *JSGlobalObject, opts_value: JSValue) JSError!md.Opt
             }
         }
         // Remaining boolean options (autolinks/headings only via compound above).
-        inline for (@typeInfo(md.Options).@"struct".fields) |field| {
+        inline for (bun.meta.fieldsOf(md.Options)) |field| {
             comptime if (field.type != bool or
                 std.mem.eql(u8, field.name, "permissive_autolinks") or
                 std.mem.eql(u8, field.name, "permissive_url_autolinks") or
@@ -430,7 +430,7 @@ const ParseRenderer = struct {
 
     fn extractComponents(self: *ParseRenderer, opts: JSValue) JSError!void {
         if (opts.isUndefinedOrNull() or !opts.isObject()) return;
-        inline for (@typeInfo(Components).@"struct".fields) |field| {
+        inline for (bun.meta.fieldsOf(Components)) |field| {
             if (try opts.getTruthy(self.globalObject, field.name)) |val| {
                 if (!val.isBoolean()) {
                     @field(self.components, field.name) = val;
@@ -822,7 +822,7 @@ const JsCallbackRenderer = struct {
 
     fn extractCallbacks(self: *JsCallbackRenderer, opts: JSValue) JSError!void {
         if (opts.isUndefinedOrNull() or !opts.isObject()) return;
-        inline for (@typeInfo(Callbacks).@"struct".fields) |field| {
+        inline for (bun.meta.fieldsOf(Callbacks)) |field| {
             if (try opts.getTruthy(self.globalObject, field.name)) |val| {
                 if (val.isCallable()) {
                     @field(self.callbacks, field.name) = val;

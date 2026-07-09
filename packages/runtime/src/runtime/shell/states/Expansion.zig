@@ -584,7 +584,7 @@ fn onGlobWalkDone(this: *Expansion, task: *ShellGlobTask) Yield {
 
     for (task.result.items) |sentinel_str| {
         // The string is allocated in the glob walker arena and will be freed, so needs to be duped here
-        const duped = bun.handleOom(this.base.allocator().dupeZ(u8, sentinel_str[0..sentinel_str.len]));
+        const duped = bun.handleOom(bun.dupeZ(this.base.allocator(), u8, sentinel_str[0..sentinel_str.len]));
         switch (this.out.pushResultSliceOwned(duped)) {
             .copied => {
                 this.base.allocator().free(duped);

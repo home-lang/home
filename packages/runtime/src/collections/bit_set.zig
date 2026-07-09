@@ -72,7 +72,7 @@ pub fn IntegerBitSet(comptime size: u16) type {
         pub const bit_length: usize = size;
 
         /// The integer type used to represent a mask in this bit set
-        pub const MaskInt = std.meta.Int(.unsigned, size);
+        pub const MaskInt = @Int(.unsigned, size);
 
         /// The integer type used to shift a mask in this bit set
         pub const ShiftInt = std.math.Log2Int(MaskInt);
@@ -357,7 +357,7 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
     if (!std.math.isPowerOfTwo(@bitSizeOf(MaskIntType))) {
         var desired_bits = std.math.ceilPowerOfTwoAssert(usize, @bitSizeOf(MaskIntType));
         if (desired_bits < byte_size) desired_bits = byte_size;
-        const FixedMaskType = std.meta.Int(.unsigned, desired_bits);
+        const FixedMaskType = @Int(.unsigned, desired_bits);
         @compileError("ArrayBitSet was passed integer type " ++ @typeName(MaskIntType) ++
             ", which is not a power of two.  Please round this up to a power of two integer size (i.e. " ++ @typeName(FixedMaskType) ++ ").");
     }
@@ -368,7 +368,7 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
     if (@bitSizeOf(MaskIntType) != @sizeOf(MaskIntType) * byte_size) {
         var desired_bits = @sizeOf(MaskIntType) * byte_size;
         desired_bits = std.math.ceilPowerOfTwoAssert(usize, desired_bits);
-        const FixedMaskType = std.meta.Int(.unsigned, desired_bits);
+        const FixedMaskType = @Int(.unsigned, desired_bits);
         @compileError("ArrayBitSet was passed integer type " ++ @typeName(MaskIntType) ++
             ", which contains padding bits.  Please round this up to an unpadded integer size (i.e. " ++ @typeName(FixedMaskType) ++ ").");
     }
@@ -1199,7 +1199,9 @@ pub const DynamicBitSetUnmanaged = struct {
 };
 
 pub const AutoBitSet = union(enum) {
-    pub const Static = ArrayBitSet(usize, (@bitSizeOf(DynamicBitSetUnmanaged) - 1));
+    // Zig 0.17: `@bitSizeOf` is unavailable for auto-layout structs; use the
+    // byte size (this struct is exactly two `usize`s, so `@sizeOf * 8` matches).
+    pub const Static = ArrayBitSet(usize, (@sizeOf(DynamicBitSetUnmanaged) * 8 - 1));
 
     static: Static,
     dynamic: DynamicBitSetUnmanaged,

@@ -332,7 +332,7 @@ pub const Field = struct {
                 .max_value = self.max_value,
             };
 
-            inline for (@typeInfo(@TypeOf(overrides)).@"struct".fields) |f| {
+            inline for (types.fieldsOf(@TypeOf(overrides))) |f| {
                 @field(result, f.name) = @field(overrides, f.name);
             }
 
@@ -510,7 +510,7 @@ pub const Field = struct {
     pub fn override(self: Field, overrides: anytype) Field {
         var result = self;
 
-        inline for (@typeInfo(@TypeOf(overrides)).@"struct".fields) |f| {
+        inline for (types.fieldsOf(@TypeOf(overrides))) |f| {
             if (!is_updating_ucd and (std.mem.eql(u8, f.name, "name") or
                 std.mem.eql(u8, f.name, "type") or
                 std.mem.eql(u8, f.name, "shift_low") or
@@ -717,7 +717,7 @@ pub fn _resolveFields(
     @setEvalBranchQuota(100_000);
     var result: [field_names.len]Field = undefined;
     for (field_names, 0..) |field_name, i| {
-        result[i] = extensions_loop: inline for (@typeInfo(config_x).@"struct".decls) |decl| {
+        result[i] = extensions_loop: inline for (@typeInfo(config_x).@"struct".decl_names) |decl| {
             for (extension_names) |ext_name| {
                 if (std.mem.eql(u8, decl.name, ext_name)) {
                     const extension = @field(config_x, decl.name);

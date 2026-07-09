@@ -17,9 +17,10 @@
 // wire structs have byte-aligned integer fields, so per-field swap is exactly
 // the RFC big-endian layout.
 const std = @import("std");
+const bun = @import("bun");
 
 pub fn byteSwapAllFields(comptime S: type, ptr: *S) void {
-    inline for (std.meta.fields(S)) |f| {
+    inline for (bun.meta.fieldsOf(S)) |f| {
         switch (@typeInfo(f.type)) {
             .@"struct" => byteSwapAllFields(f.type, &@field(ptr, f.name)),
             .@"enum" => {

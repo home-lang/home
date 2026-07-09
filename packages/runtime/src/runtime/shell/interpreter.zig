@@ -1542,7 +1542,7 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         pub fn scopedAllocator(this: @This()) if (bun.Environment.enableAllocScopes) *bun.AllocationScope else void {
             if (comptime !bun.Environment.enableAllocScopes) return;
 
-            const tags = comptime std.meta.fields(Ptr.Tag);
+            const tags = comptime bun.meta.fieldsOf(Ptr.Tag);
             inline for (tags) |tag| {
                 if (this.tagInt() == tag.value) {
                     const Ty = comptime Ptr.typeFromTag(tag.value);
@@ -1558,7 +1558,7 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         }
 
         pub fn allocator(this: @This()) std.mem.Allocator {
-            const tags = comptime std.meta.fields(Ptr.Tag);
+            const tags = comptime bun.meta.fieldsOf(Ptr.Tag);
             inline for (tags) |tag| {
                 if (this.tagInt() == tag.value) {
                     const Ty = comptime Ptr.typeFromTag(tag.value);
@@ -1591,7 +1591,7 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
 
         /// Starts the state node.
         pub fn start(this: @This()) Yield {
-            const tags = comptime std.meta.fields(Ptr.Tag);
+            const tags = comptime bun.meta.fieldsOf(Ptr.Tag);
             inline for (tags) |tag| {
                 if (this.tagInt() == tag.value) {
                     const Ty = comptime Ptr.typeFromTag(tag.value);
@@ -1605,7 +1605,7 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
 
         /// Deinitializes the state node
         pub fn deinit(this: @This()) void {
-            const tags = comptime std.meta.fields(Ptr.Tag);
+            const tags = comptime bun.meta.fieldsOf(Ptr.Tag);
             inline for (tags) |tag| {
                 if (this.tagInt() == tag.value) {
                     const Ty = comptime Ptr.typeFromTag(tag.value);
@@ -1622,7 +1622,7 @@ pub fn StatePtrUnion(comptime TypesValue: anytype) type {
         /// Signals to the state node that one of its children completed with the
         /// given exit code
         pub fn childDone(this: @This(), child: anytype, exit_code: ExitCode) Yield {
-            const tags = comptime std.meta.fields(Ptr.Tag);
+            const tags = comptime bun.meta.fieldsOf(Ptr.Tag);
             inline for (tags) |tag| {
                 if (this.tagInt() == tag.value) {
                     const Ty = comptime Ptr.typeFromTag(tag.value);

@@ -174,15 +174,15 @@ pub const ZigException = extern struct {
 test "ZigException is an extern struct with the expected leading fields" {
     const info = @typeInfo(ZigException).@"struct";
     try std.testing.expect(info.layout == .@"extern");
-    try std.testing.expectEqualStrings("type", info.fields[0].name);
-    try std.testing.expectEqualStrings("runtime_type", info.fields[1].name);
-    try std.testing.expectEqualStrings("errno", info.fields[2].name);
-    try std.testing.expectEqualStrings("syscall", info.fields[3].name);
-    try std.testing.expectEqualStrings("system_code", info.fields[4].name);
-    try std.testing.expectEqualStrings("path", info.fields[5].name);
-    try std.testing.expectEqualStrings("name", info.fields[6].name);
-    try std.testing.expectEqualStrings("message", info.fields[7].name);
-    try std.testing.expectEqualStrings("stack", info.fields[8].name);
+    try std.testing.expectEqualStrings("type", info.field_names[0]);
+    try std.testing.expectEqualStrings("runtime_type", info.field_names[1]);
+    try std.testing.expectEqualStrings("errno", info.field_names[2]);
+    try std.testing.expectEqualStrings("syscall", info.field_names[3]);
+    try std.testing.expectEqualStrings("system_code", info.field_names[4]);
+    try std.testing.expectEqualStrings("path", info.field_names[5]);
+    try std.testing.expectEqualStrings("name", info.field_names[6]);
+    try std.testing.expectEqualStrings("message", info.field_names[7]);
+    try std.testing.expectEqualStrings("stack", info.field_names[8]);
 }
 
 test "ZigException.Holder.init produces a not-yet-loaded holder" {

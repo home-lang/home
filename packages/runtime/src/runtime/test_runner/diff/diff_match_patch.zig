@@ -2994,7 +2994,7 @@ pub fn DMP(comptime Unit: type) type {
 
             const ArgsTuple = std.meta.ArgsTuple(TestFn);
 
-            const fn_args_fields = std.meta.fields(ArgsTuple);
+            const fn_args_fields = bun.meta.fieldsOf(ArgsTuple);
             if (fn_args_fields.len == 0 or fn_args_fields[0].type != std.mem.Allocator) {
                 @compileError("The provided function must have an " ++ @typeName(std.mem.Allocator) ++ " as its first argument");
             }

@@ -95,7 +95,7 @@ pub fn deinit(ptr_or_slice: anytype) void {
     }
 
     const Child = ptr_info.pointer.child;
-    const mutable = !ptr_info.pointer.is_const;
+    const mutable = !ptr_info.pointer.attrs.@"const";
     defer {
         if (comptime mutable) {
             ptr_or_slice.* = undefined;
@@ -129,7 +129,7 @@ pub fn deinit(ptr_or_slice: anytype) void {
                 @compileError("cannot deinit an untagged union: " ++ @typeName(Child));
             }
         },
-        .type, .noreturn, .@"fn", .@"opaque", .frame, .@"anyframe", .enum_literal => {
+        .type, .noreturn, .@"fn", .@"opaque", .frame, .@"anyframe", .enum_literal, .spirv => {
             @compileError("unsupported type for deinit: " ++ @typeName(Child));
         },
     }
@@ -204,10 +204,11 @@ pub fn dropSentinel(ptr: anytype, allocator: std.mem.Allocator) home_rt.OOM!Drop
 
 fn DropSentinel(comptime Ptr: type) type {
     const info = @typeInfo(Ptr).pointer;
-    return if (info.is_const) []const info.child else []info.child;
+    return if (info.attrs.@"const") []const info.child else []info.child;
 }
 
 const std = @import("std");
+const bun = @import("bun");
 const Allocator = std.mem.Allocator;
 
 const home_rt = @import("home");
@@ -269,7 +270,7 @@ test "memory: deinit handles optionals and slices" {
 
 test "memory: dropSentinel returns a freeable slice" {
     const allocator = std.testing.allocator;
-    const value = try allocator.dupeZ(u8, "home");
+    const value = try bun.dupeZ(allocator, u8, "home");
     const slice = try dropSentinel(value, allocator);
     defer allocator.free(slice);
 

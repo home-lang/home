@@ -1055,7 +1055,7 @@ pub const AsyncReaddirRecursiveTask = struct {
         var task = Subtask.new(
             .{
                 .readdir_task = readdir_task,
-                .basename = bun.PathString.init(bun.handleOom(bun.default_allocator.dupeZ(u8, basename))),
+                .basename = bun.PathString.init(bun.handleOom(bun.dupeZ(bun.default_allocator, u8, basename))),
             },
         );
         bun.assert(readdir_task.subtask_count.fetchAdd(1, .monotonic) > 0);
@@ -1074,7 +1074,7 @@ pub const AsyncReaddirRecursiveTask = struct {
             .globalObject = globalObject,
             .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
             .subtask_count = .{ .raw = 1 },
-            .root_path = PathString.init(bun.handleOom(bun.default_allocator.dupeZ(u8, args.path.slice()))),
+            .root_path = PathString.init(bun.handleOom(bun.dupeZ(bun.default_allocator, u8, args.path.slice()))),
             .result_list = switch (args.tag()) {
                 .files => .{ .files = std.array_list.Managed(bun.String).init(bun.default_allocator) },
                 .with_file_types => .{ .with_file_types = .init(bun.default_allocator) },
@@ -4935,7 +4935,7 @@ pub const NodeFS = struct {
                         .directory,
                         => {
                             if (current.name.len + 1 + name_to_copy.len > bun.MAX_PATH_BYTES) break :enqueue;
-                            stack.writeItem(basename_allocator.dupeZ(u8, name_to_copy) catch break :enqueue) catch break :enqueue;
+                            stack.writeItem(bun.dupeZ(basename_allocator, u8, name_to_copy) catch break :enqueue) catch break :enqueue;
                         },
                         // Some filesystems (e.g., Docker bind mounts, FUSE, NFS) return
                         // DT_UNKNOWN for d_type. Use lstatat to determine the actual type.
@@ -4949,7 +4949,7 @@ pub const NodeFS = struct {
                                     const real_kind = bun.sys.kindFromMode(@intCast(st.mode));
                                     effective_kind = real_kind;
                                     if (real_kind == .directory or real_kind == .sym_link) {
-                                        stack.writeItem(basename_allocator.dupeZ(u8, name_to_copy) catch break :enqueue) catch break :enqueue;
+                                        stack.writeItem(bun.dupeZ(basename_allocator, u8, name_to_copy) catch break :enqueue) catch break :enqueue;
                                     }
                                 },
                                 .err => {}, // Skip entries we can't stat
@@ -5145,7 +5145,7 @@ pub const NodeFS = struct {
                         else
                             return .{
                                 .result = .{
-                                    .null_terminated = bun.handleOom(bun.default_allocator.dupeZ(u8, file.contents)),
+                                    .null_terminated = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, file.contents)),
                                 },
                             };
                     }
@@ -5268,7 +5268,7 @@ pub const NodeFS = struct {
                         } else {
                             return .{
                                 .result = .{
-                                    .null_terminated = bun.default_allocator.dupeZ(u8, temporary_read_buffer) catch return .{
+                                    .null_terminated = bun.dupeZ(bun.default_allocator, u8, temporary_read_buffer) catch return .{
                                         .err = Syscall.Error.fromCode(.NOMEM, .read).withPathLike(args.path),
                                     },
                                 },

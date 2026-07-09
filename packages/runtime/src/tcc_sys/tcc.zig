@@ -187,19 +187,19 @@ pub const State = opaque {
         const info = @typeInfo(@TypeOf(symbols));
         var buf: [256]u8 = undefined;
 
-        inline for (info.@"struct".fields) |field| {
-            const value = @field(symbols, field.name);
-            switch (@typeInfo(field.type)) {
+        inline for (info.@"struct".field_names, info.@"struct".field_types) |field_name, field_type| {
+            const value = @field(symbols, field_name);
+            switch (@typeInfo(field_type)) {
                 .int, .comptime_int => {
                     s.defineSymbol(
-                        field.name,
-                        std.fmt.bufPrintZ(&buf, "{d}", .{value}) catch unreachable,
+                        field_name,
+                        std.fmt.bufPrintSentinel(&buf, "{d}", .{value}, 0) catch unreachable,
                     );
                 },
                 .pointer => {
-                    s.defineSymbol(s, field.name, value);
+                    s.defineSymbol(s, field_name, value);
                 },
-                else => @compileError("Macro '" ++ field.name ++ "' has unsupported symbol type: " ++ @typeName(@TypeOf(value))),
+                else => @compileError("Macro '" ++ field_name ++ "' has unsupported symbol type: " ++ @typeName(@TypeOf(value))),
             }
         }
     }
@@ -285,9 +285,9 @@ pub const State = opaque {
     /// ```
     pub fn addSymbolsComptime(s: *State, symbols: anytype) Error!void {
         const info = @typeInfo(@TypeOf(symbols));
-        inline for (info.@"struct".fields) |field| {
-            const value = @field(symbols, field.name);
-            try s.addSymbol(field.name, value);
+        inline for (info.@"struct".field_names) |field_name| {
+            const value = @field(symbols, field_name);
+            try s.addSymbol(field_name, value);
         }
     }
 

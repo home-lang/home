@@ -536,8 +536,8 @@ pub const ShellCpTask = struct {
             copying_many = true;
         }
 
-        this.src_absolute = bun.handleOom(bun.default_allocator.dupeZ(u8, src[0..src.len]));
-        this.tgt_absolute = bun.handleOom(bun.default_allocator.dupeZ(u8, tgt[0..tgt.len]));
+        this.src_absolute = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, src[0..src.len]));
+        this.tgt_absolute = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, tgt[0..tgt.len]));
 
         const args = jsc.Node.fs.Arguments.Cp{
             .src = jsc.Node.PathLike{ .string = bun.PathString.init(this.src_absolute.?) },

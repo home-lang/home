@@ -64,7 +64,7 @@ pub const Targets = struct {
     pub fn forBundlerTarget(target: bun.transpiler.options.Target) Targets {
         if (comptime bun.Environment.isDebug) {
             var browsers: Browsers = .{};
-            const browser_fields = std.meta.fields(Browsers);
+            const browser_fields = bun.meta.fieldsOf(Browsers);
             var has_any = false;
             inline for (browser_fields) |field| {
                 const env_var = "BUN_DEBUG_CSS_TARGET_" ++ field.name;

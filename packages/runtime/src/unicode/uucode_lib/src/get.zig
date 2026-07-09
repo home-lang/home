@@ -11,7 +11,7 @@ fn TableData(comptime Table: anytype) type {
 }
 
 fn tableInfoFor(comptime field: []const u8) std.builtin.Type.StructField {
-    inline for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
+    inline for (types.fieldsOf(@TypeOf(tables))) |tableInfo| {
         if (@hasField(TableData(tableInfo.type), field)) {
             return tableInfo;
         }
@@ -21,7 +21,7 @@ fn tableInfoFor(comptime field: []const u8) std.builtin.Type.StructField {
 }
 
 fn getTableInfo(comptime table_name: []const u8) std.builtin.Type.StructField {
-    inline for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
+    inline for (types.fieldsOf(@TypeOf(tables))) |tableInfo| {
         if (std.mem.eql(u8, tableInfo.name, table_name)) {
             return tableInfo;
         }
@@ -80,15 +80,15 @@ pub fn TypeOfAll(comptime table_name: []const u8) type {
 
 pub const FieldEnum = blk: {
     var fields_len: usize = 0;
-    for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
-        fields_len += @typeInfo(TableData(tableInfo.type)).@"struct".fields.len;
+    for (types.fieldsOf(@TypeOf(tables))) |tableInfo| {
+        fields_len += @typeInfo(TableData(tableInfo.type)).@"struct".field_names.len;
     }
 
     var fields: [fields_len]std.builtin.Type.EnumField = undefined;
     var i: usize = 0;
 
-    for (@typeInfo(@TypeOf(tables)).@"struct".fields) |tableInfo| {
-        for (@typeInfo(TableData(tableInfo.type)).@"struct".fields) |f| {
+    for (types.fieldsOf(@TypeOf(tables))) |tableInfo| {
+        for (types.fieldsOf(TableData(tableInfo.type))) |f| {
             fields[i] = .{
                 .name = f.name,
                 .value = i,

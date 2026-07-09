@@ -526,8 +526,8 @@ pub fn GraphemeBreakTable(comptime GB: type, comptime State: type) type {
         result: bool,
         state: State,
     };
-    const gb_fields = @typeInfo(GB).@"enum".fields;
-    const state_fields = @typeInfo(State).@"enum".fields;
+    const gb_fields = types.fieldsOf(GB);
+    const state_fields = types.fieldsOf(State);
     const n_gb = gb_fields.len;
     const n_gb_2 = n_gb * n_gb;
     const n_state = state_fields.len;
@@ -563,8 +563,8 @@ pub fn buildGraphemeBreakTable(
     @setEvalBranchQuota(20_000);
     var table: GraphemeBreakTable(GB, State) = undefined;
 
-    const gb_fields = @typeInfo(GB).@"enum".fields;
-    const state_fields = @typeInfo(State).@"enum".fields;
+    const gb_fields = types.fieldsOf(GB);
+    const state_fields = types.fieldsOf(State);
 
     for (state_fields) |state_field| {
         for (gb_fields) |gb1_field| {

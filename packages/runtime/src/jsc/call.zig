@@ -28,6 +28,7 @@
 //   - `~/Code/bun/src/jsc/JSValue.zig` L2280 (`isCallable` / `isConstructor`)
 
 const std = @import("std");
+const bun = @import("bun");
 const build_options = @import("build_options");
 const Engine = @import("engine.zig").Engine;
 const evaluate = @import("evaluate.zig");
@@ -172,7 +173,7 @@ fn makeUndefined(ctx: *JSContextRef) *JSValue {
 
 fn makeNameString(method_name: []const u8) *JSString {
     const allocator = std.heap.smp_allocator;
-    const name_z = allocator.dupeZ(u8, method_name) catch @panic("JSC: failed to allocate method name");
+    const name_z = bun.dupeZ(allocator, u8, method_name) catch @panic("JSC: failed to allocate method name");
     defer allocator.free(name_z);
 
     return extern_fns.JSStringCreateWithUTF8CString(name_z.ptr) orelse

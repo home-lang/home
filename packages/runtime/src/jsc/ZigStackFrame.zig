@@ -256,11 +256,11 @@ test "ZigStackFrame.Zero has expected defaults" {
 test "ZigStackFrame is an extern struct with the expected field order" {
     const info = @typeInfo(ZigStackFrame).@"struct";
     try std.testing.expect(info.layout == .@"extern");
-    try std.testing.expectEqualStrings("function_name", info.fields[0].name);
-    try std.testing.expectEqualStrings("source_url", info.fields[1].name);
-    try std.testing.expectEqualStrings("position", info.fields[2].name);
-    try std.testing.expectEqualStrings("code_type", info.fields[3].name);
-    try std.testing.expectEqualStrings("is_async", info.fields[4].name);
-    try std.testing.expectEqualStrings("remapped", info.fields[5].name);
-    try std.testing.expectEqualStrings("jsc_stack_frame_index", info.fields[6].name);
+    try std.testing.expectEqualStrings("function_name", info.field_names[0]);
+    try std.testing.expectEqualStrings("source_url", info.field_names[1]);
+    try std.testing.expectEqualStrings("position", info.field_names[2]);
+    try std.testing.expectEqualStrings("code_type", info.field_names[3]);
+    try std.testing.expectEqualStrings("is_async", info.field_names[4]);
+    try std.testing.expectEqualStrings("remapped", info.field_names[5]);
+    try std.testing.expectEqualStrings("jsc_stack_frame_index", info.field_names[6]);
 }

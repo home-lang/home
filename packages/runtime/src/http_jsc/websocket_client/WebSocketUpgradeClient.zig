@@ -327,7 +327,7 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                         // in the URL (wss+unix://name/path) to verify against
                         // a specific certificate name.
                         if (host_slice.slice().len > 0 and !strings.isIPAddress(host_slice.slice())) {
-                            client.hostname = bun.default_allocator.dupeZ(u8, host_slice.slice()) catch "";
+                            client.hostname = bun.dupeZ(bun.default_allocator, u8, host_slice.slice()) catch "";
                         }
                     }
 
@@ -365,7 +365,7 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                     // dialed. For HTTPS proxy connections, that's the proxy host,
                     // not the wss:// target.
                     if (!strings.isIPAddress(display_host_)) {
-                        out.hostname = bun.default_allocator.dupeZ(u8, display_host_) catch "";
+                        out.hostname = bun.dupeZ(bun.default_allocator, u8, display_host_) catch "";
                     }
                 }
 

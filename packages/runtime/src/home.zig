@@ -209,8 +209,8 @@ pub const spawnSync = @import("spawn_sync.zig").spawn;
 pub const sliceTo = std.mem.sliceTo;
 /// Faithful to upstream `bun.zig:3492`.
 pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
-    return inline for (@typeInfo(Enum).@"enum".fields) |f| {
-        if (@intFromEnum(value) == f.value) break f.name;
+    return inline for (@typeInfo(Enum).@"enum".field_names, @typeInfo(Enum).@"enum".field_values) |fname, fvalue| {
+        if (@intFromEnum(value) == fvalue) break fname;
     } else null;
 }
 /// Faithful to upstream `bun.zig:3676`.
@@ -374,7 +374,7 @@ pub fn len(value: anytype) usize {
             .slice => value.len,
         },
         .@"struct" => |info| if (info.is_tuple) {
-            return info.fields.len;
+            return info.field_names.len;
         } else @compileError("invalid type given to std.mem.len"),
         else => @compileError("invalid type given to std.mem.len"),
     };
@@ -534,8 +534,8 @@ pub fn asByteSlice(buffer: anytype) []const u8 {
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
         .pointer => @compileError("no pointers in writeAnyToHasher input"),
-        inline .@"struct", .@"union" => |info| for (info.fields) |field| {
-            assertNoHasherPointers(field.type);
+        inline .@"struct", .@"union" => |info| for (info.field_types) |ftype| {
+            assertNoHasherPointers(ftype);
         },
         .array => |array| assertNoHasherPointers(array.child),
         else => {},
@@ -582,6 +582,14 @@ pub const JSError = error{ JSError, OutOfMemory, JSTerminated };
 pub const JSTerminated = error{JSTerminated};
 pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
+
+/// Zig 0.17 removed `Allocator.dupeZ`; this restores the equivalent behavior:
+/// allocate a sentinel-terminated copy of `m`.
+pub fn dupeZ(allocator: std.mem.Allocator, comptime T: type, m: []const T) std.mem.Allocator.Error![:0]T {
+    const new_buf = try allocator.allocSentinel(T, m.len, 0);
+    @memcpy(new_buf, m);
+    return new_buf;
+}
 // Must free by pointer: ArrayBuffer/TypedArray bytes allocated here are freed
 // pointer-only by `MarkedArrayBuffer_deallocator` → `mi_free`. With
 // `-Denable_jsc` the real mimalloc links (vendor/mimalloc static.c.o) and
@@ -1961,12 +1969,12 @@ pub const HTTPThread = struct {
 };
 
 fn ReinterpretSliceType(comptime T: type, comptime Slice: type) type {
-    const is_const = @typeInfo(Slice).pointer.is_const;
+    const is_const = @typeInfo(Slice).pointer.attrs.@"const";
     return if (is_const) []const T else []T;
 }
 
 pub fn reinterpretSlice(comptime T: type, slice: anytype) ReinterpretSliceType(T, @TypeOf(slice)) {
-    const is_const = @typeInfo(@TypeOf(slice)).pointer.is_const;
+    const is_const = @typeInfo(@TypeOf(slice)).pointer.attrs.@"const";
     const bytes = std.mem.sliceAsBytes(slice);
     const new_ptr = @as(if (is_const) [*]const T else [*]T, @ptrCast(@alignCast(bytes.ptr)));
     return new_ptr[0..@divTrunc(bytes.len, @sizeOf(T))];
@@ -3514,6 +3522,9 @@ pub const meta = struct {
     pub const typeBaseName = @import("meta/meta.zig").typeBaseName;
     pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
     pub const EnumFields = @import("meta/meta.zig").EnumFields;
+    pub const EnumField = @import("meta/meta.zig").EnumField;
+    pub const Field = @import("meta/meta.zig").Field;
+    pub const fieldsOf = @import("meta/meta.zig").fieldsOf;
     pub const enumFieldNames = @import("meta/meta.zig").enumFieldNames;
     pub const Item = @import("meta/meta.zig").Item;
     pub const Tagged = @import("meta/meta.zig").Tagged;
@@ -3524,9 +3535,9 @@ pub const meta = struct {
     pub const looksLikeListContainerType = @import("meta/meta.zig").looksLikeListContainerType;
     // `std.meta.intToEnum` was removed in Zig 0.17; faithful drop-in replacement.
     pub fn intToEnum(comptime Enum: type, tag_int: anytype) error{InvalidEnumTag}!Enum {
-        inline for (@typeInfo(Enum).@"enum".fields) |f| {
-            if (@as(@typeInfo(Enum).@"enum".tag_type, @intCast(tag_int)) == f.value)
-                return @field(Enum, f.name);
+        inline for (@typeInfo(Enum).@"enum".field_names, @typeInfo(Enum).@"enum".field_values) |fname, fvalue| {
+            if (@as(@typeInfo(Enum).@"enum".tag_type, @intCast(tag_int)) == fvalue)
+                return @field(Enum, fname);
         }
         return error.InvalidEnumTag;
     }
@@ -3989,7 +4000,7 @@ pub fn getcwd(buf: *PathBuffer) ![]u8 {
 pub fn getcwdAlloc(allocator: std.mem.Allocator) ![:0]u8 {
     var temp: PathBuffer = undefined;
     const temp_slice = try getcwd(&temp);
-    return allocator.dupeZ(u8, temp_slice);
+    return dupeZ(allocator, u8, temp_slice);
 }
 
 /// Monotonic milliseconds. Values are only meaningful relative to other calls.
@@ -4164,7 +4175,7 @@ pub fn getFdPath(fd: FD, buf: *PathBuffer) ![]u8 {
         return buf[0..nul_len];
     } else {
         var proc_buf: ["/proc/self/fd/-2147483648".len + 1:0]u8 = undefined;
-        const proc_path = std.fmt.bufPrintZ(&proc_buf, "/proc/self/fd/{d}", .{fd.native()}) catch unreachable;
+        const proc_path = std.fmt.bufPrintSentinel(&proc_buf, "/proc/self/fd/{d}", .{fd.native()}, 0) catch unreachable;
         const rc = std.c.readlink(proc_path.ptr, buf.ptr, buf.len);
         if (rc < 0) return error.Unexpected;
         return buf[0..@intCast(rc)];
@@ -6477,7 +6488,7 @@ test "home_rt: sys.File read helpers round-trip a temp file" {
     // Create a temp file via the POSIX layer that sys.File wraps, so the test
     // stays independent of the churning std.Io.Dir API.
     var name_buf: [64]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrintZ(&name_buf, "/tmp/home_rt_sys_file_{d}.txt", .{std.c.getpid()});
+    const tmp_path = try std.fmt.bufPrintSentinel(&name_buf, "/tmp/home_rt_sys_file_{d}.txt", .{std.c.getpid()}, 0);
     const wfd = std.c.open(tmp_path, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
     try std.testing.expect(wfd >= 0);
     {
@@ -6544,7 +6555,7 @@ test "home_rt: sys.stat + File.readFrom round-trip a temp file" {
     const payload = "home-rt-sys-stat-readfrom";
 
     var name_buf: [80]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrintZ(&name_buf, "/tmp/home_rt_sys_stat_{d}.txt", .{std.c.getpid()});
+    const tmp_path = try std.fmt.bufPrintSentinel(&name_buf, "/tmp/home_rt_sys_stat_{d}.txt", .{std.c.getpid()}, 0);
     const wfd = std.c.open(tmp_path, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
     try std.testing.expect(wfd >= 0);
     {

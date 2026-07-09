@@ -420,7 +420,7 @@ fn openDestination(this: *TarballStream) !void {
         buf[0..],
         bun.fastRandom(),
     );
-    this.tmpname = try this.allocator.dupeZ(u8, tmpname);
+    this.tmpname = try bun.dupeZ(this.allocator, u8, tmpname);
 
     this.dest = .fromStdDir(try bun.MakePath.makeOpenPath(tarball.temp_dir, this.tmpname, .{}));
 }

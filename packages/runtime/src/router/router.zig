@@ -926,7 +926,7 @@ fn makeTest(cwd_path: string, data: anytype) !void {
     _ = std.c.fchdir(cwd.handle);
 
     const Data = @TypeOf(data);
-    const fields: []const std.builtin.Type.StructField = comptime std.meta.fields(Data);
+    const fields = comptime bun.meta.fieldsOf(Data);
     inline for (fields) |field| {
         @setEvalBranchQuota(9999);
         const value = @field(data, field.name);

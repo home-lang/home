@@ -433,7 +433,7 @@ pub fn getFlowLabel(this: *SocketAddress, _: *jsc.JSGlobalObject) JSValue {
 /// - [RFC 6437](https://tools.ietf.org/html/rfc6437)
 pub fn flowLabel(this: *const SocketAddress) ?u32 {
     if (this.family() == AF.INET6) {
-        const in6: inet.sockaddr_in6 = @bitCast(this._addr);
+        const in6: inet.sockaddr_in6 = std.mem.bytesToValue(inet.sockaddr_in6, std.mem.asBytes(&this._addr));
         return in6.flowinfo;
     } else {
         return null;

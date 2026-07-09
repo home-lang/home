@@ -251,8 +251,8 @@ pub const LengthValue = union(enum) {
     };
 
     comptime {
-        const struct_fields = std.meta.fields(LengthValue);
-        const feature_fields = std.meta.fields(@TypeOf(FeatureMap));
+        const struct_fields = bun.meta.fieldsOf(LengthValue);
+        const feature_fields = bun.meta.fieldsOf(@TypeOf(FeatureMap));
         if (struct_fields.len != feature_fields.len) {
             @compileError("LengthValue and FeatureMap must have the same number of fields");
         }
@@ -270,7 +270,7 @@ pub const LengthValue = union(enum) {
         switch (token.*) {
             .dimension => |*dim| {
                 // todo_stuff.match_ignore_ascii_case
-                inline for (std.meta.fields(@This())) |field| {
+                inline for (bun.meta.fieldsOf(@This())) |field| {
                     if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(field.name, dim.unit)) {
                         return .{ .result = @unionInit(LengthValue, field.name, dim.num.value) };
                     }
@@ -350,8 +350,8 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn sign(this: *const @This()) f32 {
-        const enum_fields = @typeInfo(@typeInfo(@This()).@"union".tag_type.?).@"enum".fields;
-        inline for (std.meta.fields(@This()), 0..) |field, i| {
+        const enum_fields = bun.meta.fieldsOf(@typeInfo(@This()).@"union".tag_type.?);
+        inline for (bun.meta.fieldsOf(@This()), 0..) |field, i| {
             if (enum_fields[i].value == @intFromEnum(this.*)) {
                 return css.signfns.signF32(@field(this, field.name));
             }
@@ -362,7 +362,7 @@ pub const LengthValue = union(enum) {
     pub fn tryFromToken(token: *const css.Token) css.Maybe(@This(), void) {
         switch (token.*) {
             .dimension => |*dim| {
-                inline for (std.meta.fields(@This())) |field| {
+                inline for (bun.meta.fieldsOf(@This())) |field| {
                     if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(field.name, dim.unit)) {
                         return .{ .result = @unionInit(LengthValue, field.name, dim.num.value) };
                     }
@@ -374,8 +374,8 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn toUnitValue(this: *const @This()) struct { CSSNumber, []const u8 } {
-        const enum_fields = @typeInfo(@typeInfo(@This()).@"union".tag_type.?).@"enum".fields;
-        inline for (std.meta.fields(@This()), 0..) |field, i| {
+        const enum_fields = bun.meta.fieldsOf(@typeInfo(@This()).@"union".tag_type.?);
+        inline for (bun.meta.fieldsOf(@This()), 0..) |field, i| {
             if (enum_fields[i].value == @intFromEnum(this.*)) {
                 return .{ @field(this, field.name), field.name };
             }

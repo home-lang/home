@@ -218,6 +218,7 @@ const c = struct {
 
 const ConnectingSocket = @import("./ConnectingSocket.zig").ConnectingSocket;
 const SocketKind = @import("./SocketKind.zig").SocketKind;
+const bun = @import("bun");
 
 /// uSockets loop handle.
 pub const Loop = @import("./Loop.zig").PosixLoop;
@@ -266,6 +267,6 @@ test "SocketGroup.ConnectResult is a tagged union of the two success paths" {
     // test just verifies the union shape stays stable so dispatch.zig can
     // exhaustive-switch on it.
     const Tag = @typeInfo(SocketGroup.ConnectResult).@"union".tag_type.?;
-    const tags = @typeInfo(Tag).@"enum".fields;
+    const tags = bun.meta.fieldsOf(Tag);
     try std.testing.expectEqual(@as(usize, 3), tags.len);
 }

@@ -88,11 +88,11 @@ pub const JSArrayIterator = struct {
 
 test "JSArrayIterator has the expected fields in order" {
     const info = @typeInfo(JSArrayIterator).@"struct";
-    try std.testing.expectEqualStrings("i", info.fields[0].name);
-    try std.testing.expectEqualStrings("len", info.fields[1].name);
-    try std.testing.expectEqualStrings("array", info.fields[2].name);
-    try std.testing.expectEqualStrings("global", info.fields[3].name);
-    try std.testing.expectEqualStrings("fast", info.fields[4].name);
+    try std.testing.expectEqualStrings("i", info.field_names[0]);
+    try std.testing.expectEqualStrings("len", info.field_names[1]);
+    try std.testing.expectEqualStrings("array", info.field_names[2]);
+    try std.testing.expectEqualStrings("global", info.field_names[3]);
+    try std.testing.expectEqualStrings("fast", info.field_names[4]);
 }
 
 test "JSArrayIterator exposes the expected entrypoints" {

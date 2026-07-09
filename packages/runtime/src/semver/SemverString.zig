@@ -1,3 +1,9 @@
+/// Zig 0.17 forbids `@bitCast` on extern structs; this reinterprets the raw
+/// bytes of `value` as `To` (same size), matching the old `@bitCast` semantics.
+inline fn reinterpret(comptime To: type, value: anytype) To {
+    return std.mem.bytesToValue(To, std.mem.asBytes(&value));
+}
+
 pub const String = extern struct {
     pub const max_inline_len: usize = 8;
 
@@ -59,7 +65,7 @@ pub const String = extern struct {
             return out;
         }
 
-        return @bitCast((@as(u64, @bitCast(Pointer.init(buf, in))) & std.math.maxInt(u63)) | (@as(u64, 1) << 63));
+        return reinterpret(String, (reinterpret(u64, Pointer.init(buf, in)) & std.math.maxInt(u63)) | (@as(u64, 1) << 63));
     }
 
     pub fn eql(this: String, that: String, this_buf: string, that_buf: string) bool {
@@ -100,7 +106,7 @@ pub const String = extern struct {
     };
 
     pub inline fn ptr(this: String) Pointer {
-        return @bitCast(@as(u64, @bitCast(this)) & std.math.maxInt(u63));
+        return reinterpret(Pointer, reinterpret(u64, this) & std.math.maxInt(u63));
     }
 
     pub fn slice(this: *const String, buf: string) string {

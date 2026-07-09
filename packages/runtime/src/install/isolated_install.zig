@@ -1255,7 +1255,7 @@ pub fn installIsolatedPackages(
         _ = manager.getCacheDirectory();
         const cache_dir_path = manager.cache_directory_path;
         if (cache_dir_path.len == 0) break :global_store_path null;
-        break :global_store_path try manager.allocator.dupeZ(
+        break :global_store_path try bun.dupeZ(manager.allocator, 
             u8,
             bun.path.joinAbsString(cache_dir_path, &.{"links"}, .auto),
         );

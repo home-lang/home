@@ -229,12 +229,12 @@ pub const InitCommand = struct {
         /// Create a new asset file, overriding anything that already exists. Known
         /// assets will have their contents pre-populated; otherwise the file will be empty.
         fn create(comptime asset_name: []const u8, args: anytype) !void {
-            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".fields.len > 0;
+            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".field_names.len > 0;
             return createFull(asset_name, asset_name, "", is_template, args);
         }
 
         pub fn createWithContents(comptime asset_name: []const u8, comptime contents: []const u8, args: anytype) !void {
-            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".fields.len > 0;
+            const is_template = comptime (@TypeOf(args) != @TypeOf(null)) and @typeInfo(@TypeOf(args)).@"struct".field_names.len > 0;
             return createFullWithContents(asset_name, contents, "", is_template, args);
         }
 
@@ -1083,7 +1083,7 @@ const Template = enum {
             if (bun.getenvZAnyCase("USER")) |user| {
                 const pathbuf = bun.path_buffer_pool.get();
                 defer bun.path_buffer_pool.put(pathbuf);
-                const path = std.fmt.bufPrintZ(pathbuf, "C:\\Users\\{s}\\AppData\\Local\\Programs\\Cursor\\Cursor.exe", .{user}) catch {
+                const path = std.fmt.bufPrintSentinel(pathbuf, "C:\\Users\\{s}\\AppData\\Local\\Programs\\Cursor\\Cursor.exe", .{user}, 0) catch {
                     return false;
                 };
 

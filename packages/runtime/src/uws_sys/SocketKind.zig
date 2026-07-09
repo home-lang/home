@@ -87,7 +87,7 @@ pub const SocketKind = enum(u8) {
 
 comptime {
     // `unsigned char kind` on us_socket_t — full byte, not the flags bitfield.
-    home_rt.assert(@typeInfo(SocketKind).@"enum".fields.len <= 256);
+    home_rt.assert(@typeInfo(SocketKind).@"enum".field_names.len <= 256);
 }
 
 /// The four kinds whose handlers live in C++ are also referenced from C++
@@ -115,7 +115,7 @@ test "SocketKind ordinals fit in a u8 and start at zero" {
     // Sanity: the enum has more than just the placeholder so the export
     // ordinals below are meaningful, and fewer than 256 so the byte stamp
     // on us_socket_t can hold every value.
-    const n = @typeInfo(SocketKind).@"enum".fields.len;
+    const n = @typeInfo(SocketKind).@"enum".field_names.len;
     try std.testing.expect(n > 2);
     try std.testing.expect(n <= 256);
 }

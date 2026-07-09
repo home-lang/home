@@ -158,7 +158,7 @@ fn onOpen(this: *WebSocketProxyTunnel) void {
             if (this._sni_hostname) |hostname| {
                 if (!bun.strings.isIPAddress(hostname)) {
                     // Set SNI hostname
-                    const hostname_z = bun.default_allocator.dupeZ(u8, hostname) catch return;
+                    const hostname_z = bun.dupeZ(bun.default_allocator, u8, hostname) catch return;
                     defer bun.default_allocator.free(hostname_z);
                     ssl_ptr.configureHTTPClient(hostname_z);
                 }

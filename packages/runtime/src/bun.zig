@@ -421,7 +421,7 @@ pub fn len(value: anytype) usize {
             .slice => value.len,
         },
         .@"struct" => |info| if (info.is_tuple) {
-            return info.fields.len;
+            return info.field_names.len;
         } else @compileError("invalid type given to std.mem.len"),
         else => @compileError("invalid type given to std.mem.len"),
     };
@@ -1258,7 +1258,7 @@ pub const getcwd = std.posix.getcwd;
 pub fn getcwdAlloc(allocator: std.mem.Allocator) ![:0]u8 {
     var temp: PathBuffer = undefined;
     const temp_slice = try getcwd(&temp);
-    return allocator.dupeZ(u8, temp_slice);
+    return bun.dupeZ(allocator, u8, temp_slice);
 }
 
 /// TODO: move to bun.sys and add a method onto FD
@@ -1611,7 +1611,7 @@ pub fn reloadProcess(
 
     const dupe_argv = allocator.allocSentinel(?[*:0]const u8, bun.argv.len, null) catch unreachable;
     for (bun.argv, dupe_argv) |src, *dest| {
-        dest.* = (allocator.dupeZ(u8, src) catch unreachable).ptr;
+        dest.* = (bun.dupeZ(allocator, u8, src) catch unreachable).ptr;
     }
 
     const environ_slice = std.mem.span(std.c.environ);
@@ -1620,7 +1620,7 @@ pub fn reloadProcess(
         if (src == null) {
             dest.* = null;
         } else {
-            dest.* = (allocator.dupeZ(u8, sliceTo(src.?, 0)) catch unreachable).ptr;
+            dest.* = (bun.dupeZ(allocator, u8, sliceTo(src.?, 0)) catch unreachable).ptr;
         }
     }
 
@@ -2777,6 +2777,14 @@ pub inline fn dupe(comptime T: type, t: *T) *T {
     return new(T, t.*);
 }
 
+/// Zig 0.17 removed `Allocator.dupeZ`; this restores the equivalent behavior:
+/// allocate a sentinel-terminated copy of `m`.
+pub fn dupeZ(allocator: std.mem.Allocator, comptime T: type, m: []const T) std.mem.Allocator.Error![:0]T {
+    const new_buf = try allocator.allocSentinel(T, m.len, 0);
+    @memcpy(new_buf, m);
+    return new_buf;
+}
+
 /// Implements `fn new` for a type.
 /// Pair with `TrivialDeinit` if the type contains no pointers.
 pub fn TrivialNew(comptime T: type) fn (T) *T {
@@ -2885,13 +2893,13 @@ pub fn iterateDir(dir: FD) DirIterator.Iterator {
 }
 
 fn ReinterpretSliceType(comptime T: type, comptime slice: type) type {
-    const is_const = @typeInfo(slice).pointer.is_const;
+    const is_const = @typeInfo(slice).pointer.attrs.@"const";
     return if (is_const) []const T else []T;
 }
 
 /// Zig has a todo for @ptrCast changing the `.len`. This is the workaround
 pub fn reinterpretSlice(comptime T: type, slice: anytype) ReinterpretSliceType(T, @TypeOf(slice)) {
-    const is_const = @typeInfo(@TypeOf(slice)).pointer.is_const;
+    const is_const = @typeInfo(@TypeOf(slice)).pointer.attrs.@"const";
     const bytes = std.mem.sliceAsBytes(slice);
     const new_ptr = @as(if (is_const) [*]const T else [*]T, @ptrCast(@alignCast(bytes.ptr)));
     return new_ptr[0..@divTrunc(bytes.len, @sizeOf(T))];
@@ -3492,7 +3500,7 @@ pub const bake = @import("./runtime/bake/bake.zig");
 
 /// like std.enums.tagName, except it doesn't lose the sentinel value.
 pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
-    return inline for (@typeInfo(Enum).@"enum".fields) |f| {
+    return inline for (bun.meta.fieldsOf(Enum)) |f| {
         if (@intFromEnum(value) == f.value) break f.name;
     } else null;
 }
@@ -3726,7 +3734,7 @@ pub inline fn writeAnyToHasher(hasher: anytype, thing: anytype) void {
 
 pub const perf = @import("./perf/perf.zig");
 pub inline fn isComptimeKnown(x: anytype) bool {
-    return comptime @typeInfo(@TypeOf(.{x})).@"struct".fields[0].is_comptime;
+    return comptime bun.meta.fieldsOf(@TypeOf(.{x}))[0].is_comptime;
 }
 
 pub inline fn itemOrNull(comptime T: type, slice: []const T, index: usize) ?T {

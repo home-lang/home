@@ -473,7 +473,7 @@ pub fn ResolutionType(comptime SemverIntType: type) type {
 
             single_file_module: String,
 
-            pub var zero: Value = @bitCast(std.mem.zeroes([@sizeOf(Value)]u8));
+            pub var zero: Value = std.mem.zeroes(Value);
 
             /// To avoid undefined memory between union values, we must zero initialize the union first.
             pub fn init(field: bun.meta.Tagged(Value, Tag)) Value {

@@ -2998,7 +2998,7 @@ pub fn unlinkat(dirfd: bun.FD, to: anytype) Maybe(void) {
 /// on host devfs, so readlink fails. Use fdescfs at /dev/fd instead.
 fn getFdPathFreeBSDLinuxulator(fd: bun.FD, out_buffer: *bun.PathBuffer) Maybe([]u8) {
     var buf: ["/dev/fd/-2147483648".len + 1:0]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&buf, "/dev/fd/{d}", .{fd.cast()}) catch unreachable;
+    const path = std.fmt.bufPrintSentinel(&buf, "/dev/fd/{d}", .{fd.cast()}, 0) catch unreachable;
     return switch (readlink(path, out_buffer)) {
         .result => |r| .{ .result = r },
         .err => |err| .{ .err = err },
@@ -3033,7 +3033,7 @@ pub fn getFdPath(fd: bun.FD, out_buffer: *bun.PathBuffer) Maybe([]u8) {
                 return getFdPathFreeBSDLinuxulator(fd, out_buffer);
             }
             var buf: ["/proc/self/fd/-2147483648".len + 1:0]u8 = undefined;
-            const path = std.fmt.bufPrintZ(&buf, "/proc/self/fd/{d}", .{fd.cast()}) catch unreachable;
+            const path = std.fmt.bufPrintSentinel(&buf, "/proc/self/fd/{d}", .{fd.cast()}, 0) catch unreachable;
             return switch (readlink(path, out_buffer)) {
                 .result => |r| .{ .result = r },
                 .err => |err| {
@@ -4068,7 +4068,7 @@ pub fn linkatTmpfile(tmpfd: bun.FD, dirfd: bun.FD, name: [:0]const u8) Maybe(voi
             //        AT_SYMLINK_FOLLOW);
             //
             var procfs_buf: ["/proc/self/fd/-2147483648".len + 1:0]u8 = undefined;
-            const path = std.fmt.bufPrintZ(&procfs_buf, "/proc/self/fd/{d}", .{tmpfd.cast()}) catch unreachable;
+            const path = std.fmt.bufPrintSentinel(&procfs_buf, "/proc/self/fd/{d}", .{tmpfd.cast()}, 0) catch unreachable;
 
             break :brk std.os.linux.linkat(
                 posix.AT.FDCWD,
@@ -4472,7 +4472,7 @@ pub fn getSelfExeSharedLibPaths(allocator: std.mem.Allocator) error{OutOfMemory}
                     _ = size;
                     const name = info.dlpi_name orelse return;
                     if (name[0] == '/') {
-                        const item = try list.allocator.dupeZ(u8, mem.sliceTo(name, 0));
+                        const item = try bun.dupeZ(list.allocator, u8, mem.sliceTo(name, 0));
                         errdefer list.allocator.free(item);
                         try list.append(item);
                     }
@@ -4492,7 +4492,7 @@ pub fn getSelfExeSharedLibPaths(allocator: std.mem.Allocator) error{OutOfMemory}
             const img_count = std.c._dyld_image_count();
             for (0..img_count) |i| {
                 const name = std.c._dyld_get_image_name(i);
-                const item = try allocator.dupeZ(u8, mem.sliceTo(name, 0));
+                const item = try bun.dupeZ(allocator, u8, mem.sliceTo(name, 0));
                 errdefer allocator.free(item);
                 try paths.append(item);
             }
@@ -4510,7 +4510,7 @@ pub fn getSelfExeSharedLibPaths(allocator: std.mem.Allocator) error{OutOfMemory}
             }
 
             const b = "/boot/system/runtime_loader";
-            const item = try allocator.dupeZ(u8, mem.sliceTo(b, 0));
+            const item = try bun.dupeZ(allocator, u8, mem.sliceTo(b, 0));
             errdefer allocator.free(item);
             try paths.append(item);
 

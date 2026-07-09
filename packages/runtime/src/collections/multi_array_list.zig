@@ -47,15 +47,8 @@ pub fn MultiArrayList(comptime T: type) type {
                 // Zig 0.17: `@Type(.{...})` was replaced by per-kind
                 // `@Union`/`@Struct` builtins with positional args.
                 pub const Bare = Bare: {
-                    var field_names: [u.fields.len][]const u8 = undefined;
-                    var field_types: [u.fields.len]type = undefined;
-                    var field_attrs: [u.fields.len]std.builtin.Type.UnionField.Attributes = undefined;
-                    for (u.fields, &field_names, &field_types, &field_attrs) |field, *name, *FType, *attrs| {
-                        name.* = field.name;
-                        FType.* = field.type;
-                        attrs.* = .{ .@"align" = field.alignment };
-                    }
-                    break :Bare @Union(u.layout, null, &field_names, &field_types, &field_attrs);
+                    const n = u.field_names.len;
+                    break :Bare @Union(u.layout, null, u.field_names[0..n], u.field_types[0..n], u.field_attrs[0..n]);
                 };
                 pub const Tag =
                     u.tag_type orelse @compileError("MultiArrayList does not support untagged unions");
@@ -166,7 +159,7 @@ pub fn MultiArrayList(comptime T: type) type {
 
         const Self = @This();
 
-        const fields = meta.fields(Elem);
+        const fields = home_rt.meta.fieldsOf(Elem);
         /// `sizes.bytes` is an array of @sizeOf each T field. Sorted by alignment, descending.
         /// `sizes.fields` is an array mapping from `sizes.bytes` array index to field index.
         const sizes = blk: {
@@ -628,7 +621,7 @@ pub fn MultiArrayList(comptime T: type) type {
             // builtins. Mirror std/multi_array_list.zig's helper layout.
             var field_names: [fields.len][]const u8 = undefined;
             var field_types: [fields.len]type = undefined;
-            var field_attrs: [fields.len]std.builtin.Type.StructField.Attributes = undefined;
+            var field_attrs: [fields.len]std.builtin.Type.Struct.FieldAttributes = undefined;
             for (sizes.fields, &field_names, &field_types, &field_attrs) |i, *name, *FType, *attrs| {
                 name.* = fields[i].name ++ "_ptr";
                 FType.* = *fields[i].type;

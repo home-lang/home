@@ -41,7 +41,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         /// NOTE: `ptr` is const if data is borrowed.
         ptr: [*]T,
         flags: packed struct(usize) {
-            len: std.meta.Int(.unsigned, @bitSizeOf(usize) - 1),
+            len: @Int(.unsigned, @bitSizeOf(usize) - 1),
             is_owned: bool,
         },
         debug: if (cow_str_assertions) ?*DebugData else void,
@@ -75,7 +75,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         /// Create a new Cow that copies `data` into a new allocation.
         pub fn initDupe(data: Slice, allocator: Allocator) !Self {
             const bytes: Slice = if (comptime sentinel) |_|
-                try allocator.dupeZ(T, data)
+                try bun.dupeZ(allocator, T, data)
             else
                 try allocator.dupe(T, data);
 
@@ -199,7 +199,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         fn intoOwned(str: *Self, allocator: Allocator) callconv(bun.callconv_inline) Allocator.Error!void {
             bun.assert(!str.isOwned());
 
-            const bytes = try if (comptime sentinel) |_| allocator.dupeZ(T, str.slice()) else allocator.dupe(T, str.slice());
+            const bytes = try if (comptime sentinel) |_| bun.dupeZ(allocator, T, str.slice()) else allocator.dupe(T, str.slice());
             str.ptr = bytes.ptr;
             str.flags.is_owned = true;
 

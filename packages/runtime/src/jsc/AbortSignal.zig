@@ -309,6 +309,6 @@ test "AbortSignal exposes the expected entrypoints" {
 
 test "AbortSignal.AbortReason is a tagged union {common, js}" {
     const info = @typeInfo(AbortSignal.AbortReason).@"union";
-    try std.testing.expectEqualStrings("common", info.fields[0].name);
-    try std.testing.expectEqualStrings("js", info.fields[1].name);
+    try std.testing.expectEqualStrings("common", info.field_names[0]);
+    try std.testing.expectEqualStrings("js", info.field_names[1]);
 }

@@ -4,6 +4,7 @@
 // is needed. comptime-gated on `enable_jsc`.
 
 const std = @import("std");
+const bun = @import("bun");
 const build_options = @import("build_options");
 const evaluate = @import("evaluate.zig");
 const callback = @import("callback.zig");
@@ -119,7 +120,7 @@ fn tomlParseNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSO
     var out = Buf.init(alloc);
     jsonTable(&out, parsed.root) catch return extern_fns.JSValueMakeNull(c);
 
-    const z = alloc.dupeZ(u8, out.items) catch return extern_fns.JSValueMakeNull(c);
+    const z = bun.dupeZ(alloc, u8, out.items) catch return extern_fns.JSValueMakeNull(c);
     const js = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return extern_fns.JSValueMakeNull(c);
     defer extern_fns.JSStringRelease(js);
     return extern_fns.JSValueMakeString(c, js);

@@ -398,7 +398,7 @@ pub const SizeProperty = packed struct(u16) {
     __unused: u4 = 0,
 
     pub fn tryFromPropertyIdTag(property_id: PropertyIdTag) ?SizeProperty {
-        inline for (std.meta.fields(@This())) |field| {
+        inline for (bun.meta.fieldsOf(@This())) |field| {
             if (comptime std.mem.eql(u8, field.name, "__unused")) continue;
             if (@intFromEnum(@field(PropertyIdTag, field.name)) == @intFromEnum(@as(PropertyIdTag, property_id))) {
                 var ret: SizeProperty = .{};

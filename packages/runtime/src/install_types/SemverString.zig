@@ -34,6 +34,11 @@
 //! layout.
 
 /// String type that stores either an offset/length into an external buffer or a string inline directly
+// Zig 0.17 forbids `@bitCast` on extern structs; reinterpret raw bytes instead.
+inline fn reinterpret(comptime To: type, value: anytype) To {
+    return std.mem.bytesToValue(To, std.mem.asBytes(&value));
+}
+
 pub const String = extern struct {
     pub const max_inline_len: usize = 8;
     /// This is three different types of string.
@@ -192,37 +197,31 @@ pub const String = extern struct {
             // This should only happen for non-ascii strings that are exactly 8 bytes.
             // so that's an edge-case
             if ((in[max_inline_len - 1]) >= 128)
-                @as(String, @bitCast((@as(
+                reinterpret(String, ((@as(
                     u64,
                     0,
                 ) | @as(
                     u64,
                     @as(
                         max_addressable_space,
-                        @truncate(@as(
-                            u64,
-                            @bitCast(Pointer.init(buf, in)),
-                        )),
+                        @truncate(reinterpret(u64, Pointer.init(buf, in))),
                     ),
                 )) | 1 << 63))
             else
                 String{ .bytes = .{ in[0], in[1], in[2], in[3], in[4], in[5], in[6], in[7] } },
 
-            else => @as(
+            else => reinterpret(
                 String,
-                @bitCast((@as(
+                (@as(
                     u64,
                     0,
                 ) | @as(
                     u64,
                     @as(
                         max_addressable_space,
-                        @truncate(@as(
-                            u64,
-                            @bitCast(Pointer.init(buf, in)),
-                        )),
+                        @truncate(reinterpret(u64, Pointer.init(buf, in))),
                     ),
-                )) | 1 << 63),
+                )) | 1 << 63,
             ),
         };
     }
@@ -280,7 +279,7 @@ pub const String = extern struct {
     ) OOM!String {
         try buf.appendSlice(allocator, in);
         const in_buf = buf.items[buf.items.len - in.len ..];
-        return @bitCast((@as(u64, 0) | @as(u64, @as(max_addressable_space, @truncate(@as(u64, @bitCast(Pointer.init(buf.items, in_buf))))))) | 1 << 63);
+        return reinterpret(String, ((@as(u64, 0) | @as(u64, @as(max_addressable_space, @truncate(reinterpret(u64, Pointer.init(buf.items, in_buf)))))) | 1 << 63));
     }
 
     pub fn eql(this: String, that: String, this_buf: []const u8, that_buf: []const u8) bool {
@@ -345,7 +344,7 @@ pub const String = extern struct {
     };
 
     pub inline fn ptr(this: String) Pointer {
-        return @as(Pointer, @bitCast(@as(u64, @as(u63, @truncate(@as(u64, @bitCast(this)))))));
+        return reinterpret(Pointer, (@as(u64, @as(u63, @truncate(reinterpret(u64, this))))));
     }
 
     // String must be a pointer because we reference it as a slice. It will become a dead pointer if it is copied.

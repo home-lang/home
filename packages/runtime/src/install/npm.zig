@@ -906,7 +906,7 @@ pub const PackageManifest = struct {
                 @compileError("header bytes must be exactly 49 bytes long, length is not serialized");
 
             // skip name
-            const fields = std.meta.fields(Npm.PackageManifest);
+            const fields = bun.meta.fieldsOf(Npm.PackageManifest);
 
             const Data = struct {
                 size: usize,
@@ -1199,9 +1199,9 @@ pub const PackageManifest = struct {
         fn manifestFileName(buf: []u8, file_id: u64, scope: *const Registry.Scope) ![:0]const u8 {
             const file_id_hex_fmt = bun.fmt.hexIntLower(file_id);
             return if (scope.url_hash == Registry.default_url_hash)
-                try std.fmt.bufPrintZ(buf, "{f}.npm", .{file_id_hex_fmt})
+                try std.fmt.bufPrintSentinel(buf, "{f}.npm", .{file_id_hex_fmt}, 0)
             else
-                try std.fmt.bufPrintZ(buf, "{f}-{f}.npm", .{ file_id_hex_fmt, bun.fmt.hexIntLower(scope.url_hash) });
+                try std.fmt.bufPrintSentinel(buf, "{f}-{f}.npm", .{ file_id_hex_fmt, bun.fmt.hexIntLower(scope.url_hash) }, 0);
         }
 
         pub fn save(this: *const PackageManifest, scope: *const Registry.Scope, tmpdir: std.Io.Dir, cache_dir: std.Io.Dir) !void {
@@ -2637,7 +2637,7 @@ pub const PackageManifest = struct {
 
         switch (how_many_bytes_to_store_indices) {
             inline 1...8 => |int_bytes| {
-                const Int = std.meta.Int(.unsigned, int_bytes * 8);
+                const Int = @Int(.unsigned, int_bytes * 8);
 
                 const ExternVersionSorter = struct {
                     string_bytes: []const u8,

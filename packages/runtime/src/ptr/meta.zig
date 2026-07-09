@@ -42,7 +42,7 @@ pub const PointerInfo = struct {
     }
 
     pub fn isConst(self: Self) bool {
-        return @typeInfo(self.NonOptionalPointer).pointer.is_const;
+        return @typeInfo(self.NonOptionalPointer).pointer.attrs.@"const";
     }
 
     pub const ParseOptions = struct {
@@ -69,19 +69,19 @@ pub const PointerInfo = struct {
             .c => @compileError("C pointers not supported"),
         }
 
-        if (pointer_info.is_const and !options.allow_const) {
+        if (pointer_info.attrs.@"const" and !options.allow_const) {
             @compileError("const pointers not supported");
         }
-        if (pointer_info.is_volatile) {
+        if (pointer_info.attrs.@"volatile") {
             @compileError("volatile pointers not supported");
         }
-        // Zig 0.17: `alignment` is `?usize`; null means "default for Child".
-        if (pointer_info.alignment) |a| {
+        // Zig 0.17: `align` is `?usize`; null means "default for Child".
+        if (pointer_info.attrs.@"align") |a| {
             if (a != @alignOf(Child)) {
                 @compileError("non-default alignment not supported");
             }
         }
-        if (pointer_info.is_allowzero) {
+        if (pointer_info.attrs.@"allowzero") {
             @compileError("allowzero not supported");
         }
         if (pointer_info.sentinel_ptr != null) {
@@ -98,12 +98,10 @@ pub const PointerInfo = struct {
 
 pub fn AddConst(Pointer: type) type {
     return switch (@typeInfo(Pointer)) {
-        .pointer => |info| @Pointer(info.size, .{
-            .@"const" = true,
-            .@"volatile" = info.is_volatile,
-            .@"allowzero" = info.is_allowzero,
-            .@"align" = info.alignment,
-            .@"addrspace" = info.address_space,
+        .pointer => |info| @Pointer(info.size, blk: {
+            var a = info.attrs;
+            a.@"const" = true;
+            break :blk a;
         }, info.child, info.sentinel()),
         .optional => |opt| ?AddConst(opt.child),
         // Technically this function accepts things like `?????[]u8`, but `PointerInfo.parse`

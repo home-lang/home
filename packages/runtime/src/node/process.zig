@@ -9,6 +9,7 @@
 // Phase 12.2 JSC bridge.
 
 const std = @import("std");
+const bun = @import("bun");
 const builtin = @import("builtin");
 const home_rt = @import("home");
 const Environment = home_rt.Environment;
@@ -102,13 +103,13 @@ pub fn cwd(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn chdir(path: []const u8) !void {
-    const path_z = try home_rt.default_allocator.dupeZ(u8, path);
+    const path_z = try bun.dupeZ(home_rt.default_allocator, u8, path);
     defer home_rt.default_allocator.free(path_z);
     if (std.c.chdir(path_z.ptr) != 0) return error.ChangeDirectoryFailed;
 }
 
 pub fn getEnv(allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
-    const key_z = try allocator.dupeZ(u8, key);
+    const key_z = try bun.dupeZ(allocator, u8, key);
     defer allocator.free(key_z);
     const raw = std.c.getenv(key_z.ptr) orelse return null;
     return try allocator.dupe(u8, std.mem.span(raw));
@@ -124,16 +125,16 @@ pub fn hasEnv(key: []const u8) bool {
 
 pub fn setEnv(key: []const u8, value: []const u8) !void {
     if (Environment.isWindows) return error.Unsupported;
-    const key_z = try home_rt.default_allocator.dupeZ(u8, key);
+    const key_z = try bun.dupeZ(home_rt.default_allocator, u8, key);
     defer home_rt.default_allocator.free(key_z);
-    const value_z = try home_rt.default_allocator.dupeZ(u8, value);
+    const value_z = try bun.dupeZ(home_rt.default_allocator, u8, value);
     defer home_rt.default_allocator.free(value_z);
     if (setenv(key_z.ptr, value_z.ptr, 1) != 0) return error.SetEnvironmentFailed;
 }
 
 pub fn unsetEnv(key: []const u8) !void {
     if (Environment.isWindows) return error.Unsupported;
-    const key_z = try home_rt.default_allocator.dupeZ(u8, key);
+    const key_z = try bun.dupeZ(home_rt.default_allocator, u8, key);
     defer home_rt.default_allocator.free(key_z);
     if (unsetenv(key_z.ptr) != 0) return error.UnsetEnvironmentFailed;
 }

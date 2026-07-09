@@ -498,9 +498,9 @@ pub const Repository = extern struct {
         attempt: u8,
     ) !std.Io.Dir {
         bun.analytics.Features.git_dependencies += 1;
-        const folder_name = try std.fmt.bufPrintZ(&tl_bufs.get().folder_name_buf, "{f}.git", .{
+        const folder_name = try std.fmt.bufPrintSentinel(&tl_bufs.get().folder_name_buf, "{f}.git", .{
             bun.fmt.hexIntLower(task_id.get()),
-        });
+        }, 0);
 
         return if (cache_dir.openDir(std.Options.debug_io, folder_name, .{})) |dir| fetch: {
             const path = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{folder_name}, .auto);

@@ -226,7 +226,7 @@ test "VM.HeapType tags match the C ABI" {
 
 test "VM.Lock has the expected fields" {
     const info = @typeInfo(VM.Lock).@"struct";
-    try std.testing.expectEqualStrings("vm", info.fields[0].name);
+    try std.testing.expectEqualStrings("vm", info.field_names[0]);
 }
 
 test "VM exposes the expected entrypoints" {

@@ -29,6 +29,7 @@
 // separate later milestone.
 
 const std = @import("std");
+const bun = @import("bun");
 const build_options = @import("build_options");
 const evaluate = @import("evaluate.zig");
 const callback = @import("callback.zig");
@@ -63,7 +64,7 @@ fn makeUint8Array(ctx: *JSContextRef, bytes: []const u8) ?*JSValue {
 
 fn setValue(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: ?*JSValue) void {
     const allocator = std.heap.page_allocator;
-    const key_z = allocator.dupeZ(u8, key) catch return;
+    const key_z = bun.dupeZ(allocator, u8, key) catch return;
     defer allocator.free(key_z);
     const name = extern_fns.JSStringCreateWithUTF8CString(key_z.ptr) orelse return;
     defer extern_fns.JSStringRelease(name);
@@ -80,7 +81,7 @@ fn setNum(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: f64) vo
 
 fn setStr(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: []const u8) void {
     const allocator = std.heap.page_allocator;
-    const z = allocator.dupeZ(u8, value) catch return;
+    const z = bun.dupeZ(allocator, u8, value) catch return;
     defer allocator.free(z);
     const s = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return;
     defer extern_fns.JSStringRelease(s);
@@ -376,12 +377,12 @@ fn whichNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObjec
 
 /// True when `path` exists and is executable by the current user.
 fn isExecutable(a: std.mem.Allocator, path: []const u8) bool {
-    const z = a.dupeZ(u8, path) catch return false;
+    const z = bun.dupeZ(a, u8, path) catch return false;
     return std.c.access(z.ptr, std.posix.X_OK) == 0;
 }
 
 fn makeJsString(c: *JSContextRef, a: std.mem.Allocator, s: []const u8) ?*JSValue {
-    const z = a.dupeZ(u8, s) catch return extern_fns.JSValueMakeNull(c);
+    const z = bun.dupeZ(a, u8, s) catch return extern_fns.JSValueMakeNull(c);
     const js = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return extern_fns.JSValueMakeNull(c);
     defer extern_fns.JSStringRelease(js);
     return extern_fns.JSValueMakeString(c, js);

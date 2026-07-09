@@ -96,7 +96,7 @@ test "iterator helpers expose the expected M6 signatures" {
     // future drift away from `(JSValue) bool` trips a compile error.
     const cb_info = @typeInfo(IterCallback);
     try std.testing.expect(cb_info == .pointer);
-    try std.testing.expect(cb_info.pointer.is_const);
+    try std.testing.expect(cb_info.pointer.attrs.@"const");
     try std.testing.expect(@typeInfo(cb_info.pointer.child) == .@"fn");
 }
 

@@ -87,8 +87,8 @@ test "uv_signal_handle_windows: UvSignalCallback shape is the C-ABI signature" {
     try std.testing.expectEqual(@as(usize, 1), @intFromBool(info == .pointer));
     const child = info.pointer.child;
     const fn_info = @typeInfo(child).@"fn";
-    try std.testing.expectEqual(@as(usize, 2), fn_info.params.len);
-    try std.testing.expectEqual(std.builtin.CallingConvention.c, fn_info.calling_convention);
+    try std.testing.expectEqual(@as(usize, 2), fn_info.param_types.len);
+    try std.testing.expectEqual(std.builtin.CallingConvention.c, fn_info.attrs.@"callconv");
     try std.testing.expectEqual(@as(?type, void), fn_info.return_type);
 }
 

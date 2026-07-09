@@ -174,7 +174,7 @@ pub const ProxyEnvStorage = struct {
             bun.strings.eqlCaseInsensitiveASCIIICheckLength
         else
             bun.strings.eql;
-        inline for (@typeInfo(ProxyEnvStorage).@"struct".fields) |f| {
+        inline for (bun.meta.fieldsOf(ProxyEnvStorage)) |f| {
             if (comptime f.type == ?*RefCountedEnvValue) {
                 // Uppercase fields are declared first. On Windows the
                 // case-insensitive eql matches the uppercase field for
@@ -191,7 +191,7 @@ pub const ProxyEnvStorage = struct {
     /// parent's strings. Caller must hold parent.lock — the pointer load
     /// and ref() are not atomic with respect to Bun__setEnvValue's deref().
     pub fn cloneFrom(self: *ProxyEnvStorage, parent: *const ProxyEnvStorage) void {
-        inline for (@typeInfo(ProxyEnvStorage).@"struct".fields) |f| {
+        inline for (bun.meta.fieldsOf(ProxyEnvStorage)) |f| {
             if (comptime f.type == ?*RefCountedEnvValue) {
                 if (@field(parent, f.name)) |val| {
                     val.ref();
@@ -207,7 +207,7 @@ pub const ProxyEnvStorage = struct {
     /// clone captured a snapshot the storage doesn't hold a ref on (e.g. an
     /// initial-environ value later overwritten by the setter).
     pub fn syncInto(self: *const ProxyEnvStorage, map: *bun.DotEnv.Map) void {
-        inline for (@typeInfo(ProxyEnvStorage).@"struct".fields) |f| {
+        inline for (bun.meta.fieldsOf(ProxyEnvStorage)) |f| {
             if (comptime f.type == ?*RefCountedEnvValue) {
                 if (@field(self, f.name)) |val| {
                     bun.handleOom(map.put(f.name, val.bytes));
@@ -217,7 +217,7 @@ pub const ProxyEnvStorage = struct {
     }
 
     pub fn deinit(self: *ProxyEnvStorage) void {
-        inline for (@typeInfo(ProxyEnvStorage).@"struct".fields) |f| {
+        inline for (bun.meta.fieldsOf(ProxyEnvStorage)) |f| {
             if (comptime f.type == ?*RefCountedEnvValue) {
                 if (@field(self, f.name)) |val| {
                     val.deref();
@@ -818,7 +818,7 @@ pub fn setTLSDefaultCiphers(this: *RareData, ciphers: []const u8) void {
     if (this.tls_default_ciphers) |old_ciphers| {
         bun.default_allocator.free(old_ciphers);
     }
-    this.tls_default_ciphers = bun.handleOom(bun.default_allocator.dupeZ(u8, ciphers));
+    this.tls_default_ciphers = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, ciphers));
 }
 
 pub fn defaultCSRFSecret(this: *RareData) []const u8 {

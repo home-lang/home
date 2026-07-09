@@ -6,15 +6,69 @@ pub fn OptionalChild(comptime T: type) type {
     return child.optional.child;
 }
 
-pub fn EnumFields(comptime T: type) []const std.builtin.Type.EnumField {
+/// Zig 0.17 removed the unified `@typeInfo(T).@"kind".fields` view (now parallel
+/// arrays). `fieldsOf` restores the pre-0.17 `[]const Field` shape with the
+/// `.name`/`.type`/`.value`/`.is_comptime`/`.alignment` members the copied Bun
+/// source relies on, for structs, unions and enums.
+pub const Field = struct {
+    name: [:0]const u8,
+    type: type = void,
+    value: comptime_int = 0,
+    is_comptime: bool = false,
+    /// `null` means "default alignment for the field type" (mirrors the new
+    /// `FieldAttributes.@"align"` shape the copied Bun source expects).
+    alignment: ?usize = null,
+};
+pub inline fn fieldsOf(comptime T: type) []const Field {
+    comptime {
+        switch (@typeInfo(T)) {
+            .@"struct" => |s| {
+                var arr: [s.field_names.len]Field = undefined;
+                for (s.field_names, s.field_types, s.field_attrs, &arr) |n, t, a, *e| {
+                    e.* = .{ .name = n, .type = t, .is_comptime = a.@"comptime", .alignment = a.@"align" };
+                }
+                const final = arr;
+                return &final;
+            },
+            .@"union" => |u| {
+                var arr: [u.field_names.len]Field = undefined;
+                for (u.field_names, u.field_types, u.field_attrs, &arr) |n, t, a, *e| {
+                    e.* = .{ .name = n, .type = t, .alignment = a.@"align" };
+                }
+                const final = arr;
+                return &final;
+            },
+            .@"enum" => |en| {
+                var arr: [en.field_names.len]Field = undefined;
+                for (en.field_names, en.field_values, &arr) |n, v, *e| {
+                    e.* = .{ .name = n, .value = v };
+                }
+                const final = arr;
+                return &final;
+            },
+            else => @compileError("fieldsOf on unsupported type " ++ @typeName(T)),
+        }
+    }
+}
+
+pub const EnumField = struct { name: [:0]const u8, value: comptime_int };
+pub inline fn EnumFields(comptime T: type) []const EnumField {
     const tyinfo = @typeInfo(T);
-    return switch (tyinfo) {
-        .@"union" => std.meta.fields(tyinfo.@"union".tag_type.?),
-        .@"enum" => tyinfo.@"enum".fields,
+    const en = switch (tyinfo) {
+        .@"union" => @typeInfo(tyinfo.@"union".tag_type.?).@"enum",
+        .@"enum" => tyinfo.@"enum",
         else => {
             @compileError("Used `EnumFields(T)` on a type that is not an `enum` or a `union(enum)`");
         },
     };
+    comptime {
+        var fields: [en.field_names.len]EnumField = undefined;
+        for (en.field_names, en.field_values, &fields) |name, value, *f| {
+            f.* = .{ .name = name, .value = value };
+        }
+        const final = fields;
+        return &final;
+    }
 }
 
 pub fn ReturnOfMaybe(comptime function: anytype) type {
@@ -28,17 +82,17 @@ pub fn MaybeResult(comptime MaybeType: type) type {
     const maybe_ty_info = @typeInfo(MaybeType);
 
     const maybe = maybe_ty_info.@"union";
-    if (maybe.fields.len != 2) @compileError("Expected the Maybe type to be a union(enum) with two variants");
+    if (maybe.field_names.len != 2) @compileError("Expected the Maybe type to be a union(enum) with two variants");
 
-    if (!std.mem.eql(u8, maybe.fields[0].name, "err")) {
-        @compileError("Expected the first field of the Maybe type to be \"err\", got: " ++ maybe.fields[0].name);
+    if (!std.mem.eql(u8, maybe.field_names[0], "err")) {
+        @compileError("Expected the first field of the Maybe type to be \"err\", got: " ++ maybe.field_names[0]);
     }
 
-    if (!std.mem.eql(u8, maybe.fields[1].name, "result")) {
-        @compileError("Expected the second field of the Maybe type to be \"result\"" ++ maybe.fields[1].name);
+    if (!std.mem.eql(u8, maybe.field_names[1], "result")) {
+        @compileError("Expected the second field of the Maybe type to be \"result\"" ++ maybe.field_names[1]);
     }
 
-    return maybe.fields[1].type;
+    return maybe.field_types[1];
 }
 
 pub fn ReturnOf(comptime function: anytype) type {
@@ -72,7 +126,9 @@ pub inline fn typeBaseName(comptime fullname: [:0]const u8) [:0]const u8 {
 pub fn enumFieldNames(comptime Type: type) []const []const u8 {
     const Filtered = struct {
         const raw = blk: {
-            var filtered_names: [std.meta.fields(Type).len][]const u8 = std.meta.fieldNames(Type).*;
+            const src = std.meta.fieldNames(Type);
+            var filtered_names: [src.len][]const u8 = undefined;
+            for (src, &filtered_names) |s, *d| d.* = s;
             var i: usize = 0;
             for (filtered_names) |name| {
                 // zig seems to include "_" or an empty string in the list of enum field names
@@ -93,9 +149,9 @@ pub fn enumFieldNames(comptime Type: type) []const []const u8 {
 
 pub fn banFieldType(comptime Container: type, comptime T: type) void {
     comptime {
-        for (std.meta.fields(Container)) |field| {
-            if (field.type == T) {
-                @compileError(std.fmt.comptimePrint(typeName(T) ++ " field \"" ++ field.name ++ "\" not allowed in " ++ typeName(Container), .{}));
+        for (std.meta.fieldNames(Container), std.meta.fieldTypes(Container)) |fname, ftype| {
+            if (ftype == T) {
+                @compileError(std.fmt.comptimePrint(typeName(T) ++ " field \"" ++ fname ++ "\" not allowed in " ++ typeName(Container), .{}));
             }
         }
     }
@@ -194,13 +250,13 @@ pub fn hasStableMemoryLayout(comptime T: type) bool {
         .float => true,
         .@"enum" => {
             // not supporting this rn
-            if (tyinfo.@"enum".is_exhaustive) return false;
+            if (tyinfo.@"enum".mode == .exhaustive) return false;
             return hasStableMemoryLayout(tyinfo.@"enum".tag_type);
         },
         .@"struct" => switch (tyinfo.@"struct".layout) {
             .auto => {
-                inline for (tyinfo.@"struct".fields) |field| {
-                    if (!hasStableMemoryLayout(field.type)) return false;
+                inline for (tyinfo.@"struct".field_types) |FieldType| {
+                    if (!hasStableMemoryLayout(FieldType)) return false;
                 }
                 return true;
             },
@@ -211,8 +267,8 @@ pub fn hasStableMemoryLayout(comptime T: type) bool {
             .auto => {
                 if (tyinfo.@"union".tag_type == null or !hasStableMemoryLayout(tyinfo.@"union".tag_type.?)) return false;
 
-                inline for (tyinfo.@"union".fields) |field| {
-                    if (!hasStableMemoryLayout(field.type)) return false;
+                inline for (tyinfo.@"union".field_types) |FieldType| {
+                    if (!hasStableMemoryLayout(FieldType)) return false;
                 }
 
                 return true;
@@ -234,14 +290,14 @@ pub fn isSimpleCopyType(comptime T: type) bool {
         .float => true,
         .@"enum" => true,
         .@"struct" => {
-            inline for (tyinfo.@"struct".fields) |field| {
-                if (!isSimpleCopyType(field.type)) return false;
+            inline for (tyinfo.@"struct".field_types) |FieldType| {
+                if (!isSimpleCopyType(FieldType)) return false;
             }
             return true;
         },
         .@"union" => {
-            inline for (tyinfo.@"union".fields) |field| {
-                if (!isSimpleCopyType(field.type)) return false;
+            inline for (tyinfo.@"union".field_types) |FieldType| {
+                if (!isSimpleCopyType(FieldType)) return false;
             }
             return true;
         },
@@ -283,13 +339,13 @@ pub const ListContainerType = enum {
 pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContainerType, child: type } {
     const tyinfo = @typeInfo(T);
     if (tyinfo == .@"struct") {
-        const fields = tyinfo.@"struct".fields;
+        const st = tyinfo.@"struct";
 
         // Looks like array list
-        if (fields.len == 2 and
-            std.mem.eql(u8, fields[0].name, "items") and
-            std.mem.eql(u8, fields[1].name, "capacity"))
-            return .{ .list = .array_list, .child = std.meta.Child(fields[0].type) };
+        if (st.field_names.len == 2 and
+            std.mem.eql(u8, st.field_names[0], "items") and
+            std.mem.eql(u8, st.field_names[1], "capacity"))
+            return .{ .list = .array_list, .child = std.meta.Child(st.field_types[0]) };
 
         // Looks like babylist
         if (@hasDecl(T, "looksLikeContainerTypeBabyList")) {
@@ -307,15 +363,8 @@ pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContaine
 
 pub fn Tagged(comptime U: type, comptime T: type) type {
     const info: std.builtin.Type.Union = @typeInfo(U).@"union";
-    var field_names: [info.fields.len][]const u8 = undefined;
-    var field_types: [info.fields.len]type = undefined;
-    var field_attrs: [info.fields.len]std.builtin.Type.UnionField.Attributes = undefined;
-    for (info.fields, &field_names, &field_types, &field_attrs) |field, *name, *FieldType, *attrs| {
-        name.* = field.name;
-        FieldType.* = field.type;
-        attrs.* = .{ .@"align" = field.alignment };
-    }
-    return @Union(.auto, T, &field_names, &field_types, &field_attrs);
+    const n = info.field_names.len;
+    return @Union(.auto, T, info.field_names[0..n], info.field_types[0..n], info.field_attrs[0..n]);
 }
 
 pub fn SliceChild(comptime T: type) type {
@@ -330,20 +379,19 @@ pub fn SliceChild(comptime T: type) type {
 pub fn useAllFields(comptime T: type, _: VoidFields(T)) void {}
 
 fn VoidFields(comptime T: type) type {
-    const fields = @typeInfo(T).@"struct".fields;
-    var field_names: [fields.len][]const u8 = undefined;
-    var field_types: [fields.len]type = undefined;
-    var field_attrs: [fields.len]std.builtin.Type.StructField.Attributes = undefined;
-    for (fields, &field_names, &field_types, &field_attrs) |field, *name, *FieldType, *attrs| {
-        name.* = field.name;
+    const info = @typeInfo(T).@"struct";
+    const n = info.field_names.len;
+    var field_types: [n]type = undefined;
+    var field_attrs: [n]std.builtin.Type.Struct.FieldAttributes = undefined;
+    for (info.field_attrs, &field_types, &field_attrs) |src, *FieldType, *attrs| {
         FieldType.* = void;
         attrs.* = .{
-            .@"comptime" = field.is_comptime,
-            .@"align" = field.alignment,
+            .@"comptime" = src.@"comptime",
+            .@"align" = src.@"align",
             .default_value_ptr = null,
         };
     }
-    return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
+    return @Struct(.auto, null, info.field_names[0..n], &field_types, &field_attrs);
 }
 
 pub fn voidFieldTypeDiscardHelper(data: anytype) void {
@@ -393,8 +441,8 @@ test "meta helper leaves" {
     try testing.expectEqual(u8, SliceChild([]const u8));
 
     const CreatedTuple = CreateUniqueTuple(2, .{ u8, u16 });
-    try testing.expectEqual(u8, @typeInfo(CreatedTuple).@"struct".fields[0].type);
-    try testing.expectEqual(u16, @typeInfo(CreatedTuple).@"struct".fields[1].type);
+    try testing.expectEqual(u8, @typeInfo(CreatedTuple).@"struct".field_types[0]);
+    try testing.expectEqual(u16, @typeInfo(CreatedTuple).@"struct".field_types[1]);
 
     const E = enum(u8) { a, _none, b, _ };
     const names = enumFieldNames(E);

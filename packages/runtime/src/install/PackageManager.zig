@@ -748,7 +748,7 @@ pub fn init(
                             } else child_path;
 
                             if (strings.eqlLong(maybe_workspace_path, path, true)) {
-                                fs.top_level_dir = try bun.default_allocator.dupeZ(u8, parent);
+                                fs.top_level_dir = try bun.dupeZ(bun.default_allocator, u8, parent);
                                 found = true;
                                 child_json.close();
                                 if (comptime Environment.isWindows) {
@@ -765,7 +765,7 @@ pub fn init(
             }
         }
 
-        fs.top_level_dir = try bun.default_allocator.dupeZ(u8, child_cwd);
+        fs.top_level_dir = try bun.dupeZ(bun.default_allocator, u8, child_cwd);
         break :root_package_json_file child_json;
     };
 
@@ -922,7 +922,7 @@ pub fn init(
     if (manager.options.ca.len > 0) {
         ca = try manager.allocator.alloc(stringZ, manager.options.ca.len);
         for (ca, manager.options.ca) |*z, s| {
-            z.* = try manager.allocator.dupeZ(u8, s);
+            z.* = try bun.dupeZ(manager.allocator, u8, s);
         }
     }
 
@@ -930,10 +930,10 @@ pub fn init(
     if (manager.options.ca_file_name.len > 0) {
         // resolve with original cwd
         if (std.fs.path.isAbsolute(manager.options.ca_file_name)) {
-            abs_ca_file_name = try manager.allocator.dupeZ(u8, manager.options.ca_file_name);
+            abs_ca_file_name = try bun.dupeZ(manager.allocator, u8, manager.options.ca_file_name);
         } else {
             var path_buf: bun.PathBuffer = undefined;
-            abs_ca_file_name = try manager.allocator.dupeZ(u8, bun.path.joinAbsStringBuf(
+            abs_ca_file_name = try bun.dupeZ(manager.allocator, u8, bun.path.joinAbsStringBuf(
                 original_cwd_clone,
                 &path_buf,
                 &.{manager.options.ca_file_name},

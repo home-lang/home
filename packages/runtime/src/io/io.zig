@@ -436,7 +436,7 @@ const Pollable = struct {
 };
 
 pub const Poll = struct {
-    flags: Flags.Set = Flags.Set.initEmpty(),
+    flags: Flags.Set = Flags.Set.empty,
     generation_number: GenerationNumberInt = 0,
 
     const GenerationNumberInt = if (Environment.isMac and Environment.allow_assert) u64 else u0;

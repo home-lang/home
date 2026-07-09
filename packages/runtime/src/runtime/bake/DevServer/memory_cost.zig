@@ -187,7 +187,7 @@ pub fn memoryCostDetailed(dev: *DevServer) MemoryCost {
 pub fn memoryCost(dev: *DevServer) usize {
     const cost = memoryCostDetailed(dev);
     var acc: usize = 0;
-    inline for (@typeInfo(MemoryCost).@"struct".fields) |field| {
+    inline for (bun.meta.fieldsOf(MemoryCost)) |field| {
         acc += @field(cost, field.name);
     }
     return acc;

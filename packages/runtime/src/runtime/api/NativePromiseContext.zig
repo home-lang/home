@@ -126,7 +126,7 @@ pub const DeferredDerefTask = struct {
     comptime {
         // Low 3 bits hold the tag; verify both capacity and alignment slack
         // so adding a tag or a packed field can't silently break the packing.
-        std.debug.assert(@typeInfo(Tag).@"enum".fields.len <= tag_mask + 1);
+        std.debug.assert(@typeInfo(Tag).@"enum".field_names.len <= tag_mask + 1);
         std.debug.assert(@alignOf(server.HTTPServer.RequestContext) > tag_mask);
         std.debug.assert(@alignOf(server.HTTPSServer.RequestContext) > tag_mask);
         std.debug.assert(@alignOf(server.DebugHTTPServer.RequestContext) > tag_mask);
@@ -254,7 +254,7 @@ const HTMLRewriter = struct {
 // ============================================================================
 
 test "NativePromiseContext.Tag: low 3 bits address all variants" {
-    try std.testing.expect(@typeInfo(Tag).@"enum".fields.len <= 8);
+    try std.testing.expect(@typeInfo(Tag).@"enum".field_names.len <= 8);
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Tag.HTTPServerRequestContext));
     try std.testing.expectEqual(@as(u8, 4), @intFromEnum(Tag.BodyValueBufferer));
 }
@@ -289,7 +289,7 @@ test "DeferredDerefTask.schedule is a no-op when the VM is shutting down" {
 }
 
 test "DeferredDerefTask.runFromJSThread dispatch table stays tag-complete" {
-    try std.testing.expectEqual(@as(usize, 7), @typeInfo(Tag).@"enum".fields.len);
+    try std.testing.expectEqual(@as(usize, 7), @typeInfo(Tag).@"enum".field_names.len);
 }
 
 test "NativePromiseContext.create routes through the soft-linked fn-ptr" {

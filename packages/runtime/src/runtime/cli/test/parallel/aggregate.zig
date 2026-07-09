@@ -78,7 +78,7 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
     home_rt.handleOom(contents.appendSlice(home_rt.default_allocator, body.items));
     home_rt.handleOom(contents.appendSlice(home_rt.default_allocator, "</testsuites>\n"));
 
-    const out_z = home_rt.handleOom(home_rt.default_allocator.dupeZ(u8, outfile));
+    const out_z = home_rt.handleOom(bun.dupeZ(home_rt.default_allocator, u8, outfile));
     defer home_rt.default_allocator.free(out_z);
     switch (home_rt.sys.File.openat(.cwd(), out_z, home_rt.O.WRONLY | home_rt.O.CREAT | home_rt.O.TRUNC, 0o664)) {
         .err => |err| Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}\n{f}", .{ outfile, err }),
@@ -283,6 +283,7 @@ fn writeRange(w: *std.Io.Writer, first: *bool, a: u32, b: u32, comptime colors: 
 }
 
 const std = @import("std");
+const bun = @import("bun");
 const Coordinator = @import("./Coordinator.zig").Coordinator;
 
 const test_command = @import("../../test_command.zig");

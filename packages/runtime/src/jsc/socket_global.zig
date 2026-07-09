@@ -412,7 +412,7 @@ pub fn runLoop(allocator: std.mem.Allocator, ctx: *JSContextRef) void {
                 if (rn <= 0) continue;
                 const b: [4]u8 = @bitCast(from.addr);
                 var ip_buf: [24]u8 = undefined;
-                const ip = std.fmt.bufPrintZ(&ip_buf, "{d}.{d}.{d}.{d}", .{ b[0], b[1], b[2], b[3] }) catch "0.0.0.0";
+                const ip = std.fmt.bufPrintSentinel(&ip_buf, "{d}.{d}.{d}.{d}", .{ b[0], b[1], b[2], b[3] }, 0) catch "0.0.0.0";
                 setGlobalBytes(ctx, global, "__home_sock_data", recv_buf[0..@intCast(rn)]);
                 setGlobalString(ctx, global, "__home_sock_addr", ip);
                 setGlobalNumber(ctx, global, "__home_sock_port", @floatFromInt(std.mem.bigToNative(u16, from.port)));

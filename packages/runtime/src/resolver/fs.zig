@@ -51,11 +51,11 @@ pub const FileSystem = struct {
         const serial = tmpname_id_number.fetchAdd(1, .monotonic);
         const hex_value = hash ^ @as(u64, serial);
 
-        return try std.fmt.bufPrintZ(buf, ".{f}-{f}.{s}", .{
+        return try std.fmt.bufPrintSentinel(buf, ".{f}-{f}.{s}", .{
             bun.fmt.hexIntLower(hex_value),
             bun.fmt.hexIntUpper(serial),
             extname,
-        });
+        }, 0);
     }
 
     pub var max_fd: std.posix.fd_t = 0;
@@ -481,7 +481,7 @@ pub const FileSystem = struct {
             parts,
             .loose,
         );
-        return try allocator.dupeZ(u8, joined);
+        return try bun.dupeZ(allocator, u8, joined);
     }
 
     pub fn abs(f: *@This(), parts: anytype) string {
@@ -1258,7 +1258,7 @@ pub const FileSystem = struct {
                         return err;
                     };
                     if (read_count + 1 < buf.len) {
-                        const allocation = try allocator.dupeZ(u8, buf[0..read_count]);
+                        const allocation = try bun.dupeZ(allocator, u8, buf[0..read_count]);
                         file_contents = allocation[0..read_count];
 
                         if (strings.BOM.detect(file_contents)) |bom| {

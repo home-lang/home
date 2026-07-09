@@ -91,7 +91,7 @@ pub const BoxShadowHandler = struct {
                 rgb.setLen(box_shadows.len());
                 for (box_shadows.slice(), rgb.slice_mut()) |*input, *output| {
                     output.color = input.color.toRGB(context.allocator) orelse input.color.deepClone(context.allocator);
-                    const fields = std.meta.fields(BoxShadow);
+                    const fields = bun.meta.fieldsOf(BoxShadow);
                     inline for (fields) |field| {
                         if (comptime std.mem.eql(u8, field.name, "color")) continue;
                         @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
@@ -112,7 +112,7 @@ pub const BoxShadowHandler = struct {
                 p3.setLen(box_shadows.len());
                 for (box_shadows.slice(), p3.slice_mut()) |*input, *output| {
                     output.color = input.color.toP3(context.allocator) orelse input.color.deepClone(context.allocator);
-                    const fields = std.meta.fields(BoxShadow);
+                    const fields = bun.meta.fieldsOf(BoxShadow);
                     inline for (fields) |field| {
                         if (comptime std.mem.eql(u8, field.name, "color")) continue;
                         @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);
@@ -126,7 +126,7 @@ pub const BoxShadowHandler = struct {
                 lab.setLen(box_shadows.len());
                 for (box_shadows.slice(), lab.slice_mut()) |*input, *output| {
                     output.color = input.color.toLAB(context.allocator) orelse input.color.deepClone(context.allocator);
-                    const fields = std.meta.fields(BoxShadow);
+                    const fields = bun.meta.fieldsOf(BoxShadow);
                     inline for (fields) |field| {
                         if (comptime std.mem.eql(u8, field.name, "color")) continue;
                         @field(output, field.name) = css.generic.deepClone(field.type, &@field(input, field.name), context.allocator);

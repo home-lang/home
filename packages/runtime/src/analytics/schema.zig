@@ -13,6 +13,7 @@
 // No `home_rt` deps — pure std-only leaf.
 
 const std = @import("std");
+const bun = @import("bun");
 const native_endian = @import("builtin").cpu.arch.endian();
 
 pub const Reader = struct {
@@ -64,7 +65,7 @@ pub const Reader = struct {
         const type_info = @typeInfo(Enum).@"enum";
         const tag = try this.readInt(type_info.tag_type);
 
-        inline for (std.meta.fields(Enum)) |field| {
+        inline for (bun.meta.fieldsOf(Enum)) |field| {
             if (tag == field.value) {
                 return @field(Enum, field.name);
             }

@@ -675,7 +675,7 @@ fn partsLen(parts: anytype) usize {
         .pointer => |ptr| switch (ptr.size) {
             .one => switch (@typeInfo(ptr.child)) {
                 .array => parts.*.len,
-                .@"struct" => |info| info.fields.len,
+                .@"struct" => |info| info.field_names.len,
                 else => @compileError("unsupported path parts pointer"),
             },
             .slice => parts.len,
@@ -692,8 +692,8 @@ fn partAt(parts: anytype, index: usize) []const u8 {
         .pointer => |ptr| switch (ptr.size) {
             .one => switch (@typeInfo(ptr.child)) {
                 .array => parts.*[index],
-                .@"struct" => |info| inline for (info.fields, 0..) |field, field_index| {
-                    if (index == field_index) return @field(parts.*, field.name);
+                .@"struct" => |info| inline for (info.field_names, 0..) |fname, field_index| {
+                    if (index == field_index) return @field(parts.*, fname);
                 } else unreachable,
                 else => @compileError("unsupported path parts pointer"),
             },

@@ -23,7 +23,7 @@ const std = @import("std");
 /// ModuleLoader lands.
 pub const HardcodedModule = enum {};
 
-pub var builtin_modules = std.enums.EnumSet(HardcodedModule).initEmpty();
+pub var builtin_modules = std.enums.EnumSet(HardcodedModule).empty;
 
 pub var @"Bun.stderr": usize = 0;
 pub var @"Bun.stdin": usize = 0;
@@ -107,14 +107,14 @@ pub const Formatter = struct {
     pub fn format(_: Formatter, writer: *std.Io.Writer) !void {
         const fields = comptime brk: {
             const info: std.builtin.Type = @typeInfo(Features);
-            // Note: upstream uses `.{""} ** info.@"struct".decls.len` (array
+            // Note: upstream uses `.{""} ** info.@"struct".decl_names.len` (array
             // repetition). Zig 0.17-dev.263 `zig fmt` mis-tokenizes the `**`
             // after `}` as two `*` (which is a semantic-breaking rewrite to
             // multiply-deref). `@splat("")` is the modern equivalent and
             // round-trips cleanly through fmt.
-            var buffer: [info.@"struct".decls.len][]const u8 = @splat("");
+            var buffer: [info.@"struct".decl_names.len][]const u8 = @splat("");
             var count: usize = 0;
-            for (info.@"struct".decls) |decl| {
+            for (info.@"struct".decl_names) |decl| {
                 var f = &@field(Features, decl.name);
                 _ = &f;
                 const Field = @TypeOf(f);
@@ -178,5 +178,5 @@ test "Features: builtin_modules starts empty" {
 
 test "Features: HardcodedModule stub is empty" {
     const info = @typeInfo(HardcodedModule).@"enum";
-    try std.testing.expectEqual(@as(usize, 0), info.fields.len);
+    try std.testing.expectEqual(@as(usize, 0), info.field_names.len);
 }

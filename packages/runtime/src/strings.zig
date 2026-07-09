@@ -1180,8 +1180,8 @@ test "NewLengthSorter / NewGlobLengthSorter export + instantiate" {
         const GlobFn = @TypeOf(GlobSorter.lessThan);
         std.debug.assert(@typeInfo(LenFn).@"fn".return_type.? == bool);
         std.debug.assert(@typeInfo(GlobFn).@"fn".return_type.? == bool);
-        std.debug.assert(@typeInfo(LenFn).@"fn".params.len == 3);
-        std.debug.assert(@typeInfo(GlobFn).@"fn".params.len == 3);
+        std.debug.assert(@typeInfo(LenFn).@"fn".param_types.len == 3);
+        std.debug.assert(@typeInfo(GlobFn).@"fn".param_types.len == 3);
     }
 }
 

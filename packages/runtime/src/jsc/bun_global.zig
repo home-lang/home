@@ -15,6 +15,7 @@
 // comptime-gated on `enable_jsc`.
 
 const std = @import("std");
+const bun = @import("bun");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const evaluate = @import("evaluate.zig");
@@ -128,7 +129,7 @@ fn writeFileNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSO
 
 fn makeJsString(ctx: *JSContextRef, s: []const u8) ?*JSValue {
     const allocator = std.heap.page_allocator;
-    const z = allocator.dupeZ(u8, s) catch return extern_fns.JSValueMakeNull(ctx);
+    const z = bun.dupeZ(allocator, u8, s) catch return extern_fns.JSValueMakeNull(ctx);
     defer allocator.free(z);
     const js = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return extern_fns.JSValueMakeNull(ctx);
     defer extern_fns.JSStringRelease(js);
@@ -342,7 +343,7 @@ fn setNum(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: f64) vo
 }
 fn setValue(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: ?*JSValue) void {
     const allocator = std.heap.page_allocator;
-    const key_z = allocator.dupeZ(u8, key) catch return;
+    const key_z = bun.dupeZ(allocator, u8, key) catch return;
     defer allocator.free(key_z);
     const name = extern_fns.JSStringCreateWithUTF8CString(key_z.ptr) orelse return;
     defer extern_fns.JSStringRelease(name);

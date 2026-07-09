@@ -68,15 +68,8 @@ const Content = union(enum) {
         // Build the untagged (tag_type = null) version of Content's fields,
         // mirroring collections/multi_array_list.zig.
         const u = @typeInfo(Content).@"union";
-        var field_names: [u.fields.len][]const u8 = undefined;
-        var field_types: [u.fields.len]type = undefined;
-        var field_attrs: [u.fields.len]std.builtin.Type.UnionField.Attributes = undefined;
-        for (u.fields, &field_names, &field_types, &field_attrs) |field, *name, *FType, *attrs| {
-            name.* = field.name;
-            FType.* = field.type;
-            attrs.* = .{ .@"align" = field.alignment };
-        }
-        break :blk @Union(u.layout, null, &field_names, &field_types, &field_attrs);
+        const n = u.field_names.len;
+        break :blk @Union(u.layout, null, u.field_names[0..n], u.field_types[0..n], u.field_attrs[0..n]);
     };
 };
 

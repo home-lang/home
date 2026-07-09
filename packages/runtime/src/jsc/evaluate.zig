@@ -5,6 +5,7 @@
 // only compile the shape; callers must opt into JSC before invoking it.
 
 const std = @import("std");
+const bun = @import("bun");
 const build_options = @import("build_options");
 const Engine = @import("engine.zig").Engine;
 const extern_fns = @import("extern_fns.zig");
@@ -45,7 +46,7 @@ pub fn evaluateUtf8(
 ) !?*JSValue {
     if (!build_options.enable_jsc) return error.JSCDisabled;
 
-    const source_z = try allocator.dupeZ(u8, source);
+    const source_z = try bun.dupeZ(allocator, u8, source);
     defer allocator.free(source_z);
 
     const script = extern_fns.JSStringCreateWithUTF8CString(source_z.ptr) orelse
@@ -54,7 +55,7 @@ pub fn evaluateUtf8(
 
     var source_url_string: ?*opaques.JSString = null;
     if (source_url) |url| {
-        const url_z = try allocator.dupeZ(u8, url);
+        const url_z = try bun.dupeZ(allocator, u8, url);
         defer allocator.free(url_z);
 
         source_url_string = extern_fns.JSStringCreateWithUTF8CString(url_z.ptr) orelse

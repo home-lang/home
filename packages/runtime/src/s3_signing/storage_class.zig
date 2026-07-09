@@ -50,7 +50,8 @@ pub const StorageClass = enum {
 
 test "StorageClass.toString round-trips through Map" {
     const std = @import("std");
-    inline for (@typeInfo(StorageClass).@"enum".fields) |f| {
+const bun = @import("bun");
+    inline for (bun.meta.fieldsOf(StorageClass)) |f| {
         const tag: StorageClass = @field(StorageClass, f.name);
         const s = tag.toString();
         const got = StorageClass.Map.get(s) orelse return error.MissingMapping;

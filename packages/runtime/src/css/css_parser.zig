@@ -332,8 +332,8 @@ pub fn DefineShorthand(comptime T: type, comptime property_name: PropertyIdTag, 
             // var count: usize = 0;
             // var important_count: usize = 0;
             // var this: T = undefined;
-            // var set_fields = std.StaticBitSet(std.meta.fields(T).len).initEmpty();
-            // const all_fields_set = std.StaticBitSet(std.meta.fields(T).len).initFull();
+            // var set_fields = std.StaticBitSet(std.meta.fieldNames(T).len).empty;
+            // const all_fields_set = std.StaticBitSet(std.meta.fieldNames(T).len).full;
 
             // // Loop through each property in `decls.declarations` and then `decls.important_declarations`
             // // The inline for loop is so we can share the code for both
@@ -446,7 +446,7 @@ pub fn DefineShorthand(comptime T: type, comptime property_name: PropertyIdTag, 
         pub fn longhands(vendor_prefix: VendorPrefix) []const PropertyId {
             _ = vendor_prefix; // autofix
             // const out: []const PropertyId = comptime out: {
-            //     var out: [std.meta.fields(@TypeOf(T.PropertyFieldMap)).len]PropertyId = undefined;
+            //     var out: [std.meta.fieldNames(@TypeOf(T.PropertyFieldMap)).len]PropertyId = undefined;
 
             //     for (std.meta.fields(@TypeOf(T.PropertyFieldMap)), 0..) |field, i| {
             //         out[i] = @unionInit(
@@ -541,13 +541,43 @@ pub fn DefineRectShorthand(comptime T: type, comptime V: type) type {
     };
 }
 
+/// Zig 0.17 removed `std.meta.fields` and reshaped `@typeInfo` into parallel
+/// arrays. This restores the pre-0.17 `[]const Field` view (with `.name`,
+/// `.type`, `.value`) used throughout this file for structs, unions and enums.
+const FieldCompat = struct { name: [:0]const u8, type: type, value: comptime_int };
+fn metaFields(comptime T: type) []const FieldCompat {
+    comptime {
+        switch (@typeInfo(T)) {
+            .@"struct" => |s| {
+                var arr: [s.field_names.len]FieldCompat = undefined;
+                for (s.field_names, s.field_types, &arr) |n, t, *e| e.* = .{ .name = n, .type = t, .value = 0 };
+                const final = arr;
+                return &final;
+            },
+            .@"union" => |u| {
+                var arr: [u.field_names.len]FieldCompat = undefined;
+                for (u.field_names, u.field_types, &arr) |n, t, *e| e.* = .{ .name = n, .type = t, .value = 0 };
+                const final = arr;
+                return &final;
+            },
+            .@"enum" => |en| {
+                var arr: [en.field_names.len]FieldCompat = undefined;
+                for (en.field_names, en.field_values, &arr) |n, v, *e| e.* = .{ .name = n, .type = void, .value = v };
+                const final = arr;
+                return &final;
+            },
+            else => @compileError("metaFields on unsupported type " ++ @typeName(T)),
+        }
+    }
+}
+
 pub fn DefineSizeShorthand(comptime T: type, comptime V: type) type {
-    if (std.meta.fields(T).len != 2) @compileError("DefineSizeShorthand must be used on a struct with 2 fields");
+    if (std.meta.fieldNames(T).len != 2) @compileError("DefineSizeShorthand must be used on a struct with 2 fields");
     return struct {
         pub fn toCss(this: *const T, dest: *Printer) PrintErr!void {
             const size: css_values.size.Size2D(V) = .{
-                .a = @field(this, std.meta.fields(T)[0].name),
-                .b = @field(this, std.meta.fields(T)[1].name),
+                .a = @field(this, std.meta.fieldNames(T)[0]),
+                .b = @field(this, std.meta.fieldNames(T)[1]),
             };
             return size.toCss(dest);
             // TODO: unfuck this
@@ -561,8 +591,8 @@ pub fn DefineSizeShorthand(comptime T: type, comptime V: type) type {
             };
 
             var this: T = undefined;
-            @field(this, std.meta.fields(T)[0].name) = size.a;
-            @field(this, std.meta.fields(T)[1].name) = size.b;
+            @field(this, std.meta.fieldNames(T)[0]) = size.a;
+            @field(this, std.meta.fieldNames(T)[1]) = size.b;
 
             return .{ .result = this };
             // TODO: unfuck this
@@ -574,7 +604,6 @@ pub fn DefineSizeShorthand(comptime T: type, comptime V: type) type {
 pub fn DeriveParse(comptime T: type) type {
     const tyinfo = @typeInfo(T);
     const is_union_enum = tyinfo == .@"union";
-    const enum_type = if (comptime is_union_enum) @typeInfo(tyinfo.@"union".tag_type.?) else tyinfo;
     const enum_actual_type = if (comptime is_union_enum) tyinfo.@"union".tag_type.? else T;
 
     const Map = bun.ComptimeEnumMap(enum_actual_type);
@@ -587,8 +616,8 @@ pub fn DeriveParse(comptime T: type) type {
                     var first_payload_index: ?usize = null;
                     var payload_count: usize = 0;
                     var void_count: usize = 0;
-                    for (tyinfo.@"union".fields, 0..) |field, i| {
-                        if (field.type == void) {
+                    for (tyinfo.@"union".field_types, 0..) |field_type, i| {
+                        if (field_type == void) {
                             void_count += 1;
                             if (first_void_index == null) first_void_index = i;
                         } else {
@@ -665,7 +694,7 @@ pub fn DeriveParse(comptime T: type) type {
         ) Result(T) {
             const last_payload_index = first_payload_index + payload_count - 1;
             if (comptime maybe_first_void_index == null) {
-                inline for (tyinfo.@"union".fields[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
+                inline for (comptime metaFields(T)[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
                     if (comptime (i == last_payload_index)) {
                         return .{ .result = switch (generic.parseFor(field.type)(input)) {
                             .result => |v| @unionInit(T, field.name, v),
@@ -683,7 +712,7 @@ pub fn DeriveParse(comptime T: type) type {
             const enum_fields = comptime bun.meta.EnumFields(T);
 
             if (comptime void_count == 1) {
-                const void_field = enum_type.@"enum".fields[first_void_index];
+                const void_field = comptime metaFields(enum_actual_type)[first_void_index];
                 // The field is declared before the payload fields.
                 // So try to parse an ident matching the name of the field, then fallthrough
                 // to parsing the payload fields.
@@ -693,7 +722,7 @@ pub fn DeriveParse(comptime T: type) type {
                         return .{ .result = @enumFromInt(void_field.value) };
                     }
 
-                    inline for (tyinfo.@"union".fields[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
+                    inline for (comptime metaFields(T)[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
                         if (comptime (i == last_payload_index and last_payload_index > first_void_index)) {
                             return .{ .result = switch (generic.parseFor(field.type)(input)) {
                                 .result => |v| @unionInit(T, field.name, v),
@@ -705,7 +734,7 @@ pub fn DeriveParse(comptime T: type) type {
                         }
                     }
                 } else {
-                    inline for (tyinfo.@"union".fields[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
+                    inline for (comptime metaFields(T)[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
                         if (comptime (i == last_payload_index and last_payload_index > first_void_index)) {
                             return .{ .result = switch (generic.parseFor(field.type)(input)) {
                                 .result => |v| @unionInit(T, field.name, v),
@@ -740,7 +769,7 @@ pub fn DeriveParse(comptime T: type) type {
                     input.reset(&state);
                 }
 
-                inline for (tyinfo.@"union".fields[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
+                inline for (comptime metaFields(T)[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
                     if (comptime (i == last_payload_index and last_payload_index > first_void_index)) {
                         return .{ .result = switch (generic.parseFor(field.type)(input)) {
                             .result => |v| @unionInit(T, field.name, v),
@@ -752,7 +781,7 @@ pub fn DeriveParse(comptime T: type) type {
                     }
                 }
             } else if (comptime first_void_index > first_payload_index) {
-                inline for (tyinfo.@"union".fields[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
+                inline for (comptime metaFields(T)[first_payload_index .. first_payload_index + payload_count], first_payload_index..) |field, i| {
                     if (comptime (i == last_payload_index and last_payload_index > first_void_index)) {
                         return .{ .result = switch (generic.parseFor(field.type)(input)) {
                             .result => |v| @unionInit(T, field.name, v),
@@ -828,14 +857,14 @@ pub fn DeriveToCss(comptime T: type) type {
     return struct {
         pub fn toCss(this: *const T, dest: *Printer) PrintErr!void {
             if (comptime is_enum_or_union_enum) {
-                inline for (std.meta.fields(T), 0..) |field, i| {
+                inline for (comptime metaFields(T), 0..) |field, i| {
                     if (@intFromEnum(this.*) == enum_fields[i].value) {
                         if (comptime tyinfo == .@"enum" or field.type == void) {
                             return dest.writeStr(enum_fields[i].name);
                         } else if (comptime generic.hasToCss(field.type)) {
                             return generic.toCss(field.type, &@field(this, field.name), dest);
                         } else if (@hasDecl(field.type, "__generateToCss") and @typeInfo(field.type) == .@"struct") {
-                            const variant_fields = std.meta.fields(field.type);
+                            const variant_fields = comptime metaFields(field.type);
                             if (variant_fields.len > 1) {
                                 const last = variant_fields.len - 1;
                                 inline for (variant_fields, 0..) |variant_field, j| {
@@ -901,7 +930,7 @@ pub const enum_property_util = struct {
 };
 
 pub fn DefineEnumProperty(comptime T: type) type {
-    const fields: []const std.builtin.Type.EnumField = std.meta.fields(T);
+    const fields = comptime metaFields(T);
 
     return struct {
         pub fn eql(lhs: *const T, rhs: *const T) bool {
@@ -940,7 +969,7 @@ pub fn DefineEnumProperty(comptime T: type) type {
 
 pub fn DeriveValueType(comptime T: type, comptime ValueTypeMap: anytype) type {
     const field_values: []const MediaFeatureType = field_values: {
-        const fields = std.meta.fields(T);
+        const fields = comptime metaFields(T);
         var mapping: [fields.len]MediaFeatureType = undefined;
         for (fields, 0..) |field, i| {
             // Check that it exists in the type map
@@ -952,7 +981,7 @@ pub fn DeriveValueType(comptime T: type, comptime ValueTypeMap: anytype) type {
 
     return struct {
         pub fn valueType(this: *const T) MediaFeatureType {
-            inline for (std.meta.fields(T), 0..) |field, i| {
+            inline for (comptime metaFields(T), 0..) |field, i| {
                 if (field.value == @intFromEnum(this.*)) {
                     return field_values[i];
                 }
@@ -2634,7 +2663,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                 // about that).
                 if (this.composes_state == .allow) {
                     const len = input.position() - location;
-                    var usage = PropertyBitset.initEmpty();
+                    var usage = PropertyBitset.empty;
                     var custom_properties = bun.BabyList([]const u8){};
                     fillPropertyBitSet(this.allocator, &usage, &declarations, &custom_properties);
 
@@ -3009,7 +3038,7 @@ pub const ComposesEntry = struct {
     composes: bun.BabyList(Composes) = .{},
 };
 pub const PropertyUsage = struct {
-    bitset: PropertyBitset = PropertyBitset.initEmpty(),
+    bitset: PropertyBitset = PropertyBitset.empty,
     custom_properties: []const []const u8 = &.{},
     range: bun.logger.Range,
 

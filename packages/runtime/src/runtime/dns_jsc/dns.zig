@@ -71,7 +71,7 @@ const LibInfo = struct {
 
         var stack_fallback = bun.stackFallback(1024, bun.default_allocator);
         const name_allocator = stack_fallback.get();
-        const name_z = bun.handleOom(name_allocator.dupeZ(u8, query.name));
+        const name_z = bun.handleOom(bun.dupeZ(name_allocator, u8, query.name));
         defer name_allocator.free(name_z);
 
         var request = GetAddrInfoRequest.init(
@@ -1219,7 +1219,7 @@ pub const internal = struct {
 
             pub fn toOwned(this: @This()) @This() {
                 if (this.host) |host| {
-                    const host_copy = bun.handleOom(bun.default_allocator.dupeZ(u8, host));
+                    const host_copy = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, host));
                     return .{
                         .host = host_copy,
                         .hash = this.hash,
@@ -1578,7 +1578,7 @@ pub const internal = struct {
     fn workPoolCallback(req: *Request) void {
         var service_buf: [bun.fmt.fastDigitCount(std.math.maxInt(u16)) + 2]u8 = undefined;
         const service: ?[*:0]const u8 = if (req.key.port > 0)
-            (std.fmt.bufPrintZ(&service_buf, "{d}", .{req.key.port}) catch unreachable).ptr
+            (std.fmt.bufPrintSentinel(&service_buf, "{d}", .{req.key.port}, 0) catch unreachable).ptr
         else
             null;
 
@@ -1635,7 +1635,7 @@ pub const internal = struct {
         var machport: bun.mach_port = 0;
         var service_buf: [bun.fmt.fastDigitCount(std.math.maxInt(u16)) + 2]u8 = undefined;
         const service: ?[*:0]const u8 = if (req.key.port > 0)
-            (std.fmt.bufPrintZ(&service_buf, "{d}", .{req.key.port}) catch unreachable).ptr
+            (std.fmt.bufPrintSentinel(&service_buf, "{d}", .{req.key.port}, 0) catch unreachable).ptr
         else
             null;
 
@@ -1681,7 +1681,7 @@ pub const internal = struct {
             req.can_retry_for_addrconfig = false;
             var service_buf: [bun.fmt.fastDigitCount(std.math.maxInt(u16)) + 2]u8 = undefined;
             const service: ?[*:0]const u8 = if (req.key.port > 0)
-                (std.fmt.bufPrintZ(&service_buf, "{d}", .{req.key.port}) catch unreachable).ptr
+                (std.fmt.bufPrintSentinel(&service_buf, "{d}", .{req.key.port}, 0) catch unreachable).ptr
             else
                 null;
             const getaddrinfo_async_start_ = LibInfo.getaddrinfo_async_start() orelse break :retry;
@@ -1827,7 +1827,7 @@ pub const internal = struct {
             return globalThis.throwInvalidArguments("hostname must be a string", .{});
         }
 
-        const hostname_z = try bun.default_allocator.dupeZ(u8, hostname_slice.slice());
+        const hostname_z = try bun.dupeZ(bun.default_allocator, u8, hostname_slice.slice());
         defer bun.default_allocator.free(hostname_z);
 
         const port: u16 = brk: {
@@ -2103,7 +2103,7 @@ pub const Resolver = struct {
     }
 
     fn anyRequestsPending(this: *Resolver) bool {
-        inline for (@typeInfo(Resolver).@"struct".fields) |field| {
+        inline for (bun.meta.fieldsOf(Resolver)) |field| {
             if (comptime std.mem.startsWith(u8, field.name, "pending_")) {
                 const set = &@field(this, field.name).used;
                 if (set.findFirstSet() != null) {

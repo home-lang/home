@@ -11,7 +11,7 @@ pub fn ExactSizeMatcher(comptime max_bytes: usize) type {
         },
     }
 
-    const T = std.meta.Int(
+    const T = @Int(
         .unsigned,
         max_bytes * 8,
     );

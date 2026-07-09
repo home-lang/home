@@ -189,8 +189,8 @@ fn deepEquals(comptime T: type, a: T, b: T) bool {
             break :blk true;
         },
         .@"struct" => |s| blk: {
-            inline for (s.fields) |f| {
-                if (!deepEquals(f.type, @field(a, f.name), @field(b, f.name))) break :blk false;
+            inline for (s.field_names, s.field_types) |f_name, f_type| {
+                if (!deepEquals(f_type, @field(a, f_name), @field(b, f_name))) break :blk false;
             }
             break :blk true;
         },

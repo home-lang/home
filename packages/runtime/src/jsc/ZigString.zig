@@ -232,7 +232,7 @@ pub const ZigString = extern struct {
 
     pub fn toOwnedSlice(this: ZigString, allocator: std.mem.Allocator) OOM![]u8 {
         if (this.isUTF8())
-            return try allocator.dupeZ(u8, this.slice());
+            return try bun.dupeZ(allocator, u8, this.slice());
 
         var list = std.array_list.Managed(u8).init(allocator);
         list = if (this.is16Bit())
@@ -254,7 +254,7 @@ pub const ZigString = extern struct {
 
     pub fn toOwnedSliceZ(this: ZigString, allocator: std.mem.Allocator) OOM![:0]u8 {
         if (this.isUTF8())
-            return allocator.dupeZ(u8, this.slice());
+            return bun.dupeZ(allocator, u8, this.slice());
 
         var list = std.array_list.Managed(u8).init(allocator);
         list = if (this.is16Bit())
@@ -394,7 +394,7 @@ pub const ZigString = extern struct {
                 this.* = .{};
             }
             // always clones
-            return allocator.dupeZ(u8, this.slice());
+            return bun.dupeZ(allocator, u8, this.slice());
         }
 
         /// Note that the returned slice is not guaranteed to be allocated by `allocator`.
@@ -702,7 +702,7 @@ pub const ZigString = extern struct {
     }
 
     pub fn sliceZBuf(this: ZigString, buf: *bun.PathBuffer) ![:0]const u8 {
-        return try std.fmt.bufPrintZ(buf, "{f}", .{this});
+        return try std.fmt.bufPrintSentinel(buf, "{f}", .{this}, 0);
     }
 
     pub inline fn full(this: *const ZigString) []const u8 {

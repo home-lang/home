@@ -78,7 +78,7 @@ fn coerceHostFn(comptime implementation: anytype) *const JSHostFn {
     if (info != .@"fn") return unsupportedHostFn;
 
     const fn_info = info.@"fn";
-    if (fn_info.params.len != 2) {
+    if (fn_info.param_types.len != 2) {
         return unsupportedHostFn;
     }
 

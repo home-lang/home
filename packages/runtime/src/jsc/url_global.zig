@@ -13,6 +13,7 @@
 // don't want the validation errors". comptime-gated on `enable_jsc`.
 
 const std = @import("std");
+const bun = @import("bun");
 const build_options = @import("build_options");
 const evaluate = @import("evaluate.zig");
 const callback = @import("callback.zig");
@@ -27,7 +28,7 @@ const JSGlobalObject = opaques.JSGlobalObject;
 
 fn jsStringValue(ctx: *JSContextRef, text: []const u8) ?*JSValue {
     const allocator = std.heap.page_allocator;
-    const text_z = allocator.dupeZ(u8, text) catch return null;
+    const text_z = bun.dupeZ(allocator, u8, text) catch return null;
     defer allocator.free(text_z);
     const string = extern_fns.JSStringCreateWithUTF8CString(text_z.ptr) orelse return null;
     defer extern_fns.JSStringRelease(string);
@@ -36,7 +37,7 @@ fn jsStringValue(ctx: *JSContextRef, text: []const u8) ?*JSValue {
 
 fn setStr(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: []const u8) void {
     const allocator = std.heap.page_allocator;
-    const key_z = allocator.dupeZ(u8, key) catch return;
+    const key_z = bun.dupeZ(allocator, u8, key) catch return;
     defer allocator.free(key_z);
     const name = extern_fns.JSStringCreateWithUTF8CString(key_z.ptr) orelse return;
     defer extern_fns.JSStringRelease(name);

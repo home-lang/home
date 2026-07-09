@@ -120,7 +120,7 @@ fn jsonStringifyDependency(this: *const Lockfile, w: anytype, dep_id: Dependency
         try w.beginObject();
         defer w.endObject() catch {};
 
-        const fields = @typeInfo(Behavior).@"struct".fields;
+        const fields = bun.meta.fieldsOf(Behavior);
         inline for (fields[1 .. fields.len - 1]) |field| {
             if (@field(dep.behavior, field.name)) {
                 try w.objectField(field.name);

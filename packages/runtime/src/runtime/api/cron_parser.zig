@@ -440,8 +440,8 @@ test "CronExpression.formatNumeric: round-trips a parsed expression" {
 }
 
 test "CronExpression.errorMessage: every variant has a non-empty message" {
-    inline for (@typeInfo(CronExpression.Error).error_set.?) |e| {
-        const err: CronExpression.Error = @field(CronExpression.Error, e.name);
+    inline for (@typeInfo(CronExpression.Error).error_set.error_names.?) |e_name| {
+        const err: CronExpression.Error = @field(CronExpression.Error, e_name);
         try std.testing.expect(CronExpression.errorMessage(err).len > 0);
     }
 }

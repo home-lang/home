@@ -602,7 +602,7 @@ pub const Parser = struct {
                             // parts is non-empty here (appendPart just ran), so getLast()
                             // is guaranteed present (Zig 0.17 getLast() returns T and
                             // asserts non-empty; getLastOrNull() is the optional form).
-                            before.append(parts.getLast()) catch unreachable;
+                            before.append(parts.getLast().?) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },
@@ -620,7 +620,7 @@ pub const Parser = struct {
                             // parts is non-empty here (appendPart just ran), so getLast()
                             // is guaranteed present (Zig 0.17 getLast() returns T and
                             // asserts non-empty; getLastOrNull() is the optional form).
-                            before.append(parts.getLast()) catch unreachable;
+                            before.append(parts.getLast().?) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },

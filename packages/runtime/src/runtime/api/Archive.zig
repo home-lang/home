@@ -219,7 +219,7 @@ fn buildTarballFromObject(globalThis: *jsc.JSGlobalObject, obj: jsc.JSValue) bun
         // Get the key as a null-terminated string
         const key_slice = key.toUTF8(allocator);
         defer key_slice.deinit();
-        const key_str = try allocator.dupeZ(u8, key_slice.slice());
+        const key_str = try bun.dupeZ(allocator, u8, key_slice.slice());
         defer allocator.free(key_str);
 
         // Get data - use view for Blob/ArrayBuffer, convert for strings
@@ -737,7 +737,7 @@ fn startWriteTask(
     path: []const u8,
     compress: Compression,
 ) bun.JSError!jsc.JSValue {
-    const path_z = try bun.default_allocator.dupeZ(u8, path);
+    const path_z = try bun.dupeZ(bun.default_allocator, u8, path);
     errdefer bun.default_allocator.free(path_z);
 
     // Ref store if using store reference
@@ -791,7 +791,7 @@ const FilesContext = struct {
     fn cloneErrorString(archive: *libarchive.lib.Archive) ?[*:0]u8 {
         const err_str = archive.errorString();
         if (err_str.len == 0) return null;
-        return bun.default_allocator.dupeZ(u8, err_str) catch null;
+        return bun.dupeZ(bun.default_allocator, u8, err_str) catch null;
     }
 
     fn run(this: *FilesContext) std.mem.Allocator.Error!Result {

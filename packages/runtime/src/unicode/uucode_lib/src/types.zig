@@ -545,7 +545,7 @@ pub fn Data(comptime c: config.Table) type {
 
 pub fn writeDataItems(comptime D: type, writer: *std.Io.Writer, data_items: []const D) !void {
     if (@typeInfo(D).@"struct".layout == .@"packed") {
-        const IntEquivalent = std.meta.Int(.unsigned, @bitSizeOf(D));
+        const IntEquivalent = @Int(.unsigned, @bitSizeOf(D));
 
         try writer.print("@bitCast([_]{s}{{\n", .{@typeName(IntEquivalent)});
 
@@ -569,7 +569,7 @@ pub fn writeDataItems(comptime D: type, writer: *std.Io.Writer, data_items: []co
                 \\
             );
 
-            inline for (@typeInfo(D).@"struct".fields) |field| {
+            inline for (fieldsOf(D)) |field| {
                 try writer.print("    .{s} = ", .{field.name});
 
                 try writeDataField(field.type, writer, @field(item, field.name));
@@ -650,11 +650,11 @@ pub fn Table2(
 }
 
 pub fn StructFromDecls(comptime Struct: type, comptime decl: []const u8) type {
-    const fields = @typeInfo(Struct).@"struct".fields;
+    const fields = fieldsOf(Struct);
     var decl_fields: [fields.len]std.builtin.Type.StructField = undefined;
     var i: usize = 0;
 
-    for (@typeInfo(Struct).@"struct".fields) |f| {
+    for (fieldsOf(Struct)) |f| {
         if (@typeInfo(f.type) == .@"struct" and @hasDecl(f.type, decl)) {
             const T = @field(f.type, decl);
             decl_fields[i] = .{
@@ -1286,11 +1286,11 @@ pub fn Union(comptime c: config.Field, comptime packing: config.Table.Packing) t
     const info = @typeInfo(c.type).@"union";
     const Tag = info.tag_type.?;
     const Int = @typeInfo(Tag).@"enum".tag_type;
-    std.debug.assert(Int == std.meta.Int(.unsigned, @bitSizeOf(Tag)));
+    std.debug.assert(Int == @Int(.unsigned, @bitSizeOf(Tag)));
 
     const ShiftMember = if (c.cp_packing == .shift) Shift(c, packing) else void;
 
-    var fields: [info.fields.len]std.builtin.Type.UnionField = undefined;
+    var fields: [info.field_names.len]std.builtin.Type.UnionField = undefined;
     var has_shift: bool = false;
     for (info.fields, 0..) |f, i| {
         const T = if (c.cp_packing == .shift and f.type == u21) blk: {
@@ -1484,7 +1484,7 @@ pub fn fieldInit(
     }
     const Tracking = @typeInfo(@TypeOf(tracking)).pointer.child;
     if (@hasField(Tracking, field)) {
-        if (@typeInfo(@TypeOf(@FieldType(Tracking, field).track)).@"fn".params.len == 3) {
+        if (@typeInfo(@TypeOf(@FieldType(Tracking, field).track)).@"fn".param_types.len == 3) {
             @field(tracking, field).track(cp, d);
         } else {
             @field(tracking, field).track(d);
@@ -1525,3 +1525,37 @@ pub fn sliceFieldInit(
 const config = @import("./config.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
+/// Zig 0.17 removed the unified `@typeInfo(T).@"kind".fields` view (now parallel
+/// arrays). `fieldsOf` restores the pre-0.17 `[]const Field` shape with
+/// `.name`/`.type`/`.value` for structs, unions and enums.
+pub const Field = struct {
+    name: [:0]const u8,
+    type: type = void,
+    value: comptime_int = 0,
+};
+pub inline fn fieldsOf(comptime T: type) []const Field {
+    comptime {
+        switch (@typeInfo(T)) {
+            .@"struct" => |s| {
+                var arr: [s.field_names.len]Field = undefined;
+                for (s.field_names, s.field_types, &arr) |n, t, *e| e.* = .{ .name = n, .type = t };
+                const final = arr;
+                return &final;
+            },
+            .@"union" => |u| {
+                var arr: [u.field_names.len]Field = undefined;
+                for (u.field_names, u.field_types, &arr) |n, t, *e| e.* = .{ .name = n, .type = t };
+                const final = arr;
+                return &final;
+            },
+            .@"enum" => |en| {
+                var arr: [en.field_names.len]Field = undefined;
+                for (en.field_names, en.field_values, &arr) |n, v, *e| e.* = .{ .name = n, .value = v };
+                const final = arr;
+                return &final;
+            },
+            else => @compileError("fieldsOf on unsupported type " ++ @typeName(T)),
+        }
+    }
+}

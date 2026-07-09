@@ -156,7 +156,7 @@ test "DOMFormData.ForEachFunction has the expected callconv signature" {
     // Zig 0.17 represents `callconv(.c)` as `CallingConvention.c_arch_default`-style
     // variants depending on the host. Asserting the param count is enough to
     // catch ABI drift; the `callconv(.c)` annotation is enforced at compile time.
-    try std.testing.expectEqual(@as(usize, 5), info.params.len);
+    try std.testing.expectEqual(@as(usize, 5), info.param_types.len);
 }
 
 comptime {

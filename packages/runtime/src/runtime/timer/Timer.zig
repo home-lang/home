@@ -650,7 +650,9 @@ pub const ID = extern struct {
     kind: Kind.Big = .setTimeout,
 
     pub inline fn asyncID(this: ID) u64 {
-        return @bitCast(this);
+        // Zig 0.17 forbids `@bitCast` on aggregates without a bit-castable
+        // layout (the enum field); reinterpret the raw bytes instead.
+        return std.mem.bytesToValue(u64, std.mem.asBytes(&this));
     }
 
     pub fn repeats(this: ID) bool {

@@ -396,7 +396,7 @@ fn appendFileAssumeCapacity(
     const watchlist_id = this.watchlist.len;
 
     const file_path_: string = if (comptime clone_file_path)
-        bun.asByteSlice(bun.handleOom(this.allocator.dupeZ(u8, file_path)))
+        bun.asByteSlice(bun.handleOom(bun.dupeZ(this.allocator, u8, file_path)))
     else
         file_path;
 
@@ -454,7 +454,7 @@ fn appendDirectoryAssumeCapacity(
     };
 
     const file_path_: string = if (comptime clone_file_path)
-        bun.asByteSlice(bun.handleOom(this.allocator.dupeZ(u8, file_path)))
+        bun.asByteSlice(bun.handleOom(bun.dupeZ(this.allocator, u8, file_path)))
     else
         file_path;
 

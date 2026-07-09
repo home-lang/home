@@ -16,6 +16,6 @@ test "Dir struct carries an FD field" {
     // Compile-time structural check — we can't construct an opaque FD value,
     // but the field name + type must exist so downstream callers compile.
     const info = @typeInfo(Dir).@"struct";
-    try std.testing.expectEqual(@as(usize, 1), info.fields.len);
-    try std.testing.expectEqualStrings("fd", info.fields[0].name);
+    try std.testing.expectEqual(@as(usize, 1), info.field_names.len);
+    try std.testing.expectEqualStrings("fd", info.field_names[0]);
 }

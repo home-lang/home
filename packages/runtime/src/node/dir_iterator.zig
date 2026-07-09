@@ -111,7 +111,7 @@ test "dir_iterator: IteratorError includes the two named cases plus UnexpectedEr
 test "dir_iterator: PathType has exactly the two variants iterate() switches on" {
     try std.testing.expectEqual(@as(u1, 0), @intFromEnum(PathType.u8));
     try std.testing.expectEqual(@as(u1, 1), @intFromEnum(PathType.u16));
-    try std.testing.expectEqual(2, @typeInfo(PathType).@"enum".fields.len);
+    try std.testing.expectEqual(2, @typeInfo(PathType).@"enum".field_names.len);
 }
 
 test "dir_iterator: IteratorResult round-trips its name + kind payload" {

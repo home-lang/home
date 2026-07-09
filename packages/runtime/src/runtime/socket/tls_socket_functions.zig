@@ -39,7 +39,7 @@ pub fn setServername(this: *This, globalObject: *jsc.JSGlobalObject, callframe: 
             // match node.js exceptions
             return globalObject.throw("Already started.", .{});
         }
-        const host__ = bun.handleOom(default_allocator.dupeZ(u8, host));
+        const host__ = bun.handleOom(bun.dupeZ(default_allocator, u8, host));
         defer default_allocator.free(host__);
         ssl_ptr.setHostname(host__);
     }

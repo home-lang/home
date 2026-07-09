@@ -61,11 +61,11 @@ pub fn fromEntries(
 
             return map;
         }
-    } else if (comptime home_rt.meta.traits.isContainer(EntryType) and std.meta.fields(EntryType).len > 0) {
+    } else if (comptime home_rt.meta.traits.isContainer(EntryType) and std.meta.fieldNames(EntryType).len > 0) {
         if (comptime !needsAllocator(Map.ensureUnusedCapacity)) {
-            try map.ensureUnusedCapacity(std.meta.fields(EntryType).len);
+            try map.ensureUnusedCapacity(std.meta.fieldNames(EntryType).len);
         } else {
-            try map.ensureUnusedCapacity(allocator, std.meta.fields(EntryType).len);
+            try map.ensureUnusedCapacity(allocator, std.meta.fieldNames(EntryType).len);
         }
 
         inline for (comptime std.meta.fieldNames(@TypeOf(EntryType))) |entry| {
@@ -73,11 +73,11 @@ pub fn fromEntries(
         }
 
         return map;
-    } else if (comptime home_rt.meta.traits.isConstPtr(EntryType) and std.meta.fields(std.meta.Child(EntryType)).len > 0) {
+    } else if (comptime home_rt.meta.traits.isConstPtr(EntryType) and std.meta.fieldNames(std.meta.Child(EntryType)).len > 0) {
         if (comptime !needsAllocator(Map.ensureUnusedCapacity)) {
-            try map.ensureUnusedCapacity(std.meta.fields(std.meta.Child(EntryType)).len);
+            try map.ensureUnusedCapacity(std.meta.fieldNames(std.meta.Child(EntryType)).len);
         } else {
-            try map.ensureUnusedCapacity(allocator, std.meta.fields(std.meta.Child(EntryType)).len);
+            try map.ensureUnusedCapacity(allocator, std.meta.fieldNames(std.meta.Child(EntryType)).len);
         }
 
         inline for (entries) |entry| {
@@ -113,7 +113,7 @@ pub fn fromMapLike(
 
 pub fn FieldType(comptime Map: type, comptime name: []const u8) ?type {
     const i = std.meta.fieldIndex(Map, name) orelse return null;
-    const field = std.meta.fields(Map)[i];
+    const field = bun.meta.fieldsOf(Map)[i];
     // Zig 0.17: `field_type` was renamed to `type`.
     return field.type;
 }
@@ -161,7 +161,7 @@ pub inline fn from(
     }
 
     if (comptime home_rt.meta.traits.isContainer(Array) and @hasDecl(Array, "put")) {
-        if (comptime home_rt.meta.traits.isConstPtr(DefaultType) and std.meta.fields(std.meta.Child(DefaultType)).len > 0) {
+        if (comptime home_rt.meta.traits.isConstPtr(DefaultType) and std.meta.fieldNames(std.meta.Child(DefaultType)).len > 0) {
             return fromEntries(Array, allocator, @TypeOf(default.*), default.*);
         }
         return fromEntries(Array, allocator, DefaultType, default);
@@ -244,7 +244,7 @@ pub fn fromSlice(
 }
 
 fn needsAllocator(comptime Fn: anytype) bool {
-    return std.meta.fields(std.meta.ArgsTuple(@TypeOf(Fn))).len > 2;
+    return std.meta.fieldNames(std.meta.ArgsTuple(@TypeOf(Fn))).len > 2;
 }
 
 test "util: Of returns the slice child type" {
@@ -285,3 +285,4 @@ test "util: needsAllocator distinguishes ArrayList styles" {
 
 const home_rt = @import("home");
 const std = @import("std");
+const bun = @import("bun");

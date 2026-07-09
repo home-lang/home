@@ -22,7 +22,7 @@ fn deinitValue(ptr_or_slice: anytype) void {
     }
 
     const Child = ptr_info.pointer.child;
-    const mutable = !ptr_info.pointer.is_const;
+    const mutable = !ptr_info.pointer.attrs.@"const";
     defer {
         if (comptime mutable) {
             ptr_or_slice.* = undefined;
@@ -303,6 +303,7 @@ pub fn TaggedUnion(comptime field_types: []const type) type {
 }
 
 const std = @import("std");
+const bun = @import("bun");
 
 test "TaggedUnion constructs fields and deinitializes active payload" {
     const testing = std.testing;
@@ -319,8 +320,8 @@ test "TaggedUnion constructs fields and deinitializes active payload" {
     var did_deinit = false;
     var value: U = .{ .@"1" = .{ .did_deinit = &did_deinit } };
 
-    try testing.expectEqual(@as(usize, 2), @typeInfo(U).@"union".fields.len);
-    try testing.expectEqualStrings("0", @typeInfo(U).@"union".fields[0].name);
+    try testing.expectEqual(@as(usize, 2), @typeInfo(U).@"union".field_names.len);
+    try testing.expectEqualStrings("0", bun.meta.fieldsOf(U)[0].name);
     try testing.expectEqual(@as(@typeInfo(U).@"union".tag_type.?, .@"1"), std.meta.activeTag(value));
 
     value.deinit();

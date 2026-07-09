@@ -43,7 +43,7 @@ test "LogicalGroup enum tags are stable" {
 
 test "PropertyCategory has two variants" {
     const info = @typeInfo(PropertyCategory).@"enum";
-    try std.testing.expectEqual(@as(usize, 2), info.fields.len);
+    try std.testing.expectEqual(@as(usize, 2), info.field_names.len);
 }
 
 const std = @import("std");

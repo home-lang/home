@@ -138,8 +138,8 @@ test "Weak(T) instantiates to a struct with the expected fields" {
     const Dummy = opaque {};
     const W = Weak(Dummy);
     const info = @typeInfo(W).@"struct";
-    try std.testing.expectEqualStrings("ref", info.fields[0].name);
-    try std.testing.expectEqualStrings("globalThis", info.fields[1].name);
+    try std.testing.expectEqualStrings("ref", info.field_names[0]);
+    try std.testing.expectEqualStrings("globalThis", info.field_names[1]);
 }
 
 test "Weak(T).init returns the zero state" {

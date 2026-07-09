@@ -226,11 +226,11 @@ fn inspectInto(comptime T: type, value: T, depth_left: u32) void {
             }
             appendOutput("{ ");
             var first = true;
-            inline for (s.fields) |f| {
+            inline for (s.field_names, s.field_types) |f_name, f_type| {
                 if (!first) appendOutput(", ");
-                appendOutput(f.name);
+                appendOutput(f_name);
                 appendOutput(": ");
-                inspectInto(f.type, @field(value, f.name), depth_left - 1);
+                inspectInto(f_type, @field(value, f_name), depth_left - 1);
                 first = false;
             }
             appendOutput(" }");
@@ -293,8 +293,8 @@ fn deepEqualsImpl(comptime T: type, a: T, b: T) bool {
             break :blk true;
         },
         .@"struct" => |s| blk: {
-            inline for (s.fields) |f| {
-                if (!deepEqualsImpl(f.type, @field(a, f.name), @field(b, f.name))) break :blk false;
+            inline for (s.field_names, s.field_types) |f_name, f_type| {
+                if (!deepEqualsImpl(f_type, @field(a, f_name), @field(b, f_name))) break :blk false;
             }
             break :blk true;
         },

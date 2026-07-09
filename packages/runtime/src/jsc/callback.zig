@@ -30,6 +30,7 @@
 //     side that unpacks `argc`/`argv` for the host fn).
 //
 const std = @import("std");
+const bun = @import("bun");
 const build_options = @import("build_options");
 const Engine = @import("engine.zig").Engine;
 const evaluate = @import("evaluate.zig");
@@ -121,7 +122,7 @@ fn registerHostFunctionObject(ctx: *JSContextRef, name: []const u8, fn_ptr: Host
 
 fn makeNameString(name: []const u8) *JSString {
     const allocator = std.heap.smp_allocator;
-    const name_z = allocator.dupeZ(u8, name) catch @panic("JSC: failed to allocate host function name");
+    const name_z = bun.dupeZ(allocator, u8, name) catch @panic("JSC: failed to allocate host function name");
     defer allocator.free(name_z);
 
     return extern_fns.JSStringCreateWithUTF8CString(name_z.ptr) orelse

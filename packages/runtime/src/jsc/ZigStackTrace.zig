@@ -124,12 +124,12 @@ test "ZigStackTrace.frames returns a slice of the right shape" {
 test "ZigStackTrace is an extern struct with the expected field order" {
     const info = @typeInfo(ZigStackTrace).@"struct";
     try std.testing.expect(info.layout == .@"extern");
-    try std.testing.expectEqualStrings("source_lines_ptr", info.fields[0].name);
-    try std.testing.expectEqualStrings("source_lines_numbers", info.fields[1].name);
-    try std.testing.expectEqualStrings("source_lines_len", info.fields[2].name);
-    try std.testing.expectEqualStrings("source_lines_to_collect", info.fields[3].name);
-    try std.testing.expectEqualStrings("frames_ptr", info.fields[4].name);
-    try std.testing.expectEqualStrings("frames_len", info.fields[5].name);
-    try std.testing.expectEqualStrings("frames_cap", info.fields[6].name);
-    try std.testing.expectEqualStrings("referenced_source_provider", info.fields[7].name);
+    try std.testing.expectEqualStrings("source_lines_ptr", info.field_names[0]);
+    try std.testing.expectEqualStrings("source_lines_numbers", info.field_names[1]);
+    try std.testing.expectEqualStrings("source_lines_len", info.field_names[2]);
+    try std.testing.expectEqualStrings("source_lines_to_collect", info.field_names[3]);
+    try std.testing.expectEqualStrings("frames_ptr", info.field_names[4]);
+    try std.testing.expectEqualStrings("frames_len", info.field_names[5]);
+    try std.testing.expectEqualStrings("frames_cap", info.field_names[6]);
+    try std.testing.expectEqualStrings("referenced_source_provider", info.field_names[7]);
 }

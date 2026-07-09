@@ -55,9 +55,9 @@ inline fn castPtr(comptime To: type, value: anytype) To {
 }
 
 fn zeroInit(comptime Type: type) Type {
-    var out: [@sizeOf(Type)]u8 align(@alignOf(Type)) = undefined;
-    @memset(@as([*]u8, @ptrCast(&out))[0..out.len], 0);
-    return @as(Type, @bitCast(out));
+    // Zig 0.17 forbids `@bitCast` to types without a well-defined layout;
+    // `std.mem.zeroes` gives the same all-zero value for any type.
+    return std.mem.zeroes(Type);
 }
 
 fn EnumMap(comptime T: type, comptime args: anytype) (fn (T) [:0]const u8) {
@@ -598,7 +598,7 @@ pub const Channel = opaque {
                 break :brk null;
             }
 
-            break :brk (std.fmt.bufPrintZ(&port_buf, "{d}", .{port}) catch unreachable).ptr;
+            break :brk (std.fmt.bufPrintSentinel(&port_buf, "{d}", .{port}, 0) catch unreachable).ptr;
         };
 
         var hints_buf: [3]AddrInfo_hints = zeroInit([3]AddrInfo_hints);
@@ -1154,7 +1154,7 @@ pub const struct_any_reply = struct {
     }
 
     pub fn deinit(this: *struct_any_reply) void {
-        inline for (@typeInfo(struct_any_reply).@"struct".fields) |field| {
+        inline for (bun.meta.fieldsOf(struct_any_reply)) |field| {
             if (comptime std.mem.endsWith(u8, field.name, "_reply")) {
                 if (@field(this, field.name)) |reply| {
                     reply.deinit();
@@ -1533,6 +1533,7 @@ pub fn getSockaddr(addr: []const u8, port: u16, sa: *std.posix.sockaddr) c_int {
 }
 
 const std = @import("std");
+const bun = @import("bun");
 const builtin = @import("builtin");
 const iovec = @import("std").os.iovec;
 

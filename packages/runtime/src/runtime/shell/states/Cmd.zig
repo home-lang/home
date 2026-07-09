@@ -497,7 +497,7 @@ fn initSubproc(this: *Cmd) Yield {
         };
 
         this.base.allocator().free(first_arg_real);
-        const duped = bun.handleOom(this.base.allocator().dupeZ(u8, bun.span(resolved)));
+        const duped = bun.handleOom(bun.dupeZ(this.base.allocator(), u8, bun.span(resolved)));
         this.args.items[0] = duped;
     }
 

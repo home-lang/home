@@ -26,7 +26,7 @@ pub const GraphemeBreakNoControl = enum(u5) {
 
 test "GraphemeBreakNoControl enum has 17 variants and fits in u5" {
     const std = @import("std");
-    try std.testing.expectEqual(@as(comptime_int, 17), @typeInfo(GraphemeBreakNoControl).@"enum".fields.len);
+    try std.testing.expectEqual(@as(comptime_int, 17), @typeInfo(GraphemeBreakNoControl).@"enum".field_names.len);
     // Confirm the tag type is exactly u5 (max 32 values).
     try std.testing.expectEqual(u5, @typeInfo(GraphemeBreakNoControl).@"enum".tag_type);
     // Spot-check a couple of tag values.

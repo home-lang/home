@@ -50,7 +50,7 @@ pub const Flags = switch (@import("builtin").cpu.arch) {
 
 pub fn format(features: @This(), writer: *std.Io.Writer) !void {
     var is_first = true;
-    inline for (@typeInfo(Flags).@"struct".fields) |field| brk: {
+    inline for (bun.meta.fieldsOf(Flags)) |field| brk: {
         if (comptime (home_rt.strings.eql(field.name, "padding") or
             home_rt.strings.eql(field.name, "none")))
             break :brk;
@@ -89,6 +89,7 @@ pub fn get() CPUFeatures {
 
 const home_rt = @import("home");
 const std = @import("std");
+const bun = @import("bun");
 
 test "CPUFeatures: Flags packs into u8 (per-arch layout)" {
     var f: Flags = std.mem.zeroes(Flags);

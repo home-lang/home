@@ -29,7 +29,7 @@ pub fn preallocate(this: *Buffers, that: Buffers, allocator: Allocator) !void {
 }
 
 const sizes = blk: {
-    const fields = std.meta.fields(Lockfile.Buffers);
+    const fields = bun.meta.fieldsOf(Lockfile.Buffers);
     const Data = struct {
         size: usize,
         name: []const u8,

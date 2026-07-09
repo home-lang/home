@@ -16,6 +16,7 @@
 // `globalThis.Bun` exists; comptime-gated on `enable_jsc`.
 
 const std = @import("std");
+const bun = @import("bun");
 const build_options = @import("build_options");
 const evaluate = @import("evaluate.zig");
 const callback = @import("callback.zig");
@@ -45,7 +46,7 @@ fn typedArrayBytes(ctx: *JSContextRef, value: *JSValue) ?[]const u8 {
 
 fn makeJsString(ctx: *JSContextRef, s: []const u8) ?*JSValue {
     const allocator = std.heap.page_allocator;
-    const z = allocator.dupeZ(u8, s) catch return extern_fns.JSValueMakeNull(ctx);
+    const z = bun.dupeZ(allocator, u8, s) catch return extern_fns.JSValueMakeNull(ctx);
     defer allocator.free(z);
     const js = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return extern_fns.JSValueMakeNull(ctx);
     defer extern_fns.JSStringRelease(js);

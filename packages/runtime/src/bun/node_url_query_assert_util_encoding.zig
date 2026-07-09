@@ -52,7 +52,7 @@ test "manifest records Node URL/assert/util/text-encoding Bun source provenance"
     try std.testing.expectEqualStrings("fd0b6f1a271fca0b8124b69f230b100f4d636af6", upstream_sha);
     try std.testing.expect(sources.len >= 10);
 
-    var saw = std.EnumSet(Slice).initEmpty();
+    var saw = std.EnumSet(Slice).empty;
     var saw_js_source_required = false;
 
     for (sources) |entry| {

@@ -127,14 +127,14 @@ pub const SystemError = extern struct {
 test "SystemError carries the expected fields in order" {
     const info = @typeInfo(SystemError).@"struct";
     try std.testing.expect(info.layout == .@"extern");
-    try std.testing.expectEqualStrings("errno", info.fields[0].name);
-    try std.testing.expectEqualStrings("code", info.fields[1].name);
-    try std.testing.expectEqualStrings("message", info.fields[2].name);
-    try std.testing.expectEqualStrings("path", info.fields[3].name);
-    try std.testing.expectEqualStrings("syscall", info.fields[4].name);
-    try std.testing.expectEqualStrings("hostname", info.fields[5].name);
-    try std.testing.expectEqualStrings("fd", info.fields[6].name);
-    try std.testing.expectEqualStrings("dest", info.fields[7].name);
+    try std.testing.expectEqualStrings("errno", info.field_names[0]);
+    try std.testing.expectEqualStrings("code", info.field_names[1]);
+    try std.testing.expectEqualStrings("message", info.field_names[2]);
+    try std.testing.expectEqualStrings("path", info.field_names[3]);
+    try std.testing.expectEqualStrings("syscall", info.field_names[4]);
+    try std.testing.expectEqualStrings("hostname", info.field_names[5]);
+    try std.testing.expectEqualStrings("fd", info.field_names[6]);
+    try std.testing.expectEqualStrings("dest", info.field_names[7]);
 }
 
 test "SystemError default state has the expected sentinel values" {
@@ -149,8 +149,8 @@ test "SystemError default state has the expected sentinel values" {
 test "SystemError.Maybe(T) is a tagged union with err/result arms" {
     const M = SystemError.Maybe(u32);
     const info = @typeInfo(M).@"union";
-    try std.testing.expectEqualStrings("err", info.fields[0].name);
-    try std.testing.expectEqualStrings("result", info.fields[1].name);
+    try std.testing.expectEqualStrings("err", info.field_names[0]);
+    try std.testing.expectEqualStrings("result", info.field_names[1]);
 }
 
 test "SystemError.getErrno inverts the sign of errno" {

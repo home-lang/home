@@ -29,23 +29,23 @@ pub inline fn implementDeepClone(comptime T: type, this: *const T, allocator: Al
     return switch (tyinfo) {
         .@"struct" => {
             var strct: T = undefined;
-            inline for (tyinfo.@"struct".fields) |field| {
-                if (comptime canTransitivelyImplementDeepClone(field.type) and @hasDecl(field.type, "__generateDeepClone")) {
-                    @field(strct, field.name) = implementDeepClone(field.type, &field(this, field.name, allocator));
+            inline for (tyinfo.@"struct".field_names, tyinfo.@"struct".field_types) |field_name, field_type| {
+                if (comptime canTransitivelyImplementDeepClone(field_type) and @hasDecl(field_type, "__generateDeepClone")) {
+                    @field(strct, field_name) = implementDeepClone(field_type, &@field(this, field_name), allocator);
                 } else {
-                    @field(strct, field.name) = deepClone(field.type, &@field(this, field.name), allocator);
+                    @field(strct, field_name) = deepClone(field_type, &@field(this, field_name), allocator);
                 }
             }
             return strct;
         },
         .@"union" => {
             const enum_fields = comptime bun.meta.EnumFields(T);
-            inline for (enum_fields, tyinfo.@"union".fields) |enum_field, union_field| {
+            inline for (enum_fields, tyinfo.@"union".field_types) |enum_field, union_field_type| {
                 if (@intFromEnum(this.*) == enum_field.value) {
-                    if (comptime canTransitivelyImplementDeepClone(union_field.type) and @hasDecl(union_field.type, "__generateDeepClone")) {
-                        return @unionInit(T, enum_field.name, implementDeepClone(union_field.type, &@field(this, enum_field.name), allocator));
+                    if (comptime canTransitivelyImplementDeepClone(union_field_type) and @hasDecl(union_field_type, "__generateDeepClone")) {
+                        return @unionInit(T, enum_field.name, implementDeepClone(union_field_type, &@field(this, enum_field.name), allocator));
                     }
-                    return @unionInit(T, enum_field.name, deepClone(union_field.type, &@field(this, enum_field.name), allocator));
+                    return @unionInit(T, enum_field.name, deepClone(union_field_type, &@field(this, enum_field.name), allocator));
                 }
             }
             unreachable;
@@ -110,8 +110,8 @@ pub fn implementEql(comptime T: type, this: *const T, other: *const T) bool {
             return true;
         },
         .@"struct" => {
-            inline for (tyinfo.@"struct".fields) |field| {
-                if (!eql(field.type, &@field(this, field.name), &@field(other, field.name))) return false;
+            inline for (tyinfo.@"struct".field_names, tyinfo.@"struct".field_types) |field_name, field_type| {
+                if (!eql(field_type, &@field(this, field_name), &@field(other, field_name))) return false;
             }
             return true;
         },
@@ -119,13 +119,13 @@ pub fn implementEql(comptime T: type, this: *const T, other: *const T) bool {
             if (tyinfo.@"union".tag_type == null) @compileError("Unions must have a tag type");
             if (@intFromEnum(this.*) != @intFromEnum(other.*)) return false;
             const enum_fields = comptime bun.meta.EnumFields(T);
-            inline for (enum_fields, std.meta.fields(T)) |enum_field, union_field| {
+            inline for (enum_fields, comptime std.meta.fieldTypes(T)) |enum_field, union_field_type| {
                 if (enum_field.value == @intFromEnum(this.*)) {
-                    if (union_field.type != void) {
-                        if (comptime canTransitivelyImplementEql(union_field.type) and @hasDecl(union_field.type, "__generateEql")) {
-                            return implementEql(union_field.type, &@field(this, enum_field.name), &@field(other, enum_field.name));
+                    if (union_field_type != void) {
+                        if (comptime canTransitivelyImplementEql(union_field_type) and @hasDecl(union_field_type, "__generateEql")) {
+                            return implementEql(union_field_type, &@field(this, enum_field.name), &@field(other, enum_field.name));
                         }
-                        return eql(union_field.type, &@field(this, enum_field.name), &@field(other, enum_field.name));
+                        return eql(union_field_type, &@field(this, enum_field.name), &@field(other, enum_field.name));
                     } else {
                         return true;
                     }
@@ -183,13 +183,13 @@ pub fn implementHash(comptime T: type, this: *const T, hasher: *std.hash.Wyhash)
             }
         },
         .@"struct" => {
-            inline for (tyinfo.@"struct".fields) |field| {
-                if (comptime hasHash(field.type)) {
-                    hash(field.type, &@field(this, field.name), hasher);
-                } else if (@hasDecl(field.type, "__generateHash") and @typeInfo(field.type) == .@"struct") {
-                    implementHash(field.type, &@field(this, field.name), hasher);
+            inline for (tyinfo.@"struct".field_names, tyinfo.@"struct".field_types) |field_name, field_type| {
+                if (comptime hasHash(field_type)) {
+                    hash(field_type, &@field(this, field_name), hasher);
+                } else if (@hasDecl(field_type, "__generateHash") and @typeInfo(field_type) == .@"struct") {
+                    implementHash(field_type, &@field(this, field_name), hasher);
                 } else {
-                    @compileError("Can't hash these fields: " ++ @typeName(field.type) ++ ". On " ++ @typeName(T));
+                    @compileError("Can't hash these fields: " ++ @typeName(field_type) ++ ". On " ++ @typeName(T));
                 }
             }
             return;
@@ -201,15 +201,14 @@ pub fn implementHash(comptime T: type, this: *const T, hasher: *std.hash.Wyhash)
             if (tyinfo.@"union".tag_type == null) @compileError("Unions must have a tag type");
             bun.writeAnyToHasher(hasher, @intFromEnum(this.*));
             const enum_fields = comptime bun.meta.EnumFields(T);
-            inline for (enum_fields, std.meta.fields(T)) |enum_field, union_field| {
+            inline for (enum_fields, comptime std.meta.fieldTypes(T)) |enum_field, union_field_type| {
                 if (enum_field.value == @intFromEnum(this.*)) {
-                    const field = union_field;
-                    if (comptime hasHash(field.type)) {
-                        hash(field.type, &@field(this, field.name), hasher);
-                    } else if (@hasDecl(field.type, "__generateHash") and @typeInfo(field.type) == .@"struct") {
-                        implementHash(field.type, &@field(this, field.name), hasher);
+                    if (comptime hasHash(union_field_type)) {
+                        hash(union_field_type, &@field(this, enum_field.name), hasher);
+                    } else if (@hasDecl(union_field_type, "__generateHash") and @typeInfo(union_field_type) == .@"struct") {
+                        implementHash(union_field_type, &@field(this, enum_field.name), hasher);
                     } else {
-                        @compileError("Can't hash these fields: " ++ @typeName(field.type) ++ ". On " ++ @typeName(T));
+                        @compileError("Can't hash these fields: " ++ @typeName(union_field_type) ++ ". On " ++ @typeName(T));
                     }
                 }
             }

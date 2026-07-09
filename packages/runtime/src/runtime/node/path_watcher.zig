@@ -295,7 +295,7 @@ pub fn watch(
     gop.key_ptr.* = bun.handleOom(bun.default_allocator.dupe(u8, key));
     const watcher = PathWatcher.new(.{
         .manager = manager,
-        .path = bun.handleOom(bun.default_allocator.dupeZ(u8, resolved)),
+        .path = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, resolved)),
         .recursive = recursive,
         .is_file = is_file,
     });
@@ -511,7 +511,7 @@ const Linux = struct {
             if (o.watcher == watcher) {
                 if (!bun.strings.eql(o.subpath, subpath)) {
                     const old = o.subpath;
-                    o.subpath = bun.handleOom(bun.default_allocator.dupeZ(u8, subpath));
+                    o.subpath = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, subpath));
                     bun.default_allocator.free(old);
                 }
                 return .success;
@@ -519,7 +519,7 @@ const Linux = struct {
         }
         bun.handleOom(gop.value_ptr.append(bun.default_allocator, .{
             .watcher = watcher,
-            .subpath = bun.handleOom(bun.default_allocator.dupeZ(u8, subpath)),
+            .subpath = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, subpath)),
         }));
         bun.handleOom(watcher.platform.wds.append(bun.default_allocator, wd));
         log("inotify_add_watch({s}) → wd={d} sub='{s}' owners={d}", .{ abs_path, wd, subpath, gop.value_ptr.items.len });
@@ -878,7 +878,7 @@ const Kqueue = struct {
         bun.handleOom(plat.entries.put(bun.default_allocator, @intCast(fd.native()), .{
             .watcher = watcher,
             .fd = fd,
-            .subpath = bun.handleOom(bun.default_allocator.dupeZ(u8, subpath)),
+            .subpath = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, subpath)),
             .gen = gen,
             .is_file = is_file,
         }));

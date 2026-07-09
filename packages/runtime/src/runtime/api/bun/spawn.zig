@@ -17,6 +17,7 @@
 // copied process/stdin/stdout/stderr leaves through the same public names.
 
 const std = @import("std");
+const bun = @import("bun");
 
 const fd_t = std.posix.fd_t;
 const mode_t = std.posix.mode_t;
@@ -104,7 +105,7 @@ pub const BunSpawn = struct {
         }
 
         pub fn openZ(self: *Actions, fd: fd_t, path: [*:0]const u8, flags: u32, mode: i32) !void {
-            const dup = try std.heap.c_allocator.dupeZ(u8, std.mem.span(path));
+            const dup = try bun.dupeZ(std.heap.c_allocator, u8, std.mem.span(path));
             try self.actions.append(.{
                 .kind = .open,
                 .path = dup.ptr,
@@ -137,7 +138,7 @@ pub const BunSpawn = struct {
                 std.heap.c_allocator.free(std.mem.span(buf));
             }
 
-            self.chdir_buf = (try std.heap.c_allocator.dupeZ(u8, path)).ptr;
+            self.chdir_buf = (try bun.dupeZ(std.heap.c_allocator, u8, path)).ptr;
         }
     };
 

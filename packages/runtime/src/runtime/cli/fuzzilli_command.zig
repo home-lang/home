@@ -32,7 +32,7 @@ test "FuzzilliCommand: gate defaults to disabled in home_rt" {
     // The `if (Environment.enable_fuzzilli)` arm collapses to `struct {}`
     // when the gate is false. Asserting the type is empty proves the
     // scaffolding compiled through.
-    const decls = @typeInfo(FuzzilliCommand).@"struct".decls;
+    const decls = @typeInfo(FuzzilliCommand).@"struct".decl_names;
     try std.testing.expectEqual(@as(usize, 0), decls.len);
 }
 

@@ -573,8 +573,8 @@ pub const AST = struct {
                 return false;
             }
 
-            const SINGLE_ARG_OPS: []const std.builtin.Type.EnumField = brk: {
-                const fields: []const std.builtin.Type.EnumField = std.meta.fields(AST.CondExpr.Op);
+            const SINGLE_ARG_OPS: []const bun.meta.EnumField = brk: {
+                const fields: []const bun.meta.EnumField = bun.meta.EnumFields(AST.CondExpr.Op);
                 const count = count: {
                     var count: usize = 0;
                     for (fields) |f| {
@@ -584,7 +584,7 @@ pub const AST = struct {
                     }
                     break :count count;
                 };
-                var ret: [count]std.builtin.Type.EnumField = undefined;
+                var ret: [count]bun.meta.EnumField = undefined;
                 var len: usize = 0;
                 for (fields) |f| {
                     if (f.name[0] == '-' and f.name.len == 2) {
@@ -596,8 +596,8 @@ pub const AST = struct {
                 break :brk &final;
             };
 
-            const BINARY_OPS: []const std.builtin.Type.EnumField = brk: {
-                const fields: []const std.builtin.Type.EnumField = std.meta.fields(AST.CondExpr.Op);
+            const BINARY_OPS: []const bun.meta.EnumField = brk: {
+                const fields: []const bun.meta.EnumField = bun.meta.EnumFields(AST.CondExpr.Op);
                 const count = count: {
                     var count: usize = 0;
                     for (fields) |f| {
@@ -607,7 +607,7 @@ pub const AST = struct {
                     }
                     break :count count;
                 };
-                var ret: [count]std.builtin.Type.EnumField = undefined;
+                var ret: [count]bun.meta.EnumField = undefined;
                 var len: usize = 0;
                 for (fields) |f| {
                     if (!(f.name[0] == '-' and f.name.len == 2)) {

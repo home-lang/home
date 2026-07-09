@@ -242,7 +242,7 @@ pub const PublishCommand = struct {
                     .allocator = ctx.allocator,
                     .package_name = package_name,
                     .package_version = package_version,
-                    .abs_tarball_path = try ctx.allocator.dupeZ(u8, abs_tarball_path),
+                    .abs_tarball_path = try bun.dupeZ(ctx.allocator, u8, abs_tarball_path),
                     .tarball_bytes = tarball_bytes,
                     .shasum = shasum,
                     .integrity = integrity,
@@ -1175,7 +1175,7 @@ pub const PublishCommand = struct {
                         const key = key: {
                             if (bin_prop.key) |key| {
                                 if (key.isString() and key.data.e_string.len() != 0) {
-                                    break :key try allocator.dupeZ(
+                                    break :key try bun.dupeZ(allocator, 
                                         u8,
                                         strings.withoutPrefixComptime(
                                             path.normalizeBuf(
@@ -1199,7 +1199,7 @@ pub const PublishCommand = struct {
                         const value = value: {
                             if (bin_prop.value) |value| {
                                 if (value.isString() and value.data.e_string.len() != 0) {
-                                    break :value try allocator.dupeZ(
+                                    break :value try bun.dupeZ(allocator, 
                                         u8,
                                         strings.withoutPrefixComptimeZ(
                                             // replace separators
@@ -1252,7 +1252,7 @@ pub const PublishCommand = struct {
                     return;
                 };
                 var bin_props = std.array_list.Managed(G.Property).init(allocator);
-                const normalized_bin_dir = try allocator.dupeZ(
+                const normalized_bin_dir = try bun.dupeZ(allocator, 
                     u8,
                     strings.withoutTrailingSlash(
                         strings.withoutPrefixComptime(

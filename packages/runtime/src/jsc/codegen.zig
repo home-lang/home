@@ -73,5 +73,5 @@ test "CallbackWrapper instantiates with stub getter/setter function pointers" {
     // The wrapper type must expose a `container: JSValue` field.
     const info = @typeInfo(Wrapped);
     try std.testing.expect(info == .@"struct");
-    try std.testing.expectEqualStrings("container", info.@"struct".fields[0].name);
+    try std.testing.expectEqualStrings("container", info.@"struct".field_names[0]);
 }

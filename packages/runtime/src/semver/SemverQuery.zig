@@ -126,7 +126,7 @@ pub const Group = struct {
     allocator: Allocator,
     input: string = "",
 
-    flags: FlagsBitSet = FlagsBitSet.initEmpty(),
+    flags: FlagsBitSet = FlagsBitSet.empty,
     pub const Flags = struct {
         pub const pre = 1;
         pub const build = 0;
