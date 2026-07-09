@@ -385,6 +385,24 @@ fn bestQuoteChar(cooked: []const u8) u8 {
     return '"';
 }
 
+fn isIdentStartByte(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$';
+}
+
+/// Whether `name` can be emitted as an unquoted property key. Mirrors Bun's
+/// `js_lexer.isIdentifier` over the ASCII range; any byte ≥0x80 is treated as an
+/// identifier char (approximating Unicode ID_Start/ID_Continue), which keeps
+/// valid Unicode identifier keys unquoted like Bun while still quoting ASCII
+/// non-identifiers such as `a-b`.
+fn isValidPropertyIdentifier(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (name[0] < 0x80 and !isIdentStartByte(name[0])) return false;
+    for (name[1..]) |c| {
+        if (c < 0x80 and !isIdentStartByte(c) and !(c >= '0' and c <= '9')) return false;
+    }
+    return true;
+}
+
 pub const Printer = struct {
     gpa: std.mem.Allocator,
     hir: *const Hir,
@@ -10069,6 +10087,25 @@ pub const Printer = struct {
     /// Emit a single non-spread object-literal property: shorthand `{ foo }`
     /// (expanded to `foo: foo` at ES5), method shorthand `{ foo() {} }`,
     /// computed `{ [k]: v }`, or regular `key: value`.
+    /// Emit a non-computed object/property NAME key: unquoted when it's a valid
+    /// JS identifier, otherwise re-quoted as a string literal (mirrors Bun's
+    /// printProperty). The parser stores a string-literal key as an identifier
+    /// holding the raw key text, so `{ "a-b": 1 }` arrives as an identifier
+    /// named `a-b` — which is NOT a valid identifier and must be emitted as
+    /// `"a-b"` rather than the invalid bare `a-b`.
+    fn printObjectKey(self: *Printer, key: NodeId) !void {
+        if (self.hir.kindOf(key) == .identifier) {
+            const name = self.interner.get(hir_mod.identifierOf(self.hir, key).name);
+            if (isValidPropertyIdentifier(name)) {
+                try self.write(name);
+            } else {
+                try self.printQuotedString(name);
+            }
+            return;
+        }
+        try self.printExpression(key);
+    }
+
     fn printObjectProp(self: *Printer, p: NodeId) !void {
         if (self.hir.kindOf(p) != .object_property) {
             try self.printExpression(p);
@@ -10092,7 +10129,7 @@ pub const Printer = struct {
                     try self.printExpression(op.key);
                     try self.write("]");
                 } else {
-                    try self.printExpression(op.key);
+                    try self.printObjectKey(op.key);
                 }
                 try self.write(": function ");
             } else {
@@ -10103,7 +10140,7 @@ pub const Printer = struct {
                     try self.printExpression(op.key);
                     try self.write("]");
                 } else {
-                    try self.printExpression(op.key);
+                    try self.printObjectKey(op.key);
                 }
             }
             try self.printObjectMethodBody(op.value);
@@ -10113,7 +10150,7 @@ pub const Printer = struct {
                 try self.printExpression(op.key);
                 try self.write("]");
             } else {
-                try self.printExpression(op.key);
+                try self.printObjectKey(op.key);
             }
             try self.write(": ");
             try self.printExpr(op.value, .comma);
@@ -10517,6 +10554,27 @@ test "emit: stripped type-only statements leave no blank line" {
         .{ .src = "const a = 1;\ninterface I { x: number }", .want = "const a = 1;" },
         // Non-stripped statements keep their single separator.
         .{ .src = "const a = 1;\nconst b = 2;", .want = "const a = 1;\nconst b = 2;" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
+}
+
+test "emit: object property key unquotes only valid identifiers" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        // Valid-identifier string keys unquote (matches Bun).
+        .{ .src = "const o = { \"abc\": 1 };", .want = "const o = { abc: 1 };" },
+        .{ .src = "const o = { 'x': 1 };", .want = "const o = { x: 1 };" },
+        .{ .src = "const o = { $_9: 1 };", .want = "const o = { $_9: 1 };" },
+        // A non-identifier string key must stay quoted — the old code emitted
+        // the invalid `{ a-b: 1 }`.
+        .{ .src = "const o = { \"a-b\": 1 };", .want = "const o = { \"a-b\": 1 };" },
+        // A digit-leading key can't unquote.
+        .{ .src = "const o = { \"0a\": 1 };", .want = "const o = { \"0a\": 1 };" },
+        // A plain identifier key is unchanged.
+        .{ .src = "const o = { foo: 1 };", .want = "const o = { foo: 1 };" },
     };
     for (cases) |c| {
         const out = try emit(c.src);
