@@ -157,6 +157,15 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         .language = .cpp,
     });
 
+    // Weak `Bun__*` visible-width/grapheme forwarders → Home's strong `home__*`
+    // exports. Definer-agnostic fallback so the link works whether or not the
+    // Bun obj set provides these symbols (bun-zig.o). See #66 / visible.zig.
+    m.addCSourceFile(.{
+        .file = b.path("packages/runtime/src/native/width_weak_home_dups.cpp"),
+        .flags = &.{ "-std=c++20", "-Wno-unused-parameter" },
+        .language = .cpp,
+    });
+
     // WebKit static libs (JavaScriptCore engine + WTF + bmalloc).
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libJavaScriptCore.a", .{bun_webkit_lib}) });
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libWTF.a", .{bun_webkit_lib}) });

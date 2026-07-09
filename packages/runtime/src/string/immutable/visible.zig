@@ -1422,13 +1422,26 @@ fn Bun__isEmojiPresentation(cp: u32) callconv(.c) bool {
 }
 
 comptime {
-    if (!build_options.enable_jsc) {
-        @export(&Bun__visibleWidthExcludeANSI_utf8, .{ .name = "Bun__visibleWidthExcludeANSI_utf8" });
-        @export(&Bun__visibleWidthExcludeANSI_utf16, .{ .name = "Bun__visibleWidthExcludeANSI_utf16" });
-        @export(&Bun__visibleWidthExcludeANSI_latin1, .{ .name = "Bun__visibleWidthExcludeANSI_latin1" });
-        @export(&Bun__codepointWidth, .{ .name = "Bun__codepointWidth" });
-        @export(&Bun__graphemeBreak, .{ .name = "Bun__graphemeBreak" });
-        @export(&Bun__isEmojiPresentation, .{ .name = "Bun__isEmojiPresentation" });
+    // Export the width/grapheme impls under Home-owned STRONG names. The
+    // canonical `Bun__*` symbols are provided as clang weak forwarders in
+    // native/width_weak_home_dups.cpp, which defer to `bun-zig.o`'s strong
+    // definitions when that object is linked (fleet obj sets) and supply the
+    // definition when it is not (obj sets that only *reference* the symbols —
+    // e.g. this machine's Bun build produces no bun-zig.o). Definer-agnostic;
+    // ends the enable_jsc-gate ping-pong (#66). zig 0.17-dev can't emit the
+    // weak defs itself — it lowers Mach-O weak @exports to local symbols —
+    // hence the clang forwarders.
+    //
+    // Gated on enable_jsc: these are only referenced by the JSC C++ bindings,
+    // and Bun__isEmojiPresentation calls ICU's icu_hasBinaryProperty, absent
+    // from the -Denable_jsc=false build.
+    if (build_options.enable_jsc) {
+        @export(&Bun__visibleWidthExcludeANSI_utf8, .{ .name = "home__visibleWidthExcludeANSI_utf8" });
+        @export(&Bun__visibleWidthExcludeANSI_utf16, .{ .name = "home__visibleWidthExcludeANSI_utf16" });
+        @export(&Bun__visibleWidthExcludeANSI_latin1, .{ .name = "home__visibleWidthExcludeANSI_latin1" });
+        @export(&Bun__codepointWidth, .{ .name = "home__codepointWidth" });
+        @export(&Bun__graphemeBreak, .{ .name = "home__graphemeBreak" });
+        @export(&Bun__isEmojiPresentation, .{ .name = "home__isEmojiPresentation" });
     }
 }
 

@@ -99,13 +99,14 @@ comptime {
         _ = @import("runtime/webcore/streams.zig").HTTPResponseSink.JSSink;
         _ = @import("runtime/webcore/streams.zig").HTTPSResponseSink.JSSink;
         _ = @import("sourcemap_jsc/CodeCoverage.zig");
-        // Width/grapheme exports consumed by sliceAnsi.cpp / wrapAnsi.cpp in
-        // the linked C++ objects. string/immutable/visible.zig carries WEAK
-        // fallback definitions for exactly this, but its lazy `const` import
-        // in immutable.zig never triggered analysis, so the exports were
-        // never emitted and the exe link failed on the 5 symbols. Force the
-        // analysis here (JSC gate only — the emoji path calls ICU's
-        // icu_hasBinaryProperty, which the -Denable_jsc=false build lacks).
+        // Width/grapheme symbols consumed by sliceAnsi.cpp / wrapAnsi.cpp in
+        // the linked C++ objects. string/immutable/visible.zig exports the
+        // impls under strong `home__*` names; native/width_weak_home_dups.cpp
+        // exposes the canonical `Bun__*` names as clang weak forwarders that
+        // defer to bun-zig.o when it is linked and supply the definition when
+        // it is not (definer-agnostic — see #66). Force the analysis here so
+        // the `home__*` exports are emitted (JSC gate only — the emoji path
+        // calls ICU's icu_hasBinaryProperty, absent from -Denable_jsc=false).
         _ = @import("string/immutable/visible.zig");
         _ = @import("native_stubs.zig");
         // Force the real ResolvePath__joinAbsStringBufCurrentPlatformBunString
