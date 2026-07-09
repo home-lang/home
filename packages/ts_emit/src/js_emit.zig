@@ -792,6 +792,12 @@ pub const Printer = struct {
         // temp whose `var _a;` declaration lands here.
         try self.pushTempScope();
         var i: usize = 0;
+        // Whether any prior top-level statement produced output. The
+        // inter-statement newline is gated on this rather than on `i > 0` so a
+        // stripped type-only statement (interface / type alias / `import type`
+        // / ambient `declare`) doesn't leave a blank line behind — matching
+        // Bun/tsc, which emit no separator for an elided statement.
+        var emitted_any = false;
         while (i < stmts.len) : (i += 1) {
             const stmt = stmts[i];
             // Decorator preamble: collect a run of decorator
@@ -801,7 +807,7 @@ pub const Printer = struct {
                 var j = i;
                 while (j < stmts.len and self.hir.kindOf(stmts[j]) == .decorator) j += 1;
                 if (j < stmts.len and self.hir.kindOf(stmts[j]) == .class_decl) {
-                    if (i > 0) try self.write(self.options.newline);
+                    if (emitted_any) try self.write(self.options.newline);
                     // JSDoc anchored on the run-leading decorator.
                     try self.emitLeadingJsDoc(stmts[i]);
                     // §4.A.9 v13 — Stage 3 (non-legacy) class decorator
@@ -818,6 +824,7 @@ pub const Printer = struct {
                         try self.write(self.options.newline);
                         try self.emitClassDecorateCall(stmts[i..j], stmts[j]);
                     }
+                    emitted_any = true;
                     i = j;
                     continue;
                 }
@@ -836,16 +843,33 @@ pub const Printer = struct {
             {
                 const c = hir_mod.classOf(self.hir, stmt);
                 if (c.name != hir_mod.none_node_id and self.classHasAnyMemberDecorator(stmt)) {
-                    if (i > 0) try self.write(self.options.newline);
+                    if (emitted_any) try self.write(self.options.newline);
                     try self.emitLeadingJsDoc(stmt);
                     const empty: []const NodeId = &[_]NodeId{};
                     try self.emitStage3IIFEClass(empty, stmt);
+                    emitted_any = true;
                     continue;
                 }
             }
-            if (i > 0) try self.write(self.options.newline);
+            // Speculatively emit the separator (+ JSDoc) then the statement; if
+            // the statement lowered to nothing (a stripped type-only decl),
+            // roll the buffer + source-map position back so no blank line is
+            // left. The rollback also drops the stripped decl's own leading
+            // JSDoc, which tsc/Bun elide along with the declaration.
+            const save_len = self.out.items.len;
+            const save_line = self.gen_line;
+            const save_col = self.gen_col;
+            if (emitted_any) try self.write(self.options.newline);
             try self.emitLeadingJsDoc(stmt);
+            const before_stmt = self.out.items.len;
             try self.printStatement(stmt);
+            if (self.out.items.len > before_stmt) {
+                emitted_any = true;
+            } else {
+                self.out.items.len = save_len;
+                self.gen_line = save_line;
+                self.gen_col = save_col;
+            }
         }
         // §4.A.31 — flush any module-level temps (`var _a, _b;`) after imports.
         try self.popTempScope(self.options.newline);
@@ -10469,6 +10493,28 @@ fn emit(source: []const u8) ![]u8 {
     defer destroyTestSetup(s);
     try s.printer.printSourceFile(s.root);
     return T.allocator.dupe(u8, s.printer.out.items);
+}
+
+test "emit: stripped type-only statements leave no blank line" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        // A leading stripped statement must not push a blank line ahead of the
+        // first real statement (matches Bun/tsc).
+        .{ .src = "import type { T } from \"x\";\nconst y = 1;", .want = "const y = 1;" },
+        .{ .src = "interface I { a: number }\nconst y = 1;", .want = "const y = 1;" },
+        .{ .src = "type A = number;\nconst y = 1;", .want = "const y = 1;" },
+        .{ .src = "declare const g: number;\nconst y = 1;", .want = "const y = 1;" },
+        // Multiple leading stripped statements collapse fully.
+        .{ .src = "type A = number;\ntype B = string;\nconst y = 1;", .want = "const y = 1;" },
+        // A trailing stripped statement leaves no trailing newline.
+        .{ .src = "const a = 1;\ninterface I { x: number }", .want = "const a = 1;" },
+        // Non-stripped statements keep their single separator.
+        .{ .src = "const a = 1;\nconst b = 2;", .want = "const a = 1;\nconst b = 2;" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
 }
 
 test "emit: number literal" {
