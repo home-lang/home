@@ -788,7 +788,7 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     var new_args = std.ArrayList([:0]const u8).empty;
     defer new_args.deinit(allocator);
 
-    try new_args.append(allocator, try allocator.dupeZ(u8, "--fix"));
+    try new_args.append(allocator, try home_rt.dupeZ(allocator, u8, "--fix"));
     for (args) |arg| {
         try new_args.append(allocator, arg);
     }
@@ -855,7 +855,7 @@ fn fixCommand(allocator: std.mem.Allocator, target: []const u8) !void {
 
     std.debug.print("{s}Fixing {d} Home file(s)...{s}\n\n", .{ Color.Blue.code(), files.items.len, Color.Reset.code() });
     for (files.items) |file| {
-        const file_arg = try allocator.dupeZ(u8, file);
+        const file_arg = try home_rt.dupeZ(allocator, u8, file);
         defer allocator.free(file_arg);
         try fmtCommand(allocator, &.{file_arg});
     }
@@ -1913,7 +1913,7 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
     var args = std.mem.zeroes(home_rt.schema.api.TransformOptions);
     args.disable_hmr = true;
     args.target = home_rt.schema.api.Target.bun;
-    args.absolute_working_dir = allocator.dupeZ(u8, cwd) catch null;
+    args.absolute_working_dir = home_rt.dupeZ(allocator, u8, cwd) catch null;
 
     // Build the preload list and WRITE any temp preload file to disk BEFORE the
     // VM (and its resolver) is initialized. `bun -e`/`--eval` exposes the node
@@ -5359,7 +5359,7 @@ fn collectProjectDependencies(allocator: std.mem.Allocator) !std.ArrayList(Depen
 }
 
 fn pkgWhy(allocator: std.mem.Allocator, name: []const u8) !void {
-    const name_z = try allocator.dupeZ(u8, name);
+    const name_z = try home_rt.dupeZ(allocator, u8, name);
     defer allocator.free(name_z);
     if (try runPantryPassthrough(allocator, "why", &.{name_z})) return;
 

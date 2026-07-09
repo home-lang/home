@@ -11243,7 +11243,9 @@ pub const Interpreter = struct {
                 std.debug.print("env! expects string argument\n", .{});
                 return error.TypeMismatch;
             }
-            const name_z = try self.arena.allocator().dupeZ(u8, name_val.String);
+            const name_src = name_val.String;
+            const name_z = try self.arena.allocator().allocSentinel(u8, name_src.len, 0);
+            @memcpy(name_z, name_src);
             if (comptime native_os != .windows and native_os != .linux) {
                 if (std.c.getenv(name_z)) |val_ptr| {
                     return Value{ .String = std.mem.span(val_ptr) };

@@ -252,7 +252,7 @@ pub const Snapshots = struct {
 
             // 2. load file text
             const test_file = Jest.runner.?.files.get(file_id);
-            const test_filename = try arena.dupeZ(u8, test_file.source.path.text);
+            const test_filename = try bun.dupeZ(arena, u8, test_file.source.path.text);
 
             const fd = switch (bun.sys.open(test_filename, bun.O.RDWR, 0o644)) {
                 .result => |r| r,
