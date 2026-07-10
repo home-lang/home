@@ -6,6 +6,14 @@ const std = @import("std");
 const core = @import("../core.zig");
 const builtin = @import("builtin");
 
+/// Null-terminated dupe. std has no `Allocator.dupeZ` method (Home's `dupeZ` is
+/// a free function this package doesn't import); frees with `allocator.free`.
+fn allocDupeZ(a: std.mem.Allocator, s: []const u8) std.mem.Allocator.Error![:0]u8 {
+    const z = try a.allocSentinel(u8, s.len, 0);
+    @memcpy(z, s);
+    return z;
+}
+
 // ============================================================================
 // C FFI Bindings to VA-API (libva)
 // ============================================================================
@@ -284,7 +292,7 @@ pub const VADevice = struct {
         }
 
         // Open DRM device
-        const path_z = try allocator.dupeZ(u8, device_path);
+        const path_z = try allocDupeZ(allocator, device_path);
         defer allocator.free(path_z);
 
         const drm_fd = open(path_z.ptr, O_RDWR);

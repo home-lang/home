@@ -7,6 +7,14 @@ const core = @import("../core/frame.zig");
 
 pub const VideoFrame = core.VideoFrame;
 
+/// Null-terminated dupe. std has no `Allocator.dupeZ` method (Home's `dupeZ` is
+/// a free function this package doesn't import); frees with `allocator.free`.
+fn allocDupeZ(a: std.mem.Allocator, s: []const u8) std.mem.Allocator.Error![:0]u8 {
+    const z = try a.allocSentinel(u8, s.len, 0);
+    @memcpy(z, s);
+    return z;
+}
+
 // ============================================================================
 // Metal C FFI Bindings
 // ============================================================================
@@ -496,7 +504,7 @@ pub const MetalComputePipeline = struct {
         defer CFRelease(library);
 
         // Get function
-        const function_name_z = try device.allocator.dupeZ(u8, function_name);
+        const function_name_z = try allocDupeZ(device.allocator, function_name);
         defer device.allocator.free(function_name_z);
 
         const function_name_ns = NSString_stringWithUTF8String(function_name_z) orelse {

@@ -8,6 +8,14 @@ const types = @import("../../core/types.zig");
 
 pub const VideoFrame = core.VideoFrame;
 
+/// Null-terminated dupe. std has no `Allocator.dupeZ` method (Home's `dupeZ` is
+/// a free function this package doesn't import); frees with `allocator.free`.
+fn allocDupeZ(a: std.mem.Allocator, s: []const u8) std.mem.Allocator.Error![:0]u8 {
+    const z = try a.allocSentinel(u8, s.len, 0);
+    @memcpy(z, s);
+    return z;
+}
+
 // ============================================================================
 // x264 C FFI Bindings
 // ============================================================================
@@ -452,12 +460,12 @@ pub const X264Encoder = struct {
         var param: x264_param_t = undefined;
 
         // Set defaults with preset and tune
-        const preset_z = try allocator.dupeZ(u8, config.preset);
+        const preset_z = try allocDupeZ(allocator, config.preset);
         defer allocator.free(preset_z);
         const tune_z = if (config.tune.len > 0)
-            try allocator.dupeZ(u8, config.tune)
+            try allocDupeZ(allocator, config.tune)
         else
-            try allocator.dupeZ(u8, "");
+            try allocDupeZ(allocator, "");
         defer allocator.free(tune_z);
 
         const ret = x264_param_default_preset(&param, preset_z.ptr, tune_z.ptr);
@@ -516,7 +524,7 @@ pub const X264Encoder = struct {
         param.b_annexb = 1; // Annex B format (start codes)
 
         // Apply profile
-        const profile_z = try allocator.dupeZ(u8, config.profile);
+        const profile_z = try allocDupeZ(allocator, config.profile);
         defer allocator.free(profile_z);
 
         const profile_ret = x264_param_apply_profile(&param, profile_z.ptr);
