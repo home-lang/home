@@ -42,13 +42,14 @@ pub const S3Error = struct {
     code: []const u8,
     message: []const u8,
 
-    pub fn toJS(_: S3Error, _: *@import("home").jsc.JSGlobalObject) @import("home").jsc.JSValue {
-        return .zero;
-    }
-
-    pub fn toJSWithAsyncStack(this: S3Error, global: *@import("home").jsc.JSGlobalObject, _: ?[]const u8, _: *@import("home").jsc.JSPromise) @import("home").jsc.JSValue {
-        return this.toJS(global);
-    }
+    // The `*JSGlobalObject`-taking variants live in the JSC bridge layer
+    // (`runtime/webcore/s3/error_jsc.zig`), which now exists. Aliasing to them
+    // (Bun's exact shape) makes `err.toJS(global, path)` build a real
+    // ERR_S3_* error instance instead of returning `.zero` — the stub caused
+    // a null JSValue to flow into the stream error path and trip the
+    // exception-presence assertion (S3 stream error with no credentials).
+    pub const toJS = @import("../runtime/webcore/s3/error_jsc.zig").s3ErrorToJS;
+    pub const toJSWithAsyncStack = @import("../runtime/webcore/s3/error_jsc.zig").s3ErrorToJSWithAsyncStack;
 };
 
 test "getSignErrorMessage maps known errors" {
