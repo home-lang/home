@@ -2325,7 +2325,10 @@ pub const Printer = struct {
             }
             if (f.flags.is_generator and !downlevel_generator and !downlevel_async_gen) try self.write("*");
             if (f.name != hir_mod.none_node_id) {
-                try self.printExpression(f.name);
+                // A method name can be a string key (`class C { "a-b"() {} }`),
+                // which the parser stores as an identifier holding the raw text;
+                // quote it when it isn't a valid identifier so it stays valid JS.
+                try self.printObjectKey(f.name);
             }
         }
         try self.write("(");
@@ -10571,6 +10574,23 @@ test "emit: stripped type-only statements leave no blank line" {
         defer T.allocator.free(out);
         try T.expectEqualStrings(c.want, out);
     }
+}
+
+test "emit: string-key methods quote non-identifier names" {
+    // A class method with a non-identifier string name must stay quoted
+    // (old code emitted the invalid `a-b() {}`).
+    const c1 = try emit("class C { \"a-b\"() {} }");
+    defer T.allocator.free(c1);
+    try T.expect(std.mem.indexOf(u8, c1, "\"a-b\"() {}") != null);
+    try T.expect(std.mem.indexOf(u8, c1, " a-b(") == null);
+    // Object-literal method too.
+    const o1 = try emit("const o = { \"a-b\"() {} };");
+    defer T.allocator.free(o1);
+    try T.expect(std.mem.indexOf(u8, o1, "\"a-b\"() {}") != null);
+    // A valid-identifier method name stays unquoted.
+    const c2 = try emit("class C { m() {} }");
+    defer T.allocator.free(c2);
+    try T.expect(std.mem.indexOf(u8, c2, "m() {}") != null);
 }
 
 test "emit: object property key unquotes only valid identifiers" {
