@@ -403,6 +403,17 @@ fn isValidPropertyIdentifier(name: []const u8) bool {
     return true;
 }
 
+/// Whether `name` is a bare numeric property key (`1`, `2.5`, `1e5`) that can be
+/// emitted unquoted. A numeric key is stored as an identifier holding the source
+/// number text; Home preserves that source form (like its numeric literals), so
+/// `parseFloat`-ability is the test. Excludes signed and `a-b`/`0a`-style keys.
+fn isNumericPropertyKey(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (name[0] == '+' or name[0] == '-') return false;
+    _ = std.fmt.parseFloat(f64, name) catch return false;
+    return true;
+}
+
 pub const Printer = struct {
     gpa: std.mem.Allocator,
     hir: *const Hir,
@@ -10096,7 +10107,7 @@ pub const Printer = struct {
     fn printObjectKey(self: *Printer, key: NodeId) !void {
         if (self.hir.kindOf(key) == .identifier) {
             const name = self.interner.get(hir_mod.identifierOf(self.hir, key).name);
-            if (isValidPropertyIdentifier(name)) {
+            if (isValidPropertyIdentifier(name) or isNumericPropertyKey(name)) {
                 try self.write(name);
             } else {
                 try self.printQuotedString(name);
@@ -10571,8 +10582,11 @@ test "emit: object property key unquotes only valid identifiers" {
         // A non-identifier string key must stay quoted — the old code emitted
         // the invalid `{ a-b: 1 }`.
         .{ .src = "const o = { \"a-b\": 1 };", .want = "const o = { \"a-b\": 1 };" },
-        // A digit-leading key can't unquote.
+        // A digit-leading non-numeric key can't unquote.
         .{ .src = "const o = { \"0a\": 1 };", .want = "const o = { \"0a\": 1 };" },
+        // Numeric keys stay unquoted (must not regress to `"1"`).
+        .{ .src = "const o = { 1: 1, 2.5: 2 };", .want = "const o = { 1: 1, 2.5: 2 };" },
+        .{ .src = "const o = { 0: 1 };", .want = "const o = { 0: 1 };" },
         // A plain identifier key is unchanged.
         .{ .src = "const o = { foo: 1 };", .want = "const o = { foo: 1 };" },
     };
