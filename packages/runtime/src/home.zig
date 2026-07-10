@@ -6157,8 +6157,14 @@ pub const S3 = struct {
         return .zero;
     }
 
-    pub fn readableStream(_: *S3Credentials, _: []const u8, _: usize, _: ?usize, _: ?[]const u8, _: bool, _: *jsc.JSGlobalObject) JSError!jsc.JSValue {
-        return .zero;
+    // Delegate to the real client (this `S3` namespace is otherwise a
+    // Phase-12 stub). The `.zero`-returning stub made `Blob.stream()` on an
+    // S3 file return an empty JSValue with no exception, tripping
+    // `assertExceptionPresenceMatches` in the host-fn wrapper. For the
+    // missing-credentials path the real impl rejects cleanly before any HMAC
+    // signing (which is still stubbed), so no other S3 wiring is required.
+    pub fn readableStream(this: *S3Credentials, s3_path: []const u8, offset: usize, size: ?usize, proxy_url: ?[]const u8, request_payer: bool, globalThis: *jsc.JSGlobalObject) JSError!jsc.JSValue {
+        return @import("runtime/webcore/s3/client.zig").readableStream(this, s3_path, offset, size, proxy_url, request_payer, globalThis);
     }
 
     pub fn stat(_: *S3Credentials, _: []const u8, _: *const fn (S3StatResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
