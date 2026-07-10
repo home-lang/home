@@ -28,6 +28,7 @@ pub const isOnCharBoundary = @import("string/immutable.zig").isOnCharBoundary;
 pub const trimLeadingChar = @import("string/immutable.zig").trimLeadingChar;
 pub const getLinesInText = @import("string/immutable.zig").getLinesInText;
 pub const startsWithCaseInsensitiveAscii = @import("string/immutable.zig").startsWithCaseInsensitiveAscii;
+pub const containsCaseInsensitiveASCII = @import("string/immutable.zig").containsCaseInsensitiveASCII;
 pub const splitFirst = @import("string/immutable.zig").splitFirst;
 pub const splitFirstWithExpected = @import("string/immutable.zig").splitFirstWithExpected;
 pub const utf8ByteSequenceLengthUnsafe = @import("string/immutable.zig").utf8ByteSequenceLengthUnsafe;
