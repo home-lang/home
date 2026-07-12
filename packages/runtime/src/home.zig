@@ -3440,6 +3440,25 @@ pub const io = struct {
             try this.list.appendSlice(bytes);
         }
 
+        // Ported from io/PipeWriter.zig StreamBuffer (identical field layout) so
+        // the S3 multipart uploader can buffer latin1/utf16 chunks. See #66.
+        pub fn writeLatin1(this: *StreamBuffer, buffer: []const u8, comptime check_ascii: bool) OOM!void {
+            if (comptime check_ascii) {
+                if (strings.isAllASCII(buffer)) {
+                    return this.write(buffer);
+                }
+            }
+            var byte_list = ByteList.moveFromList(&this.list);
+            defer this.list = byte_list.moveToListManaged(this.list.allocator);
+            _ = try byte_list.writeLatin1(this.list.allocator, buffer);
+        }
+
+        pub fn writeUTF16(this: *StreamBuffer, buffer: []const u16) OOM!void {
+            var byte_list = ByteList.moveFromList(&this.list);
+            defer this.list = byte_list.moveToListManaged(this.list.allocator);
+            _ = try byte_list.writeUTF16(this.list.allocator, buffer);
+        }
+
         pub fn writeAssumeCapacity(this: *StreamBuffer, bytes: []const u8) void {
             this.list.appendSliceAssumeCapacity(bytes);
         }
@@ -6135,7 +6154,7 @@ pub const S3 = struct {
     pub const S3StatResult = S3SimpleRequest.S3StatResult;
     pub const S3ListObjectsResult = S3SimpleRequest.S3ListObjectsResult;
     pub const S3ListObjectsOptions = S3ListObjects.S3ListObjectsOptions;
-    pub const MultiPartUpload = opaque {};
+    pub const MultiPartUpload = @import("runtime/webcore/s3/multipart.zig").MultiPartUpload;
     pub const S3HttpDownloadStreamingTask = opaque {
         pub fn onResponse(_: *S3HttpDownloadStreamingTask) void {}
     };
@@ -6147,14 +6166,16 @@ pub const S3 = struct {
 
     pub fn downloadSlice(_: *S3Credentials, _: []const u8, _: usize, _: ?usize, _: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
 
-    pub fn upload(_: *S3Credentials, _: []const u8, _: []const u8, _: ?[]const u8, _: ?[]const u8, _: ?[]const u8, _: ?ACL, _: ?[]const u8, _: ?StorageClass, _: bool, _: *const fn (S3UploadResult, *anyopaque) JSTerminated!void, _: *anyopaque) JSTerminated!void {}
-
-    pub fn uploadStream(_: *S3Credentials, _: []const u8, _: jsc.WebCore.ReadableStream, _: *jsc.JSGlobalObject, _: MultiPartUploadOptions, _: ?ACL, _: ?StorageClass, _: ?[]const u8, _: ?[]const u8, _: ?[]const u8, _: ?[]const u8, _: bool, _: ?*const fn (S3UploadResult, *anyopaque) void, _: *anyopaque) JSError!jsc.JSValue {
-        return .zero;
+    pub fn upload(this: *S3Credentials, s3_path: []const u8, content: []const u8, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, acl: ?ACL, proxy_url: ?[]const u8, storage_class: ?StorageClass, request_payer: bool, cb: *const fn (S3UploadResult, *anyopaque) JSTerminated!void, cb_ctx: *anyopaque) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").upload(this, s3_path, content, content_type, content_disposition, content_encoding, acl, proxy_url, storage_class, request_payer, cb, cb_ctx);
     }
 
-    pub fn writableStream(_: *S3Credentials, _: []const u8, _: *jsc.JSGlobalObject, _: MultiPartUploadOptions, _: ?[]const u8, _: ?[]const u8, _: ?[]const u8, _: ?[]const u8, _: ?StorageClass, _: bool) JSError!jsc.JSValue {
-        return .zero;
+    pub fn uploadStream(this: *S3Credentials, s3_path: []const u8, readable_stream: jsc.WebCore.ReadableStream, globalThis: *jsc.JSGlobalObject, opts: MultiPartUploadOptions, acl: ?ACL, storage_class: ?StorageClass, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, proxy: ?[]const u8, request_payer: bool, cb: ?*const fn (S3UploadResult, *anyopaque) void, cb_ctx: *anyopaque) JSError!jsc.JSValue {
+        return @import("runtime/webcore/s3/client.zig").uploadStream(this, s3_path, readable_stream, globalThis, opts, acl, storage_class, content_type, content_disposition, content_encoding, proxy, request_payer, cb, cb_ctx);
+    }
+
+    pub fn writableStream(this: *S3Credentials, s3_path: []const u8, globalThis: *jsc.JSGlobalObject, opts: MultiPartUploadOptions, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, proxy: ?[]const u8, storage_class: ?StorageClass, request_payer: bool) JSError!jsc.JSValue {
+        return @import("runtime/webcore/s3/client.zig").writableStream(this, s3_path, globalThis, opts, content_type, content_disposition, content_encoding, proxy, storage_class, request_payer);
     }
 
     // Delegate to the real client (this `S3` namespace is otherwise a

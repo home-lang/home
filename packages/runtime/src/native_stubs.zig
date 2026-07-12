@@ -32,7 +32,8 @@ fn abortingPanic(_: [*]u8, _: usize) callconv(.c) noreturn {
 comptime {
     @export(&abortingPanic, .{ .name = "Bun__crashHandler" });
     @export(&noopInt, .{ .name = "Bun__doesMacOSVersionSupportSendRecvMsgX" });
-    @export(&noopSize, .{ .name = "NetworkSink__memoryCost" });
+    // NetworkSink__memoryCost now has its real export (streams.zig NetworkSink,
+    // force-referenced once the S3 write path un-stub links the real uploader).
     @export(&noopBool, .{ .name = "Bun__CryptoHasherExtern__isXof" });
     @export(&noopBool, .{ .name = "Bun__streamIterEnabled" });
     // Bun object sets differ on whether workaround-missing-symbols.cpp.o
@@ -91,16 +92,10 @@ comptime {
         "CrashHandler__unsupportedUVFunction",
         "CryptoClass__finalize",
         "FileSink__assertLive",
-        "NetworkSink__close",
-        "NetworkSink__construct",
-        "NetworkSink__end",
-        "NetworkSink__endWithSink",
-        "NetworkSink__finalize",
-        "NetworkSink__flush",
-        "NetworkSink__getInternalFd",
-        "NetworkSink__start",
-        "NetworkSink__updateRef",
-        "NetworkSink__write",
+        // NetworkSink__* now have their real exports (streams.zig NetworkSink),
+        // pulled in once the S3 write path un-stub (home.zig S3.uploadStream/
+        // writableStream → real client) links the real uploader/sink. Keeping
+        // the noops here would collide with the real strong exports.
         // ResolvePath__joinAbsStringBufCurrentPlatformBunString +
         // Resolver__nodeModulePaths{ForJS,JSValue} now have their real exports in
         // jsc/resolve_path_jsc.zig + jsc/resolver_jsc.zig (force-linked from
