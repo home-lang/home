@@ -6220,14 +6220,10 @@ pub const S3 = struct {
     }
 };
 
-pub const hmac = struct {
-    pub const Algorithm = enum { sha256 };
-
-    pub fn generate(_: []const u8, _: []const u8, _: Algorithm, out: []u8) ?[]const u8 {
-        @memset(out, 0);
-        return out[0..@min(out.len, 32)];
-    }
-};
+// Real HMAC (pure std.crypto, no external deps — already used by csrf.zig).
+// Was a zero-filling stub, which made AWS SigV4 signatures all-zero so every
+// authenticated S3 request failed the signature check. Mirrors bun.zig.
+pub const hmac = @import("sha_hmac/hmac.zig");
 
 // ---- src/errno/ --------------------------------------------------------
 // Seventh-wave port batch (2026-05-18). POSIX errno tables per platform.
