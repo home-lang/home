@@ -73,13 +73,16 @@ pub fn parse(possibly_encoded_pathname_: string) !URLPath {
         decoded_pathname = possibly_encoded_pathname[0..try PercentEncoding.decodeFaultTolerantSlice(possibly_encoded_pathname, clone, &needs_redirect, true)];
     }
 
-    var question_mark_i: i16 = -1;
-    var period_i: i16 = -1;
+    // i32 (not i16): these index into the pathname, which is caller-controlled
+    // (e.g. a Bun.serve request path). An i16 index overflows at 32767 bytes,
+    // so a long path would trip the @intCast below and crash the parse.
+    var question_mark_i: i32 = -1;
+    var period_i: i32 = -1;
 
-    var first_segment_end: i16 = std.math.maxInt(i16);
-    var last_slash: i16 = -1;
+    var first_segment_end: i32 = std.math.maxInt(i32);
+    var last_slash: i32 = -1;
 
-    var i: i16 = @as(i16, @intCast(decoded_pathname.len)) - 1;
+    var i: i32 = @as(i32, @intCast(decoded_pathname.len)) - 1;
 
     while (i >= 0) : (i -= 1) {
         const c = decoded_pathname[@as(usize, @intCast(i))];
