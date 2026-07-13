@@ -20,7 +20,11 @@ pub fn setOffsetFromStart(this: @This(), offset: usize) void {
 }
 
 pub fn ensureCapacity(this: @This(), length: usize) bool {
-    return this.buffer.len >= (this.offset.* + length);
+    // offset + length can overflow usize on a hostile packet, wrapping small and
+    // passing the bounds check; use a checked add so overflow fails closed.
+    const end, const overflow = @addWithOverflow(this.offset.*, length);
+    if (overflow != 0) return false;
+    return this.buffer.len >= end;
 }
 
 pub fn init(buffer: []const u8, offset: *usize, message_start: *usize) NewReader(StackReader) {
