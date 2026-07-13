@@ -113,9 +113,11 @@ pub const URL = struct {
     }
 
     pub fn s3Path(this: *const URL) string {
-        // we need to remove protocol if exists and ignore searchParams, should be host + pathname
-        const href = if (this.protocol.len > 0 and this.href.len > this.protocol.len + 2) this.href[this.protocol.len + 2 ..] else this.href;
-        return href[0 .. href.len - (this.search.len + this.hash.len)];
+        // Remove the protocol if present; return host + pathname. The previous
+        // `href.len - (search.len + hash.len)` trim underflowed (usize) when the
+        // parsed search/hash lengths exceeded the protocol-stripped href,
+        // slicing out of bounds; upstream drops the trim entirely.
+        return if (this.protocol.len > 0 and this.href.len > this.protocol.len + 2) this.href[this.protocol.len + 2 ..] else this.href;
     }
 
     pub fn displayHost(this: *const URL) bun.fmt.HostFormatter {
