@@ -397,7 +397,21 @@ pub const FormData = struct {
                         }
                     }
                 } else if (value.len > 0 and field.content_type.isEmpty() and strings.eqlCaseInsensitiveASCII(key, "content-type", true)) {
-                    field.content_type = subslicer.sub(strings.trim(value, "; \t")).value();
+                    const trimmed = strings.trim(value, "; \t");
+                    // Only an exact "\r\n" terminates a header line, so a bare
+                    // CR/LF can survive in this value and be reflected into
+                    // outgoing request headers. Accept it only if every byte is
+                    // printable ASCII (HTAB allowed).
+                    var ct_ok = true;
+                    for (trimmed) |b| {
+                        if (b != '\t' and (b < 0x20 or b > 0x7E)) {
+                            ct_ok = false;
+                            break;
+                        }
+                    }
+                    if (ct_ok) {
+                        field.content_type = subslicer.sub(trimmed).value();
+                    }
                 }
             }
 
