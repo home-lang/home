@@ -2249,7 +2249,9 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             if (needs_content_type and
                 // do not insert the content type if it is the fallback value
                 // we may not know the content-type when streaming
-                (!this.blob.isDetached() or content_type.value.ptr != MimeType.other.value.ptr))
+                (!this.blob.isDetached() or content_type.value.ptr != MimeType.other.value.ptr) and
+                // reject header-injection bytes (CR/LF/NUL) in the content-type value
+                std.mem.indexOfAny(u8, content_type.value, "\r\n\x00") == null)
             {
                 resp.writeHeader("content-type", content_type.value);
             }
