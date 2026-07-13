@@ -12,6 +12,7 @@ const NativeCodegen = codegen_mod.NativeCodegen;
 const Aarch64NativeCodegen = codegen_mod.Aarch64NativeCodegen;
 const TypeRegistry = codegen_mod.TypeRegistry;
 const HomeKernelCodegen = codegen_mod.HomeKernelCodegen;
+const JSEntrypointLLVM = codegen_mod.JSEntrypointLLVM;
 const TypeChecker = @import("types").TypeChecker;
 const comptime_mod = @import("comptime");
 const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
@@ -169,7 +170,7 @@ fn printUsage() void {
         \\                     Compare two .d.hm declaration files
         \\  size [path]        Show package/build size report
         \\  run <file|script>  Execute an Home, JS, or TS file (or package.json script)
-        \\  build <file>       Compile an Home file to a native binary
+        \\  build <file>       Compile a Home, JS, or TS entrypoint to a native binary
         \\  watch <file>       Watch file for changes and auto-recompile (hot reload)
         \\  test / t [opts]    Run tests (auto-routes to JS runtime when package.json is present)
         \\  profile <file>     Profile memory allocations during compilation
@@ -229,6 +230,7 @@ fn printUsage() void {
         \\  home ci
         \\  home run hello.home
         \\  home build hello.home -o hello
+        \\  home build server.ts -o server
         \\  home test src/
         \\
         \\  home pkg init
@@ -2354,7 +2356,160 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: [
     std.debug.print("\n{s}Success:{s} Program completed\n", .{ Color.Green.code(), Color.Reset.code() });
 }
 
+fn runNativeBuildTool(argv: []const []const u8, tool_name: []const u8) !void {
+    var child = std.process.spawn(g_io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| {
+        std.debug.print("{s}Error:{s} failed to start {s}: {s}\n", .{
+            Color.Red.code(),
+            Color.Reset.code(),
+            tool_name,
+            @errorName(err),
+        });
+        return err;
+    };
+
+    const term = try child.wait(g_io);
+    switch (term) {
+        .exited => |code| {
+            if (code != 0) {
+                std.debug.print("{s}Error:{s} {s} exited with status {d}\n", .{
+                    Color.Red.code(),
+                    Color.Reset.code(),
+                    tool_name,
+                    code,
+                });
+                return error.NativeBuildToolFailed;
+            }
+        },
+        else => {
+            std.debug.print("{s}Error:{s} {s} terminated unexpectedly\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                tool_name,
+            });
+            return error.NativeBuildToolFailed;
+        },
+    }
+}
+
+fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8) !void {
+    if (!build_options.enable_jsc) {
+        std.debug.print(
+            "{s}Error:{s} JS/TS binaries require a Home compiler built with JavaScriptCore (-Denable_jsc=true)\n",
+            .{ Color.Red.code(), Color.Reset.code() },
+        );
+        return error.JavaScriptCoreDisabled;
+    }
+
+    if ((builtin.os.tag != .macos and builtin.os.tag != .linux) or
+        (builtin.cpu.arch != .aarch64 and builtin.cpu.arch != .x86_64))
+    {
+        std.debug.print("{s}Error:{s} LLVM JS/TS binaries currently support macOS/Linux on arm64 or x86-64\n", .{
+            Color.Red.code(),
+            Color.Reset.code(),
+        });
+        return error.UnsupportedHost;
+    }
+
+    const source_path = try Io.Dir.cwd().realPathFileAlloc(g_io, file_path, allocator);
+    defer allocator.free(source_path);
+
+    var executable_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const executable_path_len = try std.process.executablePath(g_io, &executable_path_buffer);
+    const executable_path = executable_path_buffer[0..executable_path_len];
+
+    var default_output: ?[]u8 = null;
+    defer if (default_output) |path| allocator.free(path);
+    const out_path = output_path orelse blk: {
+        default_output = try JSEntrypointLLVM.defaultOutputPath(allocator, file_path);
+        break :blk default_output.?;
+    };
+
+    if (std.fs.path.dirname(out_path)) |parent| {
+        if (parent.len > 0) try Io.Dir.cwd().createDirPath(g_io, parent);
+    }
+
+    const build_dir = try std.fmt.allocPrint(allocator, ".home-cache/llvm-js-{x}", .{getMonotonicNs()});
+    defer allocator.free(build_dir);
+    Io.Dir.cwd().deleteTree(g_io, build_dir) catch {};
+    try Io.Dir.cwd().createDirPath(g_io, build_dir);
+    defer Io.Dir.cwd().deleteTree(g_io, build_dir) catch {};
+
+    const ir_path = try std.fmt.allocPrint(allocator, "{s}/launcher.ll", .{build_dir});
+    defer allocator.free(ir_path);
+    const launcher_object_path = try std.fmt.allocPrint(allocator, "{s}/launcher.o", .{build_dir});
+    defer allocator.free(launcher_object_path);
+    const payload_assembly_path = try std.fmt.allocPrint(allocator, "{s}/payload.s", .{build_dir});
+    defer allocator.free(payload_assembly_path);
+    const payload_object_path = try std.fmt.allocPrint(allocator, "{s}/payload.o", .{build_dir});
+    defer allocator.free(payload_object_path);
+
+    const llvm_ir = try JSEntrypointLLVM.generateLauncherIR(allocator, file_path);
+    defer allocator.free(llvm_ir);
+    const payload_assembly = try JSEntrypointLLVM.generatePayloadAssembly(
+        allocator,
+        executable_path,
+        source_path,
+        builtin.os.tag,
+    );
+    defer allocator.free(payload_assembly);
+
+    try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = ir_path, .data = llvm_ir });
+    try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = payload_assembly_path, .data = payload_assembly });
+
+    std.debug.print("{s}Building LLVM JS/TS executable:{s} {s}\n", .{
+        Color.Blue.code(),
+        Color.Reset.code(),
+        file_path,
+    });
+    std.debug.print("{s}Generating LLVM launcher...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+
+    try runNativeBuildTool(
+        &.{ "clang", "-O2", "-Wno-override-module", "-c", "-x", "ir", ir_path, "-o", launcher_object_path },
+        "LLVM IR compiler",
+    );
+    try runNativeBuildTool(&.{ "clang", "-c", payload_assembly_path, "-o", payload_object_path }, "Clang assembler");
+
+    std.debug.print("{s}Linking embedded Home runtime and entrypoint...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    runNativeBuildTool(&.{ "clang", launcher_object_path, payload_object_path, "-o", out_path }, "LLVM linker") catch |err| {
+        Io.Dir.cwd().deleteFile(g_io, out_path) catch {};
+        return err;
+    };
+
+    adhocCodesign(allocator, out_path) catch |err| {
+        Io.Dir.cwd().deleteFile(g_io, out_path) catch {};
+        std.debug.print("{s}Error:{s} failed to sign JS/TS executable: {s}\n", .{
+            Color.Red.code(),
+            Color.Reset.code(),
+            @errorName(err),
+        });
+        return err;
+    };
+
+    std.debug.print("\n{s}Success:{s} Built LLVM executable {s}\n", .{
+        Color.Green.code(),
+        Color.Reset.code(),
+        out_path,
+    });
+    std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
+}
+
 fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8, kernel_mode: bool) !void {
+    if (JSEntrypointLLVM.isSupportedEntrypoint(file_path)) {
+        if (kernel_mode) {
+            std.debug.print("{s}Error:{s} --kernel is only supported for Home source files\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+            });
+            return error.UnsupportedKernelEntrypoint;
+        }
+        return buildJsLikeCommand(allocator, file_path, output_path);
+    }
+
     // Read the file
     const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });

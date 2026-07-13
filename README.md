@@ -117,6 +117,16 @@ still delegates to pantry `bun`, and the bun-corpus gate still routes
 through the bootstrap harness — wiring the realm into those is the next
 convergence step (see [`docs/BUN_PARITY_PLAN.md`](./docs/BUN_PARITY_PLAN.md)).
 
+`home build app.ts -o app` (and the equivalent JS/JSX/TSX module extensions)
+now creates a self-contained host executable through LLVM. LLVM compiles the
+native launcher, while the binary embeds the entry source and Home's own
+JavaScriptCore runtime so JavaScript semantics remain faithful to the runtime.
+Arguments and exit status are forwarded to the entrypoint. This first slice is
+single-entrypoint; bundling imported files and cross-target builds remain part
+of the standalone module-graph work. Native JS/TS builds currently require a
+JavaScriptCore-enabled Home compiler plus LLVM/Clang on `PATH`, and are
+available on arm64 and x86-64 macOS/Linux hosts.
+
 | Measurement | Coverage | % |
 |---|---|---|
 | **Runtime Zig source files present** | **1,430 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
@@ -285,7 +295,7 @@ cross-file interner search.
 | x86-64 native codegen | 🚧 Substantial (primary target) |
 | arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped) |
 | WebAssembly codegen | 🚧 Stub |
-| LLVM backend | 🚧 In progress |
+| LLVM backend | 🚧 JS/TS native launcher shipped; Home AST lowering in progress |
 | ELF object emission | 🚧 In progress |
 | Mach-O object emission | 🚧 In progress |
 
@@ -304,7 +314,7 @@ cross-file interner search.
 |---|---|
 | `home check` (type-check) | ✅ Stable |
 | `home run` (interpret) | ✅ Stable |
-| `home build` (native binary) | 🚧 In progress |
+| `home build` (native binary) | 🚧 Home native codegen + self-contained LLVM JS/TS entrypoints |
 | `home test` runner | 🚧 In progress |
 | Formatter | 🚧 In progress |
 | Linter | 🚧 In progress |
