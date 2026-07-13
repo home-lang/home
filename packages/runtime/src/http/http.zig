@@ -1015,6 +1015,10 @@ pub fn buildRequest(this: *HTTPClient, body_len: usize) picohttp.Request {
             hashHeaderConst(chunked_encoded_header.name) => {
                 // We don't want to override chunked encoding header if it was set by the user
                 if (will_append) add_transfer_encoding = false;
+                // For a fixed-size (non-streaming) body we emit Content-Length; also
+                // forwarding the user's Transfer-Encoding produces a request-smuggling
+                // framing ambiguity, so drop it unless we're actually streaming chunked.
+                if (!this.flags.is_streaming_request_body) continue;
             },
             else => {},
         }
@@ -2600,6 +2604,14 @@ const preallocate_max = 1024 * 1024 * 256;
 pub fn handleResponseBody(this: *HTTPClient, incoming_data: []const u8, is_only_buffer: bool) !bool {
     assert(this.state.transfer_encoding == .identity);
     const content_length = this.state.content_length;
+    // A body longer than Content-Length is a framing violation: the surplus
+    // bytes may belong to a smuggled next response, so this connection must not
+    // go back into the keep-alive pool.
+    if (content_length) |cl| {
+        if (incoming_data.len > cl -| this.state.total_body_received) {
+            this.state.flags.allow_keepalive = false;
+        }
+    }
     // is it exactly as much as we need?
     if (is_only_buffer and content_length != null and incoming_data.len >= content_length.?) {
         try handleResponseBodyFromSinglePacket(this, incoming_data[0..content_length.?]);
