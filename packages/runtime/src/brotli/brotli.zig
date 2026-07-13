@@ -59,6 +59,8 @@ pub const BrotliReaderArrayList = struct {
     state: State = State.Uninitialized,
     total_out: usize = 0,
     total_in: usize = 0,
+    /// Decompression-bomb cap: fail once the output buffer exceeds this size.
+    max_output_size: usize = std.math.maxInt(usize),
     flushOp: BrotliEncoder.Operation,
     finishFlushOp: BrotliEncoder.Operation,
     fullFlushOp: BrotliEncoder.Operation,
@@ -156,6 +158,10 @@ pub const BrotliReaderArrayList = struct {
 
             this.list.items.len += bytes_written;
             this.total_in += bytes_read;
+            if (this.list.items.len > this.max_output_size) {
+                this.state = .Error;
+                return error.BrotliDecompressionError;
+            }
 
             switch (result) {
                 .success => {

@@ -231,6 +231,8 @@ pub const ZstdReaderArrayList = struct {
     state: State = State.Uninitialized,
     total_out: usize = 0,
     total_in: usize = 0,
+    /// Decompression-bomb cap: fail once the output buffer exceeds this size.
+    max_output_size: usize = std.math.maxInt(usize),
 
     // PORT NOTE: upstream `pub const new = bun.TrivialNew(ZstdReaderArrayList);`
     // — re-attaches in Phase 12.2 when home_rt.TrivialNew lands. Callers use
@@ -330,6 +332,10 @@ pub const ZstdReaderArrayList = struct {
             this.list.items.len += bytes_written;
             this.total_in += bytes_read;
             this.total_out += bytes_written;
+            if (this.list.items.len > this.max_output_size) {
+                this.state = .Error;
+                return error.ZstdDecompressionError;
+            }
 
             if (rc == 0) {
                 // Frame is complete

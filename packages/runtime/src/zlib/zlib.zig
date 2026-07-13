@@ -172,6 +172,8 @@ pub const ZlibReaderArrayList = struct {
     zlib: zStream_struct,
     allocator: std.mem.Allocator,
     state: State = State.Uninitialized,
+    /// Decompression-bomb cap: fail once the output buffer exceeds this size.
+    max_output_size: usize = std.math.maxInt(usize),
 
     pub fn deinit(this: *ZlibReader) void {
         var allocator = this.allocator;
@@ -276,6 +278,10 @@ pub const ZlibReaderArrayList = struct {
                 const initial = this.list.items.len;
                 try this.list.ensureUnusedCapacity(this.list_allocator, 4096);
                 this.list.expandToCapacity();
+                if (this.list.items.len > this.max_output_size) {
+                    this.state = State.Error;
+                    return error.ZlibError;
+                }
                 this.zlib.next_out = @ptrCast(&this.list.items[initial]);
                 this.zlib.avail_out = @truncate(this.list.items.len -| initial);
             }

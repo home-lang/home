@@ -21,6 +21,11 @@ pub const Decompressor = union(enum) {
     zstd: *zstd.ZstdReaderArrayList,
     none: void,
 
+    /// Decompression-bomb guard for response bodies inflated on the HTTP thread:
+    /// a hostile server must not be able to expand a tiny compressed payload
+    /// into an unbounded allocation.
+    const MAX_DECOMPRESSED_BODY_SIZE: usize = 1024 * 1024 * 1024;
+
     pub fn deinit(this: *Decompressor) void {
         switch (this.*) {
             inline .brotli, .zlib, .zstd => |that| {
@@ -59,6 +64,7 @@ pub const Decompressor = union(enum) {
                             .windowBits = if (encoding == Encoding.gzip) Zlib.MAX_WBITS | 16 else (if (buffer.len > 1 and buffer[0] == 120) 0 else -Zlib.MAX_WBITS),
                         },
                     );
+                    reader.max_output_size = MAX_DECOMPRESSED_BODY_SIZE;
                     this.* = .{ .zlib = reader };
                     return;
                 },
@@ -69,6 +75,7 @@ pub const Decompressor = union(enum) {
                         body_out_str.allocator,
                         .{},
                     );
+                    reader.max_output_size = MAX_DECOMPRESSED_BODY_SIZE;
                     this.* = .{ .brotli = reader };
                     return;
                 },
@@ -79,6 +86,7 @@ pub const Decompressor = union(enum) {
                         body_out_str.allocator,
                         default_allocator,
                     );
+                    reader.max_output_size = MAX_DECOMPRESSED_BODY_SIZE;
                     this.* = .{ .zstd = reader };
                     return;
                 },
