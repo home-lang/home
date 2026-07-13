@@ -174,9 +174,9 @@ pub const BufferReadStream = struct {
 /// Returns true if the symlink is safe (target stays within extraction dir),
 /// false if it would escape (e.g., via ../ traversal or absolute path).
 ///
-/// The check works by resolving the symlink target relative to the symlink's
-/// directory location using a fake root, then checking if the result stays
-/// within that fake root.
+/// The check normalizes `symlink_dir/link_target` as a relative path with
+/// leading `..` preserved; the target is unsafe if the result climbs above the
+/// extraction root.
 fn isSymlinkTargetSafe(symlink_path: []const u8, link_target: [:0]const u8, symlink_join_buf: *?*bun.PathBuffer) bool {
     // Absolute symlink targets are never safe - they could point anywhere
     if (link_target.len > 0 and link_target[0] == '/') {
@@ -186,23 +186,33 @@ fn isSymlinkTargetSafe(symlink_path: []const u8, link_target: [:0]const u8, syml
     // Get the directory containing the symlink
     const symlink_dir = std.fs.path.dirname(symlink_path) orelse "";
 
-    // Use a fake root to resolve the path and check if it escapes
-    const fake_root = "/packages/";
-
     const join_buf = symlink_join_buf.* orelse join_buf: {
         symlink_join_buf.* = bun.path_buffer_pool.get();
         break :join_buf symlink_join_buf.*.?;
     };
 
-    const resolved = bun.path.joinAbsStringBuf(
-        fake_root,
-        join_buf,
-        &.{ symlink_dir, link_target },
-        .posix,
-    );
+    // Normalize `symlink_dir/link_target` as a RELATIVE path. An absolute fake
+    // root cannot be used here: POSIX normalization clamps excess `..` at `/`,
+    // so a target like `../../../packages/x` would normalize back under any
+    // fake root that happens to match a real ancestor directory name.
+    if (symlink_dir.len + 1 + link_target.len >= join_buf.len) {
+        return false;
+    }
+    var written: usize = 0;
+    if (symlink_dir.len > 0) {
+        @memcpy(join_buf[0..symlink_dir.len], symlink_dir);
+        written = symlink_dir.len;
+        join_buf[written] = '/';
+        written += 1;
+    }
+    @memcpy(join_buf[written .. written + link_target.len], link_target);
+    written += link_target.len;
 
-    // If the resolved path doesn't start with our fake root, it escaped
-    return strings.hasPrefix(resolved, fake_root);
+    // In-place normalize (allow_above_root=true preserves leading `..`).
+    const resolved = resolve_path.normalizeStringBufT(u8, join_buf[0..written], join_buf, true, .posix, false);
+
+    // Unsafe if the normalized relative path climbs above the root.
+    return !(std.mem.eql(u8, resolved, "..") or strings.hasPrefixComptime(resolved, "../"));
 }
 
 pub const Archiver = struct {
@@ -676,6 +686,8 @@ pub const Archiver = struct {
 const string = []const u8;
 
 const std = @import("std");
+
+const resolve_path = @import("../paths/resolve_path.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
