@@ -263,6 +263,25 @@ pub const PasswordObject = struct {
         );
     }
 
+    fn parseArgon2Param(encoded: []const u8, key: []const u8) ?u64 {
+        const idx = std.mem.indexOf(u8, encoded, key) orelse return null;
+        const start = idx + key.len;
+        var end = start;
+        while (end < encoded.len and encoded[end] >= '0' and encoded[end] <= '9') end += 1;
+        if (end == start) return null;
+        return std.fmt.parseInt(u64, encoded[start..end], 10) catch null;
+    }
+
+    /// Reject argon2 encoded hashes whose cost parameters are absurdly large before
+    /// handing them to strVerify (which allocates `m` KiB and runs `t` passes).
+    fn argon2ParamsWithinLimits(encoded: []const u8) bool {
+        // `$argon2id$v=19$m=<KiB>,t=<passes>,p=<lanes>$<salt>$<hash>`
+        const m = parseArgon2Param(encoded, "m=") orelse return true; // unparseable → let strVerify reject
+        const t = parseArgon2Param(encoded, "t=") orelse return true;
+        const p = parseArgon2Param(encoded, "p=") orelse return true;
+        return m <= 4 * 1024 * 1024 and t <= 64 * 1024 and p <= 64;
+    }
+
     pub fn verifyWithAlgorithm(
         allocator: std.mem.Allocator,
         password: []const u8,
@@ -271,6 +290,12 @@ pub const PasswordObject = struct {
     ) HashError!bool {
         switch (algorithm) {
             .argon2id, .argon2d, .argon2i => {
+                // Bound the encoded cost parameters before verifying: the hash is
+                // attacker-controllable, and a crafted `$argon2id$...$m=...,t=...,p=...$`
+                // would otherwise force a huge memory/time allocation (DoS).
+                if (!argon2ParamsWithinLimits(previous_hash)) {
+                    return false;
+                }
                 pwhash.argon2.strVerify(previous_hash, password, .{ .allocator = allocator }, cryptoIo()) catch |err| {
                     if (err == error.PasswordVerificationFailed) {
                         return false;
