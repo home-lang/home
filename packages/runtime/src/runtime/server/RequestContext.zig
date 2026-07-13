@@ -75,6 +75,10 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
         request_body: ?*WebCore.Body.Value.HiveRef = null,
         request_body_buf: std.ArrayListUnmanaged(u8) = .empty,
         request_body_content_len: usize = 0,
+        // Running total of bytes forwarded to a ReadableStream-consumed body,
+        // used to enforce maxRequestBodySize on the streamed path (the buffered
+        // path caps request_body_buf directly).
+        request_body_streamed_len: usize = 0,
 
         sink: ?*ResponseStream.JSSink = null,
         byte_stream: ?*jsc.WebCore.ByteStream = null,
@@ -2397,6 +2401,35 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 assert(this.request_body_buf.items.len == 0);
                 vm.eventLoop().enter();
                 defer vm.eventLoop().exit();
+
+                // Enforce maxRequestBodySize on the streamed path: a body
+                // consumed as a ReadableStream (chunked / no Content-Length)
+                // never touches request_body_buf, so the buffered-path cap below
+                // can't see it. Reject the stream with 413 once it overflows.
+                this.request_body_streamed_len +|= chunk.len;
+                if (this.request_body_streamed_len > this.server.?.config.max_request_body_size) {
+                    resp.clearOnData();
+                    this.flags.is_waiting_for_request_body = false;
+
+                    var strong = this.request_body_readable_stream_ref;
+                    this.request_body_readable_stream_ref = .{};
+                    defer strong.deinit();
+                    if (this.request_body) |request_body| {
+                        _ = request_body.unref();
+                        this.request_body = null;
+                    }
+
+                    readable.value.ensureStillAlive();
+                    const js_err = bun.String.static("Request body exceeded maxRequestBodySize").toErrorInstance(globalThis);
+                    readable.ptr.Bytes.onData(.{ .err = .{ .JSValue = js_err } }, bun.default_allocator) catch {};
+
+                    if (this.resp != null and !resp.hasResponded()) {
+                        this.flags.has_written_status = true;
+                        resp.writeStatus("413 Payload Too Large");
+                    }
+                    this.endWithoutBody(comptime !http3);
+                    return;
+                }
 
                 if (!last) {
                     readable.ptr.Bytes.onData(
