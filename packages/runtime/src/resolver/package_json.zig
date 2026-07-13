@@ -2137,21 +2137,44 @@ fn findInvalidSegment(path_: string) ?string {
             path = "";
         }
 
-        switch (segment.len) {
-            1 => {
-                if (strings.eqlComptimeIgnoreLen(segment, ".")) return segment;
-            },
-            2 => {
-                if (strings.eqlComptimeIgnoreLen(segment, "..")) return segment;
-            },
-            "node_modules".len => {
-                if (strings.eqlComptimeIgnoreLen(segment, "node_modules")) return segment;
-            },
-            else => {},
-        }
+        if (isInvalidSegment(segment)) return segment;
     }
 
     return null;
+}
+
+/// Node's PACKAGE_TARGET_RESOLVE rejects ".", "..", and "node_modules" segments
+/// case-insensitively and including percent-encoded variants. Decode the segment
+/// before comparing so spellings like "%2e%2e" or ".%2E" cannot survive the
+/// check only to be decoded into ".." by the caller (a node_modules-escape /
+/// path-traversal vector in package `exports`/`imports` maps).
+fn isInvalidSegment(segment: string) bool {
+    // "node_modules".len is the longest target; anything decoding longer can't match.
+    var decoded: [12]u8 = undefined;
+    var len: usize = 0;
+    var i: usize = 0;
+    while (i < segment.len) {
+        const b = segment[i];
+        var c: u8 = b;
+        if (b == '%' and i + 2 < segment.len) {
+            if (hexDigitValue(segment[i + 1])) |hi| {
+                if (hexDigitValue(segment[i + 2])) |lo| {
+                    c = (hi << 4) | lo;
+                    i += 3;
+                } else i += 1;
+            } else i += 1;
+        } else i += 1;
+
+        if (len == decoded.len) return false;
+        decoded[len] = std.ascii.toLower(c);
+        len += 1;
+    }
+    const d = decoded[0..len];
+    return std.mem.eql(u8, d, ".") or std.mem.eql(u8, d, "..") or std.mem.eql(u8, d, "node_modules");
+}
+
+fn hexDigitValue(c: u8) ?u8 {
+    return std.fmt.charToDigit(c, 16) catch null;
 }
 
 const string = []const u8;
