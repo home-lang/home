@@ -352,8 +352,10 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                                         }
                                     }
                                 }
-                            } else { // char is not >
-                                i += 1;
+                            } else { // no closing '>': the tag is truncated, so the
+                                // rest of the document is malformed — stop instead of
+                                // rescanning it byte by byte (quadratic on hostile input).
+                                i = xml.len;
                             }
                         } else { // char is not <
                             i += 1;
@@ -478,7 +480,9 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                     }
                 }
             } else {
-                i += 1;
+                // Top-level '<' with no closing '>': truncated/malformed document,
+                // stop instead of scanning the remainder byte by byte (quadratic).
+                i = xml.len;
             }
         }
 
