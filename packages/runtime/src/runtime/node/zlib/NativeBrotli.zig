@@ -71,10 +71,29 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
     }
 
     // this does not get gc'd because it is stored in the JS object's `this._writeState`. and the JS object is tied to the native handle as `_handle[owner_symbol]`.
-    const writeResult = arguments[1].asArrayBuffer(globalThis).?.asU32().ptr;
+    // updateWriteResult writes two u32s through this pointer, so the
+    // caller-supplied array must be a Uint32Array with at least 2 elements.
+    const write_result_buf = arguments[1].asArrayBuffer(globalThis) orelse
+        return globalThis.throwInvalidArgumentTypeValue("writeResult", "Uint32Array", arguments[1]);
+    if (write_result_buf.typed_array_type != .Uint32Array)
+        return globalThis.throwInvalidArgumentTypeValue("writeResult", "Uint32Array", arguments[1]);
+    const write_result_slice = write_result_buf.asU32();
+    if (write_result_slice.len < 2) {
+        return globalThis.ERR(.INVALID_ARG_VALUE, "writeResult must be a Uint32Array with at least 2 elements", .{}).throw();
+    }
+    const writeResult = write_result_slice.ptr;
     const writeCallback = try validators.validateFunction(globalThis, "writeCallback", arguments[2]);
 
     this.write_result = writeResult;
+
+    // Validate params (arg[0]) before any native state is initialized so the
+    // error path needs no cleanup. The setParams loop reads u32 elements, so
+    // the element type must actually be Uint32Array.
+    const params_buf = arguments[0].asArrayBuffer(globalThis) orelse
+        return globalThis.throwInvalidArgumentTypeValue("params", "Uint32Array", arguments[0]);
+    if (params_buf.typed_array_type != .Uint32Array)
+        return globalThis.throwInvalidArgumentTypeValue("params", "Uint32Array", arguments[0]);
+    const params_ = params_buf.asU32();
 
     js.writeCallbackSetCached(this_value, globalThis, writeCallback.withAsyncContextIfNeeded(globalThis));
 
@@ -83,8 +102,6 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
         impl.emitError(this, globalThis, this_value, err);
         return .false;
     }
-
-    const params_ = arguments[0].asArrayBuffer(globalThis).?.asU32();
 
     for (params_, 0..) |d, i| {
         // (d == -1) {

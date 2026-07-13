@@ -72,9 +72,20 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
     const memLevel = try validators.validateInt32(globalThis, arguments[2], "memLevel", .{}, null, null);
     const strategy = try validators.validateInt32(globalThis, arguments[3], "strategy", .{}, null, null);
     // this does not get gc'd because it is stored in the JS object's `this._writeState`. and the JS object is tied to the native handle as `_handle[owner_symbol]`.
-    const writeResult = arguments[4].asArrayBuffer(globalThis).?.asU32().ptr;
+    // updateWriteResult writes two u32s through this pointer, so the
+    // caller-supplied array must be a Uint32Array with at least 2 elements.
+    const write_result_buf = arguments[4].asArrayBuffer(globalThis) orelse
+        return globalThis.throwInvalidArgumentTypeValue("writeResult", "Uint32Array", arguments[4]);
+    if (write_result_buf.typed_array_type != .Uint32Array)
+        return globalThis.throwInvalidArgumentTypeValue("writeResult", "Uint32Array", arguments[4]);
+    const write_result_slice = write_result_buf.asU32();
+    if (write_result_slice.len < 2) {
+        return globalThis.ERR(.INVALID_ARG_VALUE, "writeResult must be a Uint32Array with at least 2 elements", .{}).throw();
+    }
+    const writeResult = write_result_slice.ptr;
     const writeCallback = try validators.validateFunction(globalThis, "writeCallback", arguments[5]);
-    const dictionary = if (arguments[6].isUndefined()) null else arguments[6].asArrayBuffer(globalThis).?.byteSlice();
+    const dictionary = if (arguments[6].isUndefined()) null else (arguments[6].asArrayBuffer(globalThis) orelse
+        return globalThis.throwInvalidArgumentTypeValue("dictionary", "Buffer, TypedArray, or DataView", arguments[6])).byteSlice();
 
     this.write_result = writeResult;
     js.writeCallbackSetCached(this_value, globalThis, writeCallback.withAsyncContextIfNeeded(globalThis));

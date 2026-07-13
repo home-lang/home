@@ -73,7 +73,13 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
 
     const writeState = writeState_value.asArrayBuffer(globalThis) orelse return globalThis.throwInvalidArgumentTypeValue("writeState", "Uint32Array", writeState_value);
     if (writeState.typed_array_type != .Uint32Array) return globalThis.throwInvalidArgumentTypeValue("writeState", "Uint32Array", writeState_value);
-    this.write_result = writeState.asU32().ptr;
+    // flushWriteResult writes two u32s through this pointer, so the
+    // caller-supplied array must hold at least 2 elements.
+    const write_state_slice = writeState.asU32();
+    if (write_state_slice.len < 2) {
+        return globalThis.ERR(.INVALID_ARG_VALUE, "writeState must be a Uint32Array with at least 2 elements", .{}).throw();
+    }
+    this.write_result = write_state_slice.ptr;
 
     const write_js_callback = try validators.validateFunction(globalThis, "processCallback", processCallback_value);
     js.writeCallbackSetCached(this_value, globalThis, write_js_callback.withAsyncContextIfNeeded(globalThis));
