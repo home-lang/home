@@ -1824,6 +1824,16 @@ pub const ESModule = struct {
                         log.addNoteFmt("Substituted \"{s}\" for \"*\" in \".{s}\" to get \".{s}\" ", .{ subpath, resolved_target, result });
                     }
 
+                    // Re-validate after substitution: `subpath` is caller-controlled and
+                    // can reintroduce "."/".."/"node_modules" segments the pre-substitution
+                    // check on `resolved_target` could not see (path traversal / escape).
+                    if (findInvalidSegment(result)) |invalid| {
+                        if (r.debug_logs) |log| {
+                            log.addNoteFmt("The substituted target \"{s}\" is invalid because it contains an invalid segment \"{s}\"", .{ result, invalid });
+                        }
+                        return Resolution{ .path = str, .status = .InvalidModuleSpecifier, .debug = .{ .token = target.first_token } };
+                    }
+
                     const status: Status = if (strings.endsWithCharOrIsZeroLength(result, '*') and strings.indexOfChar(result, '*').? == result.len - 1)
                         .ExactEndsWithStar
                     else
