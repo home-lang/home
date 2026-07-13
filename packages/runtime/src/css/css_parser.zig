@@ -5674,7 +5674,10 @@ const Tokenizer = struct {
 
     pub fn consumeChar(this: *Tokenizer) u32 {
         const c = this.nextChar();
-        const len_utf8 = lenUtf8(c);
+        // Clamp to the remaining input: lenUtf8 is derived from the codepoint
+        // value, not the bytes left, so near a truncated multibyte sequence at
+        // EOF the unclamped advance runs `position` past `src.len` → OOB reads.
+        const len_utf8 = @min(lenUtf8(c), this.src.len - this.position);
         this.position += len_utf8;
         // Note that due to the special case for the 4-byte sequence
         // intro, we must use wrapping add here.
