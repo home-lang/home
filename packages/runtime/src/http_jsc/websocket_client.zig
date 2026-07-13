@@ -71,6 +71,11 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
         const MIN_COMPRESS_SIZE = 860;
         // DEFLATE overhead
         const COMPRESSION_OVERHEAD = 4;
+        // Maximum buffered inbound message size (128 MB). Larger frames, or
+        // fragments accumulated across continuation frames, fail the connection
+        // with 1009 (message too big) instead of growing receive_buffer without
+        // bound.
+        const MAX_RECEIVE_MESSAGE_LENGTH: usize = 128 * 1024 * 1024;
 
         const WebSocket = @This();
 
@@ -699,6 +704,11 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                         if (data.len == 0) break;
                     },
                     .need_body => {
+                        if (this.receive_buffer.readableLength() +| receive_body_remain > MAX_RECEIVE_MESSAGE_LENGTH) {
+                            this.terminate(ErrorCode.message_too_big);
+                            terminated = true;
+                            break;
+                        }
                         const to_consume = @min(receive_body_remain, data.len);
 
                         const consumed = this.consume(data[0..to_consume], receive_body_remain, last_receive_data_type, is_final);
