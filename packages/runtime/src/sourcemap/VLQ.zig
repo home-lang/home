@@ -97,9 +97,11 @@ pub const VLQResult = struct {
 const base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 // base64 stores values up to 7 bits
-const base64_lut: [std.math.maxInt(u7)]u8 = brk: {
+// Indexed by a full u7 (0..=127), so the table needs 128 entries; sizing it to
+// maxInt(u7)==127 left index 127 (e.g. byte 0x7F/0xFF) an out-of-bounds read.
+const base64_lut: [std.math.maxInt(u7) + 1]u8 = brk: {
     @setEvalBranchQuota(9999);
-    var bytes: [std.math.maxInt(u7)]u8 = @splat(std.math.maxInt(u7));
+    var bytes: [std.math.maxInt(u7) + 1]u8 = @splat(std.math.maxInt(u7));
 
     for (base64, 0..) |c, i| {
         bytes[c] = i;
