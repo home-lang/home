@@ -27,6 +27,7 @@ pub const RedisError = error{
     ConnectionTimeout,
     IdleTimeout,
     NestingDepthExceeded,
+    LineTooLong,
 };
 
 pub const valkeyErrorToJS = @import("../runtime/valkey_jsc/protocol_jsc.zig").valkeyErrorToJS;
@@ -228,12 +229,16 @@ pub const ValkeyReader = struct {
 
     pub fn readUntilCRLF(self: *ValkeyReader) RedisError![]const u8 {
         const buffer = self.buffer[self.pos..];
-        for (buffer, 0..) |byte, i| {
+        const limit = @min(buffer.len, MAX_LINE_LEN + 1);
+        for (buffer[0..limit], 0..) |byte, i| {
             if (byte == '\r' and buffer.len > i + 1 and buffer[i + 1] == '\n') {
                 const result = buffer[0..i];
                 self.pos += i + 2;
                 return result;
             }
+        }
+        if (buffer.len > MAX_LINE_LEN + 1) {
+            return error.LineTooLong;
         }
 
         return error.InvalidResponse;
@@ -297,6 +302,9 @@ pub const ValkeyReader = struct {
     /// This limits recursion to prevent excessive stack usage from
     /// deeply nested responses.
     const max_nesting_depth = 128;
+    // Cap a single RESP line so a CRLF-less server response can't force an
+    // unbounded scan of the receive buffer.
+    const MAX_LINE_LEN: usize = 512 * 1024;
 
     pub fn readValue(self: *ValkeyReader, allocator: std.mem.Allocator) RedisError!RESPValue {
         return self.readValueWithDepth(allocator, 0);
