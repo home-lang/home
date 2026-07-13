@@ -38,7 +38,11 @@ fn Eql(this: HashedString, comptime Other: type, other: Other) bool {
             return ((@max(this.hash, other.hash) > 0 and this.hash == other.hash) or (this.ptr == other.ptr)) and this.len == other.len;
         },
         else => {
-            return @as(usize, this.len) == other.len and @as(u32, @truncate(home_rt.hash(other[0..other.len]))) == this.hash;
+            // Length + hash then an actual byte compare: a hash collision must
+            // not make two distinct strings compare equal (key confusion).
+            return @as(usize, this.len) == other.len and
+                @as(u32, @truncate(home_rt.hash(other[0..other.len]))) == this.hash and
+                std.mem.eql(u8, this.str(), other[0..other.len]);
         },
     }
 }
