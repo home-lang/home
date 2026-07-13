@@ -94,6 +94,7 @@ pub const MultiPartUpload = struct {
     const MIN_SINGLE_UPLOAD_SIZE: usize = MultiPartUploadOptions.MIN_SINGLE_UPLOAD_SIZE;
     const DefaultPartSize = MultiPartUploadOptions.DefaultPartSize;
     const MAX_QUEUE_SIZE = MultiPartUploadOptions.MAX_QUEUE_SIZE;
+    const MAX_UPLOAD_ID_LEN: usize = 2000;
     const AWS = S3Credentials;
     queue: ?[]UploadPart = null,
     available: bun.bit_set.IntegerBitSet(MAX_QUEUE_SIZE) = bun.bit_set.IntegerBitSet(MAX_QUEUE_SIZE).initFull(),
@@ -494,11 +495,24 @@ pub const MultiPartUpload = struct {
                 this.uploadid_buffer = result.success.body;
 
                 if (strings.indexOf(slice, "<UploadId>")) |start| {
+                    const value_start = start + "<UploadId>".len;
                     if (strings.indexOf(slice, "</UploadId>")) |end| {
-                        this.upload_id = slice[start + 10 .. end];
+                        // </UploadId> can precede <UploadId> in adversarial XML,
+                        // making start > end — a panicking slice. Guard it.
+                        if (end >= value_start) {
+                            this.upload_id = slice[value_start..end];
+                        }
                     }
                 }
-                if (this.upload_id.len == 0) {
+                const upload_id_invalid = blk: {
+                    // upload_id is later interpolated into request paths and
+                    // headers, so reject non-ASCII / control bytes.
+                    for (this.upload_id) |b| {
+                        if (b < 0x20 or b > 0x7E) break :blk true;
+                    }
+                    break :blk false;
+                };
+                if (this.upload_id.len == 0 or this.upload_id.len > MAX_UPLOAD_ID_LEN or upload_id_invalid) {
                     // Unknown type of response error from AWS
                     log("startMultiPartRequestResult {s} failed invalid id", .{this.path});
                     try this.fail(.{
