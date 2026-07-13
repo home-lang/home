@@ -5,7 +5,7 @@ Detailed per-feature status for Home's TypeScript frontend
 section is in the
 [README parity status](../README.md#typescript-parity--home-tsc-vs-tsc--tsgo).
 
-> **Headline:** 5,907 / 5,907 (100%) coarse, ~4,060 / 5,907 (~68.7%)
+> **Headline:** 5,907 / 5,907 (100%) coarse, 4,871 / 5,907 (~82.5%)
 > exact byte-for-byte against upstream conformance baselines.
 > Reproduce: `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1
 > ./pantry/.bin/zig build test -Dfilter=ts_conformance`.
@@ -342,7 +342,7 @@ folders):
 | Category | Status |
 |---|---|
 | Coarse-mode corpus | 🟢 5,907 / 5,907 (100%) |
-| Exact-mode corpus (byte-for-byte) | 🟡 ~4,060 / 5,907 (~68.7%) |
+| Exact-mode corpus (byte-for-byte) | 🟡 4,871 / 5,907 (~82.5%; 1,036 remain) |
 | Baseline-aware category sweep | 🟢 586 / 586 (100%) |
 | Named-category survey | 🟢 86 / 86 (100%) |
 | Smoke gate | 🟢 16 / 16 (100%) |

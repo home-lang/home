@@ -21,7 +21,7 @@ file-count, or row-count measurement** against an external baseline —
 not an aspirational target. Each row cites the package, harness, or
 upstream source that produces it.
 
-> Refreshed 2026-07-08. Coarse-mode TS corpus and per-slice exact mode
+> Refreshed 2026-07-13. Coarse-mode TS corpus and per-slice exact mode
 > are regression-gated on every PR; Bun port % is file-count progress
 > over integrated Home ports, while raw source presence is reported
 > separately now that the full Bun source backlog has been staged.
@@ -53,7 +53,7 @@ view; these are the drill-down pages — modeled after Bun's
 | Area | Coverage | Source |
 |---|---|---|
 | **TypeScript — coarse corpus** | **5,907 / 5,907 — 100%** | `HOME_TS_CONFORMANCE_FULL=1` against upstream conformance corpus |
-| **TypeScript — exact (byte-for-byte)** | **4,220 / 5,907 — ~71.4%** | `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1`; 1,687 exact cases remain |
+| **TypeScript — exact (byte-for-byte)** | **4,871 / 5,907 — ~82.5%** | `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1`; 1,036 exact cases remain |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes emitted** | **1,620 / 2,079 — ~77.9%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 459 catalog-only remain, but **0 are reachable parity targets** (the reachable subset is complete) — ~455 are dead-in-reference + 4 blocked, see `docs/TS_DIAGNOSTIC_REACHABILITY.md` |
@@ -64,7 +64,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **Node.js — `node:*` modules JS-callable** | **24 / 47 — ~51% (🟡 subsets)** | callable via Home's own JSC realm (`home eval` / `HOME_NATIVE_RUN`), unit-tested; see [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md). Not yet wired into the bun-corpus gate |
 | **JSC bring-up (Phase 12.2)** | **JS-callable bridge live** | `home eval` / `HOME_NATIVE_RUN` run through Home's own JSC; 24 `node:*` modules + a broad `Bun.*` surface (spawn/spawnSync/which/file/write/hash/gzipSync/Glob/…) callable & unit-tested. Native subsystems: zlib (`std.compress`), crypto HMAC/pbkdf2 (`std.crypto`), spawn (`std.process`) |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
-| **Total test count** | **~8,414 tests** (unit + integration + conformance-pin) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev.131. ⚠️ Not fully green at HEAD: ~58 TS-parity target tests currently fail (47 `ts_checker` + 11 `ts_conformance`, tracked parity work-in-progress), and the `home_rt` runtime target needs Bun's JSC/uWS C++ artifacts to link. |
+| **Total test count** | **~8,415 tests** (unit + integration + conformance-pin) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev.131. The focused `ts_checker` suite is 3,025 / 3,025; full exact conformance remains opt-in with 1,036 mismatched fixtures, and the `home_rt` runtime target needs Bun's JSC/uWS C++ artifacts to link. |
 
 ### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
 
@@ -77,7 +77,7 @@ the same *families* of diagnostics.
 | Measurement | Pass rate | Notes |
 |---|---|---|
 | **Coarse mode (5,907 cases)** | **5,907 / 5,907 — 100%** | Saturated; remains the per-PR merge gate. |
-| **Exact mode (byte-for-byte, full corpus)** | **4,220 / 5,907 — ~71.4%** | Ratcheting weekly; 1,687 exact cases remain. |
+| **Exact mode (byte-for-byte, full corpus)** | **4,871 / 5,907 — ~82.5%** | Ratcheting weekly; 1,036 exact cases remain. |
 | Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
 | Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
 | Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
