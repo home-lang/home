@@ -452,7 +452,7 @@ pub fn findAutolink(self: *const Parser, content: []const u8, start: usize) ?str
         if (scheme_len >= 2 and scheme_len <= 32 and scheme_end < content.len and content[scheme_end] == ':') {
             // URI autolink
             var uri_end = scheme_end + 1;
-            while (uri_end < content.len and content[uri_end] != '>' and !helpers.isWhitespace(content[uri_end])) {
+            while (uri_end < content.len and content[uri_end] != '>' and content[uri_end] != '<' and !helpers.isWhitespace(content[uri_end])) {
                 uri_end += 1;
             }
             if (uri_end < content.len and content[uri_end] == '>') {
