@@ -947,41 +947,25 @@ pub const H2FrameParser = struct {
         pub fn flushQueue(this: *Stream, client: *H2FrameParser, written: *usize) FlushState {
             if (this.canSendData()) {
                 // try to flush one frame
-                if (this.dataFrameQueue.peekFront()) |frame| {
+                if (this.dataFrameQueue.peekFront()) |front| {
+                    // Capture sizes by value: `front` aliases the queue's backing
+                    // store, and `writer.write()` below can re-enter and mutate/realloc
+                    // the queue (dangling any pointer we'd hold into a frame's buffer).
+                    const frame_len = front.len;
+                    const frame_remaining = front.slice().len;
+
+                    // Set only when the whole frame is flushed; a partially-sent frame
+                    // stays in the queue for the next flush. The post-block cleanup runs
+                    // exactly when this is non-null.
+                    var owned_frame: ?PendingFrame = null;
                     const no_backpressure = brk: {
-                        var is_flow_control_limited = false;
-                        defer {
-                            if (!is_flow_control_limited) {
-                                // only call the callback + free the frame if we write to the socket the full frame
-                                var _frame = this.dataFrameQueue.dequeue().?;
-                                client.outboundQueueSize -= 1;
-
-                                if (_frame.callback.get()) |callback_value| client.dispatchWriteCallback(callback_value);
-                                if (this.dataFrameQueue.isEmpty()) {
-                                    if (_frame.end_stream) {
-                                        if (this.waitForTrailers) {
-                                            client.dispatch(.onWantTrailers, this.getIdentifier());
-                                        } else {
-                                            const identifier = this.getIdentifier();
-                                            identifier.ensureStillAlive();
-                                            if (this.state == .HALF_CLOSED_REMOTE) {
-                                                this.state = .CLOSED;
-                                            } else {
-                                                this.state = .HALF_CLOSED_LOCAL;
-                                            }
-                                            client.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(this.state)));
-                                        }
-                                    }
-                                }
-                                _frame.deinit(client.allocator);
-                            }
-                        }
-
                         const writer = client.toWriter();
 
-                        if (frame.len == 0) {
-
+                        if (frame_len == 0) {
                             // flush a zero payload frame
+                            owned_frame = this.dataFrameQueue.dequeue();
+                            if (owned_frame == null) return .no_action;
+                            const frame = &owned_frame.?;
                             var dataHeader: FrameHeader = .{
                                 .type = @intFromEnum(FrameType.HTTP_FRAME_DATA),
                                 .flags = if (frame.end_stream and !this.waitForTrailers) @intFromEnum(DataFrameFlags.END_STREAM) else 0,
@@ -990,19 +974,22 @@ pub const H2FrameParser = struct {
                             };
                             break :brk dataHeader.write(@TypeOf(writer), writer);
                         } else {
-                            const frame_slice = frame.slice();
-                            const max_size = @min(@min(frame_slice.len, this.remoteWindowSize -| this.remoteUsedWindowSize, client.remoteWindowSize -| client.remoteUsedWindowSize), MAX_PAYLOAD_SIZE_WITHOUT_FRAME);
+                            const max_size = @min(@min(frame_remaining, this.remoteWindowSize -| this.remoteUsedWindowSize, client.remoteWindowSize -| client.remoteUsedWindowSize), MAX_PAYLOAD_SIZE_WITHOUT_FRAME);
                             if (max_size == 0) {
-                                is_flow_control_limited = true;
-                                log("dataFrame flow control limited {} {} {} {} {} {}", .{ frame_slice.len, this.remoteWindowSize, this.remoteUsedWindowSize, client.remoteWindowSize, client.remoteUsedWindowSize, max_size });
-                                // we are flow control limited lets return backpressure if is limited in the connection so we short circuit the flush
+                                log("dataFrame flow control limited {} {} {} {} {} {}", .{ frame_remaining, this.remoteWindowSize, this.remoteUsedWindowSize, client.remoteWindowSize, client.remoteUsedWindowSize, max_size });
+                                // flow control limited: frame stays queued, nothing to clean up.
+                                // Return backpressure if the connection window is exhausted.
                                 return if (client.remoteWindowSize == client.remoteUsedWindowSize) .backpressure else .no_action;
                             }
-                            if (max_size < frame_slice.len) {
-                                is_flow_control_limited = true;
-                                // we need to break the frame into smaller chunks
-                                frame.offset += @intCast(max_size);
-                                const able_to_send = frame_slice[0..max_size];
+                            if (max_size < frame_remaining) {
+                                // Break the frame into smaller chunks. Copy the sendable
+                                // bytes out of the queue *before* writing, since the write
+                                // can re-enter and realloc the frame's buffer; the frame
+                                // itself stays queued (owned_frame stays null).
+                                const front2 = this.dataFrameQueue.peekFront() orelse return .no_action;
+                                const able_to_send = bun.handleOom(client.allocator.dupe(u8, front2.slice()[0..max_size]));
+                                defer client.allocator.free(able_to_send);
+                                front2.offset += @intCast(max_size);
                                 client.queuedDataSize -= able_to_send.len;
                                 written.* += able_to_send.len;
 
@@ -1035,8 +1022,13 @@ pub const H2FrameParser = struct {
                                     break :brk (writer.write(able_to_send) catch 0) != 0;
                                 }
                             } else {
-
-                                // flush with some payload
+                                // flush with some payload — dequeue first so the frame
+                                // buffer is owned and can't be reallocated out from under
+                                // the write below.
+                                owned_frame = this.dataFrameQueue.dequeue();
+                                if (owned_frame == null) return .no_action;
+                                const frame = &owned_frame.?;
+                                const frame_slice = frame.slice();
                                 client.queuedDataSize -= frame_slice.len;
                                 written.* += frame_slice.len;
 
@@ -1069,6 +1061,32 @@ pub const H2FrameParser = struct {
                             }
                         }
                     };
+
+                    // Only when the whole frame was flushed (dequeued into owned_frame):
+                    // run the write callback, maybe end the stream, and free the frame.
+                    // A partially-sent frame left `owned_frame` null and stays queued.
+                    if (owned_frame) |*_frame| {
+                        client.outboundQueueSize -= 1;
+
+                        if (_frame.callback.get()) |callback_value| client.dispatchWriteCallback(callback_value);
+                        if (this.dataFrameQueue.isEmpty()) {
+                            if (_frame.end_stream) {
+                                if (this.waitForTrailers) {
+                                    client.dispatch(.onWantTrailers, this.getIdentifier());
+                                } else {
+                                    const identifier = this.getIdentifier();
+                                    identifier.ensureStillAlive();
+                                    if (this.state == .HALF_CLOSED_REMOTE) {
+                                        this.state = .CLOSED;
+                                    } else {
+                                        this.state = .HALF_CLOSED_LOCAL;
+                                    }
+                                    client.dispatchWithExtra(.onStreamEnd, identifier, jsc.JSValue.jsNumber(@intFromEnum(this.state)));
+                                }
+                            }
+                        }
+                        _frame.deinit(client.allocator);
+                    }
 
                     return if (no_backpressure) .flushed else .backpressure;
                 }
