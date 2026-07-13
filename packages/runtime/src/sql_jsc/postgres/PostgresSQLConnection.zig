@@ -1754,9 +1754,16 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
                     }
                 },
                 .Ok => {
-                    debug("Authentication OK", .{});
-                    this.authentication_state.zero();
-                    this.authentication_state = .{ .ok = {} };
+                    // Reject AuthenticationOk arriving while still mid-SASL: SASLFinal
+                    // must verify the server signature first, otherwise a MITM can send
+                    // AuthenticationOk early and skip RFC 5802 mutual authentication.
+                    if (this.authentication_state == .SASL) {
+                        this.fail("Received AuthenticationOk before SASL authentication completed", error.SASL_SIGNATURE_MISMATCH);
+                    } else {
+                        debug("Authentication OK", .{});
+                        this.authentication_state.zero();
+                        this.authentication_state = .{ .ok = {} };
+                    }
                 },
 
                 .Unknown => {
