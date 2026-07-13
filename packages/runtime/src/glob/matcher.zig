@@ -33,6 +33,12 @@ const Brace = struct {
 };
 const BraceStack = bun.BoundedArray(Brace, 10);
 
+/// Upper bound on brace-branch alternatives explored per `match` call.
+/// Sequential brace groups multiply (`{a,b}{c,d}` = 4 alternatives), so without
+/// a cap an adversarial pattern of ten sequential 10-way groups would explore
+/// 10^10 alternatives. Patterns that exceed this budget fail to match.
+const BRACE_BRANCH_BUDGET: u32 = 10_000;
+
 const MatchResult = enum {
     no_match,
     match,
@@ -126,7 +132,8 @@ pub fn match(glob: []const u8, path: []const u8) MatchResult {
     }
 
     var brace_stack = BraceStack.init(0) catch unreachable;
-    const matched = globMatchImpl(&state, glob, 0, path, &brace_stack);
+    var brace_budget: u32 = BRACE_BRANCH_BUDGET;
+    const matched = globMatchImpl(&state, glob, 0, path, &brace_stack, &brace_budget);
 
     // TODO: consider just returning a bool
     // return matched != negated;
@@ -139,7 +146,7 @@ pub fn match(glob: []const u8, path: []const u8) MatchResult {
 }
 
 // `glob_start` is the index where the glob pattern starts
-inline fn globMatchImpl(state: *State, glob: []const u8, glob_start: u32, path: []const u8, brace_stack: *BraceStack) bool {
+inline fn globMatchImpl(state: *State, glob: []const u8, glob_start: u32, path: []const u8, brace_stack: *BraceStack, brace_budget: *u32) bool {
     main_loop: while (state.glob_index < glob.len or state.path_index < path.len) {
         if (state.glob_index < glob.len) fallthrough: {
             const char = glob[state.glob_index];
@@ -264,7 +271,7 @@ inline fn globMatchImpl(state: *State, glob: []const u8, glob_start: u32, path: 
                                 continue :main_loop;
                             }
                         }
-                        return matchBrace(state, glob, path, brace_stack);
+                        return matchBrace(state, glob, path, brace_stack, brace_budget);
                     },
                     ',' => if (state.brace_depth > 0) {
                         skipBranch(state, glob);
@@ -315,7 +322,7 @@ inline fn globMatchImpl(state: *State, glob: []const u8, glob_start: u32, path: 
     return true;
 }
 
-fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *BraceStack) bool {
+fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *BraceStack, brace_budget: *u32) bool {
     var brace_depth: i16 = 0;
     var in_brackets = false;
 
@@ -334,14 +341,14 @@ fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *B
             '}' => if (!in_brackets) {
                 brace_depth -= 1;
                 if (brace_depth == 0) {
-                    if (matchBraceBranch(state, glob, path, open_brace_index, branch_index, brace_stack)) {
+                    if (matchBraceBranch(state, glob, path, open_brace_index, branch_index, brace_stack, brace_budget)) {
                         return true;
                     }
                     break;
                 }
             },
             ',' => if (brace_depth == 1) {
-                if (matchBraceBranch(state, glob, path, open_brace_index, branch_index, brace_stack)) {
+                if (matchBraceBranch(state, glob, path, open_brace_index, branch_index, brace_stack, brace_budget)) {
                     return true;
                 }
                 branch_index = state.glob_index + 1;
@@ -359,7 +366,13 @@ fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *B
     return false;
 }
 
-fn matchBraceBranch(state: *State, glob: []const u8, path: []const u8, open_brace_index: u32, branch_index: u32, brace_stack: *BraceStack) bool {
+fn matchBraceBranch(state: *State, glob: []const u8, path: []const u8, open_brace_index: u32, branch_index: u32, brace_stack: *BraceStack, brace_budget: *u32) bool {
+    // Sequential brace groups multiply, so cap total branches explored per
+    // top-level `match` to keep an adversarial pattern from blowing up
+    // exponentially. Exhausting the budget makes the branch fail to match.
+    if (brace_budget.* == 0) return false;
+    brace_budget.* -= 1;
+
     brace_stack.append(Brace{ .open_brace_idx = open_brace_index, .branch_idx = branch_index }) catch
         return false; // exceeded brace depth
 
@@ -368,7 +381,7 @@ fn matchBraceBranch(state: *State, glob: []const u8, path: []const u8, open_brac
     branch_state.glob_index = branch_index;
     branch_state.brace_depth = @intCast(brace_stack.len);
 
-    const matched = globMatchImpl(&branch_state, glob, branch_index, path, brace_stack);
+    const matched = globMatchImpl(&branch_state, glob, branch_index, path, brace_stack, brace_budget);
 
     _ = brace_stack.pop();
 
@@ -593,6 +606,21 @@ test "matcher: utf-8 paths" {
     try expectMatch("*.zig", "café.zig");
     try expectMatch("caf?.zig", "café.zig"); // '?' matches the multi-byte rune
     try expectMatch("**", "ünïcödé/path.txt");
+}
+
+test "matcher: brace-branch budget bounds adversarial patterns" {
+    // Ten sequential 10-way groups against a path that cannot match forces the
+    // matcher to explore every combination — 10^10 branches without the
+    // BRACE_BRANCH_BUDGET cap, which would hang. With the cap it fails fast.
+    const g = "{a,a,a,a,a,a,a,a,a,a}";
+    const pattern = g ++ g ++ g ++ g ++ g ++ g ++ g ++ g ++ g ++ g;
+    const path = "aaaaaaaaaab"; // 10 groups consume 10 a's, trailing 'b' never matches
+    try expectNoMatch(pattern, path);
+
+    // A legitimate brace pattern well within budget still matches normally.
+    try expectMatch("{a,b}{c,d}{e,f}", "ace");
+    try expectMatch("{a,b}{c,d}{e,f}", "bdf");
+    try expectNoMatch("{a,b}{c,d}{e,f}", "acg");
 }
 
 test "matcher: MatchResult variants for switch callers" {
