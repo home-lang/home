@@ -14,11 +14,34 @@ mutex: bun.Mutex = .{},
 /// We cannot lock/unlock a mutex
 estimated_size: std.atomic.Value(u32) = .init(0),
 
+/// Per-instance random identity, written into the structured-clone wire
+/// alongside the address. Deserialize re-reads it from the live instance
+/// (after `serialized_refs` confirms the address is safe to dereference) so
+/// wire bytes captured before this instance existed cannot match even if the
+/// allocator reused the same address.
+serialize_nonce: u64,
+
+/// Addresses of `BlockList` instances currently embedded in a live
+/// `SerializedScriptValue` (one entry per serialize). Deserialize only honours
+/// pointers present here, so wire bytes from another process (IPC `advanced`
+/// mode, `node:v8.deserialize`) cannot smuggle an arbitrary address through the
+/// BlockList structured-clone tag. Entries are never removed — the serialize
+/// -time `ref()` (see `onStructuredCloneDeserialize`) has no destroy hook to
+/// pair with, so it pins every serialized instance alive; that pinning is what
+/// keeps each allowlisted address a live, un-reused `BlockList`.
+var serialized_refs: std.ArrayListUnmanaged(usize) = .empty;
+var serialized_refs_mutex: bun.Mutex = .{};
+
 pub fn constructor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!*@This() {
     _ = callFrame;
     const ptr = @This().new(.{
         .globalThis = globalThis,
         .da_rules = .init(bun.default_allocator),
+        .serialize_nonce = nonce: {
+            var n: u64 = 0;
+            bun.csprng(std.mem.asBytes(&n));
+            break :nonce n;
+        },
     });
     return ptr;
 }
@@ -191,8 +214,15 @@ pub fn onStructuredCloneSerialize(this: *@This(), globalThis: *jsc.JSGlobalObjec
     this.mutex.lock();
     defer this.mutex.unlock();
     this.ref();
+    const addr = @intFromPtr(this);
+    {
+        serialized_refs_mutex.lock();
+        defer serialized_refs_mutex.unlock();
+        bun.handleOom(serialized_refs.append(bun.default_allocator, addr));
+    }
     const writer = StructuredCloneWriter.Writer{ .context = .{ .ctx = ctx, .impl = writeBytes } };
-    try writer.writeInt(usize, @intFromPtr(this), .little);
+    try writer.writeInt(usize, addr, .little);
+    try writer.writeInt(u64, this.serialize_nonce, .little);
 }
 
 const StructuredCloneWriter = struct {
@@ -215,11 +245,31 @@ pub fn onStructuredCloneDeserialize(globalThis: *jsc.JSGlobalObject, ptr: *[*]u8
     var buffer_stream = std.Io.Reader.fixed(ptr.*[0..total_length]);
 
     const int = buffer_stream.takeInt(usize, .little) catch return globalThis.throw("BlockList.onStructuredCloneDeserialize failed", .{});
+    const nonce = buffer_stream.takeInt(u64, .little) catch return globalThis.throw("BlockList.onStructuredCloneDeserialize failed", .{});
 
     // Advance the pointer by the number of bytes consumed
     ptr.* = ptr.* + buffer_stream.seek;
 
+    // Reject any address we did not ourselves serialize: wire bytes crafted in
+    // another process (IPC `advanced` mode, `node:v8.deserialize`) must not be
+    // able to smuggle an arbitrary pointer through this tag and have us
+    // dereference it below.
+    {
+        serialized_refs_mutex.lock();
+        defer serialized_refs_mutex.unlock();
+        if (std.mem.indexOfScalar(usize, serialized_refs.items, int) == null) {
+            return globalThis.throw("BlockList.onStructuredCloneDeserialize failed", .{});
+        }
+    }
+
     const this: *@This() = @ptrFromInt(int);
+    // Presence in `serialized_refs` (paired with the serialize-time `ref()` that
+    // pins the instance alive) guarantees `this` is a live BlockList, so this
+    // field read is in-bounds. The nonce then rejects wire bytes that name this
+    // address but were produced by a different instance.
+    if (this.serialize_nonce != nonce) {
+        return globalThis.throw("BlockList.onStructuredCloneDeserialize failed", .{});
+    }
     // A single SerializedScriptValue can be deserialized multiple times
     // (e.g. BroadcastChannel fan-out), so each wrapper must own its own ref
     // instead of adopting the one taken in serialize. The serialize ref is
