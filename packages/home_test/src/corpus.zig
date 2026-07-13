@@ -235,6 +235,7 @@ test "Bun corpus collector includes every upstream test file" {
     const copied_files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
     defer freeTestFiles(std.testing.allocator, copied_files);
 
+    try std.testing.expect(copied_files.len >= upstream_files.len);
     for (upstream_files) |upstream_file| {
         var found = false;
         for (copied_files) |copied_file| {
