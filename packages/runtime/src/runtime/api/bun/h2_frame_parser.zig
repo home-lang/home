@@ -1027,6 +1027,9 @@ pub const H2FrameParser = struct {
                                     var buffer = shared_request_buffer[0..];
                                     bun.memmove(buffer[1..][0..able_to_send.len], able_to_send);
                                     buffer[0] = padding;
+                                    // Zero the padding tail: it lives in an undefined threadlocal
+                                    // buffer, so writing it unzeroed leaks stale heap bytes on the wire.
+                                    @memset(buffer[1 + able_to_send.len .. payload_size], 0);
                                     break :brk (writer.write(buffer[0..payload_size]) catch 0) != 0;
                                 } else {
                                     break :brk (writer.write(able_to_send) catch 0) != 0;
@@ -1057,6 +1060,8 @@ pub const H2FrameParser = struct {
                                     var buffer = shared_request_buffer[0..];
                                     bun.memmove(buffer[1..][0..frame_slice.len], frame_slice);
                                     buffer[0] = padding;
+                                    // Zero the padding tail so undefined threadlocal bytes don't leak.
+                                    @memset(buffer[1 + frame_slice.len .. payload_size], 0);
                                     break :brk (writer.write(buffer[0..payload_size]) catch 0) != 0;
                                 } else {
                                     break :brk (writer.write(frame_slice) catch 0) != 0;
@@ -3481,6 +3486,8 @@ pub const H2FrameParser = struct {
                         var buffer = shared_request_buffer[0..];
                         bun.memmove(buffer[1..][0..slice.len], slice);
                         buffer[0] = padding;
+                        // Zero the padding tail so undefined threadlocal bytes don't leak.
+                        @memset(buffer[1 + slice.len .. payload_size], 0);
                         _ = writer.write(buffer[0..payload_size]) catch 0;
                     } else {
                         _ = writer.write(slice) catch 0;
@@ -4457,6 +4464,9 @@ pub const H2FrameParser = struct {
                 const buffer = encoded_headers.allocatedSlice();
                 bun.memmove(buffer[1..][0..encoded_size], buffer[0..encoded_size]);
                 buffer[0] = padding;
+                // Zero the padding tail (uninitialized allocator capacity) so it can't
+                // leak stale heap bytes on the wire.
+                @memset(buffer[1 + encoded_size .. encoded_size + padding_overhead], 0);
                 _ = writer.write(buffer[0 .. encoded_size + padding_overhead]) catch 0;
             } else {
                 _ = writer.write(encoded_data) catch 0;
