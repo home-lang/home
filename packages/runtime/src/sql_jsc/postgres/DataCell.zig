@@ -284,6 +284,10 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
                                         slice = trySlice(slice, 5);
                                         continue;
                                     }
+                                    // Not a valid literal: return rather than fall
+                                    // through, which would re-read the same byte
+                                    // forever (infinite loop on malformed input).
+                                    return error.UnsupportedArrayFormat;
                                 } else {
                                     try array.append(bun.default_allocator, SQLDataCell{ .tag = .bool, .value = .{ .bool = 0 } });
                                     slice = trySlice(slice, 1);
@@ -299,6 +303,10 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
                                         slice = trySlice(slice, 4);
                                         continue;
                                     }
+                                    // Not a valid literal: return rather than fall
+                                    // through, which would re-read the same byte
+                                    // forever (infinite loop on malformed input).
+                                    return error.UnsupportedArrayFormat;
                                 } else {
                                     try array.append(bun.default_allocator, SQLDataCell{ .tag = .bool, .value = .{ .bool = 1 } });
                                     slice = trySlice(slice, 1);
