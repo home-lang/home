@@ -592,7 +592,9 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
             this.out_fd = null;
         },
         .file => {
-            const mode: bun.Mode = if (comptime Environment.isWindows) 0 else @intCast(entry.perm() | 0o666);
+            // Mask to permission bits: setuid/setgid/sticky bits from the
+            // archive must never reach openat.
+            const mode: bun.Mode = if (comptime Environment.isWindows) 0 else @intCast((entry.perm() & 0o777) | 0o666);
             const fd = try openOutputFile(dest, path, path_slice, mode);
             this.entry_count += 1;
 
@@ -685,10 +687,37 @@ fn makeSymlink(
     // reject absolute targets and anything that escapes via `..`.
     if (target.len == 0 or target[0] == '/') return;
     {
+        // (1) A `..` component appearing after any named component can traverse
+        //     out through an already-created directory/symlink.
+        var seen_named_component = false;
+        var it = std.mem.splitScalar(u8, target, '/');
+        while (it.next()) |component| {
+            if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
+            if (std.mem.eql(u8, component, "..")) {
+                if (seen_named_component) return;
+            } else {
+                seen_named_component = true;
+            }
+        }
+        // (2) Normalize `symlink_dir/target` as a RELATIVE path and reject if it
+        //     climbs above the root. An absolute fake root cannot be used: POSIX
+        //     normalization clamps excess `..` at `/`, so a target like
+        //     `../../../packages/x` would normalize back under a matching fake
+        //     root. (Same rule as `isSymlinkTargetSafe` in the buffered path.)
         const symlink_dir = std.fs.path.dirname(path_slice) orelse "";
         var join_buf: bun.PathBuffer = undefined;
-        const resolved = bun.path.joinAbsStringBuf("/packages/", &join_buf, &.{ symlink_dir, target }, .posix);
-        if (!strings.hasPrefix(resolved, "/packages/")) return;
+        if (symlink_dir.len + 1 + target.len >= join_buf.len) return;
+        var written: usize = 0;
+        if (symlink_dir.len > 0) {
+            @memcpy(join_buf[0..symlink_dir.len], symlink_dir);
+            written = symlink_dir.len;
+            join_buf[written] = '/';
+            written += 1;
+        }
+        @memcpy(join_buf[written .. written + target.len], target);
+        written += target.len;
+        const resolved = resolve_path.normalizeStringBufT(u8, join_buf[0..written], &join_buf, true, .posix, false);
+        if (std.mem.eql(u8, resolved, "..") or strings.hasPrefixComptime(resolved, "../")) return;
     }
     bun.sys.symlinkat(target, dest_fd, path).unwrap() catch |err| switch (err) {
         error.EPERM, error.ENOENT => {
@@ -854,7 +883,7 @@ fn populateResult(this: *TarballStream, task: *Task) void {
             const gh_tag = bun.sys.openat(
                 this.dest.?,
                 ".bun-tag",
-                bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC,
+                bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC | (if (comptime Environment.isWindows) 0 else bun.O.NOFOLLOW),
                 0o644,
             ).unwrap() catch break :insert_tag;
             defer gh_tag.close();
@@ -938,3 +967,4 @@ const strings = bun.strings;
 const FileSystem = bun.fs.FileSystem;
 const Mutex = bun.threading.Mutex;
 const lib = bun.libarchive.lib;
+const resolve_path = @import("../paths/resolve_path.zig");
