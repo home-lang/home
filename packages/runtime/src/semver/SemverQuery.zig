@@ -94,12 +94,17 @@ pub const List = struct {
     }
 
     pub fn eql(lhs: *const List, rhs: *const List) bool {
-        if (!lhs.head.eql(&rhs.head)) return false;
-
-        const lhs_next = lhs.next orelse return rhs.next == null;
-        const rhs_next = rhs.next orelse return false;
-
-        return lhs_next.eql(rhs_next);
+        // Iterative rather than recursive: an adversarial OR-chain of Lists
+        // could otherwise overflow the stack (Zig does not guarantee TCO).
+        var l = lhs;
+        var r = rhs;
+        while (true) {
+            if (!l.head.eql(&r.head)) return false;
+            const l_next = l.next orelse return r.next == null;
+            const r_next = r.next orelse return false;
+            l = l_next;
+            r = r_next;
+        }
     }
 
     pub fn andRange(self: *List, allocator: Allocator, range: Range) !void {
@@ -300,12 +305,17 @@ fn deinitQueryChain(allocator: Allocator, head: *const Query) void {
 }
 
 pub fn eql(lhs: *const Query, rhs: *const Query) bool {
-    if (!lhs.range.eql(rhs.range)) return false;
-
-    const lhs_next = lhs.next orelse return rhs.next == null;
-    const rhs_next = rhs.next orelse return false;
-
-    return lhs_next.eql(rhs_next);
+    // Iterative rather than recursive: an adversarial AND-chain of Queries
+    // could otherwise overflow the stack (Zig does not guarantee TCO).
+    var l = lhs;
+    var r = rhs;
+    while (true) {
+        if (!l.range.eql(r.range)) return false;
+        const l_next = l.next orelse return r.next == null;
+        const r_next = r.next orelse return false;
+        l = l_next;
+        r = r_next;
+    }
 }
 
 pub fn satisfies(query: *const Query, version: Version, query_buf: string, version_buf: string) bool {
