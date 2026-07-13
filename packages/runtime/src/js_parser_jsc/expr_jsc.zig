@@ -7,6 +7,12 @@ pub fn exprToJS(this: Expr, allocator: std.mem.Allocator, globalObject: *jsc.JSG
 }
 
 pub fn dataToJS(this: Expr.Data, allocator: std.mem.Allocator, globalObject: *jsc.JSGlobalObject) ToJSError!jsc.JSValue {
+    // A deeply-nested AST literal recurses through dataToJS unbounded; guard the
+    // recursion funnel so a hostile input throws instead of overflowing the
+    // native stack.
+    if (!bun.StackCheck.init().isSafeToRecurse()) {
+        return globalObject.throwStackOverflow();
+    }
     return switch (this) {
         .e_array => |e| arrayToJS(e.*, allocator, globalObject),
         .e_object => |e| objectToJS(e, allocator, globalObject),
