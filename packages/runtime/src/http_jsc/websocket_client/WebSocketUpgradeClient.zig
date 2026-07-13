@@ -592,6 +592,13 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
 
             var body = data;
             if (this.body.items.len > 0) {
+                // Cap accumulated upgrade-response header bytes: a peer that
+                // streams headers without completing must not grow body without
+                // bound.
+                if (this.body.items.len +| data.len > bun.http.max_http_header_size) {
+                    this.terminate(ErrorCode.invalid_response);
+                    return;
+                }
                 bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
                 body = this.body.items;
             }
@@ -614,6 +621,10 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                     },
                     error.ShortRead => {
                         if (this.body.items.len == 0) {
+                            if (data.len > bun.http.max_http_header_size) {
+                                this.terminate(ErrorCode.invalid_response);
+                                return;
+                            }
                             bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
                         }
                         return;
@@ -629,6 +640,13 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
 
             var body = data;
             if (this.body.items.len > 0) {
+                // Cap accumulated upgrade-response header bytes: a peer that
+                // streams headers without completing must not grow body without
+                // bound.
+                if (this.body.items.len +| data.len > bun.http.max_http_header_size) {
+                    this.terminate(ErrorCode.invalid_response);
+                    return;
+                }
                 bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
                 body = this.body.items;
             }
@@ -654,6 +672,10 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                     },
                     error.ShortRead => {
                         if (this.body.items.len == 0) {
+                            if (data.len > bun.http.max_http_header_size) {
+                                this.terminate(ErrorCode.invalid_response);
+                                return;
+                            }
                             bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
                         }
                         return;
@@ -800,6 +822,13 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
             // Process as if it came directly from the socket
             var body = data;
             if (this.body.items.len > 0) {
+                // Cap accumulated upgrade-response header bytes: a peer that
+                // streams headers without completing must not grow body without
+                // bound.
+                if (this.body.items.len +| data.len > bun.http.max_http_header_size) {
+                    this.terminate(ErrorCode.invalid_response);
+                    return;
+                }
                 bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
                 body = this.body.items;
             }
@@ -822,6 +851,10 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                     },
                     error.ShortRead => {
                         if (this.body.items.len == 0) {
+                            if (data.len > bun.http.max_http_header_size) {
+                                this.terminate(ErrorCode.invalid_response);
+                                return;
+                            }
                             bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
                         }
                         return;
@@ -865,7 +898,7 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                     },
                     "Sec-WebSocket-Version".len => {
                         if (strings.eqlCaseInsensitiveASCII(header.name, "Sec-WebSocket-Version", false)) {
-                            if (!strings.eqlComptimeIgnoreLen(header.value, "13")) {
+                            if (!strings.eqlComptime(header.value, "13")) {
                                 this.terminate(ErrorCode.invalid_websocket_version);
                                 return;
                             }
@@ -996,6 +1029,13 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
 
             if (@min(websocket_accept_header.name.len, websocket_accept_header.value.len) == 0) {
                 this.terminate(ErrorCode.missing_websocket_accept_header);
+                return;
+            }
+
+            // RFC 6455 §4.1: if the client requested subprotocols, the server's
+            // 101 must select one via Sec-WebSocket-Protocol.
+            if (!protocol_header_seen and !this.subprotocols.isEmpty()) {
+                this.terminate(ErrorCode.missing_client_protocol);
                 return;
             }
 
