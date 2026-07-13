@@ -50,13 +50,12 @@ export fn us_socket_buffered_js_write(
     data: jsc.JSValue,
     encoding: jsc.JSValue,
 ) jsc.JSValue {
-    var stream_buffer = buffer.toStreamBuffer();
-    var total_written: usize = 0;
-    defer {
-        buffer.update(stream_buffer);
-        buffer.wrote(total_written);
-    }
-
+    // Convert `data`/`encoding` into node_buffer BEFORE materializing the
+    // stream buffer: the conversion can run arbitrary JS (toString /
+    // Symbol.toPrimitive, Request/Response body coercion) which can re-enter
+    // this function on the same socket. Taking the buffer first would leave two
+    // views over the same backing list; the inner call's realloc would free the
+    // allocation out from under the outer frame (use-after-free).
     var stack_fallback = bun.stackFallback(16 * 1024, bun.default_allocator);
     const node_buffer: jsc.Node.BlobOrStringOrBuffer = if (data.isUndefined())
         jsc.Node.BlobOrStringOrBuffer{ .string_or_buffer = jsc.Node.StringOrBuffer.empty }
@@ -73,6 +72,14 @@ export fn us_socket_buffered_js_write(
     defer node_buffer.deinit();
     if (node_buffer == .blob and node_buffer.blob.needsToReadFile()) {
         return globalObject.throw("File blob not supported yet in this function.", .{}) catch .zero;
+    }
+
+    // No JS executes from here on, so this view is the sole owner of the list.
+    var stream_buffer = buffer.toStreamBuffer();
+    var total_written: usize = 0;
+    defer {
+        buffer.update(stream_buffer);
+        buffer.wrote(total_written);
     }
 
     const data_slice = node_buffer.slice();
