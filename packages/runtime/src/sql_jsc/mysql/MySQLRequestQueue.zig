@@ -109,7 +109,10 @@ pub fn advance(this: *@This(), connection: *MySQLConnection) void {
         request.run(connection) catch |err| {
             debug("run failed", .{});
             connection.onError(request, err);
-            if (offset == 0) {
+            // onError can re-entrantly drain the queue; only discard the head if
+            // it's still there and still this request (else we drop the wrong
+            // item / double-deref).
+            if (offset == 0 and this._requests.readableLength() > 0 and this._requests.peekItem(0) == request) {
                 this._requests.discard(1);
                 request.deref();
             }
