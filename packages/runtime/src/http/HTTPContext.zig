@@ -522,7 +522,9 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                     }
 
                     log("Unexpected data on socket", .{});
-
+                    // Framing violation / desync on a pooled socket: tear it down
+                    // rather than leaving it in the keep-alive pool.
+                    terminateSocket(socket);
                     return;
                 }
                 log("Unexpected data on unknown socket", .{});
@@ -667,10 +669,14 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                     continue;
                 }
 
+                // The hash covers the Host-header SNI override the handshake was
+                // verified against, so it must gate every pooled socket, not just
+                // CONNECT tunnels.
+                if (socket.proxy_auth_hash != proxy_auth_hash) {
+                    continue;
+                }
+
                 if (want_tunnel) {
-                    if (socket.proxy_auth_hash != proxy_auth_hash) {
-                        continue;
-                    }
                     if (socket.target_port != target_port) {
                         continue;
                     }
@@ -766,7 +772,12 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                 // override (client.hostname) is hashed into proxyAuthHash.
                 const target_hostname: []const u8 = if (want_tunnel) client.url.hostname else "";
                 const target_port: u16 = if (want_tunnel) client.url.getPortAuto() else 0;
-                const proxy_auth_hash: u64 = if (want_tunnel) client.proxyAuthHash() else 0;
+                // For a direct TLS connection the handshake verifies the peer
+                // against the Host-header override (client.hostname) too, so the
+                // override must discriminate the pool key there — not just for
+                // CONNECT tunnels. proxyAuthHash() reduces to the override hash
+                // (or 0) for a non-proxied request.
+                const proxy_auth_hash: u64 = if (want_tunnel or (ssl and client.http_proxy == null)) client.proxyAuthHash() else 0;
 
                 if (this.existingSocket(
                     client.flags.reject_unauthorized,
