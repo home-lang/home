@@ -229,7 +229,10 @@ pub fn render(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValu
         return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
     };
 
-    const input = buffer.slice();
+    // Copy into the arena: buffer.slice() borrows JS-owned memory for a
+    // Buffer/ArrayBuffer arg, and the renderer runs JS callbacks mid-parse that
+    // could detach/resize it, freeing the slice under us (use-after-free).
+    const input = arena.allocator().dupe(u8, buffer.slice()) catch return globalThis.throwOutOfMemory();
 
     const options = try parseOptions(globalThis, opts_value);
 
@@ -302,7 +305,10 @@ fn renderAST(
         return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
     };
 
-    const input = buffer.slice();
+    // Copy into the arena: buffer.slice() borrows JS-owned memory for a
+    // Buffer/ArrayBuffer arg, and the renderer runs JS callbacks mid-parse that
+    // could detach/resize it, freeing the slice under us (use-after-free).
+    const input = arena.allocator().dupe(u8, buffer.slice()) catch return globalThis.throwOutOfMemory();
 
     const options = try parseOptions(globalThis, opts_value);
 
