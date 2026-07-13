@@ -258,7 +258,47 @@ pub fn forManifest(
         }
 
         // This actually duplicates the string! So we defer deref the WTF managed one above.
-        break :blk try tmp.toOwnedSlice(allocator);
+        const url_bytes = try tmp.toOwnedSlice(allocator);
+
+        // Registry-containment guard (SSRF): the joined manifest URL must stay
+        // on the configured registry — same scheme, host and port, with a
+        // pathname under the registry directory. A crafted package name could
+        // otherwise steer the join to an attacker-controlled host. Both sides
+        // are parsed identically, so a legitimate join (which preserves the
+        // registry's scheme/host/port and only extends the path) always passes.
+        {
+            const joined = URL.parse(url_bytes);
+            const registry = URL.parse(scope.url.href);
+            const registry_dir_end = if (strings.lastIndexOfChar(registry.pathname, '/')) |i| i + 1 else 0;
+            const registry_dir = registry.pathname[0..registry_dir_end];
+            if (!strings.eqlCaseInsensitiveASCII(joined.protocol, registry.protocol, true) or
+                !strings.eqlCaseInsensitiveASCII(joined.hostname, registry.hostname, true) or
+                joined.getPortAuto() != registry.getPortAuto() or
+                !strings.hasPrefix(joined.pathname, registry_dir))
+            {
+                if (!is_optional) {
+                    this.package_manager.log.addErrorFmt(
+                        null,
+                        logger.Loc.Empty,
+                        allocator,
+                        "Refusing to fetch manifest for package {f}: URL {f} is not on registry {f}",
+                        .{ bun.fmt.QuotedFormatter{ .text = name }, bun.fmt.QuotedFormatter{ .text = url_bytes }, bun.fmt.QuotedFormatter{ .text = scope.url.href } },
+                    ) catch |err| bun.handleOom(err);
+                } else {
+                    this.package_manager.log.addWarningFmt(
+                        null,
+                        logger.Loc.Empty,
+                        allocator,
+                        "Refusing to fetch manifest for package {f}: URL {f} is not on registry {f}",
+                        .{ bun.fmt.QuotedFormatter{ .text = name }, bun.fmt.QuotedFormatter{ .text = url_bytes }, bun.fmt.QuotedFormatter{ .text = scope.url.href } },
+                    ) catch |err| bun.handleOom(err);
+                }
+                allocator.free(url_bytes);
+                return error.InvalidURL;
+            }
+        }
+
+        break :blk url_bytes;
     };
 
     var last_modified: string = "";
