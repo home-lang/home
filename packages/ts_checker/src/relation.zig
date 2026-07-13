@@ -1601,7 +1601,15 @@ pub const Engine = struct {
                 sp[source_required - 1] != Primitive.void_t) break;
             source_required -= 1;
         }
-        if (source_required > tp.len) return false;
+        // An unexpanded array rest on the target gives it an unbounded
+        // effective parameter count. This is tsc's
+        // `hasEffectiveRestParameter(target)` arity guard: a fixed source
+        // such as `(x: object, i: number) => object` is assignable to
+        // `(...args: any[]) => any` even though the target has only one
+        // physical parameter node.
+        const target_has_unbounded_rest = !target_rest_tuple_expanded and
+            self.rest_signatures != null and self.rest_signatures.?.contains(target);
+        if (!target_has_unbounded_rest and source_required > tp.len) return false;
 
         // Positional type-parameter map: target tp -> source tp at the
         // same param position. Stack-bounded to keep the hot path
@@ -3031,6 +3039,26 @@ test "Engine: rest signature assignment compares array element types" {
     e.setRestSignatures(&rest);
 
     try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: target array rest accepts a fixed multi-parameter signature" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const any_array = try ti.internArrayType(&sint, Primitive.any);
+    const src = try ti.internSignature(&.{ Primitive.object_t, Primitive.number_t }, Primitive.object_t, false);
+    const tgt = try ti.internSignature(&.{any_array}, Primitive.any, false);
+    var rest: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest.deinit(T.allocator);
+    try rest.put(T.allocator, tgt, {});
+    e.setRestSignatures(&rest);
+
+    try T.expect(try e.isAssignableTo(src, tgt));
 }
 
 test "Engine: cache populates on lookup" {
