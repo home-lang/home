@@ -173,12 +173,22 @@ pub fn decode(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, callframe: *j
         break :stream false;
     };
 
+    var owned_input: ?[]u8 = null;
+    defer if (owned_input) |o| bun.default_allocator.free(o);
+
     const input_slice = input_slice: {
         if (arguments.len == 0 or arguments[0].isUndefined()) {
             break :input_slice "";
         }
 
         if (arguments[0].asArrayBuffer(globalThis)) |array_buffer| {
+            // A SharedArrayBuffer or resizable ArrayBuffer can shrink/reallocate
+            // underneath the borrowed slice while we decode; snapshot it first.
+            if (array_buffer.shared or array_buffer.resizable) {
+                const copy = try bun.default_allocator.dupe(u8, array_buffer.slice());
+                owned_input = copy;
+                break :input_slice copy;
+            }
             break :input_slice array_buffer.slice();
         }
 
