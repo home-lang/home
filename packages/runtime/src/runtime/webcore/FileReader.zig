@@ -370,6 +370,17 @@ pub fn onReadChunk(this: *@This(), init_buf: []const u8, state: bun.io.ReadState
             this.pending.run();
         }
 
+        // Re-derive the destination from the GC-rooted view rather than the raw
+        // pointer captured at pull time: JS may detach/transfer the backing
+        // ArrayBuffer between the pull and the data arriving, leaving
+        // `pending_view` dangling. A detached view re-derives to an empty slice.
+        var pending_slice: []u8 = &.{};
+        if (this.pending_value.get()) |view| {
+            if (view.asArrayBuffer(this.parent().globalThis)) |ab| {
+                pending_slice = ab.byteSlice();
+            }
+        }
+
         if (buf.len == 0) {
             if (this.buffered.items.len == 0) {
                 this.buffered.clearAndFree(bun.default_allocator);
@@ -379,8 +390,8 @@ pub fn onReadChunk(this: *@This(), init_buf: []const u8, state: bun.io.ReadState
             var buffer = &this.buffered;
             defer buffer.clearAndFree(bun.default_allocator);
             if (buffer.items.len > 0) {
-                if (this.pending_view.len >= buffer.items.len) {
-                    @memcpy(this.pending_view[0..buffer.items.len], buffer.items);
+                if (pending_slice.len >= buffer.items.len) {
+                    @memcpy(pending_slice[0..buffer.items.len], buffer.items);
                     this.pending.result = .{ .into_array_and_done = .{ .value = this.pending_value.get() orelse .zero, .len = @truncate(buffer.items.len) } };
                 } else {
                     this.pending.result = .{ .owned_and_done = bun.ByteList.moveFromList(buffer) };
@@ -393,8 +404,8 @@ pub fn onReadChunk(this: *@This(), init_buf: []const u8, state: bun.io.ReadState
 
         const was_done = this.reader.isDone();
 
-        if (this.pending_view.len >= buf.len) {
-            @memcpy(this.pending_view[0..buf.len], buf);
+        if (pending_slice.len >= buf.len) {
+            @memcpy(pending_slice[0..buf.len], buf);
             reader_buffer.clearRetainingCapacity();
             this.buffered.clearRetainingCapacity();
 

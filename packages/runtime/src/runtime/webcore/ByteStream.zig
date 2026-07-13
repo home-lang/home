@@ -162,8 +162,18 @@ pub fn onData(
 
     if (this.pending.state == .pending) {
         bun.assert(this.buffer.items.len == 0);
-        const to_copy = this.pending_buffer[0..@min(chunk.len, this.pending_buffer.len)];
-        const pending_buffer_len = this.pending_buffer.len;
+        // Re-derive the destination from the GC-rooted view rather than the raw
+        // pointer captured at pull time: JS may detach/transfer the backing
+        // ArrayBuffer between the pull and the data arriving, leaving
+        // `pending_buffer` dangling. A detached view re-derives to an empty slice.
+        var pending_slice: []u8 = &.{};
+        if (this.pending_value.get()) |view| {
+            if (view.asArrayBuffer(this.parent().globalThis)) |ab| {
+                pending_slice = ab.byteSlice();
+            }
+        }
+        const to_copy = pending_slice[0..@min(chunk.len, pending_slice.len)];
+        const pending_buffer_len = pending_slice.len;
         bun.assert(to_copy.ptr != chunk.ptr);
         @memcpy(to_copy, chunk[0..to_copy.len]);
         this.pending_buffer = &.{};
