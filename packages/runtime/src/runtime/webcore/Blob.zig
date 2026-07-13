@@ -1993,7 +1993,7 @@ pub fn JSDOMFile__construct_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
                         var content_type_str = try content_type.toSlice(globalThis, bun.default_allocator);
                         defer content_type_str.deinit();
                         const slice = content_type_str.slice();
-                        if (!strings.isAllASCII(slice)) {
+                        if (!isValidBlobType(slice)) {
                             break :inner;
                         }
                         blob.content_type_was_set = true;
@@ -2094,7 +2094,7 @@ pub fn constructBunFile(
                         var str = try file_type.toSlice(globalObject, bun.default_allocator);
                         defer str.deinit();
                         const slice = str.slice();
-                        if (!strings.isAllASCII(slice)) {
+                        if (!isValidBlobType(slice)) {
                             break :inner;
                         }
                         blob.content_type_was_set = true;
@@ -2490,7 +2490,7 @@ pub fn doWrite(this: *Blob, globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
                 var content_type_str = try content_type.toSlice(globalThis, bun.default_allocator);
                 defer content_type_str.deinit();
                 const slice = content_type_str.slice();
-                if (strings.isAllASCII(slice)) {
+                if (isValidBlobType(slice)) {
                     if (this.content_type_allocated) {
                         bun.default_allocator.free(this.content_type);
                         this.content_type_allocated = false;
@@ -2834,7 +2834,7 @@ pub fn getWriter(
                     var content_type_str = try content_type.toSlice(globalThis, bun.default_allocator);
                     defer content_type_str.deinit();
                     const slice = content_type_str.slice();
-                    if (strings.isAllASCII(slice)) {
+                    if (isValidBlobType(slice)) {
                         if (this.content_type_allocated) {
                             bun.default_allocator.free(this.content_type);
                             this.content_type_allocated = false;
@@ -3100,7 +3100,7 @@ pub fn getSlice(
                 var slicer = zig_str.toSlice(bun.default_allocator);
                 defer slicer.deinit();
                 const slice = slicer.slice();
-                if (!strings.isAllASCII(slice)) {
+                if (!isValidBlobType(slice)) {
                     break :inner;
                 }
 
@@ -3527,7 +3527,7 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
                                 var content_type_str = try content_type.toSlice(globalThis, bun.default_allocator);
                                 defer content_type_str.deinit();
                                 const slice = content_type_str.slice();
-                                if (!strings.isAllASCII(slice)) {
+                                if (!isValidBlobType(slice)) {
                                     break :inner;
                                 }
                                 blob.content_type_was_set = true;
@@ -5088,6 +5088,17 @@ pub fn isAllASCII(self: *const Blob) ?bool {
         .all_ascii => true,
         .non_ascii => false,
     };
+}
+
+/// A Blob/File `type` (content-type) must be printable ASCII per the WHATWG File
+/// API (bytes 0x20..0x7E). Rejecting control bytes — notably CR/LF — stops a
+/// crafted `type` from injecting extra HTTP headers when the Blob is sent as a
+/// request/response body.
+fn isValidBlobType(s: []const u8) bool {
+    for (s) |c| {
+        if (c < 0x20 or c > 0x7E) return false;
+    }
+    return true;
 }
 
 /// Takes ownership of `self` by value. Invalidates `self`.
