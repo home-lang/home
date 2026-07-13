@@ -473,6 +473,24 @@ pub const S3Credentials = struct {
         const service_name = "s3";
 
         const aws_content_hash = if (content_hash) |hash| hash else ("UNSIGNED-PAYLOAD");
+
+        // Reject CR/LF in any value that flows into a signed header or the
+        // request line: a crafted metadata/credential value could otherwise
+        // inject additional headers into the S3 request.
+        if (containsNewlineOrCR(aws_content_hash) or
+            (search_params != null and containsNewlineOrCR(search_params.?)) or
+            (acl != null and containsNewlineOrCR(acl.?)) or
+            (storage_class != null and containsNewlineOrCR(storage_class.?)) or
+            (content_md5 != null and containsNewlineOrCR(content_md5.?)) or
+            (content_disposition != null and containsNewlineOrCR(content_disposition.?)) or
+            (content_encoding != null and containsNewlineOrCR(content_encoding.?)) or
+            (session_token != null and containsNewlineOrCR(session_token.?)) or
+            containsNewlineOrCR(region) or
+            containsNewlineOrCR(this.accessKeyId) or
+            containsNewlineOrCR(host))
+        {
+            return error.InvalidHeaderValue;
+        }
         var tmp_buffer: [4096]u8 = undefined;
 
         const authorization = brk: {
