@@ -2893,7 +2893,10 @@ pub const Resolver = struct {
         // stack before null-terminating it. Reject anything that cannot fit so we never
         // index past that buffer. RFC 1035 caps hostnames at 253 octets and NI_MAXHOST
         // is 1025, so this never rejects a name that could have resolved.
-        if (name.len >= bun.MAX_PATH_BYTES) {
+        // Also reject an embedded NUL: the C getaddrinfo/c-ares path truncates at
+        // the NUL, so "good.com\x00evil.com" would resolve only "good.com" while the
+        // JS-visible string differs — a validation-bypass / SSRF vector.
+        if (name.len >= bun.MAX_PATH_BYTES or std.mem.indexOfScalar(u8, name, 0) != null) {
             var promise = jsc.JSPromise.Strong.init(globalThis);
             const promise_value = promise.value();
             c_ares.Error.ENOTFOUND.toDeferred("getaddrinfo", name, &promise).rejectLater(globalThis);
