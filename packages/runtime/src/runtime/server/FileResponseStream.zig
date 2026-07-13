@@ -33,7 +33,8 @@ state: packed struct(u8) {
     finished: bool = false,
     errored: bool = false,
     resp_detached: bool = false,
-    _: u4 = 0,
+    read_ref_held: bool = false,
+    _: u3 = 0,
 } = .{},
 
 const Mode = enum { reader, sendfile };
@@ -137,7 +138,7 @@ pub fn start(opts: StartOptions) void {
     }
 
     // hold a ref for the in-flight read; released in onReaderDone/onReaderError
-    this.ref();
+    this.holdReadRef();
     this.reader.read();
 }
 
@@ -188,7 +189,7 @@ pub fn onReadChunk(this: *FileResponseStream, chunk_: []const u8, state_: bun.io
     switch (this.resp.write(chunk)) {
         .backpressure => {
             // release the read ref; onWritable re-takes it
-            defer this.deref();
+            defer this.takeReadRef();
             this.resp.onWritable(*FileResponseStream, onWritable, this);
             if (comptime !bun.Environment.isPosix) this.reader.pause();
             return false;
@@ -197,13 +198,30 @@ pub fn onReadChunk(this: *FileResponseStream, chunk_: []const u8, state_: bun.io
     }
 }
 
+/// Take the in-flight-read ref idempotently: a second hold before release is a
+/// no-op, so the read ref can't be over-counted (leak).
+fn holdReadRef(this: *FileResponseStream) void {
+    if (this.state.read_ref_held) return;
+    this.state.read_ref_held = true;
+    this.ref();
+}
+
+/// Release the in-flight-read ref idempotently: if a drain point (backpressure,
+/// done, error) is reached more than once, only the first release derefs, so we
+/// never over-deref into a premature deinit (UAF).
+fn takeReadRef(this: *FileResponseStream) void {
+    if (!this.state.read_ref_held) return;
+    this.state.read_ref_held = false;
+    this.deref();
+}
+
 pub fn onReaderDone(this: *FileResponseStream) void {
-    defer this.deref();
+    defer this.takeReadRef();
     this.finish();
 }
 
 pub fn onReaderError(this: *FileResponseStream, err: bun.sys.Error) void {
-    defer this.deref();
+    defer this.takeReadRef();
     this.failWith(err);
 }
 
@@ -219,7 +237,7 @@ fn onWritable(this: *FileResponseStream, _: u64, _: AnyResponse) bool {
         return true;
     }
     this.resp.timeout(this.idle_timeout);
-    this.ref();
+    this.holdReadRef();
     this.reader.read();
     return true;
 }
