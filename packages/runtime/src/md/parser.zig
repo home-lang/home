@@ -201,6 +201,7 @@ pub const Parser = struct {
     pub const labelContainsLink = links_mod.labelContainsLink;
     pub const processWikiLink = links_mod.processWikiLink;
     pub const renderRefLink = links_mod.renderRefLink;
+    pub const chargeRefDefOutput = links_mod.chargeRefDefOutput;
     pub const findAutolink = links_mod.findAutolink;
     pub const renderAutolink = links_mod.renderAutolink;
 

@@ -166,6 +166,7 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
                 if (!is_image and has_inner_bracket and self.labelContainsLink(label)) {
                     return null;
                 }
+                if (!self.chargeRefDefOutput(ref_def.dest.len, ref_def.title.len)) return null;
                 try self.renderRefLink(label, ref_def, is_image);
                 return pos;
             }
@@ -185,6 +186,7 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
             if (!is_image and has_inner_bracket and self.labelContainsLink(label)) {
                 return null;
             }
+            if (!self.chargeRefDefOutput(ref_def.dest.len, ref_def.title.len)) return null;
             try self.renderRefLink(label, ref_def, is_image);
             return label_end + 1;
         }
@@ -415,6 +417,20 @@ pub fn processWikiLink(self: *Parser, content: []const u8, start: usize) Parser.
 }
 
 /// Render a reference link/image given the resolved ref def.
+/// Charge one resolved reference link/image against the ref-def output budget.
+/// On exhaustion the budget is zeroed so this and every later reference
+/// degrades to literal text, bounding quadratic reference expansion on hostile
+/// markdown (md4c, mity/md4c#238).
+pub fn chargeRefDefOutput(self: *Parser, dest_len: usize, title_len: usize) bool {
+    const n: u64 = @as(u64, dest_len) + @as(u64, title_len);
+    if (n < self.max_ref_def_output) {
+        self.max_ref_def_output -= n;
+        return true;
+    }
+    self.max_ref_def_output = 0;
+    return false;
+}
+
 pub fn renderRefLink(self: *Parser, label_content: []const u8, ref: RefDef, is_image: bool) Parser.Error!void {
     if (self.image_nesting_level > 0) {
         // Inside image alt text — emit only text, no HTML tags
