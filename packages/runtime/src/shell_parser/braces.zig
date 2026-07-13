@@ -50,6 +50,18 @@ pub const AST = struct {
 
 const MAX_NESTED_BRACES = 10;
 
+/// Cap on the number of brace groups. N open braces multiply the number of
+/// produced words, so an unbounded count is a combinatorial-explosion DoS.
+const MAX_BRACE_GROUPS = 256;
+
+fn checkBraceGroupCount(tokens: []const Token) ParserError!void {
+    var opens: usize = 0;
+    for (tokens) |*tok| {
+        if (tok.* == .open) opens += 1;
+    }
+    if (opens > MAX_BRACE_GROUPS) return error.TooManyBraces;
+}
+
 const ExpandError = ParserError;
 
 /// `out` is preallocated by using the result from `calculateExpandedAmount`
@@ -59,6 +71,7 @@ pub fn expand(
     out: []std.array_list.Managed(u8),
     contains_nested: bool,
 ) ExpandError!void {
+    try checkBraceGroupCount(tokens);
     var out_key_counter: u16 = 1;
     if (!contains_nested) {
         var expansions_table = try buildExpansionTableAlloc(allocator, tokens);
@@ -224,6 +237,7 @@ fn calculateVariantsAmount(tokens: []const Token) u32 {
 
 const ParserError = bun.OOM || error{
     UnexpectedToken,
+    TooManyBraces,
 };
 
 pub const Parser = struct {
@@ -244,6 +258,7 @@ pub const Parser = struct {
     }
 
     pub fn parse(self: *Parser) !AST.Group {
+        try checkBraceGroupCount(self.tokens);
         var group_alloc_buf: [@sizeOf(AST.Atom)]u8 = undefined;
         var group_alloc_ = bun.BufferFirstAllocator.init(&group_alloc_buf, self.alloc);
         const group_alloc = group_alloc_.allocator();

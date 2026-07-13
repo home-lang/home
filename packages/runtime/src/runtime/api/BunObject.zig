@@ -281,6 +281,13 @@ pub fn braces(global: *jsc.JSGlobalObject, brace_str: bun.String, opts: gen.Brac
         return bun.String.toJSArray(global, &.{brace_str});
     }
 
+    // Hard cap before preallocation: calculateExpandedAmount saturates to
+    // u32 max, so a tiny nested input can otherwise request a huge allocation.
+    const MAX_BRACE_EXPANSIONS: u32 = 65536;
+    if (expansion_count > MAX_BRACE_EXPANSIONS) {
+        return global.throwPretty("Too many brace expansions ({d} > {d})", .{ expansion_count, MAX_BRACE_EXPANSIONS });
+    }
+
     var expanded_strings = try arena.allocator().alloc(std.array_list.Managed(u8), expansion_count);
 
     for (0..expansion_count) |i| {
@@ -295,6 +302,7 @@ pub fn braces(global: *jsc.JSGlobalObject, brace_str: bun.String, opts: gen.Brac
     ) catch |err| switch (err) {
         error.OutOfMemory => |e| return e,
         error.UnexpectedToken => return global.throwPretty("Unexpected token while expanding braces", .{}),
+        error.TooManyBraces => return global.throwPretty("Too many braces in brace expansion", .{}),
     };
 
     var out_strings = try arena.allocator().alloc(bun.String, expansion_count);

@@ -237,6 +237,14 @@ pub fn next(this: *Expansion) Yield {
                 };
                 const expansion_count = Braces.calculateExpandedAmount(lexer_output.tokens.items[0..]);
 
+                // Hard cap before preallocation: the saturating count can be
+                // huge for a tiny nested input (see Bun.braces host fn).
+                const MAX_BRACE_EXPANSIONS: u32 = 65536;
+                if (expansion_count > MAX_BRACE_EXPANSIONS) {
+                    this.state = .{ .err = .{ .custom = bun.handleOom(this.base.allocator().dupe(u8, "too many brace expansions")) } };
+                    break;
+                }
+
                 const stack_max = comptime 16;
                 comptime {
                     assert(@sizeOf([]std.array_list.Managed(u8)) * stack_max <= 256);
@@ -260,6 +268,12 @@ pub fn next(this: *Expansion) Yield {
                         "unexpected error from Braces.expand: UnexpectedToken",
                         .{},
                     ),
+                    // Reachable from user input (a command with >256 brace
+                    // groups); report a shell error instead of panicking.
+                    error.TooManyBraces => {
+                        this.state = .{ .err = .{ .custom = bun.handleOom(this.base.allocator().dupe(u8, "too many braces in brace expansion")) } };
+                        break;
+                    },
                 };
 
                 this.outEnsureUnusedCapacity(expansion_count);
