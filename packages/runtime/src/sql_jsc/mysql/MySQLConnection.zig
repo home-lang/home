@@ -451,13 +451,12 @@ pub fn handleHandshake(this: *MySQLConnection, comptime Context: type, reader: N
         this._tls_status = .ssl_not_available;
 
         switch (this._ssl_mode) {
-            .verify_ca, .verify_full => {
+            // `require` must fail closed: silently downgrading to plaintext when
+            // the server doesn't advertise CLIENT_SSL enables a MITM SSL-strip.
+            .require, .verify_ca, .verify_full => {
                 return error.AuthenticationFailed;
             },
-            // require behaves like prefer for postgres.js compatibility,
-            // allowing graceful fallback to non-SSL when the server
-            // doesn't support it.
-            .require, .prefer, .disable => {},
+            .prefer, .disable => {},
         }
     }
     // Send auth response
@@ -1054,6 +1053,11 @@ fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewRe
                 try header.decode(reader);
                 if (header.field_count == 0) {
                     // Can't be 0
+                    return error.UnexpectedPacket;
+                }
+                // A hostile/corrupt server can send a huge lenenc field_count and
+                // force a gigabyte-scale ColumnDefinition41 allocation; cap it.
+                if (header.field_count > 4096) {
                     return error.UnexpectedPacket;
                 }
                 if (statement.columns.len != header.field_count) {
