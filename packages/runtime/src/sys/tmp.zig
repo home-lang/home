@@ -40,7 +40,10 @@ pub const Tmpfile = struct {
                 }
             }
 
-            tmpfile.fd = switch (bun.sys.openat(destination_dir, tmpfilename, O.CREAT | O.CLOEXEC | O.WRONLY, perm)) {
+            // O.EXCL: fail rather than open an existing path, so an attacker who
+            // pre-creates the temp name (e.g. as a symlink) cannot redirect the
+            // write outside the destination dir (TOCTOU / symlink attack).
+            tmpfile.fd = switch (bun.sys.openat(destination_dir, tmpfilename, O.CREAT | O.EXCL | O.CLOEXEC | O.WRONLY, perm)) {
                 .result => |fd| switch (fd.makeLibUVOwnedForSyscall(.open, .close_on_fail)) {
                     .result => |owned_fd| owned_fd,
                     .err => |err| return .{ .err = err },
