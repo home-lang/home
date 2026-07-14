@@ -769,6 +769,30 @@ pub const PackageInstaller = struct {
         _ = patchfile_path; // autofix
     }
 
+    /// A dependency alias becomes the install destination inside `node_modules`
+    /// (used as a relative path for delete/rename/create), so reject anything
+    /// that could escape it: empty, over-long, `\`, `:`, NUL, empty/`.`/`..`
+    /// components, or more than a single `@scope/name` segment.
+    fn aliasIsSafeInstallTarget(alias: []const u8) bool {
+        if (alias.len == 0 or
+            alias.len >= bun.MAX_PATH_BYTES or
+            std.mem.indexOfScalar(u8, alias, '\\') != null or
+            std.mem.indexOfScalar(u8, alias, ':') != null or
+            std.mem.indexOfScalar(u8, alias, 0) != null)
+        {
+            return false;
+        }
+        var component_count: usize = 0;
+        var it = std.mem.splitScalar(u8, alias, '/');
+        while (it.next()) |component| {
+            component_count += 1;
+            if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) {
+                return false;
+            }
+        }
+        return component_count == 1 or (component_count == 2 and alias[0] == '@');
+    }
+
     pub fn installPackageWithNameAndResolution(
         this: *PackageInstaller,
         dependency_id: DependencyID,
@@ -786,6 +810,18 @@ pub const PackageInstaller = struct {
         comptime is_pending_package_install: bool,
     ) void {
         const alias = this.lockfile.buffers.dependencies.items[dependency_id].name;
+        {
+            const alias_check = alias.slice(this.lockfile.buffers.string_bytes.items);
+            if (!aliasIsSafeInstallTarget(alias_check)) {
+                if (log_level != .silent) {
+                    Output.prettyErrorln("<r><red>error<r>: refusing to install dependency with unsafe name <b>{s}<r>", .{alias_check});
+                    Output.flush();
+                }
+                this.summary.fail += 1;
+                this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
+                return;
+            }
+        }
         const destination_dir_subpath: [:0]u8 = brk: {
             const alias_slice = alias.slice(this.lockfile.buffers.string_bytes.items);
             bun.copy(u8, &this.destination_dir_subpath_buf, alias_slice);
