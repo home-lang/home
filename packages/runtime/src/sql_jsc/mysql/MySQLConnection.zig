@@ -1132,7 +1132,13 @@ fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewRe
     }
 }
 
-const PreparedStatementsMap = std.HashMapUnmanaged(u64, *MySQLStatement, bun.IdentityContext(u64), 80);
+// Keyed by the full statement signature name (query text + bound-parameter
+// type tags), not a 64-bit hash of it: a hash collision would alias two
+// distinct prepared statements and execute the wrong one. `std.StringHashMap`
+// does not copy keys — the stored key points at the resident statement's
+// owned `signature.name`, which outlives the entry (no `remove`; freed only
+// when the statement is deref'd during connection deinit).
+const PreparedStatementsMap = std.StringHashMapUnmanaged(*MySQLStatement);
 const debug = bun.Output.scoped(.MySQLConnection, .visible);
 
 pub const ErrorPacket = @import("../../sql/mysql/protocol/ErrorPacket.zig");

@@ -765,8 +765,8 @@ pub fn onErrorPacket(
     }
 }
 
-pub fn getStatementFromSignatureHash(this: *@This(), signature_hash: u64) !MySQLConnection.PreparedStatementsMapGetOrPutResult {
-    return try this._connection.statements.getOrPut(bun.default_allocator, signature_hash);
+pub fn getStatementFromSignatureName(this: *@This(), signature_name: []const u8) !MySQLConnection.PreparedStatementsMapGetOrPutResult {
+    return try this._connection.statements.getOrPut(bun.default_allocator, signature_name);
 }
 
 const RefCount = bun.ptr.RefCount(@This(), "__ref_count", deinit, .{});

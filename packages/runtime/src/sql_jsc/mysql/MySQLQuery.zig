@@ -154,7 +154,7 @@ fn runPreparedQuery(
             return error.JSError;
         };
         errdefer signature.deinit();
-        const entry = connection.getStatementFromSignatureHash(bun.hash(signature.name)) catch |err| {
+        const entry = connection.getStatementFromSignatureName(signature.name) catch |err| {
             return globalObject.throwError(err, "failed to allocate statement");
         };
 
