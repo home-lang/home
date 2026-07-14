@@ -1604,6 +1604,7 @@ pub fn NewSocket(comptime ssl: bool) type {
             var tls = bun.new(TLSSocket, .{
                 .ref_count = .init(),
                 .handlers = handlers_ptr,
+                .flags = .{ .owns_handlers = true },
                 .socket = TLSSocket.Socket.detached,
                 .connection = if (this.connection) |c| c.clone() else null,
                 .protos = if (cfg) |c| if (c.protos) |p|
@@ -1803,7 +1804,11 @@ const Flags = packed struct(u16) {
     /// `us_socket_raw_write` (bypassing the SSL layer) so node:net can pipe
     /// pre-handshake bytes / read the underlying TCP stream.
     bypass_tls: bool = false,
-    _: u6 = 0,
+    /// Whether `handlers` points at a per-socket heap copy this socket owns (and
+    /// must free), vs a borrowed pointer into the Listener's handlers. Defaults
+    /// false so a missed set leaks rather than freeing a borrowed pointer (UAF).
+    owns_handlers: bool = false,
+    _: u5 = 0,
 };
 
 /// Unified socket mode replacing the old is_server bool + TLSMode pair.
@@ -2110,6 +2115,7 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
     var tls = bun.new(TLSSocket, .{
         .ref_count = .init(),
         .handlers = handlers_ptr,
+        .flags = .{ .owns_handlers = true },
         .socket = TLSSocket.Socket.detached,
         .connection = null,
         .protos = if (socket_config) |cfg| if (cfg.protos) |p|

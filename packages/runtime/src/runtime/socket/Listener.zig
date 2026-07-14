@@ -667,12 +667,18 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
 
             if (ssl_enabled) {
                 var tls = if (prev_maybe_tls) |prev| blk: {
-                    if (prev.handlers) |prev_handlers| {
-                        prev_handlers.deinit();
-                        handlers.vm.allocator.destroy(prev_handlers);
+                    // Only free the previous handlers if this socket owns them
+                    // (a per-socket heap copy) — a borrowed pointer into the
+                    // Listener's handlers must not be freed (use-after-free).
+                    if (prev.flags.owns_handlers) {
+                        if (prev.handlers) |prev_handlers| {
+                            prev_handlers.deinit();
+                            handlers.vm.allocator.destroy(prev_handlers);
+                        }
                     }
                     bun.assert(prev.this_value.isNotEmpty());
                     prev.handlers = handlers_ptr;
+                    prev.flags.owns_handlers = true;
                     bun.assert(prev.socket.socket == .detached);
                     // Free old resources before reassignment to prevent memory leaks
                     // when sockets are reused for reconnection (common with MongoDB driver)
@@ -694,6 +700,7 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                 } else TLSSocket.new(.{
                     .ref_count = .init(),
                     .handlers = handlers_ptr,
+                    .flags = .{ .owns_handlers = true },
                     .socket = TLSSocket.Socket.detached,
                     .connection = connection,
                     .protos = if (ssl) |s| s.takeProtos() else null,
@@ -731,11 +738,17 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
             } else {
                 var tcp = if (prev_maybe_tcp) |prev| blk: {
                     bun.assert(prev.this_value.isNotEmpty());
-                    if (prev.handlers) |prev_handlers| {
-                        prev_handlers.deinit();
-                        handlers.vm.allocator.destroy(prev_handlers);
+                    // Only free the previous handlers if this socket owns them
+                    // (a per-socket heap copy) — a borrowed pointer into the
+                    // Listener's handlers must not be freed (use-after-free).
+                    if (prev.flags.owns_handlers) {
+                        if (prev.handlers) |prev_handlers| {
+                            prev_handlers.deinit();
+                            handlers.vm.allocator.destroy(prev_handlers);
+                        }
                     }
                     prev.handlers = handlers_ptr;
+                    prev.flags.owns_handlers = true;
                     bun.assert(prev.socket.socket == .detached);
                     // Adopt `connection` (heap-owned for .unix) so the socket's
                     // deinit frees it; matches the TLS arm above and the
@@ -751,6 +764,7 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                 } else TCPSocket.new(.{
                     .ref_count = .init(),
                     .handlers = handlers_ptr,
+                    .flags = .{ .owns_handlers = true },
                     .socket = TCPSocket.Socket.detached,
                     .connection = connection,
                     .protos = null,
@@ -823,11 +837,17 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
 
             const socket = if (maybe_previous) |prev| blk: {
                 bun.assert(prev.this_value.isNotEmpty());
-                if (prev.handlers) |prev_handlers| {
-                    prev_handlers.deinit();
-                    handlers.vm.allocator.destroy(prev_handlers);
+                // Only free the previous handlers if this socket owns them (a
+                // per-socket heap copy); a borrowed pointer into the Listener's
+                // handlers must not be freed (use-after-free).
+                if (prev.flags.owns_handlers) {
+                    if (prev.handlers) |prev_handlers| {
+                        prev_handlers.deinit();
+                        handlers.vm.allocator.destroy(prev_handlers);
+                    }
                 }
                 prev.handlers = handlers_ptr;
+                prev.flags.owns_handlers = true;
                 bun.assert(prev.socket.socket == .detached);
                 // Free old resources before reassignment to prevent memory leaks
                 // when sockets are reused for reconnection (common with MongoDB driver)
@@ -851,6 +871,7 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
             } else bun.new(SocketType, .{
                 .ref_count = .init(),
                 .handlers = handlers_ptr,
+                .flags = .{ .owns_handlers = true },
                 .socket = SocketType.Socket.detached,
                 .connection = connection,
                 .protos = if (ssl) |s| s.takeProtos() else null,
