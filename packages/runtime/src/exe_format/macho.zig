@@ -77,7 +77,9 @@ pub const MachoFile = struct {
                                     found_bun = true;
                                     original_fileoff = sect.offset;
                                     original_vmaddr = sect.addr;
-                                    original_data_end = command.fileoff + command.filesize;
+                                    const de_sum, const de_ov = @addWithOverflow(command.fileoff, command.filesize);
+                                    if (de_ov != 0) return error.OffsetOverflow;
+                                    original_data_end = de_sum;
                                     original_segsize = command.filesize;
                                     self.segment = command;
                                     self.section = sect.*;
@@ -148,6 +150,13 @@ pub const MachoFile = struct {
                 return error.MissingLinkeditSegment;
 
         var sig_size: usize = 0;
+
+        // Bounds/overflow guard for the memmove below: a crafted Mach-O with
+        // out-of-range segment offsets could otherwise slice past the buffer.
+        const prev_len = self.data.items.len;
+        const bun_end, const be_ov = @addWithOverflow(original_fileoff, original_segsize);
+        if (be_ov != 0) return error.OffsetOverflow;
+        if (bun_end > prev_len or original_data_end > bun_end) return error.OffsetOutOfRange;
 
         const prev_data_slice = self.data.items[original_fileoff..];
         self.data.items.len += @as(usize, @intCast(size_diff));
