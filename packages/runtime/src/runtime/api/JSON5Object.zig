@@ -391,6 +391,12 @@ const Stringifier = struct {
 };
 
 fn exprToJS(expr: Expr, global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+    // A deeply-nested JSON5 value recurses through exprToJS unbounded; guard the
+    // recursion funnel so a hostile document throws instead of overflowing the
+    // native stack.
+    if (!bun.StackCheck.init().isSafeToRecurse()) {
+        return global.throwStackOverflow();
+    }
     switch (expr.data) {
         .e_null => return .null,
         .e_boolean => |boolean| return .jsBoolean(boolean.value),
