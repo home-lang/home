@@ -15434,6 +15434,9 @@ pub const Parser = struct {
             },
             .bang => {
                 _ = self.advance();
+                if (self.peekIsUnaryOperandStopToken()) {
+                    return try self.recoverUnaryMissingOperand(t, .not);
+                }
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .not, operand);
@@ -18803,6 +18806,24 @@ test "parser: variable declaration list tolerates additional declarators" {
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: missing logical-not operand preserves source file" {
+    var s = try newTestSetup(
+        \\var before = !b + b;
+        \\var logical =!;
+        \\var after = 1;
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmts[0]).init));
+    try T.expectEqual(hir_mod.NodeKind.unary_op, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmts[1]).init));
+    try T.expectEqual(hir_mod.NodeKind.literal_number, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmts[2]).init));
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: for-init multi-declarator wraps every binding into the init block" {
