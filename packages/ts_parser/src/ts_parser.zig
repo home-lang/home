@@ -2058,13 +2058,7 @@ pub const Parser = struct {
             // Preserve the label in the AST (`L: <stmt>`) so the emitter can
             // re-render it — dropping it would orphan `break L` / `continue L`.
             const label_ident = try self.builder.addIdentifier(tokenSpan(label_tok), label_name);
-            if (self.isAmbientContextAt(label_tok.span.start)) {
-                self.nested_statement_depth += 1;
-                defer self.nested_statement_depth -= 1;
-                const inner_a = try self.parseStatement();
-                return try self.builder.addLabeledStmt(.{ .start = label_tok.span.start, .end = self.hir.spanOf(inner_a).end }, label_ident, inner_a);
-            }
-            const inner = try self.parseStatement();
+            const inner = try self.parseNestedStatement();
             return try self.builder.addLabeledStmt(.{ .start = label_tok.span.start, .end = self.hir.spanOf(inner).end }, label_ident, inner);
         }
         return switch (t.kind) {
@@ -20193,6 +20187,15 @@ test "parser: label before declaration reports TS1344" {
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: export modifier in labeled statement reports TS1184" {
+    var s = try newTestSetup("label: export const x = 1;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1344));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1184));
 }
 
 test "parser: label before var in strict block reports TS1344 and later break TS1107" {
