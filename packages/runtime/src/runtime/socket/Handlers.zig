@@ -313,6 +313,11 @@ pub const SocketConfig = struct {
             if (hostname.length() == 0) return global.throwInvalidArguments("Expected a non-empty \"hostname\"", .{});
             result.hostname_or_unix = hostname.toUTF8(bun.default_allocator);
             const slice = result.hostname_or_unix.slice();
+            // A null byte truncates the hostname at the C-string boundary, so a
+            // later connect could target a different host than validated.
+            if (strings.indexOfChar(slice, 0) != null) {
+                return global.throwInvalidArguments("\"hostname\" must not contain null bytes", .{});
+            }
             result.port = generated.port orelse bun.URL.parse(slice).getPort() orelse {
                 return global.throwInvalidArguments("Missing \"port\"", .{});
             };
