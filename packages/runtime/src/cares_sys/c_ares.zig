@@ -610,7 +610,9 @@ pub const Channel = opaque {
     }
 
     pub fn resolve(this: *Channel, name: []const u8, comptime lookup_name: []const u8, comptime Type: type, ctx: *Type, comptime cares_type: type, comptime callback: cares_type.Callback(Type)) void {
-        if (name.len >= 1023 or (name.len == 0 and !(strings.eqlComptime(lookup_name, "ns") or strings.eqlComptime(lookup_name, "soa")))) {
+        // An embedded NUL truncates the name at the C-string boundary below, so
+        // c-ares would resolve a different domain than was validated.
+        if (name.len >= 1023 or strings.indexOfChar(name, 0) != null or (name.len == 0 and !(strings.eqlComptime(lookup_name, "ns") or strings.eqlComptime(lookup_name, "soa")))) {
             return cares_type.callbackWrapper(lookup_name, Type, callback).?(ctx, ARES_EBADNAME, 0, null, 0);
         }
 
