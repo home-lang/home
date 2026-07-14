@@ -522,13 +522,17 @@ pub const Object = struct {
         head: Expr,
         next: ?*Rope = null,
         pub fn append(this: *Rope, expr: Expr, allocator: std.mem.Allocator) OOM!*Rope {
-            if (this.next) |next| {
-                return try next.append(expr, allocator);
+            // Walk to the tail iteratively: recursing once per node overflows
+            // the native stack on adversarially deep ropes (e.g. an `.npmrc`
+            // section header with thousands of dot-separated segments).
+            var tail = this;
+            while (tail.next) |next| {
+                tail = next;
             }
 
             const rope = try allocator.create(Rope);
             rope.* = .{ .head = expr };
-            this.next = rope;
+            tail.next = rope;
             return rope;
         }
     };
