@@ -3087,19 +3087,30 @@ pub fn ambientModuleExportFacts(
         compilation.deinit();
         gpa.destroy(compilation);
     }
-    const name_id = compilation.interner.lookup(name) orelse return null;
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return null;
+    const name_id = compilation.interner.lookup(name);
     var facts: ModuleExportFacts = .{};
     var found_module = false;
     for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
-        const stmt_kind = compilation.hir.kindOf(stmt);
+        const local = if (compilation.hir.kindOf(stmt) == .export_decl)
+            hir_mod_ns.exportOf(&compilation.hir, stmt).decl
+        else
+            stmt;
+        if (local == hir_mod_ns.none_node_id) continue;
+        const stmt_kind = compilation.hir.kindOf(local);
         if (stmt_kind != .module_decl and stmt_kind != .namespace_decl) continue;
-        const ns = hir_mod_ns.namespaceOf(&compilation.hir, stmt);
-        if (ns.name == hir_mod_ns.none_node_id or compilation.hir.kindOf(ns.name) != .literal_string) continue;
-        const lit = hir_mod_ns.literalStringOf(&compilation.hir, ns.name);
-        if (!moduleNameMatchesSpecifier(compilation.interner.get(lit.value), specifier)) continue;
+        const ns = hir_mod_ns.namespaceOf(&compilation.hir, local);
+        if (ns.name == hir_mod_ns.none_node_id) continue;
+        const module_name = switch (compilation.hir.kindOf(ns.name)) {
+            .identifier => compilation.interner.get(hir_mod_ns.identifierOf(&compilation.hir, ns.name).name),
+            .literal_string => compilation.interner.get(hir_mod_ns.literalStringOf(&compilation.hir, ns.name).value),
+            else => continue,
+        };
+        if (!moduleNameMatchesSpecifier(module_name, specifier)) continue;
         found_module = true;
-        collectAmbientModuleExportFacts(&compilation.hir, name_id, hir_mod_ns.namespaceBody(&compilation.hir, stmt), true, &facts);
+        if (name_id) |id| {
+            collectAmbientModuleExportFacts(&compilation.hir, id, hir_mod_ns.namespaceBody(&compilation.hir, local), true, &facts);
+        }
     }
     return if (found_module) facts else null;
 }
@@ -3253,6 +3264,20 @@ fn declarationName(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) hir_mod_
             const c = hir_mod_ns.classOf(hir, node);
             break :blk if (c.name != hir_mod_ns.none_node_id and hir.kindOf(c.name) == .identifier)
                 hir_mod_ns.identifierOf(hir, c.name).name
+            else
+                0;
+        },
+        .interface_decl => blk: {
+            const interface = hir_mod_ns.interfaceOf(hir, node);
+            break :blk if (interface.name != hir_mod_ns.none_node_id and hir.kindOf(interface.name) == .identifier)
+                hir_mod_ns.identifierOf(hir, interface.name).name
+            else
+                0;
+        },
+        .type_alias_decl => blk: {
+            const alias = hir_mod_ns.typeAliasOf(hir, node);
+            break :blk if (alias.name != hir_mod_ns.none_node_id and hir.kindOf(alias.name) == .identifier)
+                hir_mod_ns.identifierOf(hir, alias.name).name
             else
                 0;
         },
@@ -4947,6 +4972,28 @@ test "renderModuleDisplayName quotes the module stem" {
     const m2 = try renderModuleDisplayName(T.allocator, "/node_modules/pkg/type.d.ts");
     defer T.allocator.free(m2);
     try T.expectEqualStrings("\"type\"", m2);
+}
+
+test "ambientModuleExportFacts distinguishes a missing wildcard export" {
+    const source =
+        \\declare module "*.foo" {
+        \\  let everywhere: string;
+        \\}
+    ;
+    const exported = ambientModuleExportFacts(T.allocator, source, "a.foo", "everywhere", false).?;
+    try T.expect(exported.exported_value);
+
+    const missing = ambientModuleExportFacts(T.allocator, source, "b.foo", "onlyInA", false).?;
+    try T.expect(!missing.exported_type);
+    try T.expect(!missing.exported_value);
+
+    const type_source =
+        \\declare module "*.foo" {
+        \\  export interface OhNo { star: string }
+        \\}
+    ;
+    const exported_type = ambientModuleExportFacts(T.allocator, type_source, "b.foo", "OhNo", false).?;
+    try T.expect(exported_type.exported_type);
 }
 
 test "moduleExportsTypeSpaceName: exported interface is a type-space export" {

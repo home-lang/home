@@ -47,6 +47,13 @@ const CheckerResolverAdapter = struct {
         pos: u32,
     };
 
+    const AmbientExportQuery = struct {
+        facts: ts_program.ModuleExportFacts = .{},
+        path: []const u8,
+        display_specifier: []const u8,
+        type_only_path: []const u8 = "",
+    };
+
     pub const vtable = ts_checker.ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
@@ -104,6 +111,37 @@ const CheckerResolverAdapter = struct {
         return null;
     }
 
+    fn ambientModuleExportQuery(
+        self: *CheckerResolverAdapter,
+        specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+    ) ?AmbientExportQuery {
+        var result: ?AmbientExportQuery = null;
+        for (self.ambient_modules) |m| {
+            if (!moduleNameMatchesSpecifier(m.specifier, specifier)) continue;
+            if (!ambientAtTypesModuleVisibleFrom(m.path, containing_file)) continue;
+            const src = self.resolver.fs.readFile(self.resolver.gpa, m.path) catch return null;
+            defer self.resolver.gpa.free(src);
+            const is_tsx = std.mem.endsWith(u8, m.path, ".tsx") or std.mem.endsWith(u8, m.path, ".jsx");
+            const facts = ts_program.ambientModuleExportFacts(self.resolver.gpa, src, specifier, name, is_tsx) orelse return null;
+            if (result == null) {
+                result = .{
+                    .path = m.path,
+                    .display_specifier = m.specifier,
+                };
+            }
+            result.?.facts.exported_type = result.?.facts.exported_type or facts.exported_type;
+            result.?.facts.exported_value = result.?.facts.exported_value or facts.exported_value;
+            result.?.facts.ambient_const_enum = result.?.facts.ambient_const_enum or facts.ambient_const_enum;
+            if (result.?.facts.type_only_pos == null and facts.type_only_pos != null) {
+                result.?.facts.type_only_pos = facts.type_only_pos;
+                result.?.type_only_path = m.path;
+            }
+        }
+        return result;
+    }
+
     fn moduleExportImpl(
         self_ptr: *anyopaque,
         specifier: []const u8,
@@ -113,55 +151,53 @@ const CheckerResolverAdapter = struct {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
         var stack_buf: [1024]u8 = undefined;
         const containing = canonicalContainingPath(&stack_buf, containing_file);
-        const r = self.resolver.resolve(specifier, containing) catch return null;
+        const resolved: ?ts_resolver.Resolution = self.resolver.resolve(specifier, containing) catch null;
+        const ambient = self.ambientModuleExportQuery(specifier, containing, name);
+        if (resolved == null and ambient == null) return null;
+        const module_path = if (resolved) |r| r.path else ambient.?.path;
         // Read the resolved module's source and parse+bind it to query
         // its top-level export table. The resolver's arena outlives the
         // checker calls, so the rendered module name borrowed by the
         // checker stays valid.
         const arena = self.resolver.arena.allocator();
-        const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
+        const src = self.resolver.fs.readFile(self.resolver.gpa, module_path) catch return null;
         defer self.resolver.gpa.free(src);
-        const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or std.mem.endsWith(u8, module_path, ".jsx");
         const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx) or
             ts_program.moduleExportsTypeOnlyNamespaceName(self.resolver.gpa, src, name, is_tsx);
         const exported_value = ts_program.moduleExportsValueSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const ambient_const_enum = ts_program.moduleExportsAmbientConstEnumName(self.resolver.gpa, src, r.path, name, is_tsx);
-        const has_ambient_module = self.ambientModulePathForSpecifier(specifier, containing) != null;
-        var ambient_src_owned: ?[]const u8 = null;
-        defer if (ambient_src_owned) |owned| self.resolver.gpa.free(owned);
-        const ambient_facts = if (self.ambientModulePathForSpecifier(specifier, containing)) |ambient_path| blk: {
-            const ambient_src = if (std.mem.eql(u8, ambient_path, r.path))
-                src
-            else src_blk: {
-                ambient_src_owned = self.resolver.fs.readFile(self.resolver.gpa, ambient_path) catch break :blk null;
-                break :src_blk ambient_src_owned.?;
-            };
-            break :blk ts_program.ambientModuleExportFacts(self.resolver.gpa, ambient_src, specifier, name, is_tsx);
-        } else null;
+        const ambient_const_enum = ts_program.moduleExportsAmbientConstEnumName(self.resolver.gpa, src, module_path, name, is_tsx);
         // `cannot be named`: not a direct top-level export, but reachable
         // only as a nested member of an exported namespace (no importable
         // alias). Only queried when it is not a top-level export.
-        const ambient_exported = if (ambient_facts) |facts| facts.exported_type or facts.exported_value else false;
+        const ambient_exported = if (ambient) |query| query.facts.exported_type or query.facts.exported_value else false;
         const cannot_be_named = !exported and !ambient_exported and
             ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const type_only_info = self.moduleTypeOnlyExportInfoFromSource(src, r.path, name, is_tsx);
+        const type_only_info = if (resolved != null)
+            self.moduleTypeOnlyExportInfoFromSource(src, module_path, name, is_tsx)
+        else
+            null;
         const type_only_pos = if (type_only_info) |info| info.pos else null;
-        const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
-        const effective_type_only_pos = if (ambient_facts) |facts| facts.type_only_pos orelse type_only_pos else type_only_pos;
-        const effective_type_only_path = if (ambient_facts) |facts|
-            if (facts.type_only_pos != null) r.path else if (type_only_info) |info| info.path else r.path
-        else if (type_only_info) |info| info.path else r.path;
+        const module_name = if (resolved != null)
+            ts_program.renderModuleDisplayName(arena, module_path) catch return null
+        else
+            std.fmt.allocPrint(arena, "\"{s}\"", .{ambient.?.display_specifier}) catch return null;
+        const effective_type_only_pos = if (ambient) |query| query.facts.type_only_pos orelse type_only_pos else type_only_pos;
+        const effective_type_only_path = if (ambient) |query|
+            if (query.facts.type_only_pos != null) query.type_only_path else if (type_only_info) |info| info.path else module_path
+        else if (type_only_info) |info| info.path else module_path;
         const export_path = if (effective_type_only_pos != null) (arena.dupe(u8, effective_type_only_path) catch return null) else "";
         return .{
             .module_name = module_name,
-            .exported_type = exported or if (ambient_facts) |facts| facts.exported_type else false,
-            .exported_value = exported_value or if (ambient_facts) |facts| facts.exported_value else false,
-            .ambient_const_enum = ambient_const_enum or if (ambient_facts) |facts| facts.ambient_const_enum else false,
+            .exported_type = exported or if (ambient) |query| query.facts.exported_type else false,
+            .exported_value = exported_value or if (ambient) |query| query.facts.exported_value else false,
+            .ambient_const_enum = ambient_const_enum or if (ambient) |query| query.facts.ambient_const_enum else false,
             .cannot_be_named = cannot_be_named,
             .type_only_export = effective_type_only_pos != null,
             .export_path = export_path,
             .export_pos = effective_type_only_pos orelse 0,
-            .ambient_module = has_ambient_module,
+            .ambient_module = ambient != null,
+            .ambient_module_exports_known = ambient != null,
         };
     }
 
