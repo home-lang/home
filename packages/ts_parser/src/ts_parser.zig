@@ -8881,6 +8881,11 @@ pub const Parser = struct {
                 try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1009, "Trailing comma not allowed.");
                 break;
             }
+            if (self.peek().kind == .string_literal or self.peek().kind == .number_literal) {
+                const bad_decl = self.advance();
+                try self.reportCodeAt(bad_decl.span.start, bad_decl.line, 1134, "Variable declaration expected.");
+                continue;
+            }
             const extra_name: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
             } else id_blk: {
@@ -8942,7 +8947,8 @@ pub const Parser = struct {
         }
         if (init_node != hir_mod.none_node_id and
             !self.peek().flags.preceded_by_newline and
-            (self.peek().kind == .kw_typeof or self.peek().kind == .kw_delete or self.peek().kind == .kw_void))
+            (self.peek().kind == .kw_typeof or self.peek().kind == .kw_delete or
+                self.peek().kind == .kw_void or self.peek().kind == .tilde))
         {
             const bad_unary = self.peek();
             try self.reportCodeAt(bad_unary.span.start, bad_unary.line, 1005, "',' expected.");
@@ -15443,6 +15449,9 @@ pub const Parser = struct {
             },
             .tilde => {
                 _ = self.advance();
+                if (self.peekIsUnaryOperandStopToken()) {
+                    return try self.recoverUnaryMissingOperand(t, .bit_not);
+                }
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .bit_not, operand);
@@ -18824,6 +18833,25 @@ test "parser: missing logical-not operand preserves source file" {
     try T.expectEqual(hir_mod.NodeKind.literal_number, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmts[2]).init));
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: invalid bitwise-not operations preserve declaration recovery" {
+    var s = try newTestSetup(
+        \\var q;
+        \\var a = q~;
+        \\var mul = ~[1, 2, "abc"], "";
+        \\var b =~;
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    const expected_codes = [_]u32{ 1005, 1109, 1134, 1109 };
+    try T.expectEqual(expected_codes.len, s.parser.diagnostics.items.len);
+    for (expected_codes, s.parser.diagnostics.items) |expected, diagnostic| {
+        try T.expectEqual(expected, diagnostic.code);
+    }
 }
 
 test "parser: for-init multi-declarator wraps every binding into the init block" {
