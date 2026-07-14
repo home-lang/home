@@ -2704,12 +2704,11 @@ pub const Parser = struct {
             .kw_export,
             .kw_import,
             => true,
-            // A `var` declaration is a VariableStatement, which IS a valid
-            // LabelledItem per the grammar — `foo: var x;` only errors in
-            // strict mode (tsgo's `checkStrictModeLabeledStatement`). Firing
-            // it unconditionally false-positived TS1344 on non-strict
-            // fixtures like `labeledStatementDeclarationListInLoopNoCrash2`.
-            .kw_var => self.strict_mode,
+            // A labeled `var` remains valid for legacy ES5 sloppy parsing,
+            // but tsc rejects it in strict source or at ES2015+ targets.
+            // Keeping the target gate explicit preserves the ES5 variants of
+            // `labeledStatementDeclarationListInLoopNoCrash{1,2}`.
+            .kw_var => self.strict_mode or self.target_es2015_or_later,
             .kw_abstract => self.peekAt(1).kind == .kw_class,
             else => false,
         };
@@ -20223,6 +20222,15 @@ test "parser: label before var in sloppy mode is allowed (no TS1344)" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1344);
     }
+}
+
+test "parser: label before var at ES2015 reports TS1344" {
+    var s = try newTestSetup("label: var x = 1;");
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1344));
 }
 
 test "parser: label before namespace reports TS1344 + TS1235" {

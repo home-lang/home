@@ -6059,7 +6059,7 @@ pub fn loadDirectoryWithOptions(
             .is_declaration_file = isDeclarationFilePath(entry.basename),
             .strict_flags = strict_flags,
             .always_strict = expects_error and (baselineAlwaysStrictValue(baseline_path) orelse directiveBool(case_src, "alwaysStrict") orelse false),
-            .syntax_target_es2015 = directiveTargetEs2015OrLater(case_src),
+            .syntax_target_es2015 = selectedSyntaxTargetEs2015OrLater(case_src, baselinePathIsTargetEs5(baseline_path)),
             .target_emit_es5 = baselinePathIsTargetEs5(baseline_path),
             .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, directive_source),
@@ -7611,6 +7611,17 @@ fn directiveTargetEs2015OrLater(source: []const u8) bool {
     return false;
 }
 
+fn selectedSyntaxTargetEs2015OrLater(source: []const u8, target_emit_es5: bool) bool {
+    return !target_emit_es5 and directiveTargetEs2015OrLater(source);
+}
+
+test "conformance: selected ES5 baseline overrides multi-target directive" {
+    const source = "// @target: es5, es2015\nconst x = 1;";
+    try T.expect(directiveTargetEs2015OrLater(source));
+    try T.expect(!selectedSyntaxTargetEs2015OrLater(source, true));
+    try T.expect(selectedSyntaxTargetEs2015OrLater(source, false));
+}
+
 /// True when the source's `// @target: <value>` directive lists a
 /// deprecated ES target (`es3`, `es5`). Upstream TypeScript emits
 /// `TS5107: Option 'target=ES5' is deprecated …` for every fixture
@@ -8210,7 +8221,10 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             // the pinned entry didn't set the flag explicitly, so
             // target-gated diagnostics (e.g. TS18028 private identifiers)
             // don't fire on fixtures that target ES2015 or higher.
-            .syntax_target_es2015 = entry.syntax_target_es2015 or directiveTargetEs2015OrLater(entry.source),
+            .syntax_target_es2015 = if (entry.target_emit_es5)
+                false
+            else
+                entry.syntax_target_es2015 or directiveTargetEs2015OrLater(entry.source),
             .target_emit_es5 = entry.target_emit_es5,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
