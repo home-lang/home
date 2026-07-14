@@ -134,10 +134,6 @@ pub const Parser = struct {
     /// declaration site, so `break LBL` / `continue LBL` can detect
     /// undeclared labels (TS1116) and cross-function jumps (TS1107).
     label_stack: std.ArrayListUnmanaged(LabelEntry),
-    /// Labels seen in the current parse, including labels whose
-    /// statement has already ended. TypeScript reports a jump to a
-    /// non-enclosing label as TS1107 rather than TS1116.
-    seen_labels: std.ArrayListUnmanaged(LabelEntry),
     diag_arena: std.heap.ArenaAllocator,
     ambient_depth: u32,
     block_depth: u32,
@@ -286,7 +282,6 @@ pub const Parser = struct {
             .for_init_extras = .empty,
             .regex_rescan_spans = .empty,
             .label_stack = .empty,
-            .seen_labels = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
             .block_depth = 0,
@@ -361,7 +356,6 @@ pub const Parser = struct {
         self.for_init_extras.deinit(self.gpa);
         self.regex_rescan_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
-        self.seen_labels.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
         self.synthetic_infer_check_nodes.deinit(self.gpa);
         self.diag_arena.deinit();
@@ -2049,11 +2043,6 @@ pub const Parser = struct {
                 .function_depth = self.function_depth,
                 .wraps_iteration = wraps_iteration,
             });
-            try self.seen_labels.append(self.gpa, .{
-                .name = label_name,
-                .function_depth = self.function_depth,
-                .wraps_iteration = wraps_iteration,
-            });
             defer _ = self.label_stack.pop();
             // Preserve the label in the AST (`L: <stmt>`) so the emitter can
             // re-render it — dropping it would orphan `break L` / `continue L`.
@@ -3632,15 +3621,11 @@ pub const Parser = struct {
             }
             return;
         }
+        if (self.function_depth > 0) {
+            try self.reportCodeAt(start.span.start, start.line, 1107, "Jump target cannot cross function boundary.");
+            return;
+        }
         if (is_break) {
-            var seen_i: usize = self.seen_labels.items.len;
-            while (seen_i > 0) {
-                seen_i -= 1;
-                const entry = self.seen_labels.items[seen_i];
-                if (entry.name != label_name) continue;
-                try self.reportCodeAt(start.span.start, start.line, 1107, "Jump target cannot cross function boundary.");
-                return;
-            }
             try self.reportCodeAt(start.span.start, start.line, 1116, "A 'break' statement can only jump to a label of an enclosing statement.");
         } else {
             try self.reportCodeAt(start.span.start, start.line, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
