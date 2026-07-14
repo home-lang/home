@@ -1801,6 +1801,15 @@ pub const ESModule = struct {
                     return Resolution{ .path = str, .status = .InvalidPackageTarget, .debug = .{ .token = target.first_token } };
                 }
 
+                // Refuse to build a resolved path that would exceed the path
+                // buffer; joinStringBuf below writes into a fixed-size buffer.
+                if (package_url.len + str.len + subpath.len + 8 > bun.MAX_PATH_BYTES) {
+                    if (r.debug_logs) |log| {
+                        log.addNoteFmt("The target \"{s}\" is invalid because the resolved path would be too long", .{str});
+                    }
+                    return Resolution{ .path = str, .status = .InvalidModuleSpecifier, .debug = .{ .token = target.first_token } };
+                }
+
                 // Let resolvedTarget be the URL resolution of the concatenation of packageURL and target.
                 const parts = [_]string{ package_url, str };
                 const resolved_target = resolve_path.joinStringBuf(resolve_target_buf, parts, .auto);
