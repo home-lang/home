@@ -560,7 +560,7 @@ pub const Bin = extern struct {
             _ = bun.sys.unlinkW(abs_exe_file);
         }
 
-        fn linkBinOrCreateShim(this: *Linker, abs_target: [:0]const u8, abs_dest: [:0]const u8, global: bool) void {
+        fn linkBinOrCreateShim(this: *Linker, abs_target: [:0]const u8, abs_dest: [:0]const u8, global: bool, target_has_dot_components: bool) void {
             bun.assertWithLocation(std.fs.path.isAbsolute(abs_target), @src());
             bun.assertWithLocation(std.fs.path.isAbsolute(abs_dest), @src());
             bun.assertWithLocation(abs_target[abs_target.len - 1] != std.fs.path.sep, @src());
@@ -590,9 +590,15 @@ pub const Bin = extern struct {
 
             bun.analytics.Features.binlinks += 1;
 
-            if (comptime !Environment.isWindows)
-                this.createSymlink(abs_target, abs_dest, global)
-            else {
+            if (comptime !Environment.isWindows) {
+                // A bin target with `.`/`..` components (or a symlinked one) can
+                // resolve outside the package directory, letting a dependency
+                // plant an executable pointing anywhere. Refuse it.
+                if (target_has_dot_components and this.resolvedTargetParentEscapesPackageDir(abs_target)) {
+                    return;
+                }
+                this.createSymlink(abs_target, abs_dest, global);
+            } else {
                 const target = bun.sys.openat(.cwd(), abs_target, bun.O.RDONLY, 0).unwrap() catch |err| {
                     if (err != error.EISDIR) {
                         // ignore directories, creating a shim for one won't do anything
@@ -794,6 +800,49 @@ pub const Bin = extern struct {
             };
         }
 
+        /// Does the original (pre-resolution) bin target contain a `.` or `..`
+        /// path component? Only such targets can resolve outside the package
+        /// directory, so the (more expensive) realpath containment check below
+        /// is gated on this.
+        fn binTargetHasDotComponents(target: []const u8) bool {
+            var it = std.mem.splitAny(u8, target, "/\\");
+            while (it.next()) |seg| {
+                if (std.mem.eql(u8, seg, ".") or std.mem.eql(u8, seg, "..")) return true;
+            }
+            return false;
+        }
+
+        /// True if the parent directory the bin symlink would point at resolves
+        /// (through symlinks) to somewhere outside this package's directory.
+        fn resolvedTargetParentEscapesPackageDir(this: *const Linker, abs_target: [:0]const u8) bool {
+            const dest_dir = strings.withoutTrailingSlash(this.target_node_modules_path.slice());
+            const package_name = this.target_package_name.slice();
+
+            // Build "<node_modules>/<package_name>" in a stack buffer (the
+            // Linker's abs_target_buf currently holds `abs_target`).
+            var pkg_buf: bun.PathBuffer = undefined;
+            if (dest_dir.len + 1 + package_name.len >= pkg_buf.len) return true;
+            var off: usize = 0;
+            @memcpy(pkg_buf[0..dest_dir.len], dest_dir);
+            off += dest_dir.len;
+            pkg_buf[off] = std.fs.path.sep;
+            off += 1;
+            @memcpy(pkg_buf[off..][0..package_name.len], package_name);
+            off += package_name.len;
+            const package_dir = pkg_buf[0..off];
+
+            var real_pkg_buf: bun.PathBuffer = undefined;
+            const real_package_dir = std.fs.cwd().realpath(package_dir, &real_pkg_buf) catch return true;
+
+            const target_parent = std.fs.path.dirname(abs_target) orelse return true;
+            if (target_parent.len == 0 or target_parent.len >= bun.MAX_PATH_BYTES) return true;
+
+            var real_parent_buf: bun.PathBuffer = undefined;
+            const real_parent = std.fs.cwd().realpath(target_parent, &real_parent_buf) catch return true;
+
+            return resolve_path.isParentOrEqual(real_package_dir, real_parent) == .unrelated;
+        }
+
         fn createSymlink(this: *Linker, abs_target: [:0]const u8, abs_dest: [:0]const u8, global: bool) void {
             defer {
                 if (this.err == null) {
@@ -966,7 +1015,7 @@ pub const Bin = extern struct {
                     const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                     const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                    this.linkBinOrCreateShim(abs_target, abs_dest, global);
+                    this.linkBinOrCreateShim(abs_target, abs_dest, global, binTargetHasDotComponents(target));
                 },
                 .named_file => {
                     const name = this.bin.value.named_file[0].slice(this.string_buf);
@@ -983,7 +1032,7 @@ pub const Bin = extern struct {
                     const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                     const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                    this.linkBinOrCreateShim(abs_target, abs_dest, global);
+                    this.linkBinOrCreateShim(abs_target, abs_dest, global, binTargetHasDotComponents(target));
                 },
                 .map => {
                     var i = this.bin.value.map.begin();
@@ -1006,7 +1055,7 @@ pub const Bin = extern struct {
                         const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                         const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                        this.linkBinOrCreateShim(abs_target, abs_dest, global);
+                        this.linkBinOrCreateShim(abs_target, abs_dest, global, binTargetHasDotComponents(bin_target));
                     }
                 },
                 .dir => {
@@ -1043,7 +1092,7 @@ pub const Bin = extern struct {
                                 const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                                 const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                                this.linkBinOrCreateShim(abs_target, abs_dest, global);
+                                this.linkBinOrCreateShim(abs_target, abs_dest, global, binTargetHasDotComponents(target));
                             },
                             else => {},
                         }
@@ -1155,6 +1204,7 @@ const bun = @import("bun");
 const JSON = bun.json;
 const OOM = bun.OOM;
 const path = bun.path;
+const resolve_path = @import("../paths/resolve_path.zig");
 const strings = bun.strings;
 
 const Semver = bun.Semver;
