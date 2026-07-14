@@ -14,6 +14,12 @@ io: IO,
 
 word_idx: u32,
 current_out: std.array_list.Managed(u8),
+/// Byte offsets in `current_out` written by literal brace atoms
+/// (brace_begin / comma / brace_end). Only these positions may act as
+/// brace-expansion syntax; any other `{`/`}`/`,`/`\` byte (from text, $var,
+/// command substitution, or JS `${...}` interpolation) is data and is escaped
+/// before tokenizing so it cannot inject extra argv words.
+brace_meta_offsets: std.array_list.Managed(u32),
 state: union(enum) {
     normal,
     braces,
@@ -144,14 +150,17 @@ pub fn init(
         .out = out_result,
         .out_idx = 0,
         .current_out = undefined,
+        .brace_meta_offsets = undefined,
         .io = io,
     };
     expansion.current_out = std.array_list.Managed(u8).init(expansion.base.allocator());
+    expansion.brace_meta_offsets = std.array_list.Managed(u32).init(expansion.base.allocator());
 }
 
 pub fn deinit(expansion: *Expansion) void {
     log("Expansion(0x{x}) deinit", .{@intFromPtr(expansion)});
     expansion.current_out.deinit();
+    expansion.brace_meta_offsets.deinit();
     expansion.io.deinit();
     expansion.base.endScope();
 }
@@ -190,10 +199,13 @@ pub fn next(this: *Expansion) Yield {
                             switch (this.current_out.items[0]) {
                                 '/', '\\' => {
                                     bun.handleOom(this.current_out.insertSlice(0, homedir.slice()));
+                                    // Prepending shifts every recorded brace offset.
+                                    for (this.brace_meta_offsets.items) |*off| off.* += @intCast(homedir.slice().len);
                                 },
                                 else => {
                                     // TODO: Handle username
                                     bun.handleOom(this.current_out.insert(0, '~'));
+                                    for (this.brace_meta_offsets.items) |*off| off.* += 1;
                                 },
                             }
                         } else if (this.has_quoted_empty) {
@@ -228,7 +240,26 @@ pub fn next(this: *Expansion) Yield {
                 var arena = Arena.init(this.base.allocator());
                 defer arena.deinit();
                 const arena_allocator = arena.allocator();
-                const brace_str = this.current_out.items[0..];
+                // Escape every brace metacharacter that was NOT written by a
+                // literal brace atom: bytes from text/$var/cmd-subst/JS `${...}`
+                // interpolation are data and must not be reinterpreted as
+                // brace-expansion syntax (argv injection).
+                var escaped = std.array_list.Managed(u8).init(arena_allocator);
+                bun.handleOom(escaped.ensureTotalCapacity(this.current_out.items.len));
+                {
+                    var next_meta: usize = 0;
+                    for (this.current_out.items, 0..) |b, i| {
+                        if (next_meta < this.brace_meta_offsets.items.len and
+                            @as(usize, this.brace_meta_offsets.items[next_meta]) == i)
+                        {
+                            next_meta += 1;
+                        } else if (b == '{' or b == '}' or b == ',' or b == '\\') {
+                            bun.handleOom(escaped.append('\\'));
+                        }
+                        bun.handleOom(escaped.append(b));
+                    }
+                }
+                const brace_str = escaped.items[0..];
                 var lexer_output = if (bun.strings.isAllASCII(brace_str)) lexer_output: {
                     @branchHint(.likely);
                     break :lexer_output bun.handleOom(Braces.Lexer.tokenize(arena_allocator, brace_str));
@@ -638,12 +669,17 @@ pub fn expandSimpleNoIO(this: *Expansion, atom: *const ast.SimpleAtom, str_list:
             bun.handleOom(str_list.appendSlice("**"));
         },
         .brace_begin => {
+            // str_list is `this.current_out` (both callers pass it), so its
+            // length is the offset of this literal brace metacharacter.
+            bun.handleOom(this.brace_meta_offsets.append(@intCast(str_list.items.len)));
             bun.handleOom(str_list.append('{'));
         },
         .brace_end => {
+            bun.handleOom(this.brace_meta_offsets.append(@intCast(str_list.items.len)));
             bun.handleOom(str_list.append('}'));
         },
         .comma => {
+            bun.handleOom(this.brace_meta_offsets.append(@intCast(str_list.items.len)));
             bun.handleOom(str_list.append(','));
         },
         .tilde => {
@@ -679,6 +715,8 @@ pub fn pushCurrentOut(this: *Expansion) void {
             this.current_out = std.array_list.Managed(u8).init(this.base.allocator());
         },
     }
+    // current_out was reset; the recorded brace offsets no longer apply.
+    this.brace_meta_offsets.clearRetainingCapacity();
 }
 
 fn expandVar(this: *const Expansion, label: []const u8) []const u8 {
