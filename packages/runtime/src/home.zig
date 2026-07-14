@@ -963,21 +963,42 @@ pub fn DebugOnlyDisabler(comptime Type: type) type {
     };
 }
 
+/// To handle stack overflows:
+/// 1. StackCheck.init()
+/// 2. .isSafeToRecurse()
+///
+/// The real bounds come from JSC's WTF StackBounds via the C++ FFI, which is
+/// only linked when `enable_jsc_link` is set. When it isn't (or the current
+/// thread was never configured, so `cached_stack_end` is 0), the check is a
+/// safe no-op — it never reports a false "unsafe", it just doesn't guard.
 pub const StackCheck = struct {
     cached_stack_end: usize = 0,
 
-    pub fn configureThread() void {}
+    pub fn configureThread() void {
+        if (comptime enable_jsc_link) cpp.Bun__StackCheck__initialize();
+    }
+
+    fn getStackEnd() usize {
+        if (comptime !enable_jsc_link) return 0;
+        return @intFromPtr(cpp.Bun__StackCheck__getMaxStack());
+    }
 
     pub fn init() StackCheck {
-        return .{ .cached_stack_end = 0 };
+        return .{ .cached_stack_end = getStackEnd() };
     }
 
     pub fn update(this: *StackCheck) void {
-        this.cached_stack_end = 0;
+        this.cached_stack_end = getStackEnd();
     }
 
-    pub fn isSafeToRecurse(_: StackCheck) bool {
-        return true;
+    /// Is there at least 128 KB of stack space available?
+    pub fn isSafeToRecurse(this: StackCheck) bool {
+        // Not linked / thread not configured → can't measure; assume safe so we
+        // never spuriously reject valid recursion.
+        if (this.cached_stack_end == 0) return true;
+        const stack_ptr: usize = @frameAddress();
+        const remaining_stack = stack_ptr -| this.cached_stack_end;
+        return remaining_stack > 1024 * if (Environment.isWindows) 256 else 128;
     }
 };
 

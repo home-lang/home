@@ -4233,6 +4233,11 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
 /// Test options struct
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
+    // Capture this (main/JS) thread's stack bounds so bun.StackCheck guards can
+    // actually measure remaining stack; without this every isSafeToRecurse()
+    // is a no-op and deep-nested input overflows the native stack instead of
+    // throwing (mirrors Bun's src/main.zig).
+    home_rt.StackCheck.configureThread();
     // Enable memory tracking in debug builds if configured
     var debug_allocator = std.heap.DebugAllocator(.{
         .enable_memory_limit = build_options.memory_tracking,
