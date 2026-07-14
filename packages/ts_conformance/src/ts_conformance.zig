@@ -796,6 +796,12 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             if (file_order != .eq) return file_order == .lt;
             if (a.diag_line != b.diag_line) return a.diag_line < b.diag_line;
             if (a.diag_col != b.diag_col) return a.diag_col < b.diag_col;
+            // Index-member compatibility leads override and initialization
+            // diagnostics at the same property anchor even though TS2411 has
+            // a wider span. Other pairs retain tsc's span-length tie-break.
+            const a_index_priority = a.code == 2411 and (b.code == 2416 or b.code == 2564);
+            const b_index_priority = b.code == 2411 and (a.code == 2416 or a.code == 2564);
+            if (a_index_priority != b_index_priority) return a_index_priority;
             if (a.span_len != 0 and b.span_len != 0 and a.span_len != b.span_len) {
                 return a.span_len < b.span_len;
             }
