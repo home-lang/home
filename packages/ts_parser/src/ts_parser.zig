@@ -8714,6 +8714,57 @@ pub const Parser = struct {
         return null;
     }
 
+    fn recoverNestedVarInitializer(self: *Parser) ParseError!NodeId {
+        const var_tok = self.advance();
+        try self.reportCodeAt(var_tok.span.start, var_tok.line, 1109, "Expression expected.");
+
+        const name_tok = try self.expectIdentifierLike();
+        try self.reportInvalidVariableDeclarationName(name_tok);
+        try self.reportInvalidStrictName(name_tok);
+        try self.reportInvalidFutureReservedName(name_tok);
+        try self.reportInvalidYieldName(name_tok, true);
+        try self.reportAwaitBindingIfReserved(name_tok);
+        const name_id = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+
+        // The recovered nested declaration behaves as an explicit `any`
+        // declaration in tsc's subsequent-variable compatibility check.
+        const any_id = self.interner.intern("any") catch return error.OutOfMemory;
+        const any_type = try self.builder.addTypeRef(
+            .{ .start = name_tok.span.end, .end = name_tok.span.end },
+            any_id,
+            &.{},
+            &.{},
+        );
+        const recovered_decl = try self.builder.addVarDeclEx(
+            .var_decl,
+            .{ .start = var_tok.span.start, .end = name_tok.span.end },
+            name_node,
+            any_type,
+            hir_mod.none_node_id,
+            false,
+            false,
+            self.isAmbientContextAt(var_tok.span.start),
+        );
+        try self.pending_statements.append(self.gpa, recovered_decl);
+
+        if (!self.peek().flags.preceded_by_newline and
+            (self.peek().kind == .plus or self.peek().kind == .minus or
+                self.peek().kind == .bang or self.peek().kind == .tilde))
+        {
+            const bad_unary = self.peek();
+            try self.reportCodeAt(bad_unary.span.start, bad_unary.line, 1005, "',' expected.");
+            _ = try self.parseUnaryExpression();
+        }
+
+        return try self.builder.addTypeRef(
+            .{ .start = var_tok.span.start, .end = var_tok.span.start },
+            any_id,
+            &.{},
+            &.{},
+        );
+    }
+
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // let/const/var
         if (self.isAmbientContextAt(start.span.start) and
@@ -8827,7 +8878,11 @@ pub const Parser = struct {
 
         var init_node: NodeId = hir_mod.none_node_id;
         if (self.match(.equal)) {
-            init_node = try self.parseAssignmentExpression();
+            if (self.peek().kind == .kw_var) {
+                type_annotation = try self.recoverNestedVarInitializer();
+            } else {
+                init_node = try self.parseAssignmentExpression();
+            }
         }
         var recovered_initializer_arrow_tail = false;
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
@@ -18848,6 +18903,30 @@ test "parser: invalid bitwise-not operations preserve declaration recovery" {
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 4), stmts.len);
     const expected_codes = [_]u32{ 1005, 1109, 1134, 1109 };
+    try T.expectEqual(expected_codes.len, s.parser.diagnostics.items.len);
+    for (expected_codes, s.parser.diagnostics.items) |expected, diagnostic| {
+        try T.expectEqual(expected, diagnostic.code);
+    }
+}
+
+test "parser: nested var initializer preserves recovered binding" {
+    var s = try newTestSetup(
+        \\var NUMBER1 = var NUMBER-;
+        \\var NUMBER2 = -(null - undefined);
+        \\var NUMBER =-;
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    const outer = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(outer.type_annotation));
+    const recovered = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(recovered.type_annotation));
+    const recovered_name = hir_mod.identifierOf(&s.hir, recovered.name);
+    try T.expectEqualStrings("NUMBER", s.interner.get(recovered_name.name));
+    const expected_codes = [_]u32{ 1109, 1005, 1109, 1109 };
     try T.expectEqual(expected_codes.len, s.parser.diagnostics.items.len);
     for (expected_codes, s.parser.diagnostics.items) |expected, diagnostic| {
         try T.expectEqual(expected, diagnostic.code);
