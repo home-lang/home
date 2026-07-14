@@ -43,6 +43,13 @@ pub fn NewWriterWrap(
             pub fn end(this: *@This()) AnyMySQLError.Error!void {
                 const new_offset = offsetFn(this.ctx.wrapped);
                 const length = new_offset - this.offset - PacketHeader.size;
+                // The length field is only 24 bits and we don't split across
+                // multiple packets on the write path. Reject rather than letting
+                // @intCast panic (or a wider field truncate) frame a malformed
+                // packet the server could reparse.
+                if (length >= std.math.maxInt(u24)) {
+                    return error.Overflow;
+                }
                 this.header.length = @intCast(length);
                 debug("writing packet header: {d}", .{this.header.length});
                 try this.ctx.pwrite(&this.header.encode(), this.offset);
