@@ -93,6 +93,11 @@ conn_unacked_bytes: u32 = 0,
 /// concurrent attachment; maxInt when not listed.
 registry_index: u32 = std.math.maxInt(u32),
 
+/// Host-header SNI-override hash: a request carrying an override must not
+/// coalesce onto a session whose TLS handshake was verified for a different
+/// host.
+host_header_hash: u64 = 0,
+
 pub fn create(ctx: *NewHTTPContext(true), socket: Socket, client: *const HTTPClient) *ClientSession {
     const this = ClientSession.new(.{
         .ref_count = .init(),
@@ -103,6 +108,7 @@ pub fn create(ctx: *NewHTTPContext(true), socket: Socket, client: *const HTTPCli
         .port = client.connected_url.getPortAuto(),
         .ssl_config = if (client.tls_props) |p| p.clone() else null,
         .did_have_handshaking_error = client.flags.did_have_handshaking_error,
+        .host_header_hash = client.proxyAuthHash(),
     });
     _ = H2.live_sessions.fetchAdd(1, .monotonic);
     ctx.registerH2(this);
@@ -134,8 +140,8 @@ pub fn hasHeadroom(this: *const ClientSession) bool {
         this.next_stream_id < wire.MAX_STREAM_ID;
 }
 
-pub fn matches(this: *const ClientSession, hostname: []const u8, port: u16, ssl_config: ?*SSLConfig) bool {
-    return this.port == port and SSLConfig.rawPtr(this.ssl_config) == ssl_config and strings.eqlLong(this.hostname, hostname, true);
+pub fn matches(this: *const ClientSession, hostname: []const u8, port: u16, ssl_config: ?*SSLConfig, host_header_hash: u64) bool {
+    return this.port == port and SSLConfig.rawPtr(this.ssl_config) == ssl_config and this.host_header_hash == host_header_hash and strings.eqlLong(this.hostname, hostname, true);
 }
 
 pub fn adopt(this: *ClientSession, client: *HTTPClient) void {

@@ -752,13 +752,13 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
             if (comptime ssl) {
                 if (client.canOfferH2()) {
                     for (this.active_h2_sessions.items) |session| {
-                        if (session.hasHeadroom() and session.matches(hostname, port, SSLConfig.rawPtr(client.tls_props))) {
+                        if (session.hasHeadroom() and session.matches(hostname, port, SSLConfig.rawPtr(client.tls_props), client.proxyAuthHash())) {
                             session.adopt(client);
                             return null;
                         }
                     }
                     for (this.pending_h2_connects.items) |pc| {
-                        if (pc.matches(hostname, port, SSLConfig.rawPtr(client.tls_props))) {
+                        if (pc.matches(hostname, port, SSLConfig.rawPtr(client.tls_props), client.proxyAuthHash())) {
                             bun.handleOom(pc.waiters.append(bun.default_allocator, client));
                             return null;
                         }
@@ -839,6 +839,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                         .hostname = bun.handleOom(bun.default_allocator.dupe(u8, hostname)),
                         .port = port,
                         .ssl_config = SSLConfig.rawPtr(client.tls_props),
+                        .host_header_hash = client.proxyAuthHash(),
                     });
                     bun.handleOom(this.pending_h2_connects.append(bun.default_allocator, pc));
                     client.pending_h2 = pc;

@@ -13,10 +13,13 @@ pub const new = home_rt.TrivialNew(@This());
 hostname: []const u8,
 port: u16,
 ssl_config: ?*SSLConfig,
+/// Host-header SNI-override hash: a request carrying an override must not
+/// coalesce onto a pending connect verified for a different host.
+host_header_hash: u64 = 0,
 waiters: std.ArrayListUnmanaged(*HTTPClient) = .empty,
 
-pub fn matches(this: *const @This(), hostname: []const u8, port: u16, ssl_config: ?*SSLConfig) bool {
-    return this.port == port and this.ssl_config == ssl_config and eqlLong(this.hostname, hostname);
+pub fn matches(this: *const @This(), hostname: []const u8, port: u16, ssl_config: ?*SSLConfig, host_header_hash: u64) bool {
+    return this.port == port and this.ssl_config == ssl_config and this.host_header_hash == host_header_hash and eqlLong(this.hostname, hostname);
 }
 
 pub fn unregisterFrom(this: *@This(), ctx: *NewHTTPContext(true)) void {
@@ -55,9 +58,9 @@ test "PendingConnect.matches: same hostname + port + ssl_config" {
         .port = 443,
         .ssl_config = ssl_a,
     };
-    try std.testing.expect(pc.matches("example.com", 443, ssl_a));
-    try std.testing.expect(!pc.matches("example.com", 8443, ssl_a));
-    try std.testing.expect(!pc.matches("other.com", 443, ssl_a));
+    try std.testing.expect(pc.matches("example.com", 443, ssl_a, 0));
+    try std.testing.expect(!pc.matches("example.com", 8443, ssl_a, 0));
+    try std.testing.expect(!pc.matches("other.com", 443, ssl_a, 0));
 }
 
 test "PendingConnect.matches: ssl_config identity is part of the key" {
@@ -69,8 +72,8 @@ test "PendingConnect.matches: ssl_config identity is part of the key" {
         .port = 443,
         .ssl_config = ssl_a,
     };
-    try std.testing.expect(!pc.matches("example.com", 443, ssl_b));
-    try std.testing.expect(!pc.matches("example.com", 443, null));
+    try std.testing.expect(!pc.matches("example.com", 443, ssl_b, 0));
+    try std.testing.expect(!pc.matches("example.com", 443, null, 0));
 }
 
 test "PendingConnect.matches: null ssl_config (cleartext) is its own key" {
@@ -81,8 +84,8 @@ test "PendingConnect.matches: null ssl_config (cleartext) is its own key" {
         .port = 80,
         .ssl_config = null,
     };
-    try std.testing.expect(pc.matches("example.com", 80, null));
-    try std.testing.expect(!pc.matches("example.com", 80, ssl_a));
+    try std.testing.expect(pc.matches("example.com", 80, null, 0));
+    try std.testing.expect(!pc.matches("example.com", 80, ssl_a, 0));
 }
 
 test "PendingConnect.unregisterFrom: removes the matching entry" {
