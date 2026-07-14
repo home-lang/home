@@ -4608,6 +4608,27 @@ test "driver: identifier reference resolves via binder symbol table" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(y_init));
 }
 
+test "driver: invalid export modifier preserves recovered throw diagnostic" {
+    var c = try compileSource(T.allocator,
+        \\throw;
+        \\
+        \\export throw null;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var expression_expected: u32 = 0;
+    var statement_expected: u32 = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1109) expression_expected += 1;
+        if (d.code == 1128) statement_expected += 1;
+    }
+    try T.expectEqual(@as(u32, 1), expression_expected);
+    try T.expectEqual(@as(u32, 1), statement_expected);
+}
+
 test "driver: type-check reports diagnostic on mismatched assignment" {
     var c = try compileSource(T.allocator, "let x: number = \"hi\";", .{});
     defer {

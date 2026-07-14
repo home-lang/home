@@ -3656,6 +3656,12 @@ pub const Parser = struct {
 
     fn parseThrowStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // throw
+        if (self.peek().kind == .semicolon) {
+            const semi = self.advance();
+            try self.reportCodeAt(semi.span.start, semi.line, 1109, "Expression expected.");
+            const missing = try self.builder.addLiteralUndefined(.{ .start = semi.span.start, .end = semi.span.start });
+            return try self.builder.addThrow(.{ .start = start.span.start, .end = semi.span.end }, missing);
+        }
         if (self.peek().flags.preceded_by_newline and self.peek().kind != .eof) {
             try self.reportCodeAt(start.span.end, start.line, 1142, "Line break not permitted here.");
             const missing = try self.missingIdentifierAt(start.span.end);
@@ -8520,6 +8526,14 @@ pub const Parser = struct {
             );
         }
 
+        // `export` can modify declarations, but not statement-only forms.
+        // Report at the invalid modifier and recover by parsing the statement
+        // itself rather than wrapping it in an export node.
+        if (tokenStartsNonDeclarationStatement(self.peek().kind)) {
+            try self.reportCodeAt(start.span.start, start.line, 1128, "Declaration or statement expected.");
+            return try self.parseStatement();
+        }
+
         // export <decl>
         // `export` is a modifier on the following declaration; nested in a
         // block it is TS1184, matching `export function`/`export var` etc.
@@ -8558,6 +8572,25 @@ pub const Parser = struct {
             is_type_only,
             false,
         );
+    }
+
+    fn tokenStartsNonDeclarationStatement(kind: TokenKind) bool {
+        return switch (kind) {
+            .kw_break,
+            .kw_continue,
+            .kw_debugger,
+            .kw_do,
+            .kw_for,
+            .kw_if,
+            .kw_return,
+            .kw_switch,
+            .kw_throw,
+            .kw_try,
+            .kw_while,
+            .kw_with,
+            => true,
+            else => false,
+        };
     }
 
     /// Parse a "left-hand-side" expression — primary + member-call
@@ -20213,6 +20246,26 @@ test "parser: throw statement" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.throw_stmt, s.hir.kindOf(top));
+}
+
+test "parser: export modifier before throw reports TS1128 and preserves statement" {
+    var s = try newTestSetup(
+        \\throw;
+        \\
+        \\export throw null;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.throw_stmt, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.throw_stmt, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1109));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1128));
+    const d = findDiag(s, 1128) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 8), d.pos);
+    try T.expectEqualStrings("Declaration or statement expected.", d.message);
 }
 
 test "parser: throw newline reports TS1142 and leaves next statement" {
