@@ -105,6 +105,11 @@ npm_mode: bool = true,
 bytes_received: usize = 0,
 entry_count: u32 = 0,
 fail: ?anyerror = null,
+/// Paths of symlinks created during this extraction (Posix only). A later
+/// entry whose path traverses one of these is skipped, so a symlink like
+/// `pkg -> ../../elsewhere` followed by `pkg/file` cannot write outside the
+/// extraction root (defense-in-depth behind the per-target symlink check).
+created_symlinks: std.ArrayListUnmanaged([]const u8) = .empty,
 
 allocator: std.mem.Allocator,
 
@@ -170,6 +175,8 @@ pub fn deinit(this: *TarballStream) void {
     if (this.tmpname.len > 0) this.allocator.free(this.tmpname);
     this.pending.deinit(this.allocator);
     this.reading.deinit(this.allocator);
+    for (this.created_symlinks.items) |s| this.allocator.free(s);
+    this.created_symlinks.deinit(this.allocator);
     bun.destroy(this);
 }
 
@@ -580,6 +587,18 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
     const path_slice: bun.OSPathSlice = path.ptr[0..path.len];
     const dest = this.dest.?;
 
+    // Defense-in-depth (Posix): if this entry's path passes through a symlink
+    // created earlier in this same extraction, skip it and discard its data —
+    // otherwise `pkg -> ../../elsewhere` followed by `pkg/file` would write
+    // outside the extraction root.
+    if (comptime Environment.isPosix) {
+        if (this.pathTraversesCreatedSymlink(path_slice)) {
+            this.phase = .want_data;
+            this.out_fd = null;
+            return;
+        }
+    }
+
     switch (kind) {
         .directory => {
             makeDirectory(entry, dest, path, path_slice);
@@ -587,7 +606,13 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
             this.out_fd = null;
         },
         .sym_link => {
-            if (Environment.isPosix) makeSymlink(entry, dest, path, path_slice);
+            if (comptime Environment.isPosix) {
+                if (makeSymlink(entry, dest, path, path_slice)) {
+                    // Record it so a later entry traversing this symlink is skipped.
+                    const owned = bun.handleOom(this.allocator.dupe(u8, path_slice));
+                    bun.handleOom(this.created_symlinks.append(this.allocator, owned));
+                }
+            }
             this.phase = .want_data;
             this.out_fd = null;
         },
@@ -676,16 +701,36 @@ fn makeDirectory(
     }
 }
 
+/// Lexical, case-insensitive check: does `path` traverse (pass through) a
+/// symlink created earlier in this extraction? Walks each `/`-delimited prefix
+/// of `path` and matches it against the recorded symlink paths. Case-insensitive
+/// because APFS (macOS default) matches `LINK/x` against a `link` symlink.
+fn pathTraversesCreatedSymlink(this: *const TarballStream, path: []const u8) bool {
+    if (this.created_symlinks.items.len == 0) return false;
+    var end: usize = 0;
+    while (end <= path.len) : (end += 1) {
+        if (end == path.len or path[end] == '/') {
+            const prefix = path[0..end];
+            if (prefix.len > 0) {
+                for (this.created_symlinks.items) |recorded| {
+                    if (strings.eqlCaseInsensitiveASCII(recorded, prefix, true)) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 fn makeSymlink(
     entry: *lib.Archive.Entry,
     dest_fd: bun.FD,
     path: [:0]bun.OSPathChar,
     path_slice: bun.OSPathSlice,
-) void {
+) bool {
     const target = entry.symlink();
     // Same safety rule as `isSymlinkTargetSafe` in the buffered path:
     // reject absolute targets and anything that escapes via `..`.
-    if (target.len == 0 or target[0] == '/') return;
+    if (target.len == 0 or target[0] == '/') return false;
     {
         // (1) A `..` component appearing after any named component can traverse
         //     out through an already-created directory/symlink.
@@ -694,7 +739,7 @@ fn makeSymlink(
         while (it.next()) |component| {
             if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
             if (std.mem.eql(u8, component, "..")) {
-                if (seen_named_component) return;
+                if (seen_named_component) return false;
             } else {
                 seen_named_component = true;
             }
@@ -706,7 +751,7 @@ fn makeSymlink(
         //     root. (Same rule as `isSymlinkTargetSafe` in the buffered path.)
         const symlink_dir = std.fs.path.dirname(path_slice) orelse "";
         var join_buf: bun.PathBuffer = undefined;
-        if (symlink_dir.len + 1 + target.len >= join_buf.len) return;
+        if (symlink_dir.len + 1 + target.len >= join_buf.len) return false;
         var written: usize = 0;
         if (symlink_dir.len > 0) {
             @memcpy(join_buf[0..symlink_dir.len], symlink_dir);
@@ -717,15 +762,17 @@ fn makeSymlink(
         @memcpy(join_buf[written .. written + target.len], target);
         written += target.len;
         const resolved = resolve_path.normalizeStringBufT(u8, join_buf[0..written], &join_buf, true, .posix, false);
-        if (std.mem.eql(u8, resolved, "..") or strings.hasPrefixComptime(resolved, "../")) return;
+        if (std.mem.eql(u8, resolved, "..") or strings.hasPrefixComptime(resolved, "../")) return false;
     }
-    bun.sys.symlinkat(target, dest_fd, path).unwrap() catch |err| switch (err) {
+    if (bun.sys.symlinkat(target, dest_fd, path).unwrap()) |_| {
+        return true;
+    } else |err| switch (err) {
         error.EPERM, error.ENOENT => {
-            dest_fd.makePath(u8, std.fs.path.dirname(path_slice) orelse return) catch {};
-            bun.sys.symlinkat(target, dest_fd, path).unwrap() catch {};
+            dest_fd.makePath(u8, std.fs.path.dirname(path_slice) orelse return false) catch {};
+            if (bun.sys.symlinkat(target, dest_fd, path).unwrap()) |_| return true else |_| return false;
         },
-        else => {},
-    };
+        else => return false,
+    }
 }
 
 fn applyWindowsNpmPathEscapes(path: [:0]bun.OSPathChar) void {
