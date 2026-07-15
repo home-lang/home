@@ -8870,6 +8870,7 @@ pub const Parser = struct {
         const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
 
         var type_annotation: NodeId = hir_mod.none_node_id;
+        var recovered_private_indexed_access = false;
         if (self.match(.colon)) {
             // Detect a stray type predicate in variable declaration
             // type position: `var x: <id-or-this> is T`. Upstream tsc
@@ -8892,6 +8893,42 @@ pub const Parser = struct {
                 type_annotation = try self.parseTypeAnnotation();
             } else {
                 type_annotation = try self.parseTypeAnnotation();
+            }
+        }
+
+        if (type_annotation != hir_mod.none_node_id and
+            self.hir.kindOf(type_annotation) == .indexed_access_type and
+            self.peek().kind == .private_identifier and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .open_bracket)
+        {
+            recovered_private_indexed_access = true;
+            const private_tok = self.advance();
+            const private_name = try self.internToken(private_tok);
+            const private_node = try self.builder.addIdentifier(tokenSpan(private_tok), private_name);
+            const recovered_decl = try self.builder.addVarDeclEx(
+                decl_kind,
+                tokenSpan(private_tok),
+                private_node,
+                hir_mod.none_node_id,
+                hir_mod.none_node_id,
+                false,
+                false,
+                self.isAmbientContextAt(start.span.start),
+            );
+            try self.pending_statements.append(self.gpa, recovered_decl);
+
+            if (self.peek().kind == .close_bracket) {
+                const close = self.advance();
+                try self.reportCodeAt(close.span.start, close.line, 1005, "',' expected.");
+            }
+            if (self.peek().kind == .equal) {
+                const equal = self.advance();
+                try self.reportCodeAt(equal.span.start, equal.line, 1134, "Variable declaration expected.");
+            }
+            if (self.peek().kind == .number_literal or self.peek().kind == .string_literal) {
+                const value = self.advance();
+                try self.reportCodeAt(value.span.start, value.line, 1134, "Variable declaration expected.");
             }
         }
 
@@ -8931,7 +8968,12 @@ pub const Parser = struct {
             const bad = self.advance();
             try self.reportCodeAt(bad.span.start, bad.line, 1005, "',' expected.");
         }
-        if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl and !name_list_was_empty) {
+        if (decl_kind == .const_decl and
+            init_node == hir_mod.none_node_id and
+            !is_ambient_decl and
+            !name_list_was_empty and
+            !recovered_private_indexed_access)
+        {
             // `const {}` and `const []` already raise TS1182
             // ("A destructuring declaration must have an
             // initializer.") from the checker; tsc does not
@@ -10106,6 +10148,27 @@ pub const Parser = struct {
                     };
                     node = try self.builder.addArrayType(sp, node);
                     continue;
+                }
+                // A private identifier cannot start an indexed-access type.
+                // Keep it unconsumed so declaration recovery can reinterpret
+                // the remaining `#name] = ...` tokens like upstream tsc.
+                if (self.peek().kind == .private_identifier) {
+                    const private_tok = self.peek();
+                    try self.reportCodeAtWithMatchedPair(
+                        private_tok.span.start,
+                        private_tok.line,
+                        1005,
+                        "']' expected.",
+                        idx_open.span.start,
+                        "[",
+                        "]",
+                    );
+                    const index = try self.typeRefName("unknown", .{ .start = private_tok.span.start, .end = private_tok.span.start });
+                    return try self.builder.addIndexedAccessType(
+                        .{ .start = self.hir.spanOf(node).start, .end = idx_open.span.end },
+                        node,
+                        index,
+                    );
                 }
                 // `T[K]` — indexed access type.
                 const index = try self.parseTypeAnnotation();
@@ -23182,6 +23245,36 @@ test "parser: type annotation — indexed access T[K]" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.indexed_access_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: private identifier does not start an indexed access type" {
+    const source =
+        \\class C {
+        \\  #bar = 3;
+        \\  constructor() {
+        \\    const value: C[#bar] = 3;
+        \\  }
+        \\}
+    ;
+    var s = try newTestSetup(source);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const private_pos = std.mem.indexOf(u8, source, "#bar] = 3") orelse return error.TestUnexpectedResult;
+    var saw_missing_bracket = false;
+    var saw_missing_comma = false;
+    var variable_declaration_expected: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and d.pos == private_pos and std.mem.eql(u8, d.message, "']' expected.")) {
+            saw_missing_bracket = true;
+        }
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "',' expected.")) saw_missing_comma = true;
+        if (d.code == 1134) variable_declaration_expected += 1;
+        try T.expect(d.code != 1155);
+    }
+    try T.expect(saw_missing_bracket);
+    try T.expect(saw_missing_comma);
+    try T.expectEqual(@as(usize, 2), variable_declaration_expected);
 }
 
 test "parser: type annotation — fn type" {
