@@ -220,9 +220,13 @@ pub const Lowerer = struct {
             var lits: std.ArrayListUnmanaged(TypeId) = .empty;
             defer lits.deinit(self.gpa);
             for (members) |m| {
+                if (self.string_interner.getOptional(m.name)) |name| {
+                    if (std.mem.startsWith(u8, name, "#")) continue;
+                }
                 const lit = self.interner.internStringLiteral(m.name) catch continue;
                 try lits.append(self.gpa, lit);
             }
+            if (lits.items.len == 0) return types.Primitive.never;
             if (lits.items.len == 1) return lits.items[0];
             return self.interner.internUnion(lits.items) catch error.OutOfMemory;
         }
