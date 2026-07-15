@@ -11164,6 +11164,18 @@ pub const Parser = struct {
         defer accessor_pairs.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
+            // With no trivia between the tokens, `private[k: K]: V` in a
+            // type literal is recovered as an index signature by tsc rather
+            // than as an accessibility modifier on a type member.
+            if (t.kind == .kw_private and
+                self.peekAt(1).kind == .open_bracket and
+                t.span.end == self.peekAt(1).span.start)
+            {
+                const checkpoint = self.cursor;
+                _ = self.advance();
+                if (try self.tryParseIndexSignature(out, false, false)) continue;
+                self.cursor = checkpoint;
+            }
             // `static` is illegal on an index signature inside an interface
             // or type literal — tsc emits TS1071 anchored at the `static`
             // keyword (matches `staticIndexSignature4`/`staticIndexSignature5`
@@ -18029,6 +18041,7 @@ pub const Parser = struct {
             var key: NodeId = undefined;
             var is_computed = false;
             var can_be_shorthand_property = false;
+            var accessibility_shorthand_before_computed = false;
             if (self.peek().kind == .open_bracket) {
                 const obj_key_open = self.advance();
                 key = try self.parseAssignmentExpression();
@@ -18083,7 +18096,10 @@ pub const Parser = struct {
                     );
                 }
                 const key_tok = self.advance();
-                can_be_shorthand_property = isExpressionIdentifierToken(key_tok.kind);
+                accessibility_shorthand_before_computed = isAccessibilityModifier(key_tok.kind) and
+                    self.peek().kind == .open_bracket;
+                can_be_shorthand_property = isExpressionIdentifierToken(key_tok.kind) or
+                    accessibility_shorthand_before_computed;
                 var key_span = tokenSpan(key_tok);
                 // TS18016: private identifiers are not allowed outside
                 // class bodies. tsc fires this at the `#foo` key of
@@ -18283,6 +18299,7 @@ pub const Parser = struct {
             );
             try props.append(self.gpa, prop);
             if (self.match(.comma)) continue;
+            if (accessibility_shorthand_before_computed and self.peek().kind == .open_bracket) continue;
             if (is_computed and self.peek().kind == .close_bracket) {
                 const close = self.advance();
                 try self.reportCodeAt(close.span.start, close.line, 1005, "',' expected.");
@@ -26125,6 +26142,28 @@ test "parser: class index signature accessibility modifier reports TS1071" {
     try T.expectEqual(@as(u32, 1071), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 10), s.parser.diagnostics.items[0].pos);
     try T.expectEqualStrings("'private' modifier cannot appear on an index signature.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: private indexer recovery differs between object and type literals" {
+    var s = try newTestSetup(
+        \\var x = {
+        \\    private [x: string]: string;
+        \\}
+        \\var y: {
+        \\    private[x: string]: string;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("']' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[1].message);
+    try T.expectEqual(@as(u32, 1136), s.parser.diagnostics.items[2].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[3].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[3].message);
 }
 
 test "parser: accessibility modifiers cannot be used with private identifiers" {
