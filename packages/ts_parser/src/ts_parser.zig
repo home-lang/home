@@ -6064,6 +6064,9 @@ pub const Parser = struct {
                     },
                     .kw_static => {
                         const mod = self.advance();
+                        if (mods.is_async) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'static' modifier must precede 'async' modifier.");
+                        }
                         if (mods.is_override) {
                             try self.reportCodeAt(mod.span.start, mod.line, 1029, "'static' modifier must precede 'override' modifier.");
                         }
@@ -21270,6 +21273,21 @@ test "parser: override modifier order reports async/static TS1029" {
     }
     try T.expect(saw_async);
     try T.expect(saw_static);
+}
+
+test "parser: static modifier after async reports TS1029" {
+    var s = try newTestSetup(
+        \\class C { async static *#bad() {} }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 1029) continue;
+        try T.expectEqualStrings("'static' modifier must precede 'async' modifier.", diagnostic.message);
+        found = true;
+    }
+    try T.expect(found);
 }
 
 test "parser: accessibility modifier before readonly on parameter property is silent" {
