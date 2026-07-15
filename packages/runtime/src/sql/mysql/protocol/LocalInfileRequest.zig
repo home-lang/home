@@ -20,6 +20,12 @@ pub fn decodeInternal(this: *LocalInfileRequest, comptime Context: type, reader:
         return error.InvalidLocalInfileRequest;
     }
 
+    // `packet_size` counts the header byte we just consumed. A malformed packet
+    // reporting size 0 would underflow the u24 to 0xFFFFFF and force a 16MB
+    // over-read; reject it before subtracting.
+    if (this.packet_size == 0) {
+        return error.InvalidLocalInfileRequest;
+    }
     this.filename = try reader.read(this.packet_size - 1);
 }
 
