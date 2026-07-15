@@ -5769,8 +5769,20 @@ pub const Parser = struct {
                     }
                 }
                 var default_value: NodeId = hir_mod.none_node_id;
+                var recovered_missing_property_initializer = false;
                 if (self.match(.equal)) {
                     default_value = try self.parseAssignmentExpression();
+                } else if (type_anno != hir_mod.none_node_id and
+                    self.peek().kind == .dot and
+                    !self.peek().flags.preceded_by_newline)
+                {
+                    // A `this` type is complete before a following dot.
+                    // In `a: this.foo`, tsc reports TS1442 at the dot,
+                    // discards it during list recovery, then parses `foo`
+                    // as the next class member.
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
+                    recovered_missing_property_initializer = true;
                 } else if ((self.peek().kind == .string_literal or
                     self.peek().kind == .number_literal or
                     self.peek().kind == .open_brace or
@@ -5824,7 +5836,7 @@ pub const Parser = struct {
                 if (mods.is_accessor) {
                     try self.reportOptionalAutoAccessor(optional_member_token);
                 }
-                if (!recovered_unknown_keyword) {
+                if (!recovered_unknown_keyword and !recovered_missing_property_initializer) {
                     try self.consumeClassPropertyTerminator();
                 }
                 if (name_tok.kind == .private_identifier) {
@@ -10397,16 +10409,9 @@ pub const Parser = struct {
                 break :blk try self.builder.addTypeRef(tokenSpan(bad), id, &.{}, &.{});
             },
             .kw_this => blk: {
-                const start_tok = self.advance();
-                var end_pos = start_tok.span.end;
-                while (self.peek().kind == .dot and
-                    (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword()))
-                {
-                    _ = self.advance();
-                    end_pos = self.advance().span.end;
-                }
-                const id = self.interner.intern(self.source[start_tok.span.start..end_pos]) catch return error.OutOfMemory;
-                break :blk try self.builder.addTypeRef(.{ .start = start_tok.span.start, .end = end_pos }, id, &.{}, &.{});
+                const this_tok = self.advance();
+                const id = self.interner.intern("this") catch return error.OutOfMemory;
+                break :blk try self.builder.addTypeRef(tokenSpan(this_tok), id, &.{}, &.{});
             },
             else => {
                 // Unknown — emit a synthetic type ref so the upstream
@@ -29264,6 +29269,20 @@ test "parser: TS1146 fires for a modifier-keyword class member with no name" {
     // TS1442 must NOT also fire for the same site — the swap is
     // not additive.
     try T.expectEqual(@as(u32, 0), countDiag(s, 1442));
+}
+
+test "parser: dotted this type recovers the suffix as a class member" {
+    var s = try newTestSetup("class C { a: this.foo; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1442));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), members.len);
+    const recovered = hir_mod.objectPropertyOf(&s.hir, members[1]);
+    try T.expectEqualStrings("foo", s.interner.get(hir_mod.identifierOf(&s.hir, recovered.key).name));
 }
 
 test "parser: TS1146 stays clean for legitimate modifier-named properties" {
