@@ -1145,6 +1145,14 @@ pub const Scanner = struct {
                 };
             }
             self.pos += 1;
+            if (self.isAtEnd() or !isIdentStart(self.source[self.pos])) {
+                return .{
+                    .span = .{ .start = start, .end = self.pos },
+                    .kind = .invalid,
+                    .flags = flags,
+                    .line = line,
+                };
+            }
             return self.scanPrivateIdentifier(start, line, flags);
         }
 
@@ -2190,6 +2198,19 @@ test "Scanner: private identifier" {
     try t.expectEqual(TokenKind.dot, toks.items[1].kind);
     try t.expectEqual(TokenKind.private_identifier, toks.items[2].kind);
     try t.expectEqualStrings("#secret", toks.items[2].bytes(s.source));
+}
+
+test "Scanner: bare hash is invalid" {
+    var s = Scanner.init(t.allocator, "#\nclass C { #\nthis.# }");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    var invalid_count: usize = 0;
+    for (toks.items) |token| {
+        if (token.kind == .invalid) invalid_count += 1;
+    }
+    try t.expectEqual(@as(usize, 3), invalid_count);
 }
 
 test "Scanner: template — no substitution" {

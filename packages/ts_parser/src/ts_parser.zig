@@ -5216,6 +5216,11 @@ pub const Parser = struct {
             }
             try self.reportClassMemberConstKeyword(mods);
             var member_start = self.peek();
+            if (member_start.kind == .invalid) {
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                continue;
+            }
             var invalid_index_modifier: ?Token = null;
             if (self.peek().kind == .kw_export and self.peekAt(1).kind == .open_bracket) {
                 invalid_index_modifier = self.advance();
@@ -15883,6 +15888,11 @@ pub const Parser = struct {
                     {
                         _ = self.advance();
                     }
+                    if (self.peek().kind == .invalid) {
+                        const bad = self.advance();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                        break;
+                    }
                     const name_tok = try self.expectIdentifierLike();
                     const name_id = try self.internToken(name_tok);
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end };
@@ -15911,6 +15921,11 @@ pub const Parser = struct {
                         (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword()))
                     {
                         _ = self.advance();
+                    }
+                    if (self.peek().kind == .invalid) {
+                        const bad = self.advance();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                        break;
                     }
                     const name_tok = try self.expectIdentifierLike();
                     if (name_tok.kind == .private_identifier and self.nodeIsOptionalChain(node)) {
@@ -22459,6 +22474,28 @@ test "parser: TS1451 does NOT fire for legitimate private-identifier usages" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1451);
     }
+}
+
+test "parser: bare hash reports invalid character in every private-name position" {
+    var s = try newTestSetup(
+        \\#
+        \\class C {
+        \\    #
+        \\    m() { this.# }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var invalid_count: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1127) {
+            invalid_count += 1;
+            try T.expectEqualStrings("Invalid character.", diagnostic.message);
+        }
+        try T.expect(diagnostic.code != 1451);
+    }
+    try T.expectEqual(@as(usize, 3), invalid_count);
 }
 
 test "parser: TS1194 export declarations not permitted in a namespace" {
