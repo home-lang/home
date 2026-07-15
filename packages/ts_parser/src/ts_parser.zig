@@ -12927,6 +12927,14 @@ pub const Parser = struct {
         const t = self.peek();
         switch (t.kind) {
             .equal => {
+                if (self.hir.kindOf(left) == .binary_op and
+                    hir_mod.binopOf(self.hir, left).op == .in)
+                {
+                    const equal = self.advance();
+                    try self.reportCodeAt(equal.span.start, equal.line, 1005, "';' expected.");
+                    _ = try self.parseAssignmentExpressionWithIn(allow_in);
+                    return left;
+                }
                 _ = self.advance();
                 try self.reportInvalidStrictIdentifierNode(left);
                 try self.reportInvalidAssignmentTarget(left);
@@ -22577,6 +22585,23 @@ test "parser: TS1451 does NOT fire for legitimate private-identifier usages" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1451);
     }
+}
+
+test "parser: assignment to in expression recovers with TS1005" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    #field = 1;
+        \\    test(v: any) {
+        \\        'prop' in v = 10;
+        \\        #field in v = 10;
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1451));
 }
 
 test "parser: bare hash reports invalid character in every private-name position" {
