@@ -335,6 +335,14 @@ pub fn onData(
         reader.markMessageStart();
         const c = try reader.int(u8);
         debug("read: {c}", .{c});
+        // Before the TLS handshake completes only the single-byte 'S'/'N' SSL
+        // negotiation replies are legitimate. Any other message type arriving
+        // while we are still in plaintext (tls_status == .message_sent) is a
+        // man-in-the-middle injecting forged backend messages ahead of the real
+        // TLS-wrapped stream — refuse it instead of dispatching in the clear.
+        if (connection.tls_status == .message_sent and c != 'S' and c != 'N') {
+            return error.UnexpectedMessage;
+        }
         switch (c) {
             'D' => try connection.on(.DataRow, Context, reader),
             'd' => try connection.on(.CopyData, Context, reader),
@@ -365,7 +373,11 @@ pub fn onData(
                 if (connection.tls_status == .message_sent) {
                     connection.tls_status = .ssl_not_available;
                     debug("Server does not support SSL", .{});
-                    if (connection.ssl_mode == .require) {
+                    // verify_ca/verify_full also mandate a verified TLS cert, so a
+                    // server that refuses SSL must fail closed for them too — not
+                    // just .require. Otherwise an on-path attacker downgrades the
+                    // connection to plaintext by answering the SSLRequest with 'N'.
+                    if (connection.ssl_mode == .require or connection.ssl_mode == .verify_ca or connection.ssl_mode == .verify_full) {
                         connection.fail("Server does not support SSL", error.TLSNotAvailable);
                         return;
                     }
@@ -381,9 +393,18 @@ pub fn onData(
 
             else => {
                 debug("Unknown message: {c}", .{c});
-                const to_skip = try reader.length() -| 1;
+                // A Postgres message length counts itself (4 bytes) but not the
+                // type byte already consumed, so the unread body is `length - 4`.
+                // Skipping `length - 1` over-ran the body by 3 bytes, reading the
+                // next message's payload as a type byte → parser desync. Reject a
+                // length that can't even cover its own field, then skip the body.
+                const length = try reader.length();
+                if (length < 4) {
+                    return error.InvalidMessageLength;
+                }
+                const to_skip = length -| 4;
                 debug("to_skip: {d}", .{to_skip});
-                try reader.skip(@intCast(@max(to_skip, 0)));
+                try reader.skip(@intCast(to_skip));
             },
         }
     }

@@ -16,7 +16,12 @@ data: Data = .{ .empty = {} },
 pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) !void {
     const length = try reader.length();
 
-    const data = try reader.read(@intCast(length -| 5));
+    // The length field counts itself (4 bytes) but not the 'd' type byte the
+    // dispatcher already consumed, so the body is exactly `length - 4`. The
+    // previous `- 5` left one body byte unread, desyncing every message after a
+    // CopyData ('d') packet. Saturating so a malformed short length can't
+    // underflow-panic the connection thread.
+    const data = try reader.read(@intCast(length -| 4));
     this.* = .{
         .data = data,
     };
