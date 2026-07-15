@@ -1865,7 +1865,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
                     stmt.status = PostgresSQLStatement.Status.failed;
                     stmt.error_response = .{ .protocol = err };
                     is_error_owned = false;
-                    if (this.statements.remove(bun.hash(stmt.signature.name))) {
+                    if (this.statements.remove(stmt.signature.name)) {
                         stmt.deref();
                     }
                 }
@@ -1946,7 +1946,14 @@ pub fn consumeOnCloseCallback(this: *const PostgresSQLConnection, globalObject: 
     return on_close;
 }
 
-const PreparedStatementsMap = std.HashMapUnmanaged(u64, *PostgresSQLStatement, bun.IdentityContext(u64), 80);
+// Keyed by the full statement signature name (query text + bound-parameter
+// type tags), not a 64-bit hash of it: a hash collision would alias two
+// distinct prepared statements and execute the wrong one against the wire.
+// `std.StringHashMap` does not copy keys — the stored key points at the
+// resident statement's owned `signature.name`, which outlives the entry (keys
+// are only removed on error paths before the owning `signature` is freed, or
+// when a statement is deref'd during cleanup). Mirrors the MySQL side.
+const PreparedStatementsMap = std.StringHashMapUnmanaged(*PostgresSQLStatement);
 
 const debug = bun.Output.scoped(.Postgres, .visible);
 

@@ -344,9 +344,14 @@ pub fn doRun(this: *PostgresSQLQuery, globalObject: *jsc.JSGlobalObject, callfra
     var did_write = false;
     enqueue: {
         var connection_entry_value: ?**PostgresSQLStatement = null;
-        const signature_hash: u64 = bun.hash(signature.name);
+        // Key the statement cache by the signature name bytes, not bun.hash(name):
+        // a 64-bit collision would execute the wrong prepared statement. Safe to
+        // use signature.name as the key because on the insert (not-found) path the
+        // signature is moved into the resident statement, so key and owner share
+        // the same heap bytes; every remove below runs before that move.
+        const signature_name = signature.name;
         if (!connection.flags.use_unnamed_prepared_statements) {
-            const entry = connection.statements.getOrPut(bun.default_allocator, signature_hash) catch |err| {
+            const entry = connection.statements.getOrPut(bun.default_allocator, signature_name) catch |err| {
                 signature.deinit();
                 return globalObject.throwError(err, "failed to allocate statement");
             };
@@ -404,7 +409,7 @@ pub fn doRun(this: *PostgresSQLQuery, globalObject: *jsc.JSGlobalObject, callfra
                 // prepareAndQueryWithSignature will write + bind + execute, it will change to running after binding is complete
                 PostgresRequest.prepareAndQueryWithSignature(globalObject, query_str.slice(), binding_value, PostgresSQLConnection.Writer, writer, &signature) catch |err| {
                     if (connection_entry_value != null) {
-                        _ = connection.statements.remove(signature_hash);
+                        _ = connection.statements.remove(signature_name);
                     }
                     signature.deinit();
                     if (this.statement) |stmt| {
@@ -427,7 +432,7 @@ pub fn doRun(this: *PostgresSQLQuery, globalObject: *jsc.JSGlobalObject, callfra
 
                 PostgresRequest.writeQuery(query_str.slice(), signature.prepared_statement_name, signature.fields, PostgresSQLConnection.Writer, writer) catch |err| {
                     if (connection_entry_value != null) {
-                        _ = connection.statements.remove(signature_hash);
+                        _ = connection.statements.remove(signature_name);
                     }
                     signature.deinit();
                     if (this.statement) |stmt| {
@@ -441,7 +446,7 @@ pub fn doRun(this: *PostgresSQLQuery, globalObject: *jsc.JSGlobalObject, callfra
                 };
                 writer.write(&protocol.Sync) catch |err| {
                     if (connection_entry_value != null) {
-                        _ = connection.statements.remove(signature_hash);
+                        _ = connection.statements.remove(signature_name);
                     }
                     signature.deinit();
                     if (!globalObject.hasException())
@@ -459,7 +464,7 @@ pub fn doRun(this: *PostgresSQLQuery, globalObject: *jsc.JSGlobalObject, callfra
         {
             const stmt = bun.default_allocator.create(PostgresSQLStatement) catch {
                 if (connection_entry_value != null) {
-                    _ = connection.statements.remove(signature_hash);
+                    _ = connection.statements.remove(signature_name);
                 }
                 this.deref();
                 return globalObject.throwOutOfMemory();
