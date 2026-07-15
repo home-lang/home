@@ -2320,9 +2320,10 @@ fn appendImportedPrivateHelperArityDiagnostics(
     tslib_source: []const u8,
 ) CompileError!void {
     const hash_pos = firstPrivateIdentifierHash(source) orelse return;
-    const checks = [_]struct { name: []const u8, required: usize }{
-        .{ .name = "__classPrivateFieldGet", .required = 4 },
-        .{ .name = "__classPrivateFieldSet", .required = 5 },
+    const use_positions = privateHelperUsePositions(source);
+    const checks = [_]struct { name: []const u8, required: usize, pos: ?usize }{
+        .{ .name = "__classPrivateFieldGet", .required = 4, .pos = use_positions.get },
+        .{ .name = "__classPrivateFieldSet", .required = 5, .pos = use_positions.set },
     };
     for (checks) |check| {
         const actual = helperParameterCount(tslib_source, check.name) orelse continue;
@@ -2334,7 +2335,7 @@ fn appendImportedPrivateHelperArityDiagnostics(
         );
         try c.diagnostics.append(gpa, .{
             .phase = .bind,
-            .pos = @intCast(hash_pos),
+            .pos = @intCast(check.pos orelse hash_pos),
             .line = 0,
             .span_len = @intCast(check.name.len),
             .code = 2807,
@@ -2342,6 +2343,38 @@ fn appendImportedPrivateHelperArityDiagnostics(
         });
         c.has_errors = true;
     }
+}
+
+const PrivateHelperUsePositions = struct {
+    get: ?usize = null,
+    set: ?usize = null,
+};
+
+fn privateHelperUsePositions(source: []const u8) PrivateHelperUsePositions {
+    var positions: PrivateHelperUsePositions = .{};
+    var search_from: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, source, search_from, '#')) |hash| {
+        search_from = hash + 1;
+        if (positionInLineComment(source, hash) or positionInBlockComment(source, hash)) continue;
+        if (hash == 0 or source[hash - 1] != '.') continue;
+        if (hash + 1 >= source.len or !isIdentifierStart(source[hash + 1])) continue;
+        var after_name = hash + 2;
+        while (after_name < source.len and isIdentifierContinue(source[after_name])) after_name += 1;
+        const op = skipTrivia(source, after_name);
+        const simple_write = op < source.len and source[op] == '=' and
+            (op + 1 >= source.len or (source[op + 1] != '=' and source[op + 1] != '>'));
+        const compound_write = op + 1 < source.len and source[op + 1] == '=' and
+            std.mem.indexOfScalar(u8, "+-*/%&|^", source[op]) != null;
+        const update = op + 1 < source.len and
+            ((source[op] == '+' and source[op + 1] == '+') or
+                (source[op] == '-' and source[op + 1] == '-'));
+        var access_start = hash - 1;
+        while (access_start > 0 and isIdentifierContinue(source[access_start - 1])) access_start -= 1;
+        if ((simple_write or compound_write or update) and positions.set == null) positions.set = access_start;
+        if ((!simple_write or compound_write or update) and positions.get == null) positions.get = access_start;
+        if (positions.get != null and positions.set != null) break;
+    }
+    return positions;
 }
 
 fn sourceExternalEmitHelperPosition(source: []const u8, commonjs_module: bool) ?usize {
@@ -2494,7 +2527,12 @@ fn tslibDeclarationSource(source: []const u8) ?[]const u8 {
         const path_start = marker + "@filename:".len;
         const line_end = std.mem.indexOfScalarPos(u8, source, path_start, '\n') orelse source.len;
         const path = std.mem.trim(u8, source[path_start..line_end], " \t\r");
-        if (std.mem.eql(u8, std.fs.path.basename(path), "tslib.d.ts")) {
+        const basename = std.fs.path.basename(path);
+        const is_tslib_declaration = std.mem.eql(u8, basename, "tslib.d.ts") or
+            (std.mem.eql(u8, basename, "index.d.ts") and
+                (std.mem.endsWith(u8, path, "/tslib/index.d.ts") or
+                    std.mem.endsWith(u8, path, "\\tslib\\index.d.ts")));
+        if (is_tslib_declaration) {
             const body_start = line_end + @as(usize, if (line_end < source.len) 1 else 0);
             var next_search = body_start;
             while (std.mem.indexOfPos(u8, source, next_search, "@filename:")) |next_marker| {
@@ -4259,6 +4297,47 @@ test "driver: importHelpers reports incompatible private field helper arity" {
         if (d.code != 2807) continue;
         if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldGet' with 4 parameters") != null) saw_get = true;
         if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldSet' with 5 parameters") != null) saw_set = true;
+    }
+    try T.expect(saw_get);
+    try T.expect(saw_set);
+}
+
+test "driver: importHelpers resolves private helpers from tslib package index" {
+    const source =
+        \\// @target: es2015
+        \\// @importHelpers: true
+        \\// @filename: main.ts
+        \\export class C {
+        \\    #x = 1;
+        \\    set(v: number) { this.#x = v; }
+        \\    get() { return this.#x; }
+        \\}
+        \\
+        \\// @filename: node_modules/tslib/index.d.ts
+        \\export declare function __classPrivateFieldGet(receiver: any, state: any): any;
+        \\export declare function __classPrivateFieldSet(receiver: any, state: any, value: any): any;
+    ;
+    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    const set_pos: u32 = @intCast(std.mem.indexOf(u8, source, "this.#x =").?);
+    const get_pos: u32 = @intCast(std.mem.indexOf(u8, source, "this.#x;").?);
+    var saw_get = false;
+    var saw_set = false;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2354);
+        if (d.code != 2807) continue;
+        if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldGet'") != null) {
+            try T.expectEqual(get_pos, d.pos);
+            saw_get = true;
+        }
+        if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldSet'") != null) {
+            try T.expectEqual(set_pos, d.pos);
+            saw_set = true;
+        }
     }
     try T.expect(saw_get);
     try T.expect(saw_set);
