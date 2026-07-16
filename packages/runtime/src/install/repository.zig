@@ -585,6 +585,21 @@ pub const Repository = extern struct {
         }, " \t\r\n");
     }
 
+    /// A git `resolved` commit/tag from the lockfile is passed to `git checkout`
+    /// and spliced into the on-disk cache folder name. Validate it is a single
+    /// safe token first: non-empty, bounded, no leading `-` (which git would
+    /// parse as an option), not `.`/`..`, and only alphanumerics or `-_.` — no
+    /// `/`, `\`, NUL or other separators that could escape the cache directory.
+    fn isSafeResolvedTag(resolved: string) bool {
+        if (resolved.len == 0 or resolved.len > 256) return false;
+        if (resolved[0] == '-') return false;
+        if (std.mem.eql(u8, resolved, ".") or std.mem.eql(u8, resolved, "..")) return false;
+        for (resolved) |b| {
+            if (!(std.ascii.isAlphanumeric(b) or b == '-' or b == '_' or b == '.')) return false;
+        }
+        return true;
+    }
+
     pub fn checkout(
         allocator: std.mem.Allocator,
         env: DotEnv.Map,
@@ -596,6 +611,21 @@ pub const Repository = extern struct {
         resolved: string,
     ) !ExtractData {
         bun.analytics.Features.git_dependencies += 1;
+
+        // Reject a tampered-lockfile `resolved` before it reaches `git checkout`
+        // (leading `-` = option injection) or the cache folder name (`/`/`..` =
+        // path escape).
+        if (!isSafeResolvedTag(resolved)) {
+            log.addErrorFmt(
+                null,
+                logger.Loc.Empty,
+                allocator,
+                "invalid git commit \"{s}\" for \"{s}\"",
+                .{ resolved, name },
+            ) catch unreachable;
+            return error.InstallFailed;
+        }
+
         const bufs = tl_bufs.get();
         const folder_name = PackageManager.cachedGitFolderNamePrint(&bufs.folder_name_buf, resolved, null);
 
