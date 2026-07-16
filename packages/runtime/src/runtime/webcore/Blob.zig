@@ -4047,6 +4047,19 @@ pub fn toArrayBufferViewWithBytes(this: *Blob, global: *JSGlobalObject, buf: []u
             );
         },
         .transfer => {
+            // If the store is shared with another Blob, transferring would hand
+            // mutable/neuterable access to bytes the other Blob still reads —
+            // mutating corrupts it, transferring to a worker neuters memory it
+            // reads (UAF). Copy instead (the Clone arm only reads `buf`), then
+            // detach so transfer semantics still hold.
+            if (this.store) |store| {
+                if (!store.hasOneRef()) {
+                    const copied = try toArrayBufferViewWithBytes(this, global, buf, .clone, TypedArrayView);
+                    this.detach();
+                    return copied;
+                }
+            }
+
             if (buf.len > jsc.VirtualMachine.synthetic_allocation_limit and TypedArrayView != .ArrayBuffer) {
                 this.detach();
                 return global.throwOutOfMemory();
