@@ -2105,7 +2105,7 @@ pub fn parseIntoBinaryLockfile(
 /// prefix and the byte after it is a `/` (or the URL ends there) — so a URL like
 /// `https://evil.example/registry.npmjs.org/...` is NOT under
 /// `https://registry.npmjs.org`.
-fn urlIsUnderRegistry(url: string, registry: string) bool {
+pub fn urlIsUnderRegistry(url: string, registry: string) bool {
     const reg = strings.withoutTrailingSlash(registry);
     return strings.hasPrefix(url, reg) and (url.len == reg.len or url[reg.len] == '/');
 }

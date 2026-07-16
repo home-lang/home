@@ -922,6 +922,8 @@ pub fn migrateNPMLockfile(
 
                                             const hash_index = strings.lastIndexOfChar(str.slice, '#') orelse return error.InvalidNPMLockfile;
 
+                                            if (!Install.Repository.isSafeResolvedTag(str.slice[hash_index + 1 ..])) return error.InvalidNPMLockfile;
+
                                             const commit = str.sub(str.slice[hash_index + 1 ..]).value();
                                             break :res Resolution.init(.{
                                                 .git = .{
@@ -942,6 +944,8 @@ pub fn migrateNPMLockfile(
 
                                             const hash_index = strings.lastIndexOfChar(str.slice, '#') orelse return error.InvalidNPMLockfile;
 
+                                            if (!Install.Repository.isSafeResolvedTag(str.slice[hash_index + 1 ..])) return error.InvalidNPMLockfile;
+
                                             const commit = str.sub(str.slice[hash_index + 1 ..]).value();
                                             break :res Resolution.init(.{
                                                 .git = .{
@@ -956,6 +960,22 @@ pub fn migrateNPMLockfile(
                                     };
                                 };
                                 debug("-> {f}", .{res.fmtForDebug(string_buf.bytes.items)});
+
+                                // Fail closed: a migrated lockfile whose npm entry
+                                // resolves to a tarball URL outside the configured
+                                // (and default) registry could install arbitrary
+                                // content under a trusted name unless pinned by a
+                                // supported integrity hash.
+                                if (res.tag == .npm) {
+                                    const url = res.value.npm.url.slice(string_buf.bytes.items);
+                                    const configured_registry = manager.scopeForPackageName(dep_name.slice(string_buf.bytes.items)).url.href;
+                                    if (!Install.TextLockfile.urlIsUnderRegistry(url, configured_registry) and
+                                        !Install.TextLockfile.urlIsUnderRegistry(url, Npm.Registry.default_url) and
+                                        !metas[id].integrity.tag.isSupported())
+                                    {
+                                        return error.InvalidNPMLockfile;
+                                    }
+                                }
 
                                 resolutions[id] = res;
                                 metas[id].origin = switch (res.tag) {
