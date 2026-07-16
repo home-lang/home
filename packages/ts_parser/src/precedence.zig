@@ -36,9 +36,9 @@ pub const Prec = enum(u8) {
     bit_and = 9,
     /// `==`, `!=`, `===`, `!==`.
     equality = 10,
-    /// `<`, `>`, `<=`, `>=`, `instanceof`, `in`.
+    /// `<`, `>`, `<=`, `>=`, `instanceof`, `in`, `as`, `satisfies`.
     relational = 11,
-    /// `as`, `satisfies`.
+    /// Reserved historical slot; TS assertions use relational precedence.
     type_assertion = 12,
     /// `<<`, `>>`, `>>>`.
     shift = 13,
@@ -75,8 +75,7 @@ pub fn binaryPrec(tok: TokenKind) ?Prec {
         .caret => .bit_xor,
         .ampersand => .bit_and,
         .equal_equal, .bang_equal, .equal_equal_equal, .bang_equal_equal => .equality,
-        .less_than, .less_than_equal, .greater_than, .greater_than_equal, .kw_instanceof, .kw_in => .relational,
-        .kw_as, .kw_satisfies => .type_assertion,
+        .less_than, .less_than_equal, .greater_than, .greater_than_equal, .kw_instanceof, .kw_in, .kw_as, .kw_satisfies => .relational,
         .less_less, .greater_greater, .greater_greater_greater => .shift,
         .plus, .minus => .additive,
         .asterisk, .slash, .percent => .multiplicative,
@@ -164,8 +163,8 @@ test "binaryPrec: equality and relational" {
 }
 
 test "binaryPrec: TS-only as / satisfies" {
-    try t.expectEqual(@as(?Prec, .type_assertion), binaryPrec(.kw_as));
-    try t.expectEqual(@as(?Prec, .type_assertion), binaryPrec(.kw_satisfies));
+    try t.expectEqual(@as(?Prec, .relational), binaryPrec(.kw_as));
+    try t.expectEqual(@as(?Prec, .relational), binaryPrec(.kw_satisfies));
 }
 
 test "binaryPrec: non-binary tokens are null" {

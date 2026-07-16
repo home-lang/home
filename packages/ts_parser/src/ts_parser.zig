@@ -185,6 +185,8 @@ pub const Parser = struct {
     /// namespace. Mirrors upstream `ast.IsAmbientModule(node.Parent.Parent)`.
     in_string_named_module: bool,
     strict_mode: bool,
+    /// Explicit strict grammar, excluding implicit module strictness used during transform recovery.
+    strict_grammar_mode: bool,
     target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
     allow_parameter_list_arrow_recovery: bool,
@@ -304,6 +306,7 @@ pub const Parser = struct {
             .module_augmentation_depth = 0,
             .in_string_named_module = false,
             .strict_mode = false,
+            .strict_grammar_mode = false,
             .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
             .allow_parameter_list_arrow_recovery = false,
@@ -343,6 +346,7 @@ pub const Parser = struct {
 
     pub fn setStrictMode(self: *Parser, enabled: bool) void {
         self.strict_mode = enabled;
+        self.strict_grammar_mode = enabled;
     }
 
     pub fn setTargetEs2015OrLater(self: *Parser, enabled: bool) void {
@@ -949,6 +953,9 @@ pub const Parser = struct {
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
         try self.reportJSDocTypeArgumentSyntaxDiagnostics();
+        if (self.sourceHasStrictTrueDirective()) {
+            self.strict_grammar_mode = true;
+        }
         self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
         self.top_level_module_syntax_indicator = self.sourceHasTopLevelModuleSyntaxIndicator();
         if (self.top_level_external_module_indicator) self.strict_mode = true;
@@ -2510,7 +2517,10 @@ pub const Parser = struct {
             .string_literal => blk: {
                 const is_strict = self.isUseStrictDirective(t);
                 const stmt = try self.parseExpressionStatement();
-                if (is_strict) self.strict_mode = true;
+                if (is_strict) {
+                    self.strict_mode = true;
+                    self.strict_grammar_mode = true;
+                }
                 break :blk stmt;
             },
             .semicolon => blk: {
@@ -6708,6 +6718,11 @@ pub const Parser = struct {
     fn sourceHasErasableSyntaxOnlyDirective(self: *const Parser) bool {
         return std.mem.indexOf(u8, self.source, "@erasableSyntaxOnly: true") != null or
             std.mem.indexOf(u8, self.source, "@erasableSyntaxOnly:true") != null;
+    }
+
+    fn sourceHasStrictTrueDirective(self: *const Parser) bool {
+        return std.mem.indexOf(u8, self.source, "@strict: true") != null or
+            std.mem.indexOf(u8, self.source, "@strict:true") != null;
     }
 
     fn reportErasableSyntaxOnlyTypeAssertionIfNeeded(self: *Parser, less_tok: Token) ParseError!void {
@@ -16515,22 +16530,21 @@ pub const Parser = struct {
             },
             .private_identifier => {
                 _ = self.advance();
-                // TS1451: a private identifier in primary-expression
-                // position is only legal as the left-hand-side of an
-                // `in` expression (`#name in obj`). The class-body
-                // declaration site, property access (`obj.#name`),
-                // and `#name in obj` LHS go through dedicated parser
-                // paths and never reach here. Member-access via
-                // `.#name` is handled before the dot consumes the
-                // following private-identifier token, so we can
-                // discriminate on the immediately-following token:
-                // `in` -> allowed, anything else -> TS1451.
-                if (self.peek().kind != .kw_in) {
+                if (self.class_body_depth == 0 and
+                    (self.strict_grammar_mode or self.peek().kind != .kw_in))
+                {
+                    try self.reportCodeAt(
+                        t.span.start,
+                        t.line,
+                        18016,
+                        "Private identifiers are not allowed outside class bodies.",
+                    );
+                } else if (self.peek().kind != .kw_in) {
                     try self.reportCodeAt(
                         t.span.start,
                         t.line,
                         1451,
-                        "Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression.",
+                        "Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression",
                     );
                 }
                 const id = try self.internToken(t);
@@ -19988,6 +20002,20 @@ test "parser: for-in loop" {
     try T.expectEqual(hir_mod.NodeKind.for_in_stmt, s.hir.kindOf(top));
 }
 
+test "parser: as assertion wraps an in expression at relational precedence" {
+    var s = try newTestSetup("for (let key in prop in value as any) {}");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.for_in_stmt, s.hir.kindOf(top));
+    const loop = hir_mod.forInOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.as_expr, s.hir.kindOf(loop.source));
+    const asserted = hir_mod.asExpressionOf(&s.hir, loop.source);
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(asserted.expr));
+    try T.expectEqual(hir_mod.BinOp.in, hir_mod.binopOf(&s.hir, asserted.expr).op);
+}
+
 test "parser: for-in rejects destructuring targets" {
     var s = try newTestSetup("for (var {a, b} in obj) {} for ([a, b] in obj) {}");
     defer destroyTestSetup(s);
@@ -22546,8 +22574,13 @@ test "parser: TS1451 fires for private identifier in invalid expression position
     // assignment RHS) is illegal; the only legal expression usage
     // is `#name in obj`.
     var s = try newTestSetup(
-        \\let bad = #bad;
-        \\f(#arg);
+        \\class C {
+        \\    #bad;
+        \\    m() {
+        \\        let bad = #bad;
+        \\        f(#arg);
+        \\    }
+        \\}
     );
     defer destroyTestSetup(s);
 
@@ -22557,7 +22590,7 @@ test "parser: TS1451 fires for private identifier in invalid expression position
         if (d.code == 1451) {
             ts1451 += 1;
             try T.expectEqualStrings(
-                "Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression.",
+                "Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression",
                 d.message,
             );
         }
@@ -22585,6 +22618,34 @@ test "parser: TS1451 does NOT fire for legitimate private-identifier usages" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1451);
     }
+}
+
+test "parser: private brand check outside a class reports TS18016" {
+    var s = try newTestSetup(
+        \\// @strict: true
+        \\function bad(v: object) {
+        \\    return #field in v;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 18016));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1451));
+}
+
+test "parser: non-strict outside brand check preserves transform recovery" {
+    var s = try newTestSetup(
+        \\function emitRecovery(v: object) {
+        \\    return #field in v;
+        \\}
+        \\export {};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 18016));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1451));
 }
 
 test "parser: assignment to in expression recovers with TS1005" {
