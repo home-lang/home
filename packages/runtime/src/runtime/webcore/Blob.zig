@@ -296,6 +296,40 @@ pub fn doReadFileInternal(this: *Blob, comptime Handler: type, ctx: Handler, com
     read_file_task.schedule();
 }
 
+/// Percent-encode `"`, CR, and LF in a multipart form-data field name or
+/// filename so an untrusted value cannot close the quoted-string or inject
+/// additional part headers (WHATWG "multipart/form-data encoding algorithm").
+/// The joiner copies the bytes (`pushCloned`), so the caller keeps ownership of
+/// `bytes`.
+fn pushFormDataName(joiner: *StringJoiner, allocator: std.mem.Allocator, bytes: []const u8) void {
+    var extra: usize = 0;
+    for (bytes) |b| {
+        if (b == '"' or b == '\r' or b == '\n') extra += 2;
+    }
+    if (extra == 0) {
+        joiner.pushCloned(bytes);
+        return;
+    }
+    const out = bun.handleOom(allocator.alloc(u8, bytes.len + extra));
+    defer allocator.free(out);
+    var i: usize = 0;
+    for (bytes) |b| {
+        const enc: []const u8 = switch (b) {
+            '"' => "%22",
+            '\r' => "%0D",
+            '\n' => "%0A",
+            else => {
+                out[i] = b;
+                i += 1;
+                continue;
+            },
+        };
+        @memcpy(out[i..][0..3], enc);
+        i += 3;
+    }
+    joiner.pushCloned(out[0..i]);
+}
+
 const FormDataContext = struct {
     allocator: std.mem.Allocator,
     joiner: StringJoiner,
@@ -316,8 +350,11 @@ const FormDataContext = struct {
         joiner.pushStatic("\r\n");
 
         joiner.pushStatic("Content-Disposition: form-data; name=\"");
-        const name_slice = name.toSlice(allocator);
-        joiner.push(name_slice.slice(), name_slice.allocator.get());
+        {
+            const name_slice = name.toSlice(allocator);
+            defer name_slice.deinit();
+            pushFormDataName(joiner, allocator, name_slice.slice());
+        }
 
         switch (entry) {
             .string => |value| {
@@ -327,12 +364,20 @@ const FormDataContext = struct {
             },
             .file => |value| {
                 joiner.pushStatic("\"; filename=\"");
-                const filename_slice = value.filename.toSlice(allocator);
-                joiner.push(filename_slice.slice(), filename_slice.allocator.get());
+                {
+                    const filename_slice = value.filename.toSlice(allocator);
+                    defer filename_slice.deinit();
+                    pushFormDataName(joiner, allocator, filename_slice.slice());
+                }
                 joiner.pushStatic("\"\r\n");
 
                 const blob = value.blob;
-                const content_type = if (blob.content_type.len > 0) blob.content_type else "application/octet-stream";
+                // Drop a content-type carrying CR/LF, which would inject headers
+                // into the multipart part; fall back to the generic type.
+                const content_type = if (blob.content_type.len > 0 and std.mem.indexOfAny(u8, blob.content_type, "\r\n") == null)
+                    blob.content_type
+                else
+                    "application/octet-stream";
                 joiner.pushStatic("Content-Type: ");
                 joiner.pushStatic(content_type);
                 joiner.pushStatic("\r\n\r\n");
