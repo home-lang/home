@@ -518,6 +518,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "experimentalDecorators") or
         std.ascii.eqlIgnoreCase(key, "exactOptionalPropertyTypes") or
         std.ascii.eqlIgnoreCase(key, "filename") or
+        std.ascii.eqlIgnoreCase(key, "ignoreDeprecations") or
         std.ascii.eqlIgnoreCase(key, "importHelpers") or
         std.ascii.eqlIgnoreCase(key, "isolatedDeclarations") or
         std.ascii.eqlIgnoreCase(key, "isolatedModules") or
@@ -55679,6 +55680,17 @@ test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
         \\// @target: es2020
         \\// @strict: true
         \\const x = 1;
+    ));
+    // Compiler-option directives introduced after the original runner
+    // matrix still count as fixture metadata. A trailing blank is also
+    // removed from upstream diagnostic line numbers.
+    try T.expectEqual(@as(u32, 5), countLeadingDirectiveLines(
+        \\// @target: es2015
+        \\// @ignoreDeprecations: 6.0
+        \\// @strict: false
+        \\// @alwaysStrict: true, false
+        \\
+        \\function f() {}
     ));
     // Emit-affecting runner directives are also stripped from
     // diagnostic line baselines.
