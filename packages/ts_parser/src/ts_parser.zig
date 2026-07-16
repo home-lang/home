@@ -8606,6 +8606,24 @@ pub const Parser = struct {
         };
     }
 
+    fn tokenStartsDeclarationStatementAfterVariableList(kind: TokenKind) bool {
+        return switch (kind) {
+            .kw_function,
+            .kw_class,
+            .kw_interface,
+            .kw_type,
+            .kw_enum,
+            .kw_namespace,
+            .kw_module,
+            .kw_import,
+            .kw_export,
+            .kw_declare,
+            .kw_abstract,
+            => true,
+            else => false,
+        };
+    }
+
     /// Parse a "left-hand-side" expression — primary + member-call
     /// chain. Used for `extends` clauses where a full assignment-level
     /// expression isn't grammatical.
@@ -8968,6 +8986,7 @@ pub const Parser = struct {
             }
         }
         var recovered_initializer_arrow_tail = false;
+        var recovered_declaration_list_boundary = false;
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         try self.reportVariableDefiniteAssignment(definite_assignment_token, type_annotation, init_node, is_ambient_decl);
         try self.recoverRegexVariableDeclarationTail(init_node);
@@ -9097,7 +9116,24 @@ pub const Parser = struct {
             try self.reportCodeAt(bad_unary.span.start, bad_unary.line, 1005, "',' expected.");
             _ = try self.parseUnaryExpression();
         }
-        if (!recovered_initializer_arrow_tail) try self.consumeStatementTerminator();
+        // `parseDelimitedList(PCVariableDeclarations)` reports a missing
+        // comma before a declaration-start token, then yields to the outer
+        // statement parsing context. Keep that token unread so an invalid
+        // sequence such as `var F = @dec function () {}` can recover the
+        // trailing function declaration and emit its own TS1003 at `(`.
+        // This is the parser-list boundary used by typescript-go rather
+        // than a missing statement terminator.
+        if (!recovered_initializer_arrow_tail and
+            !self.peek().flags.preceded_by_newline and
+            tokenStartsDeclarationStatementAfterVariableList(self.peek().kind))
+        {
+            const boundary = self.peek();
+            try self.reportCodeAt(boundary.span.start, boundary.line, 1005, "',' expected.");
+            recovered_declaration_list_boundary = true;
+        }
+        if (!recovered_initializer_arrow_tail and !recovered_declaration_list_boundary) {
+            try self.consumeStatementTerminator();
+        }
 
         const stmt_span: Span = .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end };
         return try self.builder.addVarDeclEx(
@@ -24269,6 +24305,32 @@ test "parser: decorated arrow initializer recovers like a missing declaration" {
     try T.expectEqual(@as(u32, 1005), semicolon_expected.code);
     try T.expectEqualStrings("';' expected.", semicolon_expected.message);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "=>").?)), semicolon_expected.pos);
+}
+
+test "parser: decorated function initializer yields at the variable declaration list" {
+    const src = "var F = @dec function () {\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    const function_pos = std.mem.indexOf(u8, src, "function").?;
+    const open_paren_pos = std.mem.indexOf(u8, src, "()").?;
+
+    const expression_expected = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1109), expression_expected.code);
+    try T.expectEqualStrings("Expression expected.", expression_expected.message);
+    try T.expectEqual(@as(u32, @intCast(function_pos - 1)), expression_expected.pos);
+
+    const comma_expected = s.parser.diagnostics.items[1];
+    try T.expectEqual(@as(u32, 1005), comma_expected.code);
+    try T.expectEqualStrings("',' expected.", comma_expected.message);
+    try T.expectEqual(@as(u32, @intCast(function_pos)), comma_expected.pos);
+
+    const identifier_expected = s.parser.diagnostics.items[2];
+    try T.expectEqual(@as(u32, 1003), identifier_expected.code);
+    try T.expectEqualStrings("Identifier expected.", identifier_expected.message);
+    try T.expectEqual(@as(u32, @intCast(open_paren_pos)), identifier_expected.pos);
 }
 
 test "parser: decorator accepts unparenthesized valid expression forms" {
