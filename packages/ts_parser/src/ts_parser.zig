@@ -7669,6 +7669,7 @@ pub const Parser = struct {
             _ = self.advance(); // local alias
             _ = self.advance(); // =
             var module_id = self.interner.intern("") catch return error.OutOfMemory;
+            var module_specifier_pos: ?u32 = null;
             var import_equals = hir_mod.none_node_id;
             var is_require_equals = false;
             if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren and self.peekAt(2).kind == .string_literal) {
@@ -7677,6 +7678,7 @@ pub const Parser = struct {
                 const require_open = self.advance(); // (
                 const mod_tok = self.advance();
                 module_id = try self.internStringLiteral(mod_tok);
+                module_specifier_pos = mod_tok.span.start;
                 // TS1147: `import name = require("…")` inside an internal
                 // namespace is illegal. tsc fires at the module-specifier
                 // string-literal token. Ambient string-named modules
@@ -7716,6 +7718,7 @@ pub const Parser = struct {
                 &.{},
                 is_type_only,
             );
+            self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_pos = module_specifier_pos;
             if (is_require_equals) {
                 if (self.module_augmentation_depth > 0) {
                     try self.reportCodeAt(start.span.start, start.line, 2667, "Imports are not permitted in module augmentations. Consider moving them to the enclosing external module.");
@@ -7734,7 +7737,7 @@ pub const Parser = struct {
             try self.skipImportAttributesClause();
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
-            return try self.builder.addImport(
+            const import_node = try self.builder.addImport(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 mod_id,
                 hir_mod.none_node_id,
@@ -7743,6 +7746,8 @@ pub const Parser = struct {
                 &.{},
                 is_type_only,
             );
+            self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_pos = mod_tok.span.start;
+            return import_node;
         }
 
         // Default binding?
@@ -7992,6 +7997,10 @@ pub const Parser = struct {
             named.items,
             is_type_only,
         );
+        self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_pos = if (mod_tok.span.start == mod_tok.span.end)
+            null
+        else
+            mod_tok.span.start;
         if (is_deferred) {
             const payload = &self.hir.import_payloads.items[self.hir.payloads.items[import_node]];
             payload.is_deferred = true;

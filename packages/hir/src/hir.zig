@@ -660,6 +660,10 @@ pub const NamespacePayload = struct {
 pub const ImportPayload = struct {
     /// Module specifier as an interned string.
     module: StringId,
+    /// Source position of the module string literal's opening quote. Keeping
+    /// the parser's token position lets diagnostics report on the actual
+    /// module specifier instead of rediscovering it from statement text.
+    module_specifier_pos: ?u32 = null,
     /// `none_node_id` if no default-import binding (`import x from "m"`).
     default_binding: NodeId,
     /// `none_node_id` if no namespace import (`import * as ns from "m"`).
