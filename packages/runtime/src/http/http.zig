@@ -2870,11 +2870,28 @@ pub fn handleResponseMetadata(
     var location: string = "";
     var pretend_304 = false;
     var is_server_sent_events = false;
+    var seen_content_length: ?usize = null;
     for (response.headers.list, 0..) |header, header_i| {
         switch (hashHeaderName(header.name)) {
             hashHeaderConst("Content-Length") => {
-                const content_length = std.fmt.parseInt(usize, header.value, 10) catch 0;
+                // RFC 9110 §9.3.6: ignore Content-Length in a 200 response to
+                // CONNECT — the connection becomes an opaque tunnel that is never
+                // pooled, so the framing-desync concern below does not apply.
+                if (this.flags.proxy_tunneling and this.proxy_tunnel == null and response.status_code == 200) {
+                    continue;
+                }
+                // RFC 9112 §6.3: an invalid or conflicting Content-Length is an
+                // unrecoverable framing error. Falling back to 0 (or accepting a
+                // second, different value) would release a desynchronized socket
+                // into the keep-alive pool — request smuggling.
+                const content_length = std.fmt.parseInt(usize, header.value, 10) catch {
+                    return error.InvalidContentLength;
+                };
                 if (this.method.hasBody()) {
+                    if (seen_content_length) |prev| {
+                        if (prev != content_length) return error.InvalidContentLength;
+                    }
+                    seen_content_length = content_length;
                     this.state.content_length = content_length;
                 } else {
                     // ignore body size for HEAD requests
@@ -2906,6 +2923,11 @@ pub fn handleResponseMetadata(
                 }
             },
             hashHeaderConst("Transfer-Encoding") => {
+                // RFC 9110 §9.3.6: as with Content-Length, ignore Transfer-Encoding
+                // in a 200 response to CONNECT (the tunnel is opaque, not framed).
+                if (this.flags.proxy_tunneling and this.proxy_tunnel == null and response.status_code == 200) {
+                    continue;
+                }
                 // RFC 9112 §7: transfer-coding names are case-insensitive.
                 if (std.ascii.eqlIgnoreCase(header.value, "gzip") or std.ascii.eqlIgnoreCase(header.value, "x-gzip")) {
                     if (!this.flags.disable_decompression) {
