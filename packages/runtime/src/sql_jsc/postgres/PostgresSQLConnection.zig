@@ -1668,6 +1668,15 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
                     }
                     debug("SASLContinue", .{});
 
+                    // RFC 5802 §5.1: the server's combined nonce MUST begin with
+                    // the client nonce we sent in the client-first-message. A
+                    // server (or man-in-the-middle) echoing a different nonce is
+                    // rejected before we derive the salted password from it.
+                    if (!std.mem.startsWith(u8, cont.r, sasl.nonce())) {
+                        debug("SASLContinue server nonce does not start with client nonce", .{});
+                        return error.InvalidMessage;
+                    }
+
                     const iteration_count = try cont.iterationCount();
 
                     const server_salt_decoded_base64 = bun.base64.decodeAlloc(bun.z_allocator, cont.s) catch |err| {
