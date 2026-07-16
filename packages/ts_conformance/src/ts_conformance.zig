@@ -506,20 +506,31 @@ fn runnerDirectiveKey(trimmed_line: []const u8) ?[]const u8 {
 }
 
 fn isRunnerDirectiveKey(key: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(key, "allowJs") or
+    // Compiler/harness options are metadata; source pragmas and annotation comments are not.
+    return std.ascii.eqlIgnoreCase(key, "allowArbitraryExtensions") or
+        std.ascii.eqlIgnoreCase(key, "allowImportingTsExtensions") or
+        std.ascii.eqlIgnoreCase(key, "allowJs") or
         std.ascii.eqlIgnoreCase(key, "allowSyntheticDefaultImports") or
+        std.ascii.eqlIgnoreCase(key, "allowUmdGlobalAccess") or
         std.ascii.eqlIgnoreCase(key, "allowUnreachableCode") or
         std.ascii.eqlIgnoreCase(key, "allowUnusedLabels") or
         std.ascii.eqlIgnoreCase(key, "alwaysStrict") or
+        std.ascii.eqlIgnoreCase(key, "baseUrl") or
         std.ascii.eqlIgnoreCase(key, "checkJs") or
+        std.ascii.eqlIgnoreCase(key, "currentDirectory") or
         std.ascii.eqlIgnoreCase(key, "customConditions") or
         std.ascii.eqlIgnoreCase(key, "declaration") or
+        std.ascii.eqlIgnoreCase(key, "declarationMap") or
+        std.ascii.eqlIgnoreCase(key, "downlevelIteration") or
+        std.ascii.eqlIgnoreCase(key, "emitDeclarationOnly") or
+        std.ascii.eqlIgnoreCase(key, "emitDecoratorMetadata") or
         std.ascii.eqlIgnoreCase(key, "esModuleInterop") or
         std.ascii.eqlIgnoreCase(key, "experimentalDecorators") or
         std.ascii.eqlIgnoreCase(key, "exactOptionalPropertyTypes") or
         std.ascii.eqlIgnoreCase(key, "filename") or
         std.ascii.eqlIgnoreCase(key, "ignoreDeprecations") or
         std.ascii.eqlIgnoreCase(key, "importHelpers") or
+        std.ascii.eqlIgnoreCase(key, "importsNotUsedAsValues") or
         std.ascii.eqlIgnoreCase(key, "isolatedDeclarations") or
         std.ascii.eqlIgnoreCase(key, "isolatedModules") or
         std.ascii.eqlIgnoreCase(key, "jsx") or
@@ -527,36 +538,56 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "jsxFragmentFactory") or
         std.ascii.eqlIgnoreCase(key, "jsxImportSource") or
         std.ascii.eqlIgnoreCase(key, "lib") or
+        std.ascii.eqlIgnoreCase(key, "libReplacement") or
+        std.ascii.eqlIgnoreCase(key, "maxNodeModuleJsDepth") or
         std.ascii.eqlIgnoreCase(key, "module") or
+        std.ascii.eqlIgnoreCase(key, "moduleDetection") or
         std.ascii.eqlIgnoreCase(key, "moduleResolution") or
         std.ascii.eqlIgnoreCase(key, "noEmit") or
         std.ascii.eqlIgnoreCase(key, "noEmitHelpers") or
+        std.ascii.eqlIgnoreCase(key, "noEmitOnError") or
         std.ascii.eqlIgnoreCase(key, "noFallthroughCasesInSwitch") or
         std.ascii.eqlIgnoreCase(key, "noImplicitAny") or
         std.ascii.eqlIgnoreCase(key, "noImplicitOverride") or
+        std.ascii.eqlIgnoreCase(key, "noImplicitReferences") or
         std.ascii.eqlIgnoreCase(key, "noImplicitReturns") or
         std.ascii.eqlIgnoreCase(key, "noImplicitThis") or
+        std.ascii.eqlIgnoreCase(key, "noLib") or
         std.ascii.eqlIgnoreCase(key, "noPropertyAccessFromIndexSignature") or
         std.ascii.eqlIgnoreCase(key, "noTypes") or
         std.ascii.eqlIgnoreCase(key, "noTypesAndSymbols") or
         std.ascii.eqlIgnoreCase(key, "noUncheckedIndexedAccess") or
+        std.ascii.eqlIgnoreCase(key, "noUncheckedSideEffectImports") or
         std.ascii.eqlIgnoreCase(key, "noUnusedLocals") or
         std.ascii.eqlIgnoreCase(key, "noUnusedParameters") or
         std.ascii.eqlIgnoreCase(key, "outDir") or
+        std.ascii.eqlIgnoreCase(key, "outFile") or
+        std.ascii.eqlIgnoreCase(key, "preserveConstEnums") or
+        std.ascii.eqlIgnoreCase(key, "preserveValueImports") or
+        std.ascii.eqlIgnoreCase(key, "pretty") or
+        std.ascii.eqlIgnoreCase(key, "reactNamespace") or
         std.ascii.eqlIgnoreCase(key, "removeComments") or
         std.ascii.eqlIgnoreCase(key, "resolveJsonModule") or
         std.ascii.eqlIgnoreCase(key, "resolvePackageJsonExports") or
         std.ascii.eqlIgnoreCase(key, "resolvePackageJsonImports") or
+        std.ascii.eqlIgnoreCase(key, "rewriteRelativeImportExtensions") or
         std.ascii.eqlIgnoreCase(key, "rootDir") or
         std.ascii.eqlIgnoreCase(key, "skipDefaultLibCheck") or
         std.ascii.eqlIgnoreCase(key, "skipLibCheck") or
+        std.ascii.eqlIgnoreCase(key, "sourceMap") or
         std.ascii.eqlIgnoreCase(key, "strict") or
+        std.ascii.eqlIgnoreCase(key, "strictBindCallApply") or
+        std.ascii.eqlIgnoreCase(key, "strictBuiltinIteratorReturn") or
         std.ascii.eqlIgnoreCase(key, "strictFunctionTypes") or
         std.ascii.eqlIgnoreCase(key, "strictNullChecks") or
         std.ascii.eqlIgnoreCase(key, "strictPropertyInitialization") or
+        std.ascii.eqlIgnoreCase(key, "stripInternal") or
         std.ascii.eqlIgnoreCase(key, "suppressExcessPropertyErrors") or
         std.ascii.eqlIgnoreCase(key, "suppressImplicitAnyIndexErrors") or
+        std.ascii.eqlIgnoreCase(key, "suppressOutputPathCheck") or
         std.ascii.eqlIgnoreCase(key, "target") or
+        std.ascii.eqlIgnoreCase(key, "traceResolution") or
+        std.ascii.eqlIgnoreCase(key, "typeRoots") or
         std.ascii.eqlIgnoreCase(key, "types") or
         std.ascii.eqlIgnoreCase(key, "useDefineForClassFields") or
         std.ascii.eqlIgnoreCase(key, "useUnknownInCatchVariables") or
@@ -55610,6 +55641,25 @@ test "conformance: virtualMarkerForByte returns null when source has no markers"
     var idx = try buildVirtualFileIndex(T.allocator, "const x = 1;");
     defer idx.deinit(T.allocator);
     try T.expectEqual(@as(?VirtualFileMarker, null), virtualMarkerForByte(idx.items, 0));
+}
+
+test "conformance: runner directive classifier covers corpus compiler options" {
+    const newly_covered = [_][]const u8{
+        "allowArbitraryExtensions", "allowImportingTsExtensions",      "allowUmdGlobalAccess",
+        "baseUrl",                  "currentDirectory",                "declarationMap",
+        "downlevelIteration",       "emitDeclarationOnly",             "emitDecoratorMetadata",
+        "importsNotUsedAsValues",   "libReplacement",                  "maxNodeModuleJsDepth",
+        "moduleDetection",          "noEmitOnError",                   "noImplicitReferences",
+        "noLib",                    "noUncheckedSideEffectImports",    "outFile",
+        "preserveConstEnums",       "preserveValueImports",            "pretty",
+        "reactNamespace",           "rewriteRelativeImportExtensions", "sourceMap",
+        "strictBindCallApply",      "strictBuiltinIteratorReturn",     "stripInternal",
+        "suppressOutputPathCheck",  "traceResolution",                 "typeRoots",
+    };
+    for (newly_covered) |key| try T.expect(isRunnerDirectiveKey(key));
+
+    const source_pragmas = [_][]const u8{ "internal", "readonly", "reference", "todo", "ts-check", "ts-expect-error", "ts-ignore", "ts-nocheck" };
+    for (source_pragmas) |key| try T.expect(!isRunnerDirectiveKey(key));
 }
 
 test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
