@@ -1931,8 +1931,18 @@ pub fn compileSource(
     checker.setIsDeclarationFile(is_declaration_file);
     // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
     // once the source file has any parse error. Mirror that by telling
-    // the checker whether the parser produced syntactic diagnostics.
-    checker.setHasParseDiagnostics(parser.diagnostics.items.len > 0);
+    // the checker whether the parser produced a true syntactic diagnostic.
+    // Home currently emits TS1163 (yield outside a generator) and TS18028
+    // (private names below ES2015) from the parser, but upstream emits both
+    // as grammar errors. They therefore must not populate
+    // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
+    var has_syntactic_parse_diagnostics = false;
+    for (parser.diagnostics.items) |d| {
+        if (d.code == 1163 or d.code == 18028) continue;
+        has_syntactic_parse_diagnostics = true;
+        break;
+    }
+    checker.setHasParseDiagnostics(has_syntactic_parse_diagnostics);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setJsxPreserveOption(options.jsx_preserve_option);
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
@@ -3367,6 +3377,32 @@ test "driver: invalid escaped identifier start suppresses evolving-any cascade" 
         try T.expect(d.code != ts_checker.check.TsCodes.variable_implicitly_any_declaration);
     }
     try T.expect(saw_invalid);
+}
+
+test "driver: yield grammar errors do not suppress await context diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\// @strict: false
+        \\// @target: es2019
+        \\async function* test(x: Promise<number>) {
+        \\    enum E {
+        \\        foo = await x,
+        \\        baz = yield 1,
+        \\    }
+        \\}
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_await_context = false;
+    var saw_yield_context = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.await_only_in_async) saw_await_context = true;
+        if (d.code == 1163) saw_yield_context = true;
+    }
+    try T.expect(saw_await_context);
+    try T.expect(saw_yield_context);
 }
 
 test "driver: implicit-any suggestions hidden by default, surfaced on opt-in" {

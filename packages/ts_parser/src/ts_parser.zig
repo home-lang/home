@@ -1923,12 +1923,19 @@ pub const Parser = struct {
             const start = self.peek();
             const dec_expr = try self.parseDecoratorExpression();
             // A decorator at statement level commits the parser to a
-            // declaration. If an ordinary identifier follows, mirror
+            // declaration. If no valid declaration head follows, mirror
             // typescript-go's `parseDeclarationWorker`: emit a missing
             // declaration at the decorator boundary, preserve the next
             // token for outer statement recovery, and avoid creating a
             // real decorator node that would produce checker-side TS1206.
-            if (self.peek().kind == .identifier) {
+            const await_starts_using_declaration = self.peek().kind == .kw_await and
+                self.peekAt(1).kind == .kw_using and
+                !self.peekAt(1).flags.preceded_by_newline and
+                (self.peekAt(2).kind == .identifier or self.peekAt(2).kind == .open_brace) and
+                !self.peekAt(2).flags.preceded_by_newline;
+            if (self.peek().kind == .identifier or
+                (self.peek().kind == .kw_await and !await_starts_using_declaration))
+            {
                 const missing_pos = if (self.cursor > 0)
                     self.tokens[self.cursor - 1].span.end
                 else
@@ -24361,6 +24368,20 @@ test "parser: decorated function initializer yields at the variable declaration 
     try T.expectEqual(@as(u32, 1003), identifier_expected.code);
     try T.expectEqualStrings("Identifier expected.", identifier_expected.message);
     try T.expectEqual(@as(u32, @intCast(open_paren_pos)), identifier_expected.pos);
+}
+
+test "parser: decorator before await produces a missing declaration" {
+    const src = "@dec\nawait 1";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const declaration = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1146), declaration.code);
+    try T.expectEqualStrings("Declaration expected.", declaration.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOfScalar(u8, src, '\n').?)), declaration.pos);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1206));
 }
 
 test "parser: decorator accepts unparenthesized valid expression forms" {
