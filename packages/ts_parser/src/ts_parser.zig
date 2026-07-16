@@ -16633,8 +16633,24 @@ pub const Parser = struct {
                 {
                     return try self.parseClassDeclaration();
                 }
-                try self.report("decorators are not valid here", "");
-                return error.UnexpectedToken;
+                // Mirrors typescript-go's `parseDecoratedExpression`:
+                // decorators in expression position are consumed first,
+                // then a missing declaration is synthesized when no class
+                // follows. Anchor TS1109 at the end of the decorator
+                // sequence (the full-start position of the next token) so
+                // outer statement recovery can report the follow-on token.
+                // For `var F = @dec () => {}`, that produces TS1109 after
+                // `)` and lets `consumeStatementTerminator` emit TS1005 on
+                // `=>`, matching decoratorOnArrowFunction exactly.
+                const missing_pos = if (self.cursor > 0)
+                    self.tokens[self.cursor - 1].span.end
+                else
+                    t.span.end;
+                try self.reportCodeAt(missing_pos, t.line, 1109, "Expression expected.");
+                return try self.builder.addLiteralNumber(
+                    .{ .start = t.span.start, .end = missing_pos },
+                    0,
+                );
             },
             .kw_class => return try self.parseClassDeclaration(),
             .kw_abstract => {
@@ -24235,6 +24251,24 @@ test "parser: decorator with call expression" {
     try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(stmts[0]));
     const dec = hir_mod.decoratorOf(&s.hir, stmts[0]);
     try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(dec.expression));
+}
+
+test "parser: decorated arrow initializer recovers like a missing declaration" {
+    const src = "var F = @dec () => {\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    const expression_expected = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1109), expression_expected.code);
+    try T.expectEqualStrings("Expression expected.", expression_expected.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "=>").? - 1)), expression_expected.pos);
+
+    const semicolon_expected = s.parser.diagnostics.items[1];
+    try T.expectEqual(@as(u32, 1005), semicolon_expected.code);
+    try T.expectEqualStrings("';' expected.", semicolon_expected.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "=>").?)), semicolon_expected.pos);
 }
 
 test "parser: decorator accepts unparenthesized valid expression forms" {
