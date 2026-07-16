@@ -359,7 +359,21 @@ pub fn processPackets(this: *MySQLConnection, comptime Context: type, reader: Ne
 
         // Process packet based on connection state
         switch (this.status) {
-            .handshaking => try this.handleHandshake(Context, reader),
+            .handshaking => {
+                try this.handleHandshake(Context, reader);
+                // If the handshake negotiated TLS, the SSLRequest has been sent
+                // and everything after this packet must arrive over the encrypted
+                // channel. Any bytes already buffered behind the handshake packet
+                // are plaintext a man-in-the-middle could have injected
+                // (CVE-2021-23222 class), so reject them instead of feeding them
+                // to the auth/command handlers.
+                if (this._tls_status == .message_sent) {
+                    reader.setOffsetFromStart(packet_length);
+                    if (reader.peek().len != 0) {
+                        return error.UnexpectedPacket;
+                    }
+                }
+            },
             .authenticating, .authentication_awaiting_pk => try this.handleAuth(Context, reader, header_length),
             .connected => try this.handleCommand(Context, reader, header_length),
             else => {
