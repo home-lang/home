@@ -7770,8 +7770,12 @@ pub const Parser = struct {
             }
         }
 
+        // Namespace/named bindings may follow a default binding only when a
+        // comma was consumed. Mirrors TypeScript's parseImportClause gate.
+        const can_parse_named_bindings = default_binding == hir_mod.none_node_id or default_binding_had_comma;
+
         // Namespace import: `* as ns`?
-        if (self.match(.asterisk)) {
+        if (can_parse_named_bindings and self.match(.asterisk)) {
             // Recover from `import * from "..."` (missing `as`) — emit
             // TS1005 'as' expected. then continue to treat the next
             // identifier-like token (including the contextual keyword
@@ -7812,7 +7816,7 @@ pub const Parser = struct {
             }
         }
         // Named imports: `{ a, b as c, type d }`?
-        else if (self.peek().kind == .open_brace) {
+        else if (can_parse_named_bindings and self.peek().kind == .open_brace) {
             saw_named_imports_brace = true;
             const named_imports_open = self.advance();
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -7942,6 +7946,7 @@ pub const Parser = struct {
             _ = self.advance();
         }
         var recovered_comma_from_tail = false;
+        var recovered_invalid_star_module = false;
         const mod_tok: Token = blk: {
             if (self.peek().kind == .string_literal) {
                 break :blk self.advance();
@@ -7964,6 +7969,21 @@ pub const Parser = struct {
                 }
                 _ = self.match(.semicolon);
                 recovered_comma_from_tail = true;
+            } else if (here.kind == .asterisk) {
+                // `import defaultBinding * as ns from "m"` lacks the comma
+                // required before a namespace import. TypeScript parses the
+                // `* as` pair as the malformed module expression, reports the
+                // missing terminator at `ns`, then resumes with `ns` as the
+                // next statement so downstream name diagnostics survive.
+                _ = self.advance();
+                _ = self.match(.kw_as);
+                const terminator = self.peek();
+                try self.reportCodeAt(terminator.span.start, terminator.line, 1005, "';' expected.");
+                if (self.peekAt(1).kind == .kw_from) {
+                    const from_tok = self.peekAt(1);
+                    try self.reportCodeAt(from_tok.span.start, from_tok.line, 1434, "Unexpected keyword or identifier.");
+                }
+                recovered_invalid_star_module = true;
             }
             const advance_over: bool = switch (here.kind) {
                 .identifier => true,
@@ -7981,7 +8001,7 @@ pub const Parser = struct {
         // Optional import attributes: `with { type: "json" }` (TS 5.3+)
         // or legacy `assert { type: "json" }` — parsed and discarded.
         try self.skipImportAttributesClause();
-        if (!recovered_comma_from_tail) try self.consumeStatementTerminator();
+        if (!recovered_comma_from_tail and !recovered_invalid_star_module) try self.consumeStatementTerminator();
         try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
         const mod_id = if (mod_tok.span.start == mod_tok.span.end)
             (self.interner.intern("") catch return error.OutOfMemory)
@@ -9628,6 +9648,17 @@ pub const Parser = struct {
             }
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if (t.kind == .kw_from and
+            self.cursor >= 3 and
+            self.tokens[self.cursor - 2].kind == .kw_as and
+            self.tokens[self.cursor - 3].kind == .asterisk)
+        {
+            // Continuation of the malformed `default * as ns from` import
+            // recovery. Its missing-semicolon diagnostic was already emitted
+            // at `ns`; leave `from` for the next statement so it remains a
+            // checked identifier after the recovery-owned TS1434.
+            return;
+        }
         if (t.kind == .string_literal and
             self.cursor > 0 and
             self.tokens[self.cursor - 1].kind == .kw_from)
@@ -21927,6 +21958,24 @@ test "parser: deferred namespace import sets is_deferred and namespace binding" 
     const imp = hir_mod.importOf(&s.hir, top);
     try T.expect(imp.is_deferred);
     try T.expect(imp.namespace_binding != hir_mod.none_node_id);
+}
+
+test "parser: deferred default binding requires a comma before namespace bindings" {
+    var s = try newTestSetup("import defer type * as ns from \"./a\";");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_missing_from = false;
+    var saw_string_literal = false;
+    var saw_unexpected_from = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'from' expected.")) saw_missing_from = true;
+        if (d.code == 1141 and std.mem.eql(u8, d.message, "String literal expected.")) saw_string_literal = true;
+        if (d.code == 1434 and std.mem.eql(u8, d.message, "Unexpected keyword or identifier.")) saw_unexpected_from = true;
+    }
+    try T.expect(saw_missing_from);
+    try T.expect(saw_string_literal);
+    try T.expect(saw_unexpected_from);
 }
 
 test "parser: import defer from string treats defer as default binding (not deferred)" {
