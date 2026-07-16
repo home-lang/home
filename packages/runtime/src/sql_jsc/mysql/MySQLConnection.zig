@@ -32,6 +32,9 @@ _secure: ?*uws.SslCtx = null,
 _tls_config: jsc.API.ServerConfig.SSLConfig = .{},
 _tls_status: TLSStatus = .none,
 _ssl_mode: SSLMode = .disable,
+/// Whether the user opted in to public-key retrieval over an unencrypted
+/// connection (see the gate in handleAuth). Defaults false — fail closed.
+_allow_public_key_retrieval: bool = false,
 _flags: ConnectionFlags = .{},
 
 pub fn init(
@@ -43,6 +46,7 @@ pub fn init(
     tls_config: jsc.API.ServerConfig.SSLConfig,
     secure: ?*uws.SslCtx,
     ssl_mode: SSLMode,
+    allow_public_key_retrieval: bool,
 ) @This() {
     return .{
         ._database = database,
@@ -56,6 +60,7 @@ pub fn init(
         ._tls_config = tls_config,
         ._secure = secure,
         ._ssl_mode = ssl_mode,
+        ._allow_public_key_retrieval = allow_public_key_retrieval,
         ._tls_status = if (ssl_mode != .disable) .pending else .none,
         ._character_set = CharacterSet.default,
     };
@@ -568,6 +573,13 @@ pub fn handleAuth(this: *MySQLConnection, comptime Context: type, reader: NewRea
                                 debug("continue auth", .{});
 
                                 if (this._ssl_mode == .disable) {
+                                    // Over plain TCP an on-path attacker can answer the
+                                    // public-key request with their own key and recover the
+                                    // password. Match mysql2 / Connector/J: refuse unless the
+                                    // user explicitly opted in via allowPublicKeyRetrieval.
+                                    if (!this._allow_public_key_retrieval) {
+                                        return error.PublicKeyRetrievalNotAllowed;
+                                    }
                                     // we are in plain TCP so we need to request the public key
                                     this.setStatus(.authentication_awaiting_pk);
                                     debug("awaiting public key", .{});

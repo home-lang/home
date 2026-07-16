@@ -439,6 +439,9 @@ pub fn createInstance(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFra
     const use_unnamed_prepared_statements = arguments[14].asBoolean();
     // MySQL doesn't support unnamed prepared statements
     _ = use_unnamed_prepared_statements;
+    // Opt-in for requesting the server's public key over an unencrypted
+    // connection (caching_sha2/sha256 full auth). Safe accessor: undefined → false.
+    const allow_public_key_retrieval = callframe.argument(15).toBoolean();
 
     var ptr = bun.new(JSMySQLConnection, .{
         ._globalObject = globalObject,
@@ -455,6 +458,7 @@ pub fn createInstance(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFra
             tls_config,
             secure,
             ssl_mode,
+            allow_public_key_retrieval,
         ),
     });
     // Ownership transferred into `ptr._connection`; disarm the errdefer so the
