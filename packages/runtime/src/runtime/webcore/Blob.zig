@@ -4292,6 +4292,50 @@ fn fromJSWithoutDeferGC(
             .Array, .DerivedArray => {
                 var iter = try jsc.JSArrayIterator.init(current, global);
                 try stack.ensureUnusedCapacity(iter.len);
+
+                // Decide up front whether processing any part (or an entry already
+                // pending on `stack`) can re-enter user JS (toString / valueOf /
+                // proxy traps / getters) and detach a borrowed buffer before
+                // joiner.done() copies it out. If nothing can, typed-array/blob
+                // parts are borrowed (pushStatic) rather than cloned, which would
+                // double peak memory for `new Blob(largeChunks)`. A non-fast array
+                // is conservatively treated as able to run user JS.
+                var parts_can_run_js = iter.fast == null or stack.items.len > 0;
+                if (!parts_can_run_js) {
+                    var prescan = try jsc.JSArrayIterator.init(current, global);
+                    scan: while (try prescan.next()) |scan_item| {
+                        if (scan_item.isUndefinedOrNull()) continue;
+                        switch (scan_item.jsTypeLoose()) {
+                            .String,
+                            .ArrayBuffer,
+                            .Int8Array,
+                            .Uint8Array,
+                            .Uint8ClampedArray,
+                            .Int16Array,
+                            .Uint16Array,
+                            .Int32Array,
+                            .Uint32Array,
+                            .Float16Array,
+                            .Float32Array,
+                            .Float64Array,
+                            .BigInt64Array,
+                            .BigUint64Array,
+                            .DataView,
+                            => {},
+                            .DOMWrapper => {
+                                if (scan_item.as(Blob) == null) {
+                                    parts_can_run_js = true;
+                                    break :scan;
+                                }
+                            },
+                            else => {
+                                parts_can_run_js = true;
+                                break :scan;
+                            },
+                        }
+                    }
+                }
+
                 var any_arrays = false;
                 while (try iter.next()) |item| {
                     if (item.isUndefinedOrNull()) continue;
@@ -4332,7 +4376,13 @@ fn fromJSWithoutDeferGC(
                             => {
                                 could_have_non_ascii = true;
                                 var buf = item.asArrayBuffer(global).?;
-                                joiner.pushStatic(buf.byteSlice());
+                                // Clone if a later part could run JS and detach this
+                                // buffer before done() copies it (UAF); else borrow.
+                                if (parts_can_run_js) {
+                                    joiner.pushCloned(buf.byteSlice());
+                                } else {
+                                    joiner.pushStatic(buf.byteSlice());
+                                }
                                 continue;
                             },
                             .Array, .DerivedArray => {
@@ -4344,7 +4394,11 @@ fn fromJSWithoutDeferGC(
                             .DOMWrapper => {
                                 if (item.as(Blob)) |blob| {
                                     could_have_non_ascii = could_have_non_ascii or blob.charset != .all_ascii;
-                                    joiner.pushStatic(blob.sharedView());
+                                    if (parts_can_run_js) {
+                                        joiner.pushCloned(blob.sharedView());
+                                    } else {
+                                        joiner.pushStatic(blob.sharedView());
+                                    }
                                     continue;
                                 } else {
                                     const sliced = try current.toSliceClone(global);
@@ -4364,7 +4418,9 @@ fn fromJSWithoutDeferGC(
             .DOMWrapper => {
                 if (current.as(Blob)) |blob| {
                     could_have_non_ascii = could_have_non_ascii or blob.charset != .all_ascii;
-                    joiner.pushStatic(blob.sharedView());
+                    // Unconditionally clone: entries still pending on `stack` are
+                    // processed after this and can run JS that detaches the store.
+                    joiner.pushCloned(blob.sharedView());
                 } else {
                     const sliced = try current.toSliceClone(global);
                     const allocator = sliced.allocator.get();
