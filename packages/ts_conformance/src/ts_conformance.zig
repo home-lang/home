@@ -6090,7 +6090,7 @@ pub fn loadDirectoryWithOptions(
             // emitting TS1039 on class-field initializers there.
             .is_declaration_file = isDeclarationFilePath(entry.basename),
             .strict_flags = strict_flags,
-            .always_strict = expects_error and (baselineAlwaysStrictValue(baseline_path) orelse directiveBool(case_src, "alwaysStrict") orelse false),
+            .always_strict = selectedAlwaysStrict(case_src, baseline_path, entry.basename),
             .syntax_target_es2015 = selectedSyntaxTargetEs2015OrLater(case_src, baselinePathIsTargetEs5(baseline_path)),
             .target_emit_es5 = baselinePathIsTargetEs5(baseline_path),
             .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
@@ -7083,6 +7083,27 @@ fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
     if (std.mem.indexOf(u8, p, "alwaysstrict=false") != null) return false;
     if (std.mem.indexOf(u8, p, "alwaysstrict=true") != null) return true;
     return null;
+}
+
+/// TypeScript defaults `alwaysStrict` to true unless it is explicitly
+/// disabled, but excludes declaration files from that default binder mode.
+/// A matrix baseline selection wins over the original multi-value directive.
+fn selectedAlwaysStrict(source: []const u8, baseline_path: ?[]const u8, basename: []const u8) bool {
+    if (isDeclarationFilePath(basename)) return false;
+    return baselineAlwaysStrictValue(baseline_path) orelse
+        directiveBool(source, "alwaysStrict") orelse
+        true;
+}
+
+test "conformance: alwaysStrict defaults on and preserves explicit matrix choices" {
+    try T.expect(selectedAlwaysStrict("const x = 1;", null, "case.ts"));
+    try T.expect(!selectedAlwaysStrict("// @alwaysStrict: false\nconst x = 1;", null, "case.ts"));
+    try T.expect(!selectedAlwaysStrict(
+        "// @alwaysStrict: true, false\nconst x = 1;",
+        "case(alwaysstrict=false).errors.txt",
+        "case.ts",
+    ));
+    try T.expect(!selectedAlwaysStrict("// @alwaysStrict: true", null, "case.d.ts"));
 }
 
 fn baselineOptionBool(path: ?[]const u8, option: []const u8) ?bool {

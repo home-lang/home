@@ -200,6 +200,10 @@ pub const Parser = struct {
     /// signatures suppress TS2463 (mirrors tsc's
     /// `checkParameterDeclaration` `IsImplementationSignature` gate).
     pending_ts2463_indices: std.ArrayListUnmanaged(u32),
+    /// Parser-emitted TS18016 diagnostics for `#name in value` outside a
+    /// class. Upstream owns these in checker grammar diagnostics, so they
+    /// are suppressed when the file has a true parse diagnostic.
+    pending_outside_private_brand_diag_indices: std.ArrayListUnmanaged(u32),
     /// When true, `(params): ReturnType => body` is NOT accepted as a
     /// parenthesized arrow with return type unless the next token
     /// after the body is `:` (terminator of an enclosing ternary).
@@ -315,6 +319,7 @@ pub const Parser = struct {
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
             .pending_ts2463_indices = .empty,
+            .pending_outside_private_brand_diag_indices = .empty,
             .disallow_arrow_return_type = false,
             .enum_recovered_missing_close_at_eof = false,
             .top_level_external_module_indicator = false,
@@ -361,6 +366,7 @@ pub const Parser = struct {
         self.regex_rescan_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
+        self.pending_outside_private_brand_diag_indices.deinit(self.gpa);
         self.synthetic_infer_check_nodes.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -976,8 +982,32 @@ pub const Parser = struct {
         // infer_type node and verifies its position via the parent
         // chain. See `validateInferTypePositions` for the algorithm.
         try self.validateInferTypePositions();
+        self.suppressOutsidePrivateBrandGrammarWhenFileHasParseErrors();
         self.suppressWithUnsupportedWhenFileHasParseErrors();
         return root;
+    }
+
+    fn suppressOutsidePrivateBrandGrammarWhenFileHasParseErrors(self: *Parser) void {
+        if (self.pending_outside_private_brand_diag_indices.items.len == 0) return;
+        var has_parse_diagnostic = false;
+        for (self.diagnostics.items) |d| {
+            switch (d.code) {
+                1036, 1101, 1163, 1451, 18016, 18028, 2410 => {},
+                else => {
+                    has_parse_diagnostic = true;
+                    break;
+                },
+            }
+        }
+        if (!has_parse_diagnostic) return;
+        var i = self.pending_outside_private_brand_diag_indices.items.len;
+        while (i > 0) {
+            i -= 1;
+            const diag_index = self.pending_outside_private_brand_diag_indices.items[i];
+            if (diag_index < self.diagnostics.items.len and self.diagnostics.items[diag_index].code == 18016) {
+                _ = self.diagnostics.orderedRemove(diag_index);
+            }
+        }
     }
 
     /// TS2410 ("the 'with' statement is not supported") is a checker
@@ -2199,7 +2229,7 @@ pub const Parser = struct {
             },
             .kw_try => try self.parseTryStatement(),
             .kw_switch => try self.parseSwitchStatement(),
-            .kw_function => try self.parseFunctionDeclaration(true),
+            .kw_function => try self.parseFunctionDeclaration(true, false),
             .kw_async => blk: {
                 // `async function f() { ... }` — consume the async
                 // keyword and parse as a function decl with the
@@ -2214,7 +2244,7 @@ pub const Parser = struct {
                     }
                     self.async_function_depth += 1;
                     defer self.async_function_depth -= 1;
-                    const fd = try self.parseFunctionDeclaration(true);
+                    const fd = try self.parseFunctionDeclaration(true, false);
                     self.hir.markFnAsync(fd);
                     break :blk fd;
                 }
@@ -2721,11 +2751,10 @@ pub const Parser = struct {
             .kw_export,
             .kw_import,
             => true,
-            // A labeled `var` remains valid for legacy ES5 sloppy parsing,
-            // but tsc rejects it in strict source or at ES2015+ targets.
-            // Keeping the target gate explicit preserves the ES5 variants of
-            // `labeledStatementDeclarationListInLoopNoCrash{1,2}`.
-            .kw_var => self.strict_mode or self.target_es2015_or_later,
+            // The strict-mode binder check for labeled variable statements
+            // only applies when targeting ES2015 or later. ES5 still accepts
+            // this recovery shape even though `alwaysStrict` defaults on.
+            .kw_var => self.target_es2015_or_later,
             .kw_abstract => self.peekAt(1).kind == .kw_class,
             else => false,
         };
@@ -3865,7 +3894,7 @@ pub const Parser = struct {
         if (self.peek().kind == .template_tail) _ = self.advance();
     }
 
-    fn parseFunctionDeclaration(self: *Parser, require_name: bool) ParseError!NodeId {
+    fn parseFunctionDeclaration(self: *Parser, require_name: bool, is_expression: bool) ParseError!NodeId {
         const start = self.advance(); // function
         // TS1046: A top-level `function` in a `.d.ts` file without a
         // leading `declare` / `export` modifier is invalid. Anchored
@@ -4071,7 +4100,11 @@ pub const Parser = struct {
             params,
             return_type,
             body,
-            .{ .is_generator = is_generator, .has_errant_arrow = had_errant_arrow_recovery },
+            .{
+                .is_generator = is_generator,
+                .is_expression = is_expression,
+                .has_errant_arrow = had_errant_arrow_recovery,
+            },
         );
     }
 
@@ -8391,13 +8424,13 @@ pub const Parser = struct {
             // expression value.
             const decl = switch (self.peek().kind) {
                 .kw_class => try self.parseClassDeclaration(),
-                .kw_function => try self.parseFunctionDeclaration(false),
+                .kw_function => try self.parseFunctionDeclaration(false, false),
                 .kw_async => blk: {
                     if (self.peekAt(1).kind == .kw_function) {
                         _ = self.advance();
                         self.async_function_depth += 1;
                         defer self.async_function_depth -= 1;
-                        const fd = try self.parseFunctionDeclaration(false);
+                        const fd = try self.parseFunctionDeclaration(false, false);
                         self.hir.markFnAsync(fd);
                         break :blk fd;
                     }
@@ -16611,15 +16644,21 @@ pub const Parser = struct {
             },
             .private_identifier => {
                 _ = self.advance();
+                const outside_private_brand_check = self.class_body_depth == 0 and
+                    self.strict_grammar_mode and self.peek().kind == .kw_in;
                 if (self.class_body_depth == 0 and
                     (self.strict_grammar_mode or self.peek().kind != .kw_in))
                 {
+                    const diag_index: u32 = @intCast(self.diagnostics.items.len);
                     try self.reportCodeAt(
                         t.span.start,
                         t.line,
                         18016,
                         "Private identifiers are not allowed outside class bodies.",
                     );
+                    if (outside_private_brand_check) {
+                        try self.pending_outside_private_brand_diag_indices.append(self.gpa, diag_index);
+                    }
                 } else if (self.peek().kind != .kw_in) {
                     try self.reportCodeAt(
                         t.span.start,
@@ -16931,9 +16970,7 @@ pub const Parser = struct {
                 return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
             },
             .kw_function => {
-                // Function expression — reuse declaration parser; it
-                // will emit `fn_decl` even when used as expression.
-                return try self.parseFunctionDeclaration(false);
+                return try self.parseFunctionDeclaration(false, true);
             },
             .kw_async => {
                 if (self.peekAt(1).kind == .kw_function) {
@@ -16943,7 +16980,7 @@ pub const Parser = struct {
                     // name is correctly diagnosed as reserved (TS1359).
                     self.async_function_depth += 1;
                     defer self.async_function_depth -= 1;
-                    const fd = try self.parseFunctionDeclaration(false);
+                    const fd = try self.parseFunctionDeclaration(false, true);
                     self.hir.markFnAsync(fd);
                     return fd;
                 }
@@ -20419,21 +20456,16 @@ test "parser: export modifier in labeled statement reports TS1184" {
     try T.expectEqual(@as(u32, 1), countDiag(s, 1184));
 }
 
-test "parser: label before var in strict block reports TS1344 and later break TS1107" {
-    // `foo: var x` is a labeled VariableStatement — valid grammar, so it
-    // only errors in strict mode (tsgo's checkStrictModeLabeledStatement).
-    // The `'use strict'` prologue puts the parser in strict mode.
+test "parser: label before var in strict ES5 block remains allowed" {
     var s = try newTestSetup("'use strict'; function f() { for (;;) { label: var x = 1; break label; } }");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    var saw_1344 = false;
     var saw_1107 = false;
     for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1344) saw_1344 = true;
+        try T.expect(d.code != 1344);
         if (d.code == 1107) saw_1107 = true;
     }
-    try T.expect(saw_1344);
     try T.expect(saw_1107);
 }
 
@@ -22731,6 +22763,23 @@ test "parser: private brand check outside a class reports TS18016" {
     try T.expectEqual(@as(u32, 0), countDiag(s, 1451));
 }
 
+test "parser: parse diagnostics suppress outside private brand grammar errors" {
+    var s = try newTestSetup(
+        \\// @strict: true
+        \\class C {
+        \\    invalid(v: object) { 'prop' in v = 10; }
+        \\}
+        \\function emitRecovery(v: object) {
+        \\    return #field in v;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 18016));
+    try T.expect(s.parser.diagnostics.items.len > 0);
+}
+
 test "parser: non-strict outside brand check preserves transform recovery" {
     var s = try newTestSetup(
         \\function emitRecovery(v: object) {
@@ -24938,6 +24987,7 @@ test "parser: function expression in let-binding" {
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(top));
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(init_node));
+    try T.expect(hir_mod.fnDeclOf(&s.hir, init_node).flags.is_expression);
 }
 
 test "parser: this parameter captured as named-this parameter" {

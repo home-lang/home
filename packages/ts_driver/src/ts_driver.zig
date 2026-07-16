@@ -1938,7 +1938,10 @@ pub fn compileSource(
     // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
     var has_syntactic_parse_diagnostics = false;
     for (parser.diagnostics.items) |d| {
-        if (d.code == 1163 or d.code == 18028) continue;
+        switch (d.code) {
+            1036, 1101, 1163, 1451, 18016, 18028, 2410 => continue,
+            else => {},
+        }
         has_syntactic_parse_diagnostics = true;
         break;
     }
@@ -3403,6 +3406,28 @@ test "driver: yield grammar errors do not suppress await context diagnostics" {
     }
     try T.expect(saw_await_context);
     try T.expect(saw_yield_context);
+}
+
+test "driver: private-brand grammar errors do not suppress await context diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\function bad(v: object) {
+        \\    #field in v;
+        \\    await 1;
+        \\}
+    , .{ .always_strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_private_brand = false;
+    var saw_await_context = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 18016) saw_private_brand = true;
+        if (d.code == ts_checker.check.TsCodes.await_only_in_async) saw_await_context = true;
+    }
+    try T.expect(saw_private_brand);
+    try T.expect(saw_await_context);
 }
 
 test "driver: implicit-any suggestions hidden by default, surfaced on opt-in" {

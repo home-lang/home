@@ -534,6 +534,7 @@ pub const FnFlags = packed struct(u16) {
     is_async: bool = false,
     is_generator: bool = false,
     is_arrow: bool = false,
+    is_expression: bool = false,
     is_method: bool = false,
     is_constructor: bool = false,
     is_getter: bool = false,
@@ -560,7 +561,7 @@ pub const FnFlags = packed struct(u16) {
     /// ("Function implementation is missing ...") on these declarations,
     /// since tsc treats the parser diagnostic as covering the broken shape.
     has_errant_arrow: bool = false,
-    _pad: u2 = 0,
+    _pad: u1 = 0,
 };
 
 pub const ParameterPayload = struct {
