@@ -5139,7 +5139,11 @@ pub fn isAllASCII(self: *const Blob) ?bool {
 /// API (bytes 0x20..0x7E). Rejecting control bytes — notably CR/LF — stops a
 /// crafted `type` from injecting extra HTTP headers when the Blob is sent as a
 /// request/response body.
-fn isValidBlobType(s: []const u8) bool {
+/// A content-type is stored on the Blob and later written verbatim into
+/// outgoing HTTP/S3 request headers, so restrict it to printable ASCII —
+/// stricter than `isAllASCII`, which permits CR/LF and other controls that
+/// could inject headers.
+pub fn isValidBlobType(s: []const u8) bool {
     for (s) |c| {
         if (c < 0x20 or c > 0x7E) return false;
     }

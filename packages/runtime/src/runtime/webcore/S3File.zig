@@ -279,7 +279,9 @@ pub fn constructS3FileWithS3CredentialsAndOptions(
                         var str = try file_type.toSlice(globalObject, bun.default_allocator);
                         defer str.deinit();
                         const slice = str.slice();
-                        if (!strings.isAllASCII(slice)) {
+                        // Reject a content-type with CR/LF or other control chars
+                        // before it is stored and written into S3 request headers.
+                        if (!Blob.isValidBlobType(slice)) {
                             break :inner;
                         }
                         blob.content_type_was_set = true;
@@ -323,7 +325,9 @@ pub fn constructS3FileWithS3Credentials(
                         var str = try file_type.toSlice(globalObject, bun.default_allocator);
                         defer str.deinit();
                         const slice = str.slice();
-                        if (!strings.isAllASCII(slice)) {
+                        // Reject a content-type with CR/LF or other control chars
+                        // before it is stored and written into S3 request headers.
+                        if (!Blob.isValidBlobType(slice)) {
                             break :inner;
                         }
                         blob.content_type_was_set = true;
