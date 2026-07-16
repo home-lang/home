@@ -46,6 +46,17 @@ pub fn NewReaderWrap(
             skipFn(this.wrapped, count);
         }
 
+        /// Consume a whole message body the caller doesn't decode. The length
+        /// field counts itself (4 bytes) but not the already-read type byte, so
+        /// the remaining body is `length - 4`. A handler that returns without
+        /// doing this leaves the body in the stream and desyncs every following
+        /// message.
+        pub fn skipMessage(this: @This()) AnyPostgresError!void {
+            const len = try this.length();
+            if (len < 4) return error.InvalidMessageLength;
+            try this.skip(@intCast(len -| 4));
+        }
+
         pub fn peek(this: @This()) []const u8 {
             return peekFn(this.wrapped);
         }

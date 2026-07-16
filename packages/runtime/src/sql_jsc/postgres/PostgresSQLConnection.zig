@@ -1876,9 +1876,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
             request.onError(.{ .protocol = err }, this.globalObject);
         },
         .PortalSuspended => {
-            // try reader.eatMessage(&protocol.PortalSuspended);
-            // var request = this.current() orelse return error.ExpectedRequest;
-            // _ = request;
+            try reader.skipMessage();
             debug("TODO PortalSuspended", .{});
         },
         .CloseComplete => {
@@ -1888,6 +1886,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
             request.onResult("CLOSECOMPLETE", this.globalObject, this.js_value, false);
         },
         .CopyInResponse => {
+            try reader.skipMessage();
             debug("TODO CopyInResponse", .{});
         },
         .NoticeResponse => {
@@ -1904,12 +1903,15 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
             request.onResult("", this.globalObject, this.js_value, false);
         },
         .CopyOutResponse => {
+            try reader.skipMessage();
             debug("TODO CopyOutResponse", .{});
         },
         .CopyDone => {
+            try reader.skipMessage();
             debug("TODO CopyDone", .{});
         },
         .CopyBothResponse => {
+            try reader.skipMessage();
             debug("TODO CopyBothResponse", .{});
         },
         else => @compileError("Unknown message type: " ++ @tagName(MessageType)),
