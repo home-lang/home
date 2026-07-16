@@ -48,6 +48,21 @@ pub const PatchFile = struct {
         }
     };
 
+    /// A `.patch` file (installed via `patchedDependencies`) is untrusted input.
+    /// Every path it names is resolved relative to the package's `patch_dir`, so
+    /// an absolute path or a `..` segment would let it delete/create/rename/chmod
+    /// files anywhere on disk. Reject anything that isn't a single relative token
+    /// with no `..` component (checking both `/` and `\` separators).
+    fn isSafePatchPath(path: []const u8) bool {
+        if (path.len == 0) return false;
+        if (std.fs.path.isAbsolutePosix(path) or std.fs.path.isAbsoluteWindows(path)) return false;
+        var it = std.mem.splitAny(u8, path, "/\\");
+        while (it.next()) |part| {
+            if (std.mem.eql(u8, part, "..")) return false;
+        }
+        return true;
+    }
+
     pub fn apply(this: *const PatchFile, allocator: Allocator, patch_dir: bun.FD) ?bun.sys.Error {
         var state: ApplyState = .{};
         var sfb = bun.stackFallback(1024, allocator);
@@ -58,6 +73,7 @@ pub const PatchFile = struct {
             defer _ = arena.reset(.retain_capacity);
             switch (part.*) {
                 .file_deletion => {
+                    if (!isSafePatchPath(part.file_deletion.path)) return bun.sys.Error.fromCode(.INVAL, .unlink);
                     const pathz = bun.handleOom(bun.dupeZ(arena.allocator(), u8, part.file_deletion.path));
 
                     if (bun.sys.unlinkat(patch_dir, pathz).asErr()) |e| {
@@ -65,6 +81,9 @@ pub const PatchFile = struct {
                     }
                 },
                 .file_rename => {
+                    if (!isSafePatchPath(part.file_rename.from_path) or !isSafePatchPath(part.file_rename.to_path)) {
+                        return bun.sys.Error.fromCode(.INVAL, .rename);
+                    }
                     const from_path = bun.handleOom(bun.dupeZ(arena.allocator(), u8, part.file_rename.from_path));
                     const to_path = bun.handleOom(bun.dupeZ(arena.allocator(), u8, part.file_rename.to_path));
 
@@ -90,6 +109,7 @@ pub const PatchFile = struct {
                     }
                 },
                 .file_creation => {
+                    if (!isSafePatchPath(part.file_creation.path)) return bun.sys.Error.fromCode(.INVAL, .open);
                     const filepath = bun.PathString.init(bun.handleOom(bun.dupeZ(arena.allocator(), u8, part.file_creation.path)));
                     const filedir = bun.path.dirname(filepath.slice(), .auto);
                     const mode = part.file_creation.mode;
@@ -159,12 +179,14 @@ pub const PatchFile = struct {
                     }
                 },
                 .file_patch => {
+                    if (!isSafePatchPath(part.file_patch.path)) return bun.sys.Error.fromCode(.INVAL, .open);
                     // TODO: should we compute the hash of the original file and check it against the on in the patch?
                     if (applyPatch(part.file_patch, &arena, patch_dir, &state).asErr()) |e| {
                         return e.withoutPath();
                     }
                 },
                 .file_mode_change => {
+                    if (!isSafePatchPath(part.file_mode_change.path)) return bun.sys.Error.fromCode(.INVAL, .fchmodat);
                     const newmode = part.file_mode_change.new_mode;
                     const filepath = bun.handleOom(bun.dupeZ(arena.allocator(), u8, part.file_mode_change.path));
                     if (comptime bun.Environment.isPosix) {
