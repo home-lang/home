@@ -23,6 +23,30 @@ pub fn folderName(this: *const Tree, deps: []const Dependency, buf: string) stri
     return deps[dep_id].name.slice(buf);
 }
 
+/// A dependency name spliced into a `node_modules/<name>/...` path must be a
+/// single safe segment: no separators/NUL, no empty/`.`/`..` component, and at
+/// most a `@scope/name` pair. Mirrors PackageInstaller.aliasIsSafeInstallTarget;
+/// a malformed lockfile name would otherwise escape node_modules.
+fn folderNameIsSafe(name: []const u8) bool {
+    if (name.len == 0 or
+        name.len >= bun.MAX_PATH_BYTES or
+        std.mem.indexOfScalar(u8, name, '\\') != null or
+        std.mem.indexOfScalar(u8, name, ':') != null or
+        std.mem.indexOfScalar(u8, name, 0) != null)
+    {
+        return false;
+    }
+    var component_count: usize = 0;
+    var it = std.mem.splitScalar(u8, name, '/');
+    while (it.next()) |component| {
+        component_count += 1;
+        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) {
+            return false;
+        }
+    }
+    return component_count == 1 or (component_count == 2 and name[0] == '@');
+}
+
 pub fn toExternal(this: Tree) External {
     var out = External{};
     out[0..4].* = @as(Id, @bitCast(this.id));
@@ -210,6 +234,16 @@ pub fn relativePathAndDepth(
 
             const id = depth_buf[depth_buf_len];
             const name = trees[id].folderName(dependencies, buf);
+            // Guard the only variable-length write into the fixed path_buf: an
+            // unsafe name would escape node_modules, and an over-long cumulative
+            // path would overflow path_buf (OOB write). A malformed lockfile is
+            // unrecoverable here (fixed return type), so crash rather than corrupt
+            // memory or install outside the tree.
+            const trailer: usize = if (comptime path_style == .node_modules) "/node_modules".len else 0;
+            if (!folderNameIsSafe(name) or path_written + name.len + trailer + 1 > path_buf.len) {
+                Output.errGeneric("Lockfile is malformed (invalid or too-long dependency folder name \"{s}\")", .{name});
+                bun.Global.crash();
+            }
             @memcpy(path_buf[path_written..][0..name.len], name);
             path_written += name.len;
 
