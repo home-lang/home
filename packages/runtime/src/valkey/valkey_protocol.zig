@@ -275,6 +275,7 @@ pub const ValkeyReader = struct {
     pub fn readVerbatimString(self: *ValkeyReader, allocator: std.mem.Allocator) RedisError!VerbatimString {
         const len = try self.readInteger();
         if (len < 0) return error.InvalidVerbatimString;
+        if (len > MAX_BULK_LEN) return error.InvalidVerbatimString;
         if (self.pos + @as(usize, @intCast(len)) > self.buffer.len) return error.InvalidVerbatimString;
 
         const content_with_format = self.buffer[self.pos .. self.pos + @as(usize, @intCast(len))];
@@ -305,6 +306,21 @@ pub const ValkeyReader = struct {
     // Cap a single RESP line so a CRLF-less server response can't force an
     // unbounded scan of the receive buffer.
     const MAX_LINE_LEN: usize = 512 * 1024;
+    /// Maximum accepted length for a single RESP blob (`$`, `=`, `!`), matching
+    /// the Redis/Valkey `proto-max-bulk-len` server default of 512 MB.
+    const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
+
+    /// A valid aggregate (`*`/`%`/`~`/`|`/`>`) has every one of its elements
+    /// present in the buffer, and each RESP element is at least one byte on the
+    /// wire, so a declared element count larger than the unread buffer is
+    /// impossible. Reject it before allocating — otherwise a 13-byte
+    /// `*1000000000\r\n` header would reserve gigabytes of element slots (OOM
+    /// DoS). Unlike Bun's growable `Vec::with_capacity` cap, Home allocates the
+    /// full count up front and then indexes it, so the safe equivalent is to
+    /// reject an impossible length rather than truncate the allocation.
+    fn checkAggregateLen(self: *const ValkeyReader, len: usize) RedisError!void {
+        if (len > self.buffer.len - self.pos) return error.InvalidResponse;
+    }
 
     pub fn readValue(self: *ValkeyReader, allocator: std.mem.Allocator) RedisError!RESPValue {
         return self.readValueWithDepth(allocator, 0);
@@ -332,6 +348,7 @@ pub const ValkeyReader = struct {
             .BulkString => {
                 const len = try self.readInteger();
                 if (len < 0) return RESPValue{ .BulkString = null };
+                if (len > MAX_BULK_LEN) return error.InvalidBulkString;
                 if (self.pos + @as(usize, @intCast(len)) > self.buffer.len) return error.InvalidResponse;
                 const str = self.buffer[self.pos .. self.pos + @as(usize, @intCast(len))];
                 self.pos += @as(usize, @intCast(len));
@@ -344,6 +361,7 @@ pub const ValkeyReader = struct {
                 if (depth >= max_nesting_depth) return error.NestingDepthExceeded;
                 const len = try self.readInteger();
                 if (len < 0) return RESPValue{ .Array = &[_]RESPValue{} };
+                try self.checkAggregateLen(@intCast(len));
                 const array = try allocator.alloc(RESPValue, @as(usize, @intCast(len)));
                 errdefer allocator.free(array);
                 var i: usize = 0;
@@ -374,6 +392,7 @@ pub const ValkeyReader = struct {
             .BlobError => {
                 const len = try self.readInteger();
                 if (len < 0) return error.InvalidBlobError;
+                if (len > MAX_BULK_LEN) return error.InvalidBlobError;
                 if (self.pos + @as(usize, @intCast(len)) > self.buffer.len) return error.InvalidBlobError;
                 const str = self.buffer[self.pos .. self.pos + @as(usize, @intCast(len))];
                 self.pos += @as(usize, @intCast(len));
@@ -389,6 +408,7 @@ pub const ValkeyReader = struct {
                 if (depth >= max_nesting_depth) return error.NestingDepthExceeded;
                 const len = try self.readInteger();
                 if (len < 0) return error.InvalidMap;
+                try self.checkAggregateLen(@intCast(len));
 
                 const entries = try allocator.alloc(MapEntry, @as(usize, @intCast(len)));
                 errdefer allocator.free(entries);
@@ -411,6 +431,7 @@ pub const ValkeyReader = struct {
                 if (depth >= max_nesting_depth) return error.NestingDepthExceeded;
                 const len = try self.readInteger();
                 if (len < 0) return error.InvalidSet;
+                try self.checkAggregateLen(@intCast(len));
 
                 var set = try allocator.alloc(RESPValue, @as(usize, @intCast(len)));
                 errdefer allocator.free(set);
@@ -429,6 +450,7 @@ pub const ValkeyReader = struct {
                 if (depth >= max_nesting_depth) return error.NestingDepthExceeded;
                 const len = try self.readInteger();
                 if (len < 0) return error.InvalidAttribute;
+                try self.checkAggregateLen(@intCast(len));
 
                 var attrs = try allocator.alloc(MapEntry, @as(usize, @intCast(len)));
                 errdefer allocator.free(attrs);
@@ -484,6 +506,7 @@ pub const ValkeyReader = struct {
                 errdefer allocator.free(push_type_dup);
 
                 // Read the rest of the data
+                try self.checkAggregateLen(@intCast(len - 1));
                 var data = try allocator.alloc(RESPValue, @as(usize, @intCast(len - 1)));
                 errdefer allocator.free(data);
                 var i: usize = 0;
