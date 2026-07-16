@@ -7051,7 +7051,24 @@ fn firstDiagnosticPath(headers: []const u8) ?[]const u8 {
 
 fn baselinePathIsTargetEs5(path: ?[]const u8) bool {
     const p = path orelse return false;
-    return std.mem.indexOf(u8, p, "(target=es5).errors.txt") != null;
+    const suffix_end = std.mem.lastIndexOf(u8, p, ").errors.txt") orelse return false;
+    const options_start = std.mem.lastIndexOfScalar(u8, p[0..suffix_end], '(') orelse return false;
+    var options = std.mem.splitScalar(u8, p[options_start + 1 .. suffix_end], ',');
+    while (options.next()) |raw_option| {
+        const option = std.mem.trim(u8, raw_option, " \t");
+        if (std.ascii.eqlIgnoreCase(option, "target=es5")) return true;
+    }
+    return false;
+}
+
+test "conformance: ES5 target baseline detection parses option matrices" {
+    try T.expect(baselinePathIsTargetEs5("case(target=es5).errors.txt"));
+    try T.expect(baselinePathIsTargetEs5("case(target=ES5,alwaysstrict=true).errors.txt"));
+    try T.expect(baselinePathIsTargetEs5("case(module=commonjs, target=es5).errors.txt"));
+    try T.expect(baselinePathIsTargetEs5("case(alwaysstrict=true,target=es5).errors.txt"));
+    try T.expect(!baselinePathIsTargetEs5("target=es5(case=plain).errors.txt"));
+    try T.expect(!baselinePathIsTargetEs5("case(target=es2015).errors.txt"));
+    try T.expect(!baselinePathIsTargetEs5("case.errors.txt"));
 }
 
 /// Inspect the chosen `.errors.txt` baseline filename for an

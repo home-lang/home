@@ -436,12 +436,25 @@ fn appendInvalidJsxFactoryValueDiagnostic(
 /// real `has_errors == true`. The path mirrors the existing
 /// `report_deprecated_target_es5` flag — both fire from the option-
 /// validation layer that the in-memory driver previously skipped.
+fn ignoresTypeScriptSixDeprecations(source: []const u8, options: CompileOptions) bool {
+    if (directiveValue(source, "ignoreDeprecations")) |value| {
+        if (std.mem.eql(u8, value, "6.0")) return true;
+    }
+    if (options.pub_tsconfig) |cfg| {
+        if (cfg.compiler_options.ignore_deprecations) |value| {
+            if (std.mem.eql(u8, value, "6.0")) return true;
+        }
+    }
+    return false;
+}
+
 fn reportDeprecatedOptionDirectives(
     gpa: std.mem.Allocator,
     c: *Compilation,
     source: []const u8,
     options: CompileOptions,
 ) CompileError!void {
+    const ignore_deprecations = ignoresTypeScriptSixDeprecations(source, options);
     const effective_resolve_json_module = blk: {
         if (directiveBool(source, "resolveJsonModule")) |explicit| break :blk explicit;
         if (options.pub_tsconfig) |cfg| {
@@ -516,7 +529,7 @@ fn reportDeprecatedOptionDirectives(
         }
     }
 
-    if (directiveValue(source, "outFile") != null) {
+    if (!ignore_deprecations and directiveValue(source, "outFile") != null) {
         try c.diagnostics.append(gpa, .{
             .phase = .parse,
             .pos = 0,
@@ -541,20 +554,22 @@ fn reportDeprecatedOptionDirectives(
         else
             null;
         if (label_opt) |label| {
-            const msg = try std.fmt.allocPrint(
-                gpa,
-                "Option 'module={s}' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '\"ignoreDeprecations\": \"6.0\"' to silence this error.",
-                .{label},
-            );
-            try c.diagnostics.append(gpa, .{
-                .phase = .parse,
-                .pos = 0,
-                .line = 0,
-                .code = 5107,
-                .is_global = true,
-                .message = msg,
-            });
-            c.has_errors = true;
+            if (!ignore_deprecations) {
+                const msg = try std.fmt.allocPrint(
+                    gpa,
+                    "Option 'module={s}' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '\"ignoreDeprecations\": \"6.0\"' to silence this error.",
+                    .{label},
+                );
+                try c.diagnostics.append(gpa, .{
+                    .phase = .parse,
+                    .pos = 0,
+                    .line = 0,
+                    .code = 5107,
+                    .is_global = true,
+                    .message = msg,
+                });
+                c.has_errors = true;
+            }
 
             // TS5105 — `verbatimModuleSyntax` is incompatible with the
             // module-system targets that don't preserve ES module syntax
@@ -1689,7 +1704,7 @@ pub fn compileSource(
     c.hir = hir_mod.Hir.init(gpa) catch return error.OutOfMemory;
     errdefer c.hir.deinit();
 
-    if (options.report_deprecated_target_es5) {
+    if (options.report_deprecated_target_es5 and !ignoresTypeScriptSixDeprecations(source, options)) {
         try c.diagnostics.append(gpa, .{
             .phase = .parse,
             .pos = 0,
@@ -5760,6 +5775,43 @@ test "driver: @outFile absence does not emit TS5101" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 5101);
     }
+}
+
+test "driver: ignoreDeprecations 6.0 suppresses TypeScript 6 option deprecations" {
+    var suppressed = try compileSource(T.allocator,
+        \\// @ignoreDeprecations: 6.0
+        \\// @outFile: bundle.js
+        \\// @module: amd
+        \\// @verbatimModuleSyntax: true
+        \\export const x = 1;
+    , .{ .no_emit = true, .report_deprecated_target_es5 = true });
+    defer {
+        suppressed.deinit();
+        T.allocator.destroy(suppressed);
+    }
+    var found_compatibility_error = false;
+    for (suppressed.diagnostics.items) |d| {
+        try T.expect(d.code != 5101);
+        if (d.code == 5107) try T.expect(std.mem.indexOf(u8, d.message, "deprecated") == null);
+        if (d.code == 5105) found_compatibility_error = true;
+    }
+    try T.expect(found_compatibility_error);
+
+    var older_boundary = try compileSource(T.allocator,
+        \\// @ignoreDeprecations: 5.0
+        \\const x = 1;
+    , .{ .no_emit = true, .report_deprecated_target_es5 = true });
+    defer {
+        older_boundary.deinit();
+        T.allocator.destroy(older_boundary);
+    }
+    var found_target_deprecation = false;
+    for (older_boundary.diagnostics.items) |d| {
+        if (d.code == 5107 and std.mem.indexOf(u8, d.message, "target=ES5") != null) {
+            found_target_deprecation = true;
+        }
+    }
+    try T.expect(found_target_deprecation);
 }
 
 test "driver: @module: amd emits TS5107 module=AMD deprecation" {
