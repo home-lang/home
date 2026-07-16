@@ -1712,6 +1712,13 @@ pub fn parseIntoBinaryLockfile(
                 },
             };
 
+            // Set when an npm entry carries an explicit tarball URL that points
+            // outside the configured (and default) registry. Such a URL must be
+            // pinned by a supported integrity hash (checked in the integrity
+            // switch below), otherwise a tampered lockfile could redirect a
+            // trusted package name to arbitrary content with verification off.
+            var npm_url_needs_integrity = false;
+
             if (res.tag == .npm) {
                 if (i >= pkg_info.len) {
                     try log.addError(source, value.loc, "Missing npm registry");
@@ -1741,6 +1748,12 @@ pub fn parseIntoBinaryLockfile(
 
                     res.value.npm.url = try string_buf.append(url);
                 } else {
+                    const configured_registry = if (manager) |mgr|
+                        mgr.scopeForPackageName(name_str).url.href
+                    else
+                        Npm.Registry.default_url;
+                    npm_url_needs_integrity = !urlIsUnderRegistry(registry_str, configured_registry) and
+                        !urlIsUnderRegistry(registry_str, Npm.Registry.default_url);
                     res.value.npm.url = try string_buf.append(registry_str);
                 }
             }
@@ -1886,6 +1899,14 @@ pub fn parseIntoBinaryLockfile(
                     };
 
                     pkg.meta.integrity = Integrity.parse(integrity_str);
+
+                    // Fail closed: an off-registry tarball URL with no supported
+                    // integrity hash could install arbitrary content under a
+                    // trusted package name with verification disabled.
+                    if (npm_url_needs_integrity and !pkg.meta.integrity.tag.isSupported()) {
+                        try log.addError(source, integrity_expr.loc, "Missing integrity hash for npm package resolved to a tarball URL outside the configured registry");
+                        return error.InvalidPackageInfo;
+                    }
                 },
                 .local_tarball, .remote_tarball => {
                     // integrity is optional for tarball deps (backward compat)
@@ -1912,6 +1933,10 @@ pub fn parseIntoBinaryLockfile(
                         return error.InvalidPackageInfo;
                     };
 
+                    if (!Repository.isSafeResolvedTag(bun_tag_str)) {
+                        try log.addError(source, bun_tag.loc, "Invalid git dependency tag");
+                        return error.InvalidPackageInfo;
+                    }
                     @field(res.value, @tagName(tag)).resolved = try string_buf.append(bun_tag_str);
 
                     // Optional integrity hash (added to pin tarball content)
@@ -2073,6 +2098,16 @@ pub fn parseIntoBinaryLockfile(
             }
         };
     }
+}
+
+/// A lockfile npm entry may carry an explicit tarball URL. It counts as "under"
+/// a registry only when the registry (sans trailing slash) is an exact path
+/// prefix and the byte after it is a `/` (or the URL ends there) — so a URL like
+/// `https://evil.example/registry.npmjs.org/...` is NOT under
+/// `https://registry.npmjs.org`.
+fn urlIsUnderRegistry(url: string, registry: string) bool {
+    const reg = strings.withoutTrailingSlash(registry);
+    return strings.hasPrefix(url, reg) and (url.len == reg.len or url[reg.len] == '/');
 }
 
 fn mapDepToPkg(dep: *Dependency, dep_id: DependencyID, pkg_id: PackageID, lockfile: *BinaryLockfile, pkg_resolutions: []const Resolution) void {

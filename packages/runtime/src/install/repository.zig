@@ -590,7 +590,7 @@ pub const Repository = extern struct {
     /// safe token first: non-empty, bounded, no leading `-` (which git would
     /// parse as an option), not `.`/`..`, and only alphanumerics or `-_.` — no
     /// `/`, `\`, NUL or other separators that could escape the cache directory.
-    fn isSafeResolvedTag(resolved: string) bool {
+    pub fn isSafeResolvedTag(resolved: string) bool {
         if (resolved.len == 0 or resolved.len > 256) return false;
         if (resolved[0] == '-') return false;
         if (std.mem.eql(u8, resolved, ".") or std.mem.eql(u8, resolved, "..")) return false;
