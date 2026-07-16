@@ -402,6 +402,9 @@ pub const Case = struct {
     /// to set `CompileOptions.module_resolution` so the checker's
     /// TS2792 / TS2307 selection lines up with the baseline.
     baseline_module_resolution: []const u8 = "",
+    /// Lower-case `module` label selected by a `(module=X)` baseline
+    /// suffix. Empty means use the first source/config directive value.
+    baseline_module_kind: []const u8 = "",
 };
 
 /// Count the contiguous block of leading lines that the TypeScript
@@ -666,9 +669,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         if (try runProgram(gpa, c)) |program_result| return program_result;
     }
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
-    const module_kind_raw = directiveValue(directive_source, "module") orelse
-        directiveValue(directive_source, "Module") orelse
-        "";
+    const module_kind_label = selectedModuleKind(c, directive_source, "");
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
@@ -685,7 +686,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .continue_on_error = true,
         .no_emit = true,
         .importer_path = c.path,
-        .module_kind = firstCommaSeparatedValue(module_kind_raw),
+        .module_kind = module_kind_label,
     }) catch |err| {
         const detail = try std.fmt.allocPrint(gpa, "compile failed: {s}", .{@errorName(err)});
         return .{
@@ -2035,6 +2036,7 @@ test "conformance: loaded corpus keeps checkJs diagnostics for late-bound comput
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         });
         defer {
             T.allocator.free(result.name);
@@ -2085,6 +2087,7 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         });
         defer {
             T.allocator.free(result.name);
@@ -2540,14 +2543,11 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     const configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, configured_type_names);
+    const module_kind_label = selectedModuleKind(c, directive_source, tsconfig_options.module);
     const resolver_strategy = if (tsconfig_options.module_resolution.len > 0)
-        (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, tsconfig_options.module))
+        (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, module_kind_label))
     else
-        resolverStrategyFromCase(c, tsconfig_options.module);
-    const module_kind_raw = directiveValue(directive_source, "module") orelse
-        directiveValue(directive_source, "Module") orelse
-        tsconfig_options.module;
-    const module_kind_label = firstCommaSeparatedValue(module_kind_raw);
+        resolverStrategyFromCase(c, module_kind_label);
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
         .strategy = resolver_strategy,
         .module_kind = module_kind_label,
@@ -5776,6 +5776,8 @@ pub const CorpusEntry = struct {
     /// See `Case.baseline_module_resolution`. Empty means the baseline
     /// has no `(moduleresolution=X)` variant suffix.
     baseline_module_resolution: []const u8 = "",
+    /// See `Case.baseline_module_kind`.
+    baseline_module_kind: []const u8 = "",
 };
 
 /// Owned-source variant — like `CorpusEntry` but the source is
@@ -5803,6 +5805,8 @@ pub const OwnedCorpusEntry = struct {
     /// Empty when the baseline has no variant suffix. Owned slice
     /// freed alongside `name` / `source`.
     baseline_module_resolution: []u8 = "",
+    /// Lower-case `module` variant extracted from the chosen baseline.
+    baseline_module_kind: []u8 = "",
 };
 
 pub const DirectoryLoadOptions = struct {
@@ -6071,6 +6075,10 @@ pub fn loadDirectoryWithOptions(
             try extractModuleResolutionFromBaseline(gpa, bp)
         else
             &.{};
+        const baseline_module: []u8 = if (baseline_path) |bp|
+            try extractModuleKindFromBaseline(gpa, bp)
+        else
+            &.{};
         try out.append(gpa, .{
             .name = name,
             .source = case_src,
@@ -6097,6 +6105,7 @@ pub fn loadDirectoryWithOptions(
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, directive_source),
             .raw_source = raw_source,
             .baseline_module_resolution = baseline_mr,
+            .baseline_module_kind = baseline_module,
         });
     }
     return out.toOwnedSlice(gpa);
@@ -7134,6 +7143,37 @@ fn extractModuleResolutionFromBaseline(gpa: std.mem.Allocator, path: []const u8)
     return gpa.dupe(u8, path[after..close]);
 }
 
+fn extractModuleKindFromBaseline(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const needle = "(module=";
+    const start = std.mem.indexOf(u8, path, needle) orelse return gpa.dupe(u8, "");
+    const after = start + needle.len;
+    const close = std.mem.indexOfScalarPos(u8, path, after, ')') orelse return gpa.dupe(u8, "");
+    const comma = std.mem.indexOfScalarPos(u8, path, after, ',') orelse close;
+    return gpa.dupe(u8, path[after..@min(comma, close)]);
+}
+
+test "conformance: module matrix selection follows the chosen baseline" {
+    const commonjs = try extractModuleKindFromBaseline(T.allocator, "case(module=commonjs).errors.txt");
+    defer T.allocator.free(commonjs);
+    try T.expectEqualStrings("commonjs", commonjs);
+
+    const combined = try extractModuleKindFromBaseline(T.allocator, "case(module=nodenext,target=es2022).errors.txt");
+    defer T.allocator.free(combined);
+    try T.expectEqualStrings("nodenext", combined);
+
+    const plain = try extractModuleKindFromBaseline(T.allocator, "case.errors.txt");
+    defer T.allocator.free(plain);
+    try T.expectEqualStrings("", plain);
+
+    const selected: Case = .{
+        .name = "case",
+        .source = "",
+        .path = "case.ts",
+        .baseline_module_kind = commonjs,
+    };
+    try T.expectEqualStrings("commonjs", selectedModuleKind(selected, "// @module: preserve,commonjs", "esnext"));
+}
+
 fn envUsize(name: [*:0]const u8, default: usize) usize {
     const raw = std.c.getenv(name) orelse return default;
     const value = std.mem.span(raw);
@@ -7233,6 +7273,14 @@ fn directiveValueMentions(source: []const u8, directive_name: []const u8, value:
         if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, part, " \t\r"), value)) return true;
     }
     return false;
+}
+
+fn selectedModuleKind(c: Case, source: []const u8, fallback: []const u8) []const u8 {
+    if (c.baseline_module_kind.len > 0) return c.baseline_module_kind;
+    const raw = directiveValue(source, "module") orelse
+        directiveValue(source, "Module") orelse
+        fallback;
+    return firstCommaSeparatedValue(raw);
 }
 
 fn firstCommaSeparatedValue(raw: []const u8) []const u8 {
@@ -8141,6 +8189,7 @@ pub fn runOwnedCorpus(
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         };
         const r = try runOneEntry(gpa, view);
         switch (r.outcome) {
@@ -8186,6 +8235,7 @@ fn freeOwnedCorpusEntry(gpa: std.mem.Allocator, entry: OwnedCorpusEntry) void {
     if (entry.path.len > 0) gpa.free(entry.path);
     if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
     if (entry.baseline_module_resolution.len > 0) gpa.free(entry.baseline_module_resolution);
+    if (entry.baseline_module_kind.len > 0) gpa.free(entry.baseline_module_kind);
 }
 
 /// Run named conformance categories relative to `root_path`.
@@ -8300,6 +8350,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         });
         errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
         exact.name = try gpa.dupe(u8, entry.name);
@@ -8332,6 +8383,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         };
         const program_result = (try runProgram(gpa, program_case)) orelse try run(gpa, program_case);
         defer if (program_result.detail.len > 0) gpa.free(program_result.detail);
@@ -54512,6 +54564,7 @@ fn runClusterFixture(
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         });
     }
     return .{
@@ -54774,6 +54827,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         });
         try results.append(T.allocator, r);
     }
@@ -55361,6 +55415,7 @@ fn runOptInTsSuiteFamily(
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,
@@ -55518,6 +55573,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,
