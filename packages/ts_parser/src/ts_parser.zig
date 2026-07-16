@@ -9949,6 +9949,14 @@ pub const Parser = struct {
                 }
                 const ref_start = switch (self.peek().kind) {
                     .identifier, .kw_default, .kw_undefined, .kw_super, .kw_this, .kw_function => self.advance(),
+                    .kw_yield => if (!self.isYieldReservedName(self.peek())) self.advance() else {
+                        const bad = self.peek();
+                        try self.reportInvalidYieldName(bad, true);
+                        const ref = try self.recoverInvalidTypeofTypeOperand(bad);
+                        const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(ref).end };
+                        const typeof_t = try self.builder.addTypeofType(sp, ref);
+                        return try self.parseArrayTypePostfix(typeof_t);
+                    },
                     else => if (self.peek().kind.isPrimitiveTypeKeyword()) self.advance() else {
                         const bad = self.peek();
                         try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
@@ -23288,6 +23296,32 @@ test "parser: type annotation — typeof undefined accepts keyword operand" {
     try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
     const tt = hir_mod.typeofTypeOf(&s.hir, v.type_annotation);
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(tt.operand));
+}
+
+test "parser: typeof yield uses contextual reserved-name diagnostics" {
+    var s = try newTestSetup(
+        \\function* g() {
+        \\    var value: typeof yield;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1212));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1003));
+}
+
+test "parser: typeof yield accepts a sloppy ES5 identifier" {
+    var s = try newTestSetup(
+        \\var yield = 1;
+        \\var value: typeof yield;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1212));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1003));
 }
 
 test "parser: type annotation — typeof default parses for checker resolution" {
