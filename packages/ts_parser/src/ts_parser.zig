@@ -1922,6 +1922,23 @@ pub const Parser = struct {
         if (self.peek().kind == .at) {
             const start = self.peek();
             const dec_expr = try self.parseDecoratorExpression();
+            // A decorator at statement level commits the parser to a
+            // declaration. If an ordinary identifier follows, mirror
+            // typescript-go's `parseDeclarationWorker`: emit a missing
+            // declaration at the decorator boundary, preserve the next
+            // token for outer statement recovery, and avoid creating a
+            // real decorator node that would produce checker-side TS1206.
+            if (self.peek().kind == .identifier) {
+                const missing_pos = if (self.cursor > 0)
+                    self.tokens[self.cursor - 1].span.end
+                else
+                    start.span.end;
+                try self.reportCodeAt(missing_pos, start.line, 1146, "Declaration expected.");
+                return try self.builder.addLiteralNumber(
+                    .{ .start = start.span.start, .end = missing_pos },
+                    0,
+                );
+            }
             const dec = try self.builder.addDecorator(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 dec_expr,
@@ -7240,8 +7257,19 @@ pub const Parser = struct {
         defer self.generator_depth = saved_generator_depth;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
+        var recovered_member_list_boundary = false;
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const member_start = self.peek();
+            // `@` cannot begin an enum member, but it can begin a
+            // declaration in the enclosing source-elements context.
+            // Match parseDelimitedList(PCEnumMembers): emit TS1132 and
+            // yield without consuming the token so outer declaration
+            // recovery can process the decorator sequence.
+            if (member_start.kind == .at) {
+                try self.reportCodeAt(member_start.span.start, member_start.line, 1132, "Enum member expected.");
+                recovered_member_list_boundary = true;
+                break;
+            }
             if (member_start.kind == .comma) {
                 const comma = self.advance();
                 try self.reportCodeAt(comma.span.start, comma.line, 1132, "Enum member expected.");
@@ -7326,7 +7354,9 @@ pub const Parser = struct {
             }
             break;
         }
-        const close_end = if (self.peek().kind == .close_brace) blk: {
+        const close_end = if (recovered_member_list_boundary)
+            self.peek().span.start
+        else if (self.peek().kind == .close_brace) blk: {
             break :blk self.advance().span.end;
         } else blk: {
             const close = self.peek();
@@ -27718,6 +27748,36 @@ test "parser: invalid enum member still reports missing close brace" {
     }
     try T.expect(invalid_found);
     try T.expect(close_found);
+}
+
+test "parser: decorator in enum body yields through enclosing declaration contexts" {
+    const src = "enum E {\n    @dec A\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+
+    const at_pos = std.mem.indexOfScalar(u8, src, '@').?;
+    const name_pos = std.mem.indexOf(u8, src, " A").? + 1;
+    const close_pos = std.mem.lastIndexOfScalar(u8, src, '}').?;
+
+    const enum_member = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1132), enum_member.code);
+    try T.expectEqualStrings("Enum member expected.", enum_member.message);
+    try T.expectEqual(@as(u32, @intCast(at_pos)), enum_member.pos);
+
+    const declaration = s.parser.diagnostics.items[1];
+    try T.expectEqual(@as(u32, 1146), declaration.code);
+    try T.expectEqualStrings("Declaration expected.", declaration.message);
+    try T.expectEqual(@as(u32, @intCast(name_pos - 1)), declaration.pos);
+
+    const trailing_close = s.parser.diagnostics.items[2];
+    try T.expectEqual(@as(u32, 1128), trailing_close.code);
+    try T.expectEqualStrings("Declaration or statement expected.", trailing_close.message);
+    try T.expectEqual(@as(u32, @intCast(close_pos)), trailing_close.pos);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1003));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
 }
 
 test "parser: JSDoc postfix nullable diagnostics keep TypeScript order" {
