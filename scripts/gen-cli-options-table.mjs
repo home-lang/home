@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
-const ref = process.env.TSGO_ROOT || path.join(process.env.HOME, "Code/typescript-go");
+const ref = process.env.TSGO_ROOT || path.join(root, "_submodules/typescript-go");
 const catalogPath = path.join(root, "packages/ts_diagnostics/src/ts_diagnostic_codes.zig");
 
 // ---- 1. Home catalogue: name (key minus trailing _<code>) -> code --------

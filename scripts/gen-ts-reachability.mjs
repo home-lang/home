@@ -17,14 +17,14 @@
 // excluding tests and the generated message table.
 //
 // Usage:  node scripts/gen-ts-reachability.mjs > docs/TS_DIAGNOSTIC_REACHABILITY.md
-//   TSGO_ROOT overrides the reference checkout (default ~/Code/typescript-go).
+//   TSGO_ROOT overrides the pinned `_submodules/typescript-go` checkout.
 
 import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
 const statusPath = path.join(root, "docs/TS_DIAGNOSTIC_CODE_STATUS.md");
-const ref = process.env.TSGO_ROOT || path.join(process.env.HOME, "Code/typescript-go");
+const ref = process.env.TSGO_ROOT || path.join(root, "_submodules/typescript-go");
 const refInternal = path.join(ref, "internal");
 
 // --- non-emitted rows from the status ledger ------------------------------

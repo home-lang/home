@@ -13,14 +13,12 @@
 //!   - `name.symbols`       — expected `(file, line, col, symbol)`
 //!                            rows for every bound identifier
 //!
-//! Phase 6 ships the harness; the suite of cases comes from the
-//! local `microsoft/TypeScript` checkout — typically already on
-//! disk for tooling reasons. Point `runDirectory` at
-//! `~/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance/`
-//! (the canonical path tsgo uses) or wherever the upstream TS
-//! repo is installed locally. We deliberately do NOT vendor TS
-//! as a git submodule — every contributor with a Code workspace
-//! already has it, and pinning it here would bloat the repo.
+//! Phase 6 ships the harness; its canonical reference is the pinned
+//! `microsoft/typescript-go` submodule at `_submodules/typescript-go`.
+//! tsgo still consumes the inherited conformance cases from its own
+//! `_submodules/TypeScript` checkout, so initialize recursively before
+//! running the full corpus. `HOME_TS_CONFORMANCE_ROOT` remains available
+//! for testing another tsgo checkout without moving Home's reproducible pin.
 
 const std = @import("std");
 const ts_driver = @import("ts_driver");
@@ -55072,11 +55070,10 @@ fn runConformanceSubset(
 }
 
 test "conformance: smoke-run local TS conformance subdirectories" {
-    // Smoke-run a SUBSET of the canonical microsoft/TypeScript
-    // conformance suite from a contributor's local TS checkout.
-    // We deliberately do NOT vendor TS as a submodule — every
-    // contributor with a Code workspace already has it. When the
-    // path doesn't exist (CI, fresh contributors), skip cleanly.
+    // Smoke-run a SUBSET of the canonical microsoft/TypeScript conformance
+    // suite inherited by the pinned typescript-go submodule. When its nested
+    // corpus has not been initialized (for example, a non-recursive source
+    // archive), skip cleanly.
     //
     // Subdirs picked (small + diverse feature coverage):
     //   - types/typeRelationships/comparable/ — equality / switch /
@@ -55256,14 +55253,12 @@ test "conformance: baseline-aware type-relationship survey" {
     try T.expectEqual(@as(u32, 586), combined.passed);
 }
 
-// Default location of the local TypeScript checkout. Other devs
-// override via `HOME_TS_CONFORMANCE_ROOT=/path/to/typescript-go`
-// (the harness then expects `<root>/_submodules/TypeScript/tests/...`
-// underneath, matching the layout tsgo's own test runner expects).
-// Tests that need the corpus call `resolveTsCorpusPaths` and skip
-// silently when the directory isn't accessible, so other devs
-// without the checkout still get a green build.
-const default_ts_root = "/Users/chrisbreuer/Code/typescript-go";
+// The repository-owned tsgo pin is the default parity source. Override with
+// `HOME_TS_CONFORMANCE_ROOT=/path/to/typescript-go` to survey another revision;
+// both roots use tsgo's `_submodules/TypeScript/tests/...` corpus layout.
+// Tests still skip when the recursively nested corpus is not initialized so a
+// non-recursive source archive can run the ordinary package suite.
+const default_ts_root = "_submodules/typescript-go";
 
 const TsCorpusPaths = struct { cases: []u8, baselines: []u8 };
 

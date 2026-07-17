@@ -7,7 +7,7 @@ Home is a modern programming language for systems, apps, and games that combines
 ## Bun parity (TS→JS transpiler / runtime)
 
 - Home maintains Bun's engine for them (they moved to Rust). The **source of truth is Bun's official Zig at `~/Code/bun`** — when implementing TS→JS lowering or runtime parity, READ the corresponding Bun code (e.g. `src/js_printer/js_printer.zig`, `src/js_parser/`, `src/ast/`) and mirror its shape rather than reinventing or guessing. The TS→JS printer lives in `packages/ts_emit/src/js_emit.zig`.
-- Diagnostic parity (`TSxxxx`) is checked against typescript-go (`~/Code/typescript-go`); TS→JS *emit* parity is checked against Bun.
+- Diagnostic parity (`TSxxxx`) is checked against the pinned typescript-go source at `_submodules/typescript-go`; TS→JS *emit* parity is checked against Bun.
 
 ## TypeScript diagnostic parity
 

@@ -2,8 +2,8 @@
 
 > Companion to [`TS_DIAGNOSTIC_CODE_STATUS.md`](./TS_DIAGNOSTIC_CODE_STATUS.md) and
 > [`TS_PARITY_PLAN.md`](./TS_PARITY_PLAN.md). Records diagnostic codes where Home's
-> faithful-parity reference (the Microsoft Go port, `~/Code/typescript-go`) and the
-> original TypeScript compiler (`~/Code/typescript-go/_submodules/TypeScript/src`)
+> faithful-parity reference (the Microsoft Go port, `_submodules/typescript-go`) and
+> the original TypeScript compiler (`_submodules/typescript-go/_submodules/TypeScript/src`)
 > disagree, and how Home resolves the disagreement.
 
 ## Policy

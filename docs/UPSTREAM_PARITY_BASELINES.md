@@ -8,7 +8,7 @@ how to triage the result.
 | Upstream | Pin (where Home ported from) | Pin location | Reference checkout | Diff computable today? |
 |---|---|---|---|---|
 | **Bun** (engine) | `fd0b6f1a271fca0b8124b69f230b100f4d636af6` | `packages/runtime/UPSTREAM_SHA.txt` (enforced by `scripts/sync-bun-tests.sh`) | `~/Code/bun` | ✅ yes — after `git fetch` |
-| **typescript-go** (tsc reference) | `462a1a4f4` (short; w23 wave) | prose only — `docs/TS_PARITY_PLAN.md` parity-wave log | `~/Code/typescript-go` | ❌ no — checkout has **no `.git`**; needs re-clone |
+| **typescript-go** (canonical TypeScript 7 reference) | `b8276f35cd288aa163fad0516b60ddaacec87ee7` | `_submodules/typescript-go` gitlink | `_submodules/typescript-go` | ✅ yes — pinned submodule on `main` |
 
 ## Bun
 
@@ -45,28 +45,41 @@ self-contained porting targets.
 
 ## typescript-go
 
-**Pin is prose-only and the diff is currently impossible to compute on this
-machine.** `~/Code/typescript-go` has **no `.git`** (only `_submodules/TypeScript`
-survives at `f350b52331`). The baseline `462a1a4f4` is recorded only in the
-`docs/TS_PARITY_PLAN.md` w23 parity-wave entry (2026-06-16), not as a machine
-pin.
+`microsoft/typescript-go` is now Home's repository-owned source of truth for
+TypeScript 7 behavior. The gitlink pins tsgo `main` at
+`b8276f35cd288aa163fad0516b60ddaacec87ee7`; that revision pins its inherited
+TypeScript corpus at `4d4f005c8541e0255a9d8791205fdce326e462bc`.
 
-To make the tsgo half runnable:
-1. Re-clone `microsoft/typescript-go`, check out `462a1a4f4`, expand to the full
-   40-char SHA.
-2. Record it as a real pin (mirror the Bun convention).
-3. `git log <pin>..origin/main`, then triage compiler-observable diagnostics vs
-   codegen/CI noise (the parity waves currently do this by hand).
+The 2026-07-16 transition moved tsgo forward 107 commits from the prior local
+checkout. Its inherited TypeScript corpus moved forward 23 commits without
+changing the 5,907-case expanded conformance inventory or its error baselines.
+Home passes all 299 expanded tsgo-native compiler testdata cases exactly and
+holds 5,045/5,907 inherited exact cases, with 862 recorded failure identities.
 
-Note: the TS **diagnostic-code** lane is already diff-driven and at parity —
-`node scripts/gen-ts-reachability.mjs` reports active-reachable = 0, so a tsgo
-bump only adds work if it introduces new emission sites. The open tsgo frontier
-is **type-checker exact-mode conformance** (~71% on the boss dashboard), which is
-a grind independent of the upstream diff.
+Initialize the reproducible two-level checkout with:
+
+```sh
+git submodule update --init --recursive --depth 1
+```
+
+The conformance harness uses `_submodules/typescript-go` by default and still
+accepts `HOME_TS_CONFORMANCE_ROOT=/path/to/typescript-go` for surveying another
+revision. To compute the live native-compiler delta:
+
+```sh
+git -C _submodules/typescript-go fetch origin main
+git -C _submodules/typescript-go log --oneline HEAD..origin/main
+```
+
+The TS **diagnostic-code** lane remains diff-driven: regenerate it with
+`node scripts/gen-ts-reachability.mjs` after a tsgo bump, then triage new live
+emission sites separately from API, LSP, build, and CI-only changes. The open
+compiler frontier remains exact diagnostic parity against tsgo's inherited
+conformance baselines.
 
 ## Status of the "diff → task list" automation
 
 No generator exists yet. Parity waves triage upstream commits **by hand**
 (`docs/TS_PARITY_PLAN.md` wave log). A future `scripts/gen-upstream-tasklist.mjs`
-could read both pins, run `git log <pin>..origin/main`, and classify commits
-engine-observable vs noise — blocked on the tsgo re-clone for the TS half.
+can read both machine pins, run each upstream log range, and classify
+compiler-observable changes separately from API, editor, build, and CI noise.
