@@ -6050,6 +6050,11 @@ pub fn loadDirectoryWithOptions(
             merged.verbatim_module_syntax = value;
             strict_flags = merged;
         }
+        if (baselineOptionBool(baseline_path, "noimplicitany")) |value| {
+            var merged = strict_flags orelse ts_driver.StrictFlags{};
+            merged.no_implicit_any = value;
+            strict_flags = merged;
+        }
         const name = try gpa.dupe(u8, stem);
         var diag_path = default_path;
         var expected_errors: []const u8 = "";
@@ -7125,6 +7130,12 @@ fn baselineOptionBool(path: ?[]const u8, option: []const u8) ?bool {
         if (std.mem.indexOf(u8, p, needle) != null) return true;
     }
     return null;
+}
+
+test "conformance: boolean variant baselines override matrix directives" {
+    try T.expectEqual(false, baselineOptionBool("case(noimplicitany=false).errors.txt", "noimplicitany").?);
+    try T.expectEqual(true, baselineOptionBool("case(noimplicitany=true).errors.txt", "noimplicitany").?);
+    try T.expect(baselineOptionBool("case.errors.txt", "noimplicitany") == null);
 }
 
 /// Extract the `moduleresolution=X` label from a baseline filename
