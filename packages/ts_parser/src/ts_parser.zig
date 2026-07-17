@@ -7644,11 +7644,15 @@ pub const Parser = struct {
             }
         }
 
+        const import_equals_star_recovery = is_type_only and
+            (self.peek().kind == .identifier or self.peek().kind == .kw_await or self.peek().kind.isContextualKeyword()) and
+            self.peekAt(1).kind == .asterisk;
         if ((self.peek().kind == .identifier or self.peek().kind == .kw_await or self.peek().kind.isContextualKeyword()) and
-            self.peekAt(1).kind == .equal)
+            (self.peekAt(1).kind == .equal or import_equals_star_recovery))
         {
             const alias_tok = self.peek();
-            if (is_type_only and self.peekAt(2).kind != .kw_require) {
+            const has_equals = self.peekAt(1).kind == .equal;
+            if (has_equals and is_type_only and self.peekAt(2).kind != .kw_require) {
                 try self.reportCodeAt(
                     start.span.start,
                     start.line,
@@ -7656,7 +7660,7 @@ pub const Parser = struct {
                     "An import alias cannot use 'import type'",
                 );
             }
-            if (alias_tok.kind == .kw_await and (self.peekAt(2).kind == .kw_require or self.top_level_export_indicator)) {
+            if (has_equals and alias_tok.kind == .kw_await and (self.peekAt(2).kind == .kw_require or self.top_level_export_indicator)) {
                 try self.reportCodeAt(
                     alias_tok.span.start,
                     alias_tok.line,
@@ -7667,6 +7671,24 @@ pub const Parser = struct {
             const alias_id = try self.internToken(alias_tok);
             const alias_node = try self.builder.addIdentifier(tokenSpan(alias_tok), alias_id);
             _ = self.advance(); // local alias
+            if (!has_equals) {
+                const star = self.advance();
+                try self.reportCodeAt(star.span.start, star.line, 1005, "'=' expected.");
+                if (self.peek().kind == .kw_as and self.peekAt(2).kind == .kw_from) {
+                    const from_tok = self.peekAt(2);
+                    try self.reportCodeAt(from_tok.span.start, from_tok.line, 1434, "Unexpected keyword or identifier.");
+                }
+                const empty_module = self.interner.intern("") catch return error.OutOfMemory;
+                return try self.builder.addImport(
+                    .{ .start = start.span.start, .end = star.span.end },
+                    empty_module,
+                    alias_node,
+                    hir_mod.none_node_id,
+                    hir_mod.none_node_id,
+                    &.{},
+                    is_type_only,
+                );
+            }
             _ = self.advance(); // =
             var module_id = self.interner.intern("") catch return error.OutOfMemory;
             var module_specifier_pos: ?u32 = null;
@@ -9648,6 +9670,17 @@ pub const Parser = struct {
             }
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
+            self.cursor >= 2 and
+            self.tokens[self.cursor - 1].kind == .kw_as and
+            self.tokens[self.cursor - 2].kind == .asterisk)
+        {
+            // Type-only import-equals recovery leaves `as ns from` behind.
+            // End the recovered `as` expression at `ns` without consuming it
+            // so both trailing identifiers still reach the checker.
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            return;
+        }
         if (t.kind == .kw_from and
             self.cursor >= 3 and
             self.tokens[self.cursor - 2].kind == .kw_as and
@@ -21976,6 +22009,27 @@ test "parser: deferred default binding requires a comma before namespace binding
     try T.expect(saw_missing_from);
     try T.expect(saw_string_literal);
     try T.expect(saw_unexpected_from);
+}
+
+test "parser: type-only defer conflict recovers as a missing import-equals assignment" {
+    var s = try newTestSetup("import type defer * as ns1 from \"./a\";");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_missing_equals = false;
+    var saw_missing_semicolon = false;
+    var saw_unexpected_from = false;
+    var saw_import_clause_diagnostic = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'=' expected.")) saw_missing_equals = true;
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "';' expected.")) saw_missing_semicolon = true;
+        if (d.code == 1434 and std.mem.eql(u8, d.message, "Unexpected keyword or identifier.")) saw_unexpected_from = true;
+        if (d.code == 1141 or (d.code == 1005 and std.mem.eql(u8, d.message, "'from' expected."))) saw_import_clause_diagnostic = true;
+    }
+    try T.expect(saw_missing_equals);
+    try T.expect(saw_missing_semicolon);
+    try T.expect(saw_unexpected_from);
+    try T.expect(!saw_import_clause_diagnostic);
 }
 
 test "parser: import defer from string treats defer as default binding (not deferred)" {
