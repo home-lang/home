@@ -9767,6 +9767,20 @@ pub const Parser = struct {
             return;
         }
         if (t.kind == .open_brace or t.kind == .open_paren) {
+            if (t.kind == .open_paren and
+                self.cursor >= 4 and
+                self.tokens[self.cursor - 2].kind == .dot and
+                self.tokens[self.cursor - 3].kind == .kw_import and
+                self.tokens[self.cursor - 4].kind == .kw_typeof and
+                self.tokenTextEquals(self.tokens[self.cursor - 1], "defer"))
+            {
+                // `parseImportTypeReference` deliberately leaves this `(`
+                // unread after recovering `typeof import.defer`. Upstream
+                // ends the malformed type alias without another semicolon
+                // diagnostic, then parses `(specifier).member` as a value
+                // expression statement.
+                return;
+            }
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
             return;
         }
@@ -12708,6 +12722,32 @@ pub const Parser = struct {
     /// generic args, never a comparison.
     fn parseImportTypeReference(self: *Parser) ParseError!NodeId {
         const import_tok = self.advance();
+        if (self.peek().kind != .open_paren) {
+            // `typeof import.defer("m").X` is parsed by upstream as a
+            // malformed import type followed by the value expression
+            // `("m").X`. Its recoverable `parseExpected` calls leave the
+            // opening parenthesis unread, allowing that trailing expression
+            // to be bound and checked normally.
+            const argument_start = self.peek();
+            try self.reportCodeAt(argument_start.span.start, argument_start.line, 1005, "'(' expected.");
+            try self.reportCodeAt(argument_start.span.start, argument_start.line, 1141, "String literal expected.");
+
+            var end_pos = import_tok.span.end;
+            if (self.match(.dot)) {
+                const member = try self.expectIdentifierLike();
+                end_pos = member.span.end;
+            }
+            const close_anchor = self.peek();
+            try self.reportCodeAt(close_anchor.span.start, close_anchor.line, 1005, "')' expected.");
+
+            const any_id = self.interner.intern("any") catch return error.OutOfMemory;
+            return try self.builder.addTypeRef(
+                .{ .start = import_tok.span.start, .end = end_pos },
+                any_id,
+                &.{},
+                &.{},
+            );
+        }
         const import_type_open = try self.expect(.open_paren, "'(' after import in import type");
         // tsc emits TS1141 "String literal expected." at the offending
         // token when `import(<non-string>)` appears in type position.
@@ -23058,6 +23098,33 @@ test "parser: import type non-string recovers and emits one TS1141 per site" {
         if (d.code == 1141 and std.mem.eql(u8, d.message, "String literal expected.")) ts1141_count += 1;
     }
     try T.expectEqual(@as(usize, 2), ts1141_count);
+}
+
+test "parser: typeof deferred import recovers trailing value expression" {
+    const source = "export type X = typeof import.defer(\"./a\").Foo;";
+    var s = try newTestSetup(source);
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1141), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
+    try T.expectEqualStrings("'(' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqualStrings("String literal expected.", s.parser.diagnostics.items[1].message);
+    try T.expectEqualStrings("')' expected.", s.parser.diagnostics.items[2].message);
+
+    const dot_pos: u32 = @intCast(std.mem.indexOf(u8, source, ".defer") orelse unreachable);
+    const open_pos: u32 = @intCast(std.mem.indexOf(u8, source, "(\"./a\")") orelse unreachable);
+    try T.expectEqual(dot_pos, s.parser.diagnostics.items[0].pos);
+    try T.expectEqual(dot_pos, s.parser.diagnostics.items[1].pos);
+    try T.expectEqual(open_pos, s.parser.diagnostics.items[2].pos);
+
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(stmts[1]));
+    const recovered = hir_mod.memberOf(&s.hir, stmts[1]);
+    try T.expectEqual(hir_mod.NodeKind.literal_string, s.hir.kindOf(recovered.object));
 }
 
 test "parser: legacy import type assertion with multiple keys reports TS1456" {
