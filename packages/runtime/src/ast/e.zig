@@ -547,9 +547,11 @@ pub const Object = struct {
         if (asProperty(self, key)) |query| {
             self.properties.ptr[query.i].value = expr;
         } else {
+            const key_expr = Expr.init(E.String, E.String.init(key), expr.loc);
             try self.properties.append(allocator, .{
-                .key = Expr.init(E.String, E.String.init(key), expr.loc),
+                .key = key_expr,
                 .value = expr,
+                .flags = ownKeyPropertyFlags(key_expr),
             });
         }
     }
@@ -565,6 +567,7 @@ pub const Object = struct {
         try self.properties.append(allocator, .{
             .key = key,
             .value = value,
+            .flags = ownKeyPropertyFlags(key),
         });
     }
 
@@ -1446,6 +1449,19 @@ pub const Import = struct {
 };
 
 pub const Class = G.Class;
+
+/// Data-file parsers (JSON/JSON5/YAML/TOML) define every key as an own
+/// property, so an own `"__proto__"` string key must be marked computed: a
+/// plain `__proto__:` key in a printed object literal sets the prototype
+/// (prototype pollution) instead of creating an own property, unlike
+/// `JSON.parse`. Emitting it as `["__proto__"]:` restores own-property
+/// semantics.
+pub fn ownKeyPropertyFlags(key: Expr) Flags.Property.Set {
+    if (key.data == .e_string and key.data.e_string.eqlComptime("__proto__")) {
+        return Flags.Property.init(.{ .is_computed = true });
+    }
+    return Flags.Property.None;
+}
 
 const string = []const u8;
 const stringZ = [:0]const u8;

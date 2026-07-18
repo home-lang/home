@@ -406,6 +406,7 @@ pub const JSON5Parser = struct {
             try properties.append(.{
                 .key = key,
                 .value = value,
+                .flags = E.ownKeyPropertyFlags(key),
             });
 
             switch (self.token.data) {

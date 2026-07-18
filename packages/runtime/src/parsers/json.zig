@@ -266,6 +266,7 @@ fn JSONLikeParser_(
                             .value = value,
                             .kind = js_ast.G.Property.Kind.normal,
                             .initializer = null,
+                            .flags = E.ownKeyPropertyFlags(key),
                         }) catch unreachable;
                     }
 
