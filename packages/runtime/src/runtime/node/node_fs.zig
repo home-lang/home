@@ -4699,10 +4699,13 @@ pub const NodeFS = struct {
                         else => {},
                     }
 
-                    const path_parts = [_]string{ root_basename, basename };
-                    return .{
-                        .err = err.withPath(bun.path.joinZBuf(buf, &path_parts, .auto)),
-                    };
+                    if (root_basename.len + 1 + basename.len + 1 < bun.MAX_PATH_BYTES) {
+                        const path_parts = [_]string{ root_basename, basename };
+                        return .{
+                            .err = err.withPath(bun.path.joinZBuf(buf, &path_parts, .auto)),
+                        };
+                    }
+                    return .{ .err = err.withPath(basename) };
                 }
                 return .{
                     .err = err.withPath(args.path.slice()),
@@ -4731,10 +4734,13 @@ pub const NodeFS = struct {
         while (switch (entry) {
             .err => |err| {
                 if (comptime !is_root) {
-                    const path_parts = [_]string{ root_basename, basename };
-                    return .{
-                        .err = err.withPath(bun.path.joinZBuf(buf, &path_parts, .auto)),
-                    };
+                    if (root_basename.len + 1 + basename.len + 1 < bun.MAX_PATH_BYTES) {
+                        const path_parts = [_]string{ root_basename, basename };
+                        return .{
+                            .err = err.withPath(bun.path.joinZBuf(buf, &path_parts, .auto)),
+                        };
+                    }
+                    return .{ .err = err.withPath(basename) };
                 }
 
                 return .{
@@ -4745,8 +4751,15 @@ pub const NodeFS = struct {
         }) |current| : (entry = iterator.next()) {
             const utf8_name = current.name.slice();
 
+            // Guard the recursive-path join: basename + '/' + name + NUL must fit
+            // in the fixed PathBuffer, or joinZBuf below writes past it (OOB). Skip
+            // an over-long entry (the OS would ENAMETOOLONG on it anyway). The root
+            // level takes the name verbatim, so there is no join to overflow.
+            const is_root_dir = async_task.root_path.sliceAssumeZ().ptr == basename.ptr;
+            if (!is_root_dir and basename.len + 1 + utf8_name.len + 1 >= bun.MAX_PATH_BYTES) continue;
+
             const name_to_copy: [:0]const u8 = brk: {
-                if (async_task.root_path.sliceAssumeZ().ptr == basename.ptr) {
+                if (is_root_dir) {
                     break :brk @ptrCast(utf8_name);
                 }
 
@@ -4913,8 +4926,14 @@ pub const NodeFS = struct {
             }) |current| : (entry = iterator.next()) {
                 const utf8_name = current.name.slice();
 
+                // Guard the join: basename + '/' + name + NUL must fit the fixed
+                // PathBuffer, or joinZBuf below writes past it (OOB). Skip an
+                // over-long entry; the root level takes the name verbatim.
+                const is_root_dir = root_basename.ptr == basename.ptr;
+                if (!is_root_dir and basename.len + 1 + utf8_name.len + 1 >= bun.MAX_PATH_BYTES) continue;
+
                 const name_to_copy = brk: {
-                    if (root_basename.ptr == basename.ptr) {
+                    if (is_root_dir) {
                         break :brk utf8_name;
                     }
 
