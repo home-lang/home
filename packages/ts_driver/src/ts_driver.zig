@@ -1399,7 +1399,17 @@ fn hasJsxFragmentSyntax(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "<>") != null;
 }
 
-fn jsxTransformEnabled(options: CompileOptions) bool {
+fn jsxTransformEnabled(source: []const u8, options: CompileOptions) bool {
+    // A `@jsx:` source directive (conformance fixtures) selects the JSX mode
+    // directly and wins over tsconfig/emit defaults, mirroring
+    // `jsxFragmentFactoryScopeRequired`. tsgo `GetJSXTransformEnabled` is
+    // true only for `react`, `react-jsx`, and `react-jsxdev`; `preserve`
+    // and `react-native` keep the syntax untransformed.
+    if (compilerOptionDirectiveValue(source, "jsx")) |mode| {
+        return std.mem.eql(u8, mode, "react") or
+            std.mem.eql(u8, mode, "react-jsx") or
+            std.mem.eql(u8, mode, "react-jsxdev");
+    }
     if (options.pub_tsconfig) |cfg| {
         if (cfg.compiler_options.jsx) |jsx| {
             return switch (jsx) {
@@ -1950,7 +1960,7 @@ pub fn compileSource(
     checker.setJsxPreserveOption(options.jsx_preserve_option);
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
     checker.setJsxFragmentFactoryContext(
-        jsxTransformEnabled(options),
+        jsxTransformEnabled(source, options),
         jsxFactoryCompilerOptionPresent(source, options),
         jsxFragmentFactoryCompilerOptionPresent(source, options),
         compilerOptionDirectiveValue(source, "jsxFragmentFactory") orelse options.emit.jsx_fragment_factory,
