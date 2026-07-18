@@ -731,6 +731,12 @@ fn NewLexer_(
                             const remainder = lexer.source.contents[lexer.current..];
                             if (remainder.len >= 4096) {
                                 lexer.current += indexOfInterestingCharacterInStringLiteral(remainder, quote) orelse {
+                                    // No interesting character in the rest of the
+                                    // input (unterminated long string): skip past
+                                    // the whole scanned remainder instead of
+                                    // advancing one codepoint and re-scanning it
+                                    // next iteration — that is O(n^2).
+                                    lexer.current += remainder.len;
                                     lexer.step();
                                     continue;
                                 };
