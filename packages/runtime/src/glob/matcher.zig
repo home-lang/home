@@ -294,7 +294,10 @@ inline fn globMatchImpl(state: *State, glob: []const u8, glob_start: u32, path: 
                 const is_match = if (cc == '/')
                     isSeparator(path[state.path_index])
                 else if (cc_len > 1)
-                    state.path_index + cc_len <= path.len and std.mem.eql(u8, path[state.path_index..][0..cc_len], glob[state.glob_index..][0..cc_len])
+                    // Bound both sides: a multibyte lead byte at the very end of
+                    // the glob claims cc_len bytes that may not be there, so the
+                    // `glob[..][0..cc_len]` slice would read out of bounds.
+                    state.path_index + cc_len <= path.len and state.glob_index + cc_len <= glob.len and std.mem.eql(u8, path[state.path_index..][0..cc_len], glob[state.glob_index..][0..cc_len])
                 else
                     path[state.path_index] == cc;
 
