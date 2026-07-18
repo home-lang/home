@@ -24,6 +24,7 @@ const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const host_fn = @import("./host_fn.zig");
 const headers_jsc = @import("../http_jsc/headers_jsc.zig");
+const vm_exports = @import("./virtual_machine_exports.zig");
 
 const node_os = @import("../runtime/node/node_os.zig");
 const node_fs_binding = @import("../runtime/node/node_fs_binding.zig");
@@ -217,6 +218,12 @@ comptime {
     // the JS binding still resolves the old H{2,3}Client symbol names.
     @export(&host_fn.toJSHostFn(headers_jsc.H2TestingAPIs.liveCounts), .{ .name = "JS2Zig___src_http_H_Client_zig__TestingAPIs_liveCounts" });
     @export(&host_fn.toJSHostFn(headers_jsc.H3TestingAPIs.quicLiveCounts), .{ .name = "JS2Zig___src_http_H_Client_zig__TestingAPIs_quicLiveCounts" });
+
+    // ---- setSyntheticAllocationLimitForTesting (bun:internal-for-testing) --
+    // Real impl in virtual_machine_exports; native_stubs noop'd it, so the OOM
+    // tests (blob-oom, fs-oom, FormData) set no limit and never hit the
+    // synthetic OOM they assert on (`.json()/.text()/.bytes() should throw`).
+    @export(&host_fn.toJSHostFn(vm_exports.Bun__setSyntheticAllocationLimitForTesting), .{ .name = "JS2Zig___src_jsc_virtual_machine_exports_zig__Bun__setSyntheticAllocationLimitForTesting" });
 
     // ---- InternalSourceMap TestingAPIs (bun:internal-for-testing) --------
     // Real exports for the VLQ round-trip / find test hooks. native_stubs had

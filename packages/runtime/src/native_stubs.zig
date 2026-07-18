@@ -140,7 +140,9 @@ comptime {
         "JS2Zig___src_jsc_bindgen_test_zig__getBindgenTestFunctions_workaround",
         "JS2Zig___src_jsc_event_loop_zig__getActiveTasks",
         "JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage",
-        "JS2Zig___src_jsc_virtual_machine_exports_zig__Bun__setSyntheticAllocationLimitForTesting",
+        // setSyntheticAllocationLimitForTesting now has its real export in
+        // js2native_workarounds.zig (the noop left the OOM tests unable to
+        // lower the limit, so they never threw the OOM they assert on).
         "JS2Zig___src_runtime_api_bun_subprocess_zig__TestingAPIs_injectStdioReadError",
         // patch TestingAPIs stay noop'd: patch.zig's makeDiff uses Zig-0.16
         // std.process.Child.init (removed in 0.17) so the impl doesn't compile.
