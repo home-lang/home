@@ -3889,12 +3889,19 @@ pub const Parser = struct {
             if (self.match(.kw_case)) {
                 value = try self.parseExpression();
             } else if (!self.match(.kw_default)) {
-                // Mirror tsc: emit TS1130 at the unexpected token and break
-                // out of the switch body without consuming it. The outer
-                // context will then see a missing `}` and chain TS1005.
-                // Matches `parserErrorRecovery_SwitchStatement2` baseline.
+                // Mirror `parseList(SwitchClauses)`: report the unexpected
+                // token, then advance to the next clause or list terminator.
+                // This lets a nested malformed declaration's `}` terminate
+                // the switch while preserving its discriminant in HIR.
                 try self.reportCodeAt(case_start.span.start, case_start.line, 1130, "'case' or 'default' expected.");
-                break;
+                while (self.peek().kind != .kw_case and
+                    self.peek().kind != .kw_default and
+                    self.peek().kind != .close_brace and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
+                }
+                continue;
             }
             _ = try self.expect(.colon, "':' after case label");
             var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -6007,15 +6014,17 @@ pub const Parser = struct {
             self.advance()
         else blk: {
             const at = self.peek();
-            try self.reportCodeAtWithMatchedPair(
-                at.span.start,
-                at.line,
-                1005,
-                "'}' expected.",
-                class_body_open.span.start,
-                "{",
-                "}",
-            );
+            if (!self.hasDiagnosticAt(1005, at.span.start)) {
+                try self.reportCodeAtWithMatchedPair(
+                    at.span.start,
+                    at.line,
+                    1005,
+                    "'}' expected.",
+                    class_body_open.span.start,
+                    "{",
+                    "}",
+                );
+            }
             break :blk at;
         };
         return try self.builder.addClass(
@@ -9643,6 +9652,19 @@ pub const Parser = struct {
         if (recovered_class_member_boundary) {
             const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else open.span.end;
             return try self.builder.addBlock(.{ .start = open.span.start, .end = end_pos }, stmts.items);
+        }
+        if (self.peek().kind == .eof) {
+            const at = self.peek();
+            try self.reportCodeAtWithMatchedPair(
+                at.span.start,
+                at.line,
+                1005,
+                "'}' expected.",
+                open.span.start,
+                "{",
+                "}",
+            );
+            return try self.builder.addBlock(.{ .start = open.span.start, .end = at.span.start }, stmts.items);
         }
         const close = try self.expectClosingMatch(.close_brace, "'}' to close block", open.span.start, "{", "}");
         // tsc: a `{...}` parsed as a statement block immediately
@@ -21160,6 +21182,33 @@ test "parser: switch with cases and default" {
     try T.expectEqual(@as(usize, 3), cases.len);
     // Default case has none_node_id value.
     try T.expectEqual(hir_mod.none_node_id, hir_mod.switchCaseOf(&s.hir, cases[2]).value);
+}
+
+test "parser: malformed switch clauses recover at the next list terminator" {
+    const src =
+        \\class C {
+        \\  constructor() {
+        \\    switch (e) {
+        \\
+        \\class D {
+        \\}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    const unexpected = findDiag(s, 1130) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "class D").?)), unexpected.pos);
+    const missing_close = findDiag(s, 1005) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, @intCast(src.len)), missing_close.pos);
+
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const constructor = hir_mod.classMembers(&s.hir, top)[0];
+    const body = hir_mod.fnDeclOf(&s.hir, constructor).body;
+    const switch_node = hir_mod.blockStmts(&s.hir, body)[0];
+    const discriminant = hir_mod.switchOf(&s.hir, switch_node).discriminant;
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(discriminant));
+    try T.expectEqualStrings("e", s.interner.get(hir_mod.identifierOf(&s.hir, discriminant).name));
 }
 
 test "parser: function declaration with parameters and body" {
