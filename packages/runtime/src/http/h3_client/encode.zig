@@ -29,13 +29,20 @@ pub fn writeRequest(session: *ClientSession, stream: *Stream, qs: *quic.Stream) 
     var authority: []const u8 = client.url.host;
     headers.items.len = 4;
     for (request.headers) |h| {
-        if (quic.Qpack.classify(h.name)) |class| switch (class) {
+        // Qpack.classify is a strict lowercase lookup (it has no getAnyCase), so
+        // the name must be lowercased first — otherwise title-case names like
+        // `Connection`/`Transfer-Encoding`/`Host` from buildRequest miss the
+        // .forbidden/.host classification and get sent verbatim. Connection-
+        // specific headers are forbidden in HTTP/3 (RFC 9114 §4.2) and make the
+        // peer reject the request (e.g. a streaming body's `Transfer-Encoding:
+        // chunked` → 400 before the handler runs).
+        const dst = lower[lower_len..][0..h.name.len];
+        _ = strings.copyLowercase(h.name, dst);
+        if (quic.Qpack.classify(dst)) |class| switch (class) {
             .forbidden => {},
             .host => authority = h.value,
             .indexed => |i| headers.appendAssumeCapacity(.init(i.name, h.value, i.index)),
         } else {
-            const dst = lower[lower_len..][0..h.name.len];
-            _ = strings.copyLowercase(h.name, dst);
             lower_len += h.name.len;
             headers.appendAssumeCapacity(.init(dst, h.value, null));
         }
