@@ -1272,6 +1272,8 @@ pub fn parse_until_after(
     return result;
 }
 
+const MAX_NESTING_DEPTH: u32 = 512;
+
 fn parse_nested_block(parser: *Parser, comptime T: type, closure: anytype, comptime parsefn: *const fn (@TypeOf(closure), *Parser) Result(T)) Result(T) {
     const block_type: BlockType = if (parser.at_start_of) |block_type| brk: {
         parser.at_start_of = null;
@@ -1288,6 +1290,18 @@ fn parse_nested_block(parser: *Parser, comptime T: type, closure: anytype, compt
         .square_bracket => Delimiters{ .close_square_bracket = true },
         .parenthesis => Delimiters{ .close_parenthesis = true },
     };
+
+    // Bound recursion: deeply nested blocks (e.g. `((((…))))` or nested
+    // `@media`) would otherwise overflow the native stack.
+    parser.input.nesting_depth += 1;
+    if (parser.input.nesting_depth > MAX_NESTING_DEPTH) {
+        parser.input.nesting_depth -= 1;
+        const err = parser.newCustomError(ParserError{ .maximum_nesting_depth = {} });
+        consume_until_end_of_block(block_type, &parser.input.tokenizer);
+        return .{ .err = err };
+    }
+    defer parser.input.nesting_depth -= 1;
+
     var nested_parser = Parser{
         .input = parser.input,
         .stop_before = closing_delimiter,
@@ -4590,6 +4604,9 @@ pub const Delimiters = packed struct(u8) {
 pub const ParserInput = struct {
     tokenizer: Tokenizer,
     cached_token: ?CachedToken = null,
+    /// Shared across every nested `Parser` (they all hold this same pointer), so
+    /// it bounds total block-nesting depth and can't be reset by re-entry.
+    nesting_depth: u32 = 0,
 
     pub fn new(allocator: Allocator, code: []const u8) ParserInput {
         return ParserInput{
