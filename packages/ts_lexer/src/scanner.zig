@@ -1292,6 +1292,26 @@ pub const Scanner = struct {
                 // file), and starts arithmetic division otherwise
                 // (after an identifier, number, `)`, `]`, etc.). We
                 // dispatch on `last_significant_kind` per ES Annex B.
+                //
+                // JSX self-closing tag: inside a `.tsx` file, `/`
+                // immediately followed by `>` after a `}` that closed
+                // a JSX attribute expression container begins `/>`,
+                // never a regex (`<Comp x={0} />` — tsc scans JSX tags
+                // on demand so it never faces this ambiguity; our
+                // pre-lexed stream would otherwise swallow `>; //…`
+                // into a bogus regex_literal and cascade into spurious
+                // TS2657 "one parent element" wraps, cf.
+                // `tsxAttributeResolution1`, `tsxFragmentErrors`).
+                if (self.jsx_context and
+                    self.last_significant_kind == .close_brace)
+                {
+                    var p = self.pos;
+                    while (p < self.source.len and
+                        (self.source[p] == ' ' or self.source[p] == '\t')) p += 1;
+                    if (p < self.source.len and self.source[p] == '>') {
+                        return self.tok(start, .slash, flags, line);
+                    }
+                }
                 if (slashStartsRegex(self.last_significant_kind)) {
                     if (self.scanRegexLiteral(gpa, start, line, flags)) |tok_| return tok_;
                     // Fall through to division if the body looks
