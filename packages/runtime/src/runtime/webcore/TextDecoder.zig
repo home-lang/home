@@ -201,6 +201,16 @@ pub fn decode(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, callframe: *j
 }
 
 pub fn decodeWithoutTypeChecks(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, uint8array: *jsc.JSUint8Array) bun.JSError!JSValue {
+    // This DOMJIT fast path skips decode()'s snapshot, so a shared or resizable
+    // backing buffer could be mutated/shrunk under the borrowed slice mid-decode
+    // (OOB / data race). Copy it first, exactly like decode().
+    if (jsc.JSValue.fromCell(uint8array).asArrayBuffer(globalThis)) |array_buffer| {
+        if (array_buffer.shared or array_buffer.resizable) {
+            const copy = try bun.default_allocator.dupe(u8, array_buffer.slice());
+            defer bun.default_allocator.free(copy);
+            return this.decodeSlice(globalThis, copy, false);
+        }
+    }
     return this.decodeSlice(globalThis, uint8array.slice(), false);
 }
 
