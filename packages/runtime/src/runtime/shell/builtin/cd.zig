@@ -31,32 +31,25 @@ pub fn start(this: *Cd) Yield {
 
     if (args.len == 1) {
         const first_arg = args[0][0..std.mem.len(args[0]) :0];
-        switch (first_arg[0]) {
-            '-' => {
-                switch (this.bltn().parentCmd().base.shell.changePrevCwd(this.bltn().parentCmd().base.interpreter)) {
-                    .result => {},
-                    .err => |err| {
-                        return this.handleChangeCwdErr(
-                            err,
-                            this.bltn().parentCmd().base.shell.prevCwdZ(),
-                        );
-                    },
-                }
-            },
-            '~' => {
-                const homedir = this.bltn().parentCmd().base.shell.getHomedir();
-                homedir.deref();
-                switch (this.bltn().parentCmd().base.shell.changeCwd(this.bltn().parentCmd().base.interpreter, homedir.slice())) {
-                    .result => {},
-                    .err => |err| return this.handleChangeCwdErr(err, homedir.slice()),
-                }
-            },
-            else => {
-                switch (this.bltn().parentCmd().base.shell.changeCwd(this.bltn().parentCmd().base.interpreter, first_arg)) {
-                    .result => {},
-                    .err => |err| return this.handleChangeCwdErr(err, first_arg),
-                }
-            },
+        // Match `-` (previous directory) exactly, not by first byte — otherwise
+        // `cd -foo` was treated as `cd -`. Tilde is handled in the expansion
+        // phase, so a `~`-prefixed arg reaching here is a literal path (no
+        // special `~` branch, matching bash/Bun).
+        if (bun.strings.eqlComptime(first_arg, "-")) {
+            switch (this.bltn().parentCmd().base.shell.changePrevCwd(this.bltn().parentCmd().base.interpreter)) {
+                .result => {},
+                .err => |err| {
+                    return this.handleChangeCwdErr(
+                        err,
+                        this.bltn().parentCmd().base.shell.prevCwdZ(),
+                    );
+                },
+            }
+        } else {
+            switch (this.bltn().parentCmd().base.shell.changeCwd(this.bltn().parentCmd().base.interpreter, first_arg)) {
+                .result => {},
+                .err => |err| return this.handleChangeCwdErr(err, first_arg),
+            }
         }
     }
 
