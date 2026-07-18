@@ -2229,7 +2229,7 @@ pub const Parser = struct {
                 try self.consumeStatementTerminator();
                 break :blk try self.builder.addBlock(.{ .start = dbg.span.start, .end = self.tokens[self.cursor - 1].span.end }, &.{});
             },
-            .kw_try => try self.parseTryStatement(),
+            .kw_try, .kw_catch, .kw_finally => try self.parseTryStatement(),
             .kw_switch => try self.parseSwitchStatement(),
             .kw_function => try self.parseFunctionDeclaration(true, false),
             .kw_async => blk: {
@@ -3772,8 +3772,15 @@ pub const Parser = struct {
     }
 
     fn parseTryStatement(self: *Parser) ParseError!NodeId {
-        const start = self.advance(); // try
-        const block = try self.parseBlockStatement();
+        const start = self.peek();
+        const has_try = self.match(.kw_try);
+        if (!has_try) {
+            try self.reportCodeAt(start.span.start, start.line, 1005, "'try' expected.");
+        }
+        const block = if (has_try)
+            try self.parseBlockStatement()
+        else
+            try self.builder.addBlock(.{ .start = start.span.start, .end = start.span.start }, &.{});
         var catch_param: NodeId = hir_mod.none_node_id;
         var catch_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_catch)) {
@@ -3782,7 +3789,16 @@ pub const Parser = struct {
                 catch_param = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                     break :blk try self.parseBindingPattern();
                 } else blk: {
-                    const name_tok = try self.expect(.identifier, "identifier in catch binding");
+                    const name_tok = if (self.peek().kind == .close_paren) missing: {
+                        const close = self.peek();
+                        try self.reportCodeAt(close.span.start, close.line, 1003, "Identifier expected.");
+                        break :missing Token{
+                            .kind = .identifier,
+                            .span = .{ .start = close.span.start, .end = close.span.start },
+                            .line = close.line,
+                            .flags = .{},
+                        };
+                    } else try self.expect(.identifier, "identifier in catch binding");
                     try self.reportInvalidStrictName(name_tok);
                     const id = try self.internToken(name_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), id);
@@ -20969,6 +20985,32 @@ test "parser: try without catch or finally reports TS1472" {
     try T.expectEqualStrings("'catch' or 'finally' expected.", d.message);
     try T.expectEqual(@as(u32, 12), d.pos);
     try T.expectEqual(@as(u32, 1), d.span_len);
+}
+
+test "parser: stray catch and finally clauses recover as try statements" {
+    var s = try newTestSetup(
+        \\function fn() {
+        \\    catch(x) { }
+        \\    finally { }
+        \\    try { };
+        \\}
+        \\function fn2() {
+        \\    finally { }
+        \\    catch (x) { }
+        \\    try { } finally { }
+        \\    finally { }
+        \\    catch (x) { }
+        \\    try { } catch () { }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const expected = [_]u32{ 1005, 1472, 1005, 1005, 1005, 1005, 1003 };
+    try T.expectEqual(expected.len, s.parser.diagnostics.items.len);
+    for (expected, s.parser.diagnostics.items) |code, d| {
+        try T.expectEqual(code, d.code);
+    }
 }
 
 test "parser: export and declare modifiers in blocks report TS1184" {
