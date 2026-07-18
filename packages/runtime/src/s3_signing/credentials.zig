@@ -248,7 +248,10 @@ pub const S3Credentials = struct {
                 const start = strings.indexOf(endpoint, "/") orelse {
                     return endpoint[0..end];
                 };
-                return endpoint[start + 1 .. end];
+                // A `/` positioned at or after the `.s3.` marker makes
+                // `start + 1 > end`, so the slice would be an invalid (panicking)
+                // range; fall back to the host prefix.
+                return if (start + 1 <= end) endpoint[start + 1 .. end] else endpoint[0..end];
             }
         } else if (strings.indexOf(endpoint, ".r2.cloudflarestorage.com")) |r2_start| {
             // check if is <BUCKET>.<ACCOUNT_ID>.r2.cloudflarestorage.com
@@ -261,7 +264,7 @@ pub const S3Credentials = struct {
             const start = strings.indexOf(endpoint, "/") orelse {
                 return endpoint[0..end];
             };
-            return endpoint[start + 1 .. end];
+            return if (start + 1 <= end) endpoint[start + 1 .. end] else endpoint[0..end];
         }
         return null;
     }
@@ -270,7 +273,9 @@ pub const S3Credentials = struct {
             if (strings.endsWith(endpoint, ".r2.cloudflarestorage.com")) return "auto";
             if (strings.indexOf(endpoint, ".amazonaws.com")) |end| {
                 if (strings.indexOf(endpoint, "s3.")) |start| {
-                    return endpoint[start + 3 .. end];
+                    // `s3.` found after `.amazonaws.com` makes `start + 3 > end`;
+                    // avoid the invalid slice and default the region.
+                    return if (start + 3 <= end) endpoint[start + 3 .. end] else "us-east-1";
                 }
             }
             // endpoint is informed but is not s3 so auto detect
