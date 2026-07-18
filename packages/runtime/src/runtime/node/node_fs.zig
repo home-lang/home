@@ -5665,7 +5665,16 @@ pub const NodeFS = struct {
         const path_slice = args.path.slice();
 
         var parts = [_]string{ FileSystem.instance.top_level_dir, path_slice };
-        const path_ = FileSystem.instance.absBuf(&parts, inbuf);
+        // Bound the join: cwd + a long user path can exceed sync_error_buf, and
+        // the unchecked absBuf would write past it (OOB). Leave one byte for the
+        // NUL and fail with ENAMETOOLONG instead.
+        const path_ = FileSystem.instance.absBufChecked(&parts, inbuf[0 .. inbuf.len - 1]) orelse {
+            return .{ .err = .{
+                .errno = @intFromEnum(bun.sys.E.NAMETOOLONG),
+                .syscall = .realpath,
+                .path = path_slice,
+            } };
+        };
         inbuf[path_.len] = 0;
         const path: [:0]u8 = inbuf[0..path_.len :0];
 
