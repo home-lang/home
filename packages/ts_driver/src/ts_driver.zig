@@ -1528,20 +1528,6 @@ fn appendJsxDirectiveDiagnostics(
     }
 
     if (jsx_mode) |mode| {
-        const classic_scope_name = classicJsxScopeName(source, options);
-        if (std.mem.eql(u8, mode, "react") and
-            directiveValue(source, "jsxFactory") == null and
-            !sourceMentionsIdentifierOutsideComments(source, classic_scope_name) and
-            !sourceHasReactJsxReference(source))
-        {
-            const msg = try std.fmt.allocPrint(
-                gpa,
-                "This JSX tag requires '{s}' to be in scope, but it could not be found.",
-                .{classic_scope_name},
-            );
-            defer gpa.free(msg);
-            try appendDriverDiagnostic(gpa, c, 0, 2874, msg);
-        }
         if (!std.mem.eql(u8, mode, "preserve") and
             !std.mem.eql(u8, mode, "react") and
             !std.mem.startsWith(u8, mode, "react-jsx") and
@@ -1551,6 +1537,21 @@ fn appendJsxDirectiveDiagnostics(
             try appendDriverDiagnostic(gpa, c, 0, 17017, "An @jsxFrag pragma is required when using an @jsx pragma with JSX fragments.");
         }
     }
+}
+
+/// True when the effective JSX mode is the classic `react` runtime.
+/// tsgo emits TS2874 per opening-like element only under `JsxEmitReact`;
+/// the checker resolves the factory scope name per element, so the
+/// driver just forwards the mode.
+fn jsxClassicRuntime(source: []const u8, options: CompileOptions) bool {
+    if (compilerOptionDirectiveValue(source, "jsx")) |mode| {
+        return std.mem.eql(u8, mode, "react");
+    }
+    if (options.pub_tsconfig) |cfg| {
+        if (cfg.compiler_options.jsx) |jsx| return jsx == .react;
+        return false;
+    }
+    return options.jsx_option_present and options.emit.jsx_runtime == .classic;
 }
 
 /// Apply tsconfig.compilerOptions to a CompileOptions. Useful when
@@ -1967,6 +1968,7 @@ pub fn compileSource(
         compilerOptionDirectiveValue(source, "jsxFragmentFactory") orelse options.emit.jsx_fragment_factory,
         jsxFragmentFactoryScopeRequired(source, options),
     );
+    checker.setJsxClassicRuntime(jsxClassicRuntime(source, options));
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setAllowJsEnabled(options.allow_js);
