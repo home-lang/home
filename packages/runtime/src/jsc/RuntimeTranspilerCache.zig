@@ -483,10 +483,11 @@ pub const RuntimeTranspilerCache = struct {
             return bun.fs.FileSystem.instance.absBufZ(parts, buf);
         }
 
-        {
-            const parts = &[_][]const u8{ bun.fs.FileSystem.RealFS.tmpdirPath(), "bun", "@t@" };
-            return bun.fs.FileSystem.instance.absBufZ(parts, buf);
-        }
+        // With neither XDG_CACHE_HOME nor HOME set, the old fallback was a
+        // predictable, world-writable `<tmpdir>/bun/@t@` directory. Another user
+        // could pre-create it and poison cached transpiler output (code
+        // execution). Disable the cache instead of using an unsafe location.
+        return "";
     }
 
     // Only do this at most once per-thread.
