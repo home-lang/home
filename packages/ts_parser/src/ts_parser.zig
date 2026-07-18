@@ -2292,7 +2292,7 @@ pub const Parser = struct {
                 // `abstract class Foo { ... }` at statement position.
                 // Other uses of `abstract` (member modifier inside a
                 // class body) are handled by the member-modifier loop.
-                if (self.peekAt(1).kind == .kw_class) {
+                if (self.abstractClassFollowsOnSameLine()) {
                     break :blk try self.parseClassDeclaration();
                 }
                 // `abstract interface/enum/namespace/module/function/var/let/const`
@@ -2693,6 +2693,11 @@ pub const Parser = struct {
         return kind == .identifier or kind == .string_literal or kind == .open_brace or kind.isContextualKeyword();
     }
 
+    fn abstractClassFollowsOnSameLine(self: *const Parser) bool {
+        const class_tok = self.peekAt(1);
+        return class_tok.kind == .kw_class and !class_tok.flags.preceded_by_newline;
+    }
+
     fn statementIsDisallowedInAmbientContext(self: *const Parser, kind: TokenKind) bool {
         _ = self;
         return switch (kind) {
@@ -2771,7 +2776,7 @@ pub const Parser = struct {
             // only applies when targeting ES2015 or later. ES5 still accepts
             // this recovery shape even though `alwaysStrict` defaults on.
             .kw_var => self.target_es2015_or_later,
-            .kw_abstract => self.peekAt(1).kind == .kw_class,
+            .kw_abstract => self.abstractClassFollowsOnSameLine(),
             else => false,
         };
     }
@@ -5024,7 +5029,7 @@ pub const Parser = struct {
         // the HIR payload so the checker can emit TS2511 on `new`.
         var is_abstract = false;
         var span_start: u32 = self.peek().span.start;
-        if (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .kw_class) {
+        if (self.peek().kind == .kw_abstract and self.abstractClassFollowsOnSameLine()) {
             _ = self.advance(); // abstract
             is_abstract = true;
         }
@@ -8456,7 +8461,7 @@ pub const Parser = struct {
                     dec_expr,
                 );
                 if (self.peek().kind == .kw_class or
-                    (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .kw_class))
+                    (self.peek().kind == .kw_abstract and self.abstractClassFollowsOnSameLine()))
                 {
                     const class_decl = try self.parseClassDeclaration();
                     try self.pending_statements.append(self.gpa, class_decl);
@@ -16892,7 +16897,7 @@ pub const Parser = struct {
             .at => {
                 _ = try self.parseDecoratorExpression();
                 if (self.peek().kind == .kw_class or
-                    (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .kw_class))
+                    (self.peek().kind == .kw_abstract and self.abstractClassFollowsOnSameLine()))
                 {
                     return try self.parseClassDeclaration();
                 }
@@ -16917,7 +16922,7 @@ pub const Parser = struct {
             },
             .kw_class => return try self.parseClassDeclaration(),
             .kw_abstract => {
-                if (self.peekAt(1).kind == .kw_class) return try self.parseClassDeclaration();
+                if (self.abstractClassFollowsOnSameLine()) return try self.parseClassDeclaration();
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -19448,6 +19453,28 @@ test "parser: virtual ts section overrides declaration-file ambient default" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1183);
     }
+}
+
+test "parser: abstract class modifier cannot cross a line break" {
+    var s = try newTestSetup(
+        \\abstract class A {}
+        \\abstract
+        \\class B {}
+        \\abstract
+        \\
+        \\class C {}
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 5), stmts.len);
+    try T.expect(hir_mod.classOf(&s.hir, stmts[0]).is_abstract);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[1]));
+    try T.expect(!hir_mod.classOf(&s.hir, stmts[2]).is_abstract);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[3]));
+    try T.expect(!hir_mod.classOf(&s.hir, stmts[4]).is_abstract);
 }
 
 test "parser: abstract constructor inside abstract class reports TS1242" {
