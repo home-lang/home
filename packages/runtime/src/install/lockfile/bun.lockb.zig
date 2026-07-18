@@ -499,6 +499,16 @@ pub fn load(
                     std.ArrayListUnmanaged(PatchedDep),
                 );
 
+                // readArray reinterprets untrusted lockfile bytes as PatchedDep,
+                // whose `patchfile_hash_is_null` is a bool — reading any byte
+                // other than 0/1 as a bool is illegal behavior. Validate the raw
+                // flag byte before any code accesses the field.
+                for (patched_dependencies_paths.items) |*patch_path| {
+                    if (std.mem.asBytes(patch_path)[@offsetOf(PatchedDep, "patchfile_hash_is_null")] > 1) {
+                        return error.CorruptLockfile;
+                    }
+                }
+
                 for (patched_dependencies_name_and_version_hashes.items, patched_dependencies_paths.items) |name_hash, patch_path| {
                     map.putAssumeCapacity(name_hash, patch_path);
                 }
