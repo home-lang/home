@@ -17981,6 +17981,25 @@ pub const Parser = struct {
                         last_child_end = self.hir.spanOf(node).end;
                         continue;
                     }
+                    // tsgo `parseJsxExpression` recovery: a `<` inside a JSX
+                    // child expression only re-enters JSX parsing when the
+                    // next token is an identifier/keyword/`>`; when the
+                    // element's own closing tag (`</…`) shows up where an
+                    // expression was expected, tsgo reports TS1109
+                    // "Expression expected." at the `<` and recovers with a
+                    // missing expression so `</…>` still closes the element
+                    // (upstream `tsxErrorRecovery1/2/3`). Home previously
+                    // re-entered JSX parsing and emitted "expected JSX tag
+                    // name" at the `/`, losing the element (and its TS7026
+                    // pair) entirely.
+                    if (self.peek().kind == .less_than and self.peekAt(1).kind == .slash) {
+                        const bad = self.peek();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                        const node = try self.builder.addJsxExpression(.{ .start = t.span.start, .end = bad.span.start }, hir_mod.none_node_id);
+                        try out.append(self.gpa, node);
+                        last_child_end = bad.span.start;
+                        continue;
+                    }
                     const expr = if (self.match(.dot_dot_dot)) blk: {
                         const dot_tok = self.tokens[self.cursor - 1];
                         const inner = try self.parseAssignmentExpression();
