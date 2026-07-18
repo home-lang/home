@@ -1217,6 +1217,19 @@ pub const internal = struct {
                 return bun.hash(name);
             }
 
+            /// Cache-lookup equality: same hash AND same hostname bytes.
+            /// bun.hash (fixed-seed wyhash) is not collision resistant, so the
+            /// hash is only a fast reject — matching on it alone would let an
+            /// offline-findable colliding hostname resolve to another host's
+            /// cached DNS result (cache poisoning).
+            pub fn matches(this: *const @This(), other: *const @This()) bool {
+                if (this.hash != other.hash) return false;
+                if (this.host) |a| {
+                    return if (other.host) |b| std.mem.eql(u8, a, b) else false;
+                }
+                return other.host == null;
+            }
+
             pub fn toOwned(this: @This()) @This() {
                 if (this.host) |host| {
                     const host_copy = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, host));
@@ -1321,7 +1334,7 @@ pub const internal = struct {
             var i: usize = 0;
             while (i < len) {
                 var entry = this.cache[i];
-                if (entry.key.hash == key.hash and entry.valid) {
+                if (entry.key.matches(&key) and entry.valid) {
                     if (entry.isExpired(timestamp_to_store)) {
                         log("get: expired entry", .{});
                         if (entry.refcount == 0) {
