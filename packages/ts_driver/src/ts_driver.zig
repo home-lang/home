@@ -1956,6 +1956,7 @@ pub fn compileSource(
         break;
     }
     checker.setHasParseDiagnostics(has_syntactic_parse_diagnostics);
+    checker.setJsxCommaRecoverySpans(parser.jsx_comma_recovery_spans.items);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setJsxPreserveOption(options.jsx_preserve_option);
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
