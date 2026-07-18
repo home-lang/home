@@ -8355,6 +8355,13 @@ pub const Parser = struct {
             self.top_level_module_syntax_indicator = true;
             self.top_level_export_indicator = true;
         }
+        if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
+            self.tokenTextEquals(self.peek(), "defer") and
+            self.peekAt(1).kind == .asterisk)
+        {
+            try self.reportCodeAt(start.span.start, start.line, 1128, "Declaration or statement expected.");
+            return try self.parseExpressionStatement();
+        }
         if ((self.peek().kind == .kw_module and self.peekAt(1).kind == .string_literal) or
             (self.peek().kind == .kw_declare and self.peekAt(1).kind == .kw_module and self.peekAt(2).kind == .string_literal))
         {
@@ -9779,6 +9786,16 @@ pub const Parser = struct {
             // recovery. Its missing-semicolon diagnostic was already emitted
             // at `ns`; leave `from` for the next statement so it remains a
             // checked identifier after the recovery-owned TS1434.
+            var has_unexpected_from = false;
+            for (self.diagnostics.items) |d| {
+                if (d.code == 1434 and d.pos == t.span.start) {
+                    has_unexpected_from = true;
+                    break;
+                }
+            }
+            if (!has_unexpected_from) {
+                try self.reportCodeAt(t.span.start, t.line, 1434, "Unexpected keyword or identifier.");
+            }
             return;
         }
         if (t.kind == .string_literal and
@@ -22164,6 +22181,21 @@ test "parser: malformed named imports recover like es6ImportNamedImportParsingEr
     try T.expectEqual(@as(usize, 2), line3_1128_count);
     try T.expect(saw_missing_from);
     try T.expect(saw_1141);
+}
+
+test "parser: export defer namespace form recovers as ordinary statements" {
+    var s = try newTestSetup("export defer * as ns from \"a\";");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const expected = [_]u32{ 1128, 1005, 1434 };
+    try T.expectEqual(expected.len, s.parser.diagnostics.items.len);
+    for (expected, s.parser.diagnostics.items) |code, d| {
+        try T.expectEqual(code, d.code);
+    }
+    for (hir_mod.blockStmts(&s.hir, root)) |stmt| {
+        try T.expect(s.hir.kindOf(stmt) != .export_decl);
+    }
 }
 
 test "parser: deferred import with named bindings parses cleanly (TS18059 is a checker grammar error)" {
