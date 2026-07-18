@@ -10,7 +10,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 
 pub const default_root = "packages/runtime/test/bun-corpus";
-pub const expected_copied_bun_test_files = 4718;
+pub const expected_copied_bun_test_files = 4708;
 
 pub const Counts = struct {
     files: usize = 0,
@@ -249,4 +249,45 @@ test "Bun corpus collector includes every upstream test file" {
             try std.testing.expect(found);
         }
     }
+}
+
+test "Bun corpus collector matches local Bun checkout when present" {
+    const upstream_root = localBunTestRoot(std.testing.allocator) catch |err| switch (err) {
+        error.SkipZigTest => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(upstream_root);
+
+    const upstream_files = collectTestFiles(std.testing.io, std.testing.allocator, upstream_root) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        error.NotDir => return error.SkipZigTest,
+        else => return err,
+    };
+    defer freeTestFiles(std.testing.allocator, upstream_files);
+
+    const copied_files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
+    defer freeTestFiles(std.testing.allocator, copied_files);
+
+    if (upstream_files.len != copied_files.len) {
+        std.debug.print("local Bun checkout test count={d}, copied Home corpus test count={d}\n", .{ upstream_files.len, copied_files.len });
+    }
+    try std.testing.expectEqual(upstream_files.len, copied_files.len);
+
+    for (upstream_files, 0..) |upstream_file, index| {
+        if (!std.mem.eql(u8, upstream_file, copied_files[index])) {
+            std.debug.print(
+                "local Bun checkout corpus mismatch at index {d}: upstream={s}, copied={s}\n",
+                .{ index, upstream_file, copied_files[index] },
+            );
+        }
+        try std.testing.expectEqualStrings(upstream_file, copied_files[index]);
+    }
+}
+
+fn localBunTestRoot(allocator: std.mem.Allocator) ![]const u8 {
+    if (std.c.getenv("BUN_REPO")) |raw| {
+        return std.fs.path.join(allocator, &.{ std.mem.span(raw), "test" });
+    }
+    const home = std.c.getenv("HOME") orelse return error.SkipZigTest;
+    return std.fs.path.join(allocator, &.{ std.mem.span(home), "Code", "bun", "test" });
 }
