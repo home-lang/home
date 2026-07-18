@@ -160,6 +160,10 @@ pub fn check(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
             .subnet => |*s| {
                 if (address.as_v4()) |ip_addr| if (s.network.as_v4()) |subnet_addr| {
                     if (s.prefix == 32) if (ip_addr == subnet_addr) (return .true) else continue;
+                    // A /0 subnet matches every address. Guard it before the mask:
+                    // `1 << 32` / a shift by the full width is illegal (panics in
+                    // safe builds), so prefix 0 must not reach the shift below.
+                    if (s.prefix == 0) return .true;
                     const one: u32 = 1;
                     const mask_addr = ((one << @intCast(s.prefix)) - 1) << @intCast(32 - s.prefix);
                     const ip_net: u32 = @byteSwap(ip_addr) & mask_addr;
@@ -170,6 +174,9 @@ pub fn check(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
                     const ip_addr: u128 = @bitCast(address.sin6.addr);
                     const subnet_addr: u128 = @bitCast(s.network.sin6.addr);
                     if (s.prefix == 128) if (ip_addr == subnet_addr) (return .true) else continue;
+                    // A /0 subnet matches every address; guard before the mask so
+                    // a shift by the full 128 bits can't panic.
+                    if (s.prefix == 0) return .true;
                     const one: u128 = 1;
                     const mask_addr = ((one << @intCast(s.prefix)) - 1) << @intCast(128 - s.prefix);
                     const ip_net: u128 = @byteSwap(ip_addr) & mask_addr;
