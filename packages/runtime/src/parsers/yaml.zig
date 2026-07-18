@@ -1009,7 +1009,13 @@ pub fn Parser(comptime enc: Encoding) type {
             }
 
             pub fn append(self: *MappingProps, prop: G.Property) OOM!void {
-                try self._list.append(prop);
+                var p = prop;
+                // Mark an own `__proto__` key computed so importing YAML doesn't
+                // set the object's prototype (prototype pollution).
+                if (p.key) |k| {
+                    p.flags = E.ownKeyPropertyFlags(k);
+                }
+                try self._list.append(p);
             }
 
             pub fn appendMaybeMerge(self: *MappingProps, key: Expr, value: Expr) OOM!void {
@@ -1017,7 +1023,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     .e_string => |key_str| !key_str.eqlComptime("<<"),
                     else => true,
                 }) {
-                    return self._list.append(.{ .key = key, .value = value });
+                    return self._list.append(.{ .key = key, .value = value, .flags = E.ownKeyPropertyFlags(key) });
                 }
 
                 return switch (value.data) {
@@ -1033,7 +1039,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         }
                     },
 
-                    else => self._list.append(.{ .key = key, .value = value }),
+                    else => self._list.append(.{ .key = key, .value = value, .flags = E.ownKeyPropertyFlags(key) }),
                 };
             }
 

@@ -622,6 +622,7 @@ pub const Object = struct {
         try self.properties.append(allocator, .{
             .key = rope.head,
             .value = value_,
+            .flags = ownKeyPropertyFlags(rope.head),
         });
     }
 
@@ -663,6 +664,7 @@ pub const Object = struct {
             try self.properties.append(allocator, .{
                 .key = rope.head,
                 .value = obj,
+                .flags = ownKeyPropertyFlags(rope.head),
             });
             return out;
         }
@@ -671,6 +673,7 @@ pub const Object = struct {
         try self.properties.append(allocator, .{
             .key = rope.head,
             .value = out,
+            .flags = ownKeyPropertyFlags(rope.head),
         });
         return out;
     }
@@ -712,6 +715,7 @@ pub const Object = struct {
             try self.properties.append(allocator, .{
                 .key = rope.head,
                 .value = obj,
+                .flags = ownKeyPropertyFlags(rope.head),
             });
             return out;
         }
@@ -720,6 +724,7 @@ pub const Object = struct {
         try self.properties.append(allocator, .{
             .key = rope.head,
             .value = out,
+            .flags = ownKeyPropertyFlags(rope.head),
         });
         return out;
     }
