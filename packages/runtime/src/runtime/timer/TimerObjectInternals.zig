@@ -517,6 +517,12 @@ pub fn deinit(this: *TimerObjectInternals) void {
             if (allocated_bytes - used_bytes > 256 * 1024) {
                 map.shrinkAndFree(bun.default_allocator, map.count() + 8);
             }
+        } else if (kind == .setInterval) {
+            // A setTimeout promoted to setInterval by convertToInterval() keeps
+            // the entry minted by toPrimitive in the setTimeout map (the kind
+            // flipped without moving it). Remove it there too, or removeTimerById
+            // would hand out a dangling *EventLoopTimer after this is freed.
+            _ = vm.timer.maps.get(.setTimeout).orderedRemove(this.id);
         }
     }
 
