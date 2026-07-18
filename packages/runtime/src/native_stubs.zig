@@ -138,7 +138,7 @@ comptime {
         "JS2Zig___src_install_npm_zig__PackageManifest_bindings_generate_workaround",
         "JS2Zig___src_jsc_Counters_zig__createCountersObject",
         "JS2Zig___src_jsc_bindgen_test_zig__getBindgenTestFunctions_workaround",
-        "JS2Zig___src_jsc_event_loop_zig__getActiveTasks",
+        // event_loop getActiveTasks now has its real export in js2native_workarounds.zig.
         "JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage",
         // setSyntheticAllocationLimitForTesting now has its real export in
         // js2native_workarounds.zig (the noop left the OOM tests unable to
@@ -154,7 +154,7 @@ comptime {
         // shell TestingAPIs (shellLex/shellParse/disabledOnThisPlatform) now
         // have real exports in jsc/js2native_workarounds.zig — the noops made
         // lex.test.ts / parse.test.ts skip (garbage return from the hooks).
-        "JS2Zig___src_runtime_webcore_FileSink_zig__TestingAPIs_fileSinkLiveCount",
+        // FileSink fileSinkLiveCount now has its real export in js2native_workarounds.zig.
         // InternalSourceMap fromVLQ/toVLQ/find now have real exports in
         // jsc/js2native_workarounds.zig (the noops returned garbage — byteLength
         // / generatedLine came back undefined in the roundtrip test).
