@@ -865,7 +865,10 @@ pub const ShellRmTask = struct {
             return Maybe(void).initErr(Syscall.Error.fromCode(bun.sys.E.ISDIR, .TODO).withPath(bun.handleOom(bun.dupeZ(bun.default_allocator, u8, dir_task.path))));
         }
 
-        const flags = bun.O.DIRECTORY | bun.O.RDONLY;
+        // The entry was classified as a directory before this open. NOFOLLOW
+        // stops a symlink swapped in between classification and open from
+        // redirecting the recursive delete into an unrelated tree (TOCTOU).
+        const flags = bun.O.DIRECTORY | bun.O.RDONLY | bun.O.NOFOLLOW;
         const fd = switch (ShellSyscall.openat(dirfd, path, flags, 0)) {
             .result => |fd| fd,
             .err => |e| {
