@@ -12503,9 +12503,6 @@ pub const Parser = struct {
         const value_type: NodeId = if (self.match(.colon)) blk: {
             break :blk try self.parseTypeAnnotation();
         } else blk: {
-            if (key_type_valid and !has_multiple_parameters) {
-                try self.reportCodeAt(start_tok.span.start, start_tok.line, 1021, "An index signature must have a type annotation.");
-            }
             break :blk hir_mod.none_node_id;
         };
         if (!self.match(.semicolon) and !self.match(.comma)) {
@@ -12515,7 +12512,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(prev.span.end + 1, prev.line, 1005, "';' expected.");
             }
         }
-        if (has_multiple_parameters or value_type == hir_mod.none_node_id) {
+        if (has_multiple_parameters or (value_type == hir_mod.none_node_id and !key_type_valid)) {
             return true;
         }
         // Even when the key type is invalid (TS1268 already reported),
@@ -27145,9 +27142,11 @@ test "parser: malformed interface index signatures use upstream recovery diagnos
 
     var missing_value = try newTestSetup("interface I {\n  [a:string]\n}");
     defer destroyTestSetup(missing_value);
-    _ = try missing_value.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 1), missing_value.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 1021), missing_value.parser.diagnostics.items[0].code);
+    const missing_root = try missing_value.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), missing_value.parser.diagnostics.items.len);
+    const missing_iface = hir_mod.blockStmts(&missing_value.hir, missing_root)[0];
+    const missing_index = hir_mod.interfaceMembers(&missing_value.hir, missing_iface)[0];
+    try T.expectEqual(hir_mod.none_node_id, hir_mod.indexSignatureOf(&missing_value.hir, missing_index).value_type);
 
     var invalid_key = try newTestSetup("interface I {\n  [a:boolean]\n}");
     defer destroyTestSetup(invalid_key);
