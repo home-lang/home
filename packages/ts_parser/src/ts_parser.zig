@@ -135,6 +135,13 @@ pub const Parser = struct {
     /// know `\` (and other stray glyphs) actually belonged to a regex
     /// body. Mirrors tsc's `reScanSlashToken` flow.
     regex_rescan_spans: std.ArrayListUnmanaged(Span),
+    /// Spans (first-element start → last-sibling end) of TS2657
+    /// "JSX expressions must have one parent element" recoveries, where
+    /// adjacent JSX elements were wrapped in a synthetic comma
+    /// BinaryExpression. Mirrors tsgo's `isInDiag2657` check: the
+    /// checker skips TS2695 ("Left side of comma operator is unused")
+    /// for comma left operands starting inside one of these spans.
+    jsx_comma_recovery_spans: std.ArrayListUnmanaged(Span),
     /// Active label scope stack. Each entry records the labeled
     /// statement's name plus the `function_depth` at the labeled
     /// declaration site, so `break LBL` / `continue LBL` can detect
@@ -294,6 +301,7 @@ pub const Parser = struct {
             .pending_statements = .empty,
             .for_init_extras = .empty,
             .regex_rescan_spans = .empty,
+            .jsx_comma_recovery_spans = .empty,
             .label_stack = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
@@ -372,6 +380,7 @@ pub const Parser = struct {
         self.pending_statements.deinit(self.gpa);
         self.for_init_extras.deinit(self.gpa);
         self.regex_rescan_spans.deinit(self.gpa);
+        self.jsx_comma_recovery_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
         self.pending_outside_private_brand_diag_indices.deinit(self.gpa);
@@ -17426,16 +17435,24 @@ pub const Parser = struct {
     // The parser diagnoses these and continues.
 
     fn parseJsx(self: *Parser) ParseError!NodeId {
-        const node = try self.parseJsxElementOrFragment();
-        if (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
-            const node_span = self.hir.spanOf(node);
-            try self.reportCodeAt(node_span.start, self.lineForPos(node_span.start), 2657, "JSX expressions must have one parent element.");
-            while (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
-                _ = self.parseJsxElementOrFragment() catch |err| switch (err) {
-                    error.UnexpectedToken => return node,
-                    else => return err,
-                };
-            }
+        var node = try self.parseJsxElementOrFragment();
+        while (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
+            // tsgo wraps adjacent JSX elements in expression position in a
+            // synthetic comma BinaryExpression so EVERY sibling stays in the
+            // AST and still gets checked (each yields its own open/close
+            // TS7026 pair); the TS2657 span runs from the first element's
+            // start through the invalid sibling's end. Home used to parse
+            // and drop the siblings, losing their checker diagnostics
+            // entirely (upstream `tsxErrorRecovery2`).
+            const first_span = self.hir.spanOf(node);
+            const sib = self.parseJsxElementOrFragment() catch |err| switch (err) {
+                error.UnexpectedToken => return node,
+                else => return err,
+            };
+            const sib_span = self.hir.spanOf(sib);
+            try self.reportCodeAtWithSpan(first_span.start, self.lineForPos(first_span.start), sib_span.end - first_span.start, 2657, "JSX expressions must have one parent element.");
+            try self.jsx_comma_recovery_spans.append(self.gpa, .{ .start = first_span.start, .end = sib_span.end });
+            node = try self.builder.addBinaryOp(.{ .start = first_span.start, .end = sib_span.end }, .comma, node, sib);
         }
         return node;
     }
@@ -24563,7 +24580,14 @@ test "parser: adjacent JSX roots report TS2657" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
-    try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(init_node));
+    // tsgo wraps adjacent JSX roots in a synthetic comma BinaryExpression
+    // so BOTH elements stay in the AST for the checker; the comma's lhs
+    // is the first element and its rhs the sibling.
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(init_node));
+    const comma = hir_mod.binopOf(&s.hir, init_node);
+    try T.expectEqual(hir_mod.BinOp.comma, comma.op);
+    try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(comma.lhs));
+    try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(comma.rhs));
 
     var count: usize = 0;
     for (s.parser.diagnostics.items) |d| {
