@@ -24,11 +24,21 @@ pub fn SSLWrapper(comptime T: type) type {
         // in reads we loop until we have no more data to read and in writes we loop until we have no more data to write/backpressure
         const BUFFER_SIZE = 65536;
 
+        // CVE-2011-1473: cap peer-initiated TLS renegotiations so a malicious
+        // server can't flood a client with HelloRequests and burn CPU. Matches
+        // Node's tls.CLIENT_RENEG_LIMIT / CLIENT_RENEG_WINDOW defaults. (The
+        // server side already refuses renegotiation via ssl_renegotiate_never.)
+        const CLIENT_RENEG_LIMIT = 3;
+        const CLIENT_RENEG_WINDOW_MS = 10 * 60 * 1000;
+
         handlers: Handlers,
         ssl: ?*BoringSSL.SSL,
         ctx: ?*BoringSSL.SSL_CTX,
 
         flags: Flags = .{},
+
+        renegotiation_count: u32 = 0,
+        renegotiation_window_start_ms: i64 = 0,
 
         pub const Flags = packed struct(u8) {
             handshake_state: HandshakeState = HandshakeState.HANDSHAKE_PENDING,
@@ -426,6 +436,22 @@ pub fn SSLWrapper(comptime T: type) type {
 
                     if (err != BoringSSL.SSL_ERROR_WANT_READ and err != BoringSSL.SSL_ERROR_WANT_WRITE) {
                         if (err == BoringSSL.SSL_ERROR_WANT_RENEGOTIATE) {
+                            // Rate-limit peer-initiated renegotiations within a
+                            // sliding window; too many is a flood (CVE-2011-1473)
+                            // — tear the connection down instead of renegotiating.
+                            const now_ms: i64 = @intCast(bun.timespec.now(.force_real_time).ms());
+                            if (now_ms -% this.renegotiation_window_start_ms > CLIENT_RENEG_WINDOW_MS) {
+                                this.renegotiation_window_start_ms = now_ms;
+                                this.renegotiation_count = 0;
+                            }
+                            this.renegotiation_count += 1;
+                            if (this.renegotiation_count > CLIENT_RENEG_LIMIT) {
+                                this.flags.fatal_error = true;
+                                this.flags.handshake_state = HandshakeState.HANDSHAKE_COMPLETED;
+                                this.triggerHandshakeCallback(false, this.getVerifyError());
+                                this.triggerCloseCallback();
+                                return false;
+                            }
                             this.flags.handshake_state = HandshakeState.HANDSHAKE_RENEGOTIATION_PENDING;
                             if (BoringSSL.SSL_renegotiate(ssl) == 0) {
                                 this.flags.handshake_state = HandshakeState.HANDSHAKE_COMPLETED;
