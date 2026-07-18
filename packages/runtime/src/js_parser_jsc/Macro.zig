@@ -418,13 +418,17 @@ pub const Runner = struct {
                     while (try object_iter.next()) |prop| {
                         const object_value = try this.run(object_iter.value);
 
+                        const key = Expr.init(
+                            E.String,
+                            E.String.init(prop.toOwnedSlice(this.allocator) catch unreachable),
+                            this.caller.loc,
+                        );
                         properties.append(this.allocator, G.Property{
-                            .key = Expr.init(
-                                E.String,
-                                E.String.init(prop.toOwnedSlice(this.allocator) catch unreachable),
-                                this.caller.loc,
-                            ),
+                            .key = key,
                             .value = object_value,
+                            // A macro returning a `__proto__` key must emit it as
+                            // an own property, not a prototype assignment.
+                            .flags = E.ownKeyPropertyFlags(key),
                         }) catch |err| bun.handleOom(err);
                     }
 
