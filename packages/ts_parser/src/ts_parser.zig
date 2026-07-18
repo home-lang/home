@@ -176,6 +176,7 @@ pub const Parser = struct {
     /// case clause clears the flag.
     in_switch_case_clause: bool,
     namespace_depth: u32,
+    dotted_ambient_namespace_depth: u32,
     module_augmentation_depth: u32,
     /// True while parsing the body of an ambient external module — a
     /// namespace/module declared with a string-literal name
@@ -307,6 +308,7 @@ pub const Parser = struct {
             .outer_loop_or_switch_active = false,
             .in_switch_case_clause = false,
             .namespace_depth = 0,
+            .dotted_ambient_namespace_depth = 0,
             .module_augmentation_depth = 0,
             .in_string_named_module = false,
             .strict_mode = false,
@@ -2390,7 +2392,10 @@ pub const Parser = struct {
             },
             .kw_enum => try self.parseEnumDeclaration(),
             .kw_namespace => blk: {
-                if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
+                const name = self.peekAt(1);
+                if (name.flags.preceded_by_newline or !tokenCanStartNamespaceDeclarationName(name.kind)) {
+                    break :blk try self.parseExpressionStatement();
+                }
                 break :blk try self.parseNamespaceDeclaration();
             },
             .kw_module => blk: {
@@ -2401,7 +2406,7 @@ pub const Parser = struct {
                     if (self.peek().kind != .open_brace) try self.consumeStatementTerminator();
                     break :blk expr;
                 }
-                if (self.peekAt(1).kind != .identifier and self.peekAt(1).kind != .string_literal) {
+                if (!tokenCanStartNamespaceDeclarationName(self.peekAt(1).kind)) {
                     break :blk try self.parseExpressionStatement();
                 }
                 break :blk try self.parseNamespaceDeclaration();
@@ -2416,6 +2421,12 @@ pub const Parser = struct {
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 1443, "Module declaration names may only use ' or \" quoted strings.");
                     const name_id = try self.internToken(declare_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(declare_tok), name_id);
+                }
+                if ((self.peekAt(1).kind == .kw_namespace or self.peekAt(1).kind == .kw_module) and
+                    (self.peekAt(2).flags.preceded_by_newline or
+                        !tokenCanStartNamespaceDeclarationName(self.peekAt(2).kind)))
+                {
+                    break :blk try self.parseExpressionStatement();
                 }
                 // `declare` is a contextual keyword. When the next
                 // token can start a tagged template, function call,
@@ -2455,8 +2466,9 @@ pub const Parser = struct {
                 // `namespace_depth > 0` for the .d.ts branch.
                 // Mirrors upstream tsc on
                 // `parserModuleDeclaration4.d.ts(2,3)`.
-                if (self.ambient_depth > 0 or
-                    (self.namespace_depth > 0 and self.isAmbientContextAt(declare_tok.span.start)))
+                if (self.dotted_ambient_namespace_depth == 0 and
+                    (self.ambient_depth > 0 or
+                        (self.namespace_depth > 0 and self.isAmbientContextAt(declare_tok.span.start))))
                 {
                     try self.reportCodeAt(declare_tok.span.start, declare_tok.line, 1038, "A 'declare' modifier cannot be used in an already ambient context.");
                 }
@@ -2675,6 +2687,10 @@ pub const Parser = struct {
             => false,
             else => true,
         };
+    }
+
+    fn tokenCanStartNamespaceDeclarationName(kind: TokenKind) bool {
+        return kind == .identifier or kind == .string_literal or kind == .open_brace or kind.isContextualKeyword();
     }
 
     fn statementIsDisallowedInAmbientContext(self: *const Parser, kind: TokenKind) bool {
@@ -7509,7 +7525,9 @@ pub const Parser = struct {
             try self.reportCodeAt(name_tok.span.start, name_tok.line, 2435, "Ambient modules cannot be nested in other modules or namespaces.");
         }
         var name_end = name_tok.span.end;
+        var is_dotted = false;
         while (self.peek().kind == .dot) {
+            is_dotted = true;
             _ = self.advance();
             const part = try self.expectIdentifierLike();
             name_end = part.span.end;
@@ -7535,6 +7553,11 @@ pub const Parser = struct {
         const is_known_module_augmentation = self.namespaceDeclarationIsKnownExternalModuleAugmentation(name_tok, old_in_string_named_module);
         self.namespace_depth += 1;
         defer self.namespace_depth -= 1;
+        const allows_nested_declare = has_declare_modifier and is_dotted;
+        if (allows_nested_declare) self.dotted_ambient_namespace_depth += 1;
+        defer if (allows_nested_declare) {
+            self.dotted_ambient_namespace_depth -= 1;
+        };
         if (is_known_module_augmentation) self.module_augmentation_depth += 1;
         defer {
             if (is_known_module_augmentation) self.module_augmentation_depth -= 1;
@@ -9648,6 +9671,21 @@ pub const Parser = struct {
             return recovered;
         }
         const expr = try self.parseExpression();
+        if (self.hir.kindOf(expr) == .identifier and self.cursor > 0) {
+            const expr_tok = self.tokens[self.cursor - 1];
+            if (!self.peek().flags.preceded_by_newline and self.tokenTextEquals(expr_tok, "declare")) {
+                return expr;
+            }
+            if (!self.peek().flags.preceded_by_newline and
+                (self.tokenTextEquals(expr_tok, "namespace") or self.tokenTextEquals(expr_tok, "module")) and
+                !tokenCanStartNamespaceDeclarationName(self.peek().kind))
+            {
+                const invalid_name = self.advance();
+                const name_text = self.source[invalid_name.span.start..invalid_name.span.end];
+                const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Namespace name cannot be '{s}'.", .{name_text});
+                try self.reportCodeAt(invalid_name.span.start, invalid_name.line, 2819, msg);
+            }
+        }
         try self.consumeStatementTerminator();
         return expr;
     }
@@ -22453,6 +22491,44 @@ test "parser: namespace reserved names report TS2819" {
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 2819) orelse return error.TestExpectedEqual;
     try T.expectEqualStrings("Namespace name cannot be 'namespace'.", d.message);
+}
+
+test "parser: leading reserved namespace name recovers as value statements" {
+    const src =
+        \\declare namespace chrome.debugger {
+        \\    declare var tabId: number;
+        \\}
+        \\declare namespace debugger {}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2819), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, @intCast(std.mem.lastIndexOf(u8, src, "debugger").?)), s.parser.diagnostics.items[0].pos);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, @intCast(std.mem.lastIndexOf(u8, src, "{}").?)), s.parser.diagnostics.items[1].pos);
+
+    var saw_declare = false;
+    var saw_namespace = false;
+    for (hir_mod.blockStmts(&s.hir, root)) |stmt| {
+        if (s.hir.kindOf(stmt) != .identifier) continue;
+        const name = s.interner.get(hir_mod.identifierOf(&s.hir, stmt).name);
+        saw_declare = saw_declare or std.mem.eql(u8, name, "declare");
+        saw_namespace = saw_namespace or std.mem.eql(u8, name, "namespace");
+    }
+    try T.expect(saw_declare);
+    try T.expect(saw_namespace);
+}
+
+test "parser: template module name retains TS1443 recovery" {
+    var s = try newTestSetup("declare module `M1` {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1443) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Module declaration names may only use ' or \" quoted strings.", d.message);
 }
 
 test "parser: malformed import attribute key reports TS1478" {
