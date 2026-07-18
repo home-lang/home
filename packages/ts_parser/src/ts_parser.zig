@@ -2580,6 +2580,18 @@ pub const Parser = struct {
                 }
                 break :blk try self.parseExpressionStatement();
             },
+            .kw_default => blk: {
+                const default_tok = self.advance();
+                if (self.block_depth == 0 and self.namespace_depth == 0) {
+                    try self.reportCodeAt(default_tok.span.start, default_tok.line, 1005, "'export' expected.");
+                } else {
+                    try self.reportCodeAt(default_tok.span.start, default_tok.line, 1128, "Declaration or statement expected.");
+                }
+                if (self.peek().kind == .eof) {
+                    break :blk try self.builder.addBlock(tokenSpan(default_tok), &.{});
+                }
+                break :blk try self.parseStatement();
+            },
             .string_literal => blk: {
                 const is_strict = self.isUseStrictDirective(t);
                 const stmt = try self.parseExpressionStatement();
@@ -7675,8 +7687,13 @@ pub const Parser = struct {
         const import_equals_star_recovery = is_type_only and
             (self.peek().kind == .identifier or self.peek().kind == .kw_await or self.peek().kind.isContextualKeyword()) and
             self.peekAt(1).kind == .asterisk;
+        const import_equals_missing_before_declaration = !is_deferred and
+            (self.peek().kind == .identifier or self.peek().kind == .kw_await or self.peek().kind.isContextualKeyword()) and
+            self.peekAt(1).kind != .comma and
+            self.peekAt(1).kind != .kw_from and
+            tokenStartsDeclarationStatementAfterVariableList(self.peekAt(1).kind);
         if ((self.peek().kind == .identifier or self.peek().kind == .kw_await or self.peek().kind.isContextualKeyword()) and
-            (self.peekAt(1).kind == .equal or import_equals_star_recovery))
+            (self.peekAt(1).kind == .equal or import_equals_star_recovery or import_equals_missing_before_declaration))
         {
             const alias_tok = self.peek();
             const has_equals = self.peekAt(1).kind == .equal;
@@ -7700,8 +7717,21 @@ pub const Parser = struct {
             const alias_node = try self.builder.addIdentifier(tokenSpan(alias_tok), alias_id);
             _ = self.advance(); // local alias
             if (!has_equals) {
+                const missing_equal_at = self.peek();
+                try self.reportCodeAt(missing_equal_at.span.start, missing_equal_at.line, 1005, "'=' expected.");
+                if (import_equals_missing_before_declaration) {
+                    const empty_module = self.interner.intern("") catch return error.OutOfMemory;
+                    return try self.builder.addImport(
+                        .{ .start = start.span.start, .end = alias_tok.span.end },
+                        empty_module,
+                        alias_node,
+                        hir_mod.none_node_id,
+                        hir_mod.none_node_id,
+                        &.{},
+                        is_type_only,
+                    );
+                }
                 const star = self.advance();
-                try self.reportCodeAt(star.span.start, star.line, 1005, "'=' expected.");
                 if (self.peek().kind == .kw_as and self.peekAt(2).kind == .kw_from) {
                     const from_tok = self.peekAt(2);
                     try self.reportCodeAt(from_tok.span.start, from_tok.line, 1434, "Unexpected keyword or identifier.");
@@ -19475,6 +19505,30 @@ test "parser: abstract class modifier cannot cross a line break" {
     try T.expect(!hir_mod.classOf(&s.hir, stmts[2]).is_abstract);
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[3]));
     try T.expect(!hir_mod.classOf(&s.hir, stmts[4]).is_abstract);
+}
+
+test "parser: malformed default and import recover into abstract classes" {
+    const src =
+        \\default abstract class C {}
+        \\import abstract class D {}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 0), s.parser.diagnostics.items[0].pos);
+    try T.expectEqualStrings("'export' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, @intCast(std.mem.lastIndexOf(u8, src, "class").?)), s.parser.diagnostics.items[1].pos);
+    try T.expectEqualStrings("'=' expected.", s.parser.diagnostics.items[1].message);
+
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    try T.expect(hir_mod.classOf(&s.hir, stmts[0]).is_abstract);
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[1]));
+    try T.expect(!hir_mod.classOf(&s.hir, stmts[2]).is_abstract);
 }
 
 test "parser: abstract constructor inside abstract class reports TS1242" {
