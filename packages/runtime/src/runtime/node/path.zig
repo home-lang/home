@@ -2604,6 +2604,9 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                             tmpBuf[1] = CHAR_BACKWARD_SLASH;
                             bufOffset = bufSize;
                             bufSize += firstPart.len;
+                            // A long UNC first-part / slice would overflow the
+                            // fixed-size tmpBuf; fail instead of writing past it.
+                            if (bufSize > tmpBuf.len) return MaybeSlice(T){ .err = bun.sys.Error.fromCode(.NAMETOOLONG, .TODO) };
                             bun.memmove(tmpBuf[bufOffset..bufSize], firstPart);
                             bufOffset = bufSize;
                             bufSize += 1;
@@ -2611,6 +2614,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                             const slice = path[last..j];
                             bufOffset = bufSize;
                             bufSize += slice.len;
+                            if (bufSize > tmpBuf.len) return MaybeSlice(T){ .err = bun.sys.Error.fromCode(.NAMETOOLONG, .TODO) };
                             bun.memmove(tmpBuf[bufOffset..bufSize], slice);
 
                             device = tmpBuf[0..bufSize];
