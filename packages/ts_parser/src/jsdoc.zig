@@ -12,7 +12,7 @@
 //! been written in TS syntax.
 //!
 //! Format support (per the TS spec):
-//!   /** @type {T} */
+//!   /** @type {T} */ or /** @type T */
 //!   /** @param {T} name [optional desc] */
 //!   /** @returns {T} */
 //!   /** @template T */
@@ -141,6 +141,10 @@ fn parseLine(line: []const u8) ?Tag {
             optional = true;
             optional_from_type_suffix = true;
         }
+    }
+    if (kind == .type_tag and type_text.len == 0) {
+        type_text = std.mem.trim(u8, rest, " \t");
+        rest = "";
     }
     // Optional name token. `@param`, `@template`, `@typedef` all
     // carry a trailing identifier. `@param` additionally supports
@@ -335,6 +339,17 @@ test "jsdoc: simple @type" {
     try T.expectEqual(@as(usize, 1), tags.len);
     try T.expectEqual(TagKind.type_tag, tags[0].kind);
     try T.expectEqualStrings("number", tags[0].type_text);
+}
+
+test "jsdoc: unbraced @type" {
+    const body =
+        \\ @type Parameters<typeof fn>
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 1), tags.len);
+    try T.expectEqual(TagKind.type_tag, tags[0].kind);
+    try T.expectEqualStrings("Parameters<typeof fn>", tags[0].type_text);
 }
 
 test "jsdoc: param with name and description" {
