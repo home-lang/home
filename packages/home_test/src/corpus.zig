@@ -10,11 +10,11 @@ const builtin = @import("builtin");
 const Io = std.Io;
 
 pub const default_root = "packages/runtime/test/bun-corpus";
+pub const expected_copied_bun_test_tree_entries = 12996;
 pub const expected_copied_bun_test_files = 4708;
+const generated_home_corpus_files = 2;
 
-const local_bun_filtered_files = [_][]const u8{
-    "fixtures/copy/kitchen-sink/README.md",
-};
+const local_bun_filtered_files = [_][]const u8{};
 
 pub const Counts = struct {
     files: usize = 0,
@@ -223,6 +223,7 @@ test "Bun corpus counter walks nested directories" {
 
 test "Bun corpus collector sees vendored upstream tests" {
     const counts = try countPath(std.testing.io, default_root);
+    try std.testing.expectEqual(@as(usize, expected_copied_bun_test_tree_entries + generated_home_corpus_files), counts.files);
     try std.testing.expectEqual(@as(usize, expected_copied_bun_test_files), counts.tests);
 
     const files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
@@ -240,6 +241,24 @@ test "Bun corpus collector sees vendored upstream tests" {
     }
     try std.testing.expect(found_cp);
     try std.testing.expect(found_spec);
+}
+
+test "Bun corpus sync does not filter upstream test-tree files" {
+    const filtered = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        default_root ++ "/FILTERED_FILES.txt",
+        std.testing.allocator,
+        std.Io.Limit.limited(64 * 1024),
+    );
+    defer std.testing.allocator.free(filtered);
+
+    var lines = std.mem.splitScalar(u8, filtered, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "#")) continue;
+        std.debug.print("unexpected filtered Bun corpus file: {s}\n", .{trimmed});
+        try std.testing.expect(false);
+    }
 }
 
 test "Bun corpus collector includes every upstream test file" {
