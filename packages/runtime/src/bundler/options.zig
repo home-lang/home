@@ -2560,7 +2560,20 @@ pub const PathTemplate = struct {
             };
 
             switch (field) {
-                .dir => try writeReplacingSlashesOnWindows(writer, if (self.placeholder.dir.len > 0) self.placeholder.dir else "."),
+                .dir => {
+                    if (self.placeholder.dir.len == 0) {
+                        try writeReplacingSlashesOnWindows(writer, ".");
+                    } else {
+                        // Sanitize leading `..` segments so `[dir]` can't place
+                        // output above outdir when a source resolves outside root.
+                        var d: []const u8 = self.placeholder.dir;
+                        while (d.len >= 3 and d[0] == '.' and d[1] == '.' and (d[2] == '/' or d[2] == '\\')) {
+                            try writeReplacingSlashesOnWindows(writer, "_.._/");
+                            d = d[3..];
+                        }
+                        try writeReplacingSlashesOnWindows(writer, d);
+                    }
+                },
                 .name => try writeReplacingSlashesOnWindows(writer, self.placeholder.name),
                 .ext => try writeReplacingSlashesOnWindows(writer, self.placeholder.ext),
                 .hash => {
