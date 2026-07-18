@@ -9628,7 +9628,19 @@ pub const Parser = struct {
     }
 
     fn parseBlockStatement(self: *Parser) ParseError!NodeId {
-        const open = try self.expect(.open_brace, "'{' to start block");
+        return self.parseBlockStatementWithMissingOpenBrace(false);
+    }
+
+    fn parseBlockStatementWithMissingOpenBrace(self: *Parser, ignore_missing_open: bool) ParseError!NodeId {
+        const open = self.peek();
+        const open_parsed = open.kind == .open_brace;
+        if (open_parsed) {
+            _ = self.advance();
+        } else if (ignore_missing_open) {
+            try self.reportCodeAt(open.span.start, open.line, 1005, "'{' expected.");
+        } else {
+            _ = try self.expect(.open_brace, "'{' to start block");
+        }
         self.block_depth += 1;
         defer self.block_depth -= 1;
         // A `{}` block under a `case` clause body resets the bare-clause
@@ -9655,18 +9667,25 @@ pub const Parser = struct {
         }
         if (self.peek().kind == .eof) {
             const at = self.peek();
-            try self.reportCodeAtWithMatchedPair(
-                at.span.start,
-                at.line,
-                1005,
-                "'}' expected.",
-                open.span.start,
-                "{",
-                "}",
-            );
+            if (open_parsed) {
+                try self.reportCodeAtWithMatchedPair(
+                    at.span.start,
+                    at.line,
+                    1005,
+                    "'}' expected.",
+                    open.span.start,
+                    "{",
+                    "}",
+                );
+            } else {
+                try self.reportCodeAt(at.span.start, at.line, 1005, "'}' expected.");
+            }
             return try self.builder.addBlock(.{ .start = open.span.start, .end = at.span.start }, stmts.items);
         }
-        const close = try self.expectClosingMatch(.close_brace, "'}' to close block", open.span.start, "{", "}");
+        const close = if (open_parsed)
+            try self.expectClosingMatch(.close_brace, "'}' to close block", open.span.start, "{", "}")
+        else
+            try self.expect(.close_brace, "'}' to close block");
         // tsc: a `{...}` parsed as a statement block immediately
         // followed by `=` is almost certainly a destructuring
         // assignment missing its wrapping parentheses (`{a} = b` should
@@ -15461,7 +15480,45 @@ pub const Parser = struct {
         if (self.peek().kind == .open_brace) {
             return try self.parseBlockStatement();
         }
+        if (self.arrowBodyStartsStatementOnly()) {
+            return try self.parseBlockStatementWithMissingOpenBrace(true);
+        }
         return try self.parseAssignmentExpression();
+    }
+
+    fn arrowBodyStartsStatementOnly(self: *const Parser) bool {
+        return switch (self.peek().kind) {
+            .at,
+            .kw_var,
+            .kw_const,
+            .kw_enum,
+            .kw_if,
+            .kw_do,
+            .kw_while,
+            .kw_for,
+            .kw_continue,
+            .kw_break,
+            .kw_return,
+            .kw_with,
+            .kw_switch,
+            .kw_throw,
+            .kw_try,
+            .kw_debugger,
+            .kw_catch,
+            .kw_finally,
+            .kw_export,
+            => true,
+            .kw_let => blk: {
+                const next = self.peekAt(1);
+                break :blk !next.flags.preceded_by_newline and
+                    (next.kind == .identifier or next.kind == .open_brace or next.kind == .open_bracket);
+            },
+            .kw_using => blk: {
+                const next = self.peekAt(1);
+                break :blk !next.flags.preceded_by_newline and next.kind == .identifier;
+            },
+            else => false,
+        };
     }
 
     fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp, allow_in: bool) ParseError!NodeId {
@@ -29078,21 +29135,17 @@ test "parser: decimal separator negative recovery matches upstream shapes" {
     try T.expect(saw_escaped_name);
 }
 
-// §6.A 2000-3000 ratchet — the expression fallback for unrecognised
-// leading tokens (e.g. `var` opening a malformed lambda body) must
-// emit TS1109 "Expression expected." rather than a Home-internal
-// "unexpected token in expression: kw_var" payload. Pins
-// `parserMissingLambdaOpenBrace1` and `parserStatementIsNotA*`.
-test "parser: expression fallback emits TS1109 not Home-internal text" {
-    var s = try newTestSetup("foo(test =>\n  var x = 0;\n);\n");
+test "parser: arrow statement body recovers a missing open brace" {
+    var s = try newTestSetup("foo(test =>\n  var x = 0;\n  return x;\n});\n");
     defer destroyTestSetup(s);
-    _ = s.parser.parseSourceFile() catch {};
-    var saw_ts1109 = false;
+    _ = try s.parser.parseSourceFile();
+    var saw_missing_brace = false;
     for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1109 and std.mem.eql(u8, d.message, "Expression expected.")) saw_ts1109 = true;
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'{' expected.")) saw_missing_brace = true;
+        try T.expect(d.code != 1109);
         try T.expect(!std.mem.startsWith(u8, d.message, "unexpected token in expression"));
     }
-    try T.expect(saw_ts1109);
+    try T.expect(saw_missing_brace);
 }
 
 test "parser: finally in expression position reports upstream recovery" {
