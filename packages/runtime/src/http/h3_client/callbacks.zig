@@ -101,6 +101,13 @@ fn onStreamHeaders(s: *quic.Stream) callconv(.c) void {
             }
             continue;
         }
+        // RFC 9114/9113: reject a regular response field whose name or value is
+        // malformed (uppercase / connection-specific name, or NUL/CR/LF in the
+        // value) so it can't inject headers when forwarded downstream.
+        if (h2_dispatch.isMalformedResponseField(name) or h2_dispatch.isMalformedResponseValue(value)) {
+            stream.session.fail(stream, error.HTTP3ProtocolError);
+            return;
+        }
         stream.decoded_headers.appendAssumeCapacity(.{ .name = name, .value = value });
     }
     if (status == 0) {
@@ -144,6 +151,7 @@ const ClientSession = @import("./ClientSession.zig");
 const H3 = @import("../H3Client.zig");
 const Stream = @import("./Stream.zig");
 const encode = @import("./encode.zig");
+const h2_dispatch = @import("../h2_client/dispatch.zig");
 const std = @import("std");
 
 const bun = @import("bun");

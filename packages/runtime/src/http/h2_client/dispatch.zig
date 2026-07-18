@@ -467,7 +467,7 @@ pub fn decodeHeaderBlock(session: *ClientSession, stream: *Stream) void {
         }
         seen_regular = true;
         if (stream.status_code != 0 or malformed) continue;
-        if (isMalformedResponseField(result.name)) {
+        if (isMalformedResponseField(result.name) or isMalformedResponseValue(result.value)) {
             malformed = true;
             continue;
         }
@@ -546,6 +546,14 @@ pub fn stripPadding(payload: []const u8) ?[]const u8 {
 pub fn isMalformedResponseField(name: []const u8) bool {
     for (name) |c| if (c >= 'A' and c <= 'Z') return true;
     return forbidden_response_fields.has(name);
+}
+
+/// RFC 9113 §8.2.1: a field value MUST NOT contain NUL (0x00), LF (0x0a), or
+/// CR (0x0d). HPACK is length-prefixed, so these would otherwise pass through
+/// verbatim and enable header injection when the value is forwarded downstream.
+pub fn isMalformedResponseValue(value: []const u8) bool {
+    for (value) |c| if (c == 0 or c == '\r' or c == '\n') return true;
+    return false;
 }
 
 const forbidden_response_fields = bun.ComptimeStringMap(void, .{
