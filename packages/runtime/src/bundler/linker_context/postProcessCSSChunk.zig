@@ -48,8 +48,30 @@ pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, ch
             j.pushStatic("/* ");
             line_offset.advance("/* ");
 
-            j.pushStatic(pretty);
-            line_offset.advance(pretty);
+            // A `*/` in the path would terminate the comment early and let the
+            // rest of the path be parsed as CSS in the bundled output.
+            if (bun.strings.contains(pretty, "*/")) {
+                var extra: usize = 0;
+                var k: usize = 1;
+                while (k < pretty.len) : (k += 1) {
+                    if (pretty[k] == '/' and pretty[k - 1] == '*') extra += 1;
+                }
+                const escaped = bun.handleOom(bun.default_allocator.alloc(u8, pretty.len + extra));
+                var w: usize = 0;
+                for (pretty, 0..) |byte, ki| {
+                    if (byte == '/' and ki > 0 and pretty[ki - 1] == '*') {
+                        escaped[w] = '\\';
+                        w += 1;
+                    }
+                    escaped[w] = byte;
+                    w += 1;
+                }
+                line_offset.advance(escaped);
+                j.push(escaped, bun.default_allocator);
+            } else {
+                j.pushStatic(pretty);
+                line_offset.advance(pretty);
+            }
 
             j.pushStatic(" */\n");
             line_offset.advance(" */\n");

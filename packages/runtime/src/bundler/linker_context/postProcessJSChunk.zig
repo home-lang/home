@@ -445,8 +445,21 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *ThreadPool.Worker, chu
                 },
             }
 
-            j.pushStatic(pretty);
-            line_offset.advance(pretty);
+            // A `*/` in the path would terminate the block comment early and
+            // turn the rest of the path into generated JavaScript.
+            if (comment_type == .multiline and strings.contains(pretty, "*/")) {
+                const sanitized = bun.handleOom(bun.default_allocator.dupe(u8, pretty));
+                var idx: usize = 0;
+                while (strings.indexOf(sanitized[idx..], "*/")) |i| {
+                    sanitized[idx + i + 1] = '_';
+                    idx += i + 2;
+                }
+                line_offset.advance(sanitized);
+                j.push(sanitized, bun.default_allocator);
+            } else {
+                j.pushStatic(pretty);
+                line_offset.advance(pretty);
+            }
 
             if (emit_targets_in_commands) {
                 j.pushStatic(" (");
