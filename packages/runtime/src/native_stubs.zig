@@ -126,8 +126,8 @@ comptime {
         // jsc/js2native_workarounds.zig — the noop returned garbage.
         "JS2Zig___src_bun_zig__getUseSystemCA",
         "JS2Zig___src_crash_handler_crash_handler_zig__js_bindings_generate_workaround",
-        "JS2Zig___src_http_H_Client_zig__TestingAPIs_liveCounts",
-        "JS2Zig___src_http_H_Client_zig__TestingAPIs_quicLiveCounts",
+        // H2/H3 liveCounts/quicLiveCounts now have real exports in
+        // js2native_workarounds.zig (the noops returned undefined counts → NaN).
         // ini IniTestingAPIs now have real exports in js2native_workarounds.zig.
         "JS2Zig___src_install_dependency_zig__Version_Tag_inferFromJS",
         "JS2Zig___src_install_dependency_zig__fromJS",

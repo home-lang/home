@@ -23,6 +23,7 @@ const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const host_fn = @import("./host_fn.zig");
+const headers_jsc = @import("../http_jsc/headers_jsc.zig");
 
 const node_os = @import("../runtime/node/node_os.zig");
 const node_fs_binding = @import("../runtime/node/node_fs_binding.zig");
@@ -207,6 +208,15 @@ comptime {
     @export(&host_fn.toJSHostFn(shell.TestingAPIs.shellLex), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellLex" });
     @export(&host_fn.toJSHostFn(shell.TestingAPIs.shellParse), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellParse" });
     @export(&host_fn.toJSHostFn(shell.TestingAPIs.disabledOnThisPlatform), .{ .name = "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_disabledOnThisPlatform" });
+
+    // ---- H2/H3 client live-count TestingAPIs (bun:internal-for-testing) --
+    // Real exports for fetchH{2,3}Internals.liveCounts. native_stubs had these
+    // noop-stubbed, so `liveCounts().sessions/.streams` came back undefined
+    // (printed as NaN) and every h3 Alt-Svc/session-count assertion failed. The
+    // real impls live in headers_jsc (moved there to keep JSC out of src/http/);
+    // the JS binding still resolves the old H{2,3}Client symbol names.
+    @export(&host_fn.toJSHostFn(headers_jsc.H2TestingAPIs.liveCounts), .{ .name = "JS2Zig___src_http_H_Client_zig__TestingAPIs_liveCounts" });
+    @export(&host_fn.toJSHostFn(headers_jsc.H3TestingAPIs.quicLiveCounts), .{ .name = "JS2Zig___src_http_H_Client_zig__TestingAPIs_quicLiveCounts" });
 
     // ---- InternalSourceMap TestingAPIs (bun:internal-for-testing) --------
     // Real exports for the VLQ round-trip / find test hooks. native_stubs had
