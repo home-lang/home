@@ -1931,6 +1931,15 @@ pub const internal = struct {
 
 pub const InternalDNSRequest = internal.Request;
 
+/// C-ABI entry the QUIC connect path calls on a DNS cache miss (from
+/// h3_client/PendingConnect). It hands the in-flight addrinfo request and the
+/// pending connect to the resolver cache so `pc.onDNSResolved` fires when the
+/// name resolves. This was noop-stubbed in native_stubs, which left every
+/// hostname (non-IP-literal) HTTP/3 connect hanging until timeout.
+export fn Bun__dns_internal_registerQuic(addrinfo_ptr: *anyopaque, pc: *anyopaque) void {
+    internal.registerQuic(@ptrCast(@alignCast(addrinfo_ptr)), @ptrCast(@alignCast(pc)));
+}
+
 comptime {
     _ = @import("./cares_jsc.zig"); // Bun__canonicalizeIP @export
     @export(&internal.us_getaddrinfo_set, .{

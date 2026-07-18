@@ -81,7 +81,8 @@ comptime {
     for ([_][]const u8{
         "Bake__bundleNewRouteJSFunctionImpl",
         "Bake__getNewRouteParamsJSFunctionImpl",
-        "Bun__dns_internal_registerQuic",
+        // Bun__dns_internal_registerQuic now has its real export in
+        // dns.zig (the noop left hostname HTTP/3 connects hanging).
         "Bun__InspectorBunFrontendDevServerAgent__setEnabled",
         "Bun__Secrets__scheduleJob",
         "Bun__onRejectEntryPointResult",
