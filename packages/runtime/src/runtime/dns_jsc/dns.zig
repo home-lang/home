@@ -102,6 +102,7 @@ const LibInfo = struct {
                 // permanently orphans the slot and leaves `buffer[pos].lookup` pointing
                 // at the request we are about to free (UAF on the next `.inflight` hit).
                 const pos = request.cache.pos_in_pending;
+                bun.default_allocator.free(this.pending_host_cache_native.buffer[pos].name);
                 this.pending_host_cache_native.buffer[pos] = undefined;
                 this.pending_host_cache_native.used.unset(pos);
             }
@@ -714,6 +715,12 @@ pub const GetAddrInfoRequest = struct {
     pub const PendingCacheKey = struct {
         hash: u64,
         len: u16,
+        /// Hostname bytes. On a stored (cache-resident) key this is owned and
+        /// freed in Resolver.getKey; on a transient lookup key it borrows the
+        /// query name. bun.hash has a fixed seed and is not collision resistant,
+        /// so the inflight match compares these bytes, not just hash+len — a
+        /// colliding hostname must not join another host's inflight resolution.
+        name: []const u8 = "",
         lookup: *GetAddrInfoRequest = undefined,
 
         pub fn append(this: *PendingCacheKey, dns_lookup: *DNSLookup) void {
@@ -726,6 +733,7 @@ pub const GetAddrInfoRequest = struct {
             return PendingCacheKey{
                 .hash = query.hash(),
                 .len = @as(u16, @truncate(query.name.len)),
+                .name = query.name,
                 .lookup = undefined,
             };
         }
@@ -2178,6 +2186,11 @@ pub const Resolver = struct {
         var cache = &@field(this, cache_name);
         bun.assert(cache.used.isSet(index));
         const entry = cache.buffer[index];
+        // Free the owned hostname stored by getOrPutIntoPendingCache (only the
+        // host cache key carries one). The returned copy's `name` is not read.
+        if (comptime @hasField(request_type.PendingCacheKey, "name")) {
+            bun.default_allocator.free(entry.name);
+        }
         cache.buffer[index] = undefined;
 
         var used = cache.used;
@@ -2473,7 +2486,10 @@ pub const Resolver = struct {
 
         while (inflight_iter.next()) |index| {
             const entry: *GetAddrInfoRequest.PendingCacheKey = &cache.buffer[index];
-            if (entry.hash == key.hash and entry.len == key.len) {
+            // Full-name compare, not just hash+len: a fixed-seed bun.hash
+            // collision must not fold two distinct hostnames onto the same
+            // inflight resolution (cache poisoning).
+            if (entry.hash == key.hash and entry.len == key.len and std.mem.eql(u8, entry.name, key.name)) {
                 return .{ .inflight = entry };
             }
         }
@@ -2481,6 +2497,8 @@ pub const Resolver = struct {
         if (cache.get()) |new| {
             new.hash = key.hash;
             new.len = key.len;
+            // Own the name for the entry's lifetime; getKey frees it on release.
+            new.name = bun.handleOom(bun.default_allocator.dupe(u8, key.name));
             return .{ .new = new };
         }
 
