@@ -13495,6 +13495,11 @@ pub const Parser = struct {
         const recover_missing_arrow_before_block = after_kind == .open_brace and
             self.parenContentsLookLikeTypedOrRestParams(self.cursor, after_paren_idx);
         if (after_kind != .arrow and after_kind != .colon and !recover_missing_arrow_before_block) return null;
+        if (after_kind == .arrow and
+            self.ambiguousParenArrowHasInvalidParameterStart(self.cursor, after_paren_idx - 1))
+        {
+            return null;
+        }
         const recover_numeric_param = after_kind == .arrow and self.parenArrowStartsWithExpressionOnlyToken(self.cursor);
         if (after_kind == .colon) {
             // `(expr): =>` is not a typed arrow in TypeScript. It recovers as
@@ -13584,6 +13589,54 @@ pub const Parser = struct {
             .number_literal, .bigint_literal, .string_literal, .regex_literal, .no_substitution_template, .template_head => true,
             else => false,
         };
+    }
+
+    /// An identifier-first parenthesized head such as `(a, b)` is
+    /// ambiguous until a complete parameter list is parsed. tsgo's
+    /// speculative `allowAmbiguity=false` path aborts when a later
+    /// top-level parameter starts with `(`, since only an identifier or
+    /// binding pattern can start a parameter. Rewind so `(a, (b, c)) =>`
+    /// recovers as comma expressions instead of an invented arrow.
+    fn ambiguousParenArrowHasInvalidParameterStart(self: *const Parser, open_idx: u32, close_idx: u32) bool {
+        if (open_idx + 2 >= close_idx or close_idx > self.tokens.len) return false;
+        const first = self.tokens[open_idx + 1].kind;
+        if (!isExpressionIdentifierToken(first) and first != .kw_this) return false;
+        const after_first = self.tokens[open_idx + 2].kind;
+        if (after_first != .comma and after_first != .equal and after_first != .close_paren) return false;
+
+        var paren_depth: u32 = 0;
+        var bracket_depth: u32 = 0;
+        var brace_depth: u32 = 0;
+        var at_parameter_start = true;
+        var i = open_idx + 1;
+        while (i < close_idx) : (i += 1) {
+            const kind = self.tokens[i].kind;
+            const at_top = paren_depth == 0 and bracket_depth == 0 and brace_depth == 0;
+            if (at_top) {
+                if (at_parameter_start and kind == .open_paren) return true;
+                if (kind == .comma) {
+                    at_parameter_start = true;
+                    continue;
+                }
+                if (at_parameter_start) at_parameter_start = false;
+            }
+            switch (kind) {
+                .open_paren => paren_depth += 1,
+                .close_paren => if (paren_depth > 0) {
+                    paren_depth -= 1;
+                },
+                .open_bracket => bracket_depth += 1,
+                .close_bracket => if (bracket_depth > 0) {
+                    bracket_depth -= 1;
+                },
+                .open_brace => brace_depth += 1,
+                .close_brace => if (brace_depth > 0) {
+                    brace_depth -= 1;
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn parenContentsLookLikeTypedOrRestParams(self: *Parser, open_paren_idx: u32, after_paren_idx: u32) bool {
@@ -25455,6 +25508,23 @@ test "parser: arrow — multiple args" {
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init_node));
     try T.expectEqual(@as(usize, 2), hir_mod.fnParams(&s.hir, init_node).len);
+}
+
+test "parser: ambiguous nested paren parameters do not commit to arrow" {
+    var s = try newTestSetup("var tt = (a, (b, c)) => a + b + c;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expect(init_node != hir_mod.none_node_id);
+    try T.expect(s.hir.kindOf(init_node) != .arrow_fn);
+
+    var saw_semicolon = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "';' expected.")) saw_semicolon = true;
+        try T.expect(d.code != 1003);
+    }
+    try T.expect(saw_semicolon);
 }
 
 test "parser: arrow — typed params + return" {
