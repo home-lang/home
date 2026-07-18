@@ -97,6 +97,12 @@ const LabelEntry = struct {
     wraps_iteration: bool = false,
 };
 
+const ImportExportSpecifier = struct {
+    imported: Token,
+    local: Token,
+    is_type_only: bool,
+};
+
 pub const Parser = struct {
     gpa: std.mem.Allocator,
     tokens: []const Token,
@@ -7917,14 +7923,6 @@ pub const Parser = struct {
             const named_imports_open = self.advance();
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
-                const spec_type_only = self.match(.kw_type);
-                // TS2206 — a named import specifier cannot carry its own
-                // `type` modifier when the whole statement is already an
-                // `import type {...}`. Anchored at the specifier's `type`
-                // keyword. Mirrors `checkGrammarTypeOnlyNamedImportsOrExports`.
-                if (is_type_only and spec_type_only) {
-                    try self.reportCodeAt(spec_start.span.start, spec_start.line, 2206, "The 'type' modifier cannot be used on a named import when 'import type' is used on its import statement.");
-                }
                 if (!self.tokenCanStartModuleExportName(self.peek())) {
                     const bad = self.peek();
                     try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
@@ -7954,29 +7952,22 @@ pub const Parser = struct {
                     if (!self.match(.comma)) break;
                     continue;
                 }
-                const imported_tok = self.advance();
+                const parsed_spec = try self.parseImportOrExportSpecifier(true);
+                const imported_tok = parsed_spec.imported;
+                const local_tok_for_diag = parsed_spec.local;
+                const spec_type_only = parsed_spec.is_type_only;
+                // TS2206 — a named import specifier cannot carry its own
+                // `type` modifier when the whole statement is already an
+                // `import type {...}`. Anchored at the specifier's `type`
+                // keyword. Mirrors `checkGrammarTypeOnlyNamedImportsOrExports`.
+                if (is_type_only and spec_type_only) {
+                    try self.reportCodeAt(spec_start.span.start, spec_start.line, 2206, "The 'type' modifier cannot be used on a named import when 'import type' is used on its import statement.");
+                }
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
-                var local_id = try self.internModuleExportName(imported_tok);
-                const imported_id = local_id;
-                var local_tok_for_diag = imported_tok;
-                var local_is_string_literal = imported_is_string_literal;
-                var has_alias = false;
-                if (self.match(.kw_as)) {
-                    const local_tok = try self.expectIdentifierLike();
-                    local_id = try self.internToken(local_tok);
-                    local_tok_for_diag = local_tok;
-                    local_is_string_literal = false;
-                    has_alias = true;
-                }
-                if (!has_alias and imported_tok.kind == .kw_await and self.top_level_external_module_indicator) {
-                    try self.reportCodeAt(
-                        imported_tok.span.start,
-                        imported_tok.line,
-                        1262,
-                        "Identifier expected. 'await' is a reserved word at the top-level of a module.",
-                    );
-                }
-                if (has_alias and local_tok_for_diag.kind == .kw_await and self.top_level_external_module_indicator) {
+                const local_id = try self.internModuleExportName(local_tok_for_diag);
+                const imported_id = try self.internModuleExportName(imported_tok);
+                const local_is_string_literal = local_tok_for_diag.kind == .string_literal;
+                if (local_tok_for_diag.kind == .kw_await and self.top_level_external_module_indicator) {
                     try self.reportCodeAt(
                         local_tok_for_diag.span.start,
                         local_tok_for_diag.line,
@@ -8616,7 +8607,8 @@ pub const Parser = struct {
             defer named.deinit(self.gpa);
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
-                const spec_type_only = self.match(.kw_type);
+                const parsed_spec = try self.parseImportOrExportSpecifier(false);
+                const spec_type_only = parsed_spec.is_type_only;
                 // TS2207 — a named export specifier cannot carry its own
                 // `type` modifier when the whole statement is already an
                 // `export type {...}`. Anchored at the specifier's `type`
@@ -8624,18 +8616,12 @@ pub const Parser = struct {
                 if (is_type_only and spec_type_only) {
                     try self.reportCodeAt(spec_start.span.start, spec_start.line, 2207, "The 'type' modifier cannot be used on a named export when 'export type' is used on its export statement.");
                 }
-                const imported_tok = try self.expectModuleExportName();
+                const imported_tok = parsed_spec.imported;
                 const imported_id = try self.internModuleExportName(imported_tok);
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
-                var local_id = imported_id;
-                var local_tok = imported_tok;
-                var local_is_string_literal = imported_is_string_literal;
-                if (self.match(.kw_as)) {
-                    local_tok = try self.expectModuleExportName();
-                    local_id = try self.internToken(local_tok);
-                    if (local_tok.kind == .string_literal) local_id = try self.internStringLiteral(local_tok);
-                    local_is_string_literal = local_tok.kind == .string_literal;
-                }
+                const local_tok = parsed_spec.local;
+                const local_id = try self.internModuleExportName(local_tok);
+                const local_is_string_literal = local_tok.kind == .string_literal;
                 const spec = try self.builder.addImportSpecifierFull(
                     .{ .start = spec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     imported_id,
@@ -18776,6 +18762,67 @@ pub const Parser = struct {
         return tok.kind == .string_literal or tok.kind == .identifier or tok.kind.isKeyword();
     }
 
+    /// Port of tsgo's `parseImportOrExportSpecifier`. The leading contextual
+    /// `type` is only a modifier when the following token sequence proves it;
+    /// otherwise it remains the imported/exported name.
+    fn parseImportOrExportSpecifier(self: *Parser, is_import: bool) ParseError!ImportExportSpecifier {
+        var name = try self.expectModuleExportName();
+        var imported: ?Token = null;
+        var is_type_only = false;
+        var can_parse_as_keyword = true;
+        var name_is_disallowed_import_keyword = is_import and name.kind.isKeyword() and !name.kind.isContextualKeyword();
+
+        if (self.tokenTextEquals(name, "type")) {
+            if (self.peek().kind == .kw_as) {
+                const first_as = self.advance();
+                if (self.peek().kind == .kw_as) {
+                    const second_as = self.advance();
+                    if (self.tokenCanStartModuleExportName(self.peek())) {
+                        is_type_only = true;
+                        imported = first_as;
+                        name = self.advance();
+                        name_is_disallowed_import_keyword = is_import and name.kind.isKeyword() and !name.kind.isContextualKeyword();
+                        can_parse_as_keyword = false;
+                    } else {
+                        imported = name;
+                        name = second_as;
+                        name_is_disallowed_import_keyword = false;
+                        can_parse_as_keyword = false;
+                    }
+                } else if (self.tokenCanStartModuleExportName(self.peek())) {
+                    imported = name;
+                    name = self.advance();
+                    name_is_disallowed_import_keyword = is_import and name.kind.isKeyword() and !name.kind.isContextualKeyword();
+                    can_parse_as_keyword = false;
+                } else {
+                    is_type_only = true;
+                    name = first_as;
+                    name_is_disallowed_import_keyword = false;
+                }
+            } else if (self.tokenCanStartModuleExportName(self.peek())) {
+                is_type_only = true;
+                name = self.advance();
+                name_is_disallowed_import_keyword = is_import and name.kind.isKeyword() and !name.kind.isContextualKeyword();
+            }
+        }
+
+        if (can_parse_as_keyword and self.match(.kw_as)) {
+            imported = name;
+            name = try self.expectModuleExportName();
+            name_is_disallowed_import_keyword = is_import and name.kind.isKeyword() and !name.kind.isContextualKeyword();
+        }
+
+        if (is_import and (name.kind == .string_literal or name_is_disallowed_import_keyword)) {
+            try self.reportCodeAt(name.span.start, name.line, 1003, "Identifier expected.");
+        }
+
+        return .{
+            .imported = imported orelse name,
+            .local = name,
+            .is_type_only = is_type_only,
+        };
+    }
+
     fn internModuleExportName(self: *Parser, tok: Token) ParseError!hir_mod.StringId {
         return if (tok.kind == .string_literal)
             try self.internStringLiteral(tok)
@@ -22134,6 +22181,34 @@ test "parser: import named" {
     try T.expectEqual(@as(usize, 2), named.len);
 }
 
+test "parser: named imports disambiguate type and as like tsgo" {
+    var s = try newTestSetup(
+        \\import { type, as, type as, type as as, type as as local, type value, plain as alias } from "mod";
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const named = hir_mod.importNamed(&s.hir, top);
+    try T.expectEqual(@as(usize, 7), named.len);
+
+    const expected = [_]struct { imported: []const u8, local: []const u8, type_only: bool }{
+        .{ .imported = "type", .local = "type", .type_only = false },
+        .{ .imported = "as", .local = "as", .type_only = false },
+        .{ .imported = "as", .local = "as", .type_only = true },
+        .{ .imported = "type", .local = "as", .type_only = false },
+        .{ .imported = "as", .local = "local", .type_only = true },
+        .{ .imported = "value", .local = "value", .type_only = true },
+        .{ .imported = "plain", .local = "alias", .type_only = false },
+    };
+    for (named, expected) |node, want| {
+        const spec = hir_mod.importSpecifierOf(&s.hir, node);
+        try T.expectEqualStrings(want.imported, s.interner.get(spec.imported));
+        try T.expectEqualStrings(want.local, s.interner.get(spec.local));
+        try T.expectEqual(want.type_only, spec.is_type_only);
+    }
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: import named string-literal module export name" {
     var s = try newTestSetup("import { \"str-name\" as imported } from \"./m\";");
     defer destroyTestSetup(s);
@@ -22445,6 +22520,35 @@ test "parser: export named" {
     const ex = hir_mod.exportOf(&s.hir, top);
     try T.expectEqual(@as(usize, 2), hir_mod.exportNamed(&s.hir, top).len);
     try T.expect(!ex.is_default);
+}
+
+test "parser: named exports disambiguate type and as like tsgo" {
+    var s = try newTestSetup(
+        \\export { type };
+        \\export { type as };
+        \\export { type something };
+        \\export { type type as foo };
+        \\export { type as as bar };
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 5), stmts.len);
+
+    const expected = [_]struct { imported: []const u8, local: []const u8, type_only: bool }{
+        .{ .imported = "type", .local = "type", .type_only = false },
+        .{ .imported = "as", .local = "as", .type_only = true },
+        .{ .imported = "something", .local = "something", .type_only = true },
+        .{ .imported = "type", .local = "foo", .type_only = true },
+        .{ .imported = "as", .local = "bar", .type_only = true },
+    };
+    for (stmts, expected) |stmt, want| {
+        const spec = hir_mod.importSpecifierOf(&s.hir, hir_mod.exportNamed(&s.hir, stmt)[0]);
+        try T.expectEqualStrings(want.imported, s.interner.get(spec.imported));
+        try T.expectEqualStrings(want.local, s.interner.get(spec.local));
+        try T.expectEqual(want.type_only, spec.is_type_only);
+    }
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: export named string-literal module export names" {
