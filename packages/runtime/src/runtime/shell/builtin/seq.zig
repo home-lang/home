@@ -88,11 +88,18 @@ fn do(this: *@This()) Yield {
     var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
 
-    while (if (this.increment > 0) current <= this._end else current >= this._end) : (current += this.increment) {
+    while (if (this.increment > 0) current <= this._end else current >= this._end) {
         const str = bun.handleOom(std.fmt.allocPrint(arena.allocator(), "{d}", .{current}));
         defer _ = arena.reset(.retain_capacity);
         _ = this.print(str);
         _ = this.print(this.separator);
+        // Float rounding can make `current + increment == current` (e.g.
+        // `seq 1 99999999` saturates near 2^24, or a tiny increment relative to
+        // a large `current`). Without this the loop never terminates and the
+        // output grows without bound — stop when there is no progress.
+        const next = current + this.increment;
+        if (next == current) break;
+        current = next;
     }
     _ = this.print(this.terminator);
 
