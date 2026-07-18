@@ -12,6 +12,10 @@ const Io = std.Io;
 pub const default_root = "packages/runtime/test/bun-corpus";
 pub const expected_copied_bun_test_files = 4708;
 
+const local_bun_filtered_files = [_][]const u8{
+    "fixtures/copy/kitchen-sink/README.md",
+};
+
 pub const Counts = struct {
     files: usize = 0,
     tests: usize = 0,
@@ -70,7 +74,20 @@ pub fn countOpenDir(io: Io, dir: *Io.Dir, counts: *Counts) !void {
     }
 }
 
+const FileSelection = enum {
+    all,
+    tests,
+};
+
+pub fn collectFiles(io: Io, allocator: std.mem.Allocator, path: []const u8) ![][]const u8 {
+    return collectFilesMatching(io, allocator, path, .all);
+}
+
 pub fn collectTestFiles(io: Io, allocator: std.mem.Allocator, path: []const u8) ![][]const u8 {
+    return collectFilesMatching(io, allocator, path, .tests);
+}
+
+fn collectFilesMatching(io: Io, allocator: std.mem.Allocator, path: []const u8, selection: FileSelection) ![][]const u8 {
     var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
     defer dir.close(io);
 
@@ -80,7 +97,7 @@ pub fn collectTestFiles(io: Io, allocator: std.mem.Allocator, path: []const u8) 
         files.deinit(allocator);
     }
 
-    try collectOpenDir(io, allocator, &dir, "", &files);
+    try collectOpenDir(io, allocator, &dir, "", selection, &files);
     const owned = try files.toOwnedSlice(allocator);
     std.mem.sort([]const u8, owned, {}, struct {
         fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
@@ -100,13 +117,14 @@ fn collectOpenDir(
     allocator: std.mem.Allocator,
     dir: *Io.Dir,
     prefix: []const u8,
+    selection: FileSelection,
     files: *std.ArrayList([]const u8),
 ) !void {
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
         switch (entry.kind) {
             .file, .sym_link => {
-                if (!isTestFile(entry.name)) continue;
+                if (selection == .tests and !isTestFile(entry.name)) continue;
                 const relative = if (prefix.len == 0)
                     try allocator.dupe(u8, entry.name)
                 else
@@ -121,7 +139,7 @@ fn collectOpenDir(
                 else
                     try std.fs.path.join(allocator, &.{ prefix, entry.name });
                 defer allocator.free(child_prefix);
-                try collectOpenDir(io, allocator, &child, child_prefix, files);
+                try collectOpenDir(io, allocator, &child, child_prefix, selection, files);
             },
             else => {},
         }
@@ -160,7 +178,7 @@ test "Bun corpus collector returns sorted relative test paths" {
         files.deinit(std.testing.allocator);
     }
 
-    try collectOpenDir(std.testing.io, std.testing.allocator, &tmp.dir, "", &files);
+    try collectOpenDir(std.testing.io, std.testing.allocator, &tmp.dir, "", .tests, &files);
     const owned = try files.toOwnedSlice(std.testing.allocator);
     defer {
         for (owned) |file| std.testing.allocator.free(file);
@@ -284,10 +302,70 @@ test "Bun corpus collector matches local Bun checkout when present" {
     }
 }
 
+test "Bun corpus mirror includes every local Bun test-tree file when present" {
+    const upstream_root = localBunTestRoot(std.testing.allocator) catch |err| switch (err) {
+        error.SkipZigTest => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(upstream_root);
+
+    const upstream_files = collectFiles(std.testing.io, std.testing.allocator, upstream_root) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        error.NotDir => return error.SkipZigTest,
+        else => return err,
+    };
+    defer freeTestFiles(std.testing.allocator, upstream_files);
+
+    const copied_files = try collectFiles(std.testing.io, std.testing.allocator, default_root);
+    defer freeTestFiles(std.testing.allocator, copied_files);
+
+    var upstream_set = std.StringHashMap(void).init(std.testing.allocator);
+    defer upstream_set.deinit();
+    for (upstream_files) |file| try upstream_set.put(file, {});
+
+    var copied_set = std.StringHashMap(void).init(std.testing.allocator);
+    defer copied_set.deinit();
+    for (copied_files) |file| try copied_set.put(file, {});
+
+    var expected_copied_from_upstream: usize = 0;
+    for (upstream_files) |upstream_file| {
+        if (isIntentionallyFilteredLocalBunFile(upstream_file)) continue;
+        expected_copied_from_upstream += 1;
+        if (!copied_set.contains(upstream_file)) {
+            std.debug.print("missing local Bun test-tree file in corpus: {s}\n", .{upstream_file});
+            try std.testing.expect(false);
+        }
+    }
+
+    var copied_from_upstream: usize = 0;
+    for (copied_files) |copied_file| {
+        if (isGeneratedHomeCorpusFile(copied_file)) continue;
+        copied_from_upstream += 1;
+        if (!upstream_set.contains(copied_file)) {
+            std.debug.print("extra non-upstream file in Bun corpus mirror: {s}\n", .{copied_file});
+            try std.testing.expect(false);
+        }
+    }
+
+    try std.testing.expectEqual(expected_copied_from_upstream, copied_from_upstream);
+}
+
 fn localBunTestRoot(allocator: std.mem.Allocator) ![]const u8 {
     if (std.c.getenv("BUN_REPO")) |raw| {
         return std.fs.path.join(allocator, &.{ std.mem.span(raw), "test" });
     }
     const home = std.c.getenv("HOME") orelse return error.SkipZigTest;
     return std.fs.path.join(allocator, &.{ std.mem.span(home), "Code", "bun", "test" });
+}
+
+fn isGeneratedHomeCorpusFile(file: []const u8) bool {
+    return std.mem.eql(u8, file, "UPSTREAM_SHA.txt") or
+        std.mem.eql(u8, file, "FILTERED_FILES.txt");
+}
+
+fn isIntentionallyFilteredLocalBunFile(file: []const u8) bool {
+    for (local_bun_filtered_files) |filtered| {
+        if (std.mem.eql(u8, file, filtered)) return true;
+    }
+    return false;
 }
