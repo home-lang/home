@@ -5082,6 +5082,15 @@ pub const Parser = struct {
         });
     }
 
+    fn isValidHeritageClauseObjectLiteral(self: *const Parser) bool {
+        if (self.peek().kind != .open_brace) return false;
+        if (self.peekAt(1).kind != .close_brace) return true;
+        return switch (self.peekAt(2).kind) {
+            .comma, .open_brace, .kw_extends, .kw_implements => true,
+            else => false,
+        };
+    }
+
     fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
         // `abstract class Foo { ... }` — TS allows the `abstract`
         // modifier as a leading keyword before `class`. Capture it for
@@ -5130,7 +5139,7 @@ pub const Parser = struct {
         if (self.peek().kind == .kw_extends) {
             saw_extends_clause = true;
             const extends_tok = self.advance();
-            if (self.peek().kind == .open_brace or
+            if ((self.peek().kind == .open_brace and !self.isValidHeritageClauseObjectLiteral()) or
                 self.peek().kind == .kw_implements or
                 self.peek().kind == .comma)
             {
@@ -18875,10 +18884,7 @@ pub const Parser = struct {
             }
             break;
         }
-        if (self.peek().kind == .semicolon and self.peekAt(1).kind == .close_brace and props.items.len > 0 and
-            self.hir.kindOf(props.items[props.items.len - 1]) == .object_property and
-            hir_mod.objectPropertyOf(self.hir, props.items[props.items.len - 1]).is_shorthand)
-        {
+        if (self.peek().kind == .semicolon and self.peekAt(1).kind == .close_brace and props.items.len > 0) {
             const semi = self.advance();
             try self.reportCodeAt(semi.span.start, semi.line, 1005, "',' expected.");
             const close = self.advance();
@@ -29105,6 +29111,18 @@ test "parser: malformed class heritage reports upstream diagnostics" {
     _ = try empty_extends.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), empty_extends.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1097), empty_extends.parser.diagnostics.items[0].code);
+
+    var object_literal_extends = try newTestSetup("class C extends { foo: string; } {}");
+    defer destroyTestSetup(object_literal_extends);
+    object_literal_extends.parser.setTargetEs2015OrLater(true);
+    const object_literal_root = try object_literal_extends.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), object_literal_extends.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), object_literal_extends.parser.diagnostics.items[0].code);
+    const object_literal_class = hir_mod.classOf(
+        object_literal_extends.parser.hir,
+        hir_mod.blockStmts(object_literal_extends.parser.hir, object_literal_root)[0],
+    );
+    try T.expectEqual(hir_mod.NodeKind.object_literal, object_literal_extends.parser.hir.kindOf(object_literal_class.extends));
 
     var trailing_extends = try newTestSetup("class C extends A, B {}");
     defer destroyTestSetup(trailing_extends);
