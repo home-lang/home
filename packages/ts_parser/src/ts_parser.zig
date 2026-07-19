@@ -5772,8 +5772,35 @@ pub const Parser = struct {
                 }
                 if (is_generator and self.peek().kind != .open_paren and self.peek().kind != .less_than) {
                     const missing_paren = self.peek();
+                    const preserves_bodyless_method = missing_paren.kind == .semicolon or
+                        missing_paren.kind == .close_brace or
+                        missing_paren.kind == .eof or
+                        (missing_paren.flags.preceded_by_newline and canStartClassMemberAfterModifier(missing_paren.kind));
                     try self.reportCodeAt(missing_paren.span.start, missing_paren.line, 1005, "'(' expected.");
                     self.skipMalformedGeneratorClassMemberTail();
+                    if (!preserves_bodyless_method) continue;
+                    const name_id = try self.internPropertyName(name_tok, name_span);
+                    const name_node = try self.builder.addIdentifier(name_span, name_id);
+                    const fn_node = try self.builder.addFnDeclGeneric(
+                        .{ .start = name_span.start, .end = self.tokens[self.cursor - 1].span.end },
+                        name_node,
+                        &.{},
+                        &.{},
+                        hir_mod.none_node_id,
+                        hir_mod.none_node_id,
+                        .{
+                            .is_method = true,
+                            .is_private = mods.visibility == .private,
+                            .is_protected = mods.visibility == .protected,
+                            .is_static = mods.is_static,
+                            .is_async = mods.is_async,
+                            .is_generator = true,
+                            .is_override = mods.is_override,
+                            .is_abstract = mods.is_abstract,
+                            .is_optional = is_optional_member,
+                        },
+                    );
+                    try members.append(self.gpa, fn_node);
                     continue;
                 }
                 if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
@@ -29944,7 +29971,7 @@ test "parser: class generator method missing name reports TS1003 without escapin
     try T.expect(saw_ts1003);
 }
 
-test "parser: class generator method missing parens reports TS1005 without synthetic overload" {
+test "parser: class generator method missing parens preserves bodyless declaration" {
     const src = "class C {\n   *foo\n}";
     var s = try newTestSetup(src);
     defer destroyTestSetup(s);
@@ -29958,7 +29985,12 @@ test "parser: class generator method missing parens reports TS1005 without synth
     const stmts = hir_mod.blockStmts(&s.hir, root);
     const cls = hir_mod.classOf(&s.hir, stmts[0]);
     const members = s.hir.childSlice(cls.members_start, cls.members_len);
-    try T.expectEqual(@as(usize, 0), members.len);
+    try T.expectEqual(@as(usize, 1), members.len);
+    try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(members[0]));
+    const method = hir_mod.fnDeclOf(&s.hir, members[0]);
+    try T.expect(method.flags.is_method);
+    try T.expect(method.flags.is_generator);
+    try T.expectEqual(hir_mod.none_node_id, method.body);
 }
 
 test "parser: 'LBL: continue LBL;' where LBL wraps a non-iteration reports TS1115" {
