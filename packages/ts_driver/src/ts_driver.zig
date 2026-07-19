@@ -2062,10 +2062,18 @@ pub fn compileSource(
         }
     }
     for (checker.diagnostics.items) |d| {
-        const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
+        var diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
+        var diagnostic_message = d.message;
+        if (d.code == ts_checker.check.TsCodes.ts_only_decl_in_js and
+            c.hir.kindOf(d.node) == .import_decl and
+            hir_mod.importOf(&c.hir, d.node).is_type_only)
+        {
+            diag_pos = c.hir.spanOf(d.node).start;
+            diagnostic_message = "'import type' declarations can only be used in TypeScript files.";
+        }
         const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or
             sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js);
-        if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, d.message, source)) continue;
+        if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, diagnostic_message, source)) continue;
         if (has_syntactic_parse_diagnostics and
             d.code == ts_checker.check.TsCodes.destructuring_decl_must_have_initializer)
         {
@@ -2112,7 +2120,7 @@ pub fn compileSource(
                 .TS => .TS,
                 .HM => .HM,
             },
-            .message = try gpa.dupe(u8, d.message),
+            .message = try gpa.dupe(u8, diagnostic_message),
             .chain = try dupeCheckerChain(gpa, d.chain),
             .related = try dupeCheckerRelated(gpa, &c.hir, d.related),
             .category = if (is_suggestion) .suggestion else .error_,
@@ -4342,6 +4350,29 @@ test "driver: missing comma operand keeps tsgo diagnostic order" {
     }
     try T.expectEqual(@as(usize, 2), count);
     try T.expectEqualSlices(u32, &.{ 2695, 1109 }, &codes);
+}
+
+test "driver: statement import type in JavaScript anchors TS8006 at import" {
+    const source = "import type A from './a';";
+    var c = try compileSource(T.allocator, source, .{
+        .allow_js = true,
+        .importer_path = "/a.js",
+        .no_emit = true,
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    const import_pos: u32 = @intCast(std.mem.indexOf(u8, source, "import type").?);
+    var found = false;
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 8006) continue;
+        found = true;
+        try T.expectEqual(import_pos, diagnostic.pos);
+        try T.expectEqualStrings("'import type' declarations can only be used in TypeScript files.", diagnostic.message);
+    }
+    try T.expect(found);
 }
 
 test "driver: let-array parse recovery suppresses grammar diagnostics" {
