@@ -13376,9 +13376,18 @@ pub const Parser = struct {
     }
 
     fn parseExpressionWithIn(self: *Parser, allow_in: bool) ParseError!NodeId {
-        var left = try self.parseAssignmentExpressionWithIn(allow_in);
+        const left = try self.parseAssignmentExpressionWithIn(allow_in);
+        return try self.parseExpressionRestWithIn(left, allow_in);
+    }
+
+    fn parseExpressionRestWithIn(self: *Parser, initial_left: NodeId, allow_in: bool) ParseError!NodeId {
+        var left = initial_left;
         while (self.match(.comma)) {
-            const right = try self.parseAssignmentExpressionWithIn(allow_in);
+            const right = if (self.peek().kind == .close_paren) blk: {
+                const close = self.peek();
+                try self.reportCodeAt(close.span.start, close.line, 1109, "Expression expected.");
+                break :blk try self.builder.addLiteralNumber(.{ .start = close.span.start, .end = close.span.start }, 0);
+            } else try self.parseAssignmentExpressionWithIn(allow_in);
             left = try self.builder.addBinaryOp(
                 .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end },
                 .comma,
@@ -17121,7 +17130,12 @@ pub const Parser = struct {
                 // parserArrowFunctionExpression8/9/10/11/12.
                 const saved_disallow_arrow_rt = self.disallow_arrow_return_type;
                 self.disallow_arrow_return_type = false;
-                const e = self.parseExpression() catch |err| {
+                const e = (if (self.peek().kind == .comma) blk: {
+                    const comma = self.peek();
+                    try self.reportCodeAt(comma.span.start, comma.line, 1109, "Expression expected.");
+                    const missing = try self.builder.addLiteralNumber(.{ .start = t.span.end, .end = t.span.end }, 0);
+                    break :blk try self.parseExpressionRestWithIn(missing, true);
+                } else self.parseExpression()) catch |err| {
                     self.disallow_arrow_return_type = saved_disallow_arrow_rt;
                     return err;
                 };
@@ -19786,6 +19800,28 @@ test "parser: nested var initializer preserves recovered binding" {
     try T.expectEqual(expected_codes.len, s.parser.diagnostics.items.len);
     for (expected_codes, s.parser.diagnostics.items) |expected, diagnostic| {
         try T.expectEqual(expected, diagnostic.code);
+    }
+}
+
+test "parser: comma expressions preserve missing operands" {
+    var s = try newTestSetup(
+        \\(ANY, );
+        \\(, ANY);
+        \\( , );
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    for (stmts) |stmt| {
+        try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(stmt));
+    }
+
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |diagnostic| {
+        try T.expectEqual(@as(u32, 1109), diagnostic.code);
+        try T.expectEqualStrings("Expression expected.", diagnostic.message);
     }
 }
 

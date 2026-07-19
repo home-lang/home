@@ -2189,6 +2189,14 @@ fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
             {
                 return a.code == 7006;
             }
+            // A missing first comma operand creates both the binder-style
+            // TS2695 and parser TS1109 at the same zero-width position.
+            // tsgo emits the comma-operand diagnostic first.
+            if ((a.code == 2695 and b.code == 1109) or
+                (a.code == 1109 and b.code == 2695))
+            {
+                return a.code == 2695;
+            }
             // TypeScript's `compareDiagnostics` orders same-start
             // diagnostics by span length before falling back to the
             // diagnostic code. This matters when an identifier-level
@@ -4311,6 +4319,29 @@ test "driver: missing template parameter orders implicit any before identifier e
     }
     try T.expectEqual(@as(usize, 2), count);
     try T.expectEqualSlices(u32, &.{ 7006, 1003 }, &same_position_codes);
+}
+
+test "driver: missing comma operand keeps tsgo diagnostic order" {
+    var c = try compileSource(T.allocator,
+        \\declare var ANY: any;
+        \\(, ANY);
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var codes: [2]u32 = undefined;
+    var count: usize = 0;
+    for (c.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2304);
+        if (diagnostic.code == 2695 or diagnostic.code == 1109) {
+            codes[count] = diagnostic.code;
+            count += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expectEqualSlices(u32, &.{ 2695, 1109 }, &codes);
 }
 
 test "driver: let-array parse recovery suppresses grammar diagnostics" {

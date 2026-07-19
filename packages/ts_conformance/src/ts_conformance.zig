@@ -872,6 +872,9 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const a_missing_parameter_priority = a.code == 7006 and b.code == 1003;
             const b_missing_parameter_priority = b.code == 7006 and a.code == 1003;
             if (a_missing_parameter_priority != b_missing_parameter_priority) return a_missing_parameter_priority;
+            const a_missing_comma_operand_priority = a.code == 2695 and b.code == 1109;
+            const b_missing_comma_operand_priority = b.code == 2695 and a.code == 1109;
+            if (a_missing_comma_operand_priority != b_missing_comma_operand_priority) return a_missing_comma_operand_priority;
             if (a.span_len != 0 and b.span_len != 0 and a.span_len != b.span_len) {
                 return a.span_len < b.span_len;
             }
