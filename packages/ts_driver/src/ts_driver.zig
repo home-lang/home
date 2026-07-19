@@ -2174,6 +2174,16 @@ fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
     const lessThan = struct {
         fn lt(_: void, a: Diagnostic, b: Diagnostic) bool {
             if (a.pos != b.pos) return a.pos < b.pos;
+            // A template token recovered as a missing parameter produces
+            // TS7006 before the grammar TS1003 in tsgo, even though both
+            // diagnostics share the same zero-width start. Preserve that
+            // parameter-recovery order instead of applying the numeric-code
+            // tie-break below.
+            if ((a.code == 7006 and b.code == 1003) or
+                (a.code == 1003 and b.code == 7006))
+            {
+                return a.code == 7006;
+            }
             // TypeScript's `compareDiagnostics` orders same-start
             // diagnostics by span length before falling back to the
             // diagnostic code. This matters when an identifier-level
@@ -4269,6 +4279,33 @@ test "driver: parser diagnostics preserve span length for exact ordering" {
     }
     try T.expect(saw_span_1357);
     try T.expect(saw_span_1164);
+}
+
+test "driver: missing template parameter orders implicit any before identifier expected" {
+    var c = try compileSource(T.allocator,
+        \\function f(`hello`);
+        \\function f(x: string);
+        \\function f(x: string) { return x; }
+    , .{
+        .no_emit = true,
+        .syntax_target_es2015 = true,
+        .strict_flags = .{ .no_implicit_any = true },
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var same_position_codes: [2]u32 = undefined;
+    var count: usize = 0;
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.pos == 11 and (diagnostic.code == 7006 or diagnostic.code == 1003)) {
+            same_position_codes[count] = diagnostic.code;
+            count += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expectEqualSlices(u32, &.{ 7006, 1003 }, &same_position_codes);
 }
 
 test "driver: importHelpers reports missing Stage 3 decorator helpers from virtual tslib" {
