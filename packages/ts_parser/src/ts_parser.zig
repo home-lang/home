@@ -13345,6 +13345,7 @@ pub const Parser = struct {
                 _ = self.advance();
                 try self.reportInvalidStrictIdentifierNode(left);
                 try self.reportInvalidAssignmentTarget(left);
+                try self.reportAssignmentPatternRestTrailingCommas(left);
                 const right = try self.parseAssignmentExpressionWithIn(allow_in);
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
                 return try self.builder.addAssignment(sp, left, right, null);
@@ -17531,6 +17532,61 @@ pub const Parser = struct {
         try self.reportCodeAt(pos, self.sourceLineAtPos(pos), 2364, "The left-hand side of an assignment expression must be a variable or a property access.");
     }
 
+    fn reportAssignmentPatternRestTrailingCommas(self: *Parser, node: NodeId) ParseError!void {
+        switch (self.hir.kindOf(node)) {
+            .array_literal => {
+                const elements = hir_mod.arrayLiteralElements(self.hir, node);
+                for (elements, 0..) |element, index| {
+                    if (element == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(element) == .spread) {
+                        if (index + 1 == elements.len) try self.reportRestTrailingComma(element, node, .close_bracket);
+                        continue;
+                    }
+                    try self.reportAssignmentPatternRestTrailingCommas(element);
+                }
+            },
+            .object_literal => {
+                const properties = hir_mod.objectLiteralProps(self.hir, node);
+                for (properties, 0..) |property, index| {
+                    switch (self.hir.kindOf(property)) {
+                        .spread => if (index + 1 == properties.len) try self.reportRestTrailingComma(property, node, .close_brace),
+                        .object_property => try self.reportAssignmentPatternRestTrailingCommas(hir_mod.objectPropertyOf(self.hir, property).value),
+                        else => {},
+                    }
+                }
+            },
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op == null) try self.reportAssignmentPatternRestTrailingCommas(assignment.target);
+            },
+            else => {},
+        }
+    }
+
+    fn reportRestTrailingComma(self: *Parser, rest: NodeId, pattern: NodeId, close_kind: TokenKind) ParseError!void {
+        const rest_span = self.hir.spanOf(rest);
+        const pattern_span = self.hir.spanOf(pattern);
+        var previous: ?Token = null;
+        for (self.tokens) |token| {
+            if (token.span.start < rest_span.start) continue;
+            if (token.span.end > pattern_span.end) break;
+            if (token.kind == close_kind and token.span.end == pattern_span.end) {
+                if (previous) |comma| {
+                    if (comma.kind == .comma) {
+                        try self.reportCodeAt(
+                            comma.span.start,
+                            comma.line,
+                            1013,
+                            "A rest parameter or binding pattern may not have a trailing comma.",
+                        );
+                    }
+                }
+                return;
+            }
+            previous = token;
+        }
+    }
+
     fn buildUpdateAssignment(self: *Parser, op_tok: Token, operand: NodeId, is_inc: bool, is_prefix: bool) ParseError!NodeId {
         // tsc anchors TS2357 at the operand expression itself
         // (e.g. column of `this` in `++this`, or `new` in `++ new Foo()`).
@@ -21472,6 +21528,21 @@ test "parser: rest parameter trailing comma reports TS1013 outside ambient conte
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1013), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: assignment pattern rest trailing commas report TS1013" {
+    var s = try newTestSetup(
+        \\let a, b;
+        \\([...a,] = []);
+        \\({...b,} = {});
+        \\const array_value = [...a,];
+        \\const object_value = {...b,};
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1013), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1013), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: object binding pattern supports literal and computed keys" {
