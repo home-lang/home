@@ -205,6 +205,7 @@ pub const Parser = struct {
     suppress_strict_param_names: bool,
     allow_parameter_list_arrow_recovery: bool,
     allow_numeric_arrow_param_recovery: bool,
+    recover_let_array_binding_as_statement: bool,
     parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
@@ -218,6 +219,10 @@ pub const Parser = struct {
     /// class. Upstream owns these in checker grammar diagnostics, so they
     /// are suppressed when the file has a true parse diagnostic.
     pending_outside_private_brand_diag_indices: std.ArrayListUnmanaged(u32),
+    /// Positions of strict-reserved TS1212 diagnostics for `var let`.
+    /// Upstream suppresses these grammar diagnostics when the file later
+    /// acquires a true parse diagnostic.
+    pending_var_let_strict_positions: std.ArrayListUnmanaged(u32),
     /// When true, `(params): ReturnType => body` is NOT accepted as a
     /// parenthesized arrow with return type unless the next token
     /// after the body is `:` (terminator of an enclosing ternary).
@@ -331,11 +336,13 @@ pub const Parser = struct {
             .suppress_strict_param_names = false,
             .allow_parameter_list_arrow_recovery = false,
             .allow_numeric_arrow_param_recovery = false,
+            .recover_let_array_binding_as_statement = false,
             .parameter_list_arrow_is_comma = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
             .pending_ts2463_indices = .empty,
             .pending_outside_private_brand_diag_indices = .empty,
+            .pending_var_let_strict_positions = .empty,
             .disallow_arrow_return_type = false,
             .enum_recovered_missing_close_at_eof = false,
             .top_level_external_module_indicator = false,
@@ -384,6 +391,7 @@ pub const Parser = struct {
         self.label_stack.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
         self.pending_outside_private_brand_diag_indices.deinit(self.gpa);
+        self.pending_var_let_strict_positions.deinit(self.gpa);
         self.synthetic_infer_check_nodes.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -999,6 +1007,7 @@ pub const Parser = struct {
         // infer_type node and verifies its position via the parent
         // chain. See `validateInferTypePositions` for the algorithm.
         try self.validateInferTypePositions();
+        self.suppressVarLetStrictGrammarWhenFileHasParseErrors();
         self.suppressOutsidePrivateBrandGrammarWhenFileHasParseErrors();
         self.suppressWithUnsupportedWhenFileHasParseErrors();
         return root;
@@ -1023,6 +1032,31 @@ pub const Parser = struct {
             const diag_index = self.pending_outside_private_brand_diag_indices.items[i];
             if (diag_index < self.diagnostics.items.len and self.diagnostics.items[diag_index].code == 18016) {
                 _ = self.diagnostics.orderedRemove(diag_index);
+            }
+        }
+    }
+
+    fn suppressVarLetStrictGrammarWhenFileHasParseErrors(self: *Parser) void {
+        if (self.pending_var_let_strict_positions.items.len == 0) return;
+        var has_parse_diagnostic = false;
+        for (self.diagnostics.items) |diagnostic| {
+            switch (diagnostic.code) {
+                1100, 1210, 1212, 1213, 1214, 1215 => {},
+                else => {
+                    has_parse_diagnostic = true;
+                    break;
+                },
+            }
+        }
+        if (!has_parse_diagnostic) return;
+
+        var i = self.diagnostics.items.len;
+        while (i > 0) {
+            i -= 1;
+            const diagnostic = self.diagnostics.items[i];
+            if (diagnostic.code != 1212) continue;
+            if (std.mem.indexOfScalar(u32, self.pending_var_let_strict_positions.items, diagnostic.pos) != null) {
+                _ = self.diagnostics.orderedRemove(i);
             }
         }
     }
@@ -2164,6 +2198,11 @@ pub const Parser = struct {
                     self.hir.markEnumConst(ed);
                     break :blk ed;
                 }
+                const saved_let_array_recovery = self.recover_let_array_binding_as_statement;
+                self.recover_let_array_binding_as_statement = t.kind == .kw_let and
+                    self.peekAt(1).kind == .open_bracket and
+                    !self.peekAt(1).flags.preceded_by_newline;
+                defer self.recover_let_array_binding_as_statement = saved_let_array_recovery;
                 break :blk try self.parseVarDecl();
             },
             .kw_using => blk: {
@@ -4882,6 +4921,31 @@ pub const Parser = struct {
                         else
                             "Array element destructuring pattern expected.";
                         try self.reportCodeAt(next.span.start, next.line, code, msg);
+                        if (!is_object and
+                            self.recover_let_array_binding_as_statement and
+                            next.kind == .number_literal)
+                        {
+                            _ = self.advance();
+                            if (self.peek().kind == .close_bracket) {
+                                const close = self.advance();
+                                try self.reportCodeAt(close.span.start, close.line, 1005, "';' expected.");
+                                if (self.match(.equal)) {
+                                    const equal = self.tokens[self.cursor - 1];
+                                    try self.reportCodeAt(equal.span.start, equal.line, 1128, "Declaration or statement expected.");
+                                    if (self.peek().kind != .semicolon and self.peek().kind != .eof) {
+                                        _ = self.parseExpression() catch {
+                                            while (self.peek().kind != .semicolon and self.peek().kind != .eof) _ = self.advance();
+                                        };
+                                    }
+                                }
+                                _ = self.match(.semicolon);
+                                return try self.builder.addPattern(
+                                    .array_pattern,
+                                    .{ .start = open.span.start, .end = close.span.end },
+                                    elements.items,
+                                );
+                            }
+                        }
                         return error.UnexpectedToken;
                     }
                 }
@@ -9125,7 +9189,15 @@ pub const Parser = struct {
             }
             try self.reportInvalidVariableDeclarationName(name_tok);
             try self.reportInvalidStrictName(name_tok);
+            const diag_count_before_reserved = self.diagnostics.items.len;
             try self.reportInvalidFutureReservedName(name_tok);
+            if (start.kind == .kw_var and
+                name_tok.kind == .kw_let and
+                self.diagnostics.items.len > diag_count_before_reserved and
+                self.diagnostics.items[self.diagnostics.items.len - 1].code == 1212)
+            {
+                try self.pending_var_let_strict_positions.append(self.gpa, name_tok.span.start);
+            }
             try self.reportInvalidYieldName(name_tok, true);
             try self.reportAwaitBindingIfReserved(name_tok);
             try self.reportAwaitReservedInAsyncContext(name_tok);
@@ -30314,6 +30386,28 @@ test "parser: TS1181 fires when a number literal starts an array binding element
     };
     const d = findDiag(s, 1181) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Array element destructuring pattern expected.", d.message);
+}
+
+test "parser: sloppy ES2015 let-array ambiguity preserves declaration recovery" {
+    var s = try newTestSetup(
+        \\var let: any;
+        \\let[0] = 100;
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqualSlices(u32, &.{ 1181, 1005, 1128 }, &.{
+        s.parser.diagnostics.items[0].code,
+        s.parser.diagnostics.items[1].code,
+        s.parser.diagnostics.items[2].code,
+    });
+    try T.expectEqualSlices(u32, &.{ 18, 19, 21 }, &.{
+        s.parser.diagnostics.items[0].pos,
+        s.parser.diagnostics.items[1].pos,
+        s.parser.diagnostics.items[2].pos,
+    });
 }
 
 test "parser: TS1180 fires when an operator starts an object binding element" {

@@ -2066,6 +2066,11 @@ pub fn compileSource(
         const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or
             sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js);
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, d.message, source)) continue;
+        if (has_syntactic_parse_diagnostics and
+            d.code == ts_checker.check.TsCodes.destructuring_decl_must_have_initializer)
+        {
+            continue;
+        }
         if (has_invalid_character_diagnostic and d.code == ts_checker.check.TsCodes.variable_implicitly_any_declaration) continue;
         // Suggestion-category diagnostics (TS7043-TS7050) only surface
         // when the caller opted in. They are never errors and never
@@ -4306,6 +4311,36 @@ test "driver: missing template parameter orders implicit any before identifier e
     }
     try T.expectEqual(@as(usize, 2), count);
     try T.expectEqualSlices(u32, &.{ 7006, 1003 }, &same_position_codes);
+}
+
+test "driver: let-array parse recovery suppresses grammar diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\var let: any;
+        \\let[0] = 100;
+    , .{
+        .no_emit = true,
+        .always_strict = true,
+        .syntax_target_es2015 = true,
+        .strict_flags = .{ .no_implicit_any = true },
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_1181 = false;
+    var saw_1005 = false;
+    var saw_1128 = false;
+    for (c.diagnostics.items) |diagnostic| {
+        switch (diagnostic.code) {
+            1181 => saw_1181 = true,
+            1005 => saw_1005 = true,
+            1128 => saw_1128 = true,
+            1182, 1212 => return error.TestUnexpectedResult,
+            else => {},
+        }
+    }
+    try T.expect(saw_1181 and saw_1005 and saw_1128);
 }
 
 test "driver: importHelpers reports missing Stage 3 decorator helpers from virtual tslib" {
