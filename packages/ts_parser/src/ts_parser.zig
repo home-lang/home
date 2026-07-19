@@ -2377,6 +2377,11 @@ pub const Parser = struct {
                 if (next == .open_bracket or next == .dot) {
                     break :blk try self.parseExpressionStatement();
                 }
+                if (t.kind == .kw_static and next == .kw_try) {
+                    const modifier = self.advance();
+                    try self.reportCodeAt(modifier.span.start, modifier.line, 1128, "Declaration or statement expected.");
+                    break :blk try self.parseStatement();
+                }
                 if (next == .kw_interface or next == .kw_namespace or next == .kw_module or
                     next == .kw_var or next == .kw_let or next == .kw_const or
                     next == .kw_function or next == .kw_class or next == .kw_enum or
@@ -3792,10 +3797,14 @@ pub const Parser = struct {
         if (!has_try) {
             try self.reportCodeAt(start.span.start, start.line, 1005, "'try' expected.");
         }
-        const block = if (has_try)
-            try self.parseBlockStatement()
-        else
-            try self.builder.addBlock(.{ .start = start.span.start, .end = start.span.start }, &.{});
+        var missing_try_block = false;
+        const block = if (has_try) blk: {
+            if (self.peek().kind == .open_brace) break :blk try self.parseBlockStatement();
+            const at = self.peek();
+            try self.reportCodeAt(at.span.start, at.line, 1005, "'{' expected.");
+            missing_try_block = true;
+            break :blk try self.builder.addBlock(.{ .start = at.span.start, .end = at.span.start }, &.{});
+        } else try self.builder.addBlock(.{ .start = start.span.start, .end = start.span.start }, &.{});
         var catch_param: NodeId = hir_mod.none_node_id;
         var catch_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_catch)) {
@@ -3858,7 +3867,7 @@ pub const Parser = struct {
         }
         var finally_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_finally)) finally_block = try self.parseBlockStatement();
-        if (catch_block == hir_mod.none_node_id and finally_block == hir_mod.none_node_id) {
+        if (catch_block == hir_mod.none_node_id and finally_block == hir_mod.none_node_id and !missing_try_block) {
             const tok = self.peek();
             try self.reportCodeAtWithSpan(tok.span.start, tok.line, tok.span.end - tok.span.start, 1472, "'catch' or 'finally' expected.");
         }
@@ -9667,6 +9676,18 @@ pub const Parser = struct {
         }
         if (self.peek().kind == .eof) {
             const at = self.peek();
+            var missing_open_already_reported = false;
+            for (self.diagnostics.items) |diagnostic| {
+                if (diagnostic.pos == at.span.start and diagnostic.code == 1005 and
+                    std.mem.eql(u8, diagnostic.message, "'{' expected."))
+                {
+                    missing_open_already_reported = true;
+                    break;
+                }
+            }
+            if (missing_open_already_reported) {
+                return try self.builder.addBlock(.{ .start = open.span.start, .end = at.span.start }, stmts.items);
+            }
             if (open_parsed) {
                 try self.reportCodeAtWithMatchedPair(
                     at.span.start,
@@ -9811,6 +9832,11 @@ pub const Parser = struct {
             // End the recovered `as` expression at `ns` without consuming it
             // so both trailing identifiers still reach the checker.
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            return;
+        }
+        if (t.kind == .kw_static and self.cursor > 0 and self.tokens[self.cursor - 1].kind == .identifier) {
+            const prev = self.tokens[self.cursor - 1];
+            try self.reportCodeAt(prev.span.start, prev.line, 1434, "Unexpected keyword or identifier.");
             return;
         }
         if (t.kind == .kw_from and
@@ -29216,6 +29242,21 @@ test "parser: arrow statement body recovers a missing open brace" {
         try T.expect(!std.mem.startsWith(u8, d.message, "unexpected token in expression"));
     }
     try T.expect(saw_missing_brace);
+}
+
+test "parser: stray static preserves following try statement recovery" {
+    var s = try newTestSetup(
+        \\cla <ss {
+        \\  _ static try
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const expected = [_]u32{ 1005, 1434, 1128, 1005 };
+    try T.expectEqual(expected.len, s.parser.diagnostics.items.len);
+    for (expected, s.parser.diagnostics.items) |code, diagnostic| {
+        try T.expectEqual(code, diagnostic.code);
+    }
 }
 
 test "parser: finally in expression position reports upstream recovery" {
