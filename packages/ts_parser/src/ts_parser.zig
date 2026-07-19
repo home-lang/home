@@ -9217,17 +9217,29 @@ pub const Parser = struct {
         if (init_node != hir_mod.none_node_id and self.peek().kind == .colon) {
             const colon_tok = self.advance();
             try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1005, "',' expected.");
-            while (self.peek().kind != .arrow and
-                self.peek().kind != .semicolon and
-                self.peek().kind != .comma and
-                self.peek().kind != .eof)
+            const after_colon = self.peek();
+            // A literal here is a malformed second declarator, not an
+            // arrow return type. Preserve the following statement token
+            // so source-element recovery can report it independently.
+            if (after_colon.kind == .number_literal or after_colon.kind == .string_literal or
+                after_colon.kind == .kw_true or after_colon.kind == .kw_false or
+                after_colon.kind == .kw_null or after_colon.kind == .kw_undefined)
             {
+                try self.reportCodeAt(after_colon.span.start, after_colon.line, 1134, "Variable declaration expected.");
                 _ = self.advance();
-            }
-            if (self.peek().kind == .arrow) {
-                const arrow_tok = self.advance();
-                try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "';' expected.");
-                recovered_initializer_arrow_tail = true;
+            } else {
+                while (self.peek().kind != .arrow and
+                    self.peek().kind != .semicolon and
+                    self.peek().kind != .comma and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
+                }
+                if (self.peek().kind == .arrow) {
+                    const arrow_tok = self.advance();
+                    try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "';' expected.");
+                    recovered_initializer_arrow_tail = true;
+                }
             }
         }
         if (self.peek().kind == .number_literal and
@@ -9309,27 +9321,6 @@ pub const Parser = struct {
                 is_ambient_decl,
             );
             try self.pending_statements.append(self.gpa, extra_decl);
-        }
-        // `var x = expr : 321` recovery. tsc treats a stray `:` after a
-        // var-decl initializer as a missing `,` between declarators
-        // (TS1005 `,` expected), then surfaces TS1134 for the
-        // misplaced literal expression that follows. Mirrors
-        // templateStringInPropertyName{1,2}, templateStringInPropertyName
-        // ES6_{1,2}, templateStringInObjectLiteral{,ES6} — where the
-        // earlier parseObjectLiteral template recovery turns
-        // `{ \`a\`: 321 }` into the tag-call init `{}\`a\`` followed
-        // by the stray `: 321`.
-        if (self.peek().kind == .colon and init_node != hir_mod.none_node_id) {
-            const colon = self.advance();
-            try self.reportCodeAt(colon.span.start, colon.line, 1005, "',' expected.");
-            const after = self.peek();
-            if (after.kind == .number_literal or after.kind == .string_literal or
-                after.kind == .kw_true or after.kind == .kw_false or
-                after.kind == .kw_null or after.kind == .kw_undefined)
-            {
-                try self.reportCodeAt(after.span.start, after.line, 1134, "Variable declaration expected.");
-                _ = self.advance();
-            }
         }
         if (init_node != hir_mod.none_node_id and
             !self.peek().flags.preceded_by_newline and
@@ -28121,6 +28112,22 @@ test "parser: object literal recovers from missing comma between properties" {
         if (d.code == 1005) saw_ts1005 = true;
     }
     try T.expect(saw_ts1005);
+}
+
+test "parser: template object key preserves variable-list recovery" {
+    var s = try newTestSetup(
+        \\var x = {
+        \\    `a`: 321
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const expected = [_]u32{ 1136, 1005, 1134, 1128 };
+    try T.expectEqual(expected.len, s.parser.diagnostics.items.len);
+    for (expected, s.parser.diagnostics.items) |code, diagnostic| {
+        try T.expectEqual(code, diagnostic.code);
+    }
 }
 
 test "parser: object shorthand semicolon before close reports comma expected" {
