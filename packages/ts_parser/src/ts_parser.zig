@@ -18818,6 +18818,10 @@ pub const Parser = struct {
             var value: NodeId = hir_mod.none_node_id;
             var is_shorthand = false;
             var is_method = false;
+            if (!is_computed and self.peek().kind == .bang) {
+                const bang_tok = self.advance();
+                try self.reportCodeAt(bang_tok.span.start, bang_tok.line, 1255, "A definite assignment assertion '!' is not permitted in this context.");
+            }
             if (!is_computed and self.peek().kind == .question) {
                 const question_tok = self.advance();
                 try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
@@ -28321,6 +28325,21 @@ test "parser: optional shorthand object properties report TS1162 and recover" {
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1162), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1162), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: object shorthand postfix markers report grammar diagnostics" {
+    var s = try newTestSetup(
+        \\const foo = { a! };
+        \\const bar = { a ? () {} };
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqualSlices(u32, &.{ 1255, 1162 }, &.{
+        s.parser.diagnostics.items[0].code,
+        s.parser.diagnostics.items[1].code,
+    });
 }
 
 test "parser: non-identifier shorthand property names require colon" {
