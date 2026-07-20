@@ -747,7 +747,10 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                             if (this.ping_len >= 2) {
                                 var code = std.mem.readInt(u16, close_data[0..2], .big);
                                 if (code == 1001) code = 1000;
-                                if ((code < 1000) or (code >= 1004 and code < 1007) or (code >= 1016 and code <= 2999)) code = 1002;
+                                // RFC 6455 §7.4.1-§7.4.2: codes <1000, the reserved
+                                // 1004-1006 and 1015-2999, and the undefined >4999
+                                // are protocol errors, so JS sees 1002.
+                                if ((code < 1000) or (code >= 1004 and code < 1007) or (code >= 1015 and code <= 2999) or (code > 4999)) code = 1002;
                                 var buf: [125]u8 = undefined;
                                 @memcpy(buf[0 .. this.ping_len - 2], close_data[2..this.ping_len]);
                                 this.sendCloseWithBody(socket, code, &buf, this.ping_len - 2);
