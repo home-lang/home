@@ -4873,8 +4873,10 @@ pub fn NewParser_(
                 var decls = bun.handleOom(allocator.alloc(G.Decl, 1));
                 decls[0] = G.Decl{ .binding = p.b(B.Identifier{ .ref = name_ref }, name_loc) };
 
-                if (p.enclosing_namespace_arg_ref == null) {
-                    // Top-level namespace: "var"
+                if (p.current_scope == p.module_scope) {
+                    // Module-scope enum/namespace: "var" so sibling declarations
+                    // still merge. A block/function-scoped enum gets "let" so its
+                    // binding does not hoist out of the block (matches tsc/esbuild).
                     stmts.append(
                         p.s(S.Local{
                             .kind = .k_var,
@@ -4883,7 +4885,7 @@ pub fn NewParser_(
                         }, stmt_loc),
                     ) catch |err| bun.handleOom(err);
                 } else {
-                    // Nested namespace: "let"
+                    // Nested/block scope: "let"
                     stmts.append(
                         p.s(S.Local{
                             .kind = .k_let,

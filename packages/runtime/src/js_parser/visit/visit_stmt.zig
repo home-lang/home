@@ -1375,7 +1375,9 @@ pub fn VisitStmt(
 
                 try p.recordDeclaredSymbol(data.name.ref.?);
                 try p.pushScopeForVisitPass(.entry, stmt.loc);
-                defer p.popScope();
+                // NOTE: the enum scope is popped explicitly below, before the
+                // closure generator runs, so current_scope is the scope that
+                // CONTAINS the enum when the var/let decision is made.
                 try p.recordDeclaredSymbol(data.arg);
 
                 const allocator = p.allocator;
@@ -1527,6 +1529,10 @@ pub fn VisitStmt(
                         p.recordUsage(data.arg);
                     }
                 }
+
+                // Pop the enum scope before generating the closure so the var/let
+                // decision sees the containing scope (matches esbuild 108484982).
+                p.popScope();
 
                 p.should_fold_typescript_constant_expressions = old_should_fold_typescript_constant_expressions;
 
