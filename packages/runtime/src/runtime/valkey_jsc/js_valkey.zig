@@ -409,11 +409,20 @@ pub const JSValkeyClient = struct {
             b.moveToSlice(&connection_strings);
         }
 
-        // Parse database number from pathname (e.g., "/1" -> database 1)
-        const database = if (pathname_utf8.slice().len > 1)
-            std.fmt.parseInt(u32, pathname_utf8.slice()[1..], 10) catch 0
-        else
-            0;
+        // Parse database number from pathname (e.g., "/1" -> database 1).
+        // For unix sockets the pathname IS the socket path, not a db index.
+        const database: u32 = switch (uri) {
+            .standalone_unix, .standalone_tls_unix => 0,
+            else => brk: {
+                const path = pathname_utf8.slice();
+                if (path.len > 1) {
+                    break :brk std.fmt.parseInt(u32, path[1..], 10) catch {
+                        return globalObject.throwInvalidArguments("Invalid database number in Redis URL: \"{s}\"", .{path[1..]});
+                    };
+                }
+                break :brk 0;
+            },
+        };
 
         bun.analytics.Features.valkey += 1;
 
