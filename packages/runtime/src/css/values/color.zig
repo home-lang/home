@@ -856,6 +856,14 @@ pub fn mapGamut(comptime T: type, color: T) T {
         return oklch.into(conversion_target);
     }
 
+    // Per CSS Color 4: if clipping the origin is already within the JND, use
+    // the clip directly. Without this, colors sitting essentially on the gamut
+    // boundary (e.g. sRGB blue) get desaturated by the chroma search below.
+    const origin_clipped = current.into(conversion_target).clip();
+    if (deltaEok(T, origin_clipped, current) < JND) {
+        return origin_clipped;
+    }
+
     var min: f32 = 0.0;
     var max = current.c;
 
