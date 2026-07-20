@@ -1012,11 +1012,12 @@ pub const serialize = struct {
             .dir => unreachable,
             .custom => |name| {
                 try dest.writeChar(':');
-                return dest.writeStr(name.name);
+                // Re-escape the raw name so minified output reparses.
+                css.serializer.serializeIdentifier(name.name, dest) catch return dest.addFmtError();
             },
             .custom_function => |v| {
                 try dest.writeChar(':');
-                try dest.writeStr(v.name);
+                css.serializer.serializeIdentifier(v.name, dest) catch return dest.addFmtError();
                 try dest.writeChar('(');
                 try v.arguments.toCssRaw(dest);
                 try dest.writeChar(')');
@@ -1138,12 +1139,13 @@ pub const serialize = struct {
             },
             .custom => |val| {
                 try dest.writeStr("::");
-                return dest.writeStr(val.name);
+                // Re-escape the raw name so minified output reparses.
+                css.serializer.serializeIdentifier(val.name, dest) catch return dest.addFmtError();
             },
             .custom_function => |v| {
                 const name = v.name;
                 try dest.writeStr("::");
-                try dest.writeStr(name);
+                css.serializer.serializeIdentifier(name, dest) catch return dest.addFmtError();
                 try dest.writeChar('(');
                 try v.arguments.toCssRaw(dest);
                 try dest.writeChar(')');
