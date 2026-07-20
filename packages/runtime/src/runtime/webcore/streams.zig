@@ -1444,9 +1444,14 @@ pub const NetworkSink = struct {
     pub fn abort(this: *@This()) void {
         this.ended = true;
         this.done = true;
-        this.signal.close(null);
         this.cancel = true;
         this.finalize();
+        // Close the signal LAST, and through a stack copy: close() runs the
+        // stream's JS onClose callback, whose teardown can cancel the stream,
+        // drain microtasks, and free this sink. No reference into the sink may
+        // be live across that call.
+        var signal = this.signal;
+        signal.close(null);
     }
 
     pub fn write(this: *@This(), data: Result) Result.Writable {
