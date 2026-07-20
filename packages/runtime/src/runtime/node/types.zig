@@ -780,7 +780,10 @@ pub const PathLike = union(enum) {
 pub const Valid = struct {
     pub fn pathSlice(zig_str: jsc.ZigString.Slice, ctx: *jsc.JSGlobalObject) bun.JSError!void {
         switch (zig_str.len) {
-            0...bun.MAX_PATH_BYTES => return,
+            // Exclusive: PathBuffer is [MAX_PATH_BYTES]u8 and the NUL-terminated
+            // copy needs len + 1 <= MAX_PATH_BYTES, so exactly MAX_PATH_BYTES
+            // must be rejected as ENAMETOOLONG.
+            0...bun.MAX_PATH_BYTES - 1 => return,
             else => {
                 var system_error = bun.sys.Error.fromCode(.NAMETOOLONG, .open).withPath(zig_str.slice()).toSystemError();
                 system_error.syscall = bun.String.dead;
@@ -792,7 +795,10 @@ pub const Valid = struct {
 
     pub fn pathStringLength(len: usize, ctx: *jsc.JSGlobalObject) bun.JSError!void {
         switch (len) {
-            0...bun.MAX_PATH_BYTES => return,
+            // Exclusive: PathBuffer is [MAX_PATH_BYTES]u8 and the NUL-terminated
+            // copy needs len + 1 <= MAX_PATH_BYTES, so exactly MAX_PATH_BYTES
+            // must be rejected as ENAMETOOLONG.
+            0...bun.MAX_PATH_BYTES - 1 => return,
             else => {
                 var system_error = bun.sys.Error.fromCode(.NAMETOOLONG, .open).toSystemError();
                 system_error.syscall = bun.String.dead;
@@ -817,7 +823,7 @@ pub const Valid = struct {
                 system_error.syscall = bun.String.dead;
                 return ctx.throwValue(system_error.toErrorInstance(ctx));
             },
-            1...bun.MAX_PATH_BYTES => return,
+            1...bun.MAX_PATH_BYTES - 1 => return,
         }
         comptime unreachable;
     }
