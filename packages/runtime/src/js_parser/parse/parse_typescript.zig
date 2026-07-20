@@ -135,6 +135,18 @@ pub fn ParseTypescript(
             const old_has_non_local_export_declare_inside_namespace = p.has_non_local_export_declare_inside_namespace;
             p.has_non_local_export_declare_inside_namespace = false;
 
+            // A namespace body is its own scope: yield/await/this/return from an
+            // enclosing generator/async fn or method must not leak in. Reset the
+            // fn/arrow parse context (defaults treat yield/await as identifiers),
+            // preserving is_top_level for parse_fn's react-hooks suppression.
+            const old_fn_or_arrow_data = p.fn_or_arrow_data_parse;
+            p.fn_or_arrow_data_parse = .{
+                .is_this_disallowed = true,
+                .is_return_disallowed = true,
+                .is_top_level = old_fn_or_arrow_data.is_top_level,
+            };
+            defer p.fn_or_arrow_data_parse = old_fn_or_arrow_data;
+
             // Parse the statements inside the namespace
             var stmts: ListManaged(Stmt) = ListManaged(Stmt).init(p.allocator);
             if (p.lexer.token == .t_dot) {
@@ -395,6 +407,17 @@ pub fn ParseTypescript(
             }
 
             try p.lexer.expect(.t_open_brace);
+
+            // An enum body is its own scope: yield/await/this from an enclosing
+            // generator/async fn or method must not leak into member initializers.
+            // Reset the fn/arrow parse context (defaults treat yield/await as
+            // identifiers), preserving is_top_level for parse_fn's suppression.
+            const old_fn_or_arrow_data = p.fn_or_arrow_data_parse;
+            p.fn_or_arrow_data_parse = .{
+                .is_this_disallowed = true,
+                .is_top_level = old_fn_or_arrow_data.is_top_level,
+            };
+            defer p.fn_or_arrow_data_parse = old_fn_or_arrow_data;
 
             // Parse the body
             var values = std.array_list.Managed(js_ast.EnumValue).init(p.allocator);
