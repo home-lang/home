@@ -509,7 +509,14 @@ fn parse_compound_selector(
         empty = false;
     }
 
-    if (parse_type_selector(Impl, parser, input, state.*, builder).asValue()) |_| {
+    // Propagate parse errors (don't swallow them) and only clear `empty` when a
+    // type selector was actually parsed, so an all-invalid selector list is
+    // reported empty rather than serialized as a bogus non-empty selector.
+    const had_type_selector = switch (parse_type_selector(Impl, parser, input, state.*, builder)) {
+        .result => |v| v,
+        .err => |e| return .{ .err = e },
+    };
+    if (had_type_selector) {
         empty = false;
     }
 
@@ -3245,7 +3252,10 @@ pub fn parse_nth_pseudo_class(
         parser,
         input,
         &child_state,
-        .ignore_invalid_selector,
+        // The of-list is a <complex-real-selector-list>: not forgiving. One
+        // invalid selector invalidates the whole pseudo-class; forgiving
+        // recovery would leave an empty list with no valid serialization.
+        .discard_list,
         .none,
     )) {
         .err => |e| return .{ .err = e },
@@ -3321,7 +3331,9 @@ pub fn parse_has(
         parser,
         input,
         &child_state,
-        parser.isAndWhereErrorRecovery(),
+        // :has() takes a <relative-selector-list>: not forgiving. Forgiving
+        // recovery would leave an empty list with no valid serialization.
+        .discard_list,
         .none,
     )) {
         .err => |e| return .{ .err = e },
