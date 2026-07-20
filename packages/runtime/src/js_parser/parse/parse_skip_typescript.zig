@@ -515,7 +515,7 @@ pub fn SkipTypescript(
 
                         // "let foo: any \n <number>foo" must not become a single type
                         if (check_type_parameters and !p.lexer.has_newline_before) {
-                            _ = try p.skipTypeScriptTypeArguments(false);
+                            _ = try p.skipTypeScriptTypeArguments(false, false);
                         }
                     },
                     .t_typeof => {
@@ -553,7 +553,7 @@ pub fn SkipTypescript(
                             }
 
                             if (!p.lexer.has_newline_before) {
-                                _ = try p.skipTypeScriptTypeArguments(false);
+                                _ = try p.skipTypeScriptTypeArguments(false, false);
                             }
                         }
                     },
@@ -711,7 +711,7 @@ pub fn SkipTypescript(
 
                         // "{ <A extends B>(): c.d \n <E extends F>(): g.h }" must not become a single type
                         if (!p.lexer.has_newline_before) {
-                            _ = try p.skipTypeScriptTypeArguments(false);
+                            _ = try p.skipTypeScriptTypeArguments(false, false);
                         }
                     },
                     .t_open_bracket => {
@@ -1119,7 +1119,7 @@ pub fn SkipTypescript(
             try p.skipTypeScriptObjectType();
         }
 
-        pub fn skipTypeScriptTypeArguments(p: *P, comptime isInsideJSXElement: bool) anyerror!bool {
+        pub fn skipTypeScriptTypeArguments(p: *P, comptime isInsideJSXElement: bool, comptime is_parse_type_arguments_in_expression: bool) anyerror!bool {
             p.markTypeScriptOnly();
             switch (p.lexer.token) {
                 .t_less_than, .t_less_than_equals, .t_less_than_less_than, .t_less_than_less_than_equals => {},
@@ -1139,7 +1139,21 @@ pub fn SkipTypescript(
             }
 
             // This type argument list must end with a ">"
-            try p.lexer.expectGreaterThan(isInsideJSXElement);
+            if (!is_parse_type_arguments_in_expression) {
+                // Normally TypeScript allows any token starting with ">" (e.g.
+                // "Array<Array<number>>()" is a type-arg list even with a ">>").
+                try p.lexer.expectGreaterThan(isInsideJSXElement);
+            } else {
+                // Emulating tsc's parseTypeArgumentsInExpression: only a literal
+                // ">" closes the list, so "x < y >= z" is not a type-arg list.
+                // Nested args still work: the inner list already peeled one ">"
+                // from ">>" in a type context before this outer closer is seen.
+                if (isInsideJSXElement) {
+                    try p.lexer.expectInsideJSXElement(.t_greater_than);
+                } else {
+                    try p.lexer.expect(.t_greater_than);
+                }
+            }
             return true;
         }
 
@@ -1255,7 +1269,8 @@ pub fn SkipTypescript(
             }
 
             pub fn skipTypeScriptTypeArgumentsWithBacktracking(p: *P) anyerror!bool {
-                if (try p.skipTypeScriptTypeArguments(false)) {
+                // In-expression backtracker: only a literal ">" closes the list.
+                if (try p.skipTypeScriptTypeArguments(false, true)) {
                     // Check the token after this and backtrack if it's the wrong one
                     if (!TypeScript.canFollowTypeArgumentsInExpression(p)) {
                         return error.Backtrack;

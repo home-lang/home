@@ -148,7 +148,7 @@ pub fn ParseSuffix(
                         return error.SyntaxError;
                     }
 
-                    _ = try p.skipTypeScriptTypeArguments(false);
+                    _ = try p.skipTypeScriptTypeArguments(false, false);
                     if (p.lexer.token != .t_open_paren) {
                         try p.lexer.expected(.t_open_paren);
                     }

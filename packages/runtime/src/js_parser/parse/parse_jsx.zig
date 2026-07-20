@@ -18,7 +18,7 @@ pub fn ParseJSXElement(
             // The tag may have TypeScript type arguments: "<Foo<T>/>"
             if (is_typescript_enabled) {
                 // Pass a flag to the type argument skipper because we need to call
-                _ = try p.skipTypeScriptTypeArguments(true);
+                _ = try p.skipTypeScriptTypeArguments(true, false);
             }
 
             var previous_string_with_backslash_loc = logger.Loc{};

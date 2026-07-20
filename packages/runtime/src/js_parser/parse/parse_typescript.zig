@@ -72,7 +72,7 @@ pub fn ParseTypescript(
 
             // Skip TypeScript type arguments after the identifier (e.g., @foo<T>)
             if (is_typescript_enabled) {
-                _ = try p.skipTypeScriptTypeArguments(false);
+                _ = try p.skipTypeScriptTypeArguments(false, false);
             }
 
             // DecoratorMemberExpression: Identifier (.Identifier)*
@@ -98,7 +98,7 @@ pub fn ParseTypescript(
 
                 // Skip TypeScript type arguments after member access (e.g., @foo.bar<T>)
                 if (is_typescript_enabled) {
-                    _ = try p.skipTypeScriptTypeArguments(false);
+                    _ = try p.skipTypeScriptTypeArguments(false, false);
                 }
             }
 

@@ -117,7 +117,7 @@ pub fn Parse(
                 // does and it probably doesn't have that high of a performance overhead
                 // because "extends" clauses aren't that frequent, so it should be ok.
                 if (comptime is_typescript_enabled) {
-                    _ = try p.skipTypeScriptTypeArguments(false); // isInsideJSXElement
+                    _ = try p.skipTypeScriptTypeArguments(false, false); // isInsideJSXElement
                 }
             }
 
