@@ -62,6 +62,21 @@ pub fn LowerDecorators(
             return ref;
         }
 
+        /// Whether a context-inferred name ("export default" -> "default",
+        /// object property keys, assignment targets) can be attached to a
+        /// lowered anonymous class as its syntactic binding name. Class bodies
+        /// are strict-mode code and the output may be a module, so reserved
+        /// words ("default", "let", "await"...), eval/arguments, and
+        /// non-identifier strings would make `_class = class <name> {}` a
+        /// syntax error.
+        fn canBeClassBindingName(name: []const u8) bool {
+            return js_lexer.isIdentifier(name) and
+                !js_lexer.Keywords.has(name) and
+                !js_lexer.StrictModeReservedWords.has(name) and
+                !bun.strings.eqlComptime(name, "await") and
+                !js_parser.isEvalOrArguments(name);
+        }
+
         /// Single var declaration statement.
         fn varDecl(p: *P, ref: Ref, value: ?Expr, l: logger.Loc) Stmt {
             const decls = bun.handleOom(p.allocator.alloc(G.Decl, 1));
@@ -568,7 +583,9 @@ pub fn LowerDecorators(
                     class_name_loc = loc;
                     expr_class_is_anonymous = true;
                     if (name_from_context) |name| {
-                        class.class_name = .{ .ref = newSym(p, .other, name), .loc = loc };
+                        if (canBeClassBindingName(name)) {
+                            class.class_name = .{ .ref = newSym(p, .other, name), .loc = loc };
+                        }
                     }
                 }
             } else {
@@ -1489,6 +1506,7 @@ const Arg = G.Arg;
 const Decl = G.Decl;
 const Property = G.Property;
 
+const js_lexer = bun.js_lexer;
 const js_parser = bun.js_parser;
 const JSXTransformType = js_parser.JSXTransformType;
 const Ref = js_parser.Ref;
