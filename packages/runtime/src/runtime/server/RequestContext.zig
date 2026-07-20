@@ -511,8 +511,12 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 defer this.deref();
 
                 this.detachResponse();
-                this.endRequestStreamingAndDrain();
+                // SAFETY: FFI handle. endRequestStreamingAndDrain() must run
+                // after the last `resp` access: its drainMicrotasks() can
+                // re-enter lsquic (H3) and free the stream out from under the
+                // local `resp` copy.
                 resp.end(data, closeConnection);
+                this.endRequestStreamingAndDrain();
             }
         }
 
@@ -522,12 +526,15 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 defer this.deref();
 
                 this.detachResponse();
-                this.endRequestStreamingAndDrain();
                 // This will send a terminating 0\r\n\r\n chunk to the client
                 // We only want to do that if they're still expecting a body
                 // We cannot call this function if the Content-Length header was previously set
                 if (resp.state().isResponsePending())
                     resp.endStream(closeConnection);
+                // endRequestStreamingAndDrain() must run after the last `resp`
+                // access: its drainMicrotasks() can re-enter lsquic (H3) and
+                // free the stream out from under the local `resp` copy.
+                this.endRequestStreamingAndDrain();
             }
         }
 
@@ -537,8 +544,11 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 defer this.deref();
 
                 this.detachResponse();
-                this.endRequestStreamingAndDrain();
+                // endRequestStreamingAndDrain() must run after the last `resp`
+                // access: its drainMicrotasks() can re-enter lsquic (H3) and
+                // free the stream out from under the local `resp` copy.
                 resp.endWithoutBody(closeConnection);
+                this.endRequestStreamingAndDrain();
             }
         }
 
@@ -546,8 +556,11 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             if (this.resp) |resp| {
                 defer this.deref();
                 this.detachResponse();
-                this.endRequestStreamingAndDrain();
+                // endRequestStreamingAndDrain() must run after the last `resp`
+                // access: its drainMicrotasks() can re-enter lsquic (H3) and
+                // free the stream out from under the local `resp` copy.
                 resp.forceClose();
+                this.endRequestStreamingAndDrain();
             }
         }
 
@@ -967,8 +980,9 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                         resp.writeHeader("accept-ranges", "bytes");
                         const close = resp.shouldCloseConnection();
                         this.detachResponse();
-                        this.endRequestStreamingAndDrain();
+                        // Drain after the last `resp` access (H3 drain can free the stream).
                         resp.end("", close);
+                        this.endRequestStreamingAndDrain();
                         this.deref();
                         return;
                     },
@@ -981,8 +995,9 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 if (auto_close) fd.close();
                 const close = resp.shouldCloseConnection();
                 this.detachResponse();
-                this.endRequestStreamingAndDrain();
+                // Drain after the last `resp` access (H3 drain can free the stream).
                 resp.end("", close);
+                this.endRequestStreamingAndDrain();
                 this.deref();
                 return;
             }
