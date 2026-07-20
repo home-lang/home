@@ -957,27 +957,37 @@ pub const ShellSubprocess = struct {
         }
 
         if (subprocess.stdout == .pipe) {
-            if (subprocess.stdout.pipe.start(subprocess, event_loop).asErr()) |err| {
+            // Keep the PipeReader alive across start()/readAll(): either can
+            // complete the reader synchronously (poll-registration failure /
+            // eager-read error), which finalizes and frees this slot's reader
+            // mid-call.
+            const pipe = subprocess.stdout.pipe;
+            pipe.ref();
+            defer pipe.deref();
+            if (pipe.start(subprocess, event_loop).asErr()) |err| {
                 const sys_err = err.toShellSystemError();
                 _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }
-            if (!spawn_args.lazy and subprocess.stdout == .pipe) {
-                subprocess.stdout.pipe.readAll();
+            if (!spawn_args.lazy) {
+                pipe.readAll();
             }
         }
 
         if (subprocess.stderr == .pipe) {
-            if (subprocess.stderr.pipe.start(subprocess, event_loop).asErr()) |err| {
+            const pipe = subprocess.stderr.pipe;
+            pipe.ref();
+            defer pipe.deref();
+            if (pipe.start(subprocess, event_loop).asErr()) |err| {
                 const sys_err = err.toShellSystemError();
                 _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }
 
-            if (!spawn_args.lazy and subprocess.stderr == .pipe) {
-                subprocess.stderr.pipe.readAll();
+            if (!spawn_args.lazy) {
+                pipe.readAll();
             }
         }
 
@@ -1228,6 +1238,12 @@ pub const PipeReader = struct {
                 return .{ .err = err };
             },
             .result => {
+                // reader.start reports a poll-registration failure through
+                // onReaderError (not its return value), so the reader may
+                // already be errored/torn down here; don't touch it again.
+                if (this.state == .err) {
+                    return .success;
+                }
                 if (comptime Environment.isPosix) {
                     // TODO: are these flags correct
                     const poll = this.reader.handle.poll;
