@@ -121,6 +121,23 @@ pub const TokenList = struct {
                             const ws_before = !has_whitespace and (d == '/' or d == '*');
                             bun.assert(d <= 0x7F);
                             try dest.delim(@intCast(d), ws_before);
+                            // delim() emits no whitespace when minifying, so consecutive
+                            // `/` and `*` delims would print adjacently and form a `/*` or
+                            // `*/` comment delimiter. Emit a real space when the next token
+                            // is the other half of that pair.
+                            if (dest.minify and (d == '/' or d == '*') and i + 1 < this.v.items.len) {
+                                switch (this.v.items[i + 1]) {
+                                    .token => |next_token| switch (next_token) {
+                                        .delim => |next| {
+                                            if ((d == '/' and next == '*') or (d == '*' and next == '/')) {
+                                                try dest.writeChar(' ');
+                                            }
+                                        },
+                                        else => {},
+                                    },
+                                    else => {},
+                                }
+                            }
                         }
                         has_whitespace = true;
                     },
