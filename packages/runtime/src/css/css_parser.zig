@@ -4630,7 +4630,9 @@ pub const ParserState = struct {
     pub fn sourceLocation(this: *const ParserState) SourceLocation {
         return .{
             .line = this.current_line_number,
-            .column = @intCast(this.position - this.current_line_start_position + 1),
+            // current_line_start_position is maintained with wrapping arithmetic
+            // (see consume4byteIntro), so the inverse must wrap as well.
+            .column = @intCast(this.position -% this.current_line_start_position + 1),
         };
     }
 };
@@ -4889,7 +4891,9 @@ const Tokenizer = struct {
     pub fn currentSourceLocation(this: *const Tokenizer) SourceLocation {
         return SourceLocation{
             .line = this.current_line_number,
-            .column = @intCast((this.position - this.current_line_start_position) + 1),
+            // current_line_start_position is maintained with wrapping arithmetic
+            // (see consume4byteIntro), so the inverse must wrap as well.
+            .column = @intCast((this.position -% this.current_line_start_position) + 1),
         };
     }
 
@@ -5849,11 +5853,15 @@ const Tokenizer = struct {
     /// 10xxxxxx  0x80..0xBF   Continuation byte: one of 1-3 bytes following the first
     pub fn consume4byteIntro(this: *Tokenizer) void {
         if (bun.Environment.allow_assert) std.debug.assert(this.nextByteUnchecked() & 0xF0 == 0xF0);
-        // This takes two UTF-16 characters to represent, so we
-        // actually have an undercount.
-        // this.current_line_start_position = self.current_line_start_position.wrapping_sub(1);
-        this.current_line_start_position -%= 1;
         this.position += 1;
+        // 4 UTF-8 bytes encode 2 UTF-16 units (undercount). Input here is
+        // unvalidated bytes, so only apply the -1 when a continuation byte
+        // follows; a stray 0xF0..0xFF must not underflow the column math.
+        if (this.nextByte()) |b| {
+            if (b & 0xC0 == 0x80) {
+                this.current_line_start_position -%= 1;
+            }
+        }
     }
 
     pub fn isIdentStart(this: *Tokenizer) bool {
@@ -5913,9 +5921,13 @@ const Tokenizer = struct {
         this.position += 1;
         // Continuation bytes contribute to column overcount.
         if (byte & 0xF0 == 0xF0) {
-            // This takes two UTF-16 characters to represent, so we
-            // actually have an undercount.
-            this.current_line_start_position -%= 1;
+            // See consume4byteIntro: input is unvalidated bytes, so only apply
+            // the UTF-16 undercount when a continuation byte follows.
+            if (this.nextByte()) |b| {
+                if (b & 0xC0 == 0x80) {
+                    this.current_line_start_position -%= 1;
+                }
+            }
         } else if (byte & 0xC0 == 0x80) {
             // Note that due to the special case for the 4-byte
             // sequence intro, we must use wrapping add here.
