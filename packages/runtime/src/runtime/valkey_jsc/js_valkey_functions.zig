@@ -1036,6 +1036,11 @@ pub fn subscribe(
     globalObject: *jsc.JSGlobalObject,
     callframe: *jsc.CallFrame,
 ) bun.JSError!JSValue {
+    // Hold a ref across the whole call: upsertReceiveHandler can re-enter
+    // (onWritable/updatePollRef) and drop the last native ref, which would free
+    // `this` before send() below runs on it.
+    this.ref();
+    defer this.deref();
     const channel_or_many, const handler_callback = callframe.argumentsAsArray(2);
     var stack_fallback = bun.stackFallback(512, bun.default_allocator);
     var redis_channels = try std.array_list.Managed(JSArgument).initCapacity(stack_fallback.get(), 1);
@@ -1134,6 +1139,11 @@ pub fn unsubscribe(
     globalObject: *jsc.JSGlobalObject,
     callframe: *jsc.CallFrame,
 ) bun.JSError!JSValue {
+    // Hold a ref across the whole call: handler teardown can re-enter
+    // (onWritable/updatePollRef) and drop the last native ref, which would free
+    // `this` before send() runs on it.
+    this.ref();
+    defer this.deref();
     // Check if we're in subscription mode
     try requireSubscriber(this, @src().fn_name);
 
