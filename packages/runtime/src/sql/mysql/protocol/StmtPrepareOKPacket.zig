@@ -20,6 +20,11 @@ pub fn decodeInternal(this: *StmtPrepareOKPacket, comptime Context: type, reader
     }
 
     this.statement_id = try reader.int(u32);
+    // The server never issues statement_id 0, and the client keys its own
+    // "prepared" state on statement_id > 0, so a 0 here is a protocol violation.
+    if (this.statement_id == 0) {
+        return error.InvalidPrepareOKPacket;
+    }
     this.num_columns = try reader.int(u16);
     this.num_params = try reader.int(u16);
     _ = try reader.int(u8); // reserved_1
