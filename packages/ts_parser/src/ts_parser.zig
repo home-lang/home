@@ -8939,6 +8939,38 @@ pub const Parser = struct {
         };
     }
 
+    fn tokenStartsOuterStatementAfterVariableList(kind: TokenKind) bool {
+        if (tokenStartsDeclarationStatementAfterVariableList(kind)) return true;
+        return switch (kind) {
+            .number_literal,
+            .bigint_literal,
+            .string_literal,
+            .no_substitution_template,
+            .template_head,
+            .regex_literal,
+            .open_paren,
+            .kw_true,
+            .kw_false,
+            .kw_null,
+            .kw_this,
+            .kw_super,
+            .kw_new,
+            .kw_typeof,
+            .kw_void,
+            .kw_delete,
+            .kw_throw,
+            .plus,
+            .minus,
+            .bang,
+            .tilde,
+            .plus_plus,
+            .minus_minus,
+            .dot_dot_dot,
+            => true,
+            else => false,
+        };
+    }
+
     /// Parse a "left-hand-side" expression — primary + member-call
     /// chain. Used for `extends` clauses where a full assignment-level
     /// expression isn't grammatical.
@@ -9309,7 +9341,7 @@ pub const Parser = struct {
             }
         }
         var recovered_initializer_arrow_tail = false;
-        var recovered_declaration_list_boundary = false;
+        var recovered_variable_list_boundary = false;
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         try self.reportVariableDefiniteAssignment(definite_assignment_token, type_annotation, init_node, is_ambient_decl);
         try self.recoverRegexVariableDeclarationTail(init_node);
@@ -9431,21 +9463,20 @@ pub const Parser = struct {
             _ = try self.parseUnaryExpression();
         }
         // `parseDelimitedList(PCVariableDeclarations)` reports a missing
-        // comma before a declaration-start token, then yields to the outer
-        // statement parsing context. Keep that token unread so an invalid
-        // sequence such as `var F = @dec function () {}` can recover the
-        // trailing function declaration and emit its own TS1003 at `(`.
-        // This is the parser-list boundary used by typescript-go rather
-        // than a missing statement terminator.
+        // comma before a token that cannot start another binding, then
+        // yields to the outer source-element context. Keep that token unread
+        // so `var b = new C 32, ''` becomes `var b = new C; 32, ''` and the
+        // comma expression remains available to the checker. Declaration
+        // starts use the same recovery boundary.
         if (!recovered_initializer_arrow_tail and
             !self.peek().flags.preceded_by_newline and
-            tokenStartsDeclarationStatementAfterVariableList(self.peek().kind))
+            tokenStartsOuterStatementAfterVariableList(self.peek().kind))
         {
             const boundary = self.peek();
             try self.reportCodeAt(boundary.span.start, boundary.line, 1005, "',' expected.");
-            recovered_declaration_list_boundary = true;
+            recovered_variable_list_boundary = true;
         }
-        if (!recovered_initializer_arrow_tail and !recovered_declaration_list_boundary) {
+        if (!recovered_initializer_arrow_tail and !recovered_variable_list_boundary) {
             try self.consumeStatementTerminator();
         }
 
@@ -30907,4 +30938,28 @@ test "parser: regex atom escape reports undetermined character escape" {
     try T.expectEqualStrings("Undetermined character escape.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 9), s.parser.diagnostics.items[0].pos);
     try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[0].span_len);
+}
+
+test "parser: variable list recovery preserves a following comma expression" {
+    const src =
+        \\class C {}
+        \\var b = new C 32, '';
+        \\var after = new C();
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmts[1]).init));
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(stmts[2]));
+    try T.expectEqual(hir_mod.BinOp.comma, hir_mod.binopOf(&s.hir, stmts[2]).op);
+    try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[3]));
+
+    const missing_comma = findDiag(s, 1005) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("',' expected.", missing_comma.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "32").?)), missing_comma.pos);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
 }

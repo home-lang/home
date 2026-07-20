@@ -96,3 +96,5 @@ app-with-resources
 
 # Local native build artifacts (lol-html staticlib etc.)
 .native/
+/.survey
+/.zig-global-cache-home-test
