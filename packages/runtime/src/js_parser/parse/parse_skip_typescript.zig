@@ -29,6 +29,11 @@ pub fn SkipTypescript(
         }
 
         pub fn skipTypeScriptBinding(p: *P) anyerror!void {
+            // Nested destructuring patterns in skipped type positions recurse
+            // through this function; bound it like parseBinding does.
+            if (!p.stack_check.isSafeToRecurse()) {
+                try bun.throwStackOverflow();
+            }
             p.markTypeScriptOnly();
             switch (p.lexer.token) {
                 .t_identifier, .t_this => {
@@ -200,6 +205,12 @@ pub fn SkipTypescript(
             result: if (get_metadata) *TypeScript.Metadata else void,
         ) anyerror!void {
             p.markTypeScriptOnly();
+            // Deeply nested types ("[[[[...", "A<A<A<...") recurse through this
+            // function; bound it the way parseExprCommon bounds expression
+            // recursion instead of overflowing the stack.
+            if (!p.stack_check.isSafeToRecurse()) {
+                try bun.throwStackOverflow();
+            }
 
             while (true) {
                 switch (p.lexer.token) {
