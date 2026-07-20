@@ -1252,7 +1252,9 @@ pub const PipeReader = struct {
         const should_continue = has_more != .eof;
 
         if (should_continue) {
-            if (bun.Environment.isPosix) this.reader.registerPoll() else switch (this.reader.startWithCurrentPipe()) {
+            if (bun.Environment.isPosix) {
+                _ = this.reader.registerPoll();
+            } else switch (this.reader.startWithCurrentPipe()) {
                 .err => |e| {
                     Output.panic("TODO: implement error handling in Bun Shell PipeReader.onReadChunk\n{f}", .{e});
                 },

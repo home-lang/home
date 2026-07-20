@@ -273,7 +273,11 @@ const PosixBufferedReader = struct {
         this.vtable.onReaderError(err);
     }
 
-    pub fn registerPoll(this: *PosixBufferedReader) void {
+    /// Returns false when registration failed and onError was dispatched. That
+    /// callback may drop the last reference to the struct embedding this reader
+    /// (the shell PipeReader does exactly that), so the caller must not touch
+    /// this reader again after a false return.
+    pub fn registerPoll(this: *PosixBufferedReader) bool {
         const poll = this.handle.getPoll() orelse brk: {
             if (this.handle == .fd and this.flags.pollable) {
                 const fd = this.handle.fd;
@@ -281,7 +285,7 @@ const PosixBufferedReader = struct {
                 break :brk this.handle.poll;
             }
 
-            return;
+            return true;
         };
         poll.owner.set(this);
 
@@ -291,9 +295,11 @@ const PosixBufferedReader = struct {
         switch (poll.registerWithFd(this.loop(), .readable, .dispatch, poll.fd)) {
             .err => |err| {
                 this.onError(err);
+                return false;
             },
             .result => {},
         }
+        return true;
     }
 
     pub fn start(this: *PosixBufferedReader, fd: bun.FD, is_pollable: bool) bun.sys.Maybe(void) {
@@ -308,7 +314,7 @@ const PosixBufferedReader = struct {
         if (this.getFd() != fd) {
             this.handle = .{ .fd = fd };
         }
-        this.registerPoll();
+        _ = this.registerPoll();
 
         return .{
             .result = {},
@@ -328,7 +334,7 @@ const PosixBufferedReader = struct {
 
     pub fn watch(this: *PosixBufferedReader) void {
         if (this.flags.pollable) {
-            this.registerPoll();
+            _ = this.registerPoll();
         }
     }
 
@@ -379,7 +385,7 @@ const PosixBufferedReader = struct {
                         readFromBlockingPipeWithoutBlocking(this, buf, fd, 0, true);
                     },
                     .not_ready => {
-                        this.registerPoll();
+                        _ = this.registerPoll();
                     },
                 }
             },
@@ -520,7 +526,7 @@ const PosixBufferedReader = struct {
 
             // Register for next poll cycle unless we got HUP
             if (!received_hup) {
-                parent.registerPoll();
+                _ = parent.registerPoll();
                 return;
             }
 
@@ -541,7 +547,7 @@ const PosixBufferedReader = struct {
             //
             // An explicit EAGAIN proves the HUP is stale, so re-arm.
             if (got_retry) {
-                parent.registerPoll();
+                _ = parent.registerPoll();
                 return;
             }
             // Otherwise we just returned from user JS; re-poll the fd to see
@@ -561,7 +567,7 @@ const PosixBufferedReader = struct {
                 .not_ready => {
                     // No data and no HUP: a writer exists. Go back to the
                     // event loop instead of blocking in read().
-                    parent.registerPoll();
+                    _ = parent.registerPoll();
                     return;
                 },
             }
@@ -612,8 +618,11 @@ const PosixBufferedReader = struct {
                             if (err.isRetry()) {
                                 if (comptime file_type == .file) {
                                     bun.Output.debugWarn("Received EAGAIN while reading from a file. This is a bug.", .{});
-                                } else {
-                                    parent.registerPoll();
+                                } else if (!parent.registerPoll()) {
+                                    // onError ran and may have freed the struct
+                                    // embedding parent; the drained head below must
+                                    // not be delivered.
+                                    return;
                                 }
 
                                 if (stack_buffer[0 .. stack_buffer.len - stack_buffer_head.len].len > 0)
@@ -665,7 +674,7 @@ const PosixBufferedReader = struct {
                         if (comptime file_type == .file) {
                             bun.Output.debugWarn("Received EAGAIN while reading from a file. This is a bug.", .{});
                         } else {
-                            parent.registerPoll();
+                            _ = parent.registerPoll();
                         }
                         return;
                     }
@@ -721,7 +730,7 @@ const PosixBufferedReader = struct {
                         if (comptime file_type == .file) {
                             bun.Output.debugWarn("Received EAGAIN while reading from a file. This is a bug.", .{});
                         } else {
-                            parent.registerPoll();
+                            _ = parent.registerPoll();
                         }
                         return;
                     }

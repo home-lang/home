@@ -156,9 +156,9 @@ pub fn onReadChunk(ptr: *anyopaque, chunk: []const u8, has_more: bun.io.ReadStat
     if (should_continue) {
         if (this.readers.len() > 0) {
             this.setReading(true);
-            if (bun.Environment.isPosix)
-                this.reader.registerPoll()
-            else switch (this.reader.startWithCurrentPipe()) {
+            if (bun.Environment.isPosix) {
+                _ = this.reader.registerPoll();
+            } else switch (this.reader.startWithCurrentPipe()) {
                 .err => |e| {
                     this.onReaderError(e);
                     return false;
