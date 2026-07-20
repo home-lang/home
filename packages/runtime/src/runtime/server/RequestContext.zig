@@ -340,7 +340,10 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             defer ctx.deref();
 
             const err = arguments.ptr[0];
-            handleReject(ctx, if (!err.isEmptyOrUndefinedOrNull()) err else .js_undefined);
+            // Pass the rejection reason through verbatim (including null and
+            // undefined) so error() sees the same value the already-settled
+            // path delivers; only an empty JSValue is normalized.
+            handleReject(ctx, if (err == .zero) .js_undefined else err);
             return .js_undefined;
         }
 
