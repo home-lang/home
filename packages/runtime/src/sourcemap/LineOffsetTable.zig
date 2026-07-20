@@ -103,8 +103,16 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
     var remaining = contents;
     while (remaining.len > 0) {
         const len_ = wtf8ByteSequenceLengthWithInvalid(remaining[0]);
-        const c = decodeWTF8RuneT(remaining.ptr[0..4], len_, i32, 0);
-        const cp_len = @as(usize, len_);
+        // `len_` is the lead byte's *declared* width; a source whose final bytes
+        // are a truncated multi-byte sequence declares more bytes than remain,
+        // so every slice below (decode, SIMD-skip offset, advance) must use the
+        // clamped width to avoid an out-of-bounds read/slice.
+        const cp_len = @min(@as(usize, len_), remaining.len);
+        const c = if (len_ == 1) @as(i32, remaining[0]) else brk: {
+            var cp_bytes: [4]u8 = .{ 0, 0, 0, 0 };
+            @memcpy(cp_bytes[0..cp_len], remaining[0..cp_len]);
+            break :brk decodeWTF8RuneT(&cp_bytes, len_, i32, 0);
+        };
 
         if (column == 0) {
             line_byte_offset = @as(
@@ -147,7 +155,7 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
             switch (c) {
                 (@max('\r', '\n') + 1)...127 => {
                     // skip ahead to the next newline or non-ascii character
-                    if (indexOfNewlineOrNonASCIICheckStart(remaining, @as(u32, len_), false)) |j| {
+                    if (indexOfNewlineOrNonASCIICheckStart(remaining, @as(u32, @intCast(cp_len)), false)) |j| {
                         column += @as(i32, @intCast(j));
                         remaining = remaining[j..];
                     } else {
