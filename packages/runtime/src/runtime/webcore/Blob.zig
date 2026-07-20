@@ -631,6 +631,14 @@ fn _onStructuredCloneDeserialize(
                 .fd => {
                     const fd = try readStructFromReader(reader, bun.FD);
 
+                    // A negative fd from the (untrusted) wire is invalid on POSIX;
+                    // it must never reach the syscall layer.
+                    if (comptime !bun.Environment.isWindows) {
+                        if (fd.native() < 0) {
+                            return globalThis.throwInvalidArguments("Invalid file descriptor", .{});
+                        }
+                    }
+
                     var path_or_fd = jsc.Node.PathOrFileDescriptor{
                         .fd = fd,
                     };
@@ -646,6 +654,11 @@ fn _onStructuredCloneDeserialize(
                     const path_len = try reader.takeInt(u32, .little);
 
                     const path = try readSlice(reader, path_len, default_allocator);
+                    // An interior NUL cannot be handed to the syscall layer
+                    // (the C-string view would truncate); reject at deserialize.
+                    if (std.mem.indexOfScalar(u8, path, 0) != null) {
+                        return globalThis.throwInvalidArguments("Blob path cannot contain null bytes", .{});
+                    }
                     var dest = jsc.Node.PathOrFileDescriptor{
                         .path = .{
                             .string = bun.PathString.init(path),
@@ -732,6 +745,10 @@ pub fn onStructuredCloneDeserialize(globalThis: *jsc.JSGlobalObject, ptr: *[*]u8
         error.OutOfMemory => {
             return globalThis.throwOutOfMemory();
         },
+        // A validation guard (e.g. negative fd / interior-NUL path) already
+        // set the exception on the global object; propagate it.
+        error.JSError => return error.JSError,
+        error.JSTerminated => return error.JSTerminated,
     };
 
     // Advance the pointer by the number of bytes consumed
