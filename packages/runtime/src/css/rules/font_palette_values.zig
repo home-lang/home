@@ -130,7 +130,10 @@ pub const OverrideColors = struct {
             .result => |vv| vv,
             .err => |e| return .{ .err = e },
         };
-        if (index < 0) return .{ .err = input.newCustomError(css.ParserError.invalid_value) };
+        // Palette entry indices are stored as u16; reject negatives and values
+        // that don't fit instead of panicking on the cast.
+        const index_u16 = std.math.cast(u16, index) orelse
+            return .{ .err = input.newCustomError(css.ParserError.invalid_value) };
 
         const color = switch (css.CssColor.parse(input)) {
             .result => |vv| vv,
@@ -140,7 +143,7 @@ pub const OverrideColors = struct {
 
         return .{
             .result = OverrideColors{
-                .index = @intCast(index),
+                .index = index_u16,
                 .color = color,
             },
         };
@@ -171,8 +174,11 @@ pub const BasePalette = union(enum) {
 
     pub fn parse(input: *css.Parser) Result(BasePalette) {
         if (input.tryParse(css.CSSIntegerFns.parse, .{}).asValue()) |i| {
-            if (i < 0) return .{ .err = input.newCustomError(css.ParserError.invalid_value) };
-            return .{ .result = .{ .integer = @intCast(i) } };
+            // Palette indices are stored as u16; reject negatives and values
+            // that don't fit instead of panicking on the cast.
+            const i_u16 = std.math.cast(u16, i) orelse
+                return .{ .err = input.newCustomError(css.ParserError.invalid_value) };
+            return .{ .result = .{ .integer = i_u16 } };
         }
 
         const location = input.currentSourceLocation();
