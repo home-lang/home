@@ -1150,10 +1150,15 @@ pub fn cronParse(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         }
     } else @as(f64, @floatFromInt(bun.milliTimestamp()));
 
-    if (std.math.isNan(from_ms) or std.math.isInf(from_ms))
+    // ECMA-262 §21.4.1.1 Time Value range bound (±8.64e15 ms). Out-of-range
+    // ms produces garbage date components that panic next()'s u32 conversions.
+    const MAX_ECMASCRIPT_TIME: f64 = 8.64e15;
+    if (std.math.isNan(from_ms) or @abs(from_ms) > MAX_ECMASCRIPT_TIME)
         return globalObject.throwInvalidArguments("Invalid date value", .{});
 
     const next_ms = (try parsed.next(globalObject, from_ms)) orelse return .null;
+    // Return null (not an Invalid Date) so callers can rely on `=== null`.
+    if (next_ms > MAX_ECMASCRIPT_TIME) return .null;
     return jsc.JSValue.fromDateNumber(globalObject, next_ms);
 }
 
