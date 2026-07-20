@@ -931,7 +931,13 @@ fn getUserAgentHeader() picohttp.Header {
 }
 
 pub fn headerStr(this: *const HTTPClient, ptr: api.StringPointer) string {
-    return this.header_buf[ptr.offset..][0..ptr.length];
+    // Return empty on a desynced `header_entries` / `header_buf` rather than
+    // slice-panicking on the HTTP thread inside buildRequest.
+    const end = @as(usize, ptr.offset) +% @as(usize, ptr.length);
+    if (end > this.header_buf.len or @as(usize, ptr.offset) > end) {
+        return "";
+    }
+    return this.header_buf[ptr.offset..end];
 }
 
 pub const HeaderBuilder = @import("./HeaderBuilder.zig");
