@@ -1249,20 +1249,13 @@ pub const PipeReader = struct {
 
         this.captured_writer.doWrite(chunk);
 
-        const should_continue = has_more != .eof;
-
-        if (should_continue) {
-            if (bun.Environment.isPosix) {
-                _ = this.reader.registerPoll();
-            } else switch (this.reader.startWithCurrentPipe()) {
-                .err => |e| {
-                    Output.panic("TODO: implement error handling in Bun Shell PipeReader.onReadChunk\n{f}", .{e});
-                },
-                else => {},
-            }
-        }
-
-        return should_continue;
+        // No explicit re-arm here: this callback runs inside the bun_io read
+        // loop, which still holds the reader on its stack and re-registers the
+        // poll itself based on the bool we return. Re-arming here would violate
+        // BufferedReaderParent's contract that onReadChunk never frees the
+        // reader — registerPoll()'s failure path dispatches onError, which can
+        // free the PosixBufferedReader the loop is still reading through.
+        return has_more != .eof;
     }
 
     pub fn onReaderDone(this: *PipeReader) void {
