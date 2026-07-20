@@ -244,7 +244,7 @@ pub fn SkipTypescript(
                         try p.lexer.next();
 
                         // ["const: number]"
-                        if (opts.contains(.allow_tuple_labels) and p.lexer.token == .t_colon) {
+                        if (opts.contains(.allow_tuple_labels) and (p.lexer.token == .t_colon or p.lexer.token == .t_question)) {
                             try p.log.addRangeError(p.source, r, "Unexpected \"const\"");
                         }
                     },
@@ -290,7 +290,7 @@ pub fn SkipTypescript(
                         try p.lexer.next();
 
                         // "[import: number]"
-                        if (opts.contains(.allow_tuple_labels) and p.lexer.token == .t_colon) {
+                        if (opts.contains(.allow_tuple_labels) and (p.lexer.token == .t_colon or p.lexer.token == .t_question)) {
                             return;
                         }
 
@@ -318,7 +318,7 @@ pub fn SkipTypescript(
                         try p.lexer.next();
 
                         // "[new: number]"
-                        if (opts.contains(.allow_tuple_labels) and p.lexer.token == .t_colon) {
+                        if (opts.contains(.allow_tuple_labels) and (p.lexer.token == .t_colon or p.lexer.token == .t_question)) {
                             return;
                         }
 
@@ -351,7 +351,7 @@ pub fn SkipTypescript(
                                 // Invalid:
                                 //   "A extends B ? keyof : string"
                                 //
-                                if ((p.lexer.token != .t_colon and p.lexer.token != .t_in) or (!opts.contains(.is_index_signature) and !opts.contains(.allow_tuple_labels))) {
+                                if ((p.lexer.token != .t_colon and p.lexer.token != .t_question and p.lexer.token != .t_in) or (!opts.contains(.is_index_signature) and !opts.contains(.allow_tuple_labels))) {
                                     try p.skipTypeScriptType(.prefix);
                                 }
 
@@ -364,7 +364,7 @@ pub fn SkipTypescript(
                             .prefix_readonly => {
                                 try p.lexer.next();
 
-                                if ((p.lexer.token != .t_colon and p.lexer.token != .t_in) or (!opts.contains(.is_index_signature) and !opts.contains(.allow_tuple_labels))) {
+                                if ((p.lexer.token != .t_colon and p.lexer.token != .t_question and p.lexer.token != .t_in) or (!opts.contains(.is_index_signature) and !opts.contains(.allow_tuple_labels))) {
                                     try p.skipTypeScriptType(.prefix);
                                 }
 
@@ -382,7 +382,7 @@ pub fn SkipTypescript(
                                 // "type Foo = Bar extends [infer T extends string] ? T : null"
                                 // "type Foo = Bar extends [infer T extends string ? infer T : never] ? T : null"
                                 // "type Foo = { [infer in Bar]: number }"
-                                if ((p.lexer.token != .t_colon and p.lexer.token != .t_in) or (!opts.contains(.is_index_signature) and !opts.contains(.allow_tuple_labels))) {
+                                if ((p.lexer.token != .t_colon and p.lexer.token != .t_question and p.lexer.token != .t_in) or (!opts.contains(.is_index_signature) and !opts.contains(.allow_tuple_labels))) {
                                     try p.lexer.expect(.t_identifier);
                                     if (p.lexer.token == .t_extends) {
                                         if (opts.contains(.disallow_conditional_types)) {
@@ -522,7 +522,7 @@ pub fn SkipTypescript(
                         try p.lexer.next();
 
                         // "[typeof: number]"
-                        if (opts.contains(.allow_tuple_labels) and p.lexer.token == .t_colon) {
+                        if (opts.contains(.allow_tuple_labels) and (p.lexer.token == .t_colon or p.lexer.token == .t_question)) {
                             return;
                         }
 
@@ -616,7 +616,8 @@ pub fn SkipTypescript(
                             }
                             try p.lexer.next();
 
-                            if (p.lexer.token != .t_colon) {
+                            // "[function?: number]" — an optional keyword label.
+                            if (p.lexer.token != .t_colon and p.lexer.token != .t_question) {
                                 try p.lexer.expect(.t_colon);
                             }
 
