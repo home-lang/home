@@ -13,6 +13,11 @@ pub fn run(this: *PBKDF2, output: []u8) bool {
     const iteration_count = this.iteration_count;
     const length = this.length;
 
+    // Node.js (OpenSSL) rejects a zero-length derivation; BoringSSL accepts it.
+    if (length == 0) {
+        return false;
+    }
+
     @memset(output, 0);
     assert(this.length <= @as(i32, @intCast(output.len)));
     BoringSSL.ERR_clear_error();
@@ -125,7 +130,9 @@ pub fn fromJS(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame, is_asy
 
     const keylen_num = arg3.asNumber();
 
-    if (std.math.isInf(keylen_num) or std.math.isNan(keylen_num)) {
+    // Reject non-integers (NaN/Inf and fractionals like 4.5) rather than
+    // silently truncating them in the @intFromFloat below.
+    if (!arg3.isInteger()) {
         return globalThis.throwRangeError(keylen_num, .{
             .field_name = "keylen",
             .msg = "an integer",
