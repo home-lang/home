@@ -9,6 +9,12 @@ pub fn ParseJSXElement(
         const only_scan_imports_and_do_not_visit = P.only_scan_imports_and_do_not_visit;
 
         pub fn parseJSXElement(noalias p: *P, loc: logger.Loc) anyerror!Expr {
+            // Nested child elements (<a><b><c>...) recurse back into this
+            // function, so guard the stack like the other recursive parse
+            // entry points do.
+            if (!p.stack_check.isSafeToRecurse()) {
+                try bun.throwStackOverflow();
+            }
             if (only_scan_imports_and_do_not_visit) {
                 p.needs_jsx_import = true;
             }
