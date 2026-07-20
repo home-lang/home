@@ -501,7 +501,10 @@ pub const GridTemplateAreas = union(enum) {
                     }
                     break :idx rest.len;
                 };
+                // A run of `.` characters is a single null-cell token (CSS Grid 2 §7.3).
+                bun.handleOom(tokens.append(allocator, null));
                 string = rest[idx..];
+                continue;
             }
 
             const starts_with_name_codepoint = brk: {
