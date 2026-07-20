@@ -20,9 +20,9 @@ pub fn toHaveBeenCalledTimes(this: *Expect, globalThis: *JSGlobalObject, callfra
         return globalThis.throwInvalidArguments("toHaveBeenCalledTimes() requires 1 non-negative integer argument", .{});
     }
 
-    const times = try arguments[0].coerce(i32, globalThis);
+    const times = arguments[0].toInt64();
 
-    var pass = @as(i32, @intCast(try calls.getLength(globalThis))) == times;
+    var pass = @as(i64, @intCast(try calls.getLength(globalThis))) == times;
 
     const not = this.flags.not;
     if (not) pass = !pass;

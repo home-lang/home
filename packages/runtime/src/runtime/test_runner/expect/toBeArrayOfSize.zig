@@ -21,7 +21,8 @@ pub fn toBeArrayOfSize(this: *Expect, globalThis: *JSGlobalObject, callFrame: *C
     this.incrementExpectCallCounter();
 
     const not = this.flags.not;
-    var pass = value.jsType().isArray() and @as(i32, @intCast(try value.getLength(globalThis))) == size.toInt32();
+    // Array length can be up to 2^32-1, which exceeds i32 range.
+    var pass = value.jsType().isArray() and @as(i64, @intCast(try value.getLength(globalThis))) == size.toInt64();
 
     if (not) pass = !pass;
     if (pass) return .js_undefined;
