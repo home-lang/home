@@ -199,7 +199,13 @@ pub fn spawnMaybeSync(
             if (try args.getTruthy(globalThis, "argv0")) |argv0_| {
                 const argv0_str = try argv0_.getZigString(globalThis);
                 if (argv0_str.len > 0) {
-                    argv0 = try argv0_str.toOwnedSliceZ(allocator);
+                    const owned = try argv0_str.toOwnedSliceZ(allocator);
+                    // Reject null bytes to prevent null-byte injection.
+                    if (std.mem.indexOfScalar(u8, owned, 0) != null) {
+                        allocator.free(owned);
+                        return globalThis.throwInvalidArguments("The property 'options.argv0' must be a string without null bytes.", .{});
+                    }
+                    argv0 = owned;
                 }
             }
 
@@ -207,7 +213,13 @@ pub fn spawnMaybeSync(
             if (try args.getTruthy(globalThis, "cwd")) |cwd_| {
                 const cwd_str = try cwd_.getZigString(globalThis);
                 if (cwd_str.len > 0) {
-                    cwd = try cwd_str.toOwnedSliceZ(allocator);
+                    const owned = try cwd_str.toOwnedSliceZ(allocator);
+                    // Reject null bytes to prevent null-byte injection.
+                    if (std.mem.indexOfScalar(u8, owned, 0) != null) {
+                        allocator.free(owned);
+                        return globalThis.throwInvalidArguments("The property 'options.cwd' must be a string without null bytes.", .{});
+                    }
+                    cwd = owned;
                 }
             }
         }
