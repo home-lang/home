@@ -326,7 +326,7 @@ inline fn globMatchImpl(state: *State, glob: []const u8, glob_start: u32, path: 
 }
 
 fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *BraceStack, brace_budget: *u32) bool {
-    var brace_depth: i16 = 0;
+    var brace_depth: i32 = 0;
     var in_brackets = false;
 
     const open_brace_index = state.glob_index;
@@ -393,17 +393,22 @@ fn matchBraceBranch(state: *State, glob: []const u8, path: []const u8, open_brac
 
 fn skipBranch(state: *State, glob: []const u8) void {
     var in_brackets = false;
-    const end_brace_depth = state.brace_depth - 1;
+    // state.brace_depth only counts groups entered via matchBraceBranch, so
+    // nesting merely scanned over while skipping is tracked locally (avoids
+    // overflowing the u8 counter on >255 nested braces in a skipped branch).
+    var nested: u32 = 0;
     while (state.glob_index < glob.len) {
         switch (glob[state.glob_index]) {
             '{' => if (!in_brackets) {
-                state.brace_depth += 1;
+                nested += 1;
             },
             '}' => if (!in_brackets) {
-                state.brace_depth -= 1;
-                if (state.brace_depth == end_brace_depth) {
+                if (nested == 0) {
+                    state.brace_depth -= 1;
                     state.glob_index += 1;
                     return;
+                } else {
+                    nested -= 1;
                 }
             },
             '[' => if (!in_brackets) {
