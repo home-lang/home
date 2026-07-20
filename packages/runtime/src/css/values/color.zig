@@ -3093,6 +3093,13 @@ pub fn parseColorMix(input: *css.Parser) Result(CssColor) {
         },
     };
 
+    // The grammar is <percentage [0,100]>; values outside that range are invalid.
+    if ((first_percent != null and (first_percent.? < 0.0 or first_percent.? > 1.0)) or
+        (second_percent != null and (second_percent.? < 0.0 or second_percent.? > 1.0)))
+    {
+        return .{ .err = input.newCustomError(css.ParserError.invalid_value) };
+    }
+
     // https://drafts.csswg.org/css-color-5/#color-mix-percent-norm
     const p1: f32, const p2: f32 = if (first_percent == null and second_percent == null) .{ @as(f32, 0.5), @as(f32, 0.5) } else brk: {
         const p2 = second_percent orelse (@as(f32, 1.0) - first_percent.?);
