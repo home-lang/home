@@ -486,12 +486,17 @@ pub const CssColor = union(enum) {
     pub fn getFallback(this: *const @This(), allocator: Allocator, kind: ColorFallbackKind) CssColor {
         if (this.* == .rgba) return this.deepClone(allocator);
 
-        return switch (kind.asBits()) {
-            ColorFallbackKind.RGB.asBits() => this.toRGB(allocator).?,
-            ColorFallbackKind.P3.asBits() => this.toP3(allocator).?,
-            ColorFallbackKind.LAB.asBits() => this.toLAB(allocator).?,
+        const converted: ?CssColor = switch (kind.asBits()) {
+            ColorFallbackKind.RGB.asBits() => this.toRGB(allocator),
+            ColorFallbackKind.P3.asBits() => this.toP3(allocator),
+            ColorFallbackKind.LAB.asBits() => this.toLAB(allocator),
             else => bun.unreachablePanic("Expected RGBA, P3, LAB fallback. This is a bug in Bun.", .{}),
         };
+        // For a compound value (shadow list, gradient stops, the `background`
+        // shorthand) the fallback kind is the union over all colors, so a
+        // currentColor / system color that can't be converted must fall back to
+        // itself rather than panic on the unwrap.
+        return converted orelse this.deepClone(allocator);
     }
 
     pub fn getFallbacks(this: *@This(), allocator: Allocator, targets: css.targets.Targets) css.SmallList(CssColor, 2) {
@@ -499,17 +504,19 @@ pub const CssColor = union(enum) {
 
         var res = css.SmallList(CssColor, 2){};
 
+        // Skip a fallback the color can't actually be converted to (an
+        // inconvertible currentColor / system color in a compound value)
+        // rather than panic on the unwrap.
         if (fallbacks.rgb) {
-            res.appendAssumeCapacity(this.toRGB(allocator).?);
+            if (this.toRGB(allocator)) |rgb| res.appendAssumeCapacity(rgb);
         }
 
         if (fallbacks.p3) {
-            res.appendAssumeCapacity(this.toP3(allocator).?);
+            if (this.toP3(allocator)) |p3| res.appendAssumeCapacity(p3);
         }
 
         if (fallbacks.lab) {
-            const foo = this.toLAB(allocator).?;
-            this.* = foo;
+            if (this.toLAB(allocator)) |lab| this.* = lab;
         }
 
         return res;
