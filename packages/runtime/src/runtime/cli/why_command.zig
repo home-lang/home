@@ -230,6 +230,46 @@ pub const WhyCommand = struct {
         return try execWithManager(ctx, pm, cli.positionals[0], cli.top_only);
     }
 
+    pub fn execStandalone(ctx: Command.Context, args: []const []const u8) !void {
+        var cli: PackageManager.CommandLineArguments = .{};
+        var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer positionals.deinit(ctx.allocator);
+
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (strings.eqlComptime(arg, "--top")) {
+                cli.top_only = true;
+            } else if (strings.eqlComptime(arg, "--depth")) {
+                if (i + 1 < args.len) {
+                    i += 1;
+                    cli.depth = std.fmt.parseInt(usize, args[i], 10) catch {
+                        Output.errGeneric("invalid depth value: '{s}', must be a positive integer", .{args[i]});
+                        Global.exit(1);
+                    };
+                }
+            } else if (strings.startsWith(arg, "--depth=")) {
+                const value = arg["--depth=".len..];
+                cli.depth = std.fmt.parseInt(usize, value, 10) catch {
+                    Output.errGeneric("invalid depth value: '{s}', must be a positive integer", .{value});
+                    Global.exit(1);
+                };
+            } else if (!strings.startsWith(arg, "-")) {
+                try positionals.append(ctx.allocator, arg);
+            }
+        }
+
+        if (positionals.items.len == 0) {
+            printUsage();
+            Global.exit(1);
+        }
+
+        cli.positionals = positionals.items;
+        const pm, const cwd = try PackageManager.init(ctx, cli, .why);
+        defer ctx.allocator.free(cwd);
+        try execWithManager(ctx, pm, positionals.items[0], cli.top_only);
+    }
+
     pub fn execFromPm(ctx: Command.Context, pm: *PackageManager, positionals: []const string) !void {
         if (positionals.len < 2) {
             printUsage();
@@ -291,10 +331,7 @@ pub const WhyCommand = struct {
                     dependents_entry.value_ptr.* = std.array_list.Managed(DependentInfo).init(arena_allocator);
                 }
 
-                var dep_version_buf = std.array_list.Managed(u8).init(arena_allocator);
-                defer dep_version_buf.deinit();
-                try dep_version_buf.writer().print("{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
-                const dep_pkg_version = try arena_allocator.dupe(u8, dep_version_buf.items);
+                const dep_pkg_version = try std.fmt.allocPrint(arena_allocator, "{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
 
                 const spec = try arena_allocator.dupe(u8, dependency.version.literal.slice(string_bytes));
 
@@ -321,10 +358,7 @@ pub const WhyCommand = struct {
 
             if (!glob.matchesName(pkg_name, package_pattern)) continue;
 
-            var version_buf = std.array_list.Managed(u8).init(ctx.allocator);
-            defer version_buf.deinit();
-            try version_buf.writer().print("{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
-            const version = try ctx.allocator.dupe(u8, version_buf.items);
+            const version = try std.fmt.allocPrint(ctx.allocator, "{f}", .{packages.items(.resolution)[pkg_idx].fmt(string_bytes, .auto)});
 
             if (!glob.matchesVersion(version)) continue;
 

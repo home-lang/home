@@ -4686,6 +4686,14 @@ pub fn main(init: std.process.Init) !void {
         try execPantryCommand(allocator, "audit", args[2..]);
         return;
     }
+    if (std.mem.eql(u8, command, "why")) {
+        const runtime_allocator = home_rt.default_allocator;
+        const log = try runtime_allocator.create(home_rt.logger.Log);
+        log.* = home_rt.logger.Log.init(runtime_allocator);
+        const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+        try home_rt.cli.WhyCommand.execStandalone(ctx, args[2..]);
+        return;
+    }
     // `home pm pkg` and `home pm scan` — Bun-compatible package metadata and
     // security-scanner operations, routed to their native runtime ports.
     if (std.mem.eql(u8, command, "pm")) {
@@ -4704,6 +4712,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, args[2], "version")) {
             try home_rt.cli.PmVersionCommand.execStandalone(ctx, args[3..]);
+            return;
+        }
+        if (std.mem.eql(u8, args[2], "why")) {
+            try home_rt.cli.WhyCommand.execStandalone(ctx, args[3..]);
             return;
         }
         if (!std.mem.eql(u8, args[2], "pkg")) {

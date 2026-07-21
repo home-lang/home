@@ -125,6 +125,12 @@ pub const Runtime = struct {
     }
 
     fn installNativeBindings(self: *Runtime) void {
+        setStringProperty(
+            self.engine.currentContext(),
+            @ptrCast(self.engine.currentGlobalObject()),
+            "__home_runtime_version",
+            home_rt.Global.package_json_version,
+        ) catch {};
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
