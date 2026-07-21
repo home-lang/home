@@ -12,6 +12,27 @@ pub const PmPkgCommand = struct {
     };
 
     pub fn exec(ctx: Command.Context, pm: *PackageManager, positionals: []const string, cwd: []const u8) !void {
+        try execImpl(ctx, pm.options.json_output, positionals, cwd);
+    }
+
+    pub fn execStandalone(ctx: Command.Context, positionals: []const string, cwd: []const u8) !void {
+        bun.install.initializeStore();
+        var filtered: std.ArrayListUnmanaged(string) = .empty;
+        defer filtered.deinit(ctx.allocator);
+
+        var parse_json = false;
+        for (positionals) |arg| {
+            if (strings.eqlComptime(arg, "--json")) {
+                parse_json = true;
+            } else {
+                try filtered.append(ctx.allocator, arg);
+            }
+        }
+
+        try execImpl(ctx, parse_json, filtered.items, cwd);
+    }
+
+    fn execImpl(ctx: Command.Context, parse_json: bool, positionals: []const string, cwd: []const u8) !void {
         if (positionals.len <= 1) {
             printHelp();
             return;
@@ -24,10 +45,10 @@ pub const PmPkgCommand = struct {
         };
 
         switch (subcommand) {
-            .get => try execGet(ctx, pm, positionals[2..], cwd),
-            .set => try execSet(ctx, pm, positionals[2..], cwd),
-            .delete => try execDelete(ctx, pm, positionals[2..], cwd),
-            .fix => try execFix(ctx, pm, cwd),
+            .get => try execGet(ctx, positionals[2..], cwd),
+            .set => try execSet(ctx, parse_json, positionals[2..], cwd),
+            .delete => try execDelete(ctx, positionals[2..], cwd),
+            .fix => try execFix(ctx, cwd),
             .help => printHelp(),
         }
     }
@@ -61,14 +82,14 @@ pub const PmPkgCommand = struct {
         Output.flush();
     }
 
-    fn findPackageJson(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
+    fn findPackageJson(allocator: std.mem.Allocator, cwd: []const u8) ![:0]const u8 {
         var path_buf: bun.PathBuffer = undefined;
         var current_dir = cwd;
 
         while (true) {
             const pkg_path = bun.path.joinAbsStringBufZ(current_dir, &path_buf, &.{"package.json"}, .auto);
             if (bun.sys.existsZ(pkg_path)) {
-                return try allocator.dupe(u8, pkg_path);
+                return try allocator.dupeSentinel(u8, pkg_path, 0);
             }
 
             const parent = bun.path.dirname(current_dir, .auto);
@@ -78,7 +99,7 @@ pub const PmPkgCommand = struct {
             current_dir = parent;
         }
 
-        Output.errGeneric("No package.json found", .{});
+        Output.errGeneric("No package.json was found", .{});
         Global.exit(1);
     }
 
@@ -89,7 +110,7 @@ pub const PmPkgCommand = struct {
         indentation: JSPrinter.Options.Indentation,
     };
 
-    fn loadPackageJson(ctx: Command.Context, allocator: std.mem.Allocator, path: []const u8) !PackageJson {
+    fn loadPackageJson(ctx: Command.Context, allocator: std.mem.Allocator, path: [:0]const u8) !PackageJson {
         const contents = bun.sys.File.readFrom(bun.FD.cwd(), path, allocator).unwrap() catch |err| {
             Output.errGeneric("Failed to read package.json: {s}", .{@errorName(err)});
             Global.exit(1);
@@ -119,8 +140,7 @@ pub const PmPkgCommand = struct {
         };
     }
 
-    fn execGet(ctx: Command.Context, pm: *PackageManager, args: []const string, cwd: []const u8) !void {
-        _ = pm;
+    fn execGet(ctx: Command.Context, args: []const string, cwd: []const u8) !void {
         const path = try findPackageJson(ctx.allocator, cwd);
         defer ctx.allocator.free(path);
 
@@ -181,13 +201,11 @@ pub const PmPkgCommand = struct {
         }
     }
 
-    fn execSet(ctx: Command.Context, pm: *PackageManager, args: []const string, cwd: []const u8) !void {
+    fn execSet(ctx: Command.Context, parse_json: bool, args: []const string, cwd: []const u8) !void {
         if (args.len == 0) {
             Output.errGeneric("<blue>bun pm pkg set<r> expects a key=value pair of args", .{});
             Global.exit(1);
         }
-
-        const parse_json = pm.options.json_output;
 
         const path = try findPackageJson(ctx.allocator, cwd);
         defer ctx.allocator.free(path);
@@ -230,8 +248,7 @@ pub const PmPkgCommand = struct {
         }
     }
 
-    fn execDelete(ctx: Command.Context, pm: *PackageManager, args: []const string, cwd: []const u8) !void {
-        _ = pm;
+    fn execDelete(ctx: Command.Context, args: []const string, cwd: []const u8) !void {
         if (args.len == 0) {
             Output.errGeneric("<blue>bun pm pkg <b>delete<r> expects key args", .{});
             Global.exit(1);
@@ -263,8 +280,7 @@ pub const PmPkgCommand = struct {
         }
     }
 
-    fn execFix(ctx: Command.Context, pm: *PackageManager, cwd: []const u8) !void {
-        _ = pm;
+    fn execFix(ctx: Command.Context, cwd: []const u8) !void {
         const path = try findPackageJson(ctx.allocator, cwd);
         defer ctx.allocator.free(path);
 
@@ -756,7 +772,7 @@ pub const PmPkgCommand = struct {
         };
 
         const content = writer.ctx.writtenWithoutTrailingZero();
-        std.fs.cwd().writeFile(.{
+        std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
             .sub_path = path,
             .data = content,
         }) catch |err| {

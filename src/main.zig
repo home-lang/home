@@ -4683,6 +4683,30 @@ pub fn main(init: std.process.Init) !void {
         try execPantryCommand(allocator, "audit", args[2..]);
         return;
     }
+    // `home pm pkg` — Bun-compatible package.json metadata operations. This
+    // command does not need install/cache/network initialization, so invoke its
+    // native runtime implementation directly instead of booting the package
+    // installer used by the other `pm` utilities.
+    if (std.mem.eql(u8, command, "pm")) {
+        if (args.len < 3 or !std.mem.eql(u8, args[2], "pkg")) {
+            std.debug.print("{s}Error:{s} unsupported 'pm' subcommand\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.process.exit(1);
+        }
+        const runtime_allocator = home_rt.default_allocator;
+        const log = try runtime_allocator.create(home_rt.logger.Log);
+        log.* = home_rt.logger.Log.init(runtime_allocator);
+        const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+        var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer positionals.deinit(runtime_allocator);
+        try positionals.append(runtime_allocator, "pkg");
+        for (args[3..]) |arg| try positionals.append(runtime_allocator, arg);
+
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CurrentWorkingDirectoryUnavailable;
+        const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+        try home_rt.cli.PmPkgCommand.execStandalone(ctx, positionals.items, cwd);
+        return;
+    }
     // `home x` / `home exec` — bunx-equivalent.
     if (std.mem.eql(u8, command, "x") or std.mem.eql(u8, command, "exec")) {
         // TODO(phase-12-10): replace with native homex (copied from Bun's src/cli/).

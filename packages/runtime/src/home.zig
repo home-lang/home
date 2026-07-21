@@ -2512,6 +2512,7 @@ pub const cli = struct {
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
     pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
     pub const TestCommand = @import("runtime/cli/test_command.zig").TestCommand;
+    pub const PmPkgCommand = @import("runtime/cli/pm_pkg_command.zig").PmPkgCommand;
     pub const Arguments = struct {
         pub const auto_params = [_]struct {
             takes_value: enum { none, optional, required },

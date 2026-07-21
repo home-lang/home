@@ -59,7 +59,12 @@ pub const color_map = struct {
 };
 
 pub fn print(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt, args);
+    writer().print(fmt, args) catch {};
+}
+
+pub fn println(comptime fmt: []const u8, args: anytype) void {
+    writer().print(fmt ++ "\n", args) catch {};
+    flush();
 }
 
 pub fn prettyln(comptime fmt: []const u8, args: anytype) void {
@@ -68,10 +73,11 @@ pub fn prettyln(comptime fmt: []const u8, args: anytype) void {
     // upstream `bun_core/output.zig` prettyWithPrinter; without this the literal
     // `<green>`-style tags leak into output (e.g. the test runner summary).
     if (enable_ansi_colors_stdout) {
-        std.debug.print(comptime prettyFmt(fmt ++ "\n", true), args);
+        writer().print(comptime prettyFmt(fmt ++ "\n", true), args) catch {};
     } else {
-        std.debug.print(comptime prettyFmt(fmt ++ "\n", false), args);
+        writer().print(comptime prettyFmt(fmt ++ "\n", false), args) catch {};
     }
+    flush();
 }
 
 pub fn prettyErrorln(comptime fmt: []const u8, args: anytype) void {
@@ -289,10 +295,11 @@ pub fn note(comptime fmt: []const u8, args: anytype) void {
 
 pub fn pretty(comptime fmt: []const u8, args: anytype) void {
     if (enable_ansi_colors_stdout) {
-        std.debug.print(comptime prettyFmt(fmt, true), args);
+        writer().print(comptime prettyFmt(fmt, true), args) catch {};
     } else {
-        std.debug.print(comptime prettyFmt(fmt, false), args);
+        writer().print(comptime prettyFmt(fmt, false), args) catch {};
     }
+    flush();
 }
 
 pub fn prettyError(comptime fmt: []const u8, args: anytype) void {
