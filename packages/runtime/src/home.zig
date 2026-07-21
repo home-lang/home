@@ -2609,6 +2609,7 @@ pub const cli = struct {
     pub const TestCommand = @import("runtime/cli/test_command.zig").TestCommand;
     pub const PmPkgCommand = @import("runtime/cli/pm_pkg_command.zig").PmPkgCommand;
     pub const ScanCommand = @import("runtime/cli/scan_command.zig").ScanCommand;
+    pub const PmVersionCommand = @import("runtime/cli/pm_version_command.zig").PmVersionCommand;
     pub const Arguments = struct {
         pub const auto_params = [_]struct {
             takes_value: enum { none, optional, required },
@@ -4068,6 +4069,8 @@ pub const runtime = struct {
         pub const Result = @import("runtime/shell/shell.zig").Result;
         pub const escapeBunStr = @import("runtime/shell/shell.zig").escapeBunStr;
         pub const needsEscapeBunstr = @import("runtime/shell/shell.zig").needsEscapeBunstr;
+        pub const needsEscapeUtf8AsciiLatin1 = @import("runtime/shell/shell.zig").needsEscapeUtf8AsciiLatin1;
+        pub const escape8Bit = @import("runtime/shell/shell.zig").escape8Bit;
         pub const shellCmdFromJS = @import("runtime/shell/shell.zig").shellCmdFromJS;
         pub const ShellSubprocess = subproc.ShellSubprocess;
     };

@@ -4386,7 +4386,7 @@ fn runSpawnSyncNative(
     const is_pm_pkg = argv_storage.items.len >= 3 and
         std.mem.eql(u8, argv_storage.items[1], "pm") and
         std.mem.eql(u8, argv_storage.items[2], "pkg");
-    if (!is_pm_pkg) try resolveCorpusArguments(allocator, &argv_storage);
+    if (is_home_invocation and !is_pm_pkg) try resolveCorpusArguments(allocator, &argv_storage);
 
     const cwd_raw = try readOptionalStringProperty(allocator, ctx, options, "cwd", exception);
     defer if (cwd_raw) |path| allocator.free(path);

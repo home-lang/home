@@ -4702,6 +4702,10 @@ pub fn main(init: std.process.Init) !void {
             try home_rt.cli.ScanCommand.execStandalone(ctx, args[3..]);
             return;
         }
+        if (std.mem.eql(u8, args[2], "version")) {
+            try home_rt.cli.PmVersionCommand.execStandalone(ctx, args[3..]);
+            return;
+        }
         if (!std.mem.eql(u8, args[2], "pkg")) {
             std.debug.print("{s}Error:{s} unsupported 'pm' subcommand\n", .{ Color.Red.code(), Color.Reset.code() });
             std.process.exit(1);

@@ -23,6 +23,59 @@ pub const PmVersionCommand = struct {
         }
     };
 
+    pub fn execStandalone(ctx: Command.Context, args: []const []const u8) !void {
+        var cli: PackageManager.CommandLineArguments = .{};
+        var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer positionals.deinit(ctx.allocator);
+        try positionals.append(ctx.allocator, "version");
+
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (strings.eqlComptime(arg, "--no-git-tag-version")) {
+                cli.git_tag_version = false;
+            } else if (strings.eqlComptime(arg, "--git-tag-version=true")) {
+                cli.git_tag_version = true;
+            } else if (strings.eqlComptime(arg, "--git-tag-version=false")) {
+                cli.git_tag_version = false;
+            } else if (strings.eqlComptime(arg, "--allow-same-version")) {
+                cli.allow_same_version = true;
+            } else if (strings.eqlComptime(arg, "--force") or strings.eqlComptime(arg, "-f")) {
+                cli.force = true;
+            } else if (strings.eqlComptime(arg, "--ignore-scripts")) {
+                cli.ignore_scripts = true;
+            } else if (strings.eqlComptime(arg, "--preid")) {
+                if (i + 1 < args.len) {
+                    i += 1;
+                    cli.preid = args[i];
+                }
+            } else if (strings.startsWith(arg, "--preid=")) {
+                cli.preid = arg["--preid=".len..];
+            } else if (strings.eqlComptime(arg, "--message") or strings.eqlComptime(arg, "-m")) {
+                if (i + 1 < args.len) {
+                    i += 1;
+                    cli.message = args[i];
+                }
+            } else if (strings.startsWith(arg, "--message=")) {
+                cli.message = arg["--message=".len..];
+            } else if (!strings.startsWith(arg, "-")) {
+                try positionals.append(ctx.allocator, arg);
+            }
+        }
+
+        cli.positionals = positionals.items;
+        const manager, const cwd = PackageManager.init(ctx, cli, .pm) catch |err| {
+            if (err == error.MissingPackageJSON) {
+                Output.errGeneric("No package.json was found", .{});
+                Global.exit(1);
+            }
+            return err;
+        };
+        defer ctx.allocator.free(cwd);
+
+        try exec(ctx, manager, positionals.items, cwd);
+    }
+
     pub fn exec(ctx: Command.Context, pm: *PackageManager, positionals: []const string, original_cwd: []const u8) !void {
         const package_json_dir = try findPackageDir(ctx.allocator, original_cwd);
 
@@ -131,7 +184,7 @@ pub const PmVersionCommand = struct {
                 Global.exit(1);
             };
 
-            std.fs.cwd().writeFile(.{
+            std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
                 .sub_path = package_json_path,
                 .data = package_json_writer.ctx.writtenWithoutTrailingZero(),
             }) catch |err| {
@@ -214,7 +267,8 @@ pub const PmVersionCommand = struct {
             return;
         }
 
-        if (!pm.options.force and !try isGitClean(cwd)) {
+        const is_clean = try isGitClean(cwd);
+        if (!pm.options.force and !is_clean) {
             Output.errGeneric("Git working directory not clean.", .{});
             Global.exit(1);
         }
@@ -448,10 +502,7 @@ pub const PmVersionCommand = struct {
 
     fn isGitClean(cwd: []const u8) bun.OOM!bool {
         var path_buf: bun.PathBuffer = undefined;
-        const git_path = bun.which(&path_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse {
-            Output.errGeneric("git must be installed to use `bun pm version --git-tag-version`", .{});
-            Global.exit(1);
-        };
+        const git_path: []const u8 = bun.which(&path_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse "git";
 
         const proc = bun.spawnSync(&.{
             .argv = &.{ git_path, "status", "--porcelain" },
@@ -481,10 +532,7 @@ pub const PmVersionCommand = struct {
 
     fn getVersionFromGit(allocator: std.mem.Allocator, cwd: []const u8) bun.OOM![]const u8 {
         var path_buf: bun.PathBuffer = undefined;
-        const git_path = bun.which(&path_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse {
-            Output.errGeneric("git must be installed to use `bun pm version from-git`", .{});
-            Global.exit(1);
-        };
+        const git_path: []const u8 = bun.which(&path_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse "git";
 
         const proc = bun.spawnSync(&.{
             .argv = &.{ git_path, "describe", "--tags", "--abbrev=0" },
@@ -528,10 +576,7 @@ pub const PmVersionCommand = struct {
 
     fn gitCommitAndTag(allocator: std.mem.Allocator, version: []const u8, custom_message: ?[]const u8, cwd: []const u8) bun.OOM!void {
         var path_buf: bun.PathBuffer = undefined;
-        const git_path = bun.which(&path_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse {
-            Output.errGeneric("git must be installed to use `bun pm version --git-tag-version`", .{});
-            Global.exit(1);
-        };
+        const git_path: []const u8 = bun.which(&path_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse "git";
 
         const stage_proc = bun.spawnSync(&.{
             .argv = &.{ git_path, "add", "package.json" },

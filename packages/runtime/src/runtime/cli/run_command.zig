@@ -262,7 +262,7 @@ pub const RunCommand = struct {
                     Output.flush();
                 }
 
-                Global.exit(code);
+                Global.exit(@truncate(code));
             }
 
             return;
@@ -306,8 +306,9 @@ pub const RunCommand = struct {
             return;
         })) {
             .err => |err| {
+                _ = err;
                 if (!silent) {
-                    Output.prettyErrorln("<r><red>error<r>: Failed to run script <b>{s}<r> due to error:\n{f}", .{ name, err });
+                    Output.prettyErrorln("<r><red>error<r>: Failed to run script <b>{s}<r>", .{name});
                 }
 
                 Output.flush();
@@ -318,17 +319,6 @@ pub const RunCommand = struct {
 
         switch (spawn_result.status) {
             .exited => |exit_code| {
-                if (exit_code.signal.valid() and exit_code.signal != .SIGINT and !silent) {
-                    Output.prettyErrorln("<r><red>error<r><d>:<r> script <b>\"{s}\"<r> was terminated by signal {f}<r>", .{ name, exit_code.signal.fmt(Output.enable_ansi_colors_stderr) });
-                    Output.flush();
-
-                    if (bun.feature_flag.BUN_INTERNAL_SUPPRESS_CRASH_IN_BUN_RUN.get()) {
-                        bun.crash_handler.suppressReporting();
-                    }
-
-                    Global.raiseIgnoringPanicHandler(exit_code.signal);
-                }
-
                 if (exit_code.code != 0) {
                     if (exit_code.code != 2 and !silent) {
                         Output.prettyErrorln("<r><red>error<r><d>:<r> script <b>\"{s}\"<r> exited with code {d}<r>", .{ name, exit_code.code });
@@ -339,29 +329,23 @@ pub const RunCommand = struct {
                 }
             },
 
-            .signaled => |signal| {
-                if (signal.valid() and signal != .SIGINT and !silent) {
-                    Output.prettyErrorln("<r><red>error<r><d>:<r> script <b>\"{s}\"<r> was terminated by signal {f}<r>", .{ name, signal.fmt(Output.enable_ansi_colors_stderr) });
+            .signaled => {
+                if (!silent) {
+                    Output.prettyErrorln("<r><red>error<r><d>:<r> script <b>\"{s}\"<r> was terminated by a signal<r>", .{name});
                     Output.flush();
                 }
-
-                if (bun.feature_flag.BUN_INTERNAL_SUPPRESS_CRASH_IN_BUN_RUN.get()) {
-                    bun.crash_handler.suppressReporting();
-                }
-
-                Global.raiseIgnoringPanicHandler(signal);
+                Global.exit(1);
             },
 
             .err => |err| {
+                _ = err;
                 if (!silent) {
-                    Output.prettyErrorln("<r><red>error<r>: Failed to run script <b>{s}<r> due to error:\n{f}", .{ name, err });
+                    Output.prettyErrorln("<r><red>error<r>: Failed to run script <b>{s}<r>", .{name});
                 }
 
                 Output.flush();
                 return;
             },
-
-            else => {},
         }
 
         return;

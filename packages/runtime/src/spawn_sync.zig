@@ -1,17 +1,5 @@
-// Minimal `bun.spawnSync` (upstream `bun.spawn.sync.spawn`, a thin synchronous
-// process-spawn-and-capture). Bun's full implementation
-// (src/runtime/api/bun/process.zig `pub const sync`) drags the whole Process /
-// SpawnOptions / Windows-uv-pipe machinery; Home doesn't have that substrate
-// yet, and the forked std uses a reworked `std.Io`-based `std.process.Child`.
-//
-// The ONLY current caller is `ChangedFilesFilter` (`bun test --changed`), which
-// is imported unconditionally by `test_command.zig` but only invoked for
-// `--changed`. So this provides the faithful Options/Result/Status TYPES (so the
-// call site + `switch (proc) { .err, .result }` compile) and a spawn() that
-// returns `error.SpawnSyncUnsupported` — the caller's `catch` degrades to a
-// graceful "spawn failed" (so `--changed` reports cleanly instead of crashing),
-// and every other test path is unaffected. Replace spawn()'s body with a real
-// std.process.Child (Io) implementation to enable `--changed` natively.
+// Synchronous process spawning and output capture, implemented on Home's
+// forked std.Io process API.
 
 const std = @import("std");
 const bun = @import("home");
@@ -69,8 +57,60 @@ pub const Result = struct {
 };
 
 pub fn spawn(options: *const Options) !bun.sys.Maybe(Result) {
-    _ = options;
-    // `bun test --changed` is the only caller; not yet wired to the forked
-    // std.Io process API. The caller's `catch` handles this gracefully.
-    return error.SpawnSyncUnsupported;
+    var threaded = std.Io.Threaded.init(bun.default_allocator, .{});
+    defer threaded.deinit();
+
+    var env_map = std.process.Environ.Map.init(bun.default_allocator);
+    defer env_map.deinit();
+    if (options.envp) |envp| {
+        var index: usize = 0;
+        while (envp[index]) |entry| : (index += 1) {
+            const pair = std.mem.span(entry);
+            const equals = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+            try env_map.put(pair[0..equals], pair[equals + 1 ..]);
+        }
+    }
+
+    const run_result = try std.process.run(bun.default_allocator, threaded.io(), .{
+        .argv = options.argv,
+        .cwd = if (options.cwd.len > 0) .{ .path = options.cwd } else .inherit,
+        .environ_map = if (options.envp != null) &env_map else null,
+    });
+
+    var stdout = std.array_list.Managed(u8).init(bun.default_allocator);
+    var stderr = std.array_list.Managed(u8).init(bun.default_allocator);
+
+    if (options.stdout == .buffer) {
+        stdout.items = run_result.stdout;
+        stdout.capacity = run_result.stdout.len;
+    } else {
+        defer bun.default_allocator.free(run_result.stdout);
+        if (options.stdout == .inherit and run_result.stdout.len > 0) {
+            try bun.Output.writer().writeAll(run_result.stdout);
+            bun.Output.flush();
+        }
+    }
+
+    if (options.stderr == .buffer) {
+        stderr.items = run_result.stderr;
+        stderr.capacity = run_result.stderr.len;
+    } else {
+        defer bun.default_allocator.free(run_result.stderr);
+        if (options.stderr == .inherit and run_result.stderr.len > 0) {
+            try bun.Output.errorWriter().writeAll(run_result.stderr);
+            bun.Output.flush();
+        }
+    }
+
+    const status: Status = switch (run_result.term) {
+        .exited => |code| .{ .exited = .{ .code = code } },
+        .signal, .stopped => .signaled,
+        .unknown => .err,
+    };
+
+    return .{ .result = .{
+        .status = status,
+        .stdout = stdout,
+        .stderr = stderr,
+    } };
 }
