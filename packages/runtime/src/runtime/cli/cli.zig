@@ -1431,6 +1431,10 @@ pub const Command = struct {
         try CreateCommand.exec(ctx, example_tag, template);
     }
 
+    pub fn execInfo(allocator: std.mem.Allocator, log: *logger.Log) !void {
+        try @"bun info"(allocator, log);
+    }
+
     fn @"bun info"(allocator: std.mem.Allocator, log: *logger.Log) !void {
         // Parse arguments manually since the standard flow doesn't work for standalone commands
         const cli = try PackageManager.CommandLineArguments.parse(allocator, .info);

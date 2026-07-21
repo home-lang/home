@@ -4694,6 +4694,13 @@ pub fn main(init: std.process.Init) !void {
         try home_rt.cli.WhyCommand.execStandalone(ctx, args[2..]);
         return;
     }
+    if (std.mem.eql(u8, command, "info")) {
+        const runtime_allocator = home_rt.default_allocator;
+        const log = try runtime_allocator.create(home_rt.logger.Log);
+        log.* = home_rt.logger.Log.init(runtime_allocator);
+        try home_rt.cli.Command.execInfo(runtime_allocator, log);
+        return;
+    }
     if (std.mem.eql(u8, command, "list") or std.mem.eql(u8, command, "whoami")) {
         const runtime_allocator = home_rt.default_allocator;
         const log = try runtime_allocator.create(home_rt.logger.Log);
@@ -4730,6 +4737,7 @@ pub fn main(init: std.process.Init) !void {
             std.mem.eql(u8, args[2], "list") or
             std.mem.eql(u8, args[2], "cache") or
             std.mem.eql(u8, args[2], "bin") or
+            std.mem.eql(u8, args[2], "view") or
             std.mem.eql(u8, args[2], "migrate") or
             std.mem.eql(u8, args[2], "hash") or
             std.mem.eql(u8, args[2], "whoami"))
