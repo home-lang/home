@@ -3,8 +3,8 @@ const std = @import("std");
 pub const ArenaAllocator = std.heap.ArenaAllocator;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
-pub fn span(pointer: anytype) std.mem.Span(@TypeOf(pointer)) {
-    return std.mem.span(pointer);
+pub fn span(pointer: anytype) []const u8 {
+    return pointer;
 }
 
 pub const Output = struct {

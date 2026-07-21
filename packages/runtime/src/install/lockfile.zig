@@ -2161,6 +2161,16 @@ pub fn hasTrustedDependency(this: *const Lockfile, name: []const u8, resolution:
     return resolution.tag == .npm and default_trusted_dependencies.has(name);
 }
 
+pub fn hasTrustedDependencyByPackageName(this: *const Lockfile, alias: []const u8, package_name: []const u8, resolution: *const Resolution) bool {
+    const trusted_name = if (resolution.tag == .npm) package_name else alias;
+    if (this.trusted_dependencies) |trusted_dependencies| {
+        const hash = @as(u32, @truncate(String.Builder.stringHash(trusted_name)));
+        return trusted_dependencies.contains(hash);
+    }
+
+    return resolution.tag == .npm and default_trusted_dependencies.has(package_name);
+}
+
 pub const NameHashMap = std.ArrayHashMapUnmanaged(PackageNameHash, String, ArrayIdentityContext.U64, false);
 pub const TrustedDependenciesSet = std.ArrayHashMapUnmanaged(TruncatedPackageNameHash, void, ArrayIdentityContext, false);
 pub const VersionHashMap = std.ArrayHashMapUnmanaged(PackageNameHash, Semver.Version, ArrayIdentityContext.U64, false);

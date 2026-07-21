@@ -4694,6 +4694,14 @@ pub fn main(init: std.process.Init) !void {
         try home_rt.cli.WhyCommand.execStandalone(ctx, args[2..]);
         return;
     }
+    if (std.mem.eql(u8, command, "list") or std.mem.eql(u8, command, "whoami")) {
+        const runtime_allocator = home_rt.default_allocator;
+        const log = try runtime_allocator.create(home_rt.logger.Log);
+        log.* = home_rt.logger.Log.init(runtime_allocator);
+        const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+        try home_rt.cli.PackageManagerCommand.execUtilities(ctx);
+        return;
+    }
     // `home pm pkg` and `home pm scan` — Bun-compatible package metadata and
     // security-scanner operations, routed to their native runtime ports.
     if (std.mem.eql(u8, command, "pm")) {
@@ -4716,6 +4724,16 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, args[2], "why")) {
             try home_rt.cli.WhyCommand.execStandalone(ctx, args[3..]);
+            return;
+        }
+        if (std.mem.eql(u8, args[2], "ls") or
+            std.mem.eql(u8, args[2], "list") or
+            std.mem.eql(u8, args[2], "cache") or
+            std.mem.eql(u8, args[2], "migrate") or
+            std.mem.eql(u8, args[2], "hash") or
+            std.mem.eql(u8, args[2], "whoami"))
+        {
+            try home_rt.cli.PackageManagerCommand.execUtilities(ctx);
             return;
         }
         if (!std.mem.eql(u8, args[2], "pkg")) {

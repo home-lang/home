@@ -52,6 +52,7 @@ pub const PackageManagerCommand = struct {
         Output.disableBuffering();
         try Output.writer().print("{f}", .{load_lockfile.ok.lockfile.fmtMetaHash()});
         Output.enableBuffering();
+        Output.flush();
         Global.exit(0);
     }
 
@@ -136,8 +137,15 @@ pub const PackageManagerCommand = struct {
     }
 
     pub fn exec(ctx: Command.Context) !void {
-        var args = try std.process.argsAlloc(ctx.allocator);
-        args = args[1..];
+        try execImpl(ctx, false);
+    }
+
+    pub fn execUtilities(ctx: Command.Context) !void {
+        try execImpl(ctx, true);
+    }
+
+    fn execImpl(ctx: Command.Context, comptime utilities_only: bool) !void {
+        const args = bun.argv[1..];
 
         // Check if we're being invoked directly as "bun whoami" instead of "bun pm whoami"
         const is_direct_whoami = if (bun.argv.len > 1) strings.eqlComptime(bun.argv[1], "whoami") else false;
@@ -169,13 +177,26 @@ pub const PackageManagerCommand = struct {
             try pm.setupGlobalDir(ctx);
         }
 
-        if (strings.eqlComptime(subcommand, "scan")) {
-            try ScanCommand.execWithManager(ctx, pm, cwd);
-            Global.exit(0);
-        } else if (strings.eqlComptime(subcommand, "pack")) {
-            try PackCommand.execWithManager(ctx, pm);
-            Global.exit(0);
-        } else if (strings.eqlComptime(subcommand, "whoami")) {
+        if (comptime !utilities_only) {
+            if (strings.eqlComptime(subcommand, "scan")) {
+                try ScanCommand.execWithManager(ctx, pm, cwd);
+                Global.exit(0);
+            } else if (strings.eqlComptime(subcommand, "pack")) {
+                try PackCommand.execWithManager(ctx, pm);
+                Global.exit(0);
+            } else if (strings.eqlComptime(subcommand, "default-trusted")) {
+                try DefaultTrustedCommand.exec();
+                Global.exit(0);
+            } else if (strings.eqlComptime(subcommand, "untrusted")) {
+                try UntrustedCommand.exec(ctx, pm, @constCast(args));
+                Global.exit(0);
+            } else if (strings.eqlComptime(subcommand, "trust")) {
+                try TrustCommand.exec(ctx, pm, @constCast(args));
+                Global.exit(0);
+            }
+        }
+
+        if (strings.eqlComptime(subcommand, "whoami")) {
             const username = Npm.whoami(ctx.allocator, pm) catch |err| {
                 switch (err) {
                     error.OutOfMemory => bun.outOfMemory(),
@@ -232,6 +253,7 @@ pub const PackageManagerCommand = struct {
             Output.disableBuffering();
             try Output.writer().print("{f}", .{load_lockfile.ok.lockfile.fmtMetaHash()});
             Output.enableBuffering();
+            Output.flush();
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "hash-print")) {
             const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
@@ -257,11 +279,11 @@ pub const PackageManagerCommand = struct {
             };
 
             if (pm.options.positionals.len > 1 and strings.eqlComptime(pm.options.positionals[1], "rm")) {
-                fd.close();
+                fd.close(std.Io.Threaded.global_single_threaded.io());
 
                 var had_err = false;
 
-                std.fs.deleteTreeAbsolute(outpath) catch |err| {
+                std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), outpath) catch |err| {
                     Output.err(err, "Could not delete {s}", .{outpath});
                     had_err = true;
                 };
@@ -269,11 +291,13 @@ pub const PackageManagerCommand = struct {
 
                 bunx: {
                     const tmp = bun.fs.FileSystem.RealFS.platformTempDir();
-                    const tmp_dir = std.fs.openDirAbsolute(tmp, .{ .iterate = true }) catch |err| {
+                    const io = std.Io.Threaded.global_single_threaded.io();
+                    const tmp_dir = bun.openDirAbsolute(tmp) catch |err| {
                         Output.err(err, "Could not open {s}", .{tmp});
                         had_err = true;
                         break :bunx;
                     };
+                    defer tmp_dir.close(io);
                     var iter = tmp_dir.iterate();
 
                     // This is to match 'bunx_command.BunxCommand.exec's logic
@@ -282,13 +306,13 @@ pub const PackageManagerCommand = struct {
                     });
 
                     var deleted: usize = 0;
-                    while (iter.next() catch |err| {
+                    while (iter.next(io) catch |err| {
                         Output.err(err, "Could not read {s}", .{tmp});
                         had_err = true;
                         break :bunx;
                     }) |entry| {
                         if (std.mem.startsWith(u8, entry.name, prefix)) {
-                            tmp_dir.deleteTree(entry.name) catch |err| {
+                            tmp_dir.deleteTree(io, entry.name) catch |err| {
                                 Output.err(err, "Could not delete {s}", .{entry.name});
                                 had_err = true;
                                 continue;
@@ -305,15 +329,7 @@ pub const PackageManagerCommand = struct {
             }
 
             Output.writer().writeAll(outpath) catch {};
-            Global.exit(0);
-        } else if (strings.eqlComptime(subcommand, "default-trusted")) {
-            try DefaultTrustedCommand.exec();
-            Global.exit(0);
-        } else if (strings.eqlComptime(subcommand, "untrusted")) {
-            try UntrustedCommand.exec(ctx, pm, args);
-            Global.exit(0);
-        } else if (strings.eqlComptime(subcommand, "trust")) {
-            try TrustCommand.exec(ctx, pm, args);
+            Output.flush();
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "ls")) {
             const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
@@ -357,8 +373,14 @@ pub const PackageManagerCommand = struct {
             @memset(more_packages, false);
             if (first_directory.dependencies.len > 1) more_packages[0] = true;
 
+            const trusted_only = strings.leftHasAnyInRight(args, &.{"--trusted"});
+
             if (strings.leftHasAnyInRight(args, &.{ "-A", "-a", "--all" })) {
-                try printNodeModulesFolderStructure(&first_directory, null, 0, &directories, lockfile, more_packages);
+                if (trusted_only) {
+                    try printTrustedDependenciesFlat(&first_directory, directories.items, lockfile);
+                } else {
+                    try printNodeModulesFolderStructure(&first_directory, null, 0, &directories, lockfile, more_packages);
+                }
             } else {
                 var cwd_buf: bun.PathBuffer = undefined;
                 const path = bun.getcwd(&cwd_buf) catch {
@@ -382,16 +404,32 @@ pub const PackageManagerCommand = struct {
                     .buf = string_bytes,
                 }, ByName.isLessThan);
 
-                for (sorted_dependencies, 0..) |dependency_id, index| {
+                var display_dependencies = sorted_dependencies;
+                if (trusted_only) {
+                    const package_names = slice.items(.name);
+                    var trusted_count: usize = 0;
+                    for (sorted_dependencies) |dependency_id| {
+                        const package_id = lockfile.buffers.resolutions.items[dependency_id];
+                        if (package_id >= lockfile.packages.len) continue;
+                        const alias = dependencies[dependency_id].name.slice(string_bytes);
+                        const package_name = package_names[package_id].slice(string_bytes);
+                        if (!lockfile.hasTrustedDependencyByPackageName(alias, package_name, &resolutions[package_id])) continue;
+                        sorted_dependencies[trusted_count] = dependency_id;
+                        trusted_count += 1;
+                    }
+                    display_dependencies = sorted_dependencies[0..trusted_count];
+                }
+
+                for (display_dependencies, 0..) |dependency_id, index| {
                     const package_id = lockfile.buffers.resolutions.items[dependency_id];
                     if (package_id >= lockfile.packages.len) continue;
                     const name = dependencies[dependency_id].name.slice(string_bytes);
                     const resolution = resolutions[package_id].fmt(string_bytes, .auto);
 
-                    if (index < sorted_dependencies.len - 1) {
-                        Output.prettyln("<d>├──<r> {s}<r><d>@{f}<r>\n", .{ name, resolution });
+                    if (index < display_dependencies.len - 1) {
+                        Output.prettyln("<d>├──<r> {s}<r><d>@{f}<r>", .{ name, resolution });
                     } else {
-                        Output.prettyln("<d>└──<r> {s}<r><d>@{f}<r>\n", .{ name, resolution });
+                        Output.prettyln("<d>└──<r> {s}<r><d>@{f}<r>", .{ name, resolution });
                     }
                 }
             }
@@ -456,6 +494,82 @@ pub const PackageManagerCommand = struct {
         }
     }
 };
+
+fn printTrustedDependenciesFlat(
+    first_directory: *const NodeModulesFolder,
+    directories: []const NodeModulesFolder,
+    lockfile: *Lockfile,
+) !void {
+    var cwd_buf: bun.PathBuffer = undefined;
+    const path = bun.getcwd(&cwd_buf) catch {
+        Output.prettyErrorln("<r><red>error<r>: Could not get current working directory", .{});
+        Global.exit(1);
+    };
+    Output.println("{s} node_modules", .{path});
+
+    const allocator = lockfile.allocator;
+    const dependencies = lockfile.buffers.dependencies.items;
+    const resolution_ids = lockfile.buffers.resolutions.items;
+    const string_bytes = lockfile.buffers.string_bytes.items;
+    const package_slice = lockfile.packages.slice();
+    const resolutions = package_slice.items(.resolution);
+    const package_names = package_slice.items(.name);
+
+    const seen = try allocator.alloc(bool, lockfile.packages.len);
+    defer allocator.free(seen);
+    @memset(seen, false);
+
+    var trusted: std.ArrayListUnmanaged(DependencyID) = .empty;
+    defer trusted.deinit(allocator);
+
+    const Visitor = struct {
+        fn visit(
+            dependency_id: DependencyID,
+            lock: *Lockfile,
+            deps: []const Dependency,
+            package_ids: []const PackageID,
+            names: anytype,
+            package_resolutions: anytype,
+            bytes: []const u8,
+            visited: []bool,
+            output: *std.ArrayListUnmanaged(DependencyID),
+            alloc: std.mem.Allocator,
+        ) !void {
+            const package_id = package_ids[dependency_id];
+            if (package_id >= lock.packages.len or visited[package_id]) return;
+            const alias = deps[dependency_id].name.slice(bytes);
+            const package_name = names[package_id].slice(bytes);
+            if (!lock.hasTrustedDependencyByPackageName(alias, package_name, &package_resolutions[package_id])) return;
+            visited[package_id] = true;
+            try output.append(alloc, dependency_id);
+        }
+    };
+
+    for (first_directory.dependencies) |dependency_id| {
+        try Visitor.visit(dependency_id, lockfile, dependencies, resolution_ids, package_names, resolutions, string_bytes, seen, &trusted, allocator);
+    }
+    for (directories) |directory| {
+        for (directory.dependencies) |dependency_id| {
+            try Visitor.visit(dependency_id, lockfile, dependencies, resolution_ids, package_names, resolutions, string_bytes, seen, &trusted, allocator);
+        }
+    }
+
+    std.sort.pdq(DependencyID, trusted.items, ByName{
+        .dependencies = dependencies,
+        .buf = string_bytes,
+    }, ByName.isLessThan);
+
+    for (trusted.items, 0..) |dependency_id, index| {
+        const package_id = resolution_ids[dependency_id];
+        const alias = dependencies[dependency_id].name.slice(string_bytes);
+        const resolution = resolutions[package_id].fmt(string_bytes, .auto);
+        if (index + 1 < trusted.items.len) {
+            Output.prettyln("<d>├──<r> {s}<r><d>@{f}<r>", .{ alias, resolution });
+        } else {
+            Output.prettyln("<d>└──<r> {s}<r><d>@{f}<r>", .{ alias, resolution });
+        }
+    }
+}
 
 fn printNodeModulesFolderStructure(
     directory: *const NodeModulesFolder,

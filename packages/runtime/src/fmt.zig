@@ -64,6 +64,53 @@ pub fn quote(text: []const u8) QuotedFormatter {
     return .{ .text = text };
 }
 
+pub const RedactedNpmUrlFormatter = struct {
+    url: []const u8,
+
+    pub fn format(self: RedactedNpmUrlFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        var i: usize = 0;
+        while (i < self.url.len) {
+            if (strings.startsWithUUID(self.url[i..])) {
+                try writer.writeAll("***");
+                i += 36;
+                continue;
+            }
+
+            const npm_secret_len = strings.startsWithNpmSecret(self.url[i..]);
+            if (npm_secret_len > 0) {
+                try writer.writeAll("***");
+                i += npm_secret_len;
+                continue;
+            }
+
+            try writer.writeByte(self.url[i]);
+            i += 1;
+        }
+    }
+};
+
+pub fn redactedNpmUrl(url: []const u8) RedactedNpmUrlFormatter {
+    return .{ .url = url };
+}
+
+pub const DependencyUrlFormatter = struct {
+    url: []const u8,
+
+    pub fn format(self: DependencyUrlFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        var remain = self.url;
+        while (strings.indexOfChar(remain, '/')) |slash| {
+            try writer.writeAll(remain[0..slash]);
+            try writer.writeAll("%2f");
+            remain = remain[slash + 1 ..];
+        }
+        try writer.writeAll(remain);
+    }
+};
+
+pub fn dependencyUrl(url: []const u8) DependencyUrlFormatter {
+    return .{ .url = url };
+}
+
 pub fn githubActionWriter(writer: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
     for (text) |c| switch (c) {
         '\n' => try writer.writeAll("%0A"),

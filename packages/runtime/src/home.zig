@@ -2611,6 +2611,7 @@ pub const cli = struct {
     pub const ScanCommand = @import("runtime/cli/scan_command.zig").ScanCommand;
     pub const PmVersionCommand = @import("runtime/cli/pm_version_command.zig").PmVersionCommand;
     pub const WhyCommand = @import("runtime/cli/why_command.zig").WhyCommand;
+    pub const PackageManagerCommand = @import("runtime/cli/package_manager_command.zig").PackageManagerCommand;
     pub const Arguments = struct {
         pub const auto_params = [_]struct {
             takes_value: enum { none, optional, required },
@@ -5009,6 +5010,7 @@ pub const threading = struct {
     pub const GuardedBy = guarded.GuardedBy;
     pub const DebugGuarded = guarded.Debug;
     pub const UnboundedQueue = @import("threading/unbounded_queue.zig").UnboundedQueue;
+    pub const Channel = @import("threading/channel.zig").Channel;
     // ThreadPool re-lands: its mimalloc + jsc.wtf idle-path deps now have
     // faithful libc-shim no-ops, so the kprotty-derived pool type-checks for
     // the transpiler resolver cone (PackageManagerTask embeds `ThreadPool.Task`).
@@ -5753,6 +5755,13 @@ pub const sys = struct {
 
         pub fn close(this: File) void {
             this.handle.close();
+        }
+
+        pub fn closeAndMoveTo(this: File, src: [:0]const u8, dest: [:0]const u8) !void {
+            defer if (Environment.isPosix) this.close();
+            if (Environment.isWindows) this.close();
+            const cwd = FD.cwd();
+            try Sys.moveFileZWithHandle(this.handle, cwd, src, cwd, dest);
         }
 
         pub fn writeAll(this: File, bytes: []const u8) Maybe(void) {

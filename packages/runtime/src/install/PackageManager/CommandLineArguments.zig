@@ -78,6 +78,7 @@ pub const update_params: []const ParamType = &(shared_params ++ [_]ParamType{
 
 pub const pm_params: []const ParamType = &(shared_params ++ [_]ParamType{
     clap.parseParam("-a, --all") catch unreachable,
+    clap.parseParam("--trusted") catch unreachable,
     clap.parseParam("--json                              Output in JSON format") catch unreachable,
     // clap.parseParam("--filter <STR>...                      Pack each matching workspace") catch unreachable,
     clap.parseParam("--destination <STR>                    The directory the tarball will be saved in") catch unreachable,
@@ -751,6 +752,7 @@ pub fn printHelp(subcommand: Subcommand) void {
 
 pub fn parse(allocator: std.mem.Allocator, comptime subcommand: Subcommand) !CommandLineArguments {
     Output.is_verbose = Output.isVerbose();
+    clap.args.setProcessArgs(bun.argv);
 
     const params: []const ParamType = switch (subcommand) {
         .install => install_params,

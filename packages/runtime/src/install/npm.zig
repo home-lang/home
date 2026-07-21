@@ -22,9 +22,9 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
     const auth_type = if (manager.options.publish_config.auth_type) |auth_type| @tagName(auth_type) else "web";
     const ci_name = bun.ci.detectCIName();
 
-    var print_buf = std.array_list.Managed(u8).init(allocator);
+    var print_buf = std.Io.Writer.Allocating.init(allocator);
     defer print_buf.deinit();
-    var print_writer = print_buf.writer();
+    const print_writer = &print_buf.writer;
 
     var headers: http.HeaderBuilder = .{};
 
@@ -32,15 +32,15 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
         headers.count("accept", "*/*");
         headers.count("accept-encoding", "gzip,deflate");
 
-        try print_writer.print("Bearer {s}", .{registry.token});
-        headers.count("authorization", print_buf.items);
+        print_writer.print("Bearer {s}", .{registry.token}) catch return error.OutOfMemory;
+        headers.count("authorization", print_buf.written());
         print_buf.clearRetainingCapacity();
 
         // no otp needed, just use auth-type from options
         headers.count("npm-auth-type", auth_type);
         headers.count("npm-command", "whoami");
 
-        try print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{
+        print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{
             Global.user_agent,
             Global.os_name,
             Global.arch_name,
@@ -48,8 +48,8 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
             false,
             if (ci_name != null) " ci/" else "",
             ci_name orelse "",
-        });
-        headers.count("user-agent", print_buf.items);
+        }) catch return error.OutOfMemory;
+        headers.count("user-agent", print_buf.written());
         print_buf.clearRetainingCapacity();
 
         headers.count("Connection", "keep-alive");
@@ -62,28 +62,28 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
         headers.append("accept", "*/*");
         headers.append("accept-encoding", "gzip/deflate");
 
-        try print_writer.print("Bearer {s}", .{registry.token});
-        headers.append("authorization", print_buf.items);
+        print_writer.print("Bearer {s}", .{registry.token}) catch return error.OutOfMemory;
+        headers.append("authorization", print_buf.written());
         print_buf.clearRetainingCapacity();
 
         headers.append("npm-auth-type", auth_type);
         headers.append("npm-command", "whoami");
 
-        try print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, false, if (ci_name != null) " ci/" else "", ci_name orelse "" });
-        headers.append("user-agent", print_buf.items);
+        print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, false, if (ci_name != null) " ci/" else "", ci_name orelse "" }) catch return error.OutOfMemory;
+        headers.append("user-agent", print_buf.written());
         print_buf.clearRetainingCapacity();
 
         headers.append("Connection", "keep-alive");
         headers.append("Host", registry.url.host);
     }
 
-    try print_writer.print("{s}/-/whoami", .{
+    print_writer.print("{s}/-/whoami", .{
         strings.withoutTrailingSlash(registry.url.href),
-    });
+    }) catch return error.OutOfMemory;
 
     var response_buf = try MutableString.init(allocator, 1024);
 
-    const url = URL.parse(print_buf.items);
+    const url = URL.parse(print_buf.written());
 
     var req = http.AsyncHTTP.initSync(
         allocator,

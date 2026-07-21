@@ -46,7 +46,7 @@ pub const OsIterator = struct {
     const Error = process.ArgIterator.InitError;
 
     arena: bun.ArenaAllocator,
-    remain: [][:0]const u8,
+    remain: []const [:0]const u8,
 
     /// The executable path (this is the first argument passed to the program)
     /// TODO: Is it the right choice for this to be null? Maybe `init` should
@@ -59,7 +59,7 @@ pub const OsIterator = struct {
             .exe_arg = undefined,
             .remain = &.{},
         };
-        res.remain = process.argsAlloc(res.arena.allocator()) catch &.{};
+        res.remain = process_args;
         res.exe_arg = res.next();
         return res;
     }
@@ -78,6 +78,12 @@ pub const OsIterator = struct {
         return null;
     }
 };
+
+var process_args: []const [:0]const u8 = &.{};
+
+pub fn setProcessArgs(argv: []const [:0]const u8) void {
+    process_args = argv;
+}
 
 /// An argument iterator that takes a string and parses it into arguments, simulating
 /// how shells split arguments.

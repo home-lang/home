@@ -19,7 +19,20 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
     this.packages = try this.packages.clone(z_allocator);
     old_packages_list.deinit(this.allocator);
 
-    var writer = bytes.writer();
+    const ListWriter = struct {
+        bytes: *std.array_list.Managed(u8),
+
+        pub fn writeAll(self: @This(), data: []const u8) !void {
+            try self.bytes.appendSlice(data);
+        }
+
+        pub fn writeInt(self: @This(), comptime T: type, value: T, endian: std.builtin.Endian) !void {
+            var encoded: [@sizeOf(T)]u8 = undefined;
+            std.mem.writeInt(T, &encoded, value, endian);
+            try self.writeAll(&encoded);
+        }
+    };
+    const writer = ListWriter{ .bytes = bytes };
     try writer.writeAll(header_bytes);
     try writer.writeInt(u32, @intFromEnum(this.format), .little);
 

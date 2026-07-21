@@ -31,6 +31,9 @@ pub const startsWithCaseInsensitiveAscii = @import("string/immutable.zig").start
 pub const containsCaseInsensitiveASCII = @import("string/immutable.zig").containsCaseInsensitiveASCII;
 pub const splitFirst = @import("string/immutable.zig").splitFirst;
 pub const splitFirstWithExpected = @import("string/immutable.zig").splitFirstWithExpected;
+pub const startsWithUUID = @import("string/immutable.zig").startsWithUUID;
+pub const startsWithNpmSecret = @import("string/immutable.zig").startsWithNpmSecret;
+pub const leftHasAnyInRight = @import("string/immutable.zig").leftHasAnyInRight;
 pub const utf8ByteSequenceLengthUnsafe = @import("string/immutable.zig").utf8ByteSequenceLengthUnsafe;
 pub fn withoutSuffixComptime(input: []const u8, comptime suffix: []const u8) []const u8 {
     return if (hasSuffixComptime(input, suffix)) input[0 .. input.len - suffix.len] else input;
