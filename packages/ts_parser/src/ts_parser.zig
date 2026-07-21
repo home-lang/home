@@ -8939,6 +8939,24 @@ pub const Parser = struct {
         };
     }
 
+    fn tokenCanStartVariableBinding(kind: TokenKind) bool {
+        return switch (kind) {
+            .identifier,
+            .private_identifier,
+            .open_brace,
+            .open_bracket,
+            => true,
+            else => {
+                // Mirrors tsgo's `isBindingIdentifier`: contextual and
+                // strict-mode-reserved words follow `with`, the final ES
+                // reserved word, in both token enums.
+                const raw = @backingInt(kind);
+                return raw >= @backingInt(TokenKind.kw_yield) and
+                    raw <= @backingInt(TokenKind.kw_accessor);
+            },
+        };
+    }
+
     fn tokenStartsOuterStatementAfterVariableList(kind: TokenKind) bool {
         if (tokenStartsDeclarationStatementAfterVariableList(kind)) return true;
         return switch (kind) {
@@ -9400,20 +9418,31 @@ pub const Parser = struct {
                 try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
             }
         }
-        while (self.match(.comma)) {
-            const comma_tok = self.tokens[self.cursor - 1];
-            if (self.peek().kind == .semicolon or self.peek().kind == .eof) {
-                try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1009, "Trailing comma not allowed.");
-                break;
-            }
-            if (self.peek().kind == .kw_return and self.peek().flags.preceded_by_newline) {
-                try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1009, "Trailing comma not allowed.");
-                break;
-            }
-            if (self.peek().kind == .string_literal or self.peek().kind == .number_literal) {
-                const bad_decl = self.advance();
-                try self.reportCodeAt(bad_decl.span.start, bad_decl.line, 1134, "Variable declaration expected.");
-                continue;
+        while (true) {
+            const comma_tok: ?Token = if (self.match(.comma))
+                self.tokens[self.cursor - 1]
+            else if (!recovered_initializer_arrow_tail and
+                !self.peek().flags.preceded_by_newline and
+                tokenCanStartVariableBinding(self.peek().kind))
+            blk: {
+                const missing_comma = self.peek();
+                try self.reportCodeAt(missing_comma.span.start, missing_comma.line, 1005, "',' expected.");
+                break :blk null;
+            } else break;
+            if (comma_tok) |separator| {
+                if (self.peek().kind == .semicolon or self.peek().kind == .eof) {
+                    try self.reportCodeAt(separator.span.start, separator.line, 1009, "Trailing comma not allowed.");
+                    break;
+                }
+                if (self.peek().kind == .kw_return and self.peek().flags.preceded_by_newline) {
+                    try self.reportCodeAt(separator.span.start, separator.line, 1009, "Trailing comma not allowed.");
+                    break;
+                }
+                if (self.peek().kind == .string_literal or self.peek().kind == .number_literal) {
+                    const bad_decl = self.advance();
+                    try self.reportCodeAt(bad_decl.span.start, bad_decl.line, 1134, "Variable declaration expected.");
+                    continue;
+                }
             }
             const extra_name: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
@@ -9427,7 +9456,16 @@ pub const Parser = struct {
                 break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
             const extra_definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
-            var extra_type: NodeId = hir_mod.none_node_id;
+            var extra_type: NodeId = if (comma_tok == null) blk: {
+                const any_id = self.interner.intern("any") catch return error.OutOfMemory;
+                const name_end = self.hir.spanOf(extra_name).end;
+                break :blk try self.builder.addTypeRef(
+                    .{ .start = name_end, .end = name_end },
+                    any_id,
+                    &.{},
+                    &.{},
+                );
+            } else hir_mod.none_node_id;
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
@@ -19798,6 +19836,40 @@ test "parser: variable declaration list tolerates additional declarators" {
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: variable declaration list recovers missing commas before bindings" {
+    const src = "var y: z is number;";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    const expected_names = [_][]const u8{ "y", "is", "number" };
+    for (stmts, expected_names) |stmt, expected_name| {
+        try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmt));
+        const name = hir_mod.varDeclOf(&s.hir, stmt).name;
+        try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(name));
+        try T.expectEqualStrings(expected_name, s.interner.get(hir_mod.identifierOf(&s.hir, name).name));
+    }
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmts[0]).type_annotation));
+    for (stmts[1..]) |stmt| {
+        const type_annotation = hir_mod.varDeclOf(&s.hir, stmt).type_annotation;
+        try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(type_annotation));
+        const type_ref = hir_mod.typeRefOf(&s.hir, type_annotation);
+        try T.expectEqualStrings("any", s.interner.get(type_ref.name));
+    }
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1134));
+    for (s.parser.diagnostics.items, 0..) |d, i| {
+        try T.expectEqualStrings("',' expected.", d.message);
+        const expected_pos = if (i == 0)
+            std.mem.indexOf(u8, src, "is").?
+        else
+            std.mem.indexOf(u8, src, "number").?;
+        try T.expectEqual(@as(u32, @intCast(expected_pos)), d.pos);
+    }
 }
 
 test "parser: missing logical-not operand preserves source file" {
