@@ -490,7 +490,30 @@ pub const Bin = extern struct {
         }
     };
 
-    pub const PriorityQueue = std.PriorityQueue(Install.DependencyID, PriorityQueueContext, PriorityQueueContext.lessThan);
+    pub const PriorityQueue = struct {
+        allocator: std.mem.Allocator,
+        queue: std.PriorityQueue(Install.DependencyID, PriorityQueueContext, PriorityQueueContext.lessThan),
+
+        pub fn init(allocator: std.mem.Allocator, context: PriorityQueueContext) @This() {
+            return .{ .allocator = allocator, .queue = .initContext(context) };
+        }
+
+        pub fn deinit(this: *@This()) void {
+            this.queue.deinit(this.allocator);
+        }
+
+        pub fn add(this: *@This(), dependency_id: Install.DependencyID) !void {
+            try this.queue.push(this.allocator, dependency_id);
+        }
+
+        pub fn removeOrNull(this: *@This()) ?Install.DependencyID {
+            return this.queue.pop();
+        }
+
+        pub fn count(this: *const @This()) usize {
+            return this.queue.count();
+        }
+    };
 
     // https://github.com/npm/npm-normalize-package-bin/blob/574e6d7cd21b2f3dee28a216ec2053c2551f7af9/lib/index.js#L38
     pub fn normalizedBinName(name: []const u8) []const u8 {
@@ -832,13 +855,15 @@ pub const Bin = extern struct {
             const package_dir = pkg_buf[0..off];
 
             var real_pkg_buf: bun.PathBuffer = undefined;
-            const real_package_dir = std.fs.cwd().realpath(package_dir, &real_pkg_buf) catch return true;
+            const real_package_dir_len = std.Io.Dir.cwd().realPathFile(std.Io.Threaded.global_single_threaded.io(), package_dir, &real_pkg_buf) catch return true;
+            const real_package_dir = real_pkg_buf[0..real_package_dir_len];
 
             const target_parent = std.fs.path.dirname(abs_target) orelse return true;
             if (target_parent.len == 0 or target_parent.len >= bun.MAX_PATH_BYTES) return true;
 
             var real_parent_buf: bun.PathBuffer = undefined;
-            const real_parent = std.fs.cwd().realpath(target_parent, &real_parent_buf) catch return true;
+            const real_parent_len = std.Io.Dir.cwd().realPathFile(std.Io.Threaded.global_single_threaded.io(), target_parent, &real_parent_buf) catch return true;
+            const real_parent = real_parent_buf[0..real_parent_len];
 
             return resolve_path.isParentOrEqual(real_package_dir, real_parent) == .unrelated;
         }
@@ -871,7 +896,7 @@ pub const Bin = extern struct {
 
                         const node_modules_path_save = this.node_modules_path.save();
                         this.node_modules_path.append(".bin");
-                        bun.makePath(std.fs.cwd(), this.node_modules_path.slice()) catch {};
+                        bun.makePath(std.Io.Dir.cwd(), this.node_modules_path.slice()) catch {};
                         node_modules_path_save.restore();
 
                         switch (bun.sys.symlinkRunningExecutable(rel_target, abs_dest)) {
@@ -895,7 +920,7 @@ pub const Bin = extern struct {
             }
 
             // delete and try again
-            std.fs.deleteTreeAbsolute(abs_dest) catch {};
+            std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), abs_dest) catch {};
             bun.sys.symlinkRunningExecutable(rel_target, abs_dest).unwrap() catch |err| {
                 this.err = err;
             };
@@ -1074,12 +1099,12 @@ pub const Bin = extern struct {
                         this.err = err;
                         return;
                     };
-                    defer target_dir.close();
+                    defer target_dir.close(std.Io.Threaded.global_single_threaded.io());
 
                     const abs_dest_dir_end = abs_dest_buf_remain;
 
                     var iter = target_dir.iterate();
-                    while (iter.next() catch null) |entry| {
+                    while (iter.next(std.Io.Threaded.global_single_threaded.io()) catch null) |entry| {
                         switch (entry.kind) {
                             .sym_link, .file => {
                                 // `this.abs_target_buf` is available now because `path.joinAbsStringZ` copied everything into `parse_join_input_buffer`

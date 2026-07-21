@@ -643,7 +643,7 @@ pub const RunCommand = struct {
     pub fn createFakeTemporaryNodeExecutable(
         PATH: *std.array_list.Managed(u8),
         optional_bun_path: *string,
-    ) (OOM || std.fs.SelfExePathError)!void {
+    ) !void {
         // If we are already running as "node", the path should exist
         if (CLI.pretend_to_be_node) return;
 
@@ -669,19 +669,19 @@ pub const RunCommand = struct {
             }
 
             if (Environment.isDebug) {
-                std.fs.deleteTreeAbsolute(bun_node_dir) catch {};
+                std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), bun_node_dir) catch {};
             }
             const paths = .{ bun_node_dir ++ "/node", bun_node_dir ++ "/bun" };
             inline for (paths) |path| {
                 var retried = false;
                 while (true) {
                     inner: {
-                        std.posix.symlinkZ(argv0, path) catch |err| {
+                        std.Io.Dir.cwd().symLink(std.Io.Threaded.global_single_threaded.io(), std.mem.span(argv0), path, .{}) catch |err| {
                             if (err == error.PathAlreadyExists) break :inner;
                             if (retried)
                                 return;
 
-                            std.fs.makeDirAbsoluteZ(bun_node_dir) catch {};
+                            std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), bun_node_dir) catch {};
 
                             retried = true;
                             continue;
@@ -726,8 +726,8 @@ pub const RunCommand = struct {
             if (Environment.isDebug) {
                 const dir_slice_u8 = std.unicode.utf16LeToUtf8Alloc(bun.default_allocator, dir_slice) catch @panic("oom");
                 defer bun.default_allocator.free(dir_slice_u8);
-                std.fs.deleteTreeAbsolute(dir_slice_u8) catch {};
-                std.fs.makeDirAbsolute(dir_slice_u8) catch @panic("huh?");
+                std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), dir_slice_u8) catch {};
+                std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), dir_slice_u8) catch @panic("huh?");
             }
 
             const image_path = bun.windows.exePathW();

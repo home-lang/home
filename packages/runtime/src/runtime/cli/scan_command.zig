@@ -23,6 +23,28 @@ pub const ScanCommand = struct {
         try execWithManager(ctx, manager, cwd);
     }
 
+    pub fn execStandalone(ctx: Command.Context, args: []const []const u8) !void {
+        var cli: PackageManager.CommandLineArguments = .{};
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                PackageManager.CommandLineArguments.printHelp(.scan);
+                return;
+            }
+            if (std.mem.eql(u8, arg, "--json")) cli.json_output = true;
+        }
+
+        const manager, const cwd = PackageManager.init(ctx, cli, .scan) catch |err| {
+            if (err == error.MissingPackageJSON) {
+                Output.errGeneric("No package.json was found", .{});
+                Global.exit(1);
+            }
+            return err;
+        };
+        defer ctx.allocator.free(cwd);
+
+        try execWithManager(ctx, manager, cwd);
+    }
+
     pub fn execWithManager(ctx: Command.Context, manager: *PackageManager, original_cwd: []const u8) !void {
         if (manager.options.security_scanner == null) {
             Output.prettyErrorln("<r><red>error<r>: no security scanner configured", .{});

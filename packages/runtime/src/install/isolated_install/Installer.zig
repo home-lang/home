@@ -1419,24 +1419,24 @@ pub const Installer = struct {
 
         const string_buf = this.lockfile.buffers.string_bytes.items;
 
-        var version_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer version_buf.deinit(bun.default_allocator);
+        var version_buf = std.Io.Writer.Allocating.init(this.lockfile.allocator);
+        defer version_buf.deinit();
 
-        var writer = version_buf.writer(this.lockfile.allocator);
-        try writer.print("{s}@", .{pkg_name.slice(string_buf)});
+        const writer = &version_buf.writer;
+        writer.print("{s}@", .{pkg_name.slice(string_buf)}) catch return error.OutOfMemory;
 
         switch (pkg_res.tag) {
             .workspace => {
                 if (this.lockfile.workspace_versions.get(pkg_name_hash)) |workspace_version| {
-                    try writer.print("{f}", .{workspace_version.fmt(string_buf)});
+                    writer.print("{f}", .{workspace_version.fmt(string_buf)}) catch return error.OutOfMemory;
                 }
             },
             else => {
-                try writer.print("{f}", .{pkg_res.fmt(string_buf, .posix)});
+                writer.print("{f}", .{pkg_res.fmt(string_buf, .posix)}) catch return error.OutOfMemory;
             },
         }
 
-        const name_and_version_hash = String.Builder.stringHash(version_buf.items);
+        const name_and_version_hash = String.Builder.stringHash(version_buf.written());
 
         if (this.lockfile.patched_dependencies.get(name_and_version_hash)) |patch| {
             return .{

@@ -388,11 +388,11 @@ const PackageCollector = struct {
 
             if ((try this.dedupe.getOrPut(dep_pkg_id)).found_existing) continue;
 
-            var pkg_path_buf: std.ArrayList(PackageID) = .{};
+            var pkg_path_buf: std.ArrayList(PackageID) = .empty;
             try pkg_path_buf.append(this.manager.allocator, root_pkg_id);
             try pkg_path_buf.append(this.manager.allocator, dep_pkg_id);
 
-            var dep_path_buf: std.ArrayList(DependencyID) = .{};
+            var dep_path_buf: std.ArrayList(DependencyID) = .empty;
             try dep_path_buf.append(this.manager.allocator, dep_id);
 
             try this.queue.writeItem(.{
@@ -420,11 +420,11 @@ const PackageCollector = struct {
 
                 if ((try this.dedupe.getOrPut(dep_pkg_id)).found_existing) continue;
 
-                var pkg_path_buf: std.ArrayList(PackageID) = .{};
+                var pkg_path_buf: std.ArrayList(PackageID) = .empty;
                 try pkg_path_buf.append(this.manager.allocator, pkg_id);
                 try pkg_path_buf.append(this.manager.allocator, dep_pkg_id);
 
-                var dep_path_buf: std.ArrayList(DependencyID) = .{};
+                var dep_path_buf: std.ArrayList(DependencyID) = .empty;
                 try dep_path_buf.append(this.manager.allocator, dep_id);
 
                 try this.queue.writeItem(.{
@@ -472,13 +472,13 @@ const PackageCollector = struct {
                 if (update_dep_id == invalid_dependency_id) continue;
                 if ((try this.dedupe.getOrPut(update_pkg_id)).found_existing) continue;
 
-                var initial_pkg_path: std.ArrayList(PackageID) = .{};
+                var initial_pkg_path: std.ArrayList(PackageID) = .empty;
                 if (parent_pkg_id != invalid_package_id) {
                     try initial_pkg_path.append(this.manager.allocator, parent_pkg_id);
                 }
                 try initial_pkg_path.append(this.manager.allocator, update_pkg_id);
 
-                var initial_dep_path: std.ArrayList(DependencyID) = .{};
+                var initial_dep_path: std.ArrayList(DependencyID) = .empty;
                 try initial_dep_path.append(this.manager.allocator, update_dep_id);
 
                 try this.queue.writeItem(.{
@@ -527,11 +527,11 @@ const PackageCollector = struct {
 
                 if ((try this.dedupe.getOrPut(next_pkg_id)).found_existing) continue;
 
-                var extended_pkg_path: std.ArrayList(PackageID) = .{};
+                var extended_pkg_path: std.ArrayList(PackageID) = .empty;
                 try extended_pkg_path.appendSlice(this.manager.allocator, mutable_item.pkg_path.items);
                 try extended_pkg_path.append(this.manager.allocator, next_pkg_id);
 
-                var extended_dep_path: std.ArrayList(DependencyID) = .{};
+                var extended_dep_path: std.ArrayList(DependencyID) = .empty;
                 try extended_dep_path.appendSlice(this.manager.allocator, mutable_item.dep_path.items);
                 try extended_dep_path.append(this.manager.allocator, next_dep_id);
 
@@ -551,8 +551,9 @@ const JSONBuilder = struct {
     collector: *PackageCollector,
 
     pub fn buildPackageJSON(this: JSONBuilder) ![]const u8 {
-        var json_buf: std.ArrayList(u8) = .{};
-        var writer = json_buf.writer(this.manager.allocator);
+        var json_buf = std.Io.Writer.Allocating.init(this.manager.allocator);
+        defer json_buf.deinit();
+        const writer = &json_buf.writer;
 
         const pkgs = this.manager.lockfile.packages.slice();
         const pkg_names = pkgs.items(.name);
@@ -609,7 +610,7 @@ const JSONBuilder = struct {
         }
 
         try writer.writeAll("\n]");
-        return json_buf.toOwnedSlice(this.manager.allocator);
+        return json_buf.toOwnedSlice();
     }
 };
 
@@ -654,22 +655,32 @@ fn attemptSecurityScanWithRetry(manager: *PackageManager, security_scanner: []co
     const json_data = try json_builder.buildPackageJSON();
     defer manager.allocator.free(json_data);
 
-    var code: std.ArrayList(u8) = .{};
+    var code: std.ArrayList(u8) = .empty;
     defer code.deinit(manager.allocator);
 
     var temp_source: []const u8 = scanner_entry_source;
+    const scanner_specifier = if (!bun.resolver.isPackagePath(security_scanner) and !std.fs.path.isAbsolute(security_scanner))
+        bun.path.joinAbsString(original_cwd, &.{security_scanner}, .auto)
+    else
+        security_scanner;
+    const scanner_specifier_literal = try std.fmt.allocPrint(
+        manager.allocator,
+        "{f}",
+        .{bun.fmt.formatJSONStringUTF8(scanner_specifier, .{})},
+    );
+    defer manager.allocator.free(scanner_specifier_literal);
 
     const scanner_placeholder = "__SCANNER_MODULE__";
     if (std.mem.indexOf(u8, temp_source, scanner_placeholder)) |index| {
         try code.appendSlice(manager.allocator, temp_source[0..index]);
-        try code.appendSlice(manager.allocator, security_scanner);
+        try code.appendSlice(manager.allocator, scanner_specifier_literal);
         try code.appendSlice(manager.allocator, temp_source[index + scanner_placeholder.len ..]);
         temp_source = code.items;
     }
 
     const suppress_placeholder = "__SUPPRESS_ERROR__";
     if (std.mem.indexOf(u8, temp_source, suppress_placeholder)) |index| {
-        var new_code: std.ArrayList(u8) = .{};
+        var new_code: std.ArrayList(u8) = .empty;
         try new_code.appendSlice(manager.allocator, temp_source[0..index]);
         try new_code.appendSlice(manager.allocator, if (suppress_error_output) "true" else "false");
         try new_code.appendSlice(manager.allocator, temp_source[index + suppress_placeholder.len ..]);
@@ -729,8 +740,8 @@ pub const SecurityScanSubprocess = struct {
     pub const StaticPipeWriter = jsc.Subprocess.NewStaticPipeWriter(@This());
 
     pub fn spawn(this: *SecurityScanSubprocess) !void {
-        this.ipc_data = .{};
-        this.stderr_data = .{};
+        this.ipc_data = .empty;
+        this.stderr_data = .empty;
         this.ipc_reader.setParent(this);
 
         // Two extra pipes for communicating with the scanner subprocess:
@@ -786,7 +797,7 @@ pub const SecurityScanSubprocess = struct {
             .extra_fds = &extra_fds,
         };
 
-        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(std.os.environ.ptr))).unwrap();
+        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(std.c.environ))).unwrap();
         defer spawned.extra_pipes.deinit();
 
         ipc_output_fds[1].close();
@@ -845,7 +856,7 @@ pub const SecurityScanSubprocess = struct {
             },
         };
 
-        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(std.os.environ.ptr))).unwrap();
+        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(std.c.environ))).unwrap();
         defer spawned.extra_pipes.deinit();
 
         ipc_output_fds[1].close();
@@ -1183,7 +1194,7 @@ pub const SecurityScanSubprocess = struct {
 };
 
 fn parseSecurityAdvisoriesFromExpr(manager: *PackageManager, advisories_expr: bun.js_parser.Expr, package_paths: *bun.AutoArrayHashMap(PackageID, PackagePath)) ![]SecurityAdvisory {
-    var advisories_list: std.ArrayList(SecurityAdvisory) = .{};
+    var advisories_list: std.ArrayList(SecurityAdvisory) = .empty;
     defer advisories_list.deinit(manager.allocator);
 
     if (advisories_expr.data != .e_array) {

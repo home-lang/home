@@ -116,7 +116,7 @@ pub const PackageInstall = struct {
 
         var destination_dir = this.node_modules.openDir(root_node_modules_dir) catch return false;
         defer {
-            if (std.fs.cwd().fd != destination_dir.fd) destination_dir.close(std.Options.debug_io);
+            if (std.Io.Dir.cwd().handle != destination_dir.handle) destination_dir.close(std.Io.Threaded.global_single_threaded.io());
         }
 
         if (comptime bun.Environment.isPosix) {
@@ -1258,8 +1258,9 @@ pub const PackageInstall = struct {
         // cache_dir_subpath in here is actually the full path to the symlink pointing to the linked package
         const symlinked_path = this.cache_dir_subpath;
         var to_buf: bun.PathBuffer = undefined;
-        const to_path = this.cache_dir.realpath(symlinked_path, &to_buf) catch |err|
+        const to_path_len = this.cache_dir.realPathFile(std.Io.Threaded.global_single_threaded.io(), symlinked_path, &to_buf) catch |err|
             return Result.fail(err, .linking_dependency, @errorReturnTrace());
+        const to_path = to_buf[0..to_path_len];
 
         const dest = std.fs.path.basename(dest_path);
         // When we're linking on Windows, we want to avoid keeping the source directory handle open
@@ -1328,13 +1329,13 @@ pub const PackageInstall = struct {
                 break :brk bun.MakePath.makeOpenPath(destination_dir, dir, .{}) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
             } else destination_dir;
             defer {
-                if (subdir != null) dest_dir.close();
+                if (subdir != null) dest_dir.close(std.Io.Threaded.global_single_threaded.io());
             }
 
             const dest_dir_path = bun.getFdPath(.fromStdDir(dest_dir), &dest_buf) catch |err| return Result.fail(err, .linking_dependency, @errorReturnTrace());
 
             const target = Path.relative(dest_dir_path, to_path);
-            std.posix.symlinkat(target, dest_dir.fd, dest) catch |err| return Result.fail(err, .linking_dependency, null);
+            dest_dir.symLink(std.Io.Threaded.global_single_threaded.io(), target, dest, .{}) catch |err| return Result.fail(err, .linking_dependency, null);
         }
 
         if (isDanglingSymlink(symlinked_path)) return Result.fail(error.DanglingSymlink, .linking_dependency, @errorReturnTrace());

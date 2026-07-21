@@ -28,10 +28,10 @@ pub fn installHoistedPackages(
     if (log_level.showProgress()) {
         progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
         root_node = progress.start("", 0);
-        download_node = root_node.start(ProgressStrings.download(), 0);
+        download_node = root_node.start(ProgressStrings.download(.plain), 0);
 
-        install_node = root_node.start(ProgressStrings.install(), this.lockfile.buffers.hoisted_dependencies.items.len);
-        scripts_node = root_node.start(ProgressStrings.script(), 0);
+        install_node = root_node.start(ProgressStrings.install(.plain), this.lockfile.buffers.hoisted_dependencies.items.len);
+        scripts_node = root_node.start(ProgressStrings.script(.plain), 0);
         this.downloads_node = &download_node;
         this.scripts_node = &scripts_node;
     }
@@ -54,7 +54,7 @@ pub fn installHoistedPackages(
     const node_modules_folder = brk: {
         // Attempt to open the existing node_modules folder
         switch (bun.sys.openatOSPath(cwd, bun.OSPathLiteral("node_modules"), bun.O.DIRECTORY | bun.O.RDONLY, 0o755)) {
-            .result => |fd| break :brk std.Io.Dir{ .fd = fd.cast() },
+            .result => |fd| break :brk std.Io.Dir{ .handle = fd.cast() },
             .err => {},
         }
 

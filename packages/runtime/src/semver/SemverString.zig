@@ -33,6 +33,24 @@ pub const String = extern struct {
         return .{ .str = self, .buf = buf };
     }
 
+    pub inline fn fmtStorePath(self: *const String, buf: []const u8) StorePathFormatter {
+        return .{ .str = self, .buf = buf };
+    }
+
+    pub const StorePathFormatter = struct {
+        str: *const String,
+        buf: string,
+
+        pub fn format(this: StorePathFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+            for (this.str.slice(this.buf)) |c| {
+                try writer.writeByte(switch (c) {
+                    '/', '\\', ':', '#' => '+',
+                    else => c,
+                });
+            }
+        }
+    };
+
     pub inline fn fmtJson(self: *const String, buf: string, opts: anytype) @TypeOf(shim.fmt.formatJSONStringUTF8("", opts)) {
         return shim.fmt.formatJSONStringUTF8(self.slice(buf), opts);
     }

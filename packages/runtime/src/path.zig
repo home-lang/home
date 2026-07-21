@@ -41,6 +41,7 @@ pub const normalizeString = @import("paths/resolve_path.zig").normalizeString;
 pub threadlocal var join_buf: [4096]u8 = undefined;
 pub const PosixToWinNormalizer = @import("paths/resolve_path.zig").PosixToWinNormalizer;
 pub const relative = @import("paths/resolve_path.zig").relative;
+pub const relativeZ = @import("paths/resolve_path.zig").relativeZ;
 pub const relativeNormalized = @import("paths/resolve_path.zig").relativeNormalized;
 pub const relativeNormalizedBuf = @import("paths/resolve_path.zig").relativeNormalizedBuf;
 pub const relativePlatform = @import("paths/resolve_path.zig").relativePlatform;

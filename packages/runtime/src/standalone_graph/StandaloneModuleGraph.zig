@@ -85,6 +85,7 @@ pub const SerializedSourceMap = struct {
 };
 
 compile_exec_argv: []const []const u8 = &.{},
+flags: Flags = .{},
 
 pub const CompileResult = union(enum) {
     success,

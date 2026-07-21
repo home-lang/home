@@ -195,15 +195,11 @@ pub fn cachedGitFolderNamePrintAuto(this: *const PackageManager, repository: *co
 
     if (!repository.repo.isEmpty() and !repository.committish.isEmpty()) {
         const string_buf = this.lockfile.buffers.string_bytes.items;
-        return std.fmt.bufPrintSentinel(
-            PackageManager.cached_package_folder_name_buf(),
-            "@G@{f}{f}{f}",
-            .{
-                repository.committish.fmt(string_buf),
-                CacheVersion.Formatter{ .version_number = CacheVersion.current },
-                PatchHashFmt{ .hash = patch_hash },
-            },
-        0) catch unreachable;
+        return std.fmt.bufPrintSentinel(PackageManager.cached_package_folder_name_buf(), "@G@{f}{f}{f}", .{
+            repository.committish.fmt(string_buf),
+            CacheVersion.Formatter{ .version_number = CacheVersion.current },
+            PatchHashFmt{ .hash = patch_hash },
+        }, 0) catch unreachable;
     }
 
     return "";
@@ -270,17 +266,13 @@ pub fn cachedNPMPackageFolderNamePrint(this: *const PackageManager, buf: []u8, n
 }
 
 fn cachedGitHubFolderNamePrintGuess(buf: []u8, string_buf: []const u8, repository: *const Repository, patch_hash: ?u64) stringZ {
-    return std.fmt.bufPrintSentinel(
-        buf,
-        "@GH@{f}-{f}-{f}{f}{f}",
-        .{
-            repository.owner.fmt(string_buf),
-            repository.repo.fmt(string_buf),
-            repository.committish.fmt(string_buf),
-            CacheVersion.Formatter{ .version_number = CacheVersion.current },
-            PatchHashFmt{ .hash = patch_hash },
-        },
-    0) catch unreachable;
+    return std.fmt.bufPrintSentinel(buf, "@GH@{f}-{f}-{f}{f}{f}", .{
+        repository.owner.fmt(string_buf),
+        repository.repo.fmt(string_buf),
+        repository.committish.fmt(string_buf),
+        CacheVersion.Formatter{ .version_number = CacheVersion.current },
+        PatchHashFmt{ .hash = patch_hash },
+    }, 0) catch unreachable;
 }
 pub fn cachedNPMPackageFolderName(this: *const PackageManager, name: string, version: Semver.Version, patch_hash: ?u64) stringZ {
     return this.cachedNPMPackageFolderNamePrint(PackageManager.cached_package_folder_name_buf(), name, version, patch_hash);
@@ -296,49 +288,37 @@ pub fn cachedNPMPackageFolderPrintBasename(
 ) stringZ {
     if (version.tag.hasPre()) {
         if (version.tag.hasBuild()) {
-            return std.fmt.bufPrintSentinel(
-                buf,
-                "{s}@{d}.{d}.{d}-{f}+{f}{f}{f}",
-                .{
-                    name,
-                    version.major,
-                    version.minor,
-                    version.patch,
-                    bun.fmt.hexIntLower(version.tag.pre.hash),
-                    bun.fmt.hexIntUpper(version.tag.build.hash),
-                    CacheVersion.Formatter{ .version_number = if (include_cache_version) CacheVersion.current else null },
-                    PatchHashFmt{ .hash = patch_hash },
-                },
-            0) catch unreachable;
-        }
-        return std.fmt.bufPrintSentinel(
-            buf,
-            "{s}@{d}.{d}.{d}-{f}{f}{f}",
-            .{
+            return std.fmt.bufPrintSentinel(buf, "{s}@{d}.{d}.{d}-{f}+{f}{f}{f}", .{
                 name,
                 version.major,
                 version.minor,
                 version.patch,
                 bun.fmt.hexIntLower(version.tag.pre.hash),
-                CacheVersion.Formatter{ .version_number = if (include_cache_version) CacheVersion.current else null },
-                PatchHashFmt{ .hash = patch_hash },
-            },
-        0) catch unreachable;
-    }
-    if (version.tag.hasBuild()) {
-        return std.fmt.bufPrintSentinel(
-            buf,
-            "{s}@{d}.{d}.{d}+{f}{f}{f}",
-            .{
-                name,
-                version.major,
-                version.minor,
-                version.patch,
                 bun.fmt.hexIntUpper(version.tag.build.hash),
                 CacheVersion.Formatter{ .version_number = if (include_cache_version) CacheVersion.current else null },
                 PatchHashFmt{ .hash = patch_hash },
-            },
-        0) catch unreachable;
+            }, 0) catch unreachable;
+        }
+        return std.fmt.bufPrintSentinel(buf, "{s}@{d}.{d}.{d}-{f}{f}{f}", .{
+            name,
+            version.major,
+            version.minor,
+            version.patch,
+            bun.fmt.hexIntLower(version.tag.pre.hash),
+            CacheVersion.Formatter{ .version_number = if (include_cache_version) CacheVersion.current else null },
+            PatchHashFmt{ .hash = patch_hash },
+        }, 0) catch unreachable;
+    }
+    if (version.tag.hasBuild()) {
+        return std.fmt.bufPrintSentinel(buf, "{s}@{d}.{d}.{d}+{f}{f}{f}", .{
+            name,
+            version.major,
+            version.minor,
+            version.patch,
+            bun.fmt.hexIntUpper(version.tag.build.hash),
+            CacheVersion.Formatter{ .version_number = if (include_cache_version) CacheVersion.current else null },
+            PatchHashFmt{ .hash = patch_hash },
+        }, 0) catch unreachable;
     }
     return std.fmt.bufPrintSentinel(buf, "{s}@{d}.{d}.{d}{f}{f}", .{
         name,
@@ -565,19 +545,20 @@ pub fn computeCacheDirAndSubpath(
 }
 
 pub fn attemptToCreatePackageJSONAndOpen() !std.Io.File {
-    const package_json_file = std.Io.Dir.cwd().createFileZ("package.json", .{ .read = true }) catch |err| {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const package_json_file = std.Io.Dir.cwd().createFile(io, "package.json", .{ .read = true }) catch |err| {
         Output.prettyErrorln("<r><red>error:<r> {s} create package.json", .{@errorName(err)});
         Global.crash();
     };
 
-    try package_json_file.pwriteAll("{\"dependencies\": {}}", 0);
+    try package_json_file.writePositionalAll(io, "{\"dependencies\": {}}", 0);
 
     return package_json_file;
 }
 
 pub fn attemptToCreatePackageJSON() !void {
-    var file = try attemptToCreatePackageJSONAndOpen();
-    file.close();
+    const file = try attemptToCreatePackageJSONAndOpen();
+    file.close(std.Io.Threaded.global_single_threaded.io());
 }
 
 pub fn saveLockfile(
@@ -631,7 +612,7 @@ pub fn saveLockfile(
 
     if (log_level.showProgress()) {
         this.progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
-        save_node = this.progress.start(ProgressStrings.save(), 0);
+        save_node = this.progress.start(ProgressStrings.save(.plain), 0);
         save_node.activate();
 
         this.progress.refresh();

@@ -159,7 +159,7 @@ pub const FilePoll = struct {
     // writer poll. `bun.shell.ShellSubprocess` is a stub for the ProcessExitHandler
     // union; the real type that owns FilePolls is `bun.shell.subproc.ShellSubprocess`.
     const ShellStaticPipeWriter = bun.shell.subproc.ShellSubprocess.StaticPipeWriter.Poll;
-    // const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll; // install not for corpus
+    const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll;
     const FileSink = jsc.WebCore.FileSink.Poll;
     // const TerminalPoll = bun.api.Terminal.Poll; // terminal not for corpus
     const DNSResolver = bun.api.dns.Resolver;
@@ -183,7 +183,7 @@ pub const FilePoll = struct {
 
         StaticPipeWriter,
         ShellStaticPipeWriter,
-        // SecurityScanStaticPipeWriter,
+        SecurityScanStaticPipeWriter,
 
         BufferedReader,
 
@@ -385,7 +385,10 @@ pub const FilePoll = struct {
                 var handler: *StaticPipeWriter = ptr.as(StaticPipeWriter);
                 handler.onPoll(size_or_offset, poll.flags.contains(.hup));
             },
-            // SecurityScanStaticPipeWriter case: install not for corpus
+            @field(Owner.Tag, @typeName(SecurityScanStaticPipeWriter)) => {
+                var handler: *SecurityScanStaticPipeWriter = ptr.as(SecurityScanStaticPipeWriter);
+                handler.onPoll(size_or_offset, poll.flags.contains(.hup));
+            },
             @field(Owner.Tag, @typeName(FileSink)) => {
                 var handler: *FileSink = ptr.as(FileSink);
                 handler.onPoll(size_or_offset, poll.flags.contains(.hup));

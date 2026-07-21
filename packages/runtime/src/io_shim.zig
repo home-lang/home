@@ -48,7 +48,7 @@ pub fn GenericWriter(
         }
 
         pub fn print(self: Self, comptime fmt: []const u8, args: anytype) Error!void {
-            const text = std.fmt.allocPrint(std.heap.smp_allocator, fmt, args) catch return error.OutOfMemory;
+            const text = std.fmt.allocPrint(std.heap.smp_allocator, fmt, args) catch @panic("out of memory");
             defer std.heap.smp_allocator.free(text);
             return self.writeAll(text);
         }

@@ -85,7 +85,7 @@ pub const PostinstallOptimizer = enum {
                 }
             }
 
-            if (bun.env_var.feature_flag.BUN_FEATURE_FLAG_DISABLE_NATIVE_DEPENDENCY_LINKER.get()) {
+            if (bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_NATIVE_DEPENDENCY_LINKER.get()) {
                 return false;
             }
 
@@ -107,7 +107,7 @@ pub const PostinstallOptimizer = enum {
             target_os: Npm.OperatingSystem,
             tree_id: ?Lockfile.Tree.Id,
         ) bool {
-            if (bun.env_var.feature_flag.BUN_FEATURE_FLAG_DISABLE_IGNORE_SCRIPTS.get()) {
+            if (bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_IGNORE_SCRIPTS.get()) {
                 return false;
             }
 

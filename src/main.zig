@@ -1838,7 +1838,10 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
 
     // Write to a temp module and run it through the full VM.
     var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.js", .{std.c.getpid()}) catch
+    // Bun parses inline eval as TypeScript even when runtime flags precede
+    // `-e` (the security-scanner bootstrap relies on this for its type-only
+    // declarations), so keep the temp module on the TypeScript loader path.
+    const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.ts", .{std.c.getpid()}) catch
         return false;
     Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items }) catch return false;
     runFileViaVMOpts(allocator, tmp_path, &.{}, true) catch |err| {
@@ -4683,12 +4686,10 @@ pub fn main(init: std.process.Init) !void {
         try execPantryCommand(allocator, "audit", args[2..]);
         return;
     }
-    // `home pm pkg` — Bun-compatible package.json metadata operations. This
-    // command does not need install/cache/network initialization, so invoke its
-    // native runtime implementation directly instead of booting the package
-    // installer used by the other `pm` utilities.
+    // `home pm pkg` and `home pm scan` — Bun-compatible package metadata and
+    // security-scanner operations, routed to their native runtime ports.
     if (std.mem.eql(u8, command, "pm")) {
-        if (args.len < 3 or !std.mem.eql(u8, args[2], "pkg")) {
+        if (args.len < 3) {
             std.debug.print("{s}Error:{s} unsupported 'pm' subcommand\n", .{ Color.Red.code(), Color.Reset.code() });
             std.process.exit(1);
         }
@@ -4696,6 +4697,15 @@ pub fn main(init: std.process.Init) !void {
         const log = try runtime_allocator.create(home_rt.logger.Log);
         log.* = home_rt.logger.Log.init(runtime_allocator);
         const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+
+        if (std.mem.eql(u8, args[2], "scan")) {
+            try home_rt.cli.ScanCommand.execStandalone(ctx, args[3..]);
+            return;
+        }
+        if (!std.mem.eql(u8, args[2], "pkg")) {
+            std.debug.print("{s}Error:{s} unsupported 'pm' subcommand\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.process.exit(1);
+        }
         var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
         defer positionals.deinit(runtime_allocator);
         try positionals.append(runtime_allocator, "pkg");

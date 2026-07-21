@@ -67,7 +67,7 @@ pub const FileCopier = struct {
 
             return .{ .err = bun.sys.Error.fromCode(errno, .copyfile) };
         };
-        defer dest_dir.close();
+        defer dest_dir.close(std.Io.Threaded.global_single_threaded.io());
 
         var copy_file_state: bun.CopyFileState = .{};
 
@@ -139,17 +139,17 @@ pub const FileCopier = struct {
                 };
                 defer src.close();
 
-                var dest = dest_dir.createFileZ(entry.path, .{}) catch dest: {
+                var dest = dest_dir.createFile(std.Io.Threaded.global_single_threaded.io(), entry.path, .{}) catch dest: {
                     if (bun.Dirname.dirname(bun.OSPathChar, entry.path)) |entry_dirname| {
                         bun.MakePath.makePath(bun.OSPathChar, dest_dir, entry_dirname) catch {};
                     }
 
-                    break :dest dest_dir.createFileZ(entry.path, .{}) catch |err| {
+                    break :dest dest_dir.createFile(std.Io.Threaded.global_single_threaded.io(), entry.path, .{}) catch |err| {
                         Output.prettyErrorln("<r><red>{s}<r>: copy file {f}", .{ @errorName(err), bun.fmt.fmtOSPath(entry.path, .{}) });
                         Global.exit(1);
                     };
                 };
-                defer dest.close();
+                defer dest.close(std.Io.Threaded.global_single_threaded.io());
 
                 if (comptime Environment.isPosix) {
                     const stat = src.stat().unwrap() catch continue;
@@ -171,6 +171,7 @@ pub const FileCopier = struct {
 
 const Walker = @import("../../sys/walker_skippable.zig");
 
+const std = @import("std");
 const bun = @import("bun");
 const Environment = bun.Environment;
 const FD = bun.FD;

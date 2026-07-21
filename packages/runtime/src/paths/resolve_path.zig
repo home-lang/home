@@ -895,6 +895,12 @@ pub const PosixToWinNormalizer = struct {
         return this.resolveCWD(maybe_posix_path);
     }
 
+    pub fn resolveZ(this: *@This(), source_dir: []const u8, maybe_posix_path: [:0]const u8) [:0]const u8 {
+        if (comptime !Environment.isWindows) return maybe_posix_path;
+        const joined = joinAbsStringBufZ(source_dir, &this.buf, &.{maybe_posix_path}, .auto);
+        return this.resolveCWDWithExternalBufZ(joined, &this.buf);
+    }
+
     // On POSIX an absolute posix path is already the platform path — return it
     // unchanged (faithful to upstream, whose normalizer body is gated entirely
     // behind `if (isWindows)` and otherwise returns `maybe_posix_path`). The

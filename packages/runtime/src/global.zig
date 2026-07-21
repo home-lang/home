@@ -37,8 +37,25 @@ pub const BunInfo = struct {
 // fetch tests assert the equality, and the "Home/0.0.0" rebrand broke
 // every body-stream clone test at the first header assertion.
 pub const user_agent = @import("bun_core/Global.zig").user_agent;
+pub const os_name = @import("bun_core/Global.zig").os_name;
+pub const arch_name = @import("bun_core/Global.zig").arch_name;
+
+pub const ExitFn = *const fn () callconv(.c) void;
+var exit_callbacks: std.ArrayListUnmanaged(ExitFn) = .empty;
+
+pub fn addExitCallback(function: ExitFn) void {
+    if (std.mem.indexOfScalar(ExitFn, exit_callbacks.items, function) == null) {
+        exit_callbacks.append(std.heap.smp_allocator, function) catch {};
+    }
+}
+
+pub fn runExitCallbacks() void {
+    for (exit_callbacks.items) |callback| callback();
+    exit_callbacks.items.len = 0;
+}
 
 pub fn exit(code: u8) noreturn {
+    runExitCallbacks();
     std.process.exit(code);
 }
 

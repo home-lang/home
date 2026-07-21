@@ -463,7 +463,8 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
         // used later for adding to path for scripts
         manager.node_gyp_tempdir_name = try manager.allocator.dupe(u8, node_gyp_tempdir_name);
 
-        var node_gyp_tempdir = tempdir.handle.makeOpenPath(manager.node_gyp_tempdir_name, .{}) catch |err| {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const node_gyp_tempdir = tempdir.handle.createDirPathOpen(io, manager.node_gyp_tempdir_name, .{}) catch |err| {
             if (err == error.EEXIST) {
                 // it should not exist
                 Output.prettyErrorln("<r><red>error<r>: node-gyp tempdir already exists", .{});
@@ -472,7 +473,7 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
             Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> creating node-gyp tempdir", .{@errorName(err)});
             Global.crash();
         };
-        defer node_gyp_tempdir.close();
+        defer node_gyp_tempdir.close(io);
 
         const file_name = switch (Environment.os) {
             else => "node-gyp",
@@ -483,11 +484,12 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
             .windows => 0, // windows does not have an executable bit
         };
 
-        var node_gyp_file = node_gyp_tempdir.createFile(file_name, .{ .mode = mode }) catch |err| {
+        const permissions: std.Io.File.Permissions = if (comptime Environment.isWindows) .default_file else .fromMode(mode);
+        const node_gyp_file = node_gyp_tempdir.createFile(io, file_name, .{ .permissions = permissions }) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> creating node-gyp tempdir", .{@errorName(err)});
             Global.crash();
         };
-        defer node_gyp_file.close();
+        defer node_gyp_file.close(io);
 
         const content = switch (Environment.os) {
             .windows =>
@@ -508,7 +510,7 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
             ,
         };
 
-        node_gyp_file.writeAll(content) catch |err| {
+        node_gyp_file.writeStreamingAll(io, content) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: <b><red>{s}<r> writing to " ++ file_name ++ " file", .{@errorName(err)});
             Global.crash();
         };
@@ -566,13 +568,14 @@ pub fn init(
     cli: CommandLineArguments,
     subcommand: Subcommand,
 ) !struct { *PackageManager, string } {
+    const io = std.Io.Threaded.global_single_threaded.io();
     if (cli.global) {
         var explicit_global_dir: string = "";
         if (ctx.install) |opts| {
             explicit_global_dir = opts.global_dir orelse explicit_global_dir;
         }
-        var global_dir = try Options.openGlobalDir(explicit_global_dir);
-        try global_dir.setAsCwd();
+        const global_dir = try Options.openGlobalDir(explicit_global_dir);
+        try std.process.setCurrentDir(std.Io.Threaded.global_single_threaded.io(), global_dir);
     }
 
     var fs = try Fs.FileSystem.init(null);
@@ -626,7 +629,8 @@ pub fn init(
                 package_json_path_buf[this_cwd.len + "/package.json".len] = 0;
                 const package_json_path = package_json_path_buf[0 .. this_cwd.len + "/package.json".len :0];
 
-                break :child std.fs.cwd().openFileZ(
+                break :child std.Io.Dir.cwd().openFile(
+                    io,
                     package_json_path,
                     .{ .mode = if (need_write) .read_write else .read_only },
                 ) catch |err| switch (err) {
@@ -693,17 +697,18 @@ pub fn init(
                     parent_path_buf[parent_without_trailing_slash.len..parent_path_buf.len][0.."/package.json".len].* = "/package.json".*;
                     parent_path_buf[parent_without_trailing_slash.len + "/package.json".len] = 0;
 
-                    const json_file = std.fs.cwd().openFileZ(
-                        parent_path_buf[0 .. parent_without_trailing_slash.len + "/package.json".len :0].ptr,
+                    const json_file = std.Io.Dir.cwd().openFile(
+                        io,
+                        parent_path_buf[0 .. parent_without_trailing_slash.len + "/package.json".len :0],
                         .{ .mode = .read_write },
                     ) catch {
                         continue;
                     };
-                    defer if (!found) json_file.close();
-                    const json_stat_size = try json_file.getEndPos();
+                    defer if (!found) json_file.close(io);
+                    const json_stat_size = try json_file.length(io);
                     const json_buf = try ctx.allocator.alloc(u8, json_stat_size + 64);
                     defer ctx.allocator.free(json_buf);
-                    const json_len = try json_file.preadAll(json_buf, 0);
+                    const json_len = try json_file.readPositionalAll(io, json_buf, 0);
                     const json_path = try bun.getFdPath(.fromStdFile(json_file), &root_package_json_path_buf);
                     const json_source = logger.Source.initPathString(json_path, json_buf[0..json_len]);
                     initializeStore();
@@ -750,7 +755,7 @@ pub fn init(
                             if (strings.eqlLong(maybe_workspace_path, path, true)) {
                                 fs.top_level_dir = try bun.dupeZ(bun.default_allocator, u8, parent);
                                 found = true;
-                                child_json.close();
+                                child_json.close(io);
                                 if (comptime Environment.isWindows) {
                                     try json_file.seekTo(0);
                                 }
@@ -1295,7 +1300,7 @@ const File = bun.sys.File;
 const Semver = bun.Semver;
 const String = Semver.String;
 
-const BunArguments = bun.cli.Arguments;
+const BunArguments = @import("../runtime/cli/Arguments.zig");
 const Command = bun.cli.Command;
 
 const Fs = bun.fs;

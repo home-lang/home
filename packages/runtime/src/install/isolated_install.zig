@@ -13,7 +13,7 @@ pub fn installIsolatedPackages(
     const lockfile = manager.lockfile;
 
     const store: Store = store: {
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer = bun.Timer.start() catch unreachable;
         const pkgs = lockfile.packages.slice();
         const pkg_dependency_slices = pkgs.items(.dependencies);
         const pkg_resolutions = pkgs.items(.resolution);
@@ -626,7 +626,7 @@ pub fn installIsolatedPackages(
         var dedupe: std.AutoHashMapUnmanaged(PackageID, std.ArrayListUnmanaged(DedupeInfo)) = .empty;
         defer dedupe.deinit(lockfile.allocator);
 
-        var res_fmt_buf: std.array_list.Managed(u8) = .init(lockfile.allocator);
+        var res_fmt_buf = std.Io.Writer.Allocating.init(lockfile.allocator);
         defer res_fmt_buf.deinit();
 
         const nodes_slice = nodes.slice();
@@ -661,7 +661,7 @@ pub fn installIsolatedPackages(
 
             const dedupe_entry = try dedupe.getOrPut(lockfile.allocator, pkg_id);
             if (!dedupe_entry.found_existing) {
-                dedupe_entry.value_ptr.* = .{};
+                dedupe_entry.value_ptr.* = .empty;
             } else {
                 const curr_peers = node_peers[entry.node_id.get()];
                 const curr_dep_id = node_dep_ids[entry.node_id.get()];
@@ -729,8 +729,8 @@ pub fn installIsolatedPackages(
                     hasher.update(pkg_name.slice(string_buf));
                     const pkg_res = pkg_resolutions[peer_ids.pkg_id];
                     res_fmt_buf.clearRetainingCapacity();
-                    try res_fmt_buf.writer().print("{f}", .{pkg_res.fmt(string_buf, .posix)});
-                    hasher.update(res_fmt_buf.items);
+                    res_fmt_buf.writer.print("{f}", .{pkg_res.fmt(string_buf, .posix)}) catch return error.OutOfMemory;
+                    hasher.update(res_fmt_buf.written());
                 }
                 break :peer_hash .from(hasher.final());
             };
@@ -861,7 +861,7 @@ pub fn installIsolatedPackages(
     const WyhashWriter = struct {
         hasher: *std.hash.Wyhash,
         const E = error{};
-        pub fn writer(self: *@This()) std.io.GenericWriter(*@This(), E, write) {
+        pub fn writer(self: *@This()) bun.io.GenericWriter(*@This(), E, write) {
             return .{ .context = self };
         }
         fn write(self: *@This(), bytes: []const u8) E!usize {
@@ -1255,7 +1255,8 @@ pub fn installIsolatedPackages(
         _ = manager.getCacheDirectory();
         const cache_dir_path = manager.cache_directory_path;
         if (cache_dir_path.len == 0) break :global_store_path null;
-        break :global_store_path try bun.dupeZ(manager.allocator, 
+        break :global_store_path try bun.dupeZ(
+            manager.allocator,
             u8,
             bun.path.joinAbsString(cache_dir_path, &.{"links"}, .auto),
         );
@@ -1428,9 +1429,9 @@ pub fn installIsolatedPackages(
         if (manager.options.log_level.showProgress()) {
             progress.supports_ansi_escape_codes = Output.enable_ansi_colors_stderr;
             root_node = progress.start("", 0);
-            download_node = root_node.start(ProgressStrings.download(), 0);
-            install_node = root_node.start(ProgressStrings.install(), store.entries.len);
-            scripts_node = root_node.start(ProgressStrings.script(), 0);
+            download_node = root_node.start(ProgressStrings.download(.plain), 0);
+            install_node = root_node.start(ProgressStrings.install(.plain), store.entries.len);
+            scripts_node = root_node.start(ProgressStrings.script(.plain), 0);
 
             manager.downloads_node = null;
             manager.scripts_node = &scripts_node;

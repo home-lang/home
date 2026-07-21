@@ -7,6 +7,8 @@
 const std = @import("std");
 const Environment = @import("environment.zig");
 
+pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
+
 /// Returns the raw env value if set, otherwise null. POSIX-only — the
 /// upstream Bun implementation uses native syscalls on Windows; until
 /// Phase 12 brings that across we use `std.process.getEnvVarOwned`
@@ -125,6 +127,8 @@ pub const XDG_CACHE_HOME = struct {
         return rawGet("XDG_CACHE_HOME");
     }
 };
+
+pub const XDG_CONFIG_HOME = StringEnv("XDG_CONFIG_HOME");
 
 /// `DO_NOT_TRACK=1` (per https://consoledonottrack.com/) opts callers out
 /// of any telemetry / crash-reporter wakeups. Bun reads this through

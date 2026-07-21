@@ -548,7 +548,9 @@ pub inline fn writeAnyToHasher(hasher: anytype, thing: anytype) void {
     hasher.update(std.mem.asBytes(&thing));
 }
 pub const path = @import("path.zig");
+pub const EnvPath = @import("paths/EnvPath.zig").EnvPath;
 pub const env_var = @import("env_var.zig");
+pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
 pub const clap = @import("clap/clap.zig");
 pub const ParentDeathWatchdog = @import("io/ParentDeathWatchdog.zig");
 
@@ -1736,52 +1738,144 @@ pub const cpp = if (enable_jsc_link) @import(".generated/cpp.zig") else struct {
     // .generated/cpp.zig so callers compile under -Denable_jsc=false.
     // Bodies panic (predicates return a safe default) — the JSC tests that
     // would exercise them are skipped without the C++ bridge.
-    pub fn Bun__CallFrame__getLineNumber(_: anytype, _: anytype) c_uint { @panic("home_rt.cpp.Bun__CallFrame__getLineNumber needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn Bun__gregorianDateTimeToMS(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!f64 { @panic("home_rt.cpp.Bun__gregorianDateTimeToMS needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn Bun__JSValue__bind(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!jsc.JSValue { @panic("home_rt.cpp.Bun__JSValue__bind needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn Bun__JSValue__setPrototypeDirect(_: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.Bun__JSValue__setPrototypeDirect needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn Bun__msToGregorianDateTime(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype) void { @panic("home_rt.cpp.Bun__msToGregorianDateTime needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn Bun__parseDate(_: anytype, _: anytype) error{JSError}!f64 { @panic("home_rt.cpp.Bun__parseDate needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn Bun__WTFStringImpl__ensureHash(_: anytype) void { @panic("home_rt.cpp.Bun__WTFStringImpl__ensureHash needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn BunString__createAtom(_: anytype, _: anytype) String { @panic("home_rt.cpp.BunString__createAtom needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn BunString__createUTF8ForJS(_: anytype, _: anytype, _: anytype) error{JSError}!jsc.JSValue { @panic("home_rt.cpp.BunString__createUTF8ForJS needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn BunString__fromUTF16ToLatin1(_: anytype, _: anytype) String { @panic("home_rt.cpp.BunString__fromUTF16ToLatin1 needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn BunString__fromUTF16(_: anytype, _: anytype) String { @panic("home_rt.cpp.BunString__fromUTF16 needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn BunString__toJSON(_: anytype, _: anytype) error{JSError}!jsc.JSValue { @panic("home_rt.cpp.BunString__toJSON needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn BunString__toThreadSafe(_: anytype) void { @panic("home_rt.cpp.BunString__toThreadSafe needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn BunString__tryCreateAtom(_: anytype, _: anytype) String { @panic("home_rt.cpp.BunString__tryCreateAtom needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn IPCSerialize(_: anytype, _: anytype, _: anytype) error{JSError}!jsc.JSValue { @panic("home_rt.cpp.IPCSerialize needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSGlobalObject__reload(_: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSGlobalObject__reload needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSPromise__reject(_: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSPromise__reject needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSPromise__rejectAsHandled(_: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSPromise__rejectAsHandled needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSPromise__resolve(_: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSPromise__resolve needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSPromise__result(_: anytype, _: anytype) jsc.JSValue { @panic("home_rt.cpp.JSC__JSPromise__result needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSPromise__setHandled(_: anytype) void { @panic("home_rt.cpp.JSC__JSPromise__setHandled needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSPromise__status(_: anytype) u32 { @panic("home_rt.cpp.JSC__JSPromise__status needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__forEachProperty(_: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSValue__forEachProperty needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__forEachPropertyOrdered(_: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSValue__forEachPropertyOrdered needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__isAnyInt(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isBigInt(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isBigInt32(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isConstructor(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isCustomGetterSetter(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isGetterSetter(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isHeapBigInt(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isPrimitive(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__isUInt32AsAnyInt(_: anytype) bool { return false; }
-    pub fn JSC__JSValue__jsEmptyString(_: anytype) jsc.JSValue { @panic("home_rt.cpp.JSC__JSValue__jsEmptyString needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__jsNumberFromU16(_: anytype) jsc.JSValue { @panic("home_rt.cpp.JSC__JSValue__jsNumberFromU16 needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__putMayBeIndex(_: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSValue__putMayBeIndex needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__toInt64(_: jsc.JSValue) callconv(.c) i64 { @panic("home_rt.cpp.JSC__JSValue__toInt64 needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__toMatch(_: anytype, _: anytype, _: anytype) error{JSError}!bool { @panic("home_rt.cpp.JSC__JSValue__toMatch needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__toStringOrNull(_: anytype, _: anytype) error{JSError}!*jsc.JSString { @panic("home_rt.cpp.JSC__JSValue__toStringOrNull needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__toZigException(_: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSValue__toZigException needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSMock__getCurrentUnixTimeMs() f64 { @panic("home_rt.cpp.JSMock__getCurrentUnixTimeMs needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSMock__setOverridenDateNow(_: anytype, _: anytype) void { @panic("home_rt.cpp.JSMock__setOverridenDateNow needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn ReadableStream__empty(_: anytype) error{JSError}!jsc.JSValue { @panic("home_rt.cpp.ReadableStream__empty needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn ReadableStream__used(_: anytype) error{JSError}!jsc.JSValue { @panic("home_rt.cpp.ReadableStream__used needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn WTFStringImpl__isThreadSafe(_: anytype) bool { return false; }
-    pub fn ZigString__toExternalValue(_: anytype, _: anytype) jsc.JSValue { @panic("home_rt.cpp.ZigString__toExternalValue needs the C++ FFI bridge (Phase 12.2)"); }
+    pub fn Bun__CallFrame__getLineNumber(_: anytype, _: anytype) c_uint {
+        @panic("home_rt.cpp.Bun__CallFrame__getLineNumber needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn Bun__gregorianDateTimeToMS(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!f64 {
+        @panic("home_rt.cpp.Bun__gregorianDateTimeToMS needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn Bun__JSValue__bind(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!jsc.JSValue {
+        @panic("home_rt.cpp.Bun__JSValue__bind needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn Bun__JSValue__setPrototypeDirect(_: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.Bun__JSValue__setPrototypeDirect needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn Bun__msToGregorianDateTime(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype) void {
+        @panic("home_rt.cpp.Bun__msToGregorianDateTime needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn Bun__parseDate(_: anytype, _: anytype) error{JSError}!f64 {
+        @panic("home_rt.cpp.Bun__parseDate needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn Bun__WTFStringImpl__ensureHash(_: anytype) void {
+        @panic("home_rt.cpp.Bun__WTFStringImpl__ensureHash needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn BunString__createAtom(_: anytype, _: anytype) String {
+        @panic("home_rt.cpp.BunString__createAtom needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn BunString__createUTF8ForJS(_: anytype, _: anytype, _: anytype) error{JSError}!jsc.JSValue {
+        @panic("home_rt.cpp.BunString__createUTF8ForJS needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn BunString__fromUTF16ToLatin1(_: anytype, _: anytype) String {
+        @panic("home_rt.cpp.BunString__fromUTF16ToLatin1 needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn BunString__fromUTF16(_: anytype, _: anytype) String {
+        @panic("home_rt.cpp.BunString__fromUTF16 needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn BunString__toJSON(_: anytype, _: anytype) error{JSError}!jsc.JSValue {
+        @panic("home_rt.cpp.BunString__toJSON needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn BunString__toThreadSafe(_: anytype) void {
+        @panic("home_rt.cpp.BunString__toThreadSafe needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn BunString__tryCreateAtom(_: anytype, _: anytype) String {
+        @panic("home_rt.cpp.BunString__tryCreateAtom needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn IPCSerialize(_: anytype, _: anytype, _: anytype) error{JSError}!jsc.JSValue {
+        @panic("home_rt.cpp.IPCSerialize needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSGlobalObject__reload(_: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSGlobalObject__reload needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSPromise__reject(_: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSPromise__reject needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSPromise__rejectAsHandled(_: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSPromise__rejectAsHandled needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSPromise__resolve(_: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSPromise__resolve needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSPromise__result(_: anytype, _: anytype) jsc.JSValue {
+        @panic("home_rt.cpp.JSC__JSPromise__result needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSPromise__setHandled(_: anytype) void {
+        @panic("home_rt.cpp.JSC__JSPromise__setHandled needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSPromise__status(_: anytype) u32 {
+        @panic("home_rt.cpp.JSC__JSPromise__status needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__forEachProperty(_: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSValue__forEachProperty needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__forEachPropertyOrdered(_: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSValue__forEachPropertyOrdered needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__isAnyInt(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isBigInt(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isBigInt32(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isConstructor(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isCustomGetterSetter(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isGetterSetter(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isHeapBigInt(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isPrimitive(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__isUInt32AsAnyInt(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSValue__jsEmptyString(_: anytype) jsc.JSValue {
+        @panic("home_rt.cpp.JSC__JSValue__jsEmptyString needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__jsNumberFromU16(_: anytype) jsc.JSValue {
+        @panic("home_rt.cpp.JSC__JSValue__jsNumberFromU16 needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__putMayBeIndex(_: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSValue__putMayBeIndex needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__toInt64(_: jsc.JSValue) callconv(.c) i64 {
+        @panic("home_rt.cpp.JSC__JSValue__toInt64 needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__toMatch(_: anytype, _: anytype, _: anytype) error{JSError}!bool {
+        @panic("home_rt.cpp.JSC__JSValue__toMatch needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__toStringOrNull(_: anytype, _: anytype) error{JSError}!*jsc.JSString {
+        @panic("home_rt.cpp.JSC__JSValue__toStringOrNull needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSC__JSValue__toZigException(_: anytype, _: anytype, _: anytype) error{JSError}!void {
+        @panic("home_rt.cpp.JSC__JSValue__toZigException needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSMock__getCurrentUnixTimeMs() f64 {
+        @panic("home_rt.cpp.JSMock__getCurrentUnixTimeMs needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn JSMock__setOverridenDateNow(_: anytype, _: anytype) void {
+        @panic("home_rt.cpp.JSMock__setOverridenDateNow needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn ReadableStream__empty(_: anytype) error{JSError}!jsc.JSValue {
+        @panic("home_rt.cpp.ReadableStream__empty needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn ReadableStream__used(_: anytype) error{JSError}!jsc.JSValue {
+        @panic("home_rt.cpp.ReadableStream__used needs the C++ FFI bridge (Phase 12.2)");
+    }
+    pub fn WTFStringImpl__isThreadSafe(_: anytype) bool {
+        return false;
+    }
+    pub fn ZigString__toExternalValue(_: anytype, _: anytype) jsc.JSValue {
+        @panic("home_rt.cpp.ZigString__toExternalValue needs the C++ FFI bridge (Phase 12.2)");
+    }
 };
 
 const TestJSCExterns = struct {
@@ -2508,11 +2602,13 @@ pub const ObjectPool = object_pool.ObjectPool;
 // ---- src/cli/ ----------------------------------------------------------
 // Bun's CLI surface. Copy-in-progress; see src/cli/PORTING_STATUS.md.
 pub const cli = struct {
+    pub var pretend_to_be_node = false;
     pub const which_npm_client = @import("cli/which_npm_client.zig");
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
     pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
     pub const TestCommand = @import("runtime/cli/test_command.zig").TestCommand;
     pub const PmPkgCommand = @import("runtime/cli/pm_pkg_command.zig").PmPkgCommand;
+    pub const ScanCommand = @import("runtime/cli/scan_command.zig").ScanCommand;
     pub const Arguments = struct {
         pub const auto_params = [_]struct {
             takes_value: enum { none, optional, required },
@@ -2529,6 +2625,8 @@ pub const cli = struct {
     // Faithful to upstream `cli.Command` (`runtime/cli/cli.zig:306`).
     pub const Command = @import("runtime/cli/cli.zig").Command;
 };
+
+pub const Bunfig = @import("runtime/cli/bunfig.zig").Bunfig;
 
 // ---- src/jsc/ ----------------------------------------------------------
 // JSC binding surface. Most of this is opaque types + enums until the
@@ -3083,10 +3181,10 @@ pub const jsc = struct {
                 var result: SocketConfigHandlers = .{};
                 if (!value.isObject()) return result;
                 const pairs = .{
-                    .{ "open", "onOpen" },       .{ "close", "onClose" },
-                    .{ "data", "onData" },       .{ "drain", "onWritable" },
-                    .{ "timeout", "onTimeout" }, .{ "connectError", "onConnectError" },
-                    .{ "end", "onEnd" },         .{ "error", "onError" },
+                    .{ "open", "onOpen" },           .{ "close", "onClose" },
+                    .{ "data", "onData" },           .{ "drain", "onWritable" },
+                    .{ "timeout", "onTimeout" },     .{ "connectError", "onConnectError" },
+                    .{ "end", "onEnd" },             .{ "error", "onError" },
                     .{ "handshake", "onHandshake" },
                 };
                 inline for (pairs) |pair| {
@@ -3630,6 +3728,14 @@ pub const crash_handler = struct {
 
     pub fn suppressReporting() void {}
 
+    pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: anytype) void {
+        // The pinned Zig standard library uses a distinct debug.StackTrace
+        // representation. Keep this diagnostic-only hook non-fatal until the
+        // full Bun crash handler is linked.
+        _ = trace;
+        _ = limits;
+    }
+
     pub fn dumpCurrentStackTrace(_: usize, _: anytype) void {}
 };
 
@@ -3748,14 +3854,7 @@ pub const install = struct {
     // (`install/install.zig:256`): the real runner with its intrusive-heap
     // `List`. Lazy import — only analysed when the PM cone touches it.
     pub const LifecycleScriptSubprocess = @import("install/lifecycle_script_runner.zig").LifecycleScriptSubprocess;
-    pub const SecurityScanSubprocess = struct {
-        pub fn onProcessExit(this: *SecurityScanSubprocess, process: anytype, status: anytype, rusage: anytype) void {
-            _ = this;
-            _ = process;
-            _ = status;
-            _ = rusage;
-        }
-    };
+    pub const SecurityScanSubprocess = aggregator.SecurityScanSubprocess;
 };
 
 // Faithful to upstream `bun.zig:1182`: `pub const PackageManager = install.PackageManager;`
@@ -4949,6 +5048,33 @@ pub const c = struct {
     pub const MSG_DONTWAIT: c_int = if (Environment.isMac) 0x80 else 0x40;
     pub const MSG_NOSIGNAL: c_int = 0x4000;
     pub const O_EVTONLY: c_int = 0x8000;
+    pub const PROC_PIDTBSDINFO: c_int = 3;
+    pub const struct_proc_bsdinfo = extern struct {
+        pbi_flags: u32,
+        pbi_status: u32,
+        pbi_xstatus: u32,
+        pbi_pid: u32,
+        pbi_ppid: u32,
+        pbi_uid: u32,
+        pbi_gid: u32,
+        pbi_ruid: u32,
+        pbi_rgid: u32,
+        pbi_svuid: u32,
+        pbi_svgid: u32,
+        rfu_1: u32,
+        pbi_comm: [16]u8,
+        pbi_name: [32]u8,
+        pbi_nfiles: u32,
+        pbi_pgid: u32,
+        pbi_pjobc: u32,
+        e_tdev: u32,
+        e_tpgid: u32,
+        pbi_nice: i32,
+        pbi_start_tvsec: u64,
+        pbi_start_tvusec: u64,
+    };
+    pub extern fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, buffersize: c_int) c_int;
+    pub extern fn proc_listchildpids(ppid: c_int, buffer: ?*anyopaque, buffersize: c_int) c_int;
     pub const getuid = std.c.getuid;
     pub const chmod = std.c.chmod;
     pub extern fn if_indextoname(ifindex: c_uint, ifname: [*c]u8) ?[*:0]u8;
@@ -5109,6 +5235,11 @@ pub const sys = struct {
     pub const mmap = @import("sys/sys.zig").mmap;
     pub const sendNonBlock = @import("sys/sys.zig").sendNonBlock;
     pub const chdir = @import("sys/sys.zig").chdir;
+    pub const pipe = @import("sys/sys.zig").pipe;
+    pub const umask = std.c.umask;
+    pub const WindowsSymlinkOptions = @import("sys/sys.zig").WindowsSymlinkOptions;
+    pub const existsAt = @import("sys/sys.zig").existsAt;
+    pub const symlinkRunningExecutable = @import("sys/sys.zig").symlinkRunningExecutable;
 
     // Faithful to upstream `bun.sys.workaround_symbols`
     // (`src/sys/sys.zig:20`): the platform-selected stat/memmem shims from
@@ -5159,6 +5290,7 @@ pub const sys = struct {
     pub const existsOSPath = @import("sys/sys.zig").existsOSPath;
     pub const symlink = @import("sys/sys.zig").symlink;
     pub const symlinkat = @import("sys/sys.zig").symlinkat;
+    pub const clonefileat = @import("sys/sys.zig").clonefileat;
     pub const utimens = @import("sys/sys.zig").utimens;
     pub const write = @import("sys/sys.zig").write;
     pub const PosixStat = @import("sys/PosixStat.zig").PosixStat;
@@ -5359,7 +5491,10 @@ pub const sys = struct {
                 std.c.pwrite(fd.native(), bytes.ptr, bytes.len, @intCast(offset))
             else
                 std.c.write(fd.native(), bytes.ptr, bytes.len);
-            { const e = std.c.errno(rc); if (e != .SUCCESS) return .{ .err = errFromE(.pwritev, e).withFd(fd) }; }
+            {
+                const e = std.c.errno(rc);
+                if (e != .SUCCESS) return .{ .err = errFromE(.pwritev, e).withFd(fd) };
+            }
             const written: usize = @intCast(rc);
             total += written;
             if (offset >= 0) offset += @intCast(written);
@@ -5571,6 +5706,15 @@ pub const sys = struct {
             }
 
             return .{ .bytes = list };
+        }
+
+        pub fn readToEndSmall(this: File, allocator: std.mem.Allocator) ReadToEndResult {
+            var list = std.array_list.Managed(u8).init(allocator);
+            list.ensureUnusedCapacity(64) catch |err| handleOom(err);
+            return switch (this.readToEndWithArrayList(&list, .probably_small)) {
+                .err => |err| .{ .err = err, .bytes = list },
+                .result => .{ .bytes = list },
+            };
         }
 
         pub fn readToEndWithArrayList(this: File, list: *std.array_list.Managed(u8), size_hint: anytype) Maybe(usize) {

@@ -114,7 +114,7 @@ pub fn prettyFmt(comptime fmt: []const u8, comptime is_enabled: bool) [:0]const 
     comptime var new_fmt: [fmt.len * 4]u8 = undefined;
     comptime var new_fmt_i: usize = 0;
 
-    @setEvalBranchQuota(9999);
+    @setEvalBranchQuota(100_000);
     comptime var i: usize = 0;
     comptime while (i < fmt.len) {
         switch (fmt[i]) {
