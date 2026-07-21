@@ -147,6 +147,21 @@ pub const PackageManagerCommand = struct {
     fn execImpl(ctx: Command.Context, comptime utilities_only: bool) !void {
         const args = bun.argv[1..];
 
+        if (args.len >= 2 and
+            strings.eqlComptime(args[0], "pm") and
+            strings.leftHasAnyInRight(args[1..], &.{"bin"}) and
+            strings.leftHasAnyInRight(args, &.{ "-g", "--global" }))
+        {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            const global_bin_dir = try PackageManager.Options.openGlobalBinDir(ctx.install);
+            defer global_bin_dir.close(io);
+            var path_buf: bun.PathBuffer = undefined;
+            const path = try bun.getFdPath(.fromStdDir(global_bin_dir), &path_buf);
+            Output.prettyln("{s}", .{path});
+            Output.flush();
+            return;
+        }
+
         // Check if we're being invoked directly as "bun whoami" instead of "bun pm whoami"
         const is_direct_whoami = if (bun.argv.len > 1) strings.eqlComptime(bun.argv[1], "whoami") else false;
 

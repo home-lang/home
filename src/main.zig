@@ -4702,8 +4702,8 @@ pub fn main(init: std.process.Init) !void {
         try home_rt.cli.PackageManagerCommand.execUtilities(ctx);
         return;
     }
-    // `home pm pkg` and `home pm scan` — Bun-compatible package metadata and
-    // security-scanner operations, routed to their native runtime ports.
+    // Bun-compatible package-manager utilities routed to their native runtime
+    // ports. Commands with standalone ports stay above this shared dispatcher.
     if (std.mem.eql(u8, command, "pm")) {
         if (args.len < 3) {
             std.debug.print("{s}Error:{s} unsupported 'pm' subcommand\n", .{ Color.Red.code(), Color.Reset.code() });
@@ -4729,6 +4729,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, args[2], "ls") or
             std.mem.eql(u8, args[2], "list") or
             std.mem.eql(u8, args[2], "cache") or
+            std.mem.eql(u8, args[2], "bin") or
             std.mem.eql(u8, args[2], "migrate") or
             std.mem.eql(u8, args[2], "hash") or
             std.mem.eql(u8, args[2], "whoami"))
