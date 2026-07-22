@@ -9763,15 +9763,42 @@ pub const Parser = struct {
             try self.reportCodeAt(name_span_start, name_span_line, 1155, must_init_msg);
         }
         while (self.match(.comma)) {
-            const extra_name_tok = try self.parseUsingDeclBindingTarget(await_using);
+            const extra_name: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket)
+                try self.parseUsingDeclBindingPattern(await_using)
+            else blk: {
+                const extra_name_tok = try self.parseUsingDeclBindingTarget(await_using);
+                const extra_name_id = try self.internToken(extra_name_tok);
+                break :blk try self.builder.addIdentifier(tokenSpan(extra_name_tok), extra_name_id);
+            };
+            var extra_type_annotation: NodeId = hir_mod.none_node_id;
             if (self.match(.colon)) {
-                _ = try self.parseTypeAnnotation();
+                extra_type_annotation = try self.parseTypeAnnotation();
             }
+            var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) {
-                _ = try self.parseAssignmentExpression();
+                extra_init = try self.parseAssignmentExpression();
             } else if (!in_ambient and !decorated) {
-                try self.reportCodeAt(extra_name_tok.span.start, extra_name_tok.line, 1155, must_init_msg);
+                const extra_span = self.hir.spanOf(extra_name);
+                try self.reportCodeAt(extra_span.start, name_span_line, 1155, must_init_msg);
             }
+            const extra_start = self.hir.spanOf(extra_name).start;
+            const extra_end = if (extra_init != hir_mod.none_node_id)
+                self.hir.spanOf(extra_init).end
+            else if (extra_type_annotation != hir_mod.none_node_id)
+                self.hir.spanOf(extra_type_annotation).end
+            else
+                self.hir.spanOf(extra_name).end;
+            const extra_decl = try self.builder.addVarDeclEx(
+                .const_decl,
+                .{ .start = extra_start, .end = extra_end },
+                extra_name,
+                extra_type_annotation,
+                extra_init,
+                !await_using,
+                await_using,
+                false,
+            );
+            try self.pending_statements.append(self.gpa, extra_decl);
         }
         try self.consumeStatementTerminator();
 
@@ -25913,6 +25940,34 @@ test "parser: `await using x = getR();` parses with is_await_using=true" {
     try T.expectEqual(false, vd.is_using);
     try T.expectEqual(true, vd.is_await_using);
     try T.expect(vd.init != hir_mod.none_node_id);
+}
+
+test "parser: trailing using declarators preserve binding patterns and flags" {
+    var s = try newTestSetup(
+        \\function f() { using a = null, [b] = null, {c} = null; }
+        \\async function g() { await using a = null, [b] = null, {c} = null; }
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    const functions = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), functions.len);
+    for (functions, 0..) |fn_node, fn_index| {
+        const body = hir_mod.fnDeclOf(&s.hir, fn_node).body;
+        const decls = hir_mod.blockStmts(&s.hir, body);
+        try T.expectEqual(@as(usize, 3), decls.len);
+        try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, decls[0]).name));
+        try T.expectEqual(hir_mod.NodeKind.array_pattern, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, decls[1]).name));
+        try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, decls[2]).name));
+        for (decls) |decl| {
+            const vd = hir_mod.varDeclOf(&s.hir, decl);
+            try T.expectEqual(fn_index == 0, vd.is_using);
+            try T.expectEqual(fn_index == 1, vd.is_await_using);
+            try T.expect(vd.init != hir_mod.none_node_id);
+        }
+    }
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |d| try T.expectEqual(@as(u32, 1492), d.code);
 }
 
 test "parser: empty const declaration list reports only TS1123" {

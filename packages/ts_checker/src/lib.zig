@@ -152,6 +152,33 @@ pub fn internRegExpMatchArray(
     return ti.internObjectTypeWithIndex(&members, types.Primitive.none, string_t);
 }
 
+/// Build the iterator-object shape introduced by the modern iterable libs.
+/// Unlike a plain `Iterator<T>`, `IteratorObject<T>` is self-iterable and
+/// inherits `Disposable`; its async counterpart inherits `AsyncDisposable`.
+pub fn iteratorObjectType(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    elem: TypeId,
+    is_async: bool,
+) !TypeId {
+    const value_id = try sint.intern("value");
+    const done_id = try sint.intern("done");
+    const result_t = try ti.internObjectType(&[_]types.ObjectMember{
+        .{ .name = value_id, .type = elem, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = done_id, .type = types.Primitive.boolean_t, .is_optional = false, .is_readonly = true, .is_method = false },
+    });
+    const next_result_t = if (is_async) types.Primitive.any else result_t;
+    const next_sig = try ti.internSignature(&[_]TypeId{}, next_result_t, false);
+    const iterator_sig = try ti.internSignature(&[_]TypeId{}, types.Primitive.any, false);
+    const dispose_sig = try ti.internSignature(&[_]TypeId{}, if (is_async) types.Primitive.any else types.Primitive.void_t, false);
+    const members = [_]types.ObjectMember{
+        .{ .name = try sint.intern("next"), .type = next_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern(if (is_async) "Symbol.asyncIterator" else "Symbol.iterator"), .type = iterator_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern(if (is_async) "Symbol.asyncDispose" else "Symbol.dispose"), .type = dispose_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    return ti.internObjectTypeWithIndex(&members, types.Primitive.none, elem);
+}
+
 /// Build (or fetch from cache) the `String.prototype` member shape.
 /// All methods are typed against the concrete `string` primitive —
 /// generics aren't needed here.
@@ -499,12 +526,12 @@ pub fn arrayProto(
     const optional_cb_tt_num = try ti.internUnion(&[_]TypeId{ cb_tt_num, undef_t });
     const sig_sort = try ti.internSignature(&[_]TypeId{optional_cb_tt_num}, arr_t, false);
     const sig_to_array = try ti.internSignature(&[_]TypeId{}, arr_t, false);
-    const number_arr = try ti.internArrayType(sint, number_t);
-    const sig_keys = try ti.internSignature(&[_]TypeId{}, number_arr, false);
-    const sig_entries = try ti.internSignature(&[_]TypeId{}, any_arr, false);
-    // `values(): IterableIterator<T>` — modeled as `T[]` because the
-    // checker's iterable path already understands array element types.
-    const sig_values = try ti.internSignature(&[_]TypeId{}, arr_t, false);
+    const key_iterator = try iteratorObjectType(ti, sint, number_t, false);
+    const entry_iterator = try iteratorObjectType(ti, sint, any_t, false);
+    const value_iterator = try iteratorObjectType(ti, sint, elem, false);
+    const sig_keys = try ti.internSignature(&[_]TypeId{}, key_iterator, false);
+    const sig_entries = try ti.internSignature(&[_]TypeId{}, entry_iterator, false);
+    const sig_values = try ti.internSignature(&[_]TypeId{}, value_iterator, false);
     const sig_iterator = sig_values;
 
     // `reduce<U>(cb: (acc: U, cur: T) => U, init: U): U` (and
