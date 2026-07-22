@@ -5672,7 +5672,13 @@ pub const Parser = struct {
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
-                if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
+                if (self.match(.colon)) {
+                    return_type = try self.parseReturnTypeAnnotation(params);
+                    if (return_type != hir_mod.none_node_id and self.hir.kindOf(return_type) == .type_predicate_type) {
+                        const predicate_span = self.hir.spanOf(return_type);
+                        try self.reportCodeAt(predicate_span.start, self.lineAt(predicate_span.start), 1228, "A type predicate is only allowed in return type position for functions and methods.");
+                    }
+                }
                 try self.validateAccessorSignature(accessor_kw, name_node, params, return_type);
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) {
@@ -6042,7 +6048,7 @@ pub const Parser = struct {
                 const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
                 var type_anno: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) {
-                    type_anno = try self.parseTypeAnnotation();
+                    type_anno = try self.parsePropertyTypeAnnotation();
                     _ = self.match(.question);
                     _ = self.match(.bang);
                     if (self.peek().kind == .open_paren and !self.peek().flags.preceded_by_newline) {
@@ -10345,6 +10351,18 @@ pub const Parser = struct {
         return self.parseTypeAnnotation();
     }
 
+    fn parsePropertyTypeAnnotation(self: *Parser) ParseError!NodeId {
+        if (self.peek().kind == .kw_this and
+            self.peekAt(1).kind == .kw_is and
+            !self.peekAt(1).flags.preceded_by_newline)
+        {
+            const predicate_start = self.peek();
+            try self.reportCodeAt(predicate_start.span.start, predicate_start.line, 1228, "A type predicate is only allowed in return type position for functions and methods.");
+            return try self.parseReturnTypeAnnotation(&.{});
+        }
+        return try self.parseTypeAnnotation();
+    }
+
     /// Look up a parameter by interned name; return its 0-based
     /// positional index or null. `this` parameters return null
     /// (caller falls back to the 0xFFFF sentinel for `this`).
@@ -12103,7 +12121,7 @@ pub const Parser = struct {
 
             // Property: `name: T;`.
             var type_node: NodeId = hir_mod.none_node_id;
-            if (self.match(.colon)) type_node = try self.parseTypeAnnotation();
+            if (self.match(.colon)) type_node = try self.parsePropertyTypeAnnotation();
             // TS1246/TS1247: a property in an interface body / type
             // literal cannot carry an initializer (`bar: number = 5;`).
             // tsc anchors at the initializer value (the token after `=`)
@@ -12329,7 +12347,7 @@ pub const Parser = struct {
             return true;
         }
         var type_node: NodeId = hir_mod.none_node_id;
-        if (self.match(.colon)) type_node = try self.parseTypeAnnotation();
+        if (self.match(.colon)) type_node = try self.parsePropertyTypeAnnotation();
         _ = self.match(.semicolon);
         _ = self.match(.comma);
         const member = try self.builder.addInterfaceMember(member_span, name_id, type_node, is_optional, is_readonly, false, false);
@@ -26376,6 +26394,31 @@ test "parser: non-assertion `x is T` is still a type predicate (is_asserts=false
     const pred = hir_mod.typePredicateOf(&s.hir, fn_p.return_type);
     try T.expectEqual(false, pred.is_asserts);
     try T.expect(pred.target_type != hir_mod.none_node_id);
+}
+
+test "parser: property and accessor predicates recover as predicate types" {
+    var s = try newTestSetup(
+        \\class C {
+        \\  field: this is C;
+        \\  get guard(): this is C { return true; }
+        \\}
+        \\interface I { guard: this is I; }
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const class_members = hir_mod.classMembers(&s.hir, stmts[0]);
+    const field = hir_mod.objectPropertyOf(&s.hir, class_members[0]);
+    const accessor = hir_mod.fnDeclOf(&s.hir, class_members[1]);
+    const iface_member = hir_mod.interfaceMemberOf(&s.hir, hir_mod.interfaceMembers(&s.hir, stmts[1])[0]);
+    try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(field.type_annotation));
+    try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(accessor.return_type));
+    try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(iface_member.type_node));
+    var predicate_position_errors: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1228) predicate_position_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 3), predicate_position_errors);
 }
 
 test "parser: `yield* h()` parses with delegated flag set" {
