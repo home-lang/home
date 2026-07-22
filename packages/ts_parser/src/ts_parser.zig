@@ -13177,6 +13177,7 @@ pub const Parser = struct {
             _ = self.advance();
         }
         if (self.match(.comma)) {
+            try self.reportImportTypeOptionsGrammarDiagnostics();
             try self.reportLegacyImportTypeAssertionDiagnostics();
             var depth: i32 = 0;
             while (self.peek().kind != .eof) {
@@ -13245,6 +13246,51 @@ pub const Parser = struct {
             qualifier.items,
             args.items,
         );
+    }
+
+    fn reportImportTypeOptionsGrammarDiagnostics(self: *Parser) ParseError!void {
+        if (self.peek().kind != .open_brace) return;
+        const outer_open_i: usize = @intCast(self.cursor);
+        const outer_close_i = self.findMatchingBraceTokenIndex(outer_open_i) orelse return;
+        const outer_open = self.tokens[outer_open_i];
+        var brace_depth: usize = 0;
+        var i = outer_open_i;
+        while (i < outer_close_i) : (i += 1) {
+            const tok = self.tokens[i];
+            switch (tok.kind) {
+                .open_brace => brace_depth += 1,
+                .close_brace => if (brace_depth > 0) {
+                    brace_depth -= 1;
+                },
+                .comma => {
+                    if (i + 1 >= outer_close_i or self.tokens[i + 1].kind != .comma) continue;
+                    const second = self.tokens[i + 1];
+                    if (brace_depth == 1) {
+                        try self.reportCodeAtWithMatchedPair(
+                            second.span.start,
+                            second.line,
+                            1005,
+                            "'}' expected.",
+                            outer_open.span.start,
+                            "{",
+                            "}",
+                        );
+                        const outer_close = self.tokens[outer_close_i];
+                        try self.reportCodeAt(outer_close.span.start, outer_close.line, 1128, "Declaration or statement expected.");
+                        if (outer_close_i + 1 < self.tokens.len and self.tokens[outer_close_i + 1].kind == .close_paren) {
+                            const close_paren = self.tokens[outer_close_i + 1];
+                            try self.reportCodeAt(close_paren.span.start, close_paren.line, 1128, "Declaration or statement expected.");
+                        }
+                        return;
+                    }
+                    if (brace_depth == 2) {
+                        try self.reportCodeAt(second.span.start, second.line, 1478, "Identifier or string literal expected.");
+                        return;
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     fn reportLegacyImportTypeAssertionDiagnostics(self: *Parser) ParseError!void {
@@ -31033,6 +31079,24 @@ test "parser: await arrow parameter recovery anchors the first await" {
         if (d.code == 2524) try T.expectEqual(await_pos, d.pos);
         if (d.code == 1109) try T.expectEqual(arrow_pos, d.pos);
     }
+}
+
+test "parser: import type options recover consecutive commas" {
+    const src =
+        \\type A = typeof import("./a", { with: { type: "json" },, });
+        \\type B = typeof import("./a", { with: { type: "json",, } });
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const expected = [_]u32{ 1005, 1128, 1128, 1478 };
+    try T.expectEqual(expected.len, s.parser.diagnostics.items.len);
+    for (expected, s.parser.diagnostics.items) |code, diagnostic| {
+        try T.expectEqual(code, diagnostic.code);
+    }
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items[0].related.len);
+    try T.expectEqual(@as(u32, 1007), s.parser.diagnostics.items[0].related[0].code);
 }
 
 test "parser: TS1450 fires for a dynamic import with three arguments" {
