@@ -13633,6 +13633,23 @@ pub const Parser = struct {
         };
         const start_tok = if (is_async) self.tokens[checkpoint] else self.peek();
 
+        if (self.peek().kind == .kw_await and
+            self.peekAt(1).kind == .arrow and
+            self.async_function_depth > 0 and
+            self.param_initializer_depth > 0)
+        {
+            const await_tok = self.advance();
+            const arrow_tok = self.advance();
+            try self.reportCodeAt(await_tok.span.start, await_tok.line, 2524, "'await' expressions cannot be used in a parameter initializer.");
+            try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1109, "Expression expected.");
+
+            const saved_async_depth = self.async_function_depth;
+            self.async_function_depth = 0;
+            defer self.async_function_depth = saved_async_depth;
+            const operand = try self.parseAssignmentExpression();
+            return try self.builder.addAwaitExpr(.{ .start = await_tok.span.start, .end = self.hir.spanOf(operand).end }, hir_mod.none_node_id);
+        }
+
         // Single-ident arrow: `x => …`
         if (isExpressionIdentifierToken(self.peek().kind) and self.peekAt(1).kind == .arrow) {
             const name_tok = self.advance();
@@ -31000,6 +31017,22 @@ test "parser: TS1450 fires for a dynamic import with no arguments" {
     _ = try s.parser.parseSourceFile();
     const d = findDiag(s, 1450) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Dynamic imports can only accept a module specifier and an optional set of attributes as arguments", d.message);
+}
+
+test "parser: await arrow parameter recovery anchors the first await" {
+    const src = "async function foo(a = await => await): Promise<void> {}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2524));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1109));
+    const await_pos: u32 = @intCast(std.mem.indexOf(u8, src, "await").?);
+    const arrow_pos: u32 = @intCast(std.mem.indexOf(u8, src, "=>").?);
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2524) try T.expectEqual(await_pos, d.pos);
+        if (d.code == 1109) try T.expectEqual(arrow_pos, d.pos);
+    }
 }
 
 test "parser: TS1450 fires for a dynamic import with three arguments" {
