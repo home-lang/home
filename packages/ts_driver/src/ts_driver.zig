@@ -385,6 +385,9 @@ pub const CompileOptions = struct {
     /// every source file is loaded, so it can see a sibling `tslib.d.ts`.
     /// Suppress the single-file virtual-section check on that path.
     suppress_import_helper_diagnostics: bool = false,
+    /// The selected conformance/compiler target needs explicit resource
+    /// management lowering even when the reduced emitter target is esnext.
+    resource_management_helpers_required: bool = false,
 };
 
 fn appendDriverDiagnostic(
@@ -1739,11 +1742,6 @@ pub fn compileSource(
 
     const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
     const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
-    var missing_imported_helpers_reported = false;
-    if (effective_import_helpers and !effective_experimental_decorators and !options.suppress_import_helper_diagnostics) {
-        try appendMissingImportedHelperDiagnostics(gpa, c, source, helperDiagnosticsUseCommonJsModule(source, options));
-        missing_imported_helpers_reported = true;
-    }
 
     // ------ Lex ------
     var tsx_lex_source: ?[]u8 = null;
@@ -2132,9 +2130,17 @@ pub fn compileSource(
     }
 
     if (effective_import_helpers and !effective_experimental_decorators and
-        !options.suppress_import_helper_diagnostics and !missing_imported_helpers_reported)
+        !options.suppress_import_helper_diagnostics)
     {
-        try appendMissingImportedHelperDiagnostics(gpa, c, source, helperDiagnosticsUseCommonJsModule(source, options));
+        try appendMissingImportedHelperDiagnostics(
+            gpa,
+            c,
+            source,
+            helperDiagnosticsUseCommonJsModule(source, options),
+            options.emit.es_target != .esnext or
+                options.resource_management_helpers_required or
+                sourceTargetNeedsResourceLowering(source),
+        );
     }
 
     // ------ Emit ------
@@ -2232,9 +2238,10 @@ fn appendMissingImportedHelperDiagnostics(
     c: *Compilation,
     source: []const u8,
     commonjs_module: bool,
+    lower_resource_declarations: bool,
 ) CompileError!void {
     const tslib_source = tslibDeclarationSource(source) orelse {
-        if (sourceExternalEmitHelperPosition(source, commonjs_module)) |pos| {
+        if (sourceExternalEmitHelperPosition(c, source, commonjs_module, lower_resource_declarations)) |pos| {
             try c.diagnostics.append(gpa, .{
                 .phase = .bind,
                 .pos = @intCast(pos),
@@ -2449,12 +2456,46 @@ fn privateHelperUsePositions(source: []const u8) PrivateHelperUsePositions {
     return positions;
 }
 
-fn sourceExternalEmitHelperPosition(source: []const u8, commonjs_module: bool) ?usize {
+fn sourceExternalEmitHelperPosition(
+    c: *const Compilation,
+    source: []const u8,
+    commonjs_module: bool,
+    lower_resource_declarations: bool,
+) ?usize {
     var best: ?usize = null;
     if (findStage3DecoratedClassExpression(source, 0)) |decorated| best = decorated.at_pos;
     if (firstPrivateIdentifierHash(source)) |hash| best = minOptionalPos(best, hash);
+    if (lower_resource_declarations) {
+        if (firstResourceDeclarationPosition(&c.hir)) |using_pos| best = minOptionalPos(best, using_pos);
+    }
     if (commonjs_module) {
         if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
+    }
+    return best;
+}
+
+fn sourceTargetNeedsResourceLowering(source: []const u8) bool {
+    const target = compilerOptionDirectiveValue(source, "target") orelse return false;
+    var parts = std.mem.splitScalar(u8, target, ',');
+    while (parts.next()) |raw_part| {
+        const part = std.mem.trim(u8, raw_part, " \t\r");
+        if (std.ascii.eqlIgnoreCase(part, "esnext")) return false;
+    }
+    return true;
+}
+
+fn firstResourceDeclarationPosition(hir: *const Hir) ?usize {
+    var best: ?usize = null;
+    var node: NodeId = 1;
+    while (node < hir.nodeCount()) : (node += 1) {
+        switch (hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => continue,
+        }
+        const decl = hir_mod.varDeclOf(hir, node);
+        if (!decl.is_using and !decl.is_await_using) continue;
+        const pos: usize = hir.spanOf(node).start;
+        best = minOptionalPos(best, pos);
     }
     return best;
 }
@@ -4466,6 +4507,39 @@ test "driver: importHelpers reports missing tslib module for helper syntax" {
         }
     }
     try T.expect(saw_2354);
+}
+
+test "driver: importHelpers detects lowered resource declarations" {
+    try T.expect(!sourceTargetNeedsResourceLowering("// @target: es5, esnext"));
+    const source =
+        \\export {};
+        \\using value = null;
+    ;
+    var c = try compileSource(T.allocator, source, .{
+        .no_emit = true,
+        .emit = .{ .import_helpers = true, .es_target = .es2022 },
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    const using_pos = std.mem.indexOf(u8, source, "using").?;
+    var saw_2354 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2354 and d.pos == using_pos) saw_2354 = true;
+    }
+    try T.expect(saw_2354);
+
+    var native = try compileSource(T.allocator, source, .{
+        .no_emit = true,
+        .emit = .{ .import_helpers = true, .es_target = .esnext },
+    });
+    defer {
+        native.deinit();
+        T.allocator.destroy(native);
+    }
+    for (native.diagnostics.items) |d| try T.expect(d.code != 2354);
 }
 
 test "driver: importHelpers reports missing tslib for commonjs namespace re-export helper" {

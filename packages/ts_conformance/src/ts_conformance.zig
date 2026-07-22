@@ -678,6 +678,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
+        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(directive_source, c.target_emit_es5),
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
         .allow_js = directiveBool(directive_source, "allowJs") orelse false,
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
@@ -2700,6 +2701,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
+        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(directive_source, c.target_emit_es5),
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
         .allow_js = allow_js_project,
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
@@ -7708,6 +7710,17 @@ fn directiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
     return null;
 }
 
+fn selectedResourceManagementHelpersRequired(source: []const u8, target_emit_es5: bool) bool {
+    if (target_emit_es5) return true;
+    const target = directiveValue(source, "target") orelse return false;
+    var parts = std.mem.splitScalar(u8, target, ',');
+    while (parts.next()) |raw_part| {
+        const part = std.mem.trim(u8, raw_part, " \t\r");
+        if (std.ascii.eqlIgnoreCase(part, "esnext")) return false;
+    }
+    return true;
+}
+
 fn directiveTargetEs2015OrLater(source: []const u8) bool {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
@@ -7753,6 +7766,10 @@ test "conformance: selected ES5 baseline overrides multi-target directive" {
     try T.expect(directiveTargetEs2015OrLater(source));
     try T.expect(!selectedSyntaxTargetEs2015OrLater(source, true));
     try T.expect(selectedSyntaxTargetEs2015OrLater(source, false));
+    try T.expect(selectedResourceManagementHelpersRequired(source, true));
+    try T.expect(selectedResourceManagementHelpersRequired(source, false));
+    try T.expect(!selectedResourceManagementHelpersRequired("// @target: es5, esnext", false));
+    try T.expect(selectedResourceManagementHelpersRequired("// @target: es2022\nusing value = null;", false));
 }
 
 /// True when the source's `// @target: <value>` directive lists a
@@ -8419,6 +8436,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         .always_strict = entry.always_strict,
         .syntax_target_es2015 = entry.syntax_target_es2015,
         .emit = .{ .es_target = if (entry.target_emit_es5) .es5 else .esnext },
+        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(directive_source, entry.target_emit_es5),
         .allow_js = directiveBool(directive_source, "allowJs") orelse false,
         .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         .continue_on_error = true,

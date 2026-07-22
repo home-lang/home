@@ -206,6 +206,7 @@ pub const Parser = struct {
     allow_parameter_list_arrow_recovery: bool,
     allow_numeric_arrow_param_recovery: bool,
     recover_let_array_binding_as_statement: bool,
+    suppress_await_using_array_assignment_target: bool,
     parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
@@ -337,6 +338,7 @@ pub const Parser = struct {
             .allow_parameter_list_arrow_recovery = false,
             .allow_numeric_arrow_param_recovery = false,
             .recover_let_array_binding_as_statement = false,
+            .suppress_await_using_array_assignment_target = false,
             .parameter_list_arrow_is_comma = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
@@ -428,9 +430,9 @@ pub const Parser = struct {
     /// using-decls like `using {a} = null;` — tsc parses these
     /// (emitting TS1492) rather than treating `using` as an
     /// expression statement.
-    fn usingBindingPatternLookahead(self: *const Parser, at_offset: u32) bool {
+    fn usingBindingPatternEqualToken(self: *const Parser, at_offset: u32) ?Token {
         const open = self.peekAt(at_offset);
-        if (open.kind != .open_brace and open.kind != .open_bracket) return false;
+        if (open.kind != .open_brace and open.kind != .open_bracket) return null;
         var off: u32 = at_offset + 1;
         var depth: u32 = 1;
         // Bound the scan — 256 tokens of binding pattern is wildly
@@ -439,7 +441,7 @@ pub const Parser = struct {
         var budget: u32 = 256;
         while (depth > 0 and budget > 0) : (budget -= 1) {
             const cur = self.peekAt(off);
-            if (cur.kind == .eof) return false;
+            if (cur.kind == .eof) return null;
             switch (cur.kind) {
                 .open_brace, .open_bracket => depth += 1,
                 .close_brace, .close_bracket => depth -= 1,
@@ -447,8 +449,13 @@ pub const Parser = struct {
             }
             off += 1;
         }
-        if (depth != 0) return false;
-        return self.peekAt(off).kind == .equal;
+        if (depth != 0) return null;
+        const equal = self.peekAt(off);
+        return if (equal.kind == .equal) equal else null;
+    }
+
+    fn usingBindingPatternLookahead(self: *const Parser, at_offset: u32) bool {
+        return self.usingBindingPatternEqualToken(at_offset) != null;
     }
 
     fn advance(self: *Parser) Token {
@@ -2266,6 +2273,19 @@ pub const Parser = struct {
                 {
                     break :blk try self.parseUsingDecl(true, false);
                 }
+                if (self.peekAt(1).kind == .kw_using and
+                    !self.peekAt(1).flags.preceded_by_newline and
+                    self.peekAt(2).kind == .open_bracket and
+                    !self.peekAt(2).flags.preceded_by_newline)
+                {
+                    if (self.usingBindingPatternEqualToken(2)) |equal| {
+                        try self.reportCodeAt(equal.span.start, equal.line, 1005, "';' expected.");
+                        const saved = self.suppress_await_using_array_assignment_target;
+                        self.suppress_await_using_array_assignment_target = true;
+                        defer self.suppress_await_using_array_assignment_target = saved;
+                        break :blk try self.parseExpressionStatement();
+                    }
+                }
                 break :blk try self.parseExpressionStatement();
             },
             .kw_return => try self.parseReturnStatement(),
@@ -3285,22 +3305,11 @@ pub const Parser = struct {
         //   for (expr ...) ...             — expression init
         // The first two can be followed by `in` / `of` for for-in/for-of.
         var init_node: NodeId = hir_mod.none_node_id;
-        var has_decl_kw = (self.peek().kind == .kw_let or
+        const has_decl_kw = (self.peek().kind == .kw_let or
             self.peek().kind == .kw_const or
             self.peek().kind == .kw_var or
             self.peek().kind == .kw_using or
             (self.peek().kind == .kw_await and self.peekAt(1).kind == .kw_using));
-        if (self.peek().kind == .kw_await and self.peekAt(1).kind == .kw_using and self.peekAt(2).kind == .kw_of) {
-            const after_of = self.peekAt(3).kind;
-            has_decl_kw = after_of == .kw_of or
-                after_of == .kw_in or
-                after_of == .equal or
-                after_of == .colon or
-                after_of == .comma or
-                after_of == .semicolon or
-                after_of == .close_paren;
-        }
-
         if (self.peek().kind == .semicolon) {
             // empty init — leave as none
         } else if (has_decl_kw) {
@@ -3308,6 +3317,7 @@ pub const Parser = struct {
             const is_await_using_decl = kw.kind == .kw_await;
             const is_using_decl = kw.kind == .kw_using or is_await_using_decl;
             if (is_await_using_decl) _ = try self.expect(.kw_using, "'using' after 'await' in for initializer");
+            if (is_await_using_decl) try self.reportAwaitUsingContextDiagnostics(kw);
             const binding_start = self.peek();
             const binding_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
@@ -3329,6 +3339,25 @@ pub const Parser = struct {
                 const name_id = try self.internToken(name_tok);
                 break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
+            if (is_await_using_decl and binding_start.kind == .kw_of and
+                self.peek().kind != .kw_in and self.peek().kind != .kw_of and
+                self.peek().kind != .equal and self.peek().kind != .colon and
+                self.peek().kind != .comma and self.peek().kind != .semicolon and
+                self.peek().kind != .close_paren)
+            {
+                const empty_pos = if (binding_start.span.start > 0) binding_start.span.start - 1 else binding_start.span.start;
+                try self.reportCodeAt(empty_pos, binding_start.line, 1123, "Variable declaration list cannot be empty.");
+                const source_expr = try self.parseExpression();
+                _ = try self.expectClosingMatch(.close_paren, "')' to close for-in/of header", open_paren.span.start, "(", ")");
+                self.loop_depth += 1;
+                defer self.loop_depth -= 1;
+                self.loop_switch_depth += 1;
+                defer self.loop_switch_depth -= 1;
+                const body = try self.parseNestedStatement();
+                const loop_span: Span = .{ .start = start.span.start, .end = self.hir.spanOf(body).end };
+                if (is_await) return try self.builder.addForAwaitOf(loop_span, hir_mod.none_node_id, source_expr, body);
+                return try self.builder.addForOf(loop_span, hir_mod.none_node_id, source_expr, body);
+            }
             if (!is_using_decl and (binding_start.kind == .kw_in or binding_start.kind == .kw_of) and
                 self.peek().kind != .kw_in and self.peek().kind != .kw_of and
                 self.peek().kind != .equal and self.peek().kind != .colon and
@@ -3358,6 +3387,12 @@ pub const Parser = struct {
             }
             if (kw.kind == .kw_using and binding_start.kind == .kw_of and self.peek().kind == .kw_of) {
                 try self.reportCodeAt(kw.span.start, kw.line, 2304, "Cannot find name 'using'.");
+                const second_of = self.peek();
+                try self.reportCodeAt(second_of.span.start, second_of.line, 2304, "Cannot find name 'of'.");
+                if (self.peekAt(1).kind == .open_bracket and self.peekAt(2).kind == .close_bracket) {
+                    const close = self.peekAt(2);
+                    try self.reportCodeAt(close.span.start, close.line, 1011, "An element access expression should take an argument.");
+                }
             }
             // Optional type annotation. In for-in/of declarations we
             // preserve it by wrapping the binding in a var/let/const
@@ -9615,6 +9650,18 @@ pub const Parser = struct {
         return try self.parseBindingPattern();
     }
 
+    fn reportAwaitUsingContextDiagnostics(self: *Parser, start: Token) ParseError!void {
+        const inside_function = self.function_depth > 0;
+        const file_is_module = self.top_level_external_module_indicator;
+        if (self.static_block_depth > 0) {
+            try self.reportCodeAt(start.span.start, start.line, 18054, "'await using' statements cannot be used inside a class static block.");
+        } else if (inside_function and self.async_function_depth == 0) {
+            try self.reportCodeAt(start.span.start, start.line, 2852, "'await using' statements are only allowed within async functions and at the top levels of modules.");
+        } else if (!inside_function and !file_is_module and self.namespace_depth == 0) {
+            try self.reportCodeAt(start.span.start, start.line, 2853, "'await using' statements are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.");
+        }
+    }
+
     fn parseUsingDecl(self: *Parser, await_using: bool, decorated: bool) ParseError!NodeId {
         const start = self.advance(); // `using` or `await`
         if (await_using) {
@@ -9691,15 +9738,7 @@ pub const Parser = struct {
             // `if`/`while` arms, switch case bodies don't count as
             // function boundaries. The module indicator is derived
             // from a top-level `import`/`export` having been seen.
-            const inside_function = self.function_depth > 0;
-            const file_is_module = self.top_level_external_module_indicator;
-            if (self.static_block_depth > 0) {
-                try self.reportCodeAt(start.span.start, start.line, 18054, "'await using' statements cannot be used inside a class static block.");
-            } else if (inside_function and self.async_function_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 2852, "'await using' statements are only allowed within async functions and at the top levels of modules.");
-            } else if (!inside_function and !file_is_module and self.namespace_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 2853, "'await using' statements are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.");
-            }
+            try self.reportAwaitUsingContextDiagnostics(start);
         }
         if (self.in_switch_case_clause) {
             // A `using`/`await using` directly under a `case`/`default`
@@ -17737,6 +17776,7 @@ pub const Parser = struct {
 
     fn reportInvalidAssignmentTarget(self: *Parser, node: NodeId) ParseError!void {
         if (self.isValidAssignmentTarget(node)) return;
+        if (self.suppress_await_using_array_assignment_target) return;
         const pos = self.parenthesizedNodeStart(node) orelse self.hir.spanOf(node).start;
         try self.reportCodeAt(pos, self.sourceLineAtPos(pos), 2364, "The left-hand side of an assignment expression must be a variable or a property access.");
     }
@@ -21076,12 +21116,14 @@ test "parser: using for header edge diagnostics" {
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2304), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 1155), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 2304), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1011), s.parser.diagnostics.items[2].code);
+    try T.expectEqual(@as(u32, 1155), s.parser.diagnostics.items[3].code);
 }
 
-test "parser: await using of expression in for header is not a declaration" {
+test "parser: await using of in for header reports an empty declaration list" {
     var s = try newTestSetup(
         \\declare const x: any[];
         \\for (await using of x);
@@ -21090,7 +21132,21 @@ test "parser: await using of expression in for header is not a declaration" {
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1123), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1123), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: await using array expression keeps semicolon recovery" {
+    var s = try newTestSetup(
+        \\{ await using [a] = null; }
+        \\export {};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: non-declaration for-of array target parses as expression" {

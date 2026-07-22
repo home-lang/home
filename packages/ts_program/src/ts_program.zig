@@ -2587,7 +2587,14 @@ pub const Program = struct {
         if (legacyDecoratorsEnabled(f.source, options)) return;
         const c = f.compilation orelse return;
         const tslib = self.findTslibDeclaration() orelse {
-            if (sourceExternalEmitHelperPosition(f.source, options.emit.module_kind == .commonjs)) |pos| {
+            if (sourceExternalEmitHelperPosition(
+                c,
+                f.source,
+                options.emit.module_kind == .commonjs,
+                options.emit.es_target != .esnext or
+                    options.resource_management_helpers_required or
+                    sourceTargetNeedsResourceLowering(f.source),
+            )) |pos| {
                 try c.diagnostics.append(self.gpa, .{
                     .phase = .bind,
                     .pos = @intCast(pos),
@@ -2660,12 +2667,52 @@ pub const Program = struct {
         }
     }
 
-    fn sourceExternalEmitHelperPosition(source: []const u8, commonjs_module: bool) ?usize {
+    fn sourceExternalEmitHelperPosition(
+        c: *const ts_driver.Compilation,
+        source: []const u8,
+        commonjs_module: bool,
+        lower_resource_declarations: bool,
+    ) ?usize {
         var best: ?usize = null;
         if (findStage3DecoratedClassExpression(source, 0)) |decorated| best = decorated.at_pos;
         if (firstPrivateIdentifierHash(source)) |hash| best = minOptionalPos(best, hash);
+        if (lower_resource_declarations) {
+            if (firstResourceDeclarationPosition(&c.hir)) |using_pos| best = minOptionalPos(best, using_pos);
+        }
         if (commonjs_module) {
             if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
+        }
+        return best;
+    }
+
+    fn sourceTargetNeedsResourceLowering(source: []const u8) bool {
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r/*");
+            if (!std.mem.startsWith(u8, line, "@target")) continue;
+            const target = std.mem.trim(u8, line["@target".len..], " \t:");
+            var parts = std.mem.splitScalar(u8, target, ',');
+            while (parts.next()) |raw_part| {
+                const part = std.mem.trim(u8, raw_part, " \t\r");
+                if (std.ascii.eqlIgnoreCase(part, "esnext")) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn firstResourceDeclarationPosition(hir: *const hir_mod_ns.Hir) ?usize {
+        var best: ?usize = null;
+        var node: hir_mod_ns.NodeId = 1;
+        while (node < hir.nodeCount()) : (node += 1) {
+            switch (hir.kindOf(node)) {
+                .var_decl, .let_decl, .const_decl => {},
+                else => continue,
+            }
+            const decl = hir_mod_ns.varDeclOf(hir, node);
+            if (!decl.is_using and !decl.is_await_using) continue;
+            const pos: usize = hir.spanOf(node).start;
+            best = minOptionalPos(best, pos);
         }
         return best;
     }
@@ -4673,6 +4720,29 @@ test "Program: importHelpers reports missing tslib module for helper syntax" {
         if (d.code == 2354 and std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null) {
             saw_2354 = true;
         }
+    }
+    try T.expect(saw_2354);
+}
+
+test "Program: importHelpers detects lowered resource declarations" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const source =
+        \\export {};
+        \\await using value = null;
+    ;
+    _ = try p.add("/main.ts", source);
+    try p.compileAll(.{ .emit = .{ .import_helpers = true, .es_target = .es2022 } });
+
+    const c = p.fileById(0).compilation.?;
+    const using_pos = std.mem.indexOf(u8, source, "await").?;
+    var saw_2354 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2354 and d.pos == using_pos) saw_2354 = true;
     }
     try T.expect(saw_2354);
 }
