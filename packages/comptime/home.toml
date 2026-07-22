@@ -9,4 +9,4 @@ authors = ["Home Contributors"]
 # No dependencies - pure compile-time code
 
 [build]
-zig_version = "0.17.0-dev.1275+59a628c6d"
+zig_version = "0.17.0-dev.1441+d5181a9c9"
