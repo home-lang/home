@@ -45,7 +45,7 @@
     "better-dx": "^0.2.15"
   },
   "dependencies": {
-    "ziglang.org": "0.17.0-dev.1275+59a628c6d"
+    "ziglang.org": "0.17.0-dev.1441+d5181a9c9"
   },
   "workspaces": [
     "./packages/vscode-home",

@@ -5171,7 +5171,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
         \\# Project toolchain managed by pantry.
         \\# Run: home pkg tools
         \\dependencies:
-        \\  - ziglang.org@0.17.0-dev.1275+59a628c6d
+        \\  - ziglang.org@0.17.0-dev.1441+d5181a9c9
         \\  - bun
         \\
     ;
@@ -5381,7 +5381,7 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
         \\# Project toolchain managed by pantry.
         \\# Run: home pkg tools
         \\dependencies:
-        \\  - ziglang.org@0.17.0-dev.1275+59a628c6d
+        \\  - ziglang.org@0.17.0-dev.1441+d5181a9c9
         \\  - bun
         \\
     ;
