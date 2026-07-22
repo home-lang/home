@@ -222,8 +222,9 @@ pub fn stringProto(
     // The separator accepts both `string` and `RegExp`; model it as `any`
     // like `match`/`replace` so regex literals don't spuriously fail.
     const sig_split = try ti.internSignature(&[_]TypeId{ any_t, optional_number_t }, string_arr, false);
-    // `(start: number, end?: number): string`.
-    const sig_slice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, string_t, false);
+    // `slice(start?: number, end?: number): string` / `substring(start: number, end?: number): string`.
+    const sig_slice = try ti.internSignature(&[_]TypeId{ optional_number_t, optional_number_t }, string_t, false);
+    const sig_substring = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, string_t, false);
     // `concat(...strs: string[]): string` — rest accepting any number
     // of additional strings. Registered in `rest_set` so call sites
     // expand to 0+ string args.
@@ -307,7 +308,7 @@ pub fn stringProto(
         .{ .name = try sint.intern("split"), .type = sig_split, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("indexOf"), .type = sig_str_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("slice"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("substring"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("substring"), .type = sig_substring, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("trim"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         // `concat` is `(...strs: string[]): string`; modeled as the
         // common single-arg form `(s: string): string` until rest
