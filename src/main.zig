@@ -4581,7 +4581,72 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
 
-        try runCommand(allocator, args[2], args[3..]);
+        // Runtime flags may appear between `run` and the script, e.g.
+        // `bun run --bun file.js` or `bun run --require ./pre file.js`. Skip
+        // them to find the actual target (a file path or package.json script
+        // name — the first non-flag token). The flags stay in the process's
+        // real argv, so `process.execArgv` is still populated correctly by the
+        // VM; we only need to locate the entrypoint here. Previously the target
+        // was hard-coded to `args[2]`, so `run --bun x` treated `--bun` as the
+        // module and failed with "Module not found '--bun'".
+        var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer preloads.deinit(allocator);
+        var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer conditions.deinit(allocator);
+        var ri: usize = 2;
+        while (ri < args.len) : (ri += 1) {
+            const a = args[ri];
+            if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
+                if (ri + 1 < args.len) {
+                    preloads.append(allocator, args[ri + 1]) catch {};
+                    ri += 1;
+                }
+                continue;
+            }
+            if (std.mem.startsWith(u8, a, "--require=")) {
+                preloads.append(allocator, a["--require=".len..]) catch {};
+                continue;
+            }
+            if (std.mem.startsWith(u8, a, "--preload=")) {
+                preloads.append(allocator, a["--preload=".len..]) catch {};
+                continue;
+            }
+            if (std.mem.eql(u8, a, "--conditions")) {
+                if (ri + 1 < args.len) {
+                    var it = std.mem.splitScalar(u8, args[ri + 1], ',');
+                    while (it.next()) |part| {
+                        const trimmed = std.mem.trim(u8, part, " \t");
+                        if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
+                    }
+                    ri += 1;
+                }
+                continue;
+            }
+            if (std.mem.startsWith(u8, a, "--conditions=")) {
+                var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
+                while (it.next()) |part| {
+                    const trimmed = std.mem.trim(u8, part, " \t");
+                    if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
+                }
+                continue;
+            }
+            // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
+            // --smol, --env-file=...); skip it. The first non-flag token is the
+            // entrypoint.
+            if (a.len > 0 and a[0] == '-') continue;
+            break;
+        }
+
+        if (ri >= args.len) {
+            // Every token after `run` was a flag — no entrypoint. Fall back to
+            // the REPL, matching the bare `run` behavior above.
+            try repl.start(allocator);
+            return;
+        }
+
+        g_user_preloads = preloads.items;
+        g_user_conditions = conditions.items;
+        try runCommand(allocator, args[ri], args[ri + 1 ..]);
         return;
     }
 
