@@ -1027,6 +1027,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     interpreter_tests.root_module.addImport("interpreter", interpreter_pkg);
+    interpreter_tests.root_module.addImport("parser", parser_pkg);
+    interpreter_tests.root_module.addImport("lexer", lexer_pkg);
+    interpreter_tests.root_module.addImport("ast", ast_pkg);
 
     const run_interpreter_tests = b.addRunArtifact(interpreter_tests);
 

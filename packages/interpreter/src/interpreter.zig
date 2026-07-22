@@ -108,6 +108,12 @@ pub const Interpreter = struct {
         interpreter.global_env = Environment.init(arena_allocator, null);
         interpreter.program = program;
         interpreter.return_value = null;
+        // NOTE: `allocator.create` returns uninitialized memory, so struct-field
+        // defaults (e.g. `recursion_depth: u32 = 0`) do NOT apply here — every
+        // field must be set explicitly. Missing this one left recursion_depth as
+        // garbage (~0xAA…), so the very first evaluateExpression tripped the
+        // MAX_RECURSION_DEPTH guard and no program could evaluate an expression.
+        interpreter.recursion_depth = 0;
         interpreter.debugger = null;
         interpreter.debug_enabled = false;
         interpreter.source_file = "";

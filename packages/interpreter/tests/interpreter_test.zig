@@ -3,6 +3,10 @@ const testing = std.testing;
 const Interpreter = @import("interpreter").Interpreter;
 const Value = @import("interpreter").Value;
 
+test {
+    _ = @import("program_eval_test.zig");
+}
+
 test "interpreter: create integer value" {
     const allocator = testing.allocator;
 
