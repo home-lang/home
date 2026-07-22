@@ -807,7 +807,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .col = diag_col,
             .code = code,
             .code_prefix = prefix,
-            .severity = .err,
+            .severity = diagnosticSeverity(code, prefix),
             .message = if (exact_mode) diagnosticHeaderMessage(d.message) else d.message,
             .span_len = d.span_len,
         };
@@ -2874,7 +2874,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .col = diag_col,
                 .code = code,
                 .code_prefix = prefix,
-                .severity = .err,
+                .severity = diagnosticSeverity(code, prefix),
                 .message = if (exact_mode) diagnosticHeaderMessage(message) else message,
                 .span_len = d.span_len,
             };
@@ -5678,6 +5678,17 @@ fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
     };
 }
 
+fn diagnosticSeverity(code: u32, prefix: ts_diagnostics.Diagnostic.CodePrefix) ts_diagnostics.Severity {
+    if (prefix == .HM) return .err;
+    const info = ts_diagnostics.codes.lookup(code) orelse return .err;
+    return switch (info.category) {
+        .warning => .warning,
+        .err => .err,
+        .suggestion => .suggestion,
+        .message => .message,
+    };
+}
+
 pub const Suite = struct {
     cases: []const Case,
     pub fn run(self: Suite, gpa: std.mem.Allocator, results: *std.ArrayListUnmanaged(Result)) !Stats {
@@ -7054,10 +7065,16 @@ fn firstNonOptionValidationDiagnostic(
 }
 
 fn isDiagnosticHeader(line: []const u8) bool {
-    if (std.mem.startsWith(u8, line, "error TS")) return true;
-    if (std.mem.startsWith(u8, line, "error HM")) return true;
-    if (std.mem.indexOf(u8, line, "): error TS") != null) return true;
-    if (std.mem.indexOf(u8, line, "): error HM") != null) return true;
+    const categories = [_][]const u8{ "error", "warning", "suggestion", "message" };
+    const prefixes = [_][]const u8{ "TS", "HM" };
+    inline for (categories) |category| {
+        inline for (prefixes) |prefix| {
+            const global = std.fmt.comptimePrint("{s} {s}", .{ category, prefix });
+            if (std.mem.startsWith(u8, line, global)) return true;
+            const located = std.fmt.comptimePrint("): {s} {s}", .{ category, prefix });
+            if (std.mem.indexOf(u8, line, located) != null) return true;
+        }
+    }
     return false;
 }
 
@@ -54959,9 +54976,10 @@ test "conformance: extracts diagnostic headers from upstream baseline text" {
     const headers = try extractDiagnosticHeaders(T.allocator,
         \\tests/cases/conformance/types/example.ts(1,5): error TS2322: Type 'string' is not assignable to type 'number'.
         \\tests/cases/conformance/types/example.ts(2,5): error TS2322: Type 'number' is not assignable to type 'string'.
+        \\tests/cases/conformance/types/example.ts(3,5): message TS1450: Dynamic import grammar message.
         \\
         \\
-        \\==== tests/cases/conformance/types/example.ts (2 errors) ====
+        \\==== tests/cases/conformance/types/example.ts (3 errors) ====
         \\    let x: number = "hi";
         \\    let y: string = 1;
         \\    // example.ts(99,1): error TS9999: this comment-shaped header must be ignored
@@ -54971,7 +54989,8 @@ test "conformance: extracts diagnostic headers from upstream baseline text" {
 
     try T.expectEqualStrings(
         "tests/cases/conformance/types/example.ts(1,5): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
-            "tests/cases/conformance/types/example.ts(2,5): error TS2322: Type 'number' is not assignable to type 'string'.",
+            "tests/cases/conformance/types/example.ts(2,5): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "tests/cases/conformance/types/example.ts(3,5): message TS1450: Dynamic import grammar message.",
         headers,
     );
     try T.expectEqualStrings("tests/cases/conformance/types/example.ts", firstDiagnosticPath(headers).?);
