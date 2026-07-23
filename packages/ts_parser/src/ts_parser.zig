@@ -252,6 +252,11 @@ pub const Parser = struct {
     /// TS1169 vs. TS1170 when a computed key isn't a literal-resolved
     /// name. Mirrors `computedPropertyNamesDeclarationEmit3/4_ES{5,6}`.
     parsing_interface_body: bool = false,
+    /// Set when malformed type-member recovery consumes through a
+    /// semicolon but must leave the containing `}` to the source-element
+    /// parser. TypeScript uses this shape for malformed index-signature
+    /// value types such as `[index: number]: p1 is C;`.
+    type_member_list_leave_close: bool = false,
     /// Side-table of `infer_type` node IDs that were synthesised by the
     /// parser as the check slot of an `infer X extends C ? T : F`
     /// shorthand. These bare infer nodes look like they're in the
@@ -4169,6 +4174,14 @@ pub const Parser = struct {
 
         var return_type: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
+        if (return_type != hir_mod.none_node_id and self.peek().kind == .kw_is) {
+            const nested_is = self.advance();
+            try self.reportCodeAt(nested_is.span.start, nested_is.line, 1144, "'{' or ';' expected.");
+            if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
+                const trailing_type = self.advance();
+                try self.reportCodeAt(trailing_type.span.start, trailing_type.line, 1434, "Unexpected keyword or identifier.");
+            }
+        }
 
         var body: NodeId = hir_mod.none_node_id;
         var had_errant_arrow_recovery = false;
@@ -4783,6 +4796,11 @@ pub const Parser = struct {
                     missing_close_reported = true;
                     break;
                 }
+                if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
+                    const missing_comma = self.peek();
+                    try self.reportCodeAt(missing_comma.span.start, missing_comma.line, 1005, "',' expected.");
+                    continue;
+                }
                 if (!self.match(.comma)) break;
                 if (flags.is_rest and self.peek().kind == .close_paren and self.ambient_depth == 0) {
                     const comma_tok = self.tokens[self.cursor - 1];
@@ -4863,7 +4881,10 @@ pub const Parser = struct {
             }
         }
         if (accessor_kind == .kw_get) {
-            if (counted_params.len != 0) {
+            if (counted_params.len != 0 and
+                (return_type == hir_mod.none_node_id or
+                    self.hir.kindOf(return_type) != .type_predicate_type))
+            {
                 try self.reportCodeAt(name_span.start, name_line, 1054, "A 'get' accessor cannot have parameters.");
             }
             return;
@@ -4889,7 +4910,9 @@ pub const Parser = struct {
                 try self.reportCodeAt(name_span.start, name_line, 1052, "A 'set' accessor parameter cannot have an initializer.");
             }
         }
-        if (return_type != hir_mod.none_node_id) {
+        if (return_type != hir_mod.none_node_id and
+            self.hir.kindOf(return_type) != .type_predicate_type)
+        {
             try self.reportCodeAt(name_span.start, name_line, 1095, "A 'set' accessor cannot have a return type annotation.");
         }
     }
@@ -5907,7 +5930,12 @@ pub const Parser = struct {
                         // annotation. Anchor at the annotation node's start
                         // so the column points at the type, not the colon.
                         // Mirrors `parserConstructorDeclaration10.ts(2,18)`.
-                        if (name_tok.kind == .kw_constructor and return_type != hir_mod.none_node_id) {
+                        if (name_tok.kind == .kw_constructor and return_type != hir_mod.none_node_id and
+                            self.hir.kindOf(return_type) == .type_predicate_type)
+                        {
+                            const ret_span = self.hir.spanOf(return_type);
+                            try self.reportCodeAt(ret_span.start, self.lineAt(ret_span.start), 1228, "A type predicate is only allowed in return type position for functions and methods.");
+                        } else if (name_tok.kind == .kw_constructor and return_type != hir_mod.none_node_id) {
                             const ret_span = self.hir.spanOf(return_type);
                             try self.reportCodeAt(ret_span.start, self.lineAt(ret_span.start), 1093, "Type annotation cannot appear on a constructor declaration.");
                         }
@@ -7368,8 +7396,10 @@ pub const Parser = struct {
         const saved_in_iface = self.parsing_interface_body;
         self.parsing_interface_body = true;
         defer self.parsing_interface_body = saved_in_iface;
-        try self.parseTypeMemberList(&members);
-        const close = if (self.peek().kind == .close_brace)
+        const leave_close_for_statement_recovery = try self.parseTypeMemberList(&members);
+        const close = if (leave_close_for_statement_recovery)
+            self.tokens[self.cursor - 1]
+        else if (self.peek().kind == .close_brace)
             self.advance()
         else blk: {
             const at = self.peek();
@@ -11758,7 +11788,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(stray.span.start, stray.line, 7061, "A mapped type may not declare properties or methods.");
                 var stray_members: std.ArrayListUnmanaged(NodeId) = .empty;
                 defer stray_members.deinit(self.gpa);
-                try self.parseTypeMemberList(&stray_members);
+                _ = try self.parseTypeMemberList(&stray_members);
             }
             const close = try self.expectClosingMatch(.close_brace, "'}' to close mapped type", open.span.start, "{", "}");
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0, false);
@@ -11766,7 +11796,14 @@ pub const Parser = struct {
         }
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
-        try self.parseTypeMemberList(&members);
+        const leave_close_for_statement_recovery = try self.parseTypeMemberList(&members);
+        if (leave_close_for_statement_recovery) {
+            const end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else open.span.end;
+            return try self.builder.addObjectType(
+                .{ .start = open.span.start, .end = end },
+                members.items,
+            );
+        }
         const close = try self.expectClosingMatch(.close_brace, "'}' to close object type", open.span.start, "{", "}");
         return try self.builder.addObjectType(
             .{ .start = open.span.start, .end = close.span.end },
@@ -11788,7 +11825,8 @@ pub const Parser = struct {
     /// Index/call/construct signatures are skipped for now —
     /// tracked as Phase 6 follow-ups so the harness can keep
     /// progressing.
-    fn parseTypeMemberList(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
+    fn parseTypeMemberList(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!bool {
+        self.type_member_list_leave_close = false;
         const MethodOptionality = struct {
             optional: bool,
             span: Span,
@@ -11805,6 +11843,38 @@ pub const Parser = struct {
         defer accessor_pairs.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
+            // A statement in an anonymous object type used as a return
+            // annotation terminates that type's recovery. In
+            // `function f(x): x is { return true; }`, TypeScript consumes
+            // the statement through its semicolon but leaves the closing
+            // brace to the source-element parser, which then reports the
+            // unmatched `}`. Keeping that boundary also prevents `true`
+            // from becoming a synthetic implicit-any property.
+            if (!self.parsing_interface_body and t.kind == .kw_return and
+                self.peekAt(1).kind != .colon and
+                self.peekAt(1).kind != .question and
+                self.peekAt(1).kind != .open_paren and
+                self.peekAt(1).kind != .less_than and
+                self.peekAt(1).kind != .semicolon and
+                self.peekAt(1).kind != .comma and
+                self.peekAt(1).kind != .close_brace)
+            {
+                try self.reportCodeAtWithSpan(
+                    t.span.start,
+                    t.line,
+                    t.span.end - t.span.start,
+                    1131,
+                    "Property or signature expected.",
+                );
+                while (self.peek().kind != .semicolon and
+                    self.peek().kind != .close_brace and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
+                }
+                _ = self.match(.semicolon);
+                return true;
+            }
             // With no trivia between the tokens, `private[k: K]: V` in a
             // type literal is recovered as an index signature by tsc rather
             // than as an accessibility modifier on a type member.
@@ -11814,7 +11884,10 @@ pub const Parser = struct {
             {
                 const checkpoint = self.cursor;
                 _ = self.advance();
-                if (try self.tryParseIndexSignature(out, false, false)) continue;
+                if (try self.tryParseIndexSignature(out, false, false)) {
+                    if (self.type_member_list_leave_close) return true;
+                    continue;
+                }
                 self.cursor = checkpoint;
             }
             // `static` is illegal on an index signature inside an interface
@@ -11835,7 +11908,10 @@ pub const Parser = struct {
             if (t.kind == .open_bracket or
                 (t.kind == .kw_readonly and self.peekAt(1).kind == .open_bracket))
             {
-                if (try self.tryParseIndexSignature(out, false, false)) continue;
+                if (try self.tryParseIndexSignature(out, false, false)) {
+                    if (self.type_member_list_leave_close) return true;
+                    continue;
+                }
                 if (try self.tryParseComputedTypeMember(out, false)) continue;
                 // Not an index signature or supported computed key.
                 try self.reportMalformedTypeMemberBracket(t);
@@ -12167,6 +12243,7 @@ pub const Parser = struct {
             }
             try out.append(self.gpa, member);
         }
+        return false;
     }
 
     fn parseTypeSignatureMember(self: *Parser, is_constructor: bool) ParseError!NodeId {
@@ -12183,6 +12260,12 @@ pub const Parser = struct {
         defer self.gpa.free(params);
         var ret: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) ret = try self.parseReturnTypeAnnotation(params);
+        if (is_constructor and ret != hir_mod.none_node_id and
+            self.hir.kindOf(ret) == .type_predicate_type)
+        {
+            const predicate_span = self.hir.spanOf(ret);
+            try self.reportCodeAt(predicate_span.start, self.lineAt(predicate_span.start), 1228, "A type predicate is only allowed in return type position for functions and methods.");
+        }
         const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
         const fn_t = try self.builder.addFnType(
             .{ .start = start.span.start, .end = end_pos },
@@ -12836,8 +12919,16 @@ pub const Parser = struct {
         if (!self.match(.semicolon) and !self.match(.comma)) {
             const next = self.peek();
             if (next.kind != .close_brace and next.kind != .eof and !next.flags.preceded_by_newline) {
-                const prev = self.tokens[self.cursor - 1];
-                try self.reportCodeAt(prev.span.end + 1, prev.line, 1005, "';' expected.");
+                try self.reportCodeAt(next.span.start, next.line, 1005, "';' expected.");
+                while (self.peek().kind != .semicolon and
+                    self.peek().kind != .close_brace and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
+                }
+                if (self.match(.semicolon)) {
+                    self.type_member_list_leave_close = true;
+                }
             }
         }
         if (has_multiple_parameters or (value_type == hir_mod.none_node_id and !key_type_valid)) {
@@ -26419,6 +26510,103 @@ test "parser: property and accessor predicates recover as predicate types" {
         if (diagnostic.code == 1228) predicate_position_errors += 1;
     }
     try T.expectEqual(@as(usize, 3), predicate_position_errors);
+}
+
+test "parser: nested type predicate recovery preserves function body" {
+    var s = try newTestSetup(
+        \\function guard(x): x is x is A {
+        \\  return true;
+        \\}
+        \\let after = 1;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    const guard = hir_mod.fnDeclOf(&s.hir, stmts[0]);
+    try T.expect(guard.body != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(guard.return_type));
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1144), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1434), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: predicate syntax in parameter type recovers missing commas" {
+    var s = try newTestSetup("function f(a: b is A) {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_node = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(@as(usize, 3), hir_mod.fnParams(&s.hir, fn_node).len);
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: statement in predicate object type leaves outer brace for recovery" {
+    var s = try newTestSetup(
+        \\function guard(x): x is {
+        \\  return true;
+        \\}
+        \\let after = 1;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_type_member = false;
+    var saw_unmatched_brace = false;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1131) saw_type_member = true;
+        if (diagnostic.code == 1128) saw_unmatched_brace = true;
+    }
+    try T.expect(saw_type_member);
+    try T.expect(saw_unmatched_brace);
+}
+
+test "parser: predicates on constructors and accessors prefer TS1228" {
+    var s = try newTestSetup(
+        \\class D {
+        \\  constructor(p: A): p is A { return true; }
+        \\  get value(p: A): p is A { return true; }
+        \\  set value(p: A): p is A { return true; }
+        \\}
+        \\interface I { new (p: A): p is A; }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var predicate_position_errors: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1228) predicate_position_errors += 1;
+        try T.expect(diagnostic.code != 1093);
+        try T.expect(diagnostic.code != 1054);
+        try T.expect(diagnostic.code != 1095);
+    }
+    try T.expectEqual(@as(usize, 4), predicate_position_errors);
+}
+
+test "parser: malformed index predicate leaves interface brace for recovery" {
+    var s = try newTestSetup(
+        \\interface I {
+        \\  [index: number]: p1 is C;
+        \\}
+        \\let after = 1;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len >= 2);
+    try T.expectEqual(hir_mod.NodeKind.interface_decl, s.hir.kindOf(stmts[0]));
+    const members = hir_mod.interfaceMembers(&s.hir, stmts[0]);
+    try T.expectEqual(@as(usize, 1), members.len);
+    try T.expectEqual(hir_mod.NodeKind.index_signature, s.hir.kindOf(members[0]));
+    var saw_semicolon = false;
+    var saw_unmatched_brace = false;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1005) saw_semicolon = true;
+        if (diagnostic.code == 1128) saw_unmatched_brace = true;
+    }
+    try T.expect(saw_semicolon);
+    try T.expect(saw_unmatched_brace);
 }
 
 test "parser: `yield* h()` parses with delegated flag set" {

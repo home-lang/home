@@ -358,7 +358,7 @@ pub const Scanner = struct {
         while (!self.isAtEnd()) {
             const c = self.source[self.pos];
             switch (c) {
-                ' ', '\t' => self.pos += 1,
+                ' ', '\t', '\x0B', '\x0C' => self.pos += 1,
                 '\n' => {
                     self.pos += 1;
                     self.line += 1;
@@ -417,7 +417,22 @@ pub const Scanner = struct {
                     }
                     return;
                 },
-                else => return,
+                else => {
+                    const unicode_space_len = self.unicodeWhitespaceLengthAt(self.pos);
+                    if (unicode_space_len != 0) {
+                        self.pos += unicode_space_len;
+                        continue;
+                    }
+                    const unicode_line_len = self.unicodeLineTerminatorLengthAt(self.pos);
+                    if (unicode_line_len != 0) {
+                        self.pos += unicode_line_len;
+                        self.line += 1;
+                        self.line_start = self.pos;
+                        self.saw_newline = true;
+                        continue;
+                    }
+                    return;
+                },
             }
         }
     }
@@ -489,6 +504,33 @@ pub const Scanner = struct {
 
     fn isIdentCont(c: u8) bool {
         return isIdentStart(c) or (c >= '0' and c <= '9');
+    }
+
+    fn unicodeWhitespaceLengthAt(self: *const Scanner, pos: u32) u32 {
+        if (pos >= self.source.len) return 0;
+        const remaining = self.source[pos..];
+        if (std.mem.startsWith(u8, remaining, "\xC2\xA0")) return 2;
+        if (std.mem.startsWith(u8, remaining, "\xE1\x9A\x80")) return 3;
+        if (remaining.len >= 3 and remaining[0] == 0xE2 and remaining[1] == 0x80 and
+            remaining[2] >= 0x80 and remaining[2] <= 0x8A)
+        {
+            return 3;
+        }
+        if (std.mem.startsWith(u8, remaining, "\xE2\x80\xAF") or
+            std.mem.startsWith(u8, remaining, "\xE2\x81\x9F") or
+            std.mem.startsWith(u8, remaining, "\xE3\x80\x80") or
+            std.mem.startsWith(u8, remaining, "\xEF\xBB\xBF"))
+        {
+            return 3;
+        }
+        return 0;
+    }
+
+    fn unicodeLineTerminatorLengthAt(self: *const Scanner, pos: u32) u32 {
+        if (pos >= self.source.len) return 0;
+        const remaining = self.source[pos..];
+        return if (std.mem.startsWith(u8, remaining, "\xE2\x80\xA8") or
+            std.mem.startsWith(u8, remaining, "\xE2\x80\xA9")) 3 else 0;
     }
 
     fn startsWithUtf8NotSign(self: *const Scanner) bool {
@@ -565,6 +607,8 @@ pub const Scanner = struct {
         var has_escape = false;
         while (!self.isAtEnd()) {
             const ch = self.source[self.pos];
+            if (self.unicodeWhitespaceLengthAt(self.pos) != 0 or
+                self.unicodeLineTerminatorLengthAt(self.pos) != 0) break;
             if (isIdentCont(ch)) {
                 self.pos += 1;
                 continue;
@@ -659,7 +703,11 @@ pub const Scanner = struct {
 
     fn scanPrivateIdentifier(self: *Scanner, start: u32, line: u32, flags: TokenFlags) Token {
         // The leading `#` was already consumed; scan the identifier body.
-        while (!self.isAtEnd() and isIdentCont(self.source[self.pos])) {
+        while (!self.isAtEnd() and
+            self.unicodeWhitespaceLengthAt(self.pos) == 0 and
+            self.unicodeLineTerminatorLengthAt(self.pos) == 0 and
+            isIdentCont(self.source[self.pos]))
+        {
             self.pos += 1;
         }
         return .{
@@ -819,10 +867,16 @@ pub const Scanner = struct {
         numeric_line: u32,
         mode: NumericIdentifierMode,
     ) ScanError!void {
-        if (self.isAtEnd() or !isIdentStart(self.source[self.pos])) return;
+        if (self.isAtEnd() or
+            self.unicodeWhitespaceLengthAt(self.pos) != 0 or
+            self.unicodeLineTerminatorLengthAt(self.pos) != 0 or
+            !isIdentStart(self.source[self.pos])) return;
         const id_start = self.pos;
         self.pos += 1;
-        while (!self.isAtEnd() and isIdentCont(self.source[self.pos])) self.pos += 1;
+        while (!self.isAtEnd() and
+            self.unicodeWhitespaceLengthAt(self.pos) == 0 and
+            self.unicodeLineTerminatorLengthAt(self.pos) == 0 and
+            isIdentCont(self.source[self.pos])) self.pos += 1;
         if (self.pos == id_start + 1 and self.source[id_start] == 'n') {
             switch (mode) {
                 .bigint_exponent => {
@@ -2473,6 +2527,20 @@ test "Scanner: regex with backslash escapes — `fixSignatureCaching` pattern" {
     // The full body is preserved verbatim, including escapes.
     try t.expect(std.mem.startsWith(u8, toks.items[2].bytes(s.source), "/(android"));
     try t.expect(std.mem.endsWith(u8, toks.items[2].bytes(s.source), "/i"));
+    try t.expectEqual(@as(usize, 0), s.diagnostics.items.len);
+}
+
+test "Scanner: ECMAScript Unicode whitespace is trivia" {
+    var s = Scanner.init(t.allocator, "left\xC2\xA0middle\xE2\x80\xA8right");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[1].kind);
+    try t.expect(!toks.items[1].flags.preceded_by_newline);
+    try t.expectEqual(TokenKind.identifier, toks.items[2].kind);
+    try t.expect(toks.items[2].flags.preceded_by_newline);
+    try t.expectEqual(@as(u32, 2), toks.items[2].line);
     try t.expectEqual(@as(usize, 0), s.diagnostics.items.len);
 }
 
