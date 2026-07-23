@@ -2007,6 +2007,10 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
     }
 
     vm.main_is_html_entrypoint = false;
+    // `-e`/eval (inject_node_globals) loads an internal /tmp/home-eval-*.ts temp
+    // file as `main`; flag it so createArgv omits it from process.argv, matching
+    // `bun -e` (argv = [exe, ...userArgs], no script path).
+    vm.main_is_eval_entry = inject_node_globals;
 
     // Hand control to JSC under the API lock; start() loads + runs the entry.
     VmRunState.instance = .{ .vm = vm, .entry_path = abs_path };

@@ -194,6 +194,7 @@ fn createArgv(globalObject: *jsc.JSGlobalObject) callconv(.c) jsc.JSValue {
     }
 
     if (vm.main.len > 0 and
+        !vm.main_is_eval_entry and
         !strings.endsWithComptime(vm.main, bun.pathLiteral("/[eval]")) and
         !strings.endsWithComptime(vm.main, bun.pathLiteral("/[stdin]")))
     {
