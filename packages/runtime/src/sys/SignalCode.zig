@@ -72,9 +72,48 @@ pub const SignalCode = enum(u8) {
         return @intFromEnum(value) <= @intFromEnum(SignalCode.SIGSYS) and @intFromEnum(value) >= @intFromEnum(SignalCode.SIGHUP);
     }
 
+    /// Parse a `SignalCode` from a JS value (number or signal-name string),
+    /// mirroring Node/Bun semantics. `value`/`globalThis` are taken as
+    /// `anytype` so this stays free of a direct JSC import (the methods resolve
+    /// on the JSValue/JSGlobalObject the callers pass). Previously a stub that
+    /// discarded the value and always returned `default` (SIGTERM), which made
+    /// `Bun.spawn({ killSignal })` and `subprocess.kill(sig)` ignore the
+    /// requested signal.
     pub fn fromJS(value: anytype, globalThis: anytype) !SignalCode {
-        _ = value;
-        _ = globalThis;
+        if (value.getNumber()) |sig64| {
+            // NaN → default (matches Node).
+            if (std.math.isNan(sig64)) {
+                return SignalCode.default;
+            }
+            if (std.math.isInf(sig64) or @trunc(sig64) != sig64) {
+                return globalThis.throwInvalidArguments("Unknown signal", .{});
+            }
+            if (sig64 < 0) {
+                return globalThis.throwInvalidArguments("Invalid signal: must be >= 0", .{});
+            }
+            if (sig64 > 31) {
+                return globalThis.throwInvalidArguments("Invalid signal: must be < 32", .{});
+            }
+            return @enumFromInt(@as(u8, @intFromFloat(sig64)));
+        } else if (value.isString()) {
+            // Parse the signal NAME manually: `SignalCode.Map` (ComptimeEnumMap)
+            // isn't exposed yet, so JSValue.toEnum is unavailable. Signal names
+            // are short, so a stack buffer avoids needing an allocator — this
+            // file must not import `bun` (that would be a circular import, since
+            // bun.zig re-exports SignalCode).
+            var name_buf: [256]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&name_buf);
+            const sig_slice = try value.toSlice(globalThis, fba.allocator());
+            const name_str = sig_slice.slice();
+            if (name_str.len == 0) {
+                return SignalCode.default;
+            }
+            return std.meta.stringToEnum(SignalCode, name_str) orelse
+                globalThis.throwInvalidArguments("Unknown signal: '{s}'", .{name_str});
+        } else if (!value.isEmptyOrUndefinedOrNull()) {
+            return globalThis.throwInvalidArguments("Invalid signal: must be a string or an integer", .{});
+        }
+
         return SignalCode.default;
     }
 
