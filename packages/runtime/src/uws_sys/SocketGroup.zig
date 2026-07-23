@@ -159,10 +159,16 @@ pub const SocketGroup = extern struct {
         // `us_connecting_socket_t*` placeholder. Named to match the C side so
         // the branches read the right way round — see PR review #3161005603.
         var has_dns_resolved: c_int = 0;
-        // The current bun-usockets ABI accepts an optional local bind address
-        // before the socket options. Home does not expose localAddress yet, so
-        // pass the same unbound values used by Bun's ordinary HTTP clients.
-        const ptr = c.us_socket_group_connect(self, @intFromEnum(kind), ssl_ctx, host, port, null, 0, options, socket_ext_size, &has_dns_resolved) orelse return .failed;
+        // ABI (context.c / libusockets.h): us_socket_group_connect(
+        //   group, kind, ssl_ctx, host, port, options, socket_ext_size,
+        //   is_connecting) — 8 params, is_connecting is `nonnull`.
+        // An earlier version inserted two extra "local bind address" args
+        // (`null, 0`) before `options`, believing a newer bun-usockets ABI.
+        // Home's vendored bun-usockets has no such params, so the extra args
+        // shifted the C side: `is_connecting` received the `options` value (0)
+        // as a pointer and `*is_connecting = 1` wrote to NULL — a segfault on
+        // connect() to an IP literal (e.g. net.connect(port) to 127.0.0.1).
+        const ptr = c.us_socket_group_connect(self, @intFromEnum(kind), ssl_ctx, host, port, options, socket_ext_size, &has_dns_resolved) orelse return .failed;
         return if (has_dns_resolved != 0)
             .{ .socket = @ptrCast(@alignCast(ptr)) }
         else
@@ -213,7 +219,7 @@ const c = struct {
     /// Returns `us_socket_t*` (fast path) OR `us_connecting_socket_t*` (slow
     /// path), discriminated by `*is_connecting`. The public `connect()` method
     /// turns this into the typed `ConnectResult` union — call that, not this.
-    extern fn us_socket_group_connect(*SocketGroup, u8, ?*SslCtx, [*:0]const u8, c_int, ?[*:0]const u8, c_int, c_int, c_int, *c_int) ?*anyopaque;
+    extern fn us_socket_group_connect(*SocketGroup, u8, ?*SslCtx, [*:0]const u8, c_int, c_int, c_int, *c_int) ?*anyopaque;
     extern fn us_socket_group_connect_unix(*SocketGroup, u8, ?*SslCtx, [*]const u8, usize, c_int, c_int) ?*us_socket_t;
     extern fn us_socket_from_fd(*SocketGroup, u8, ?*SslCtx, c_int, LIBUS_SOCKET_DESCRIPTOR, c_int) ?*us_socket_t;
     extern fn us_socket_pair(*SocketGroup, u8, c_int, *[2]LIBUS_SOCKET_DESCRIPTOR) ?*us_socket_t;
@@ -274,10 +280,14 @@ test "SocketGroup.ConnectResult is a tagged union of the two success paths" {
     try std.testing.expectEqual(@as(usize, 3), tags.len);
 }
 
-test "bun-usockets connect declaration includes local bind arguments" {
+test "bun-usockets connect declaration matches the C ABI (8 params)" {
     const std = @import("std");
+    // Must match us_socket_group_connect in context.c / libusockets.h:
+    //   (group, kind, ssl_ctx, host, port, options, socket_ext_size, is_connecting)
+    // A wrong arg count shifts the C params, landing `is_connecting` on an int
+    // value; the C side then writes `*is_connecting = 1` through a bogus
+    // pointer → segfault on connect() to an IP literal.
     const fn_info = @typeInfo(@TypeOf(c.us_socket_group_connect)).@"fn";
-    try std.testing.expectEqual(@as(usize, 10), fn_info.param_types.len);
-    try std.testing.expect(fn_info.param_types[5].? == ?[*:0]const u8);
-    try std.testing.expect(fn_info.param_types[6].? == c_int);
+    try std.testing.expectEqual(@as(usize, 8), fn_info.param_types.len);
+    try std.testing.expect(fn_info.param_types[7].? == *c_int);
 }
