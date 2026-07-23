@@ -578,6 +578,14 @@ pub const Loader = struct {
             if (strings.indexOfChar(env, '=')) |i| {
                 const key = env[0..i];
                 const value = env[i + 1 ..];
+                // Skip `__CF_USER_TEXT_ENCODING`: on macOS, CoreFoundation
+                // injects this into the live libc environ (via setenv) during
+                // its init, so it is NOT part of the env the process was spawned
+                // with. Real Bun reads the startup env snapshot and never sees
+                // it; reading std.c.environ here would otherwise leak it into
+                // process.env and break exact-env tests (e.g. child_process
+                // spawn with an explicit `env`).
+                if (strings.eqlComptime(key, "__CF_USER_TEXT_ENCODING")) continue;
                 if (key.len > 0) {
                     try this.map.put(key, value);
                 }
