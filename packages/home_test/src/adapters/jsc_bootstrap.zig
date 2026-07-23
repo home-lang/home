@@ -4399,6 +4399,26 @@ fn runSpawnSyncNative(
     const cwd = try resolveSpawnCwd(allocator, cwd_raw);
     defer if (cwd.owned) allocator.free(cwd.path.?);
 
+    var env_storage = std.ArrayList([]const u8).empty;
+    defer {
+        for (env_storage.items) |entry| allocator.free(entry);
+        env_storage.deinit(allocator);
+    }
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    var have_env = false;
+    if (getProperty(ctx, options, "__home_env_pairs", exception)) |env_value| {
+        if (!extern_fns.JSValueIsUndefined(ctx, env_value) and !extern_fns.JSValueIsNull(ctx, env_value)) {
+            try readStringArray(allocator, ctx, env_value, exception, &env_storage);
+            for (env_storage.items) |entry| {
+                const equals = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+                try env_map.put(entry[0..equals], entry[equals + 1 ..]);
+            }
+            have_env = true;
+        }
+    }
+    const environ_map: ?*const std.process.Environ.Map = if (have_env) &env_map else null;
+
     if (isIssue06946CorpusSpawn(argv_storage.items, cwd.path)) {
         return makeSpawnResult(
             ctx,
@@ -4434,6 +4454,7 @@ fn runSpawnSyncNative(
         const run_result = std.process.run(allocator, io, .{
             .argv = argv_storage.items,
             .cwd = if (cwd.path) |path| .{ .path = path } else .inherit,
+            .environ_map = environ_map,
         }) catch |err| {
             setExceptionFmt(ctx, exception, "Bun.spawnSync() failed: {s} cmd={s} cwd={s}", .{ @errorName(err), argv_storage.items[0], cwd.path orelse "(inherit)" });
             return error.NativeException;
@@ -4446,6 +4467,7 @@ fn runSpawnSyncNative(
         var child = std.process.spawn(io, .{
             .argv = argv_storage.items,
             .cwd = if (cwd.path) |path| .{ .path = path } else .inherit,
+            .environ_map = environ_map,
             .stdin = stdio.stdin,
             .stdout = stdio.stdout,
             .stderr = stdio.stderr,
