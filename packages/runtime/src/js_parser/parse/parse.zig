@@ -159,6 +159,7 @@ pub fn Parse(
 
                 // Parse decorators for this property
                 const first_decorator_loc = p.lexer.loc();
+                const property_scope_index = p.scopes_in_order.items.len;
                 if (opts.allow_ts_decorators) {
                     opts.ts_decorators = try p.parseTypeScriptDecorators();
                     opts.has_class_decorators = class_opts.ts_decorators.len > 0;
@@ -185,6 +186,13 @@ pub fn Parse(
                     }
 
                     has_decorators = has_decorators or opts.has_argument_decorators;
+                } else {
+                    // The property was dropped (e.g. a TypeScript overload signature,
+                    // abstract/declare method, or index signature), which drops its
+                    // decorators and computed key too. Discard any scopes recorded
+                    // while parsing them (e.g. arrow decorators) or the visit pass hits
+                    // a scope order mismatch. Ports oven-sh/bun 81a811b2ae (#31340).
+                    p.discardScopesUpTo(property_scope_index);
                 }
             }
 
