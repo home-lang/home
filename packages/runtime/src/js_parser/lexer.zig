@@ -498,13 +498,13 @@ fn NewLexer_(
 
                                         switch (c3) {
                                             '0'...'9' => {
-                                                value = value * 16 | (c3 - '0');
+                                                value = value *| 16 | (c3 - '0');
                                             },
                                             'a'...'f' => {
-                                                value = value * 16 | (c3 + 10 - 'a');
+                                                value = value *| 16 | (c3 + 10 - 'a');
                                             },
                                             'A'...'F' => {
-                                                value = value * 16 | (c3 + 10 - 'A');
+                                                value = value *| 16 | (c3 + 10 - 'A');
                                             },
                                             '}' => {
                                                 if (is_first) {
@@ -2324,6 +2324,13 @@ fn NewLexer_(
 
                         lexer.end = lexer.current;
                         lexer.token = .t_syntax_error;
+                        // Advance past the bad byte so a subsequent recovery next()
+                        // dispatches on the following byte instead of re-dispatching
+                        // on the still-current bad byte (which left current == end and
+                        // panicked with a duplicate/zero-width scope location).
+                        // `end` was already set above, so the error range is unchanged.
+                        // Ports oven-sh/bun 4c8a21b149 (#30969).
+                        lexer.step();
                     },
                 }
 
