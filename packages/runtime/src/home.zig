@@ -4597,7 +4597,18 @@ pub const allocators = struct {
 
     pub const c_allocator = std.heap.c_allocator;
     pub const z_allocator = @import("bun_alloc/fallback/z.zig").allocator;
-    pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+    // `freeWithoutSize` frees `default_allocator` buffers (that allocator is
+    // what JS-visible no-copy ArrayBuffers are built from). `default_allocator`
+    // is mimalloc when JSC is linked (see `home.zig` `default_allocator`), so
+    // this MUST track the same conditional — otherwise it frees a mimalloc
+    // pointer with libc `free`, which aborts when the GC sweeps the ArrayBuffer
+    // (root cause of the libdeflate crash, commit 7fb08cb6c). `c_allocator`
+    // above stays libc on purpose: it backs Home-internal / C-interop
+    // allocations that are freed through the same allocator, not via this.
+    pub const freeWithoutSize = if (enable_jsc_link)
+        @import("bun_alloc/basic.zig").freeWithoutSize
+    else
+        @import("bun_alloc/fallback.zig").freeWithoutSize;
 
     pub fn BSSList(comptime ValueType: type, comptime _count: anytype) type {
         const count = _count * 2;

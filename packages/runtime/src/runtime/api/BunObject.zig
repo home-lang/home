@@ -1544,13 +1544,12 @@ pub const JSZlib = struct {
         reader.deinit();
     }
     export fn global_deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
-        // The libdeflate result buffers wrapped by `toJSWithContext` below are
-        // allocated through the Zig mimalloc allocator (`default_allocator` /
-        // `VirtualMachine.get().allocator`), so they must be freed with
-        // `mi_free`. `bun.allocators.freeWithoutSize` routes to libc `free`,
-        // which aborts ("pointer being freed was not allocated") when the GC
-        // sweeps these ArrayBuffers, since the pointer lives in mimalloc's heap.
-        bun.mimalloc.mi_free(ctx);
+        // Frees the libdeflate result buffers wrapped by `toJSWithContext`
+        // below, which are `default_allocator`-allocated. `freeWithoutSize`
+        // tracks that allocator (mimalloc when JSC is linked); it previously
+        // hardcoded libc `free`, which aborted the GC sweep of these
+        // ArrayBuffers (fixed centrally in home.zig `allocators.freeWithoutSize`).
+        bun.allocators.freeWithoutSize(ctx);
     }
     export fn compressor_deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
         var compressor: *zlib.ZlibCompressorArrayList = bun.cast(*zlib.ZlibCompressorArrayList, ctx.?);
@@ -1832,13 +1831,11 @@ pub const JSZlib = struct {
 
 pub const JSZstd = struct {
     // Currently unused (the zstd paths below hand results to JS via
-    // `createBuffer`, which copies), but kept correct to avoid the same
-    // cross-allocator trap fixed in `JSZlib.global_deallocator`: buffers that
-    // would be wrapped no-copy here are mimalloc-allocated, and
-    // `bun.allocators.freeWithoutSize` routes to libc `free`, which aborts when
-    // the GC frees the ArrayBuffer. Free with `mi_free` to match the allocator.
+    // `createBuffer`, which copies). `freeWithoutSize` now tracks
+    // `default_allocator` (mimalloc when JSC is linked), so this is safe for any
+    // future no-copy wrapping — see home.zig `allocators.freeWithoutSize`.
     export fn deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
-        bun.mimalloc.mi_free(ctx);
+        bun.allocators.freeWithoutSize(ctx);
     }
 
     inline fn getOptions(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!struct { jsc.Node.StringOrBuffer, ?JSValue } {
