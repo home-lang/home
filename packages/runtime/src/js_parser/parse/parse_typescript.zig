@@ -403,7 +403,14 @@ pub fn ParseTypescript(
                 name.ref = try p.declareSymbol(.ts_enum, name_loc, name_text);
                 _ = try p.pushScopeForParsePass(.entry, loc);
                 p.current_scope.ts_namespace = ts_namespace;
-                bun.handleOom(p.ref_to_ts_namespace_member.putNoClobber(p.allocator, name.ref.?, enum_member_data));
+                // Overwrite allowed: on a forbidden redeclaration (e.g. `function X`
+                // then `enum X`), `declareSymbol` returns the existing ref for every
+                // colliding enum, so the key repeats. The value is the same
+                // `exported_members` map already reused, so the re-insert is
+                // idempotent — `putNoClobber` would panic on the duplicate key in
+                // debug builds instead of letting the "already declared" parse error
+                // surface. Ports oven-sh/bun 9bf393422c (#32711).
+                bun.handleOom(p.ref_to_ts_namespace_member.put(p.allocator, name.ref.?, enum_member_data));
             }
 
             try p.lexer.expect(.t_open_brace);
