@@ -195,8 +195,15 @@ pub fn VisitStmt(
             }
             pub fn s_export_default(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.ExportDefault) !void {
                 defer {
+                    // Guard on isSymbol(): early returns can reach this before the
+                    // parse-time name ref (a SourceContentsSlice / AllocatedName, e.g.
+                    // `export default \u{66}`) has been rewritten into a real symbol,
+                    // and recordDeclaredSymbol asserts the ref is a symbol.
+                    // Ports oven-sh/bun 4e159fbc9c (#32714).
                     if (data.default_name.ref) |ref| {
-                        p.recordDeclaredSymbol(ref) catch unreachable;
+                        if (ref.isSymbol()) {
+                            p.recordDeclaredSymbol(ref) catch unreachable;
+                        }
                     }
                 }
 
@@ -254,7 +261,7 @@ pub fn VisitStmt(
                             }
                         }
 
-                        if (data.default_name.ref.?.isSourceContentsSlice()) {
+                        if (!data.default_name.ref.?.isSymbol()) {
                             data.default_name = createDefaultName(p, data.value.expr.loc) catch unreachable;
                         }
 
@@ -344,7 +351,7 @@ pub fn VisitStmt(
                                 return;
                             }
 
-                            if (data.default_name.ref.?.isSourceContentsSlice()) {
+                            if (!data.default_name.ref.?.isSymbol()) {
                                 data.default_name = createDefaultName(p, stmt.loc) catch unreachable;
                             }
 
@@ -450,7 +457,7 @@ pub fn VisitStmt(
                                 }
                             }
 
-                            if (data.default_name.ref.?.isSourceContentsSlice()) {
+                            if (!data.default_name.ref.?.isSymbol()) {
                                 data.default_name = createDefaultName(p, stmt.loc) catch unreachable;
                             }
 
