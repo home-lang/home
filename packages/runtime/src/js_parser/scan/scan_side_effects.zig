@@ -471,6 +471,15 @@ pub const SideEffects = enum(u1) {
                     findIdentifiers(decl.binding, &decls);
                 }
 
+                // Drop the statement entirely when the destructuring pattern binds
+                // no identifiers — e.g. `if (0) var []`. An empty `var;` is invalid
+                // syntax, and the printer asserts it never sees an empty decl list.
+                // Ports oven-sh/bun a3408a2205 (#31003).
+                if (decls.items.len == 0) {
+                    decls.deinit();
+                    return false;
+                }
+
                 local.decls = .moveFromList(&decls);
                 return true;
             },
