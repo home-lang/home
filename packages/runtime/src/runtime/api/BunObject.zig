@@ -1831,8 +1831,14 @@ pub const JSZlib = struct {
 };
 
 pub const JSZstd = struct {
+    // Currently unused (the zstd paths below hand results to JS via
+    // `createBuffer`, which copies), but kept correct to avoid the same
+    // cross-allocator trap fixed in `JSZlib.global_deallocator`: buffers that
+    // would be wrapped no-copy here are mimalloc-allocated, and
+    // `bun.allocators.freeWithoutSize` routes to libc `free`, which aborts when
+    // the GC frees the ArrayBuffer. Free with `mi_free` to match the allocator.
     export fn deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
-        bun.allocators.freeWithoutSize(ctx);
+        bun.mimalloc.mi_free(ctx);
     }
 
     inline fn getOptions(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!struct { jsc.Node.StringOrBuffer, ?JSValue } {
