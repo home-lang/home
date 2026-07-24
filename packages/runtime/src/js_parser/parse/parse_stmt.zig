@@ -1316,15 +1316,27 @@ pub fn ParseStmt(
                                 if (p.lexer.isContextualKeyword("global")) {
                                     try p.lexer.next();
                                     try p.lexer.expect(.t_open_brace);
+                                    const scope_index = p.scopes_in_order.items.len;
                                     _ = try p.parseStmtsUpTo(.t_close_brace, opts);
                                     try p.lexer.next();
+                                    // The statements inside are dropped, so discard any scopes
+                                    // they recorded or the visit pass hits a scope order mismatch.
+                                    p.discardScopesUpTo(scope_index);
                                     return p.s(S.TypeScript{}, loc);
                                 }
 
                                 // "declare const x: any"
+                                const scope_index = p.scopes_in_order.items.len;
                                 const stmt = try p.parseStmt(opts);
                                 if (opts.ts_decorators) |decs| {
                                     p.discardScopesUpTo(decs.scope_index);
+                                } else {
+                                    // The statement is dropped below (or reduced to just its
+                                    // bindings for "export declare var" inside a namespace), so
+                                    // discard any scopes it recorded or the visit pass hits a
+                                    // scope order mismatch (e.g. "declare foo: bar" parses a
+                                    // labeled statement that records a Label scope).
+                                    p.discardScopesUpTo(scope_index);
                                 }
 
                                 // Unlike almost all uses of "declare", statements that use
