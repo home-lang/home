@@ -369,6 +369,30 @@ pub const SocketConfig = struct {
         }
         var generated: jsc.generated.SocketConfig = try .fromJS(globalObject, opts);
         defer generated.deinit();
+
+        // Bindgen's loose-`u16` coercion (`IDLLooseInteger<u16>`) isn't
+        // implemented, so a non-number `port` — e.g. `port: "8080"`, the very
+        // common `port: process.env.PORT` pattern — is dropped to null instead
+        // of being ToNumber-coerced, and `fromGenerated` then reports a bogus
+        // `Missing "port"`. Mirror `IDLLooseInteger<u16>` here: ToNumber, then
+        // require a finite integer in the range [0, 65535]. Only kicks in when
+        // bindgen produced no port (a numeric port is already handled). Drop
+        // once the bindgen loose-integer path lands.
+        if (generated.port == null and opts.isObject()) {
+            if (try opts.get(globalObject, "port")) |port_val| {
+                if (!port_val.isUndefinedOrNull()) {
+                    const d = try port_val.toNumber(globalObject);
+                    // `@trunc(d) != d` is true for NaN and any non-integer.
+                    if (@trunc(d) != d) {
+                        return globalObject.throwValue(globalObject.createRangeErrorInstance("port must be an integer (received {d})", .{d}));
+                    }
+                    if (d < 0 or d > 65535) {
+                        return globalObject.throwValue(globalObject.createRangeErrorInstance("port must be in the range [0, 65535] (received {d})", .{d}));
+                    }
+                    generated.port = @as(u16, @intFromFloat(d));
+                }
+            }
+        }
         return .fromGenerated(vm, globalObject, &generated, is_server);
     }
 };
