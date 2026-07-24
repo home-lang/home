@@ -1544,7 +1544,13 @@ pub const JSZlib = struct {
         reader.deinit();
     }
     export fn global_deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
-        bun.allocators.freeWithoutSize(ctx);
+        // The libdeflate result buffers wrapped by `toJSWithContext` below are
+        // allocated through the Zig mimalloc allocator (`default_allocator` /
+        // `VirtualMachine.get().allocator`), so they must be freed with
+        // `mi_free`. `bun.allocators.freeWithoutSize` routes to libc `free`,
+        // which aborts ("pointer being freed was not allocated") when the GC
+        // sweeps these ArrayBuffers, since the pointer lives in mimalloc's heap.
+        bun.mimalloc.mi_free(ctx);
     }
     export fn compressor_deallocator(_: ?*anyopaque, ctx: ?*anyopaque) void {
         var compressor: *zlib.ZlibCompressorArrayList = bun.cast(*zlib.ZlibCompressorArrayList, ctx.?);
