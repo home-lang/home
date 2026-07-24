@@ -337,6 +337,36 @@ pub const SocketConfig = struct {
         globalObject: *jsc.JSGlobalObject,
         is_server: bool,
     ) bun.JSError!SocketConfig {
+        // Bindgen's loose-`String` coercion currently returns null for truthy
+        // non-string values (e.g. `[]`, `new String("")`) instead of
+        // ToString-coercing them (`hostname`) or rejecting them with a type
+        // error (`unix`, whose bindgen type is a strict string). Without this
+        // pre-check those inputs fall through to the generic
+        // `Expected either "hostname" or "unix"` error in `fromGenerated`.
+        // Bun distinguishes them: a non-string `unix` is a hard type error,
+        // and a non-string `hostname` is ToString-coerced then checked for
+        // emptiness. Drop this once the bindgen loose/strict string paths land.
+        if (opts.isObject()) {
+            // A *primitive* JS string is what bindgen accepts; a boxed
+            // `StringObject` (`new String("")`) or any other value gets dropped
+            // to null, so treat only the primitive as a real string here.
+            if (try opts.get(globalObject, "unix")) |unix_val| {
+                const is_primitive_string = unix_val.isCell() and unix_val.jsType().isString();
+                if (!unix_val.isUndefinedOrNull() and !is_primitive_string) {
+                    return globalObject.throwInvalidArguments("SocketOptions.unix must be a string", .{});
+                }
+            }
+            if (try opts.get(globalObject, "hostname")) |host_val| {
+                const is_primitive_string = host_val.isCell() and host_val.jsType().isString();
+                if (!host_val.isUndefinedOrNull() and !is_primitive_string) {
+                    const s = try host_val.toBunString(globalObject);
+                    defer s.deref();
+                    if (s.isEmpty()) {
+                        return globalObject.throwInvalidArguments("Expected a non-empty \"hostname\"", .{});
+                    }
+                }
+            }
+        }
         var generated: jsc.generated.SocketConfig = try .fromJS(globalObject, opts);
         defer generated.deinit();
         return .fromGenerated(vm, globalObject, &generated, is_server);
