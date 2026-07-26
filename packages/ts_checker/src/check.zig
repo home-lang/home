@@ -3901,6 +3901,11 @@ pub const Checker = struct {
     /// never overflow the native stack even if evaluation produced a
     /// self-referential structural shape.
     type_name_depth: u32 = 0,
+    /// Types currently being expanded as signature parameter/return
+    /// constituents. Recursive array aliases can point their numeric
+    /// index back to the same type, so diagnostic rendering needs the
+    /// same cycle protection as ordinary type-name allocation.
+    signature_constituent_display_in_progress: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Value names whose declared annotation is currently being lowered.
     /// `typeof` queries can legally participate in recursive value
     /// shapes; this guard keeps mutual annotations from re-entering
@@ -4851,6 +4856,7 @@ pub const Checker = struct {
         self.circ_ctx_stack.deinit(self.gpa);
         self.object_index_compat_checked.deinit(self.gpa);
         self.object_property_merge_checked.deinit(self.gpa);
+        self.signature_constituent_display_in_progress.deinit(self.gpa);
         self.resolving_value_types.deinit(self.gpa);
         self.namespace_value_in_progress.deinit(self.gpa);
         self.namespace_value_object_types.deinit(self.gpa);
@@ -122192,6 +122198,12 @@ pub const Checker = struct {
     }
 
     fn allocSignatureConstituentDisplayName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        const entry = try self.signature_constituent_display_in_progress.getOrPut(self.gpa, t);
+        if (entry.found_existing) {
+            return self.alias_display_names.get(t) orelse "...";
+        }
+        defer _ = self.signature_constituent_display_in_progress.remove(t);
+
         if (self.typeIsArrayLikeObject(t) and self.actualTupleLength(t) == null) {
             const elem_t = self.interner.objectNumberIndex(t);
             const elem_name = (try self.allocSignatureConstituentDisplayName(elem_t)) orelse return null;
@@ -200164,6 +200176,25 @@ test "checker: alpha-equivalent generic signatures relate through nested unions"
     b.base.checker.strict_flags.strict_null_checks = true;
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+}
+
+test "checker: signature diagnostics terminate on recursive array aliases" {
+    const s = try newSetup(
+        \\type Array<T> = { [n: number]: T };
+        \\type Recursive = Array<Recursive>;
+        \\declare let target: (x: number[]) => void;
+        \\declare let source: (x: Recursive) => void;
+        \\target = source;
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_function_types = true;
+    try s.checker.checkSourceFile(s.root);
+    const recursive_name = try s.sint.intern("Recursive");
+    const recursive_t = s.checker.type_names.get(recursive_name) orelse return error.TestUnexpectedResult;
+    const display = (try s.checker.allocSignatureConstituentDisplayName(recursive_t)) orelse
+        return error.TestUnexpectedResult;
+    try T.expect(display.len > 0);
+    try T.expectEqual(@as(usize, 0), s.checker.signature_constituent_display_in_progress.count());
 }
 
 test "checker: direct generic signature relations use contextual instantiation and minimum arity" {
