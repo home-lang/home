@@ -71866,13 +71866,16 @@ pub const Checker = struct {
         if (self.classProtectedStructuralMismatch(target_t, source_t)) return false;
         if (try self.abstractConstructorAssignedToNonAbstract(source_t, target_t)) return false;
         if ((try self.constructorVisibilityMismatch(source_t, target_t)) != null) return false;
+        if (try self.nestedSignatureKindMismatch(source_t, target_t, 0)) return false;
         if (!try self.signaturePredicatesAssignable(source_t, target_t)) return false;
         if (!try self.signatureThisTypesAssignable(source_t, target_t)) return false;
         if (self.bareSignatureMissingRequiredObjectMembers(source_t, target_t)) return false;
         if (!try self.objectMemberSignatureThisTypesAssignable(source_t, target_t)) return false;
+        if (try self.overloadedSignatureSetRelation(source_t, target_t)) |ok| return ok;
         if (try self.callbackMethodMemberSignatureMismatch(source_t, target_t)) return false;
         if (try self.callbackMethodMembersAssignable(source_t, target_t)) return true;
-        if (try self.genericSignaturesAlphaAssignable(source_t, target_t)) return true;
+        if (try self.contextualGenericSignatureRelation(source_t, target_t)) |ok| return ok;
+        if (try self.genericSignaturesAlphaRelation(source_t, target_t)) |ok| return ok;
         if (try self.genericSignatureRelationMismatch(source_t, target_t)) return false;
         if (try self.nonNullableIntersectionSourceAssignableToTarget(source_t, target_t)) return true;
         if (self.typeParameterSourceAssignableToMappedTarget(source_t, target_t)) return true;
@@ -71911,6 +71914,65 @@ pub const Checker = struct {
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn nestedSignatureKindMismatch(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+        depth: u8,
+    ) CheckError!bool {
+        if (depth >= 16 or
+            source_t >= self.interner.pool.typeCount() or
+            target_t >= self.interner.pool.typeCount())
+        {
+            return false;
+        }
+        if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return false;
+        if (self.signatureIsConstruct(source_t) != self.signatureIsConstruct(target_t)) return true;
+
+        const source_params = self.interner.signatureParams(source_t);
+        const target_params = self.interner.signatureParams(target_t);
+        const shared_len = @min(source_params.len, target_params.len);
+        for (0..shared_len) |i| {
+            if (try self.callableShapeKindMismatch(source_params[i], target_params[i], depth + 1)) return true;
+        }
+        const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+        const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+        return try self.callableShapeKindMismatch(source_ret, target_ret, depth + 1);
+    }
+
+    fn callableShapeKindMismatch(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+        depth: u8,
+    ) CheckError!bool {
+        if (depth >= 16) return false;
+        if (self.interner.isSignature(source_t) and self.interner.isSignature(target_t)) {
+            return try self.nestedSignatureKindMismatch(source_t, target_t, depth);
+        }
+
+        var source_calls: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer source_calls.deinit(self.gpa);
+        var target_calls: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer target_calls.deinit(self.gpa);
+        try self.collectCallSignatures(source_t, &source_calls);
+        try self.collectCallSignatures(target_t, &target_calls);
+
+        var source_constructs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer source_constructs.deinit(self.gpa);
+        var target_constructs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer target_constructs.deinit(self.gpa);
+        try self.collectConstructSignatures(source_t, &source_constructs);
+        try self.collectConstructSignatures(target_t, &target_constructs);
+
+        const source_callable = source_calls.items.len > 0 or source_constructs.items.len > 0;
+        const target_callable = target_calls.items.len > 0 or target_constructs.items.len > 0;
+        if (!source_callable or !target_callable) return false;
+        const shares_call_kind = source_calls.items.len > 0 and target_calls.items.len > 0;
+        const shares_construct_kind = source_constructs.items.len > 0 and target_constructs.items.len > 0;
+        return !shares_call_kind and !shares_construct_kind;
     }
 
     fn keyofSourceAssignableToPropertyKeyTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
@@ -72243,9 +72305,17 @@ pub const Checker = struct {
         if (source_t == target_t) return false;
         const source_is_tp = source_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source_t).is_type_parameter and
+            !self.interner.pool.flagsOf(source_t).is_union and
+            !self.interner.pool.flagsOf(source_t).is_intersection and
+            !self.interner.pool.flagsOf(source_t).is_object_type and
+            !self.interner.pool.flagsOf(source_t).is_signature and
             !self.isThisTypeParameter(source_t);
         const target_is_tp = target_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_t).is_type_parameter and
+            !self.interner.pool.flagsOf(target_t).is_union and
+            !self.interner.pool.flagsOf(target_t).is_intersection and
+            !self.interner.pool.flagsOf(target_t).is_object_type and
+            !self.interner.pool.flagsOf(target_t).is_signature and
             !self.isThisTypeParameter(target_t);
         if (target_is_tp and self.intersectionSourceContainsTypeParameter(source_t, target_t)) return false;
         if (source_is_tp and target_is_tp) {
@@ -72260,11 +72330,7 @@ pub const Checker = struct {
             }
             return true;
         }
-        if (target_is_tp) {
-            const constraint = self.typeParameterConstraint(target_t) orelse return true;
-            if (constraint == target_t) return true;
-            if (self.engine.isAssignableTo(source_t, constraint) catch false) return true;
-        }
+        if (target_is_tp) return true;
         if (source_is_tp and !target_is_tp) {
             const constraint = self.typeParameterConstraint(source_t) orelse return true;
             if (constraint == source_t) return true;
@@ -72293,6 +72359,17 @@ pub const Checker = struct {
         if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
         const source_flags = self.interner.pool.flagsOf(source_t);
         const target_flags = self.interner.pool.flagsOf(target_t);
+        if (source_flags.is_signature and target_flags.is_signature) {
+            const source_params = self.interner.signatureParams(source_t);
+            const target_params = self.interner.signatureParams(target_t);
+            const shared_len = @min(source_params.len, target_params.len);
+            for (0..shared_len) |i| {
+                if (try self.genericObjectTypeParameterMismatch(target_params[i], source_params[i], depth + 1)) return true;
+            }
+            const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+            const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+            return try self.genericObjectTypeParameterMismatch(source_ret, target_ret, depth + 1);
+        }
         if (!source_flags.is_object_type or !target_flags.is_object_type) return false;
         for (self.interner.objectMembers(target_t)) |tm| {
             const sm_t = self.interner.objectMember(source_t, tm.name) orelse continue;
@@ -72304,14 +72381,14 @@ pub const Checker = struct {
     fn genericSignatureRelationMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return false;
-        const source_type_params = self.generic_signature_params.get(source_t) orelse return false;
-        const target_type_params = self.generic_signature_params.get(target_t) orelse return false;
-        if (source_type_params.len == 0 and target_type_params.len == 0) return false;
+        const source_type_param_count = if (self.generic_signature_params.get(source_t)) |params| params.len else 0;
+        const target_type_param_count = if (self.generic_signature_params.get(target_t)) |params| params.len else 0;
+        if (source_type_param_count == 0 and target_type_param_count == 0) return false;
 
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
         const compare_len = @min(source_params.len, target_params.len);
-        if (source_type_params.len <= target_type_params.len) {
+        if (source_type_param_count <= target_type_param_count) {
             var i: usize = 0;
             while (i < compare_len) : (i += 1) {
                 if (try self.genericObjectTypeParameterMismatch(target_params[i], source_params[i], 0)) return true;
@@ -116345,6 +116422,47 @@ pub const Checker = struct {
         return true;
     }
 
+    fn inferFromCallableSignatureMembers(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        if (!self.interner.isSignature(param_t) or self.interner.isSignature(arg_t)) return false;
+
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        if (self.signatureIsConstruct(param_t)) {
+            try self.collectConstructSignatures(arg_t, &signatures);
+        } else {
+            try self.collectCallSignatures(arg_t, &signatures);
+        }
+        if (signatures.items.len == 0) return false;
+
+        var return_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer return_subs.deinit(self.gpa);
+        if (self.interner.signatureReturn(param_t)) |param_return| {
+            for (signatures.items) |signature| {
+                const member_return = self.interner.signatureReturn(signature) orelse continue;
+                var member_return_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer member_return_subs.deinit(self.gpa);
+                try self.inferFromPair(param_return, member_return, &member_return_subs);
+                try self.mergeContextualSignatureInferences(&return_subs, &member_return_subs);
+            }
+            try self.mergeContextualSignatureInferences(subs, &return_subs);
+        }
+
+        for (signatures.items) |signature| {
+            var member_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer member_subs.deinit(self.gpa);
+            try self.inferFromPair(param_t, signature, &member_subs);
+            var return_it = return_subs.iterator();
+            while (return_it.next()) |entry| _ = member_subs.remove(entry.key_ptr.*);
+            try self.mergeContextualSignatureInferences(subs, &member_subs);
+        }
+        return true;
+    }
+
     fn inferFromPair(
         self: *Checker,
         param_t: TypeId,
@@ -116361,6 +116479,7 @@ pub const Checker = struct {
         const p_payload = pool.payloadOf(param_t);
         const a_flags = pool.flagsOf(arg_t);
         if (try self.inferFromSameGenericInstantiation(param_t, arg_t, subs)) return;
+        if (try self.inferFromCallableSignatureMembers(param_t, arg_t, subs)) return;
         // Union/intersection flags are aggregate ORs of their members,
         // so a union containing `T` also has `is_type_parameter`.
         // Dispatch compound containers before the bare type-parameter
@@ -125217,14 +125336,24 @@ pub const Checker = struct {
             const source_c = source_constraint orelse continue;
             const target_c_raw = target_constraint orelse return false;
             const target_c = try self.substituteType(target_c_raw, &subs);
-            if (try self.genericObjectTypeParameterMismatch(target_c, source_c, 0)) return false;
-            if (!(self.engine.isAssignableTo(target_c, source_c) catch false)) return false;
+            const constraint_mismatch = try self.genericObjectTypeParameterMismatch(target_c, source_c, 0);
+            const constraint_assignable = self.engine.isAssignableTo(target_c, source_c) catch false;
+            const recursive_constraint_relation =
+                self.containsFreeTypeParameter(target_c) and
+                self.containsFreeTypeParameter(source_c);
+            // Recursive constraints are related under an optimistic cycle
+            // assumption. A structural walk can hit the cycle before the
+            // engine installs its pending marker; preserve the directional
+            // result by accepting that one recursive, non-assignable shape.
+            if (constraint_mismatch and !(recursive_constraint_relation and !constraint_assignable)) return false;
+            if (!constraint_assignable and !recursive_constraint_relation) return false;
         }
 
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
-        if (source_params.len > target_params.len) return false;
-        for (source_params, 0..) |source_param, i| {
+        if (self.signatureMinRequiredArgs(source_t, source_params) > target_params.len) return false;
+        const shared_len = @min(source_params.len, target_params.len);
+        for (source_params[0..shared_len], 0..) |source_param, i| {
             const target_param = try self.substituteType(target_params[i], &subs);
             if (!(self.engine.isAssignableTo(target_param, source_param) catch false)) return false;
         }
@@ -125243,6 +125372,159 @@ pub const Checker = struct {
         const indexed_ok = try self.genericIndexedAccessReturnsMatch(source_ret, target_ret);
         const narrowed_union_ok = try self.genericNarrowedReturnUnionMatches(source_ret, target_ret);
         return ret_ok or indexed_ok or narrowed_union_ok;
+    }
+
+    fn genericSignaturesAlphaRelation(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!?bool {
+        if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return null;
+        const source_params = self.generic_signature_params.get(source_t) orelse return null;
+        const target_params = self.generic_signature_params.get(target_t) orelse return null;
+        if (source_params.len == 0 or source_params.len != target_params.len) return null;
+        return try self.genericSignaturesAlphaAssignable(source_t, target_t);
+    }
+
+    /// TypeScript contextually instantiates a generic source signature when
+    /// relating it to a non-generic target. The inference machinery already
+    /// exists for callbacks and heritage checks; direct assignments must use
+    /// the same path before falling through to the structural type engine.
+    fn contextualGenericSignatureRelation(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!?bool {
+        if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return null;
+        _ = self.generic_signature_params.get(source_t) orelse return null;
+        if (self.generic_signature_params.get(target_t) != null) return null;
+        if (self.signatureIsConstruct(source_t) != self.signatureIsConstruct(target_t)) return false;
+        const instantiated = try self.instantiateGenericSignatureInContextOf(source_t, target_t);
+        return try self.contextualFunctionSignatureAssignable(instantiated, target_t);
+    }
+
+    fn overloadedSignatureSetRelation(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!?bool {
+        var source_calls: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer source_calls.deinit(self.gpa);
+        var target_calls: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer target_calls.deinit(self.gpa);
+        try self.collectCallSignatures(source_t, &source_calls);
+        try self.collectCallSignatures(target_t, &target_calls);
+
+        var source_constructs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer source_constructs.deinit(self.gpa);
+        var target_constructs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer target_constructs.deinit(self.gpa);
+        try self.collectConstructSignatures(source_t, &source_constructs);
+        try self.collectConstructSignatures(target_t, &target_constructs);
+
+        var handled = false;
+        if (target_calls.items.len > 0 and
+            (source_calls.items.len > 1 or target_calls.items.len > 1) and
+            (self.signatureSetHasGeneric(source_calls.items) or self.signatureSetHasGeneric(target_calls.items)))
+        {
+            handled = true;
+            if (!try self.signatureSetCoversTargets(source_calls.items, target_calls.items)) return false;
+        }
+        if (target_constructs.items.len > 0 and
+            (source_constructs.items.len > 1 or target_constructs.items.len > 1) and
+            (self.signatureSetHasGeneric(source_constructs.items) or self.signatureSetHasGeneric(target_constructs.items)))
+        {
+            handled = true;
+            if (!try self.signatureSetCoversTargets(source_constructs.items, target_constructs.items)) return false;
+        }
+        return if (handled) true else null;
+    }
+
+    fn signatureSetHasGeneric(self: *Checker, signatures: []const TypeId) bool {
+        for (signatures) |signature| {
+            if (self.generic_signature_params.get(signature) != null) return true;
+        }
+        return false;
+    }
+
+    fn signatureSetCoversTargets(
+        self: *Checker,
+        source_sigs: []const TypeId,
+        target_sigs: []const TypeId,
+    ) CheckError!bool {
+        if (source_sigs.len == 0) return false;
+        for (target_sigs) |target_sig| {
+            var matched = false;
+            for (source_sigs) |source_sig| {
+                var relation_source = source_sig;
+                var relation_target = target_sig;
+                if (self.generic_signature_params.get(source_sig) != null and
+                    self.generic_signature_params.get(target_sig) == null)
+                {
+                    relation_source = try self.instantiateGenericSignatureInContextOf(source_sig, target_sig);
+                } else if (self.generic_signature_params.get(target_sig) != null and
+                    self.generic_signature_params.get(source_sig) == null)
+                {
+                    relation_target = try self.instantiateGenericSignatureInContextOf(target_sig, source_sig);
+                }
+                if (try self.checkerAssignableTo(relation_source, relation_target)) {
+                    matched = true;
+                    break;
+                }
+                if (try self.genericSourceSatisfiesOverloadedTarget(source_sig, target_sig)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched and try self.overloadedSourceSatisfiesGenericTarget(source_sigs, target_sig)) {
+                matched = true;
+            }
+            if (!matched) return false;
+        }
+        return true;
+    }
+
+    fn genericSourceSatisfiesOverloadedTarget(
+        self: *Checker,
+        source_sig: TypeId,
+        target_sig: TypeId,
+    ) CheckError!bool {
+        _ = self.generic_signature_params.get(source_sig) orelse return false;
+        if (self.generic_signature_params.get(target_sig) != null) return false;
+        const instantiated_source = try self.instantiateGenericSignatureInContextOf(source_sig, target_sig);
+        if (try self.nestedSignatureKindMismatch(instantiated_source, target_sig, 0)) return false;
+        const source_params = self.interner.signatureParams(instantiated_source);
+        const target_params = self.interner.signatureParams(target_sig);
+        if (self.signatureMinRequiredArgs(instantiated_source, source_params) > target_params.len) return false;
+        const shared_len = @min(source_params.len, target_params.len);
+        for (0..shared_len) |i| {
+            if (try self.callableShapeKindMismatch(source_params[i], target_params[i], 0)) return false;
+        }
+        const source_ret = self.interner.signatureReturn(instantiated_source) orelse types.Primitive.void_t;
+        const target_ret = self.interner.signatureReturn(target_sig) orelse types.Primitive.void_t;
+        return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+    }
+
+    fn overloadedSourceSatisfiesGenericTarget(
+        self: *Checker,
+        source_sigs: []const TypeId,
+        target_sig: TypeId,
+    ) CheckError!bool {
+        if (source_sigs.len <= 1) return false;
+        _ = self.generic_signature_params.get(target_sig) orelse return false;
+        const target_params = self.interner.signatureParams(target_sig);
+
+        for (source_sigs) |source_sig| {
+            if (self.signatureIsConstruct(source_sig) != self.signatureIsConstruct(target_sig)) return false;
+            const instantiated_target = try self.instantiateGenericSignatureInContextOf(target_sig, source_sig);
+            if (try self.nestedSignatureKindMismatch(source_sig, instantiated_target, 0)) return false;
+            const source_params = self.interner.signatureParams(source_sig);
+            if (self.signatureMinRequiredArgs(source_sig, source_params) > target_params.len) return false;
+            const shared_len = @min(source_params.len, self.interner.signatureParams(instantiated_target).len);
+            for (0..shared_len) |i| {
+                if (try self.callableShapeKindMismatch(
+                    source_params[i],
+                    self.interner.signatureParams(instantiated_target)[i],
+                    0,
+                )) return false;
+            }
+            const source_ret = self.interner.signatureReturn(source_sig) orelse types.Primitive.void_t;
+            const target_ret = self.interner.signatureReturn(instantiated_target) orelse types.Primitive.void_t;
+            if (!try self.contextualFunctionReturnAssignable(source_ret, target_ret)) return false;
+        }
+        return true;
     }
 
     fn genericNarrowedReturnUnionMatches(self: *Checker, source_ret: TypeId, target_ret: TypeId) CheckError!bool {
@@ -125835,6 +126117,22 @@ pub const Checker = struct {
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
         if (self.rest_signatures.contains(target_t) and target_params.len > 0) {
+            if (self.rest_signatures.contains(source_t) and source_params.len > 0) {
+                const source_fixed = source_params.len - 1;
+                const target_fixed = target_params.len - 1;
+                const shared_fixed = @min(source_fixed, target_fixed);
+                for (0..shared_fixed) |i| {
+                    if (!try self.contextualTargetParamAssignableToSource(target_params[i], source_params[i])) return false;
+                }
+                if (source_fixed > target_fixed) return false;
+                if (!try self.contextualTargetParamAssignableToSource(
+                    target_params[target_params.len - 1],
+                    source_params[source_params.len - 1],
+                )) return false;
+                const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+                const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+                return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+            }
             if (!try self.contextualRestSignatureParamsAssignable(source_params, target_params)) return false;
             const source_ret_rest = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
             const target_ret_rest = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
