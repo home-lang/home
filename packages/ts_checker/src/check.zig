@@ -78659,10 +78659,165 @@ pub const Checker = struct {
 
     fn visibleAnnotatedSignatureIdentifierDiagnosticName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
         const source_display = (try self.visibleAnnotatedSignatureIdentifierTypeName(node)) orelse return null;
-        if (self.interner.isSignature(t) and self.signatureThisParam(t) != null) {
-            if (try self.allocCallableSignatureName(t)) |signature_display| return signature_display;
+        const params: []const TypeId = if (self.interner.isSignature(t)) self.interner.signatureParams(t) else &.{};
+        const has_strict_optional_params = self.strict_flags.strict_null_checks and
+            params.len > 0 and
+            self.signatureMinRequiredArgs(t, params) < params.len and
+            !self.rest_signatures.contains(t);
+        if (self.interner.isSignature(t) and
+            (self.signatureThisParam(t) != null or
+                self.signatureUsesArrayAliasConstituent(t) or
+                has_strict_optional_params or
+                std.mem.indexOf(u8, source_display, "Array<") != null))
+        {
+            if (std.mem.indexOf(u8, source_display, "Array<") != null) {
+                return try self.normalizeSignatureArrayAnnotationText(t, source_display);
+            }
+            if (try self.allocCallableSignatureNamePreservingGenericPrefix(t, source_display)) |signature_display| return signature_display;
         }
         return source_display;
+    }
+
+    fn normalizeSignatureArrayAnnotationText(
+        self: *Checker,
+        sig: TypeId,
+        text: []const u8,
+    ) CheckError![]const u8 {
+        var transform_start: usize = 0;
+        if (self.generic_signature_params.get(sig) != null) {
+            if (std.mem.indexOfScalar(u8, text, '<')) |generic_open| {
+                var depth: usize = 0;
+                for (text[generic_open..], generic_open..) |ch, i| {
+                    if (ch == '<') {
+                        depth += 1;
+                    } else if (ch == '>') {
+                        if (depth == 0) break;
+                        depth -= 1;
+                        if (depth == 0) {
+                            transform_start = i + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try out.appendSlice(arena, text[0..transform_start]);
+        try self.appendSignatureArrayAnnotationText(&out, arena, text[transform_start..]);
+        return out.items;
+    }
+
+    fn appendSignatureArrayAnnotationText(
+        self: *Checker,
+        out: *std.ArrayListUnmanaged(u8),
+        arena: std.mem.Allocator,
+        text: []const u8,
+    ) CheckError!void {
+        var i: usize = 0;
+        while (i < text.len) {
+            const array_prefix = std.mem.startsWith(u8, text[i..], "Array<") and
+                (i == 0 or !isJsDocIdentChar(text[i - 1]));
+            if (!array_prefix) {
+                try out.append(arena, text[i]);
+                i += 1;
+                continue;
+            }
+            const inner_start = i + "Array<".len;
+            var depth: usize = 1;
+            var close = inner_start;
+            while (close < text.len and depth > 0) : (close += 1) {
+                if (text[close] == '<') {
+                    depth += 1;
+                } else if (text[close] == '>') {
+                    depth -= 1;
+                }
+            }
+            if (depth != 0) {
+                try out.append(arena, text[i]);
+                i += 1;
+                continue;
+            }
+            const inner_end = close - 1;
+            const inner = text[inner_start..inner_end];
+            const wrap = std.mem.indexOfScalar(u8, inner, '|') != null or
+                std.mem.indexOf(u8, inner, "=>") != null;
+            if (wrap) try out.append(arena, '(');
+            try self.appendSignatureArrayAnnotationText(out, arena, inner);
+            if (wrap) try out.append(arena, ')');
+            try out.appendSlice(arena, "[]");
+            i = close;
+        }
+    }
+
+    fn allocCallableSignatureNamePreservingGenericPrefix(
+        self: *Checker,
+        sig: TypeId,
+        source_display: []const u8,
+    ) CheckError!?[]const u8 {
+        const rendered = (try self.allocCallableSignatureName(sig)) orelse return null;
+        if (self.generic_signature_params.get(sig) == null) return rendered;
+        const generic_open = std.mem.indexOfScalar(u8, source_display, '<') orelse return rendered;
+        var depth: usize = 0;
+        var generic_close: ?usize = null;
+        for (source_display[generic_open..], generic_open..) |ch, i| {
+            if (ch == '<') {
+                depth += 1;
+            } else if (ch == '>') {
+                if (depth == 0) return rendered;
+                depth -= 1;
+                if (depth == 0) {
+                    generic_close = i;
+                    break;
+                }
+            }
+        }
+        const close = generic_close orelse return rendered;
+        const rendered_params = std.mem.indexOfScalar(u8, rendered, '(') orelse return rendered;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s}{s}",
+            .{ source_display[0 .. close + 1], rendered[rendered_params..] },
+        );
+    }
+
+    fn signatureUsesArrayAliasConstituent(self: *Checker, sig: TypeId) bool {
+        if (!self.interner.isSignature(sig)) return false;
+        for (self.interner.signatureParams(sig)) |param_t| {
+            if (self.typeUsesArrayAliasDisplay(param_t, 0)) return true;
+        }
+        const ret_t = self.interner.signatureReturn(sig) orelse return false;
+        return self.typeUsesArrayAliasDisplay(ret_t, 0);
+    }
+
+    fn typeUsesArrayAliasDisplay(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth > 6 or t >= self.interner.pool.typeCount()) return false;
+        if (self.alias_display_names.get(t)) |display| {
+            if (std.mem.indexOf(u8, display, "Array<") != null and
+                std.mem.endsWith(u8, display, ">") and
+                self.interner.objectNumberIndex(t) != types.Primitive.none)
+            {
+                return true;
+            }
+        }
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeUsesArrayAliasDisplay(member, depth + 1)) return true;
+            }
+        } else if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeUsesArrayAliasDisplay(member, depth + 1)) return true;
+            }
+        } else if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |param_t| {
+                if (self.typeUsesArrayAliasDisplay(param_t, depth + 1)) return true;
+            }
+            if (self.interner.signatureReturn(t)) |ret_t| {
+                if (self.typeUsesArrayAliasDisplay(ret_t, depth + 1)) return true;
+            }
+        }
+        return false;
     }
 
     fn functionExpressionAssignmentDiagnosticName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
@@ -122032,8 +122187,44 @@ pub const Checker = struct {
             return try self.allocTypePredicateName(sig, pred);
         }
         const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
-        return (try self.allocSimpleTypeName(ret)) orelse
+        return (try self.allocSignatureConstituentDisplayName(ret)) orelse
             (try self.allocObjectTypeShape(ret));
+    }
+
+    fn allocSignatureConstituentDisplayName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (self.typeIsArrayLikeObject(t) and self.actualTupleLength(t) == null) {
+            const elem_t = self.interner.objectNumberIndex(t);
+            const elem_name = (try self.allocSignatureConstituentDisplayName(elem_t)) orelse return null;
+            const wrap = std.mem.indexOfScalar(u8, elem_name, '|') != null or
+                std.mem.indexOf(u8, elem_name, "=>") != null;
+            return if (wrap)
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "{s}({s})[]",
+                    .{ if (self.typeIsReadonlyArrayLike(t)) "readonly " else "", elem_name },
+                )
+            else
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "{s}{s}[]",
+                    .{ if (self.typeIsReadonlyArrayLike(t)) "readonly " else "", elem_name },
+                );
+        }
+        if (self.alias_display_names.get(t)) |display| {
+            if (std.mem.indexOf(u8, display, "Array<") != null and std.mem.endsWith(u8, display, ">")) {
+                const elem_t = self.interner.objectNumberIndex(t);
+                if (elem_t != types.Primitive.none) {
+                    const elem_name = (try self.allocSignatureConstituentDisplayName(elem_t)) orelse return null;
+                    const wrap = std.mem.indexOfScalar(u8, elem_name, '|') != null or
+                        std.mem.indexOf(u8, elem_name, "=>") != null;
+                    return if (wrap)
+                        try std.fmt.allocPrint(self.diag_arena.allocator(), "({s})[]", .{elem_name})
+                    else
+                        try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}[]", .{elem_name});
+                }
+            }
+        }
+        return try self.allocSimpleTypeName(t);
     }
 
     /// Home records optional parameters as `T | undefined` in both modes.
@@ -122062,7 +122253,7 @@ pub const Checker = struct {
             if (i > 0) try buf.appendSlice(arena, ", ");
             try buf.appendSlice(arena, try self.signatureParamNameAt(sig, i));
             try buf.appendSlice(arena, ": ");
-            const pn = (try self.allocSimpleTypeName(p)) orelse
+            const pn = (try self.allocSignatureConstituentDisplayName(p)) orelse
                 (try self.allocObjectTypeShape(p)) orelse return null;
             try buf.appendSlice(arena, pn);
         }
@@ -122123,7 +122314,7 @@ pub const Checker = struct {
             if (is_optional and !std.mem.endsWith(u8, name_text, "?")) try buf.append(arena, '?');
             try buf.appendSlice(arena, ": ");
             const display_p = try self.signatureParameterDisplayType(p, is_optional);
-            const pn = (try self.allocSimpleTypeName(display_p)) orelse
+            const pn = (try self.allocSignatureConstituentDisplayName(display_p)) orelse
                 (try self.allocObjectTypeShape(display_p)) orelse return null;
             if (is_optional and is_rest and !self.typeNameIncludesUndefined(display_p, pn)) {
                 try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "{s} | undefined", .{pn}));
@@ -133317,6 +133508,7 @@ pub const Checker = struct {
             (try self.singleLiteralAliasAssignmentName(value_node, source)) orelse
             (try self.templateLiteralAssignmentSourceName(source)) orelse
             (try self.visibleSimpleAliasAnnotationNameForIdentifier(value_node, source)) orelse
+            (try self.overloadedSignatureObjectAssignmentName(value_node, source)) orelse
             (try self.visibleGenericAssignmentAnnotationName(value_node, source)) orelse
             (try self.assignmentIdentifierObjectUnionAnnotationName(value_node, source)) orelse
             (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(value_node, source)) orelse
@@ -133327,7 +133519,7 @@ pub const Checker = struct {
             (if (target_annotation_is_nonnullable) try self.allocAssignmentDiagnosticTypeName(related_source) else null) orelse
             (try self.allocObjectTypeShape(source)) orelse
             return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
-        const target_name = (try self.assignmentExpressionPredicateTypeName(target_node, target)) orelse
+        const target_name_raw = (try self.assignmentExpressionPredicateTypeName(target_node, target)) orelse
             self.keyofAnnotationNameForIdentifier(target_node) orelse
             (try self.indexedAccessAnnotationNameForIdentifier(target_node)) orelse
             (try self.nullableAnnotationDiagnosticNameForIdentifier(target_node, false)) orelse
@@ -133336,10 +133528,17 @@ pub const Checker = struct {
             (try self.assignmentIdentifierObjectUnionAnnotationName(target_node, target)) orelse
             (try self.visibleMixedCompoundAnnotationNameForIdentifier(target_node)) orelse
             (try self.visibleSimpleAliasAnnotationNameForIdentifier(target_node, target)) orelse
+            (try self.overloadedSignatureObjectAssignmentName(target_node, target)) orelse
             (try self.visibleGenericAssignmentAnnotationName(target_node, target)) orelse
+            (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, target)) orelse
             (try self.allocAssignmentDiagnosticTypeName(target)) orelse
             (try self.allocObjectTypeShape(target)) orelse
             return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
+        const target_name = if (self.identifierAnnotationHasOverloadedSignatures(target_node) and
+            std.mem.indexOfScalar(u8, target_name_raw, '\n') != null)
+            try self.compactOverloadedSignatureDiagnosticName(target_name_raw)
+        else
+            target_name_raw;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Type '{s}' is not assignable to type '{s}'.",
@@ -133362,6 +133561,116 @@ pub const Checker = struct {
             .related = related,
         });
         try self.attachDidYouMeanCallOrConstructRelated(value_node, related_source, target);
+    }
+
+    fn identifierAnnotationHasOverloadedSignatures(self: *Checker, node: NodeId) bool {
+        const text = self.visibleAnnotatedIdentifierTypeText(node) orelse return false;
+        if (std.mem.indexOfScalar(u8, text, '{') == null) return false;
+        var signature_count: usize = 0;
+        var start: usize = 0;
+        while (std.mem.indexOf(u8, text[start..], "new (")) |offset| {
+            signature_count += 1;
+            start += offset + "new (".len;
+        }
+        if (signature_count > 1) return true;
+        signature_count = 0;
+        start = 0;
+        while (std.mem.indexOf(u8, text[start..], "):")) |offset| {
+            signature_count += 1;
+            start += offset + "):".len;
+        }
+        return signature_count > 1;
+    }
+
+    fn compactOverloadedSignatureDiagnosticName(self: *Checker, text: []const u8) CheckError![]const u8 {
+        const compact = try self.compactDiagnosticWhitespace(text);
+        if (!self.strict_flags.strict_null_checks or std.mem.indexOf(u8, compact, "?:") == null) return compact;
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        var i: usize = 0;
+        while (i < compact.len) {
+            const optional_at = std.mem.indexOf(u8, compact[i..], "?:") orelse {
+                try out.appendSlice(arena, compact[i..]);
+                break;
+            };
+            const marker = i + optional_at;
+            try out.appendSlice(arena, compact[i .. marker + 2]);
+            var type_start = marker + 2;
+            while (type_start < compact.len and compact[type_start] == ' ') : (type_start += 1) {}
+            try out.appendSlice(arena, compact[marker + 2 .. type_start]);
+
+            var angle_depth: usize = 0;
+            var paren_depth: usize = 0;
+            var bracket_depth: usize = 0;
+            var brace_depth: usize = 0;
+            var type_end = type_start;
+            while (type_end < compact.len) : (type_end += 1) {
+                const ch = compact[type_end];
+                switch (ch) {
+                    '<' => angle_depth += 1,
+                    '>' => if (angle_depth > 0) {
+                        angle_depth -= 1;
+                    },
+                    '(' => paren_depth += 1,
+                    ')' => {
+                        if (angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) break;
+                        if (paren_depth > 0) paren_depth -= 1;
+                    },
+                    '[' => bracket_depth += 1,
+                    ']' => if (bracket_depth > 0) {
+                        bracket_depth -= 1;
+                    },
+                    '{' => brace_depth += 1,
+                    '}' => if (brace_depth > 0) {
+                        brace_depth -= 1;
+                    },
+                    ',' => if (angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) break,
+                    else => {},
+                }
+            }
+            const raw_type = compact[type_start..type_end];
+            const type_text = std.mem.trimEnd(u8, raw_type, " ");
+            try out.appendSlice(arena, type_text);
+            if (!std.mem.eql(u8, type_text, "any") and
+                !std.mem.eql(u8, type_text, "unknown") and
+                std.mem.indexOf(u8, type_text, "undefined") == null)
+            {
+                try out.appendSlice(arena, " | undefined");
+            }
+            try out.appendSlice(arena, raw_type[type_text.len..]);
+            i = type_end;
+        }
+        return out.items;
+    }
+
+    fn compactDiagnosticWhitespace(self: *Checker, text: []const u8) CheckError![]const u8 {
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        var pending_space = false;
+        for (std.mem.trim(u8, text, " \t\r\n")) |ch| {
+            if (std.ascii.isWhitespace(ch)) {
+                pending_space = out.items.len > 0;
+                continue;
+            }
+            if (pending_space) try out.append(arena, ' ');
+            try out.append(arena, ch);
+            pending_space = false;
+        }
+        return out.items;
+    }
+
+    fn overloadedSignatureObjectAssignmentName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
+        const display_t = self.visibleAnnotatedIdentifierType(node) orelse t;
+        if (display_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(display_t).is_object_type) return null;
+        var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer call_sigs.deinit(self.gpa);
+        try self.collectCallSignatures(display_t, &call_sigs);
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(display_t, &construct_sigs);
+        if (call_sigs.items.len + construct_sigs.items.len <= 1) return null;
+        return try self.allocObjectTypeShape(display_t);
     }
 
     fn assignmentValueExpressionDisplayName(self: *Checker, value_node: NodeId, source: TypeId, target: TypeId) CheckError!?[]const u8 {
@@ -133792,6 +134101,7 @@ pub const Checker = struct {
         target: TypeId,
     ) CheckError!bool {
         if (!self.interner.isSignature(source) or !self.interner.isSignature(target)) return false;
+        if (self.generic_signature_params.get(source) != null or self.generic_signature_params.get(target) != null) return false;
         if (self.alias_display_names.contains(source) or self.alias_display_names.contains(target)) return false;
         const source_params = self.interner.signatureParams(source);
         const target_params = self.interner.signatureParams(target);
@@ -133857,9 +134167,9 @@ pub const Checker = struct {
             const display_p = try self.signatureParameterDisplayType(p, is_optional);
             const param_name = if (self.interner.isSignature(display_p))
                 (try self.allocCallableSignatureNameExpandingSignatureParams(display_p)) orelse
-                    (try self.allocSimpleTypeName(display_p)) orelse "any"
+                    (try self.allocSignatureConstituentDisplayName(display_p)) orelse "any"
             else
-                (try self.allocSimpleTypeName(display_p)) orelse "any";
+                (try self.allocSignatureConstituentDisplayName(display_p)) orelse "any";
             try sig_buf.appendSlice(arena, param_name);
             wrote_param = true;
         }
@@ -133869,9 +134179,9 @@ pub const Checker = struct {
             (try self.allocSignatureReturnDisplayName(t)) orelse "any"
         else if (self.interner.isSignature(ret))
             (try self.allocCallableSignatureNameExpandingSignatureParams(ret)) orelse
-                (try self.allocSimpleTypeName(ret)) orelse "any"
+                (try self.allocSignatureConstituentDisplayName(ret)) orelse "any"
         else
-            (try self.allocSimpleTypeName(ret)) orelse "any";
+            (try self.allocSignatureConstituentDisplayName(ret)) orelse "any";
         try sig_buf.appendSlice(arena, ret_name);
         return sig_buf.items;
     }
@@ -133970,6 +134280,14 @@ pub const Checker = struct {
     }
 
     fn visibleGenericAssignmentAnnotationName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
+        if (self.interner.isSignature(t)) {
+            if (self.visibleAnnotatedIdentifierTypeText(node)) |text| {
+                if (std.mem.indexOf(u8, text, "Array<") != null) {
+                    const normalized = try self.normalizedTypeAnnotationText(text);
+                    return try self.normalizeSignatureArrayAnnotationText(t, normalized);
+                }
+            }
+        }
         if (t < self.interner.pool.typeCount()) {
             const flags = self.interner.pool.flagsOf(t);
             // Intrinsic string mappings are evaluated types, not generic
@@ -134651,7 +134969,7 @@ pub const Checker = struct {
                 const reduced = try self.subtractUndefined(p);
                 if (reduced != types.Primitive.never) display_p = reduced;
             }
-            if (try self.allocSimpleTypeName(display_p)) |pn| {
+            if (try self.allocSignatureConstituentDisplayName(display_p)) |pn| {
                 try sig_buf.appendSlice(arena, pn);
             } else {
                 try sig_buf.appendSlice(arena, "any");
@@ -199846,6 +200164,116 @@ test "checker: alpha-equivalent generic signatures relate through nested unions"
     b.base.checker.strict_flags.strict_null_checks = true;
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+}
+
+test "checker: direct generic signature relations use contextual instantiation and minimum arity" {
+    const s = try newSetup(
+        \\declare let concreteCall: (x: number) => number[];
+        \\declare let genericCall: <T>(x: T) => T[];
+        \\concreteCall = genericCall;
+        \\genericCall = concreteCall;
+        \\declare let concreteConstruct: new (x: number) => number[];
+        \\declare let genericConstruct: new <T>(x: T) => T[];
+        \\concreteConstruct = genericConstruct;
+        \\genericConstruct = concreteConstruct;
+        \\declare let zero: <T>() => T;
+        \\declare let optional: <T>(x?: T) => T;
+        \\declare let required: <T>(x: T) => T;
+        \\zero = optional;
+        \\optional = zero;
+        \\zero = required;
+        \\required = zero;
+        \\declare class Base { foo: string }
+        \\declare class Derived extends Base { bar: string }
+        \\declare let concreteNested: (x: (arg: Base) => Derived) => (r: Base) => Derived;
+        \\declare let genericNested: <T extends Base, U extends Derived>(x: (arg: T) => U) => (r: T) => U;
+        \\concreteNested = genericNested;
+        \\genericNested = concreteNested;
+        \\declare let concreteRest: (...x: Derived[]) => Derived;
+        \\declare let genericRest: <T extends Derived>(...x: T[]) => T;
+        \\concreteRest = genericRest;
+        \\genericRest = concreteRest;
+        \\declare let overloadedCall: { (x: number): number[]; (x: string): string[] };
+        \\overloadedCall = genericCall;
+        \\genericCall = overloadedCall;
+        \\declare let overloadedConstruct: { new (x: number): number[]; new (x: string): string[] };
+        \\overloadedConstruct = genericConstruct;
+        \\genericConstruct = overloadedConstruct;
+        \\declare let concreteArray: (x: Array<Base>) => Array<Derived>;
+        \\declare let constrainedArray: <T extends Array<Base>>(x: Array<Base>) => T;
+        \\constrainedArray = concreteArray;
+        \\declare let genericStrings: <T>(x: T) => string[];
+        \\declare let genericValues: <T>(x: T) => T[];
+        \\genericStrings = genericValues;
+        \\genericValues = genericStrings;
+        \\declare let concreteNestedPair: (x: (arg: Base) => Derived, y: (arg2: Base) => Derived) => (r: Base) => Derived;
+        \\declare let badGenericNestedPair: <T extends Base, U extends Derived>(x: (arg: T) => U, y: (arg2: { foo: number }) => U) => (r: T) => U;
+        \\concreteNestedPair = badGenericNestedPair;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 9), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.types_of_parameters_incompatible));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '(x: Base[]) => Derived[]' is not assignable to type '<T extends Array<Base>>(x: Base[]) => T'.",
+    ));
+    var saw_nested_decl_names = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.indexOf(u8, d.message, "x: (arg: Base)") != null and
+            std.mem.indexOf(u8, d.message, "y: (arg2: Base)") != null)
+        {
+            saw_nested_decl_names = true;
+        }
+    }
+    try T.expect(saw_nested_decl_names);
+}
+
+test "checker: nested overloads preserve call and construct signature kinds" {
+    const s = try newSetup(
+        \\declare let nestedCallOverloads: { (x: { (a: number): number; (a?: number): number }): number[]; (x: { (a: boolean): boolean; (a?: boolean): boolean }): boolean[] };
+        \\declare let genericNestedCall: <T>(x: (a: T) => T) => T[];
+        \\nestedCallOverloads = genericNestedCall;
+        \\genericNestedCall = nestedCallOverloads;
+        \\declare let nestedConstructOverloads: {
+        \\  new (x: {
+        \\    new (a: number): number;
+        \\    new (a?: number): number;
+        \\  }): number[];
+        \\  new (x: {
+        \\    new (a: boolean): boolean;
+        \\    new (a?: boolean): boolean;
+        \\  }): boolean[];
+        \\};
+        \\declare let genericNestedCallbackConstruct: new <T>(x: (a: T) => T) => T[];
+        \\nestedConstructOverloads = genericNestedCallbackConstruct;
+        \\genericNestedCallbackConstruct = nestedConstructOverloads;
+        \\declare let genericNestedConstructor: new <T>(x: new (a: T) => T) => T[];
+        \\nestedConstructOverloads = genericNestedConstructor;
+        \\genericNestedConstructor = nestedConstructOverloads;
+        \\declare let heterogeneousCalls: { (x: { (a: number): number; (a: string): string }): any[]; (x: { (a: boolean): boolean; (a: Date): Date }): any[] };
+        \\heterogeneousCalls = genericNestedCall;
+        \\genericNestedCall = heterogeneousCalls;
+        \\declare let heterogeneousConstructs: { new (x: { new (a: number): number; new (a: string): string }): any[]; new (x: { new (a: boolean): boolean; new (a: Date): Date }): any[] };
+        \\heterogeneousConstructs = genericNestedConstructor;
+        \\genericNestedConstructor = heterogeneousConstructs;
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_null_checks = true;
+    s.checker.strict_flags.strict_function_types = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    var saw_optional_undefined = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        try T.expect(std.mem.indexOfScalar(u8, diagnostic.message, '\n') == null);
+        if (std.mem.indexOf(u8, diagnostic.message, "a?: number | undefined") != null) {
+            saw_optional_undefined = true;
+        }
+    }
+    try T.expect(saw_optional_undefined);
 }
 
 test "checker: generic void signatures do not satisfy type parameter returns" {
