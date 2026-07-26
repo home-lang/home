@@ -9021,9 +9021,9 @@ pub const Parser = struct {
                 // Mirrors tsgo's `isBindingIdentifier`: contextual and
                 // strict-mode-reserved words follow `with`, the final ES
                 // reserved word, in both token enums.
-                const raw = @backingInt(kind);
-                return raw >= @backingInt(TokenKind.kw_yield) and
-                    raw <= @backingInt(TokenKind.kw_accessor);
+                const raw = @intFromEnum(kind);
+                return raw >= @intFromEnum(TokenKind.kw_yield) and
+                    raw <= @intFromEnum(TokenKind.kw_accessor);
             },
         };
     }
@@ -18500,9 +18500,9 @@ pub const Parser = struct {
     /// upstream's `reservedNamesInAliases.ts` baseline.
     fn isReservedTypeAliasName(name: []const u8) bool {
         const reserved = [_][]const u8{
-            "any",       "unknown", "never",     "object",  "string",
-            "number",    "bigint",  "symbol",    "boolean", "void",
-            "undefined", "null",    "intrinsic",
+            "any",    "unknown",   "never",  "object",  "string",
+            "number", "bigint",    "symbol", "boolean", "void",
+            "null",   "undefined",
         };
         for (reserved) |r| {
             if (std.mem.eql(u8, r, name)) return true;
@@ -31437,6 +31437,16 @@ test "parser: TS2207 stays clean for a plain export type" {
         _ = s.parser.parseSourceFile() catch {};
         try T.expectEqual(@as(u32, 0), countDiag(s, 2207));
     }
+}
+
+test "parser: intrinsic remains a legal type alias name" {
+    var s = try newTestSetup(
+        \\type intrinsic = string;
+        \\function f() { type intrinsic = number; }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 2457));
 }
 
 test "parser: regex atom escape reports undetermined character escape" {

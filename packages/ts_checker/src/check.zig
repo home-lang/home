@@ -24284,16 +24284,6 @@ pub const Checker = struct {
         return self.widenForInference(arg_t);
     }
 
-    fn iifeParameterHasNoCallArgument(self: *Checker, fn_node: NodeId, param_index: usize) bool {
-        const parent = self.hir.parentOf(fn_node);
-        if (parent == hir_mod.none_node_id) return false;
-        const parent_kind = self.hir.kindOf(parent);
-        if (parent_kind != .call_expr and parent_kind != .new_expr) return false;
-        const call = hir_mod.callOf(self.hir, parent);
-        if (call.callee != fn_node) return false;
-        return param_index >= hir_mod.callArgs(self.hir, parent).len;
-    }
-
     fn satisfiesProvidesContextualType(self: *Checker, satisfies_node: NodeId, fn_node: NodeId) bool {
         if (self.hir.kindOf(satisfies_node) != .satisfies_expr) return false;
         const a = hir_mod.asExpressionOf(self.hir, satisfies_node);
@@ -27856,7 +27846,6 @@ pub const Checker = struct {
             }
             try param_types.append(self.gpa, signature_t);
             try param_omittable.append(self.gpa, pp.flags.is_rest or
-                (!has_anno and self.iifeParameterHasNoCallArgument(node, param_index)) or
                 (!has_anno and
                     !has_jsdoc_param_type and
                     jsdoc_context_param_t == null and
@@ -56750,12 +56739,28 @@ pub const Checker = struct {
     /// dedicated `intrinsic` token, so it surfaces as a qualifier-free,
     /// argument-free `type_ref` named `intrinsic`. Used by the TS2795
     /// misuse check.
-    fn typeNodeIsIntrinsicKeyword(self: *Checker, type_node: NodeId) bool {
+    fn typeNodeIsIntrinsicReference(self: *Checker, type_node: NodeId) bool {
         if (type_node == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(type_node) != .type_ref) return false;
         const tr = hir_mod.typeRefOf(self.hir, type_node);
         if (tr.qualifier_len != 0 or tr.args_len != 0) return false;
         return std.mem.eql(u8, self.string_interner.get(tr.name), "intrinsic");
+    }
+
+    fn typeAliasBodyIsBareIntrinsic(self: *Checker, alias_node: NodeId, type_node: NodeId) bool {
+        if (!self.typeNodeIsIntrinsicReference(type_node)) return false;
+
+        const src = self.source orelse return true;
+        const alias_span = self.hir.spanOf(alias_node);
+        const type_span = self.hir.spanOf(type_node);
+        if (alias_span.end > src.len or type_span.start < alias_span.start or type_span.start > alias_span.end) return true;
+        const prefix = src[alias_span.start..type_span.start];
+        const equal_rel = std.mem.lastIndexOfScalar(u8, prefix, '=') orelse return true;
+        var body = std.mem.trim(u8, src[alias_span.start + equal_rel + 1 .. alias_span.end], " \t\r\n");
+        if (body.len > 0 and body[body.len - 1] == ';') {
+            body = std.mem.trim(u8, body[0 .. body.len - 1], " \t\r\n");
+        }
+        return std.mem.eql(u8, body, "intrinsic");
     }
 
     /// The single-parameter compiler-provided intrinsic type aliases that
@@ -56792,8 +56797,9 @@ pub const Checker = struct {
         // `BuiltinIteratorReturn` (no type parameters) or one of the
         // single-parameter string-mapping/NoInfer intrinsics
         // (`Uppercase`/`Lowercase`/`Capitalize`/`Uncapitalize`/`NoInfer`).
-        if (self.typeNodeIsIntrinsicKeyword(ta.aliased)) {
-            const ta_type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        const ta_type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        const body_is_bare_intrinsic = self.typeAliasBodyIsBareIntrinsic(node, ta.aliased);
+        if (body_is_bare_intrinsic) {
             const alias_name: []const u8 = if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier)
                 self.string_interner.get(hir_mod.identifierOf(self.hir, ta.name).name)
             else
@@ -56803,8 +56809,15 @@ pub const Checker = struct {
             if (!valid) {
                 try self.report(ta.aliased, TsCodes.intrinsic_keyword_misuse, "The 'intrinsic' keyword can only be used to declare compiler provided intrinsic types.");
             }
+        } else if (self.typeNodeIsIntrinsicReference(ta.aliased)) {
+            const intrinsic_name = hir_mod.typeRefOf(self.hir, ta.aliased).name;
+            if (!self.typeParamNameMatches(intrinsic_name, ta_type_params) and
+                self.findTypeAliasDeclInScope(ta.aliased, intrinsic_name) == null)
+            {
+                try self.report(ta.aliased, TsCodes.cannot_find_name, "Cannot find name 'intrinsic'.");
+            }
         }
-        const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        const type_params = ta_type_params;
         // TS2637 — variance annotations (`in`/`out`) on a type alias's type
         // parameters are only meaningful when the alias's declared type is an
         // anonymous object / function / constructor / mapped type. tsc keys
@@ -93534,6 +93547,37 @@ pub const Checker = struct {
         }
     }
 
+    fn orderedIntersectionTypeNode(self: *Checker, type_node: NodeId, depth: usize) ?NodeId {
+        if (type_node == hir_mod.none_node_id or depth > 8) return null;
+        if (self.hir.kindOf(type_node) == .intersection_type) return type_node;
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const tr = hir_mod.typeRefOf(self.hir, type_node);
+        if (tr.qualifier_len != 0 or tr.args_len != 0) return null;
+        const alias_decl = self.findTypeAliasDeclInScope(type_node, tr.name) orelse return null;
+        const alias = hir_mod.typeAliasOf(self.hir, alias_decl);
+        return self.orderedIntersectionTypeNode(alias.aliased, depth + 1);
+    }
+
+    fn collectOrderedIntersectionCallSignatures(
+        self: *Checker,
+        type_node: NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!bool {
+        const intersection_node = self.orderedIntersectionTypeNode(type_node, 0) orelse return false;
+        for (hir_mod.intersectionTypeMembers(self.hir, intersection_node)) |member_node| {
+            if (self.orderedIntersectionTypeNode(member_node, 0)) |nested| {
+                for (hir_mod.intersectionTypeMembers(self.hir, nested)) |nested_member| {
+                    const member_t = try self.lowererLowerWithTypeParams(nested_member);
+                    try self.collectCallSignatures(member_t, out);
+                }
+            } else {
+                const member_t = try self.lowererLowerWithTypeParams(member_node);
+                try self.collectCallSignatures(member_t, out);
+            }
+        }
+        return out.items.len > 1;
+    }
+
     fn collectNamedMemberSignatures(
         self: *Checker,
         t: TypeId,
@@ -93680,6 +93724,7 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         var sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer sigs.deinit(self.gpa);
+        var preserve_intersection_order = false;
         if (self.hir.kindOf(callee) != .member_access and
             callee_t < self.interner.pool.typeCount() and
             self.unionMembersAreDirectCallSignatures(callee_t))
@@ -93694,7 +93739,13 @@ pub const Checker = struct {
                 try self.checkExpression(m.object);
             try self.collectNamedMemberSignatures(receiver_t, m.name, &sigs);
         } else {
-            try self.collectCallSignatures(callee_t, &sigs);
+            if (self.visibleAnnotatedIdentifierTypeNode(callee)) |type_node| {
+                preserve_intersection_order = try self.collectOrderedIntersectionCallSignatures(type_node, &sigs);
+            }
+            if (!preserve_intersection_order) {
+                sigs.clearRetainingCapacity();
+                try self.collectCallSignatures(callee_t, &sigs);
+            }
         }
         if (sigs.items.len == 0) return null;
         if (sigs.items.len == 1) {
@@ -93734,6 +93785,10 @@ pub const Checker = struct {
         for (sigs.items) |sig| {
             const effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
             if (!try self.signatureAccepts(call_node, effective_sig, args, arg_types)) continue;
+            if (preserve_intersection_order) {
+                selected_applicable = effective_sig;
+                break;
+            }
             if (selected_applicable == types.Primitive.none or
                 self.signatureMoreSpecificForArgs(effective_sig, selected_applicable, args, arg_types))
             {
@@ -137633,10 +137688,45 @@ pub const Checker = struct {
     }
 
     fn signatureMinRequiredArgsForCall(self: *Checker, sig: TypeId, params: []const TypeId, call_node: NodeId) usize {
+        if (self.directIifeMinRequiredArgs(call_node)) |min_required| {
+            return @min(min_required, params.len);
+        }
         var min_required = self.signatureMinRequiredArgs(sig, params);
         if (!self.nonStrictJsCallAllowsTrailingNullishOmissions(call_node)) return min_required;
         while (min_required > 0 and self.parameterTypeCanBeOmitted(params[min_required - 1])) {
             min_required -= 1;
+        }
+        return min_required;
+    }
+
+    /// Direct IIFEs contextually type omitted unannotated parameters as
+    /// `undefined`, making only those trailing slots omittable. Derive that
+    /// minimum from the call syntax: signature TypeIds are structurally
+    /// interned, so storing this declaration-specific fact on the TypeId can
+    /// be overwritten by an unrelated `(any) => any` declaration.
+    fn directIifeMinRequiredArgs(self: *Checker, call_node: NodeId) ?usize {
+        const call_kind = self.hir.kindOf(call_node);
+        if (call_kind != .call_expr and call_kind != .new_expr) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        const callee_kind = self.hir.kindOf(call.callee);
+        if (callee_kind != .fn_decl and callee_kind != .fn_expr and callee_kind != .arrow_fn) return null;
+
+        const args = hir_mod.callArgs(self.hir, call_node);
+        const params = hir_mod.fnParams(self.hir, call.callee);
+        var min_required: usize = 0;
+        var value_index: usize = 0;
+        for (params) |param| {
+            if (self.hir.kindOf(param) != .parameter) continue;
+            if (self.isThisParameter(param)) continue;
+            const p = hir_mod.parameterOf(self.hir, param);
+            const omitted_untyped = value_index >= args.len and
+                p.type_annotation == hir_mod.none_node_id;
+            const omittable = p.flags.is_optional or
+                p.flags.is_rest or
+                p.default_value != hir_mod.none_node_id or
+                omitted_untyped;
+            if (!omittable) min_required = value_index + 1;
+            value_index += 1;
         }
         return min_required;
     }
@@ -193998,6 +194088,17 @@ test "checker: TS2795 stays silent for a normal type alias body" {
     }
 }
 
+test "checker: TS2795 requires a syntactically bare intrinsic body" {
+    const s = try newSetup(
+        \\type Wrapped = (intrinsic);
+        \\type Shadow<intrinsic> = (intrinsic);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.intrinsic_keyword_misuse));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
 test "checker: TS2737 fires for a BigInt literal under target es5" {
     const s = try newSetup(
         \\// @target: es5
@@ -199365,14 +199466,50 @@ test "checker: TS2590 counts nested template literal union products" {
 }
 
 test "checker: direct IIFEs omit only trailing untyped parameters" {
+    {
+        const s = try newSetup("(function (x, y) {})(1);");
+        defer destroySetup(s);
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    }
+    {
+        const s = try newSetup("((x, y, z) => x)();");
+        defer destroySetup(s);
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    }
+    {
+        const s = try newSetup("((x: number, y: number) => {})(1);");
+        defer destroySetup(s);
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    }
+    {
+        const s = try newSetup(
+            \\const cachedRequired = function (x) { return x; };
+            \\(function (undefined) { return undefined; })();
+            \\cachedRequired();
+        );
+        defer destroySetup(s);
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    }
+}
+
+test "checker: intersection call overloads preserve source annotation order" {
     const s = try newSetup(
-        \\(function (x, y) {})(1);
-        \\((x, y, z) => 42)();
-        \\((x: number, y: number) => {})(1);
+        \\type StringCall = (s: string) => string;
+        \\type AnyCall = (x: any) => any;
+        \\var stringFirst: StringCall & AnyCall;
+        \\var anyFirst: AnyCall & StringCall;
+        \\var x = stringFirst("abc");
+        \\var x: string;
+        \\var y = anyFirst("abc");
+        \\var y: any;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: fixed callback satisfies an any-array rest constraint" {
