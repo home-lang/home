@@ -62312,7 +62312,9 @@ pub const Checker = struct {
                         }
                     }
                 }
-                try self.checkInvalidIndexedAccessType(ia.index, ia.object, obj, idx);
+                if (!self.indexedAccessUsesEnclosingMappedKey(ia.object, ia.index)) {
+                    try self.checkInvalidIndexedAccessType(ia.index, ia.object, obj, idx);
+                }
                 try self.checkInvalidMappedObjectIndexedAccessType(ia.object, ia.index);
                 if (try self.resolveObjectIndexedAccessType(obj, idx)) |resolved| return resolved;
                 return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
@@ -72513,6 +72515,7 @@ pub const Checker = struct {
         if (self.keyofSourceAssignableToPropertyKeyTarget(source_t, target_t)) return true;
         if (self.typeParameterSourceToIntersectionTargetResult(source_t, target_t)) |ok| return ok;
         if (try self.sameGenericFunctionArgumentAliasMismatch(source_t, target_t)) return false;
+        if (try self.recursiveHomomorphicAliasIndexerAssignable(source_t, target_t)) return true;
         if (try self.sameGenericInstantiationAssignableByVariance(source_t, target_t)) |ok| return ok;
         if (try self.variadicTupleTypeParameterAssignableTo(source_t, target_t)) |ok| return ok;
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
@@ -83854,6 +83857,7 @@ pub const Checker = struct {
                                 (try self.genericArrayConstrainedSignatureAnnotationAssignment(a.value, a.target)) or
                                 self.genericSignatureAssignmentAssignable(assignment_check_value_t, target_t) or
                                 (try self.nonNullableAnnotatedIdentifierAssignableToAnnotatedTarget(a.value, a.target)) or
+                                (try self.recursiveHomomorphicAliasIndexerAssignable(assignment_check_value_t, target_t)) or
                                 (try self.recursiveGenericUnionAliasAssignable(assignment_check_value_t, target_t)) or
                                 (try self.freshReadonlyArrayLiteralAssignableToTarget(a.value, target_t)) or
                                 (!self.readonlyArrayLikeAssignmentShouldFail(a.value, assignment_check_value_t, target_t) and blk_relation: {
@@ -85113,6 +85117,7 @@ pub const Checker = struct {
                             try self.applyInferredConditionalConstraintsFromCallArgs(param_ts, arg_types.items, &call_subs);
                             try self.applyInferredConditionalConstraintsToSubs(effective_callee_t, &call_subs);
                             effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
+                            effective_callee_t = try self.relowerSignatureObjectMembersWithInferences(effective_callee_t, &call_subs);
                         }
                     }
                     try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
@@ -91208,6 +91213,8 @@ pub const Checker = struct {
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         const n = @min(params.len, param_ts.len);
+        const effective_param_ts = try self.gpa.dupe(TypeId, param_ts[0..n]);
+        defer self.gpa.free(effective_param_ts);
         for (0..n) |i| {
             const pp = hir_mod.parameterOf(self.hir, params[i]);
             if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
@@ -91224,6 +91231,7 @@ pub const Checker = struct {
                     effective_param_t = self.unionWithUndefined(effective_param_t) catch effective_param_t;
                 }
             }
+            effective_param_ts[i] = effective_param_t;
             try self.recordNarrow(id.name, effective_param_t);
             self.hir.setType(params[i], effective_param_t);
             self.hir.setType(pp.name, effective_param_t);
@@ -91241,11 +91249,35 @@ pub const Checker = struct {
         defer self.function_body_depth -= 1;
         if (self.hir.kindOf(f.body) == .block_stmt) {
             for (hir_mod.blockStmts(self.hir, f.body)) |s| try self.checkStatement(s);
+            if (inferred_signature_out) |out| {
+                var return_expressions: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer return_expressions.deinit(self.gpa);
+                try self.collectReturnExpressions(f.body, &return_expressions);
+
+                var return_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer return_types.deinit(self.gpa);
+                for (return_expressions.items) |expression| {
+                    const expression_t = if (self.hir.typeOf(expression) != types.Primitive.none)
+                        self.hir.typeOf(expression)
+                    else
+                        try self.checkExpression(expression);
+                    try self.appendUniqueTypeId(&return_types, expression_t);
+                }
+                const return_t = switch (return_types.items.len) {
+                    0 => types.Primitive.void_t,
+                    1 => return_types.items[0],
+                    else => self.interner.internUnion(return_types.items) catch return error.OutOfMemory,
+                };
+                const inferred_sig = self.interner.internSignature(effective_param_ts, return_t, false) catch return error.OutOfMemory;
+                try self.recordSignatureParamNames(inferred_sig, params[0..n]);
+                self.hir.setType(fn_node, inferred_sig);
+                out.* = inferred_sig;
+            }
         } else {
-            const body_t = (try self.contextualFunctionBodyExpressionType(f.body, params[0..n], param_ts[0..n])) orelse
+            const body_t = (try self.contextualFunctionBodyExpressionType(f.body, params[0..n], effective_param_ts)) orelse
                 try self.checkExpression(f.body);
             if (inferred_signature_out) |out| {
-                const inferred_sig = self.interner.internSignature(param_ts[0..n], body_t, false) catch return error.OutOfMemory;
+                const inferred_sig = self.interner.internSignature(effective_param_ts, body_t, false) catch return error.OutOfMemory;
                 try self.recordSignatureParamNames(inferred_sig, params[0..n]);
                 self.hir.setType(fn_node, inferred_sig);
                 out.* = inferred_sig;
@@ -119055,6 +119087,15 @@ pub const Checker = struct {
     fn mappedTemplateIndexedAccess(self: *Checker, t: TypeId) ?MappedIndexedAccess {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
+        // Union/intersection flags aggregate their constituent flags. Walk
+        // containers before testing the leaf indexed-access flag so
+        // `T[K] | Recursive<T[K]>` is not decoded using a union payload.
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.mappedTemplateIndexedAccess(member)) |hit| return hit;
+            }
+            return null;
+        }
         if (flags.is_indexed_access) {
             const ia = self.indexedAccessPayloadOrNull(t) orelse return null;
             if (ia.object < self.interner.pool.typeCount() and
@@ -119063,12 +119104,6 @@ pub const Checker = struct {
                 self.interner.pool.flagsOf(ia.index).is_type_parameter)
             {
                 return .{ .object_tp = ia.object, .key_tp = ia.index };
-            }
-            return null;
-        }
-        if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |member| {
-                if (self.mappedTemplateIndexedAccess(member)) |hit| return hit;
             }
             return null;
         }
@@ -119357,20 +119392,323 @@ pub const Checker = struct {
             self.interner.pool.flagsOf(param_t).is_object_type and
             self.interner.pool.flagsOf(arg_t).is_object_type)
         {
-            const p_members_borrow = self.interner.objectMembers(param_t);
-            var p_members_copy: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-            defer p_members_copy.deinit(self.gpa);
-            try p_members_copy.appendSlice(self.gpa, p_members_borrow);
-            for (p_members_copy.items) |pm| {
-                const value_node = self.findObjectLiteralPropValue(arg_node, pm.name) orelse continue;
-                const am_t = self.interner.objectMember(arg_t, pm.name) orelse continue;
-                try self.inferFromArgument(pm.type, am_t, value_node, subs);
-            }
+            try self.inferFromObjectLiteralArgument(param_t, arg_t, arg_node, subs);
             return;
         }
         if (try self.inferFromConstructSignatureArgument(param_t, arg_t, subs)) return;
         try self.inferStableIndexedElementArgument(param_t, arg_t, arg_node, subs);
         try self.inferFromPair(param_t, arg_t, subs);
+    }
+
+    fn inferFromObjectLiteralArgument(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        arg_node: NodeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        var param_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer param_members.deinit(self.gpa);
+        try param_members.appendSlice(self.gpa, self.interner.objectMembers(param_t));
+
+        // Mirrors tsgo's intra-expression inference sites: members whose
+        // contextual parameter types still reference an unfixed type
+        // parameter wait until stable members have contributed candidates.
+        for (0..2) |phase| {
+            for (param_members.items) |param_member| {
+                const value_node = self.findObjectLiteralPropValue(arg_node, param_member.name) orelse continue;
+                const defer_contextual = self.contextualFunctionParametersContainFreeType(value_node, param_member.type);
+                if ((phase == 0) == defer_contextual) continue;
+
+                const substituted_param_t = self.substituteType(param_member.type, subs) catch param_member.type;
+                const has_unfixed = self.typeContainsUnfixedInferenceParameter(param_member.type, subs, 0);
+                const mapped_or_conditional = try self.signatureContainsMappedOrConditionalType(param_member.type);
+                const has_predicate = if (self.firstSignatureType(param_member.type)) |member_sig|
+                    self.signature_predicates.contains(member_sig)
+                else
+                    false;
+                const relowered_param_t = if (!has_predicate and (!has_unfixed or mapped_or_conditional))
+                    try self.relowerObjectMemberTypeWithInferences(param_member, subs)
+                else
+                    null;
+                const effective_param_t = relowered_param_t orelse substituted_param_t;
+                var source_t = self.interner.objectMember(arg_t, param_member.name) orelse
+                    if (self.hir.typeOf(value_node) != types.Primitive.none)
+                        self.hir.typeOf(value_node)
+                    else
+                        try self.checkExpression(value_node);
+                if (self.functionExpressionHasContextSensitiveParameters(value_node) and
+                    !self.signatureParametersContainFreeType(effective_param_t))
+                {
+                    if (self.firstSignatureType(effective_param_t)) |target_sig| {
+                        try self.checkFunctionWithContextualSignatureMode(value_node, target_sig, false, &source_t);
+                    }
+                }
+                try self.inferFromArgument(effective_param_t, source_t, value_node, subs);
+            }
+        }
+
+        for (hir_mod.objectLiteralProps(self.hir, arg_node)) |prop| {
+            if (self.hir.kindOf(prop) != .spread) continue;
+            const spread_expr = hir_mod.spreadOf(self.hir, prop).expression;
+            if (spread_expr == hir_mod.none_node_id or self.hir.kindOf(spread_expr) != .object_literal) continue;
+            const spread_t = if (self.hir.typeOf(spread_expr) != types.Primitive.none)
+                self.hir.typeOf(spread_expr)
+            else
+                try self.checkExpression(spread_expr);
+            if (spread_t >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(spread_t).is_object_type)
+            {
+                continue;
+            }
+            try self.inferFromObjectLiteralArgument(param_t, spread_t, spread_expr, subs);
+        }
+    }
+
+    fn signatureParametersContainFreeType(self: *Checker, t: TypeId) bool {
+        const sig = self.firstSignatureType(t) orelse return false;
+        for (self.interner.signatureParams(sig)) |param| {
+            if (self.containsFreeTypeParameter(param)) return true;
+        }
+        return false;
+    }
+
+    fn typeContainsUnfixedInferenceParameter(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+        depth: u8,
+    ) bool {
+        if (depth >= 24 or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeContainsUnfixedInferenceParameter(member, subs, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeContainsUnfixedInferenceParameter(member, subs, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_type_parameter) {
+            if (subs.contains(t)) return false;
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return true;
+            const name = self.interner.pool.type_parameter_payloads.items[payload_idx].name;
+            var it = subs.keyIterator();
+            while (it.next()) |candidate| {
+                if (candidate.* >= self.interner.pool.typeCount()) continue;
+                const candidate_flags = self.interner.pool.flagsOf(candidate.*);
+                if (!candidate_flags.is_type_parameter or
+                    candidate_flags.is_union or
+                    candidate_flags.is_intersection)
+                {
+                    continue;
+                }
+                const candidate_payload_idx = self.interner.pool.payloadOf(candidate.*);
+                if (candidate_payload_idx >= self.interner.pool.type_parameter_payloads.items.len) continue;
+                if (self.interner.pool.type_parameter_payloads.items[candidate_payload_idx].name == name) return false;
+            }
+            return true;
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |param| {
+                if (self.typeContainsUnfixedInferenceParameter(param, subs, depth + 1)) return true;
+            }
+            const return_t = self.interner.signatureReturn(t) orelse return false;
+            return self.typeContainsUnfixedInferenceParameter(return_t, subs, depth + 1);
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |member| {
+                if (self.typeContainsUnfixedInferenceParameter(member.type, subs, depth + 1)) return true;
+            }
+            const indexes = [_]TypeId{
+                self.interner.objectStringIndex(t),
+                self.interner.objectNumberIndex(t),
+                self.interner.objectSymbolIndex(t),
+            };
+            for (indexes) |index_t| {
+                if (index_t != types.Primitive.none and
+                    self.typeContainsUnfixedInferenceParameter(index_t, subs, depth + 1))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (flags.is_keyof) {
+            const operand = self.directKeyofOperand(t) orelse return false;
+            return self.typeContainsUnfixedInferenceParameter(operand, subs, depth + 1);
+        }
+        if (flags.is_indexed_access) {
+            const indexed = self.indexedAccessPayloadOrNull(t) orelse return false;
+            return self.typeContainsUnfixedInferenceParameter(indexed.object, subs, depth + 1) or
+                self.typeContainsUnfixedInferenceParameter(indexed.index, subs, depth + 1);
+        }
+        if (flags.is_mapped) {
+            const mapped = self.interner.mappedPayload(t);
+            return self.typeContainsUnfixedInferenceParameter(mapped.constraint, subs, depth + 1) or
+                self.typeContainsUnfixedInferenceParameter(mapped.template, subs, depth + 1);
+        }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            return self.typeContainsUnfixedInferenceParameter(conditional.check_type, subs, depth + 1) or
+                self.typeContainsUnfixedInferenceParameter(conditional.extends_type, subs, depth + 1) or
+                self.typeContainsUnfixedInferenceParameter(conditional.true_branch, subs, depth + 1) or
+                self.typeContainsUnfixedInferenceParameter(conditional.false_branch, subs, depth + 1);
+        }
+        return false;
+    }
+
+    fn relowerObjectMemberTypeWithInferences(
+        self: *Checker,
+        member: types.ObjectMember,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?TypeId {
+        if (member.decl_node == hir_mod.none_node_id or subs.count() == 0) return null;
+        const type_node = switch (self.hir.kindOf(member.decl_node)) {
+            .interface_member => hir_mod.interfaceMemberOf(self.hir, member.decl_node).type_node,
+            .object_property => hir_mod.objectPropertyOf(self.hir, member.decl_node).type_annotation,
+            else => return null,
+        };
+        if (type_node == hir_mod.none_node_id) return null;
+
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        var it = subs.iterator();
+        while (it.next()) |entry| {
+            const param_t = entry.key_ptr.*;
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            const flags = self.interner.pool.flagsOf(param_t);
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) continue;
+            const payload_idx = self.interner.pool.payloadOf(param_t);
+            if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) continue;
+            const payload = self.interner.pool.type_parameter_payloads.items[payload_idx];
+            try self.recordNarrow(payload.name, entry.value_ptr.*);
+        }
+        return try self.lowererLowerWithTypeParams(type_node);
+    }
+
+    fn relowerSignatureObjectMembersWithInferences(
+        self: *Checker,
+        sig: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        if (!self.interner.isSignature(sig) or subs.count() == 0) return sig;
+        const old_params = self.interner.signatureParams(sig);
+        var params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer params.deinit(self.gpa);
+        var changed = false;
+        for (old_params) |param| {
+            const refreshed = try self.relowerObjectTypeMembersWithInferences(param, subs);
+            if (refreshed != param) changed = true;
+            try params.append(self.gpa, refreshed);
+        }
+        if (!changed) return sig;
+
+        const return_t = self.interner.signatureReturn(sig) orelse types.Primitive.void_t;
+        const payload_idx = self.interner.pool.payloadOf(sig);
+        if (payload_idx >= self.interner.pool.signature_payloads.items.len) return sig;
+        const payload = self.interner.pool.signature_payloads.items[payload_idx];
+        const this_t = self.signatureThisParam(sig);
+        const refreshed_sig = if (this_t) |receiver|
+            self.interner.internSignatureWithThisType(
+                params.items,
+                return_t,
+                payload.is_construct,
+                payload.is_abstract_construct,
+                receiver,
+            ) catch return error.OutOfMemory
+        else
+            self.interner.internSignatureWithAbstract(
+                params.items,
+                return_t,
+                payload.is_construct,
+                payload.is_abstract_construct,
+            ) catch return error.OutOfMemory;
+        try self.copySignatureParamNames(refreshed_sig, sig);
+        try self.copySignatureNullishArrayDefaults(refreshed_sig, sig);
+        if (self.rest_signatures.contains(sig)) try self.rest_signatures.put(self.gpa, refreshed_sig, {});
+        if (self.signature_min_args.get(sig)) |min_required| {
+            try self.signature_min_args.put(self.gpa, refreshed_sig, min_required);
+        }
+        if (this_t) |receiver| try self.signature_this_params.put(self.gpa, refreshed_sig, receiver);
+        return refreshed_sig;
+    }
+
+    fn relowerObjectTypeMembersWithInferences(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        if (t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return t;
+
+        const old_members = self.interner.objectMembers(t);
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var changed = false;
+        for (old_members) |member| {
+            var refreshed = member;
+            if (try self.signatureContainsMappedOrConditionalType(member.type)) {
+                if (try self.relowerObjectMemberTypeWithInferences(member, subs)) |member_t| {
+                    refreshed.type = member_t;
+                    if (member_t != member.type) changed = true;
+                }
+            }
+            try members.append(self.gpa, refreshed);
+        }
+        if (!changed) return t;
+
+        const string_idx = self.interner.objectStringIndex(t);
+        const number_idx = self.interner.objectNumberIndex(t);
+        const symbol_idx = self.interner.objectSymbolIndex(t);
+        const refreshed = if (string_idx == types.Primitive.none and
+            number_idx == types.Primitive.none and
+            symbol_idx == types.Primitive.none)
+            self.interner.internObjectType(members.items) catch return error.OutOfMemory
+        else
+            self.interner.internObjectTypeWithIndexAndSymbol(
+                members.items,
+                string_idx,
+                number_idx,
+                symbol_idx,
+            ) catch return error.OutOfMemory;
+        if (self.alias_display_names.get(t)) |display| {
+            try self.alias_display_names.put(self.gpa, refreshed, display);
+        }
+        if (self.alias_type_args.get(t)) |args| {
+            try self.alias_type_args.put(self.gpa, refreshed, args);
+        }
+        return refreshed;
+    }
+
+    fn signatureContainsMappedOrConditionalType(self: *Checker, t: TypeId) CheckError!bool {
+        const sig = self.firstSignatureType(t) orelse return false;
+        for (self.interner.signatureParams(sig)) |param| {
+            if (try self.typeContainsMappedType(param)) return true;
+            if (try self.typeContainsConditionalType(param)) return true;
+        }
+        const return_t = self.interner.signatureReturn(sig) orelse return false;
+        return (try self.typeContainsMappedType(return_t)) or
+            (try self.typeContainsConditionalType(return_t));
+    }
+
+    fn contextualFunctionParametersContainFreeType(
+        self: *Checker,
+        value_node: NodeId,
+        target_t: TypeId,
+    ) bool {
+        if (!self.functionExpressionHasContextSensitiveParameters(value_node)) return false;
+        const target_sig = self.firstSignatureType(target_t) orelse return false;
+        for (self.interner.signatureParams(target_sig)) |param| {
+            if (self.containsFreeTypeParameter(param)) return true;
+        }
+        return false;
     }
 
     fn inferFromArrayLiteralToTrailingMappedVariadic(
@@ -121411,6 +121749,14 @@ pub const Checker = struct {
                     stop_after_arg_mismatch = true;
                     continue;
                 }
+                if (self.hir.kindOf(args[i]) == .object_literal) {
+                    if (self.objectTypeFromMaybeOptional(param_t)) |object_target| {
+                        if (try self.tryReportContextualFunctionPropertyReturnMismatch(args[i], object_target)) {
+                            stop_after_arg_mismatch = true;
+                            continue;
+                        }
+                    }
+                }
                 if (self.hir.kindOf(args[i]) == .object_literal and
                     try self.tryReportObjectLiteralMappedPropertyMismatch(args[i], param_t))
                 {
@@ -121545,7 +121891,8 @@ pub const Checker = struct {
                     } else param_t;
                     const generic_display_param_t = try self.genericCallDiagnosticDisplayType(call_node, raw_display_param_t);
                     const completed_display_param_t = try self.genericCallUnboundDiagnosticType(sig, generic_display_param_t);
-                    const contextual_display_param_t = try self.contextualFunctionExpressionDiagnosticTargetSignature(args[i], completed_display_param_t);
+                    const reduced_display_param_t = try self.reduceNeverIntersectionsForAssignability(completed_display_param_t);
+                    const contextual_display_param_t = try self.contextualFunctionExpressionDiagnosticTargetSignature(args[i], reduced_display_param_t);
                     const display_param_t = self.identifierFunctionReferenceDiagnosticTarget(
                         args[i],
                         try self.templateLiteralDiagnosticTarget(contextual_display_param_t),
@@ -122933,6 +123280,10 @@ pub const Checker = struct {
     }
 
     fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
+        const reduced_param_t = try self.reduceNeverIntersectionsForAssignability(param_t);
+        if (reduced_param_t != param_t) {
+            return self.formatArgumentNotAssignable(arg_t, reduced_param_t, position);
+        }
         // Mirror tsc's diagnostic widening: when the source side is a
         // literal type (e.g. `1`) but the target is its base primitive
         // (`number`), upstream renders the source as the base type so
@@ -125982,6 +126333,34 @@ pub const Checker = struct {
         if (try self.reportTupleIndexedAccessTypeRange(index_node, object_t, index_t)) return;
         if (!self.indexTypeHasKeysMissingFromObject(object_t, index_t)) return;
         try self.reportOnce(index_node, TsCodes.type_cannot_be_used_to_index_type, "Type cannot be used to index type.");
+    }
+
+    fn indexedAccessUsesEnclosingMappedKey(
+        self: *Checker,
+        object_node: NodeId,
+        index_node: NodeId,
+    ) bool {
+        const index_name = self.bareTypeNodeName(index_node) orelse return false;
+        var cur = self.hir.parentOf(index_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .mapped_type) continue;
+            const mapped = hir_mod.mappedTypeOf(self.hir, cur);
+            if (mapped.type_param == hir_mod.none_node_id or
+                self.hir.kindOf(mapped.type_param) != .type_parameter)
+            {
+                return false;
+            }
+            const type_param = hir_mod.typeParameterOf(self.hir, mapped.type_param);
+            if (type_param.name != index_name or
+                mapped.constraint == hir_mod.none_node_id or
+                self.hir.kindOf(mapped.constraint) != .keyof_type)
+            {
+                return false;
+            }
+            const keyof = hir_mod.keyofTypeOf(self.hir, mapped.constraint);
+            return self.typeNodesReferenceSameBareName(object_node, keyof.operand);
+        }
+        return false;
     }
 
     fn reportEcmaPrivateStringIndexedAccess(
@@ -130940,6 +131319,7 @@ pub const Checker = struct {
         {
             return true;
         }
+        if (try self.tryReportContextualFunctionPropertyReturnMismatch(init_node, resolved_target)) return true;
         if (try self.typeContainsMappedType(resolved_target)) return true;
         if (try self.typeContainsConditionalType(resolved_target)) return true;
         var emitted = false;
@@ -131014,6 +131394,45 @@ pub const Checker = struct {
             emitted = true;
         }
         return emitted;
+    }
+
+    fn tryReportContextualFunctionPropertyReturnMismatch(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            const prop_node = (try self.findObjectLiteralPropNodeForTargetMember(init_node, target_member.name)) orelse continue;
+            const property = hir_mod.objectPropertyOf(self.hir, prop_node);
+            if (property.value == hir_mod.none_node_id or
+                !self.isContextualFunctionExpressionLike(property.value))
+            {
+                continue;
+            }
+            const target_sig = self.firstSignatureType(target_member.type) orelse continue;
+            const raw_return_t = self.interner.signatureReturn(target_sig) orelse continue;
+            if (raw_return_t == types.Primitive.void_t or
+                raw_return_t == types.Primitive.any or
+                raw_return_t == types.Primitive.unknown)
+            {
+                continue;
+            }
+            const return_t = (try self.reduceDisplayedAliasInstance(raw_return_t)) orelse raw_return_t;
+            const source_sig = self.firstSignatureType(self.hir.typeOf(property.value)) orelse continue;
+            const source_return_t = self.interner.signatureReturn(source_sig) orelse continue;
+            if (try self.checkerAssignableTo(source_return_t, return_t)) continue;
+
+            const anchor = if (property.key != hir_mod.none_node_id) property.key else property.value;
+            try self.reportTypeNotAssignable(
+                anchor,
+                source_sig,
+                target_sig,
+                "Type is not assignable to property type.",
+            );
+            try self.attachExpectedTypeFromPropertyRelated(target_t, target_member);
+            return true;
+        }
+        return false;
     }
 
     fn typeHasAliasDisplayPrefix(self: *Checker, t: TypeId, prefix: []const u8) bool {
@@ -134961,6 +135380,93 @@ pub const Checker = struct {
         }
         return std.mem.indexOfScalar(u8, source_name, '<') == null and
             (source_info.unresolved_recursive_indexer or target_info.unresolved_recursive_indexer);
+    }
+
+    fn recursiveHomomorphicAliasIndexerAssignable(
+        self: *Checker,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!bool {
+        const source_display = self.alias_display_names.get(source) orelse return false;
+        const target_display = self.alias_display_names.get(target) orelse return false;
+        const source_base = genericAliasBaseName(source_display);
+        const target_base = genericAliasBaseName(target_display);
+        if (!std.mem.eql(u8, source_base, target_base)) return false;
+
+        const source_args = self.alias_type_args.get(source) orelse return false;
+        const target_args = self.alias_type_args.get(target) orelse return false;
+        if (source_args.len != 1 or target_args.len != 1) return false;
+        if (!self.containsFreeTypeParameter(source_args[0])) return false;
+        if (target_args[0] >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(target_args[0]).is_object_type or
+            self.interner.objectStringIndex(target_args[0]) == types.Primitive.none)
+        {
+            return false;
+        }
+
+        const alias_name = self.string_interner.intern(source_base) catch return error.OutOfMemory;
+        const info = self.generic_aliases.get(alias_name) orelse return false;
+        if (info.params.len != 1) return false;
+        return self.aliasBodyHasRecursiveHomomorphicTemplate(info.body, info.params[0], source_base, 0);
+    }
+
+    fn aliasBodyHasRecursiveHomomorphicTemplate(
+        self: *Checker,
+        t: TypeId,
+        source_param: TypeId,
+        alias_base: []const u8,
+        depth: u8,
+    ) CheckError!bool {
+        if (depth >= 8 or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (try self.aliasBodyHasRecursiveHomomorphicTemplate(member, source_param, alias_base, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (try self.aliasBodyHasRecursiveHomomorphicTemplate(member, source_param, alias_base, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_mapped) return false;
+        const mapped = self.interner.mappedPayload(t);
+        if ((self.directKeyofOperand(mapped.constraint) orelse return false) != source_param) return false;
+        const indexed = self.mappedTemplateIndexedAccess(mapped.template) orelse return false;
+        if (indexed.object_tp != source_param) return false;
+        if (mapped.template >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(mapped.template).is_union)
+        {
+            return false;
+        }
+        return self.typeContainsAliasDisplayBase(mapped.template, alias_base, 0);
+    }
+
+    fn typeContainsAliasDisplayBase(
+        self: *Checker,
+        t: TypeId,
+        alias_base: []const u8,
+        depth: u8,
+    ) bool {
+        if (depth >= 8 or t >= self.interner.pool.typeCount()) return false;
+        if (self.alias_display_names.get(t)) |display| {
+            if (std.mem.eql(u8, genericAliasBaseName(display), alias_base)) return true;
+        }
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeContainsAliasDisplayBase(member, alias_base, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeContainsAliasDisplayBase(member, alias_base, depth + 1)) return true;
+            }
+        }
+        return false;
     }
 
     const RecursiveGenericUnionAliasInfo = struct {
@@ -203082,6 +203588,98 @@ test "checker: scalar candidates precede contextual callback inference" {
         TsCodes.argument_type_mismatch,
         "Argument of type '(a: number) => string' is not assignable to parameter of type '(a: number) => 1'.",
     ));
+}
+
+test "checker: union inference accepts homomorphic recursion and renders impossible intersections" {
+    const b = try newBoundSetup(
+        \\declare function f4<T>(x: string & T): T;
+        \\f4(42);
+        \\const containsPromises: unique symbol = Symbol();
+        \\type DeepPromised<T> =
+        \\  { [containsPromises]?: true } &
+        \\  { [K in keyof T]: T[K] | DeepPromised<T[K]> | Promise<DeepPromised<T[K]>> };
+        \\async function fun<T>(value: DeepPromised<T>) {
+        \\  const indexed: DeepPromised<{ [name: string]: {} | null | undefined }> = value;
+        \\}
+        \\type Deep<T> = { [K in keyof T]: T[K] | Deep<T[K]> };
+        \\declare function baz<T>(dp: Deep<T>): T;
+        \\declare let xx: { a: string | undefined };
+        \\baz(xx);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .no_implicit_any = true,
+        .strict_function_types = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '42' is not assignable to parameter of type 'never'.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_cannot_be_used_to_index_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+}
+
+test "checker: intra-expression inference fixes contextual object members and spreads" {
+    const b = try newBoundSetup(
+        \\class Wrapper<T = any> { value?: T; }
+        \\type WrappedMap = Record<string, Wrapper>;
+        \\type Unwrap<D extends WrappedMap> = {
+        \\  [K in keyof D]: D[K] extends Wrapper<infer T> ? T : never;
+        \\};
+        \\type MappingComponent<I extends WrappedMap, O extends WrappedMap> = {
+        \\  setup(): { inputs: I; outputs: O };
+        \\  map?: (inputs: Unwrap<I>) => Unwrap<O>;
+        \\};
+        \\declare function createMappingComponent<I extends WrappedMap, O extends WrappedMap>(
+        \\  def: MappingComponent<I, O>
+        \\): void;
+        \\createMappingComponent({
+        \\  setup() {
+        \\    return {
+        \\      inputs: { num: new Wrapper<number>(), str: new Wrapper<string>() },
+        \\      outputs: { bool: new Wrapper<boolean>(), str: new Wrapper<string>() }
+        \\    };
+        \\  },
+        \\  map(inputs) {
+        \\    return {
+        \\      bool: inputs.nonexistent,
+        \\      str: inputs.num,
+        \\    };
+        \\  }
+        \\});
+        \\interface Props<T> {
+        \\  a: (x: string) => T;
+        \\  b: (arg: T) => void;
+        \\}
+        \\declare function Foo<T>(props: Props<T>): null;
+        \\Foo({
+        \\  ...{
+        \\    a: (x) => 10,
+        \\    b: (arg) => { arg.toString(); },
+        \\  },
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .no_implicit_any = true,
+        .strict_function_types = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.property_does_not_exist,
+        "Property 'nonexistent' does not exist on type 'Unwrap<{ num: Wrapper<number>; str: Wrapper<string>; }>'.",
+    ));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, 7006));
 }
 
 test "checker: inferred async generators satisfy async iterator return types" {
