@@ -18347,6 +18347,7 @@ const harness_prelude =
     \\function __home_s3_presign_url(path, options) {
     \\  const opts = options && typeof options === "object" ? options : {};
     \\  const requestPayer = __home_s3_request_payer(opts);
+    \\  __home_s3_validate_storage_class(opts);
     \\  const endpoint = String(opts.endpoint || "https://s3.amazonaws.com").replace(/\/+$/, "");
     \\  const bucket = String(opts.bucket || "");
     \\  const key = String(path || "").replace(/^\/+/, "");
@@ -18362,7 +18363,7 @@ const harness_prelude =
     \\  if (opts.type) params.push(["response-content-type", String(opts.type)]);
     \\  if (opts.acl) params.push(["X-Amz-Acl", String(opts.acl)]);
     \\  if (requestPayer) params.push(["x-amz-request-payer", "requester"]);
-    \\  if (opts.storageClass) params.push(["X-Amz-Storage-Class", String(opts.storageClass)]);
+    \\  if (opts.storageClass) params.push(["x-amz-storage-class", String(opts.storageClass)]);
     \\  params.push(["X-Amz-Signature", "home"]);
     \\  params.sort((left, right) => left[0] < right[0] ? -1 : (left[0] > right[0] ? 1 : 0));
     \\  return base + "?" + params.map(([key, value]) => encodeURIComponent(key) + "=" + encodeURIComponent(value)).join("&");
@@ -18415,8 +18416,17 @@ const harness_prelude =
     \\  if (typeof options.requestPayer !== "boolean") throw new TypeError("requestPayer must be a boolean");
     \\  return options.requestPayer;
     \\}
+    \\function __home_s3_validate_storage_class(options) {
+    \\  if (!options || options.storageClass === undefined) return;
+    \\  const storageClass = options.storageClass;
+    \\  const valid = ["STANDARD", "STANDARD_IA", "INTELLIGENT_TIERING", "EXPRESS_ONEZONE", "ONEZONE_IA", "GLACIER", "GLACIER_IR", "REDUCED_REDUNDANCY", "OUTPOSTS", "DEEP_ARCHIVE", "SNOW"];
+    \\  if (typeof storageClass !== "string" || !valid.includes(storageClass)) {
+    \\    throw new TypeError("storageClass must be one of " + valid.join(", "));
+    \\  }
+    \\}
     \\function __home_s3_request_headers(options, initialHeaders) {
     \\  const opts = options && typeof options === "object" ? options : {};
+    \\  __home_s3_validate_storage_class(opts);
     \\  const headers = new Headers(initialHeaders);
     \\  const signedHeaders = [];
     \\  for (const name of ["content-disposition", "content-encoding", "content-md5"]) {
@@ -18573,6 +18583,8 @@ const harness_prelude =
     \\}
     \\function __home_s3_file(clientOptions, path, fileOptions) {
     \\  const options = Object.assign({}, fileOptions || {});
+    \\  __home_s3_validate_storage_class(clientOptions);
+    \\  __home_s3_validate_storage_class(options);
     \\  const contentType = __home_s3_normalize_content_type(options.type);
     \\  if (contentType === undefined) delete options.type;
     \\  else options.type = contentType;
@@ -18587,6 +18599,7 @@ const harness_prelude =
     \\    write(data, writeOptions) { return __home_s3_write(path, data, Object.assign({}, clientOptions, options, writeOptions || {})); },
     \\    writer(writerOptions) {
     \\      const writerState = { chunks: [], options: Object.assign({}, clientOptions, options, writerOptions || {}) };
+    \\      __home_s3_validate_storage_class(writerState.options);
     \\      return {
     \\        write(chunk) {
     \\          writerState.chunks.push(chunk);
@@ -21018,6 +21031,7 @@ const harness_prelude =
     \\  S3Client: Object.assign(function S3Client(options) {
     \\    if (!(this instanceof Bun.S3Client)) return new Bun.S3Client(options);
     \\    this.options = options && typeof options === "object" ? options : {};
+    \\    __home_s3_validate_storage_class(this.options);
     \\    if (this.options.queueSize !== undefined) {
     \\      const queueSize = Number(this.options.queueSize);
     \\      if (!Number.isFinite(queueSize) || queueSize < 1) throw new RangeError("S3Client queueSize must be >= 1");
@@ -27286,6 +27300,7 @@ const harness_prelude =
     \\Bun.SystemError = __home_bun_system_error;
     \\Bun.dns = null;
     \\Bun.env = process.env;
+    \\Bun.s3 = new Bun.S3Client({});
     \\Bun.ArrayBufferSink = __home_array_buffer_sink;
     \\let __home_bun_has_non_reified_static = true;
     \\Bun = new Proxy(Bun, {
@@ -55382,7 +55397,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-requester-pays.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-storage-class.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "S3 storage class signing and multipart integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
@@ -64078,6 +64093,32 @@ test "bootstrap runner mirrors S3 requester-pays signing corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors S3 storage-class signing corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_s3_validate_storage_class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "x-amz-storage-class") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-storage-class.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 9 or summary.todo != 0) {
+        std.debug.print(
+            "S3 storage-class signing corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 9), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 9), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors S3 header injection corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -64218,7 +64259,7 @@ test "bootstrap runner mirrors S3 signature performance corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "X-Amz-Storage-Class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "x-amz-storage-class") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.presign =") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
