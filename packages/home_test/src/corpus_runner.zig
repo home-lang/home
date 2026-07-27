@@ -23189,7 +23189,17 @@ const harness_prelude =
     \\}
     \\function __home_bake_shell_native_test(command, cwdPath, envMap) {
     \\  const args = __home_bun_shell_words(command);
-    \\  if (args.length < 3 || args[0] !== process.execPath || args[1] !== "test") return null;
+    \\  if (args.length < 2 || args[0] !== process.execPath || args[1] !== "test") return null;
+    \\  if (args.length === 2) {
+    \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.$ native test bridge is not installed");
+    \\    const child = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\      cmd: args,
+    \\      cwd: String(cwdPath || process.cwd()),
+    \\      env: envMap || {},
+    \\      stdio: ["ignore", "pipe", "pipe"],
+    \\    }));
+    \\    return __home_bake_shell_result(Number(child && child.exitCode || 0), child && child.stdout, child && child.stderr);
+    \\  }
     \\  const files = args.slice(2);
     \\  if (files.some(arg => String(arg).startsWith("-"))) return null;
     \\  if (files.length === 0) return null;
@@ -26781,7 +26791,7 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.includes("iniInternals")) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install.test.ts") && /(?:^|\s)install(?:\s|$)/.test(command)) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  const commandWords = __home_bun_shell_words(command);
-    \\  if (commandWords.length >= 3 && commandWords[0] === process.execPath && commandWords[1] === "test" && !commandWords.slice(2).some(arg => String(arg).startsWith("-"))) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
+    \\  if (commandWords.length >= 2 && commandWords[0] === process.execPath && commandWords[1] === "test" && !commandWords.slice(2).some(arg => String(arg).startsWith("-"))) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (command.trim() === "pwd" || __home_current_file_is_bake_corpus()) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/util/which.test.ts")) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
@@ -26804,7 +26814,8 @@ const harness_prelude =
     \\    }
     \\    const result = __home_bake_shell(command);
     \\    result.cwdPath = shell.__home_cwd || "";
-    \\    result.__home_throw_on_error = !!shell.__home_throw_on_error;
+    \\    result.envMap = shell.__home_env || {};
+    \\    result.throwOnError = !!shell.__home_throw_on_error;
     \\    return result;
     \\  };
     \\  shell.__home_cwd = __home_bake_virtual_normalize(initialCwd || process.cwd());
@@ -55385,7 +55396,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-interop.js"))
         try rewriteNativeTodoCorpus(allocator, "bun test cross-runner interop helper fixture")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-assertions.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test expect.assertions failure reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-extend.test.js"))
         try rewriteNativeTodoCorpus(allocator, "bun test expect.extend cross-runner matcher matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect.test.js"))

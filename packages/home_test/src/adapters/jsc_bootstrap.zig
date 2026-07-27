@@ -4752,7 +4752,8 @@ fn resolveCorpusArguments(allocator: std.mem.Allocator, argv: *std.ArrayList([]c
 }
 
 fn isHomeExecutableArg(value: []const u8) bool {
-    return std.mem.eql(u8, value, "home") or std.mem.eql(u8, std.fs.path.basename(value), "home");
+    const basename = std.fs.path.basename(value);
+    return std.mem.eql(u8, basename, "home") or std.mem.eql(u8, basename, "home-debug");
 }
 
 fn isHomeEvalInvocation(argv: []const []const u8) bool {
@@ -5275,12 +5276,14 @@ fn homeExecutableFromAncestorsAlloc(allocator: std.mem.Allocator, start: []const
 }
 
 fn preferredHomeExecutablePathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const self_exe = try selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+    if (isHomeExecutableArg(self_exe)) return allocator.dupe(u8, self_exe);
+
     const cwd = try currentWorkingDirectoryAlloc(allocator);
     defer allocator.free(cwd);
     if (try homeExecutableFromAncestorsAlloc(allocator, cwd)) |installed| return installed;
 
-    const self_exe = try selfExePathAlloc(allocator);
-    defer allocator.free(self_exe);
     const self_dir = std.fs.path.dirname(self_exe) orelse ".";
     if (try homeExecutableFromAncestorsAlloc(allocator, self_dir)) |installed| return installed;
 
@@ -5375,6 +5378,13 @@ test "adapter recognizes HomeUnsupported exceptions" {
     try std.testing.expect(unsupportedExceptionReason("HomeUnsupportedError: assertion failed") == null);
     try std.testing.expect(unsupportedExceptionReason("Error: __home_unsupported__:assertion failed") == null);
     try std.testing.expect(unsupportedExceptionReason("Error: assertion failed") == null);
+}
+
+test "adapter recognizes release and debug Home executables" {
+    try std.testing.expect(isHomeExecutableArg("home"));
+    try std.testing.expect(isHomeExecutableArg("/tmp/zig-out/bin/home"));
+    try std.testing.expect(isHomeExecutableArg("/tmp/zig-out/bin/home-debug"));
+    try std.testing.expect(!isHomeExecutableArg("/tmp/zig-out/bin/home_test"));
 }
 
 test "adapter inserts home run for Bun-style direct script invocations" {
