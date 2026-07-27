@@ -55379,6 +55379,46 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
     return summary;
 }
 
+pub fn runDirectory(
+    io: Io,
+    allocator: std.mem.Allocator,
+    corpus_path: []const u8,
+    relative_directory: []const u8,
+) !Summary {
+    const directory_path = try std.fs.path.join(allocator, &.{ corpus_path, relative_directory });
+    defer allocator.free(directory_path);
+
+    const test_files = corpus.collectTestFiles(io, allocator, directory_path) catch |err| switch (err) {
+        error.FileNotFound => return .{ .blocked = true, .reason = "corpus-directory-not-found" },
+        else => return err,
+    };
+    defer corpus.freeTestFiles(allocator, test_files);
+
+    if (!build_options.enable_jsc) {
+        return .{
+            .files = test_files.len,
+            .blocked = true,
+            .reason = "jsc-disabled",
+        };
+    }
+
+    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var summary = Summary{};
+    const show_progress = bunCorpusProgressEnabled();
+    for (test_files, 0..) |directory_relative, index| {
+        const corpus_relative = try std.fs.path.join(allocator, &.{ relative_directory, directory_relative });
+        defer allocator.free(corpus_relative);
+        if (show_progress) {
+            std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, corpus_relative });
+        }
+        try runRelativeFile(io, allocator, &runtime, corpus_path, corpus_relative, &summary);
+    }
+
+    return summary;
+}
+
 fn bunCorpusProgressEnabled() bool {
     return envFlagEnabled("HOME_BUN_CORPUS_PROGRESS");
 }
@@ -72414,24 +72454,36 @@ test "bootstrap runner mirrors JSON5 API corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
-test "bootstrap runner mirrors JSON5 official suite corpus" {
+test "bootstrap runner aggregates the nested JSON5 corpus directory" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/json5/json5-test-suite.test.ts");
+    // The two individual files are pinned at 320 and 113 tests respectively.
+    // The directory target must select both in sorted order and preserve their
+    // aggregate result instead of delegating the path to native `bun test`.
+    var summary = try runDirectory(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/json5");
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 113 or summary.todo != 0) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 433 or summary.todo != 0) {
         std.debug.print(
-            "JSON5 official suite corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 113), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            "JSON5 directory corpus mismatch: files={} passed={} expected={} failed={} todo={} unsupported={} first_file={s} message={s}\n",
+            .{
+                summary.files,
+                summary.passed,
+                @as(usize, 433),
+                summary.failed,
+                summary.todo,
+                summary.unsupported,
+                summary.first_failure_file,
+                summary.first_failure_message,
+            },
         );
     }
-    try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 113), summary.passed);
+    try std.testing.expectEqual(@as(usize, 2), summary.files);
+    try std.testing.expectEqual(@as(usize, 433), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
