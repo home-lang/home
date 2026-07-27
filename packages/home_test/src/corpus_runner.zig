@@ -55153,7 +55153,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/perf_hooks/histogram.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "node:perf_hooks histogram native integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugin-namespace-drive-letter.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun plugin namespace drive-letter resolution")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugins.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun global plugin loader integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/repl/repl.test.ts"))
@@ -58884,6 +58884,34 @@ test "plugin nested throw fixture lowers hook union syntax" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as const") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using dir") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using proc") == null);
+}
+
+test "bootstrap runner mirrors plugin namespace drive-letter corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/plugin/plugin-namespace-drive-letter.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/plugin/plugin-namespace-drive-letter.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun plugin namespace drive-letter resolution") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "single-letter plugin namespace") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun plugin namespace drive-letter corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bun pragma transpiler fixture lowers typed helpers and fs promises import" {
