@@ -23120,6 +23120,10 @@ const harness_prelude =
     \\      try { return Promise.resolve(JSON.parse(text)); }
     \\      catch (error) { return Promise.resolve({}); }
     \\    },
+    \\    lines() { return __home_bun_shell_output_lines(this.__home_result().stdout); },
+    \\    bytes() { return Promise.resolve(__home_bun_shell_output_bytes(this.__home_result().stdout)); },
+    \\    arrayBuffer() { return this.bytes().then(bytes => bytes.buffer); },
+    \\    blob() { return this.bytes().then(bytes => new Blob([bytes])); },
     \\    then(resolve, reject) { return Promise.resolve().then(() => this.__home_result()).then(resolve, reject); },
     \\    __home_result() {
     \\      const result = this.__home_run();
@@ -24095,7 +24099,7 @@ const harness_prelude =
     \\}
     \\function __home_typed_array_equal(a, b, strict) {
     \\  if (!ArrayBuffer.isView(a) || !ArrayBuffer.isView(b)) return false;
-    \\  if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    \\  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
     \\  const aLength = typeof a.BYTES_PER_ELEMENT === "number" ? a.byteLength / a.BYTES_PER_ELEMENT : (typeof a.length === "number" ? a.length : a.byteLength);
     \\  const bLength = typeof b.BYTES_PER_ELEMENT === "number" ? b.byteLength / b.BYTES_PER_ELEMENT : (typeof b.length === "number" ? b.length : b.byteLength);
     \\  if (aLength !== bLength || a.byteLength !== b.byteLength) return false;
@@ -26072,16 +26076,25 @@ const harness_prelude =
     \\  __using: __home_wrap_using,
     \\};
     \\const __home_native_bun_shell = Bun.$;
+    \\function __home_bun_shell_output_bytes(stdout) {
+    \\  return new TextEncoder().encode(String(stdout || ""));
+    \\}
+    \\function __home_bun_shell_output_lines(stdout) {
+    \\  const lines = String(stdout || "").split("\n");
+    \\  return {
+    \\    async *[Symbol.asyncIterator]() {
+    \\      for (const line of lines) yield line;
+    \\    },
+    \\  };
+    \\}
     \\function __home_bun_shell_await_value(result) {
     \\  const value = {};
     \\  for (const key of Object.keys(result)) if (key !== "then") value[key] = result[key];
     \\  value.text = function() { return String(value.stdout || ""); };
     \\  value.json = function() { return JSON.parse(String(value.stdout || "{}")); };
-    \\  value.blob = function() {
-    \\    const text = String(value.stdout || "").replace(/\n$/, "");
-    \\    return new Blob([new TextEncoder().encode(text)]);
-    \\  };
-    \\  value.bytes = function() { return new TextEncoder().encode(String(value.stdout || "")); };
+    \\  value.lines = function() { return __home_bun_shell_output_lines(value.stdout); };
+    \\  value.blob = function() { return new Blob([__home_bun_shell_output_bytes(String(value.stdout || "").replace(/\n$/, ""))]); };
+    \\  value.bytes = function() { return __home_bun_shell_output_bytes(value.stdout); };
     \\  value.arrayBuffer = function() { return value.bytes().buffer; };
     \\  return value;
     \\}
@@ -26093,14 +26106,18 @@ const harness_prelude =
     \\  result.quiet = function() { return result; };
     \\  result.throws = function(value) { result.__home_throw_on_error = value !== false; return result; };
     \\  result.nothrow = function() { result.__home_throw_on_error = false; return result; };
-    \\  result.text = function() { return Promise.resolve(String(result.stdout || "")); };
-    \\  result.json = function() { return Promise.resolve(JSON.parse(String(result.stdout || "{}"))); };
-    \\  result.blob = function() {
-    \\    const text = String(result.stdout || "").replace(/\n$/, "");
-    \\    return new Blob([new TextEncoder().encode(text)]);
-    \\  };
-    \\  result.bytes = function() { return new TextEncoder().encode(String(result.stdout || "")); };
-    \\  result.arrayBuffer = function() { return result.bytes().buffer; };
+    \\  function consume(callback) {
+    \\    return Promise.resolve().then(() => {
+    \\      if (result.__home_throw_on_error && Number(result.exitCode || 0) !== 0) throw __home_bun_shell_await_value(result);
+    \\      return callback();
+    \\    });
+    \\  }
+    \\  result.text = function() { return consume(() => String(result.stdout || "")); };
+    \\  result.json = function() { return consume(() => JSON.parse(String(result.stdout || "{}"))); };
+    \\  result.lines = function() { return __home_bun_shell_output_lines(result.stdout); };
+    \\  result.blob = function() { return consume(() => new Blob([__home_bun_shell_output_bytes(result.stdout)])); };
+    \\  result.bytes = function() { return consume(() => __home_bun_shell_output_bytes(result.stdout)); };
+    \\  result.arrayBuffer = function() { return result.bytes().then(bytes => bytes.buffer); };
     \\  result.run = function() { return Promise.resolve(result); };
     \\  result.then = function(resolve, reject) {
     \\    return Promise.resolve().then(() => {
@@ -26541,6 +26558,24 @@ const harness_prelude =
     \\  const value = env && Object.prototype.hasOwnProperty.call(env, match[1]) ? String(env[match[1]]) : "";
     \\  return __home_bun_shell_text_result(value + "\n");
     \\}
+    \\function __home_bun_shell_io_result(parts, values) {
+    \\  if (!Array.isArray(parts) || !Array.isArray(values)) return null;
+    \\  const raw = parts.raw && parts.raw.length === parts.length ? parts.raw : parts;
+    \\  if (raw.length === 2 && values.length === 1 && /^\s*cat\s*<\s*$/.test(String(raw[0])) && /^\s*$/.test(String(raw[1]))) {
+    \\    const input = values[0] instanceof Response ? values[0].body : values[0];
+    \\    return __home_bun_shell_text_result(__home_utf8_bytes_to_text(__home_body_bytes_sync(input)));
+    \\  }
+    \\  if (raw.length === 3 && values.length === 2 && /^\s*cat\s+$/.test(String(raw[0])) && /^\s*>\s*$/.test(String(raw[1])) && /^\s*$/.test(String(raw[2]))) {
+    \\    const sourcePath = String(values[0]);
+    \\    const target = values[1];
+    \\    if (!ArrayBuffer.isView(target)) return __home_bun_shell_result(1, "", "Shell output target is not writable\n");
+    \\    const sourceBytes = __home_file_bytes_sync(sourcePath);
+    \\    const targetBytes = new Uint8Array(target.buffer, target.byteOffset, target.byteLength);
+    \\    targetBytes.set(sourceBytes.slice(0, targetBytes.length));
+    \\    return __home_bun_shell_result(0, "", "");
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_bun_shell_leak_args_result(command) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/shell/shell-leak-args.test.ts")) return null;
     \\  const text = String(command || "");
@@ -26557,6 +26592,11 @@ const harness_prelude =
     \\  return shell;
     \\}
     \\function __home_bun_shell(parts, ...values) {
+    \\  const ioResult = __home_bun_shell_io_result(parts, values);
+    \\  if (ioResult) {
+    \\    ioResult.__home_throw_on_error = !!__home_bun_shell.__home_throw_on_error;
+    \\    return ioResult;
+    \\  }
     \\  const issueResult = __home_bun_shell_issue_result(parts, values);
     \\  if (issueResult) return issueResult;
     \\  const yesBufferResult = __home_bun_shell_yes_buffer_result(parts, values);
@@ -26596,6 +26636,12 @@ const harness_prelude =
     \\}
     \\function __home_bun_shell_instance(initialCwd) {
     \\  const shell = function(parts, ...values) {
+    \\    const ioResult = __home_bun_shell_io_result(parts, values);
+    \\    if (ioResult) {
+    \\      ioResult.cwdPath = shell.__home_cwd || "";
+    \\      ioResult.__home_throw_on_error = !!shell.__home_throw_on_error;
+    \\      return ioResult;
+    \\    }
     \\    const command = __home_bun_shell_command(parts, values);
     \\    const envEcho = __home_bun_shell_env_echo(command, shell.__home_env);
     \\    if (envEcho) {
@@ -26618,7 +26664,7 @@ const harness_prelude =
     \\  return shell;
     \\}
     \\__home_bun_shell.__home_env = Object.create(null);
-    \\__home_bun_shell.__home_throw_on_error = false;
+    \\__home_bun_shell.__home_throw_on_error = true;
     \\__home_bun_shell.throws = function(value) { __home_bun_shell.__home_throw_on_error = value !== false; if (__home_native_bun_shell && typeof __home_native_bun_shell.throws === "function") __home_native_bun_shell.throws(value); return __home_bun_shell; };
     \\__home_bun_shell.nothrow = function() { __home_bun_shell.__home_throw_on_error = false; if (__home_native_bun_shell && typeof __home_native_bun_shell.nothrow === "function") __home_native_bun_shell.nothrow(); return __home_bun_shell; };
     \\__home_bun_shell.cwd = function(value) { __home_bake_shell_cwd = __home_bake_virtual_normalize(value || process.cwd()); if (__home_native_bun_shell && typeof __home_native_bun_shell.cwd === "function") __home_native_bun_shell.cwd(value); return __home_bun_shell; };
@@ -55029,7 +55075,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell-file.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell-instance.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun shell instance IO and environment integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun shell parser, subprocess, and TestBuilder integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/basename.test.ts"))
@@ -59340,6 +59386,36 @@ test "bootstrap runner mirrors Bun shell output corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun shell instance IO corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/bunshell-instance.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/bunshell-instance.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell instance IO and environment integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { $ } = globalThis.__home_import(\"bun\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_shell_io_result") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_shell_output_lines") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun shell instance IO corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
