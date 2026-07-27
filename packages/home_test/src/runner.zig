@@ -46,13 +46,20 @@ pub const RunOptions = struct {
 pub const FileRun = struct {
     result: result.FileResult,
     first_failure_message_owned: bool = false,
+    stdout: []const u8 = "",
+    stdout_owned: bool = false,
 
     pub fn deinit(self: *FileRun, allocator: std.mem.Allocator) void {
         if (self.first_failure_message_owned) {
             allocator.free(self.result.first_failure_message);
         }
+        if (self.stdout_owned) {
+            allocator.free(self.stdout);
+        }
         self.result.first_failure_message = "";
         self.first_failure_message_owned = false;
+        self.stdout = "";
+        self.stdout_owned = false;
     }
 
     pub fn failBorrowed(path: []const u8, message: []const u8) FileRun {

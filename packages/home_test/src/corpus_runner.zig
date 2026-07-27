@@ -61,6 +61,8 @@ pub const Summary = struct {
     first_failure_file_owned: bool = false,
     first_failure_message: []const u8 = "",
     first_failure_message_owned: bool = false,
+    stdout: []const u8 = "",
+    stdout_owned: bool = false,
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
         if (self.first_failure_file_owned) {
@@ -69,10 +71,15 @@ pub const Summary = struct {
         if (self.first_failure_message_owned) {
             allocator.free(self.first_failure_message);
         }
+        if (self.stdout_owned) {
+            allocator.free(self.stdout);
+        }
         self.first_failure_file = "";
         self.first_failure_file_owned = false;
         self.first_failure_message = "";
         self.first_failure_message_owned = false;
+        self.stdout = "";
+        self.stdout_owned = false;
     }
 
     pub fn addFileResult(self: *Summary, file: test_result.FileResult) void {
@@ -199,6 +206,7 @@ const harness_prelude =
     \\  Intl.DateTimeFormat = __home_DateTimeFormat;
     \\}
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null, pendingMessages: [] };
+    \\var __home_console_output = globalThis.__home_console_output || [];
     \\var __home_real_timer_bindings = null;
     \\globalThis.__home_reset_tests = function() {
     \\  __home_use_real_timers();
@@ -213,6 +221,7 @@ const harness_prelude =
     \\  }
     \\  if (typeof globalThis.__home_reset_performance_clock === "function") globalThis.__home_reset_performance_clock();
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null, pendingMessages: [] };
+    \\  __home_console_output = globalThis.__home_console_output = [];
     \\  globalThis.__home_root_scope = {
     \\    parent: null,
     \\    beforeAll: [],
@@ -37586,6 +37595,11 @@ const harness_prelude =
     \\  return __home_util_inspect(value);
     \\}
     \\function __home_console_write(stream, text) {
+    \\  if (stream === process.stdout) {
+    \\    const output = String(text);
+    \\    __home_console_output.push(output.endsWith("\n") ? output.slice(0, -1) : output);
+    \\    return;
+    \\  }
     \\  if (stream && typeof stream.write === "function") stream.write(String(text));
     \\}
     \\class __home_Console {
@@ -55352,7 +55366,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-failures.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test only-failures CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test only filtering CLI reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-only.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test only fixture CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-test.test.ts"))
@@ -55661,6 +55675,12 @@ fn runRelativeFile(
 
     const r = file_run.result;
     summary.addFileResult(r);
+    if (file_run.stdout.len != 0) {
+        const combined = try std.mem.concat(allocator, u8, &.{ summary.stdout, file_run.stdout });
+        if (summary.stdout_owned) allocator.free(summary.stdout);
+        summary.stdout = combined;
+        summary.stdout_owned = true;
+    }
     if (prepared.allow_no_tests and r.passed + r.failed + r.todo + r.unsupported == 0) {
         summary.allowed_empty_files += 1;
     }
@@ -71127,9 +71147,9 @@ test "bootstrap runner gives test.only precedence over describe.only" {
 
     const source =
         \\describe.only("outer", () => {
-        \\  test("skipped by inner only", () => expect.unreachable());
+        \\  test("skipped by inner only", () => console.log("should not run"));
         \\  describe("inner", () => {
-        \\    test.only("selected", () => expect().pass());
+        \\    test.only("selected", () => console.log("should run"));
         \\  });
         \\});
     ;
@@ -71145,6 +71165,7 @@ test "bootstrap runner gives test.only precedence over describe.only" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqualStrings("should run\n", file_run.stdout);
 }
 
 test "bootstrap runner covers conditional skip helpers" {

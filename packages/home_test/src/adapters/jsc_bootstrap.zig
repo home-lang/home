@@ -477,6 +477,9 @@ pub const Runtime = struct {
             return runner.FileRun.unsupportedBorrowed(spec.path, "no bun:test tests registered by corpus file");
         }
 
+        const stdout = readString(self, allocator, "__home_console_output.length ? __home_console_output.join('\\n') + '\\n' : ''") catch |err| {
+            return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+        };
         return .{
             .result = .{
                 .path = spec.path,
@@ -484,6 +487,8 @@ pub const Runtime = struct {
                 .failed = counters.failed,
                 .todo = counters.todo,
             },
+            .stdout = stdout,
+            .stdout_owned = true,
         };
     }
 };

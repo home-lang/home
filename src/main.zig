@@ -4137,6 +4137,11 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
     var summary = try home_test.corpus_runner.runFile(g_io, allocator, corpus_path, relative_path);
     defer summary.deinit(allocator);
 
+    if (summary.stdout.len != 0) {
+        const stdout_file = std.Io.File.stdout();
+        try stdout_file.writeStreamingAll(g_io, summary.stdout);
+    }
+
     if (summary.blocked) {
         std.debug.print("\n{s}Bun Corpus Native File: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
         std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
