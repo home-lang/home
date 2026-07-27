@@ -370,6 +370,37 @@ pub fn LowerDecorators(
             }
         }
 
+        /// Drain receiver-capture temporaries created past `baseline` into a single
+        /// `var` declaration statement; null if none were created. Truncates the
+        /// global temp list so the normal prepend mechanism does not also declare them.
+        /// ports oven-sh/bun a7034f2248 (#31426).
+        fn drainCaptureTempDecls(p: *P, baseline: usize, loc: logger.Loc) ?Stmt {
+            const total = p.temp_refs_to_declare.items.len;
+            if (total == baseline) return null;
+            const decls = bun.handleOom(p.allocator.alloc(G.Decl, total - baseline));
+            for (baseline..total, 0..) |i, di| {
+                const capture_ref = p.temp_refs_to_declare.items[i].ref;
+                decls[di] = .{ .binding = p.b(B.Identifier{ .ref = capture_ref }, loc), .value = null };
+            }
+            p.temp_refs_to_declare.shrinkRetainingCapacity(baseline);
+            return p.s(S.Local{ .decls = Decl.List.fromOwnedSlice(decls) }, loc);
+        }
+
+        /// Declare receiver-capture temporaries created past `temps_before` at the top
+        /// of the function body they were created in, so each invocation gets a fresh
+        /// binding. A binding hoisted outside the function would be shared across
+        /// invocations, and `__privateGet(_obj = recv, _s, getter)` runs the user getter
+        /// between the write and the `.call(_obj)` read — re-entering the same site
+        /// through that getter would clobber a shared temp.
+        /// ports oven-sh/bun a7034f2248 (#31426).
+        fn declareCaptureTempsInFnBody(p: *P, stmts: []Stmt, temps_before: usize, body_loc: logger.Loc) []Stmt {
+            const decl_stmt = drainCaptureTempDecls(p, temps_before, body_loc) orelse return stmts;
+            const new_stmts = bun.handleOom(p.allocator.alloc(Stmt, stmts.len + 1));
+            new_stmts[0] = decl_stmt;
+            @memcpy(new_stmts[1..], stmts);
+            return new_stmts;
+        }
+
         fn rewritePrivateAccessesInExpr(p: *P, expr: *Expr, map: *const PrivateLoweredMap) void {
             switch (expr.data) {
                 .e_index => |e| {
@@ -412,7 +443,24 @@ pub fn LowerDecorators(
                             if (map.get(e.target.data.e_index.index.data.e_private_identifier.ref.innerIndex())) |info| {
                                 rewritePrivateAccessesInExpr(p, &e.target.data.e_index.target, map);
                                 const obj_expr = e.target.data.e_index.target;
-                                const private_access = privateGetExpr(p, obj_expr, info, expr.loc);
+                                // `x.#m(...)` becomes `__privateGet(x, _m).call(x, ...)`, which
+                                // references the receiver twice. Only identifiers and `this` can
+                                // be repeated safely; any other receiver is captured in a temporary
+                                // so its side effects run once and nested private calls don't
+                                // duplicate the whole subtree (the duplication is exponential in the
+                                // length of a chain like `o.#m().#m().#m()`).
+                                // ports oven-sh/bun a7034f2248 (#31426).
+                                const get_obj, const this_arg = switch (obj_expr.data) {
+                                    .e_identifier => |id| .{ obj_expr, useRef(p, id.ref, obj_expr.loc) },
+                                    .e_this => .{ obj_expr, p.newExpr(E.This{}, obj_expr.loc) },
+                                    else => brk: {
+                                        const tmp_ref = p.generateTempRef("_obj");
+                                        const write = assignTo(p, tmp_ref, obj_expr, expr.loc);
+                                        const read = useRef(p, tmp_ref, expr.loc);
+                                        break :brk .{ write, read };
+                                    },
+                                };
+                                const private_access = privateGetExpr(p, get_obj, info, expr.loc);
                                 const call_target = p.newExpr(E.Dot{
                                     .target = private_access,
                                     .name = "call",
@@ -420,7 +468,7 @@ pub fn LowerDecorators(
                                 }, expr.loc);
                                 const orig_args = e.args.slice();
                                 const new_args = bun.handleOom(p.allocator.alloc(Expr, 1 + orig_args.len));
-                                new_args[0] = obj_expr;
+                                new_args[0] = this_arg;
                                 for (orig_args, 0..) |*arg, ai| {
                                     rewritePrivateAccessesInExpr(p, arg, map);
                                     new_args[1 + ai] = arg.*;
@@ -463,8 +511,16 @@ pub fn LowerDecorators(
                     if (e.tag) |*t| rewritePrivateAccessesInExpr(p, t, map);
                     for (e.parts) |*part| rewritePrivateAccessesInExpr(p, &part.value, map);
                 },
-                .e_function => |e| rewritePrivateAccessesInStmts(p, e.func.body.stmts, map),
-                .e_arrow => |e| rewritePrivateAccessesInStmts(p, e.body.stmts, map),
+                .e_function => |e| {
+                    const temps_before = p.temp_refs_to_declare.items.len;
+                    rewritePrivateAccessesInStmts(p, e.func.body.stmts, map);
+                    e.func.body.stmts = declareCaptureTempsInFnBody(p, e.func.body.stmts, temps_before, e.func.body.loc);
+                },
+                .e_arrow => |e| {
+                    const temps_before = p.temp_refs_to_declare.items.len;
+                    rewritePrivateAccessesInStmts(p, e.body.stmts, map);
+                    e.body.stmts = declareCaptureTempsInFnBody(p, e.body.stmts, temps_before, e.body.loc);
+                },
                 else => {},
             }
         }
@@ -552,6 +608,12 @@ pub fn LowerDecorators(
 
         fn lowerImpl(p: *P, stmt: Stmt, mode: StdDecMode) []Stmt {
             const is_expr = mode == .expr;
+            // Receiver-capture temporaries created by rewritePrivateAccessesInExpr land
+            // in temp_refs_to_declare; everything pushed past this point that was NOT
+            // created inside a function body (field initializers, static blocks, decorate
+            // expressions) is declared in a `var` statement alongside the other lowering
+            // variables right before output assembly. ports oven-sh/bun a7034f2248 (#31426).
+            const temp_refs_before = p.temp_refs_to_declare.items.len;
             var class = switch (mode) {
                 .stmt => &stmt.data.s_class.class,
                 .expr => |e| e.class,
@@ -1386,6 +1448,15 @@ pub fn LowerDecorators(
             class.properties = new_properties.items;
             class.has_decorators = false;
             class.should_lower_standard_decorators = false;
+
+            // Declare the receiver-capture temporaries created outside any function body
+            // (field initializers, static blocks, decorate expressions — each runs at most
+            // once per class evaluation, so they share the hoisted binding). Temps created
+            // inside method/function/arrow bodies were already declared there by
+            // declareCaptureTempsInFnBody. ports oven-sh/bun a7034f2248 (#31426).
+            if (drainCaptureTempDecls(p, temp_refs_before, loc)) |decl_stmt| {
+                prefix_stmts.append(decl_stmt) catch unreachable;
+            }
 
             // ── Phase 8: Assemble output ─────────────────────
             if (is_expr) {
