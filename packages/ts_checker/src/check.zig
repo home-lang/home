@@ -14040,7 +14040,7 @@ pub const Checker = struct {
         try self.checkJsDocOverloadImplicitAnyReturns(node);
         const contextual_return = if (f.return_type == hir_mod.none_node_id and
             self.fnBodyHasReturnValueSyntax(f.body))
-            self.contextualReturnTypeForFunction(node)
+            self.contextualReturnTypeForFunctionKind(node, f.flags.is_async)
         else
             null;
         if (contextual_return) |ret_t| try self.refineSignatureReturn(node, ret_t);
@@ -14133,7 +14133,12 @@ pub const Checker = struct {
         // `AsyncGenerator<T,ÃÂ¢ÃÂÃÂ¦>`), not `Promise<T>`. TS1064 only
         // applies to plain async functions.
         if (f.flags.is_generator) return;
-        if (f.return_type == hir_mod.none_node_id) return;
+        if (f.return_type == hir_mod.none_node_id) {
+            if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
+                try self.checkAsyncJsDocReturnType(node, jsdoc_return);
+            }
+            return;
+        }
         const rt = f.return_type;
         if (self.target_emit_es5) {
             try self.checkAsyncReturnTypeIsPromiseEs5(node, rt);
@@ -14194,6 +14199,42 @@ pub const Checker = struct {
         // Bare type-ref name we can wrap with a concrete suggestion:
         // emit the TS1064 "Did you mean to write 'Promise<X>'?" variant.
         try self.reportAsyncReturnDidYouMeanAwaited(rt);
+    }
+
+    fn checkAsyncJsDocReturnType(self: *Checker, node: NodeId, jsdoc_return: JsDocDeclaredReturn) CheckError!void {
+        if (self.promisePayloadType(jsdoc_return.type) != null) return;
+        if (jsdoc_return.origin == .contextual_type) {
+            try self.reportAt(
+                node,
+                jsdoc_return.pos,
+                TsCodes.async_return_must_be_promise,
+                "The return type of an async function or method must be the global Promise<T> type.",
+            );
+            return;
+        }
+        if (self.target_emit_es5) {
+            const display = (try self.allocSimpleTypeName(jsdoc_return.type)) orelse "unknown";
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not a valid async function return type in ES5 because it does not refer to a Promise-compatible constructor value.",
+                .{display},
+            );
+            try self.reportAt(node, jsdoc_return.pos, TsCodes.async_return_not_promise_compatible_es5, msg);
+            return;
+        }
+        const awaited_t = switch (self.awaitedChainIssue(jsdoc_return.type)) {
+            .malformed_then => types.Primitive.void_t,
+            .none, .recursive_then => self.evalAwaited(jsdoc_return.type),
+        };
+        const awaited_name = (try self.allocSimpleTypeName(awaited_t)) orelse
+            (try self.allocObjectTypeShape(awaited_t)) orelse
+            "void";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "The return type of an async function or method must be the global Promise<T> type. Did you mean to write 'Promise<{s}>'?",
+            .{awaited_name},
+        );
+        try self.reportAt(node, jsdoc_return.pos, TsCodes.async_return_must_be_promise_did_you_mean, msg);
     }
 
     fn checkAsyncReturnTypeIsPromiseEs5(self: *Checker, fn_node: NodeId, rt: NodeId) CheckError!void {
@@ -14634,6 +14675,13 @@ pub const Checker = struct {
     const JsDocDeclaredReturn = struct {
         type: TypeId,
         pos: u32,
+        origin: Origin,
+
+        const Origin = enum {
+            returns_tag,
+            inline_function_type,
+            contextual_type,
+        };
     };
 
     fn jsDocDeclaredReturnForFunction(self: *Checker, node: NodeId) CheckError!?JsDocDeclaredReturn {
@@ -14657,12 +14705,19 @@ pub const Checker = struct {
                 const pos = self.jsDocFunctionReturnTypePos(src, type_text) orelse
                     self.sliceStartPos(src, type_text) orelse
                     span.start;
-                return .{ .type = ret_t, .pos = pos };
+                return .{
+                    .type = ret_t,
+                    .pos = pos,
+                    .origin = if (jsDocFunctionOpenParen(type_text) != null)
+                        .inline_function_type
+                    else
+                        .contextual_type,
+                };
             }
             if (tag.kind == .returns_tag) {
                 const ret_t = (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) orelse types.Primitive.any;
                 const pos = self.sliceStartPos(src, tag.type_text) orelse span.start;
-                return .{ .type = ret_t, .pos = pos };
+                return .{ .type = ret_t, .pos = pos, .origin = .returns_tag };
             }
         }
         return null;
@@ -15052,7 +15107,14 @@ pub const Checker = struct {
                     declared_from_paired_setter = true;
                     break :blk setter_t;
                 }
-                contextual_sig = self.contextualReturnSignatureForFunction(node);
+                const candidate_sig = self.contextualReturnSignatureForFunction(node);
+                contextual_sig = if (candidate_sig) |sig|
+                    if (!f.flags.is_async or self.typeContainsPromisePayload(self.interner.signatureReturn(sig) orelse types.Primitive.none))
+                        sig
+                    else
+                        null
+                else
+                    null;
                 break :blk if (contextual_sig) |sig|
                     self.interner.signatureReturn(sig) orelse types.Primitive.none
                 else
@@ -15142,7 +15204,7 @@ pub const Checker = struct {
         // return type by unioning every return statement's value
         // type. No returns -> `void_t`, except contextual targets
         // that admit `undefined` infer `undefined` like tsc.
-        const contextual_return_t = self.contextualReturnTypeForFunction(node);
+        const contextual_return_t = self.contextualReturnTypeForFunctionKind(node, f.flags.is_async);
         const has_return_value_body = self.fnBodyHasReturnValueSyntax(f.body);
         const has_contextual_return_value_body = contextual_return_t != null and has_return_value_body;
         if (f.return_type == hir_mod.none_node_id and
@@ -23949,6 +24011,22 @@ pub const Checker = struct {
         if (self.pairedSetterContextualReturnType(fn_node)) |setter_t| return setter_t;
         const sig = self.contextualReturnSignatureForFunction(fn_node) orelse return null;
         return self.interner.signatureReturn(sig);
+    }
+
+    fn contextualReturnTypeForFunctionKind(self: *Checker, fn_node: NodeId, is_async: bool) ?TypeId {
+        const return_t = self.contextualReturnTypeForFunction(fn_node) orelse return null;
+        if (!is_async or self.typeContainsPromisePayload(return_t)) return return_t;
+        return null;
+    }
+
+    fn typeContainsPromisePayload(self: *Checker, t: TypeId) bool {
+        if (self.promisePayloadType(t) != null) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(t).is_union) return false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (self.typeContainsPromisePayload(member)) return true;
+        }
+        return false;
     }
 
     fn pairedSetterContextualReturnType(self: *Checker, fn_node: NodeId) ?TypeId {
@@ -74393,6 +74471,15 @@ pub const Checker = struct {
             if (self.class_instance_types.get(name)) |t| return t;
             return null;
         }
+        if (self.module) |module| {
+            if (module.root.lookup(name)) |symbol| {
+                const decl = self.visibleValueSymbolDeclForNode(symbol.decls.items, anchor) orelse return null;
+                const kind = self.hir.kindOf(decl);
+                if (kind != .class_decl and kind != .class_expr) return null;
+                try self.checkClassDecl(decl);
+                if (self.class_instance_types.get(name)) |t| return t;
+            }
+        }
         return null;
     }
 
@@ -74935,6 +75022,10 @@ pub const Checker = struct {
         if (base.len == 0 or base.len != trimmed.len) return null;
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id) return null;
+        const name = self.string_interner.intern(base) catch return error.OutOfMemory;
+        if (self.sourceHasVirtualFilenameSections() and self.sourceHasLexicalValueDeclarationText(name)) {
+            return types.Primitive.any;
+        }
         if (std.mem.eql(u8, base, "exports")) {
             const exports_name = self.string_interner.intern("exports") catch return error.OutOfMemory;
             if (try self.currentCommonJsExportsTypeRef(anchor, exports_name)) |exports_t| return exports_t;
@@ -75022,6 +75113,12 @@ pub const Checker = struct {
             const elem_text = args.next() orelse return null;
             const elem_t = (try self.jsDocTypeTextToType(src, elem_text)) orelse types.Primitive.any;
             return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+        }
+
+        if (std.mem.eql(u8, name, "Promise")) {
+            const value_text = args.next() orelse return null;
+            const value_t = (try self.jsDocTypeTextToType(src, value_text)) orelse types.Primitive.any;
+            return try self.buildStructuralPromise(value_t);
         }
 
         if (std.mem.eql(u8, name, "Object") or std.mem.eql(u8, name, "Object.")) {
@@ -126350,6 +126447,13 @@ pub const Checker = struct {
                 ret_t = try self.functionExpressionInferenceSignature(f.body, ret_t, true);
             }
         }
+        if (f.flags.is_async) {
+            const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.none;
+            ret_t = if (self.promisePayloadType(source_ret) != null)
+                source_ret
+            else
+                try self.buildStructuralPromise(self.evalAwaited(ret_t));
+        }
         if (ret_t == types.Primitive.none or ret_t == types.Primitive.any or ret_t == types.Primitive.unknown) return null;
         const sig = self.interner.internSignature(target_params, ret_t, false) catch return null;
         if (source_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source_t).is_signature) {
@@ -126536,6 +126640,11 @@ pub const Checker = struct {
         if (try self.contextualReturnLacksRequiredObjectShape(source_ret, target_ret)) return false;
         if (self.engine.isAssignableTo(source_ret, target_ret) catch false) return true;
         if (try self.generatorReturnAssignableToTargetReturn(source_ret, target_ret)) return true;
+        if (target_ret >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(target_ret).is_object_type)
+        {
+            return false;
+        }
         return try self.presentObjectMembersAssignable(source_ret, target_ret);
     }
 
@@ -174545,6 +174654,42 @@ test "checker: async bodies validate promised returns and anchor malformed thena
         }
     }
     try T.expect(saw_name_anchor);
+}
+
+test "checker: checked-JS async returns enforce direct and contextual Promise contracts" {
+    const source =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: /a.js
+        \\/**
+        \\ * @callback ReturnsString
+        \\ * @returns {string}
+        \\ */
+        \\/** @returns {string} */
+        \\const direct = async () => "";
+        \\/** @type {function(): string} */
+        \\const inline = async () => "";
+        \\/** @type {ReturnsString} */
+        \\const contextual = async () => "";
+        \\/** @type {function(function(): string): void} */
+        \\const takesString = (callback) => {};
+        \\takesString(async () => 0);
+    ;
+
+    const native = try newSetup(source);
+    defer destroySetup(native);
+    try native.checker.checkSourceFile(native.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(native, TsCodes.async_return_must_be_promise_did_you_mean));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.argument_type_mismatch));
+
+    const es5 = try newSetup(source);
+    defer destroySetup(es5);
+    es5.checker.setTargetEmitEs5(true);
+    try es5.checker.checkSourceFile(es5.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(es5, TsCodes.async_return_not_promise_compatible_es5));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.argument_type_mismatch));
 }
 
 test "checker: async return typed by an unresolved imported name does not emit TS1064" {
