@@ -1177,17 +1177,16 @@ pub fn SkipTypescript(
                 defer p.lexer.is_log_disabled = old_log_disabled;
                 var backtrack = false;
                 const FnReturnType = bun.meta.ReturnOf(func);
-                const result = func(p) catch |err| brk: {
-                    switch (err) {
-                        error.Backtrack => {
-                            backtrack = true;
-                        },
-                        else => {
-                            if (p.lexer.did_panic) {
-                                backtrack = true;
-                            }
-                        },
-                    }
+                const result = func(p) catch brk: {
+                    // Restore the lexer on ANY error during the speculative parse, not
+                    // just error.Backtrack / did_panic. Errors raised while the log is
+                    // disabled are suppressed, so the lexer must never be left mid-token
+                    // — otherwise the suffix parser reprocesses a half-scanned token
+                    // (e.g. an unterminated template literal after type arguments) and
+                    // panics slicing its raw contents. After backtracking, normal parsing
+                    // re-scans and reports the real syntax error.
+                    // ports oven-sh/bun 10db442886 (#31238).
+                    backtrack = true;
                     if (comptime FnReturnType == anyerror!bool or FnReturnType == anyerror!void)
                         // we are not using the value
                         break :brk undefined;
@@ -1223,13 +1222,10 @@ pub fn SkipTypescript(
                 defer p.lexer.is_log_disabled = old_log_disabled;
                 var backtrack = false;
                 const FnReturnType = bun.meta.ReturnOf(func);
-                const result = @call(.auto, func, args) catch |err| brk: {
-                    switch (err) {
-                        error.Backtrack => {
-                            backtrack = true;
-                        },
-                        else => {},
-                    }
+                const result = @call(.auto, func, args) catch brk: {
+                    // Restore on ANY error during the speculative parse (see
+                    // lexerBacktracker). ports oven-sh/bun 10db442886 (#31238).
+                    backtrack = true;
                     if (comptime FnReturnType == anyerror!bool or FnReturnType == anyerror!void)
                         // we are not using the value
                         break :brk undefined;
