@@ -88287,7 +88287,11 @@ pub const Checker = struct {
                                 // line 39 (`<test1 x={32} {...obj7}/>`
                                 // where obj7.x is a compatible string).
                                 const overridden = !ok and try self.jsxLaterSpreadProvidesCompatibleProp(attrs, attr, a.name, prop_t);
-                                if (!ok and !overridden and !(has_spread_attr and props_target_had_free)) {
+                                if (!ok and
+                                    !overridden and
+                                    !has_any_spread and
+                                    !(has_spread_attr and props_target_had_free))
+                                {
                                     // JSX overload resolution owns the
                                     // applicability failure. Defer the
                                     // value mismatch so it becomes TS2769;
@@ -88295,6 +88299,16 @@ pub const Checker = struct {
                                     // the explicit attribute that failed.
                                     if (self.jsxTagHasVisibleOverloads(el.tag)) {
                                         if (has_spread_attr) overload_value_mismatch_anchor = attr;
+                                    } else if (self.jsxTagIsIntrinsic(el.tag) and
+                                        std.mem.indexOfScalar(u8, attr_name, '-') != null)
+                                    {
+                                        // Intrinsic hyphenated attributes
+                                        // participate in the synthesized
+                                        // attributes bag when explicitly
+                                        // declared, but tsgo does not
+                                        // elaborate their mismatch at the
+                                        // value. Let the whole-bag relation
+                                        // below own TS2322 instead.
                                     } else {
                                         per_attr_assignability_fired = true;
                                         // Prefer tsc's value-level
@@ -88308,10 +88322,6 @@ pub const Checker = struct {
                                         // property.` is the fallback when
                                         // either side fails to render.
                                         const diagnostic_value = try self.jsxAttributeDiagnosticValueType(a.value, value_t, prop_t);
-                                        const widened_value = if (diagnostic_value != value_t)
-                                            diagnostic_value
-                                        else
-                                            self.widenForInference(diagnostic_value);
                                         // tsc checks a value against an
                                         // intersection target
                                         // constituent-by-constituent and
@@ -88328,8 +88338,8 @@ pub const Checker = struct {
                                             prop_t
                                         else
                                             try self.firstFailingIntersectionMember(value_t, prop_t);
-                                        const src_text = (try self.allocSimpleTypeName(widened_value)) orelse
-                                            (try self.allocAnonymousObjectName(widened_value));
+                                        const src_text = (try self.allocSimpleTypeName(diagnostic_value)) orelse
+                                            (try self.allocAnonymousObjectName(diagnostic_value));
                                         const tgt_text = callable_intersection_name orelse
                                             (try self.allocSimpleTypeName(report_prop_t)) orelse
                                             (try self.allocAnonymousObjectName(report_prop_t));
@@ -89436,16 +89446,17 @@ pub const Checker = struct {
     }
 
     fn jsxAttributeDiagnosticValueType(self: *Checker, value: NodeId, fallback: TypeId, prop_t: TypeId) CheckError!TypeId {
-        if (value == hir_mod.none_node_id) return fallback;
-        if (self.propertyKeyLiteralUnionPart(prop_t) == null) return fallback;
-        var inner = value;
-        if (self.hir.kindOf(value) == .jsx_expression) {
-            const ex = hir_mod.jsxExpressionOf(self.hir, value);
-            if (ex.expression == hir_mod.none_node_id) return fallback;
-            inner = ex.expression;
-        }
-        if (self.hir.kindOf(inner) != .literal_string) return fallback;
-        return try self.expressionLiteralType(inner, fallback);
+        if (value == hir_mod.none_node_id) return types.Primitive.true_lit;
+        const widened = self.widenForInference(fallback);
+        if (self.propertyKeyLiteralUnionPart(prop_t) == null) return widened;
+        // Quoted JSX initializers are normalized as mutable strings
+        // (`x="Hi"` -> `string`). Expressions inside braces keep their
+        // fresh literal for elaboration (`x={3}` -> `3`), as does the
+        // shorthand form handled above.
+        if (self.hir.kindOf(value) != .jsx_expression) return widened;
+        const ex = hir_mod.jsxExpressionOf(self.hir, value);
+        if (ex.expression == hir_mod.none_node_id) return widened;
+        return try self.expressionLiteralType(ex.expression, widened);
     }
 
     fn jsxTagVisibleOverloads(self: *Checker, tag: NodeId) ?[]const TypeId {
@@ -136486,12 +136497,59 @@ pub const Checker = struct {
             }
             if (self.hir.kindOf(later) != .jsx_spread_attribute) continue;
             const sp = hir_mod.jsxSpreadAttributeOf(self.hir, later);
+            if (try self.jsxObjectLiteralProvidesCompatibleProp(sp.expression, name, prop_t)) |compatible| {
+                if (compatible) return true;
+                continue;
+            }
             const spread_t = try self.checkedExpressionType(sp.expression);
             if (try self.lookupObjectMember(spread_t, name)) |provided_t| {
                 if (self.engine.isAssignableTo(provided_t, prop_t) catch false) return true;
             }
         }
         return false;
+    }
+
+    /// Determine the final value of a named property in an object-literal
+    /// spread before mutable-location widening erases fresh literals.
+    /// Scanning from the end mirrors object spread's last-write-wins
+    /// semantics, including nested object-literal spreads.
+    fn jsxObjectLiteralProvidesCompatibleProp(
+        self: *Checker,
+        expr: NodeId,
+        name: hir_mod.StringId,
+        prop_t: TypeId,
+    ) CheckError!?bool {
+        const object_expr = self.unwrapJsxSpreadObjectExpression(expr);
+        if (object_expr == hir_mod.none_node_id or self.hir.kindOf(object_expr) != .object_literal) return null;
+        const props = hir_mod.objectLiteralProps(self.hir, object_expr);
+        var idx = props.len;
+        while (idx > 0) {
+            idx -= 1;
+            const prop = props[idx];
+            if (self.hir.kindOf(prop) == .spread) {
+                const sp = hir_mod.spreadOf(self.hir, prop);
+                if (try self.jsxObjectLiteralProvidesCompatibleProp(sp.expression, name, prop_t)) |compatible| {
+                    return compatible;
+                }
+                const spread_t = try self.checkedExpressionType(sp.expression);
+                if (try self.lookupObjectMember(spread_t, name)) |provided_t| {
+                    return self.engine.isAssignableTo(provided_t, prop_t) catch false;
+                }
+                continue;
+            }
+            if (self.hir.kindOf(prop) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, prop);
+            if (op.is_computed) continue;
+            const prop_name = self.propertyNameFromKeyNode(op.key) orelse continue;
+            if (prop_name != name) continue;
+            if (op.value == hir_mod.none_node_id) {
+                return self.engine.isAssignableTo(types.Primitive.true_lit, prop_t) catch false;
+            }
+            if (try self.literalExpressionAssignableToTarget(op.value, prop_t)) return true;
+            const value_t = try self.checkedExpressionType(op.value);
+            return self.engine.isAssignableTo(value_t, prop_t) catch false;
+        }
+        return null;
     }
 
     /// Renders a JSX attrs target with tsc's `IntrinsicAttributes &`
@@ -149584,7 +149642,7 @@ test "checker: JSX union props keep literal discriminants in attr bag" {
     }
 }
 
-test "checker: JSX declared data attributes are type checked" {
+test "checker: JSX parity declared data attributes are type checked" {
     const s = try newTsxSetup(
         \\declare namespace JSX {
         \\  interface Element {}
@@ -149598,10 +149656,58 @@ test "checker: JSX declared data attributes are type checked" {
     try s.checker.checkSourceFile(s.root);
 
     var count: usize = 0;
+    var found_bag_diagnostic = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) count += 1;
+        if (d.code == TsCodes.type_not_assignable) {
+            count += 1;
+            if (std.mem.indexOf(u8, d.message, "Type '{ \"data-foo\": number; }'") != null) {
+                found_bag_diagnostic = true;
+            }
+        }
     }
     try T.expectEqual(@as(usize, 1), count);
+    try T.expect(found_bag_diagnostic);
+}
+
+test "checker: JSX parity literal mismatch diagnostics preserve expression and shorthand literals" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\interface Props { x: 2; y: false; z: 2; }
+        \\function Component(props: Props) { return null as any; }
+        \\<Component x={3} y z="Hi" />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var number_literal = false;
+    var shorthand_literal = false;
+    var quoted_string = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.eql(u8, d.message, "Type '3' is not assignable to type '2'.")) number_literal = true;
+        if (std.mem.eql(u8, d.message, "Type 'true' is not assignable to type 'false'.")) shorthand_literal = true;
+        if (std.mem.eql(u8, d.message, "Type 'string' is not assignable to type '2'.")) quoted_string = true;
+    }
+    try T.expect(number_literal);
+    try T.expect(shorthand_literal);
+    try T.expect(quoted_string);
+}
+
+test "checker: JSX parity later literal spread and any spread suppress explicit mismatches" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\interface Props { x: 2; }
+        \\function Component(props: Props) { return null as any; }
+        \\declare const anything: any;
+        \\<Component x={3} {...{ x: 2 }} />;
+        \\<Component {...anything} x={3} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: JSX children respect fixed tuple arity" {
