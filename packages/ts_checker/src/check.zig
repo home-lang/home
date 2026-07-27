@@ -14054,6 +14054,7 @@ pub const Checker = struct {
         try self.checkArgumentsCollisionWithRestParameter(node);
         try self.checkAsyncReturnTypeIsPromise(node);
         try self.walkFnBody(node);
+        try self.checkGeneratorReturnProtocolCompatibility(node);
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
         try self.checkFnReturnPathExits(node);
         try self.checkSetterReturnValue(node);
@@ -14199,6 +14200,61 @@ pub const Checker = struct {
         // Bare type-ref name we can wrap with a concrete suggestion:
         // emit the TS1064 "Did you mean to write 'Promise<X>'?" variant.
         try self.reportAsyncReturnDidYouMeanAwaited(rt);
+    }
+
+    fn checkGeneratorReturnProtocolCompatibility(self: *Checker, node: NodeId) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (!f.flags.is_generator or !f.flags.is_async or f.return_type == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(f.return_type) != .type_ref) return;
+        const ref = hir_mod.typeRefOf(self.hir, f.return_type);
+        if (ref.qualifier_len != 0) return;
+        const name = self.string_interner.get(ref.name);
+        const is_iterable_iterator = std.mem.eql(u8, name, "IterableIterator");
+        const is_iterable = std.mem.eql(u8, name, "Iterable");
+        const is_iterator = std.mem.eql(u8, name, "Iterator");
+        if (!is_iterable_iterator and !is_iterable and !is_iterator) return;
+
+        const args = hir_mod.typeRefArgs(self.hir, f.return_type);
+        const yield_t = if (args.len > 0)
+            self.lowererLowerWithTypeParams(args[0]) catch types.Primitive.any
+        else
+            types.Primitive.any;
+        const yield_name = (try self.allocSimpleTypeName(yield_t)) orelse "any";
+        const source_name = if (is_iterable)
+            "AsyncGenerator<any, any, unknown>"
+        else
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "AsyncGenerator<{s}, any, any>",
+                .{yield_name},
+            );
+        const target_name = if (is_iterator)
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Iterator<{s}, any, any>",
+                .{yield_name},
+            )
+        else
+            std.mem.trim(u8, self.nodeSourceTextOrEmpty(f.return_type), " \t\r\n");
+
+        if (is_iterator) {
+            if (self.diagnosticExists(f.return_type, TsCodes.type_not_assignable)) return;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, target_name },
+            );
+            try self.report(f.return_type, TsCodes.type_not_assignable, msg);
+            return;
+        }
+
+        if (self.diagnosticExists(f.return_type, TsCodes.property_missing_required)) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '[Symbol.iterator]' is missing in type '{s}' but required in type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(f.return_type, TsCodes.property_missing_required, msg);
     }
 
     fn checkAsyncJsDocReturnType(self: *Checker, node: NodeId, jsdoc_return: JsDocDeclaredReturn) CheckError!void {
@@ -15221,7 +15277,9 @@ pub const Checker = struct {
                 // path that consults `objectNumberIndex`.
                 var yield_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer yield_types.deinit(self.gpa);
-                try self.collectYieldTypes(f.body, &yield_types, f.flags.is_async);
+                var next_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer next_types.deinit(self.gpa);
+                try self.collectYieldTypes(f.body, &yield_types, &next_types, f.flags.is_async);
                 const yield_t: TypeId = if (yield_types.items.len == 0)
                     types.Primitive.never
                 else if (yield_types.items.len == 1)
@@ -15250,7 +15308,14 @@ pub const Checker = struct {
                     hir_mod.callOf(self.hir, parent).callee != node
                 else
                     false;
-                const next_t = if (is_contextual_call_argument) types.Primitive.any else types.Primitive.unknown;
+                const next_t = if (next_types.items.len == 0)
+                    (if (is_contextual_call_argument) types.Primitive.any else types.Primitive.unknown)
+                else if (next_types.items.len == 1)
+                    next_types.items[0]
+                else if (std.mem.indexOfScalar(TypeId, next_types.items, types.Primitive.any) != null)
+                    types.Primitive.any
+                else
+                    self.interner.internIntersection(next_types.items) catch return error.OutOfMemory;
                 const gen_t = try self.synthesizeGeneratorTypeFull(yield_t, gen_return_t, next_t, f.flags.is_async);
                 try self.refineSignatureReturn(node, gen_t);
             } else {
@@ -23025,7 +23090,11 @@ pub const Checker = struct {
             .return_type = return_t,
             .next_type = next_t,
         });
-        try self.registerAliasDisplayName(result_t, name_id, args);
+        if (is_sync_iterator or is_async_iterator) {
+            try self.registerAliasDisplayName(result_t, name_id, &.{ yield_t, return_t, next_t });
+        } else {
+            try self.registerAliasDisplayName(result_t, name_id, args);
+        }
         return result_t;
     }
 
@@ -25606,7 +25675,8 @@ pub const Checker = struct {
     fn collectYieldTypes(
         self: *Checker,
         node: NodeId,
-        out: *std.ArrayListUnmanaged(TypeId),
+        yield_types: *std.ArrayListUnmanaged(TypeId),
+        next_types: *std.ArrayListUnmanaged(TypeId),
         is_async_generator: bool,
     ) CheckError!void {
         if (node == hir_mod.none_node_id) return;
@@ -25633,47 +25703,60 @@ pub const Checker = struct {
                         self.iterableElementType(expr_t) catch expr_t
                     else
                         expr_t;
-                    try out.append(self.gpa, yield_t);
+                    try yield_types.append(self.gpa, yield_t);
+                    const next_t = if (y.type_node == hir_mod.none_node_id)
+                        self.hir.typeOf(node)
+                    else if (self.generator_type_info.get(expr_t)) |delegated|
+                        delegated.next_type
+                    else
+                        types.Primitive.none;
+                    if (next_t != types.Primitive.none) {
+                        try next_types.append(self.gpa, next_t);
+                    }
                 } else {
-                    try out.append(self.gpa, types.Primitive.undefined_t);
+                    try yield_types.append(self.gpa, types.Primitive.undefined_t);
+                    const next_t = self.hir.typeOf(node);
+                    if (next_t != types.Primitive.none) {
+                        try next_types.append(self.gpa, next_t);
+                    }
                 }
             },
             // Don't descend into nested fns ÃÂ¢ÃÂÃÂ their `yield`s belong
             // to that inner generator, not us.
             .fn_decl, .fn_expr, .arrow_fn => return,
-            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectYieldTypes(s, out, is_async_generator),
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectYieldTypes(s, yield_types, next_types, is_async_generator),
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
-                try self.collectYieldTypes(i.then_branch, out, is_async_generator);
-                try self.collectYieldTypes(i.else_branch, out, is_async_generator);
+                try self.collectYieldTypes(i.then_branch, yield_types, next_types, is_async_generator);
+                try self.collectYieldTypes(i.else_branch, yield_types, next_types, is_async_generator);
             },
             .while_stmt => {
                 const w = hir_mod.whileOf(self.hir, node);
-                try self.collectYieldTypes(w.body, out, is_async_generator);
+                try self.collectYieldTypes(w.body, yield_types, next_types, is_async_generator);
             },
             .do_while_stmt => {
                 const w = hir_mod.doWhileOf(self.hir, node);
-                try self.collectYieldTypes(w.body, out, is_async_generator);
+                try self.collectYieldTypes(w.body, yield_types, next_types, is_async_generator);
             },
             .for_stmt => {
                 const fr = hir_mod.forStmtOf(self.hir, node);
-                try self.collectYieldTypes(fr.body, out, is_async_generator);
+                try self.collectYieldTypes(fr.body, yield_types, next_types, is_async_generator);
             },
             .for_in_stmt, .for_of_stmt => {
                 const fr = hir_mod.forInOf(self.hir, node);
-                try self.collectYieldTypes(fr.body, out, is_async_generator);
+                try self.collectYieldTypes(fr.body, yield_types, next_types, is_async_generator);
             },
             .try_stmt => {
                 const ts = hir_mod.tryOf(self.hir, node);
-                try self.collectYieldTypes(ts.block, out, is_async_generator);
-                if (ts.catch_block != hir_mod.none_node_id) try self.collectYieldTypes(ts.catch_block, out, is_async_generator);
-                if (ts.finally_block != hir_mod.none_node_id) try self.collectYieldTypes(ts.finally_block, out, is_async_generator);
+                try self.collectYieldTypes(ts.block, yield_types, next_types, is_async_generator);
+                if (ts.catch_block != hir_mod.none_node_id) try self.collectYieldTypes(ts.catch_block, yield_types, next_types, is_async_generator);
+                if (ts.finally_block != hir_mod.none_node_id) try self.collectYieldTypes(ts.finally_block, yield_types, next_types, is_async_generator);
             },
             .switch_stmt => {
-                for (hir_mod.switchCases(self.hir, node)) |case| try self.collectYieldTypes(case, out, is_async_generator);
+                for (hir_mod.switchCases(self.hir, node)) |case| try self.collectYieldTypes(case, yield_types, next_types, is_async_generator);
             },
             .switch_case => {
-                for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.collectYieldTypes(s, out, is_async_generator);
+                for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.collectYieldTypes(s, yield_types, next_types, is_async_generator);
             },
             else => {},
         }
@@ -68027,6 +68110,40 @@ pub const Checker = struct {
         });
     }
 
+    fn reportGeneratorYieldTypeNotAssignable(
+        self: *Checker,
+        yield_node: NodeId,
+        operand_node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!void {
+        const diag_start = self.diagnostics.items.len;
+        const diagnostic_source_t = self.widenLiteralType(source_t);
+        try self.reportTypeNotAssignable(
+            operand_node,
+            diagnostic_source_t,
+            target_t,
+            "Type is not assignable to generator yield type.",
+        );
+        if (self.hir.kindOf(yield_node) != .yield_expr or self.diagnostics.items.len == diag_start) return;
+        if (hir_mod.yieldExprOf(self.hir, yield_node).type_node == hir_mod.none_node_id) return;
+        if (self.yieldStarOperandStartPos(yield_node)) |pos| {
+            self.diagnostics.items[self.diagnostics.items.len - 1].pos = pos;
+        }
+    }
+
+    fn yieldStarOperandStartPos(self: *Checker, yield_node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(yield_node);
+        if (span.start >= span.end or span.end > src.len) return null;
+        var pos: usize = span.start;
+        while (pos < span.end and src[pos] != '*') : (pos += 1) {}
+        if (pos >= span.end) return null;
+        pos += 1;
+        while (pos < span.end and std.ascii.isWhitespace(src[pos])) : (pos += 1) {}
+        return @intCast(pos);
+    }
+
     fn asyncIteratorMissingNextRelatedInfo(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError![]const RelatedInfo {
         if (!self.iteratorLikeMethodReturnsTypeMissingNext(source_t, "Symbol.asyncIterator")) return &.{};
         return self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
@@ -87456,10 +87573,20 @@ pub const Checker = struct {
                     AwaitedTypeResult{ .type = inner_t_raw };
                 const inner_t = try self.expressionLiteralType(y.expr, awaited_yield.type);
                 if (y.type_node != hir_mod.none_node_id) {
-                    if (!self.isIterableLikeType(inner_t) and
-                        !self.objectLiteralHasSymbolIteratorMethod(y.expr))
-                    {
-                        try self.reportIteratorRequired(y.expr, inner_t);
+                    const inside_async_generator = self.isInsideAsyncGeneratorFunction(node);
+                    const protocol_t = if (self.promiseResolveCallArgument(y.expr)) |resolved|
+                        try self.buildStructuralPromise(try self.checkExpression(resolved))
+                    else
+                        inner_t_raw;
+                    const operand_is_iterable = self.isIterableLikeType(protocol_t) or
+                        self.objectLiteralHasSymbolIteratorMethod(y.expr) or
+                        (inside_async_generator and self.isAsyncIterableLikeType(protocol_t));
+                    if (!operand_is_iterable) {
+                        if (inside_async_generator) {
+                            try self.reportAsyncIteratorRequired(y.expr, protocol_t, y.expr);
+                        } else {
+                            try self.reportIteratorRequired(y.expr, protocol_t);
+                        }
                     } else if (gen) |info| {
                         try self.checkIteratorNextSentType(y.expr, inner_t, info.next_type, .yield_star);
                     }
@@ -87512,7 +87639,7 @@ pub const Checker = struct {
                                 info.yield_type,
                             ) catch false;
                             if (!reported) {
-                                try self.report(y.expr, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                                try self.reportGeneratorYieldTypeNotAssignable(node, y.expr, delegated_yield, info.yield_type);
                             }
                         }
                     }
@@ -87543,7 +87670,7 @@ pub const Checker = struct {
                             if (generator_object_to_callable) {
                                 try self.reportTypeNotAssignable(y.expr, inner_t, info.yield_type, "Type is not assignable to generator yield type.");
                             } else {
-                                try self.report(y.expr, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                                try self.reportGeneratorYieldTypeNotAssignable(node, y.expr, inner_t, info.yield_type);
                             }
                         }
                     }
@@ -201081,6 +201208,59 @@ test "checker: inferred async generators satisfy async iterator return types" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+}
+
+test "checker: async generator protocols preserve yield-star and next semantics" {
+    const b = try newBoundSetup(
+        \\// @strict: false
+        \\// @target: es2018
+        \\// @lib: esnext
+        \\async function* badObject() { yield* {}; }
+        \\async function* badPromise() { yield* Promise.resolve([1, 2]); }
+        \\const direct: () => AsyncIterator<number> = async function* () { yield "a"; };
+        \\const arrayDelegate: () => AsyncIterator<number> = async function* () { yield* ["a"]; };
+        \\const asyncDelegate: () => AsyncIterator<number> = async function* () {
+        \\  yield* (async function* () { yield "a"; })();
+        \\};
+        \\async function* explicit(): AsyncIterator<number> { yield "a"; }
+        \\async function* wrongIterableIterator(): IterableIterator<number> { yield 1; }
+        \\async function* wrongIterable(): Iterable<number> { yield 1; }
+        \\async function* wrongIterator(): Iterator<number> { yield 1; }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.async_iterator_required));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.async_iterator_required,
+        "Type 'Promise<number[]>' must have a '[Symbol.asyncIterator]()' method that returns an async iterator.",
+    ));
+    try T.expect(!checkerHasCode(b, TsCodes.yield_star_not_iterable));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '() => AsyncGenerator<string, void, any>' is not assignable to type '() => AsyncIterator<number, any, any>'.",
+    ));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '() => AsyncGenerator<string, void, unknown>' is not assignable to type '() => AsyncIterator<number, any, any>'.",
+    ));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.property_missing_required,
+        "Property '[Symbol.iterator]' is missing in type 'AsyncGenerator<number, any, any>' but required in type 'IterableIterator<number>'.",
+    ));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.property_missing_required,
+        "Property '[Symbol.iterator]' is missing in type 'AsyncGenerator<any, any, unknown>' but required in type 'Iterable<number>'.",
+    ));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type 'AsyncGenerator<number, any, any>' is not assignable to type 'Iterator<number, any, any>'.",
+    ));
 }
 
 test "checker: generic intersection inference uses array iteration elements" {
