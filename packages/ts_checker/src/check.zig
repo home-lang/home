@@ -3855,6 +3855,12 @@ pub const Checker = struct {
     /// Stable declaration identity for mapped key parameters. Structural
     /// interning would collapse unrelated `[K in ...]` declarations.
     mapped_type_params: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    /// Function/class/function-type constraints are lowered after a first
+    /// pass installs fresh placeholder type parameters. Forward constraints
+    /// retain those placeholder ids, so remember the corresponding finalized
+    /// declaration ids rather than conflating same-named parameters from
+    /// unrelated generic scopes.
+    type_parameter_placeholder_targets: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     /// Names of NON-generic type aliases whose body is currently being
     /// lowered. A bare reference to one of these, reached while a
     /// type-argument / tuple-element context is active (see
@@ -4505,6 +4511,7 @@ pub const Checker = struct {
             .generic_interface_decl_by_instance = .empty,
             .active_generic_aliases = .empty,
             .mapped_type_params = .empty,
+            .type_parameter_placeholder_targets = .empty,
             .resolving_value_types = .empty,
             .namespace_value_in_progress = .empty,
             .namespace_value_object_types = .empty,
@@ -4854,6 +4861,7 @@ pub const Checker = struct {
         self.conditional_branch_check_names.deinit(self.gpa);
         self.reported_mapped_property_cycles.deinit(self.gpa);
         self.mapped_type_params.deinit(self.gpa);
+        self.type_parameter_placeholder_targets.deinit(self.gpa);
         self.alias_lower_in_progress.deinit(self.gpa);
         self.typeof_query_in_progress.deinit(self.gpa);
         self.circ_ctx_stack.deinit(self.gpa);
@@ -27904,6 +27912,7 @@ pub const Checker = struct {
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const placeholder = self.hir.typeOf(tp);
             const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
                 try self.lowererLowerWithTypeParams(tpp.constraint)
             else
@@ -27922,6 +27931,9 @@ pub const Checker = struct {
                     types.Variance.fromHirBits(tpp.variance),
                     tpp.is_const,
                 ) catch return error.OutOfMemory;
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_placeholder_targets.put(self.gpa, placeholder, tp_id);
+            }
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
             try captured_tp_ids.append(self.gpa, tp_id);
@@ -32220,6 +32232,7 @@ pub const Checker = struct {
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const placeholder = self.hir.typeOf(tp);
             const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
                 try self.lowererLowerWithTypeParams(tpp.constraint)
             else
@@ -32238,6 +32251,9 @@ pub const Checker = struct {
                     types.Variance.fromHirBits(tpp.variance),
                     tpp.is_const,
                 ) catch return error.OutOfMemory;
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_placeholder_targets.put(self.gpa, placeholder, tp_id);
+            }
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
             try class_param_ids.append(self.gpa, tp_id);
@@ -62383,6 +62399,7 @@ pub const Checker = struct {
                 for (ft_type_params) |tp| {
                     if (self.hir.kindOf(tp) != .type_parameter) continue;
                     const tpp = hir_mod.typeParameterOf(self.hir, tp);
+                    const placeholder = self.hir.typeOf(tp);
                     const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
                         try self.lowererLowerWithTypeParams(tpp.constraint)
                     else
@@ -62401,6 +62418,9 @@ pub const Checker = struct {
                             types.Variance.fromHirBits(tpp.variance),
                             tpp.is_const,
                         ) catch return error.OutOfMemory;
+                    if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                        try self.type_parameter_placeholder_targets.put(self.gpa, placeholder, tp_id);
+                    }
                     self.hir.setType(tp, tp_id);
                     try self.recordNarrow(tpp.name, tp_id);
                     try captured_tp_ids.append(self.gpa, tp_id);
@@ -109007,15 +109027,27 @@ pub const Checker = struct {
         return false;
     }
 
+    fn resolvedTypeParameterPlaceholder(self: *Checker, t: TypeId) TypeId {
+        var current = t;
+        var depth: u8 = 0;
+        while (depth < 16) : (depth += 1) {
+            const next = self.type_parameter_placeholder_targets.get(current) orelse return current;
+            if (next == current) return current;
+            current = next;
+        }
+        return current;
+    }
+
     fn typeParameterConstraint(self: *Checker, t: TypeId) ?TypeId {
-        if (t >= self.interner.pool.typeCount()) return null;
-        const flags = self.interner.pool.flagsOf(t);
+        const resolved_t = self.resolvedTypeParameterPlaceholder(t);
+        if (resolved_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(resolved_t);
         if (!flags.is_type_parameter) return null;
-        const payload_idx = self.interner.pool.payloadOf(t);
+        const payload_idx = self.interner.pool.payloadOf(resolved_t);
         if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
         if (tp.constraint == types.Primitive.none or tp.constraint == types.Primitive.unknown) return null;
-        return tp.constraint;
+        return self.resolvedTypeParameterPlaceholder(tp.constraint);
     }
 
     /// Resolve a type parameter to its base constraint (apparent type)
@@ -128261,11 +128293,27 @@ pub const Checker = struct {
     }
 
     fn typeParameterConstraintAssignableToParam(self: *Checker, arg_t: TypeId, param_t: TypeId) !bool {
+        return self.typeParameterConstraintAssignableToParamDepth(arg_t, param_t, 0);
+    }
+
+    fn typeParameterConstraintAssignableToParamDepth(
+        self: *Checker,
+        arg_t: TypeId,
+        param_t: TypeId,
+        depth: u8,
+    ) !bool {
+        if (depth >= 16) return false;
         if (arg_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(arg_t).is_type_parameter) return false;
         const constraint = self.typeParameterConstraint(arg_t) orelse return false;
         if (constraint == arg_t or constraint == types.Primitive.none or constraint == types.Primitive.unknown) return false;
-        if (self.sameTypeParameterName(constraint, param_t)) return true;
+        if (constraint == param_t) return true;
+        if (constraint < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(constraint).is_type_parameter and
+            try self.typeParameterConstraintAssignableToParamDepth(constraint, param_t, depth + 1))
+        {
+            return true;
+        }
         return self.engine.isAssignableTo(constraint, param_t) catch false;
     }
 
@@ -182811,6 +182859,49 @@ test "checker: unrelated type parameters nest arbitrary instantiation under TS23
         try T.expectEqual(TsCodes.type_parameter_might_need_extends_constraint, d.related[0].code);
     }
     try T.expectEqual(@as(u32, 2), mismatch_count);
+}
+
+test "checker: forward type parameter constraints retain transitive declaration identity" {
+    const s = try newSetup(
+        \\function forward<T extends U, U extends V, V extends Date>(t: T, u: U, v: V) {
+        \\  u = t;
+        \\  v = t;
+        \\  v = u;
+        \\  let d: Date;
+        \\  d = t;
+        \\  d = u;
+        \\  d = v;
+        \\  t = u;
+        \\  t = v;
+        \\  t = new Date();
+        \\  u = v;
+        \\  u = new Date();
+        \\  v = new Date();
+        \\}
+        \\function reordered<V extends Date, U extends V, T extends U>(t: T, u: U, v: V) {
+        \\  u = t;
+        \\  v = t;
+        \\  v = u;
+        \\  let d: Date;
+        \\  d = t;
+        \\  d = u;
+        \\  d = v;
+        \\  t = u;
+        \\  t = v;
+        \\  t = new Date();
+        \\  u = v;
+        \\  u = new Date();
+        \\  v = new Date();
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var mismatch_count: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) mismatch_count += 1;
+    }
+    try T.expectEqual(@as(u32, 12), mismatch_count);
 }
 
 test "checker: unconstrained source type parameter carries TS2208 related info" {
