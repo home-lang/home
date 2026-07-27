@@ -88531,6 +88531,12 @@ pub const Checker = struct {
             try self.appendOrReplaceObjectMember(&display_attr_members, children_member);
             try self.appendOrReplaceObjectMember(&generic_spread_display_members, children_member);
         }
+        try self.reportJsxBareGenericSpreadIntrinsicAttributesMismatch(
+            el.tag,
+            attrs,
+            raw_props_t,
+            props_t,
+        );
         // Spread-override (dual case): `<Tag x="ok" {...obj} />`
         // where the explicit `x="ok"` passes the value check but a
         // LATER spread provides an incompatible value type for the
@@ -88649,13 +88655,31 @@ pub const Checker = struct {
                         if (try self.jsxLibElementSyntheticType()) |t| return t;
                         return types.Primitive.any;
                     }
-                    const attrs_match_overload = try self.jsxAttributesMatchOverload(el.tag, attrs_t, attrs.len);
+                    const has_generic_spread = generic_spread_types.items.len > 0;
+                    const attrs_match_overload = try self.jsxAttributesMatchOverload(
+                        el.tag,
+                        attrs_t,
+                        attrs.len,
+                        has_generic_spread,
+                    );
                     const interface_overloads = try self.jsxTagInterfaceOverloads(el.tag);
                     const attrs_match_sigs = if (interface_overloads) |sigs|
-                        try self.jsxAttributesMatchSignatures(el.tag, sigs, attrs_t, attrs.len)
+                        try self.jsxAttributesMatchSignatures(
+                            el.tag,
+                            sigs,
+                            attrs_t,
+                            attrs.len,
+                            has_generic_spread,
+                        )
                     else
                         false;
-                    const attrs_have_no_excess = try self.jsxAttrsHaveNoExcessMembersForTarget(el.tag, attrs_t, effective_target);
+                    // A generic spread is preserved by tsgo as an
+                    // intersection (`T & { ...explicit }`), not a fresh
+                    // object literal. Excess-property checking therefore
+                    // does not apply to the composed bag, while required
+                    // properties and value relations still do.
+                    const attrs_have_no_excess = has_generic_spread or
+                        try self.jsxAttrsHaveNoExcessMembersForTarget(el.tag, attrs_t, effective_target);
                     const attrs_values_assignable = try self.jsxAttributeBagValuesAssignable(attrs_t, effective_target);
                     if (self.jsxTagHasVisibleOverloads(el.tag) and !attrs_match_overload) {
                         try self.report(self.jsxNoOverloadAnchor(el.tag, attrs), TsCodes.no_overload_matches, "No overload matches this call.");
@@ -89607,11 +89631,163 @@ pub const Checker = struct {
             try self.jsxFixDirectPropsInference(target, full_evidence_t, &subs);
             effective_target = self.substituteType(target, &subs) catch effective_target;
         }
+        // `getSpreadType` retains an otherwise-bare generic spread as
+        // the inference source. In particular, `<Component {...props} />`
+        // for `Component<T>(props: T)` and `props: U` infers `T = U`,
+        // even when U has no constraint and therefore contributes no
+        // materialized object members.
+        try self.jsxFixDirectPropsInferenceFromBareGenericSpread(target, attrs, &subs);
+        try self.normalizeJsxInferenceConstraints(target, &subs);
         var fallback_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
         defer fallback_visited.deinit(self.gpa);
         try self.collectJsxUnfixedTypeParamFallbacks(target, &subs, &fallback_visited);
         if (subs.count() == 0) return target;
         return self.substituteType(target, &subs) catch effective_target;
+    }
+
+    fn jsxFixDirectPropsInferenceFromBareGenericSpread(
+        self: *Checker,
+        target: TypeId,
+        attrs: []const NodeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        if (attrs.len != 1 or target >= self.interner.pool.typeCount()) return;
+        const target_flags = self.interner.pool.flagsOf(target);
+        if (!target_flags.is_type_parameter or target_flags.is_union or target_flags.is_intersection) return;
+        if (self.hir.kindOf(attrs[0]) != .jsx_spread_attribute) return;
+        const spread = hir_mod.jsxSpreadAttributeOf(self.hir, attrs[0]);
+        const source = try self.checkedExpressionType(spread.expression);
+        if (source >= self.interner.pool.typeCount()) return;
+        const source_flags = self.interner.pool.flagsOf(source);
+        if (!source_flags.is_type_parameter or source_flags.is_union or source_flags.is_intersection) return;
+        try subs.put(self.gpa, target, source);
+    }
+
+    /// A bare generic spread remains its source type parameter through
+    /// JSX call inference. With React's `JSX.IntrinsicAttributes` in
+    /// scope, an unconstrained `U` cannot satisfy the managed target
+    /// `IntrinsicAttributes & U`; a constrained object type can.
+    fn reportJsxBareGenericSpreadIntrinsicAttributesMismatch(
+        self: *Checker,
+        tag: NodeId,
+        attrs: []const NodeId,
+        raw_target: ?TypeId,
+        instantiated_target: ?TypeId,
+    ) CheckError!void {
+        if (!self.jsxHasIntrinsicAttributesDecl(tag) or attrs.len != 1) return;
+        const target = raw_target orelse return;
+        if (target >= self.interner.pool.typeCount()) return;
+        const target_flags = self.interner.pool.flagsOf(target);
+        if (!target_flags.is_type_parameter or target_flags.is_union or target_flags.is_intersection) return;
+        if (self.hir.kindOf(attrs[0]) != .jsx_spread_attribute) return;
+        const spread = hir_mod.jsxSpreadAttributeOf(self.hir, attrs[0]);
+        const source = try self.checkedExpressionType(spread.expression);
+        if (source >= self.interner.pool.typeCount()) return;
+        const source_flags = self.interner.pool.flagsOf(source);
+        if (!source_flags.is_type_parameter or source_flags.is_union or source_flags.is_intersection) return;
+        if (self.typeParameterConstraint(source) != null) return;
+        if (instantiated_target == null or instantiated_target.? != source) return;
+
+        const source_name = (try self.allocSimpleTypeName(source)) orelse return;
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type 'IntrinsicAttributes & {s}'.",
+            .{ source_name, source_name },
+        );
+        const chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{.{
+            .code = TsCodes.type_not_assignable,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type 'IntrinsicAttributes'.",
+                .{source_name},
+            ),
+        }});
+        var related: []const RelatedInfo = &.{};
+        if (self.typeParameterDeclForType(source)) |decl| {
+            related = try self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
+                .node = decl,
+                .code = TsCodes.type_parameter_might_need_extends_constraint,
+                .message = "This type parameter might need an `extends JSX.IntrinsicAttributes` constraint.",
+            }});
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = tag,
+            .code = TsCodes.type_not_assignable,
+            .message = message,
+            .chain = chain,
+            .related = related,
+        });
+    }
+
+    /// Finalize JSX inference candidates using tsgo's `getInferredType`
+    /// constraint rule: an inferred candidate that does not satisfy the
+    /// instantiated constraint is discarded and the constraint itself
+    /// becomes the inferred type.
+    fn normalizeJsxInferenceConstraints(
+        self: *Checker,
+        target: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited.deinit(self.gpa);
+        try self.normalizeJsxInferenceConstraintsInner(target, subs, &visited);
+    }
+
+    fn normalizeJsxInferenceConstraintsInner(
+        self: *Checker,
+        t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        visited: *std.AutoHashMapUnmanaged(TypeId, void),
+    ) CheckError!void {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
+        if (visited.contains(t)) return;
+        try visited.put(self.gpa, t, {});
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                try self.normalizeJsxInferenceConstraintsInner(member, subs, visited);
+            }
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                try self.normalizeJsxInferenceConstraintsInner(member, subs, visited);
+            }
+            return;
+        }
+        if (flags.is_type_parameter) {
+            if (self.isThisTypeParameter(t)) return;
+            const candidate = subs.get(t) orelse return;
+            const raw_constraint = self.typeParameterConstraint(t) orelse return;
+            if (raw_constraint == t) return;
+            const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+            if (!(self.engine.isAssignableTo(candidate, constraint) catch false)) {
+                try subs.put(self.gpa, t, constraint);
+            }
+            return;
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |member| {
+                try self.normalizeJsxInferenceConstraintsInner(member.type, subs, visited);
+            }
+            const string_index = self.interner.objectStringIndex(t);
+            if (string_index != types.Primitive.none) {
+                try self.normalizeJsxInferenceConstraintsInner(string_index, subs, visited);
+            }
+            const number_index = self.interner.objectNumberIndex(t);
+            if (number_index != types.Primitive.none) {
+                try self.normalizeJsxInferenceConstraintsInner(number_index, subs, visited);
+            }
+            return;
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |param_t| {
+                try self.normalizeJsxInferenceConstraintsInner(param_t, subs, visited);
+            }
+            if (self.interner.signatureReturn(t)) |return_t| {
+                try self.normalizeJsxInferenceConstraintsInner(return_t, subs, visited);
+            }
+        }
     }
 
     fn collectJsxUnfixedTypeParamFallbacks(
@@ -89631,6 +89807,8 @@ pub const Checker = struct {
                 const payload = self.interner.pool.type_parameter_payloads.items[payload_idx];
                 break :blk if (payload.default != types.Primitive.none)
                     self.substituteType(payload.default, subs) catch payload.default
+                else if (self.typeParameterConstraint(t)) |raw_constraint|
+                    self.substituteType(raw_constraint, subs) catch raw_constraint
                 else
                     types.Primitive.unknown;
             } else types.Primitive.unknown;
@@ -89726,16 +89904,13 @@ pub const Checker = struct {
     }
 
     fn jsxNoOverloadAnchor(self: *Checker, tag: NodeId, attrs: []const NodeId) NodeId {
-        var saw_spread = false;
-        var last_explicit = tag;
-        for (attrs) |attr| {
-            switch (self.hir.kindOf(attr)) {
-                .jsx_spread_attribute => saw_spread = true,
-                .jsx_attribute => last_explicit = attr,
-                else => {},
-            }
-        }
-        return if (saw_spread) last_explicit else tag;
+        _ = self;
+        _ = attrs;
+        // `resolveJsxOpeningLikeElement` reports applicability failures
+        // against the JSX tag name. Attribute-level elaborations may hang
+        // below that diagnostic, but the TS2769 head remains at the tag
+        // even when the attributes bag contains spreads.
+        return tag;
     }
 
     /// Construct (preferred) or call signatures of a non-union tag
@@ -89771,7 +89946,14 @@ pub const Checker = struct {
         return try self.diag_arena.allocator().dupe(TypeId, sigs.items);
     }
 
-    fn jsxAttributesMatchSignatures(self: *Checker, anchor: NodeId, sigs: []const TypeId, attrs_t: TypeId, attr_count: usize) CheckError!bool {
+    fn jsxAttributesMatchSignatures(
+        self: *Checker,
+        anchor: NodeId,
+        sigs: []const TypeId,
+        attrs_t: TypeId,
+        attr_count: usize,
+        has_generic_spread: bool,
+    ) CheckError!bool {
         for (sigs) |sig| {
             const params = self.interner.signatureParams(sig);
             if (params.len == 0) {
@@ -89788,7 +89970,8 @@ pub const Checker = struct {
                     target = self.substituteType(target, &subs) catch target;
                 }
             }
-            const no_excess = try self.jsxAttrsHaveNoExcessMembersForTarget(anchor, attrs_t, target);
+            const no_excess = has_generic_spread or
+                try self.jsxAttrsHaveNoExcessMembersForTarget(anchor, attrs_t, target);
             if (no_excess and self.engine.isAssignableTo(attrs_t, target) catch false) return true;
             if (no_excess and target_had_free and try self.jsxRequiredPropsAssignable(target, attrs_t)) return true;
         }
@@ -89827,7 +90010,13 @@ pub const Checker = struct {
         return tag;
     }
 
-    fn jsxAttributesMatchOverload(self: *Checker, tag: NodeId, attrs_t: TypeId, attr_count: usize) CheckError!bool {
+    fn jsxAttributesMatchOverload(
+        self: *Checker,
+        tag: NodeId,
+        attrs_t: TypeId,
+        attr_count: usize,
+        has_generic_spread: bool,
+    ) CheckError!bool {
         const overloads = self.jsxTagVisibleOverloads(tag) orelse return false;
         for (overloads) |sig| {
             const params = self.interner.signatureParams(sig);
@@ -89845,7 +90034,8 @@ pub const Checker = struct {
                     target = self.substituteType(target, &subs) catch target;
                 }
             }
-            const no_excess = try self.jsxAttrsHaveNoExcessMembersForTarget(tag, attrs_t, target);
+            const no_excess = has_generic_spread or
+                try self.jsxAttrsHaveNoExcessMembersForTarget(tag, attrs_t, target);
             if (no_excess and self.engine.isAssignableTo(attrs_t, target) catch false) return true;
             if (no_excess and target_had_free and try self.jsxRequiredPropsAssignable(target, attrs_t)) return true;
         }
@@ -89919,6 +90109,10 @@ pub const Checker = struct {
         try attr_members.appendSlice(self.gpa, self.interner.objectMembers(attrs_t));
         for (attr_members.items) |attr_member| {
             if (attr_member.name == key_name) continue;
+            // tsgo's `isIgnoredJsxProperty` exempts every hyphenated
+            // JSX name from excess-property checking, not only the
+            // conventional `data-*` family.
+            if (std.mem.indexOfScalar(u8, self.string_interner.get(attr_member.name), '-') != null) continue;
             if ((try self.lookupObjectMember(target, attr_member.name)) != null) continue;
             if (target_has_string_index) continue;
             return false;
@@ -90972,6 +91166,19 @@ pub const Checker = struct {
             if (hir_mod.identifierOf(self.hir, f.name).name != tag_name) continue;
             const params = hir_mod.fnParams(self.hir, decl);
             if (params.len == 0) return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+            // Reuse the declaration's signature while it is available:
+            // its parameter types were lowered inside the function's
+            // generic scope, preserving `T` plus its constraint. Re-lowering
+            // `param: T` here at the JSX use site has no active declaration
+            // type-parameter scope and collapses T to `unknown`.
+            const signature = self.hir.typeOf(decl);
+            if (signature != types.Primitive.none and
+                signature < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(signature).is_signature)
+            {
+                const signature_params = self.interner.signatureParams(signature);
+                if (signature_params.len > 0) return signature_params[0];
+            }
             const first = hir_mod.parameterOf(self.hir, params[0]);
             if (first.type_annotation == hir_mod.none_node_id) return types.Primitive.any;
             try self.ensureTypeRefDeclChecked(first.type_annotation, root);
@@ -201907,6 +202114,101 @@ test "checker: JSX generic spreads report the composed attributes bag" {
         TsCodes.type_not_assignable,
         "Type 'T' is not assignable to type 'IntrinsicAttributes & { prop: unknown; \"ignore-prop\": string; }'.",
     ));
+}
+
+test "checker: JSX generic spread intersections suppress only excess properties" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\declare function OverloadComponent<U>(): JSX.Element;
+        \\declare function OverloadComponent<U>(attr: { b: U, a?: string, "ignore-prop": boolean }): JSX.Element;
+        \\declare function OverloadComponent<T, U>(attr: { b: U, a: T }): JSX.Element;
+        \\declare function RequiredComponent<U>(): JSX.Element;
+        \\declare function RequiredComponent<U>(attr: { b: U, a: string, "ignore-prop": boolean }): JSX.Element;
+        \\declare function RequiredComponent<T, U>(attr: { b: U, a: T }): JSX.Element;
+        \\declare function ComponentSpecific<U>(attr: { prop: U }): JSX.Element;
+        \\function check<T extends { b: number, prop: number }, U extends { a: boolean, b: string }>(arg1: T, arg2: U) {
+        \\  <OverloadComponent {...arg2} ignore-pro="hello" />;
+        \\  <OverloadComponent {...arg2} ignore-prop="hello" {...arg1} />;
+        \\  <ComponentSpecific {...arg1} prop1="hello" />;
+        \\  <RequiredComponent {...arg1} ignore-prop />;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: JSX inference falls back to an unsatisfied object constraint" {
+    const s = try newTsxSetup(
+        \\// @target: es2015
+        \\// @filename: file.tsx
+        \\// @jsx: preserve
+        \\// @module: amd
+        \\// @skipLibCheck: true
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require('react')
+        \\interface MyComponentProp {
+        \\  values: string;
+        \\}
+        \\function MyComponent1<T extends MyComponentProp>(attr: T) {
+        \\  return <div>attr.values</div>
+        \\}
+        \\let i1 = <MyComponent1 values={5}/>;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .strict_property_initialization = true,
+        .use_unknown_in_catch_variables = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'number' is not assignable to type 'string'.",
+    ));
+}
+
+test "checker: JSX bare generic spreads retain intrinsic attributes relation" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\declare function Component<T>(props: T): JSX.Element;
+        \\function unconstrained<U>(props: U) {
+        \\  return <Component {...props} />;
+        \\}
+        \\function constrained<U extends { x: string }>(props: U) {
+        \\  return <Component {...props} />;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'U' is not assignable to type 'IntrinsicAttributes & U'.",
+    ));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+        try T.expectEqualStrings(
+            "Type 'U' is not assignable to type 'IntrinsicAttributes'.",
+            diagnostic.chain[0].message,
+        );
+        try T.expectEqual(@as(usize, 1), diagnostic.related.len);
+        try T.expectEqualStrings(
+            "This type parameter might need an `extends JSX.IntrinsicAttributes` constraint.",
+            diagnostic.related[0].message,
+        );
+    }
 }
 
 test "checker: JSX generic class defaults remain inferable before callback context" {
