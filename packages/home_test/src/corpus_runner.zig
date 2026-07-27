@@ -571,9 +571,13 @@ const harness_prelude =
     \\globalThis.__home_symlinks = globalThis.__home_symlinks || Object.create(null);
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
+    \\globalThis.__home_array_buffer_transfer_locks = globalThis.__home_array_buffer_transfer_locks || new WeakSet();
     \\if (!ArrayBuffer.prototype.transfer || !ArrayBuffer.prototype.transfer.__home_marks_detached) {
     \\  const __home_native_array_buffer_transfer = ArrayBuffer.prototype.transfer;
     \\  ArrayBuffer.prototype.transfer = function(newLength) {
+    \\    if (globalThis.__home_array_buffer_transfer_locks.has(this)) {
+    \\      return this.slice(0, newLength === undefined ? this.byteLength : Number(newLength) || 0);
+    \\    }
     \\    Object.defineProperty(this, "__home_detached", { configurable: true, value: true });
     \\    if (typeof __home_native_array_buffer_transfer === "function") return __home_native_array_buffer_transfer.call(this, newLength);
     \\    return new ArrayBuffer(newLength === undefined ? this.byteLength : Number(newLength) || 0);
@@ -6765,6 +6769,204 @@ const harness_prelude =
     \\    output.push('<h' + level + ' id="' + slug + '">' + body + "</h" + level + ">");
     \\  }
     \\  return output.length > 0 ? output.join("\n") + "\n" : "";
+    \\}
+    \\function __home_markdown_callback(callbacks, name, children, meta) {
+    \\  const callback = callbacks && callbacks[name];
+    \\  if (typeof callback !== "function") return children;
+    \\  const result = meta === undefined ? callback(children) : callback(children, meta);
+    \\  return result === null || result === undefined ? "" : String(result);
+    \\}
+    \\function __home_markdown_decode_entities(value) {
+    \\  return String(value || "").replace(/&(?:#(\d+)|#x([\da-f]+)|amp|lt|gt|quot|apos);/gi, (match, decimal, hex) => {
+    \\    if (decimal !== undefined) return String.fromCodePoint(Number(decimal));
+    \\    if (hex !== undefined) return String.fromCodePoint(parseInt(hex, 16));
+    \\    const name = match.slice(1, -1).toLowerCase();
+    \\    return name === "amp" ? "&" : name === "lt" ? "<" : name === "gt" ? ">" : name === "quot" ? '"' : "'";
+    \\  });
+    \\}
+    \\function __home_markdown_inline_render(source, callbacks, options) {
+    \\  const text = String(source || "");
+    \\  const patterns = [
+    \\    { name: "image", re: /!\[([^\]]*)\]\((\S+?)(?:\s+["']([^"']*)["'])?\)/ },
+    \\    { name: "link", re: /\[([^\]]*)\]\((\S+?)(?:\s+["']([^"']*)["'])?\)/ },
+    \\    { name: "codespan", re: /`([^`]*)`/ },
+    \\    { name: "strong", re: /\*\*([^*]*?)\*\*|__([^_]*?)__/ },
+    \\    { name: "strikethrough", re: /~~([^~]*?)~~/ },
+    \\    { name: "emphasis", re: /\*([^*\n]+?)\*|_([^_\n]+?)_/ },
+    \\  ];
+    \\  if (options && options.autolinks) patterns.push({ name: "autolink", re: /\bwww\.[^\s<]+/ });
+    \\  let best = null;
+    \\  for (const pattern of patterns) {
+    \\    const match = pattern.re.exec(text);
+    \\    if (match && (!best || match.index < best.match.index)) best = { pattern, match };
+    \\  }
+    \\  if (!best) {
+    \\    const decoded = __home_markdown_decode_entities(text);
+    \\    return __home_markdown_callback(callbacks, "text", decoded);
+    \\  }
+    \\  const prefix = __home_markdown_inline_render(text.slice(0, best.match.index), callbacks, options);
+    \\  const rest = text.slice(best.match.index + best.match[0].length);
+    \\  const name = best.pattern.name;
+    \\  let rendered = "";
+    \\  if (name === "image") {
+    \\    const children = __home_markdown_inline_render(best.match[1], callbacks, options);
+    \\    rendered = __home_markdown_callback(callbacks, "image", children, { src: best.match[2], title: best.match[3] });
+    \\  } else if (name === "link") {
+    \\    const children = __home_markdown_inline_render(best.match[1], callbacks, options);
+    \\    rendered = __home_markdown_callback(callbacks, "link", children, { href: best.match[2], title: best.match[3] });
+    \\  } else if (name === "autolink") {
+    \\    const children = __home_markdown_callback(callbacks, "text", best.match[0]);
+    \\    rendered = __home_markdown_callback(callbacks, "link", children, { href: "http://" + best.match[0], title: undefined });
+    \\  } else {
+    \\    const children = __home_markdown_inline_render(best.match[1] === undefined ? best.match[2] : best.match[1], callbacks, options);
+    \\    rendered = __home_markdown_callback(callbacks, name, children);
+    \\  }
+    \\  return prefix + rendered + __home_markdown_inline_render(rest, callbacks, options);
+    \\}
+    \\function __home_markdown_list_match(line) {
+    \\  const match = String(line || "").match(/^(\s*)(?:(\d+)\.|([-+*]))\s+([\s\S]*)$/);
+    \\  if (!match) return null;
+    \\  return { indent: match[1].length, ordered: match[2] !== undefined, start: match[2] === undefined ? undefined : Number(match[2]), content: match[4] };
+    \\}
+    \\function __home_markdown_render_list(lines, startIndex, callbacks, options, depth) {
+    \\  const first = __home_markdown_list_match(lines[startIndex]);
+    \\  const indent = first.indent;
+    \\  const ordered = first.ordered;
+    \\  const start = first.start;
+    \\  const items = [];
+    \\  let index = startIndex;
+    \\  while (index < lines.length) {
+    \\    const item = __home_markdown_list_match(lines[index]);
+    \\    if (!item || item.indent !== indent || item.ordered !== ordered) break;
+    \\    let content = item.content;
+    \\    let checked;
+    \\    if (options && options.tasklists) {
+    \\      const task = content.match(/^\[([ xX])\]\s+(.*)$/);
+    \\      if (task) {
+    \\        checked = task[1].toLowerCase() === "x";
+    \\        content = task[2];
+    \\      }
+    \\    }
+    \\    index++;
+    \\    let children = __home_markdown_inline_render(content, callbacks, options);
+    \\    while (index < lines.length) {
+    \\      const nested = __home_markdown_list_match(lines[index]);
+    \\      if (!nested || nested.indent <= indent) break;
+    \\      const renderedNested = __home_markdown_render_list(lines, index, callbacks, options, depth + 1);
+    \\      children += renderedNested.output;
+    \\      index = renderedNested.next;
+    \\    }
+    \\    items.push({ children, checked });
+    \\  }
+    \\  let renderedItems = "";
+    \\  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+    \\    renderedItems += __home_markdown_callback(callbacks, "listItem", items[itemIndex].children, {
+    \\      index: itemIndex,
+    \\      depth,
+    \\      ordered,
+    \\      start,
+    \\      checked: items[itemIndex].checked,
+    \\    });
+    \\  }
+    \\  return {
+    \\    output: __home_markdown_callback(callbacks, "list", renderedItems, { ordered, start, depth }),
+    \\    next: index,
+    \\  };
+    \\}
+    \\function __home_markdown_render_blocks(source, callbacks, options) {
+    \\  const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    \\  let output = "";
+    \\  let index = 0;
+    \\  while (index < lines.length) {
+    \\    const line = lines[index];
+    \\    if (line.trim() === "") {
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    const fence = line.match(/^```([^\s`]*)\s*$/);
+    \\    if (fence) {
+    \\      index++;
+    \\      const body = [];
+    \\      while (index < lines.length && !/^```\s*$/.test(lines[index])) body.push(lines[index++]);
+    \\      if (index < lines.length) index++;
+    \\      output += __home_markdown_callback(callbacks, "code", body.join("\n") + "\n", {
+    \\        language: fence[1] || undefined,
+    \\      });
+    \\      continue;
+    \\    }
+    \\    const heading = line.match(/^(#{1,6})\s+([\s\S]*?)\s*#*\s*$/);
+    \\    if (heading) {
+    \\      const children = __home_markdown_inline_render(heading[2], callbacks, options);
+    \\      const meta = { level: heading[1].length };
+    \\      if (options && options.headings && (options.headings === true || options.headings.ids)) {
+    \\        meta.id = __home_markdown_heading_slug(heading[2]);
+    \\      }
+    \\      output += __home_markdown_callback(callbacks, "heading", children, meta);
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+    \\      output += __home_markdown_callback(callbacks, "hr", "");
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    if (/^>\s?/.test(line)) {
+    \\      const quoted = [];
+    \\      while (index < lines.length && /^>\s?/.test(lines[index])) quoted.push(lines[index++].replace(/^>\s?/, ""));
+    \\      output += __home_markdown_callback(callbacks, "blockquote", __home_markdown_render_blocks(quoted.join("\n"), callbacks, options));
+    \\      continue;
+    \\    }
+    \\    const list = __home_markdown_list_match(line);
+    \\    if (list) {
+    \\      const renderedList = __home_markdown_render_list(lines, index, callbacks, options, 0);
+    \\      output += renderedList.output;
+    \\      index = renderedList.next;
+    \\      continue;
+    \\    }
+    \\    if (line.includes("|") && index + 1 < lines.length && /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(lines[index + 1])) {
+    \\      const splitRow = row => row.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
+    \\      const headers = splitRow(line);
+    \\      index += 2;
+    \\      const rows = [];
+    \\      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") rows.push(splitRow(lines[index++]));
+    \\      const headCells = headers.map(cell => __home_markdown_callback(callbacks, "th", __home_markdown_inline_render(cell, callbacks, options))).join("");
+    \\      const head = __home_markdown_callback(callbacks, "thead", __home_markdown_callback(callbacks, "tr", headCells));
+    \\      const bodyRows = rows.map(row => {
+    \\        const cells = row.map(cell => __home_markdown_callback(callbacks, "td", __home_markdown_inline_render(cell, callbacks, options))).join("");
+    \\        return __home_markdown_callback(callbacks, "tr", cells);
+    \\      }).join("");
+    \\      const body = __home_markdown_callback(callbacks, "tbody", bodyRows);
+    \\      output += __home_markdown_callback(callbacks, "table", head + body);
+    \\      continue;
+    \\    }
+    \\    const paragraph = [line];
+    \\    index++;
+    \\    while (index < lines.length && lines[index].trim() !== "" && !/^(?:#{1,6}\s+|```|>\s?|(?:\s*)(?:\d+\.|[-+*])\s+)/.test(lines[index])) {
+    \\      paragraph.push(lines[index++]);
+    \\    }
+    \\    output += __home_markdown_callback(callbacks, "paragraph", __home_markdown_inline_render(paragraph.join("\n"), callbacks, options));
+    \\  }
+    \\  return output;
+    \\}
+    \\function __home_markdown_render(source, callbacks, options) {
+    \\  let buffer = null;
+    \\  let text;
+    \\  if (ArrayBuffer.isView(source)) {
+    \\    buffer = source.buffer;
+    \\    globalThis.__home_array_buffer_transfer_locks.add(buffer);
+    \\    text = new TextDecoder().decode(source);
+    \\  } else if (source instanceof ArrayBuffer) {
+    \\    buffer = source;
+    \\    globalThis.__home_array_buffer_transfer_locks.add(buffer);
+    \\    text = new TextDecoder().decode(new Uint8Array(source));
+    \\  } else {
+    \\    text = String(source || "");
+    \\  }
+    \\  try {
+    \\    return __home_markdown_render_blocks(text, callbacks || {}, options || {});
+    \\  } finally {
+    \\    if (buffer) globalThis.__home_array_buffer_transfer_locks.delete(buffer);
+    \\  }
     \\}
     \\function __home_spawn_markdown_entrypoint_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/markdown-entrypoint.test.ts")) return null;
@@ -20982,6 +21184,7 @@ const harness_prelude =
     \\  markdown: {
     \\    ansi: __home_markdown_ansi,
     \\    html: __home_markdown_html,
+    \\    render: __home_markdown_render,
     \\  },
     \\  escapeHTML(value) {
     \\    return ("" + value).replace(/[&<>"']/g, ch => {
@@ -55611,7 +55814,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-react.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.markdown React renderer integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-render-callback.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.markdown render callback integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-spec.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.markdown CommonMark spec parser")
     else if (std.mem.eql(u8, relative_path, "js/bun/md/gfm-compat.test.ts"))
@@ -57563,6 +57766,33 @@ test "bootstrap runner mirrors Bun markdown heading IDs corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun markdown render callback corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_render_blocks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_array_buffer_transfer_locks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "render: __home_markdown_render") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/md-render-callback.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 37 or summary.todo != 0) {
+        std.debug.print(
+            "Bun markdown render callback corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 37), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 37), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors standalone browser compile corpus" {
