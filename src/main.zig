@@ -1571,6 +1571,10 @@ fn fileExtIsJsLike(path: []const u8) bool {
     return false;
 }
 
+fn fileExtIsShellLike(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".sh");
+}
+
 fn looksLikePackageScriptName(name: []const u8) bool {
     if (name.len == 0) return false;
     for (name) |c| {
@@ -2301,7 +2305,53 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
     }
 }
 
+fn runShellFile(file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    const runtime_allocator = home_rt.default_allocator;
+
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdUnavailable;
+    const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+    const abs_path = if (std.fs.path.isAbsolute(file_path))
+        try runtime_allocator.dupe(u8, file_path)
+    else
+        try std.fs.path.join(runtime_allocator, &.{ cwd, file_path });
+
+    const log = try runtime_allocator.create(home_rt.logger.Log);
+    log.* = home_rt.logger.Log.init(runtime_allocator);
+    const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+    ctx.args.absolute_working_dir = home_rt.dupeZ(runtime_allocator, u8, cwd) catch null;
+
+    const positionals = try runtime_allocator.alloc([]const u8, 2);
+    positionals[0] = "run";
+    positionals[1] = abs_path;
+    ctx.positionals = positionals;
+
+    if (extra_args.len > 0) {
+        const passthrough = try runtime_allocator.alloc([]const u8, extra_args.len);
+        for (extra_args, passthrough) |src, *dst| dst.* = src;
+        ctx.passthrough = passthrough;
+    }
+
+    var bundle = try home_rt.Transpiler.init(
+        runtime_allocator,
+        log,
+        try home_rt.jsc.config.configureTransformOptionsForBunVM(runtime_allocator, ctx.args),
+        null,
+    );
+    try bundle.runEnvLoader(bundle.options.env.disable_default_env_files);
+
+    const mini = home_rt.jsc.MiniEventLoop.initGlobal(bundle.env, cwd);
+    mini.top_level_dir = cwd;
+    const exit_code = try home_rt.shell.Interpreter.initAndRunFromFile(ctx, mini, abs_path);
+    home_rt.Output.flush();
+    home_rt.Global.exit(@truncate(exit_code));
+}
+
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    if (fileExtIsShellLike(file_path)) {
+        return runShellFile(file_path, extra_args);
+    }
+
     // Route JS / TS files through the runtime delegation shim (Phase 12).
     if (fileExtIsJsLike(file_path)) {
         return runJsLikeFile(allocator, file_path, extra_args);

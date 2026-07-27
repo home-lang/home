@@ -1033,7 +1033,12 @@ pub const Interpreter = struct {
 
     pub fn initAndRunFromFile(ctx: bun.cli.Command.Context, mini: *jsc.MiniEventLoop, path: []const u8) !bun.shell.ExitCode {
         var shargs = ShellArgs.init();
-        const src = try std.fs.cwd().readFileAlloc(shargs.arena_allocator(), path, std.math.maxInt(u32));
+        const src = try std.Io.Dir.cwd().readFileAlloc(
+            std.Options.debug_io,
+            path,
+            shargs.arena_allocator(),
+            std.Io.Limit.limited(std.math.maxInt(u32)),
+        );
         defer shargs.deinit();
 
         const jsobjs: []JSValue = &[_]JSValue{};

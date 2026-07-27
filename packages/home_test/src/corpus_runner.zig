@@ -7025,25 +7025,6 @@ const harness_prelude =
     \\  if (source.includes("-h)")) return __home_spawn_completed("", "error: Failed to run script.sh due to error Unexpected ')'\n", 1);
     \\  return null;
     \\}
-    \\function __home_spawn_shell_positionals_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/shell/env.positionals.test.ts")) return null;
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const runIndex = cmd.indexOf("run");
-    \\  if (runIndex < 0 || runIndex + 1 >= cmd.length) return null;
-    \\  const script = cmd[runIndex + 1];
-    \\  const args = cmd.slice(runIndex + 2);
-    \\  if (script.endsWith("positionals.bun.sh")) {
-    \\    const out = [script, args[0] || "", (args[1] || "") + (args[1] || "")];
-    \\    return __home_spawn_completed(out.join("\n") + "\n", "", 0);
-    \\  }
-    \\  if (script.endsWith("positionals2.bun.sh")) {
-    \\    const out = [script, args[0] || "", (args[1] || "") + (args[1] || "")];
-    \\    for (let i = 2; i < 9; i++) out.push(args[i] || "");
-    \\    out.push((args[0] || "") + "0");
-    \\    return __home_spawn_completed(out.join("\n") + "\n", "", 0);
-    \\  }
-    \\  return null;
-    \\}
     \\function __home_spawn_shell_sentinel_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/shell/shell-sentinel-hardening.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -20108,8 +20089,6 @@ const harness_prelude =
     \\    if (runSigkillFixture) return runSigkillFixture;
     \\    const runShellFixture = __home_spawn_run_shell_fixture(options || {});
     \\    if (runShellFixture) return runShellFixture;
-    \\    const shellPositionalsFixture = __home_spawn_shell_positionals_fixture(options || {});
-    \\    if (shellPositionalsFixture) return shellPositionalsFixture;
     \\    const shellSentinelFixture = __home_spawn_shell_sentinel_fixture(options || {});
     \\    if (shellSentinelFixture) return shellSentinelFixture;
     \\    const sqlPreconnectFixture = __home_spawn_sql_preconnect_fixture(options || {});
@@ -30277,7 +30256,9 @@ const harness_prelude =
     \\}
     \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["harness"].bunExe = function() {
-    \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/shell/shell-cmdsub-crash.test.ts")) {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  if (filename.includes("js/bun/shell/shell-cmdsub-crash.test.ts") ||
+    \\      filename.includes("js/bun/shell/env.positionals.test.ts")) {
     \\    return globalThis.__home_bun_executable || process.execPath;
     \\  }
     \\  return process.execPath;
@@ -48578,7 +48559,10 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
         try appendHostedGitInfoCasesPrelude(out, allocator);
     }
     if (std.mem.eql(u8, relative_path, "js/bun/shell/env.positionals.test.ts")) {
-        try out.appendSlice(allocator, "process.argv = [process.execPath, __filename];\n");
+        try out.appendSlice(
+            allocator,
+            "const __home_positionals_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_positionals_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nprocess.argv = [process.execPath, __filename];\n",
+        );
     }
     if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
         try out.appendSlice(allocator, "globalThis.setImmediate = undefined;\nvar setImmediate = undefined;\n");
@@ -59154,8 +59138,13 @@ test "bootstrap runner mirrors Bun shell positional argv corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell positional argument integration") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const path = globalThis.__home_import(\"node:path\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const __home_positionals_repo_root = __home_build_dirname") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "\"packages/runtime/test/bun-corpus\"), __filename") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_dir = __dirname;") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "process.argv = [process.execPath, __filename];") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_shell_positionals_result") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_shell_positionals_fixture") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "filename.includes(\"js/bun/shell/env.positionals.test.ts\")") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();

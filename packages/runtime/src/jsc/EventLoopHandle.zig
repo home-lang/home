@@ -101,22 +101,32 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
-    pub fn topLevelDir(this: EventLoopHandle) [:0]const u8 {
-        _ = this;
-        return home_rt.fs.FileSystem.instance.top_level_dir;
+    pub fn topLevelDir(this: EventLoopHandle) []const u8 {
+        return switch (this) {
+            .js => this.js.virtual_machine.transpiler.fs.top_level_dir,
+            .mini => this.mini.top_level_dir,
+        };
     }
 
     pub fn allocator(this: EventLoopHandle) std.mem.Allocator {
-        _ = this;
-        return home_rt.default_allocator;
+        return switch (this) {
+            .js => this.js.virtual_machine.allocator,
+            .mini => this.mini.allocator,
+        };
     }
 
     pub fn createNullDelimitedEnvMap(this: EventLoopHandle, alloc: std.mem.Allocator) error{OutOfMemory}![:null]?[*:0]const u8 {
-        return this.bunVM().?.transpiler.env.map.createNullDelimitedEnvMap(alloc);
+        return switch (this) {
+            .js => this.js.virtual_machine.transpiler.env.map.createNullDelimitedEnvMap(alloc),
+            .mini => this.mini.env.?.map.createNullDelimitedEnvMap(alloc),
+        };
     }
 
     pub fn env(this: EventLoopHandle) *home_rt.DotEnv.Loader {
-        return this.bunVM().?.transpiler.env;
+        return switch (this) {
+            .js => this.js.virtual_machine.transpiler.env,
+            .mini => this.mini.env.?,
+        };
     }
 
     pub fn stdout(this: EventLoopHandle) *home_rt.jsc.WebCore.Blob.Store {
