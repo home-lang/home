@@ -18473,6 +18473,34 @@ const harness_prelude =
     \\    return { ok: true, uploadId };
     \\  });
     \\}
+    \\function __home_s3_read(path, options, responseType) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  const endpoint = String(opts.endpoint || "").replace(/\/+$/, "");
+    \\  if (!endpoint) return Promise.reject(new Error("S3 read requires an endpoint"));
+    \\  const bucket = String(opts.bucket || "").replace(/^\/+|\/+$/g, "");
+    \\  const key = String(path || "").replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+    \\  let url;
+    \\  try {
+    \\    url = new URL(endpoint + (bucket ? "/" + encodeURIComponent(bucket) : "") + "/" + key);
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
+    \\  const handle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
+    \\  if (!handle || handle.stopped || typeof handle.fetch !== "function") {
+    \\    return Promise.reject(new Error("S3 read request failed for " + url.href));
+    \\  }
+    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET" }))).then(async response => {
+    \\    if (!response || response.ok === false) {
+    \\      const error = new Error(response && typeof response.text === "function" ? await response.text() : "S3 request failed");
+    \\      error.code = "UnknownError";
+    \\      error.status = response && response.status !== undefined ? response.status : 0;
+    \\      throw error;
+    \\    }
+    \\    if (responseType === "arrayBuffer") return response.arrayBuffer();
+    \\    if (responseType === "json") return response.json();
+    \\    return response.text();
+    \\  });
+    \\}
     \\function __home_s3_file(clientOptions, path, fileOptions) {
     \\  const options = Object.assign({}, fileOptions || {});
     \\  const contentType = __home_s3_normalize_content_type(options.type);
@@ -18480,6 +18508,9 @@ const harness_prelude =
     \\  else options.type = contentType;
     \\  return {
     \\    get type() { return contentType || ""; },
+    \\    text() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "text"); },
+    \\    json() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "json"); },
+    \\    arrayBuffer() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "arrayBuffer"); },
     \\    presign(presignOptions) { return __home_s3_presign_url(path, Object.assign({}, clientOptions, options, presignOptions || {})); },
     \\    write(data, writeOptions) { return __home_s3_write(path, data, Object.assign({}, clientOptions, options, writeOptions || {})); },
     \\    writer(writerOptions) {
@@ -55268,7 +55299,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "S3 R2 and MinIO integration suite")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-insecure.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "S3 HTTP endpoint error integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-encode-overflow.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-objects.test.ts"))
@@ -63918,6 +63949,29 @@ test "bootstrap runner mirrors S3 list option encoding overflow corpus" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 5), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors S3 insecure HTTP endpoint corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-insecure.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "S3 insecure HTTP endpoint corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
