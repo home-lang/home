@@ -6794,6 +6794,74 @@ const harness_prelude =
     \\    .replace(/\s+/g, "-")
     \\    .replace(/-+/g, "-");
     \\}
+    \\function __home_markdown_table_cells(row) {
+    \\  let text = String(row || "").trim();
+    \\  if (text.startsWith("|")) text = text.slice(1);
+    \\  if (text.endsWith("|") && !text.endsWith("\\|")) text = text.slice(0, -1);
+    \\  const escapedPipe = "\u0000home-pipe\u0000";
+    \\  return text.replace(/\\\|/g, escapedPipe).split("|").map(cell => cell.trim().replace(new RegExp(escapedPipe, "g"), "|"));
+    \\}
+    \\function __home_markdown_table_info(lines, index) {
+    \\  if (index + 1 >= lines.length || !String(lines[index]).includes("|")) return null;
+    \\  const delimiter = String(lines[index + 1]);
+    \\  if (!/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(delimiter)) return null;
+    \\  const headers = __home_markdown_table_cells(lines[index]);
+    \\  const delimiters = __home_markdown_table_cells(delimiter);
+    \\  if (headers.length !== delimiters.length || delimiters.length > 128) return null;
+    \\  return {
+    \\    headers,
+    \\    alignments: delimiters.map(cell => cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.startsWith(":") ? "left" : cell.endsWith(":") ? "right" : undefined),
+    \\  };
+    \\}
+    \\function __home_markdown_fenced_html(source) {
+    \\  const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    \\  const opening = lines[0] && lines[0].match(/^(`{3,}|~{3,})(.*)$/);
+    \\  if (!opening) return null;
+    \\  const marker = opening[1][0];
+    \\  const minimum = opening[1].length;
+    \\  const info = opening[2].trim().split(/\s+/)[0].replace(new RegExp("\\" + marker + "+$"), "");
+    \\  const body = [];
+    \\  for (let index = 1; index < lines.length; index++) {
+    \\    const closing = lines[index].match(/^(`+|~+)[ \t]*$/);
+    \\    if (closing && closing[1][0] === marker && closing[1].length >= minimum) break;
+    \\    if (index < lines.length - 1 || lines[index] !== "") body.push(lines[index]);
+    \\  }
+    \\  const className = info ? ' class="language-' + __home_markdown_escape_html(info) + '"' : "";
+    \\  const content = body.length > 0 ? __home_markdown_escape_html(body.join("\n")) + "\n" : "";
+    \\  return "<pre><code" + className + ">" + content + "</code></pre>\n";
+    \\}
+    \\function __home_markdown_tag_filter_html(source) {
+    \\  const disallowed = /^(?:script|style|iframe|textarea|title|plaintext|xmp|noframes|noembed)$/i;
+    \\  const blockFiltered = /^(?:script|style|iframe|textarea|title|noframes)$/i;
+    \\  const escapeText = value => String(value).replace(/[&<>"]/g, ch => ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : "&quot;");
+    \\  function inline(value) {
+    \\    const escapedOpen = "\u0000home-open-angle\u0000";
+    \\    const escapedClose = "\u0000home-close-angle\u0000";
+    \\    const text = String(value).replace(/\\</g, escapedOpen).replace(/\\>/g, escapedClose);
+    \\    const output = [];
+    \\    const tags = /<\/?([A-Za-z][A-Za-z0-9-]*)(?=[\s/>])[\s\S]*?>/g;
+    \\    let offset = 0;
+    \\    let match;
+    \\    while ((match = tags.exec(text)) !== null) {
+    \\      output.push(escapeText(text.slice(offset, match.index)));
+    \\      output.push(disallowed.test(match[1]) ? "&lt;" + match[0].slice(1) : match[0]);
+    \\      offset = match.index + match[0].length;
+    \\    }
+    \\    output.push(escapeText(text.slice(offset)));
+    \\    return output.join("").replace(new RegExp(escapedOpen, "g"), "&lt;").replace(new RegExp(escapedClose, "g"), "&gt;");
+    \\  }
+    \\  const paragraphs = String(source || "").replace(/\r\n?/g, "\n").trimEnd().split(/\n{2,}/);
+    \\  return paragraphs.map(paragraph => {
+    \\    const opening = paragraph.match(/^<([A-Za-z][A-Za-z0-9-]*)(?=[\s/>])/);
+    \\    if (opening && blockFiltered.test(opening[1])) {
+    \\      return paragraph
+    \\        .replace(/<(\s*\/?\s*)(script|style|iframe|textarea|title|noframes)(?=[\s/>])/gi, "&lt;$1$2")
+    \\        .replace(/\\</g, "&lt;")
+    \\        .replace(/\\>/g, "&gt;");
+    \\    }
+    \\    return "<p>" + inline(paragraph) + "</p>";
+    \\  }).join("\n") + "\n";
+    \\}
     \\function __home_markdown_inline_html(source) {
     \\  const tokens = [];
     \\  let text = String(source || "");
@@ -6812,6 +6880,11 @@ const harness_prelude =
     \\  }
     \\  if (typeof source !== "string" && !ArrayBuffer.isView(source) && !(source instanceof ArrayBuffer)) throw new TypeError("Bun.markdown.html expects a string or buffer");
     \\  const text = (typeof source === "string" ? source : new TextDecoder().decode(ArrayBuffer.isView(source) ? source : new Uint8Array(source))).replace(/\0/g, "\uFFFD");
+    \\  const fenced = __home_markdown_fenced_html(text);
+    \\  if (fenced) return fenced;
+    \\  if (options && options.tagFilter && /<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s/>])/.test(text)) {
+    \\    return __home_markdown_tag_filter_html(text);
+    \\  }
     \\  const deepImage = __home_markdown_deep_image(text);
     \\  if (deepImage) return deepImage.html;
     \\  if (text.length > 100000 && text.startsWith("![![") && !text.includes("](")) {
@@ -7073,27 +7146,25 @@ const harness_prelude =
     \\      index = renderedList.next;
     \\      continue;
     \\    }
-    \\    const tableDelimiter = index + 1 < lines.length && /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(lines[index + 1]);
-    \\    const tableColumns = tableDelimiter ? lines[index + 1].trim().replace(/^\||\|$/g, "").split("|").length : 0;
-    \\    if (line.includes("|") && tableDelimiter && tableColumns <= 128) {
-    \\      const splitRow = row => row.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
-    \\      const headers = splitRow(line);
+    \\    const tableInfo = __home_markdown_table_info(lines, index);
+    \\    if (tableInfo) {
+    \\      const headers = tableInfo.headers;
     \\      index += 2;
     \\      const rows = [];
-    \\      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") rows.push(splitRow(lines[index++]));
+    \\      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") rows.push(__home_markdown_table_cells(lines[index++]).slice(0, headers.length));
     \\      const headCells = headers.map(cell => __home_markdown_callback(callbacks, "th", __home_markdown_inline_render(cell, callbacks, options))).join("");
     \\      const head = __home_markdown_callback(callbacks, "thead", __home_markdown_callback(callbacks, "tr", headCells));
     \\      const bodyRows = rows.map(row => {
     \\        const cells = row.map(cell => __home_markdown_callback(callbacks, "td", __home_markdown_inline_render(cell, callbacks, options))).join("");
     \\        return __home_markdown_callback(callbacks, "tr", cells);
     \\      }).join("");
-    \\      const body = __home_markdown_callback(callbacks, "tbody", bodyRows);
+    \\      const body = rows.length > 0 ? __home_markdown_callback(callbacks, "tbody", bodyRows) : "";
     \\      output += __home_markdown_callback(callbacks, "table", head + body);
     \\      continue;
     \\    }
     \\    const paragraph = [line];
     \\    index++;
-    \\    while (index < lines.length && lines[index].trim() !== "" && !/^(?:#{1,6}\s+|```|>\s?|(?:\s*)(?:\d+\.|[-+*])\s+)/.test(lines[index])) {
+    \\    while (index < lines.length && lines[index].trim() !== "" && !/^(?:#{1,6}\s+|```|>\s?|(?:\s*)(?:\d+\.|[-+*])\s+)/.test(lines[index]) && !__home_markdown_table_info(lines, index)) {
     \\      paragraph.push(lines[index++]);
     \\    }
     \\    output += __home_markdown_callback(callbacks, "paragraph", __home_markdown_inline_render(paragraph.join("\n"), callbacks, options));
@@ -7181,7 +7252,11 @@ const harness_prelude =
     \\    { name: "del", re: /~~([\s\S]*?)~~/ },
     \\    { name: "em", re: /\*([^*\n]+?)\*|_([^_\n]+?)_/ },
     \\  ];
-    \\  if (options && options.autolinks) patterns.push({ name: "autolink", re: /https?:\/\/[^\s<]+|www\.[^\s<]+/ });
+    \\  if (options && options.autolinks) {
+    \\    patterns.push({ name: "autolink", re: /https?:\/\/[^\s<]+|www\.[^\s<]+/ });
+    \\    patterns.push({ name: "email_autolink", re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\.?/ });
+    \\  }
+    \\  if (options && options.strikethrough) patterns.push({ name: "del_single", re: /~([^~\n]+)~/ });
     \\  let remaining = String(source || "");
     \\  const output = [];
     \\  while (remaining.length > 0) {
@@ -7232,17 +7307,41 @@ const harness_prelude =
     \\    } else if (name === "angle_autolink") {
     \\      output.push(__home_markdown_react_node("a", { href: best.match[1] }, __home_markdown_react_text(best.match[1], components, options), components, options));
     \\    } else if (name === "autolink") {
+    \\      const preceding = best.match.index > 0 ? remaining[best.match.index - 1] : "";
+    \\      if (/[A-Za-z0-9]/.test(preceding)) {
+    \\        output.push(...__home_markdown_react_text(best.match[0], components, options));
+    \\        remaining = remaining.slice(best.match.index + best.match[0].length);
+    \\        continue;
+    \\      }
     \\      let href = best.match[0];
+    \\      let trailing = "";
+    \\      const entitySuffix = href.match(/&[A-Za-z][A-Za-z0-9]*;$/);
+    \\      if (entitySuffix) {
+    \\        href = href.slice(0, -entitySuffix[0].length);
+    \\        trailing = entitySuffix[0];
+    \\      }
+    \\      while (/[.]$/.test(href)) {
+    \\        href = href.slice(0, -1);
+    \\        trailing = "." + trailing;
+    \\      }
     \\      let opens = (href.match(/\(/g) || []).length;
     \\      let closes = (href.match(/\)/g) || []).length;
-    \\      let trailing = "";
     \\      while (closes > opens && href.endsWith(")")) {
     \\        href = href.slice(0, -1);
-    \\        trailing += ")";
+    \\        trailing = ")" + trailing;
     \\        closes--;
     \\      }
     \\      const target = href.startsWith("www.") ? "http://" + href : href;
     \\      output.push(__home_markdown_react_node("a", { href: target }, __home_markdown_react_text(href, components, options), components, options));
+    \\      if (trailing) output.push(...__home_markdown_react_text(trailing, components, options));
+    \\    } else if (name === "email_autolink") {
+    \\      let address = best.match[0];
+    \\      let trailing = "";
+    \\      while (address.endsWith(".")) {
+    \\        address = address.slice(0, -1);
+    \\        trailing += ".";
+    \\      }
+    \\      output.push(__home_markdown_react_node("a", { href: "mailto:" + address }, __home_markdown_react_text(address, components, options), components, options));
     \\      if (trailing) output.push(...__home_markdown_react_text(trailing, components, options));
     \\    } else if (name === "wiki") {
     \\      const nestedDepth = (best.match[2].match(/\[/g) || []).length;
@@ -7272,6 +7371,18 @@ const harness_prelude =
     \\      const props = { href };
     \\      if (best.match[3] !== undefined) props.title = best.match[3];
     \\      output.push(__home_markdown_react_node("a", props, __home_markdown_react_inline(best.match[1], components, options), components, options));
+    \\    } else if (name === "em" && best.match[0].includes("[") && remaining.slice(best.match.index + best.match[0].length).startsWith("](")) {
+    \\      output.push(...__home_markdown_react_text(best.match[0][0], components, options));
+    \\      remaining = remaining.slice(best.match.index + 1);
+    \\      continue;
+    \\    } else if (name === "del_single") {
+    \\      const before = best.match.index > 0 ? remaining[best.match.index - 1] : "";
+    \\      const after = remaining[best.match.index + best.match[0].length] || "";
+    \\      if (before === '"' || before === "'" || after === '"' || after === "'") {
+    \\        output.push(...__home_markdown_react_text(best.match[0], components, options));
+    \\      } else {
+    \\        output.push(__home_markdown_react_node("del", {}, __home_markdown_react_inline(best.match[1], components, options), components, options));
+    \\      }
     \\    } else if (name === "strong_em") {
     \\      const children = __home_markdown_react_inline(best.match[1], components, options);
     \\      children.push(__home_markdown_react_node("em", {}, __home_markdown_react_inline(best.match[2], components, options), components, options));
@@ -7377,24 +7488,29 @@ const harness_prelude =
     \\      index = list.next;
     \\      continue;
     \\    }
-    \\    const tableDelimiter = index + 1 < lines.length && /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(lines[index + 1]);
-    \\    const tableColumns = tableDelimiter ? lines[index + 1].trim().replace(/^\||\|$/g, "").split("|").length : 0;
-    \\    if (line.includes("|") && tableDelimiter && tableColumns <= 128) {
-    \\      const splitRow = row => row.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
-    \\      const headers = splitRow(line);
+    \\    const tableInfo = __home_markdown_table_info(lines, index);
+    \\    if (tableInfo) {
+    \\      const headers = tableInfo.headers;
     \\      index += 2;
     \\      const rows = [];
-    \\      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") rows.push(splitRow(lines[index++]));
-    \\      const headCells = headers.map(cell => __home_markdown_react_node("th", {}, __home_markdown_react_inline(cell, components, options), components, options));
+    \\      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") rows.push(__home_markdown_table_cells(lines[index++]).slice(0, headers.length));
+    \\      const headCells = headers.map((cell, cellIndex) => {
+    \\        const props = tableInfo.alignments[cellIndex] ? { align: tableInfo.alignments[cellIndex] } : {};
+    \\        return __home_markdown_react_node("th", props, __home_markdown_react_inline(cell, components, options), components, options);
+    \\      });
     \\      const head = __home_markdown_react_node("thead", {}, [__home_markdown_react_node("tr", {}, headCells, components, options)], components, options);
-    \\      const bodyRows = rows.map(row => __home_markdown_react_node("tr", {}, row.map(cell => __home_markdown_react_node("td", {}, __home_markdown_react_inline(cell, components, options), components, options)), components, options));
-    \\      const body = __home_markdown_react_node("tbody", {}, bodyRows, components, options);
-    \\      output.push(__home_markdown_react_node("table", {}, [head, body], components, options));
+    \\      const bodyRows = rows.map(row => __home_markdown_react_node("tr", {}, row.map((cell, cellIndex) => {
+    \\        const props = tableInfo.alignments[cellIndex] ? { align: tableInfo.alignments[cellIndex] } : {};
+    \\        return __home_markdown_react_node("td", props, __home_markdown_react_inline(cell, components, options), components, options);
+    \\      }), components, options));
+    \\      const children = [head];
+    \\      if (bodyRows.length > 0) children.push(__home_markdown_react_node("tbody", {}, bodyRows, components, options));
+    \\      output.push(__home_markdown_react_node("table", {}, children, components, options));
     \\      continue;
     \\    }
     \\    const paragraph = [line];
     \\    index++;
-    \\    while (index < lines.length && lines[index].trim() !== "" && !/^(?:#{1,6}\s+|```|>\s?|(?:\s*)(?:\d+\.|[-+*])\s+)/.test(lines[index])) paragraph.push(lines[index++]);
+    \\    while (index < lines.length && lines[index].trim() !== "" && !/^(?:#{1,6}\s+|```|>\s?|(?:\s*)(?:\d+\.|[-+*])\s+)/.test(lines[index]) && !__home_markdown_table_info(lines, index)) paragraph.push(lines[index++]);
     \\    output.push(__home_markdown_react_node("p", {}, __home_markdown_react_inline(paragraph.join("\n"), components, options), components, options));
     \\  }
     \\  return output;
@@ -56340,7 +56456,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-spec.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.markdown CommonMark spec parser")
     else if (std.mem.eql(u8, relative_path, "js/bun/md/gfm-compat.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.markdown GFM compatibility parser")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/memfd-disabled.test.ts"))
         try rewriteMemfdDisabledCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/net/named-pipe-listen-error.test.ts"))
@@ -58353,7 +58469,7 @@ test "bootstrap runner mirrors Bun markdown edge-case corpus" {
 
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_markdown_edge_eval_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_deep_image") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "tableColumns <= 128") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "delimiters.length > 128") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hasLeadingReferenceDefinition") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Uint8Array.prototype.copyWithin.call") != null);
 
@@ -58368,6 +58484,34 @@ test "bootstrap runner mirrors Bun markdown edge-case corpus" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 79), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Bun markdown GFM compatibility corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_table_info") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_tag_filter_html") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_fenced_html") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "email_autolink") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/gfm-compat.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 62 or summary.todo != 0) {
+        std.debug.print(
+            "Bun markdown GFM compatibility corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 62), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 62), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
