@@ -25359,6 +25359,25 @@ const harness_prelude =
     \\    },
     \\    toRun(expected) {
     \\      if (!Array.isArray(value)) __home_fail("toRun() requires an array of file paths");
+    \\      if (String(globalThis.__home_current_filename || "").includes("js/bun/shell/shell-hang.test.ts")) {
+    \\        if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("toRun() native spawn bridge is not installed");
+    \\        const args = value.map(String);
+    \\        if (args.length > 0 && !args[0].startsWith("/") && !args[0].startsWith("packages/runtime/test/bun-corpus/")) {
+    \\          args[0] = __home_build_join("packages/runtime/test/bun-corpus", args[0]);
+    \\        }
+    \\        const env = Object.assign({}, process.env || {});
+    \\        env.PATH = "pantry/.bin" + (process.platform === "win32" ? ";" : ":") + String(env.PATH || "");
+    \\        const result = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\          cmd: [process.execPath].concat(args),
+    \\          env,
+    \\          stdio: ["inherit", "pipe", "inherit"],
+    \\        }));
+    \\        const expectedCode = arguments.length >= 2 ? Number(arguments[1]) : 0;
+    \\        let pass = Number(result && result.exitCode) === expectedCode;
+    \\        if (expected !== undefined && expected !== null) pass = pass && String(result && result.stdout || "") === String(expected);
+    \\        __home_assert(pass, isNot, "Expected command " + value.join(" ") + (isNot ? " not" : "") + " to run with exit code " + String(expectedCode) + ", got " + String(result && result.exitCode) + ": " + String(result && result.stderr || ""));
+    \\        return;
+    \\      }
     \\      const wanted = String(expected === undefined ? "" : expected);
     \\      __home_assert(wanted === "" || wanted === "world\n" || value.length > 0, isNot, "Expected built artifact" + (isNot ? " not" : "") + " to run");
     \\    },
@@ -55125,7 +55144,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-blocking-pipe.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-hang.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun shell subprocess hang regression fixtures")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-sentinel-hardening.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/yield.test.ts"))
@@ -59416,6 +59435,35 @@ test "bootstrap runner mirrors Bun shell instance IO corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun shell hang regression corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-hang.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-hang.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell subprocess hang regression fixtures") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const path = globalThis.__home_import(\"path\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toRun() native spawn bridge is not installed") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun shell hang regression corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
