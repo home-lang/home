@@ -145,6 +145,18 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_shellLexNative",
+            shellLexNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_shellParseNative",
+            shellParseNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_spawnSyncNative",
             spawnSyncNative,
         );
@@ -3633,6 +3645,207 @@ fn setCallbackProperty(
     defer extern_fns.JSStringRelease(name_string);
     const function_object = extern_fns.JSObjectMakeFunctionWithCallback(ctx, name_string, callback) orelse return;
     setProperty(ctx, object, name, @ptrCast(function_object));
+}
+
+const ShellTemplateSource = struct {
+    script: std.ArrayList(u8) = .empty,
+    string_values: std.ArrayList([]u8) = .empty,
+    jsobjs_len: u32 = 0,
+
+    fn deinit(this: *ShellTemplateSource, allocator: std.mem.Allocator) void {
+        this.script.deinit(allocator);
+        for (this.string_values.items) |value| allocator.free(value);
+        this.string_values.deinit(allocator);
+    }
+};
+
+const ShellTestingOperation = enum { lex, parse };
+
+fn shellLexNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    return shellTestingNative(.lex, ctx.?, argument_count, arguments, exception);
+}
+
+fn shellParseNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    return shellTestingNative(.parse, ctx.?, argument_count, arguments, exception);
+}
+
+fn shellTestingNative(
+    operation: ShellTestingOperation,
+    ctx: *JSContextRef,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) ?*JSValue {
+    const allocator = std.heap.smp_allocator;
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        setException(ctx, exception, "shell testing API expects template strings and values");
+        return null;
+    }
+
+    var source = buildShellTemplateSource(allocator, ctx, arguments[0].?, arguments[1].?, exception) catch |err| {
+        setExceptionFmt(ctx, exception, "shell template conversion failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer source.deinit(allocator);
+
+    const result = switch (operation) {
+        .lex => home_rt.shell.TestingAPIs.lexSourceInterpolated(
+            allocator,
+            source.script.items,
+            source.jsobjs_len,
+            source.string_values.items,
+        ),
+        .parse => home_rt.shell.TestingAPIs.parseSourceInterpolated(
+            allocator,
+            source.script.items,
+            source.jsobjs_len,
+            source.string_values.items,
+        ),
+    } catch |err| {
+        setExceptionFmt(ctx, exception, "shell {s} failed: {s}", .{ @tagName(operation), @errorName(err) });
+        return null;
+    };
+    defer result.deinit(allocator);
+
+    return switch (result) {
+        .output => |output| makeStringValue(ctx, output) catch |err| {
+            setExceptionFmt(ctx, exception, "shell {s} result failed: {s}", .{ @tagName(operation), @errorName(err) });
+            return null;
+        },
+        .err => |message| {
+            setErrorLikeException(ctx, exception, message);
+            return null;
+        },
+    };
+}
+
+fn buildShellTemplateSource(
+    allocator: std.mem.Allocator,
+    ctx: *JSContextRef,
+    raw_value: *JSValue,
+    values_value: *JSValue,
+    exception: extern_fns.ExceptionRef,
+) !ShellTemplateSource {
+    if (!extern_fns.JSValueIsArray(ctx, raw_value) or !extern_fns.JSValueIsArray(ctx, values_value)) {
+        return error.ShellTemplateMustUseArrays;
+    }
+    const raw_object = extern_fns.JSValueToObject(ctx, raw_value, exception) orelse return error.InvalidShellTemplate;
+    const values_object = extern_fns.JSValueToObject(ctx, values_value, exception) orelse return error.InvalidShellTemplate;
+    const raw_len = try jsArrayLength(ctx, raw_object, exception);
+    const values_len = try jsArrayLength(ctx, values_object, exception);
+    if (raw_len != values_len + 1) return error.InvalidShellTemplateLength;
+
+    var source: ShellTemplateSource = .{};
+    errdefer source.deinit(allocator);
+    for (0..raw_len) |index| {
+        const raw_part = extern_fns.JSObjectGetPropertyAtIndex(ctx, raw_object, @intCast(index), exception) orelse
+            return error.InvalidShellTemplate;
+        const raw_text = try valueToOwnedString(allocator, ctx, raw_part, exception);
+        defer allocator.free(raw_text);
+        try source.script.appendSlice(allocator, raw_text);
+
+        if (index < values_len) {
+            const template_value = extern_fns.JSObjectGetPropertyAtIndex(ctx, values_object, @intCast(index), exception) orelse
+                return error.InvalidShellTemplate;
+            try appendShellTemplateValue(allocator, ctx, template_value, exception, &source);
+        }
+    }
+    return source;
+}
+
+fn jsArrayLength(ctx: *JSContextRef, object: *JSObject, exception: extern_fns.ExceptionRef) !usize {
+    const length_value = getProperty(ctx, object, "length", exception) orelse return error.InvalidArrayLength;
+    const length_number = extern_fns.JSValueToNumber(ctx, length_value, exception);
+    if (!std.math.isFinite(length_number) or length_number < 0 or @floor(length_number) != length_number) {
+        return error.InvalidArrayLength;
+    }
+    return @intFromFloat(length_number);
+}
+
+fn appendShellTemplateValue(
+    allocator: std.mem.Allocator,
+    ctx: *JSContextRef,
+    value: *JSValue,
+    exception: extern_fns.ExceptionRef,
+    source: *ShellTemplateSource,
+) !void {
+    if (extern_fns.JSValueIsArray(ctx, value)) {
+        const object = extern_fns.JSValueToObject(ctx, value, exception) orelse return error.InvalidShellArray;
+        const len = try jsArrayLength(ctx, object, exception);
+        for (0..len) |index| {
+            const item = extern_fns.JSObjectGetPropertyAtIndex(ctx, object, @intCast(index), exception) orelse
+                return error.InvalidShellArray;
+            try appendShellTemplateValue(allocator, ctx, item, exception, source);
+            if (index + 1 < len) try source.script.append(allocator, ' ');
+        }
+        return;
+    }
+
+    if (extern_fns.JSValueIsObject(ctx, value)) {
+        const typed_array_type = extern_fns.JSValueGetTypedArrayType(ctx, value, exception);
+        if (typed_array_type != .kJSTypedArrayTypeNone) {
+            return appendShellObjectReference(allocator, source);
+        }
+
+        const object = extern_fns.JSValueToObject(ctx, value, exception) orelse return error.InvalidShellObject;
+        if (getProperty(ctx, object, "raw", exception)) |raw| {
+            if (!extern_fns.JSValueIsUndefined(ctx, raw) and
+                !extern_fns.JSValueIsNull(ctx, raw) and
+                extern_fns.JSValueToBoolean(ctx, raw))
+            {
+                const raw_text = try valueToOwnedString(allocator, ctx, raw, exception);
+                defer allocator.free(raw_text);
+                if (std.mem.indexOfScalar(u8, raw_text, 0) != null) return error.ShellValueContainsNullByte;
+                try source.script.appendSlice(allocator, raw_text);
+                return;
+            }
+        }
+        return appendShellObjectReference(allocator, source);
+    }
+
+    const string_value = try valueToOwnedString(allocator, ctx, value, exception);
+    var owns_string_value = true;
+    errdefer if (owns_string_value) allocator.free(string_value);
+    if (std.mem.indexOfScalar(u8, string_value, 0) != null) return error.ShellValueContainsNullByte;
+    const index = source.string_values.items.len;
+    try source.string_values.append(allocator, string_value);
+    owns_string_value = false;
+    try appendShellReference(allocator, &source.script, home_rt.shell.LEX_JS_STRING_PREFIX, index);
+}
+
+fn appendShellObjectReference(allocator: std.mem.Allocator, source: *ShellTemplateSource) !void {
+    const index = source.jsobjs_len;
+    source.jsobjs_len = std.math.add(u32, source.jsobjs_len, 1) catch return error.TooManyShellObjectReferences;
+    try appendShellReference(allocator, &source.script, home_rt.shell.LEX_JS_OBJREF_PREFIX, index);
+}
+
+fn appendShellReference(
+    allocator: std.mem.Allocator,
+    script: *std.ArrayList(u8),
+    prefix: []const u8,
+    index: anytype,
+) !void {
+    var buf: [128]u8 = undefined;
+    const marker = try std.fmt.bufPrint(&buf, "{s}{d}", .{ prefix, index });
+    try script.appendSlice(allocator, marker);
 }
 
 fn nativePluginGetFooCount(

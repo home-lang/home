@@ -4539,6 +4539,126 @@ pub fn SmolList(comptime T: type, comptime INLINED_MAX: comptime_int) type {
 
 /// Used in JS tests, see `internal-for-testing.ts` and shell tests.
 pub const TestingAPIs = struct {
+    pub const SourceResult = union(enum) {
+        output: []u8,
+        err: []u8,
+
+        pub fn deinit(this: SourceResult, allocator: Allocator) void {
+            switch (this) {
+                inline else => |value| allocator.free(value),
+            }
+        }
+    };
+
+    /// Run the shell lexer without requiring a Bun-owned `JSGlobalObject`.
+    ///
+    /// The corpus runner uses a plain JavaScriptCore C-API realm, so its
+    /// callbacks cannot call the internal JS host-function ABI directly. Keep
+    /// the lexer and its JSON serialization shared here and only marshal the
+    /// source string across that boundary.
+    pub fn lexSource(allocator: Allocator, script: []const u8, jsobjs_len: u32) !SourceResult {
+        return lexSourceWithStrings(allocator, script, jsobjs_len, &.{});
+    }
+
+    pub fn lexSourceInterpolated(
+        allocator: Allocator,
+        script: []const u8,
+        jsobjs_len: u32,
+        string_values: []const []const u8,
+    ) !SourceResult {
+        const jsstrings = try allocator.alloc(bun.String, string_values.len);
+        defer allocator.free(jsstrings);
+        for (string_values, jsstrings) |value, *bunstr| bunstr.* = bun.String.fromBytes(value);
+        return lexSourceWithStrings(allocator, script, jsobjs_len, jsstrings);
+    }
+
+    fn lexSourceWithStrings(
+        allocator: Allocator,
+        script: []const u8,
+        jsobjs_len: u32,
+        jsstrings: []bun.String,
+    ) !SourceResult {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const lex_result = brk: {
+            if (bun.strings.isAllASCII(script)) {
+                var lexer = LexerAscii.new(arena.allocator(), script, jsstrings, jsobjs_len);
+                try lexer.lex();
+                break :brk lexer.get_result();
+            }
+            var lexer = LexerUnicode.new(arena.allocator(), script, jsstrings, jsobjs_len);
+            try lexer.lex();
+            break :brk lexer.get_result();
+        };
+
+        if (lex_result.errors.len > 0) {
+            return .{ .err = try allocator.dupe(u8, lex_result.combineErrors(arena.allocator())) };
+        }
+
+        var test_tokens = try std.array_list.Managed(Test.TestToken).initCapacity(arena.allocator(), lex_result.tokens.len);
+        for (lex_result.tokens) |tok| {
+            try test_tokens.append(Test.TestToken.from_real(tok, lex_result.strpool));
+        }
+
+        return .{ .output = try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(test_tokens.items, .{})}) };
+    }
+
+    /// Run the shell parser without requiring a Bun-owned `JSGlobalObject`.
+    pub fn parseSource(allocator: Allocator, script: []const u8, jsobjs_len: u32) !SourceResult {
+        const jsobjs = try allocator.alloc(JSValue, jsobjs_len);
+        defer allocator.free(jsobjs);
+        @memset(jsobjs, .zero);
+        return parseSourceWithValues(allocator, script, jsobjs, &.{});
+    }
+
+    pub fn parseSourceInterpolated(
+        allocator: Allocator,
+        script: []const u8,
+        jsobjs_len: u32,
+        string_values: []const []const u8,
+    ) !SourceResult {
+        const jsobjs = try allocator.alloc(JSValue, jsobjs_len);
+        defer allocator.free(jsobjs);
+        @memset(jsobjs, .zero);
+
+        const jsstrings = try allocator.alloc(bun.String, string_values.len);
+        defer allocator.free(jsstrings);
+        for (string_values, jsstrings) |value, *bunstr| bunstr.* = bun.String.fromBytes(value);
+        return parseSourceWithValues(allocator, script, jsobjs, jsstrings);
+    }
+
+    fn parseSourceWithValues(
+        allocator: Allocator,
+        script: []const u8,
+        jsobjs: []JSValue,
+        jsstrings: []bun.String,
+    ) !SourceResult {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        var out_parser: ?Parser = null;
+        var out_lex_result: ?LexResult = null;
+        const script_ast = Interpreter.parse(
+            arena.allocator(),
+            script,
+            jsobjs,
+            jsstrings,
+            &out_parser,
+            &out_lex_result,
+        ) catch |err| {
+            if (err == ParseError.Lex and out_lex_result != null) {
+                return .{ .err = try allocator.dupe(u8, out_lex_result.?.combineErrors(arena.allocator())) };
+            }
+            if (out_parser) |*parser| {
+                return .{ .err = try allocator.dupe(u8, parser.combineErrors()) };
+            }
+            return .{ .err = try std.fmt.allocPrint(allocator, "failed to lex/parse shell: {s}", .{@errorName(err)}) };
+        };
+
+        return .{ .output = try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(script_ast, .{})}) };
+    }
+
     pub fn disabledOnThisPlatform(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
         if (comptime bun.Environment.isWindows) return .false;
 
@@ -4595,38 +4715,17 @@ pub const TestingAPIs = struct {
         var script = std.array_list.Managed(u8).init(arena.allocator());
         try shellCmdFromJS(globalThis, string_args, &template_args, &jsobjs, &jsstrings, &script, marked_argument_buffer);
 
-        const jsobjs_len: u32 = @intCast(jsobjs.items.len);
-        const lex_result = brk: {
-            if (bun.strings.isAllASCII(script.items[0..])) {
-                var lexer = LexerAscii.new(arena.allocator(), script.items[0..], jsstrings.items[0..], jsobjs_len);
-                lexer.lex() catch |err| {
-                    return globalThis.throwError(err, "failed to lex shell");
-                };
-                break :brk lexer.get_result();
-            }
-            var lexer = LexerUnicode.new(arena.allocator(), script.items[0..], jsstrings.items[0..], jsobjs_len);
-            lexer.lex() catch |err| {
-                return globalThis.throwError(err, "failed to lex shell");
-            };
-            break :brk lexer.get_result();
+        const result = lexSourceWithStrings(
+            globalThis.bunVM().allocator,
+            script.items,
+            @intCast(jsobjs.items.len),
+            jsstrings.items,
+        ) catch |err| return globalThis.throwError(err, "failed to lex shell");
+        defer result.deinit(globalThis.bunVM().allocator);
+        return switch (result) {
+            .output => |str| bun.String.fromBytes(str).toJS(globalThis),
+            .err => |str| globalThis.throwPretty("{s}", .{str}),
         };
-
-        if (lex_result.errors.len > 0) {
-            const str = lex_result.combineErrors(arena.allocator());
-            return globalThis.throwPretty("{s}", .{str});
-        }
-
-        var test_tokens = try std.array_list.Managed(Test.TestToken).initCapacity(arena.allocator(), lex_result.tokens.len);
-        for (lex_result.tokens) |tok| {
-            const test_tok = Test.TestToken.from_real(tok, lex_result.strpool);
-            try test_tokens.append(test_tok);
-        }
-
-        const str = bun.handleOom(std.fmt.allocPrint(globalThis.bunVM().allocator, "{f}", .{std.json.fmt(test_tokens.items[0..], .{})}));
-
-        defer globalThis.bunVM().allocator.free(str);
-        var bun_str = bun.String.fromBytes(str);
-        return bun_str.toJS(globalThis);
     }
 
     pub const shellParse = jsc.MarkedArgumentBuffer.wrap(shellParseImpl);
@@ -4662,28 +4761,17 @@ pub const TestingAPIs = struct {
         var script = std.array_list.Managed(u8).init(arena.allocator());
         try shellCmdFromJS(globalThis, string_args, &template_args, &jsobjs, &jsstrings, &script, marked_argument_buffer);
 
-        var out_parser: ?Parser = null;
-        var out_lex_result: ?LexResult = null;
-
-        const script_ast = Interpreter.parse(arena.allocator(), script.items[0..], jsobjs.items[0..], jsstrings.items[0..], &out_parser, &out_lex_result) catch |err| {
-            if (err == ParseError.Lex) {
-                if (bun.Environment.allow_assert) assert(out_lex_result != null);
-                const str = out_lex_result.?.combineErrors(arena.allocator());
-                return globalThis.throwPretty("{s}", .{str});
-            }
-
-            if (out_parser) |*p| {
-                const errstr = p.combineErrors();
-                return globalThis.throwPretty("{s}", .{errstr});
-            }
-
-            return globalThis.throwError(err, "failed to lex/parse shell");
+        const result = parseSourceWithValues(
+            globalThis.bunVM().allocator,
+            script.items,
+            jsobjs.items,
+            jsstrings.items,
+        ) catch |err| return globalThis.throwError(err, "failed to lex/parse shell");
+        defer result.deinit(globalThis.bunVM().allocator);
+        return switch (result) {
+            .output => |str| bun.String.createUTF8ForJS(globalThis, str),
+            .err => |str| globalThis.throwPretty("{s}", .{str}),
         };
-
-        const str = bun.handleOom(std.fmt.allocPrint(globalThis.bunVM().allocator, "{f}", .{std.json.fmt(script_ast, .{})}));
-
-        defer globalThis.bunVM().allocator.free(str);
-        return bun.String.createUTF8ForJS(globalThis, str);
     }
 };
 

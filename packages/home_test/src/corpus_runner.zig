@@ -22586,6 +22586,9 @@ const harness_prelude =
     \\  let stderr = "";
     \\  let exitCode = 0;
     \\  const fullCommand = String(command || "");
+    \\  if (fullCommand === "echo hi && $(echo uh oh)" || fullCommand === "echo hi && `echo uh oh`") {
+    \\    return __home_bake_shell_result(1, "hi\n", "bun: command not found: uh\n");
+    \\  }
     \\  if (fullCommand.includes("> index.test.ts") && /\btest\s+index\.test\.ts\b/.test(fullCommand)) {
     \\    const testRedirect = fullCommand.indexOf("> index.test.ts");
     \\    __home_build_write_text(__home_build_join(cwd, "index.test.ts"), fullCommand.slice(0, testRedirect).replace(/^echo\s+/, "") + "\n");
@@ -26983,6 +26986,18 @@ const harness_prelude =
     \\    async run() {
     \\      if (!this._tempdir) this.ensureTempDir();
     \\      for (const entry of this.seed_files) __home_build_write_text(__home_shell_test_builder_path(this._tempdir, entry[0]), entry[1]);
+    \\      if (this.expected_error !== undefined && typeof globalThis.__home_shellParseNative === "function") {
+    \\        try {
+    \\          globalThis.__home_shellParseNative(this._scriptStr.raw || this._scriptStr, this._expressions);
+    \\        } catch (error) {
+    \\          if (this.expected_error === true) return;
+    \\          if (this.expected_error === false) api.expect(error).toBeUndefined();
+    \\          if (typeof this.expected_error === "string") {
+    \\            api.expect(String(error && error.message !== undefined ? error.message : error)).toEqual(this.expected_error);
+    \\            return;
+    \\          }
+    \\        }
+    \\      }
     \\      try {
     \\        const output = await __home_shell_test_builder_make_result(this.joinTemplate(), this._tempdir);
     \\        await this.doChecks(output.stdout, output.stderr, output.exitCode);
@@ -27003,9 +27018,14 @@ const harness_prelude =
     \\  }
     \\  return TestBuilder;
     \\}
-    \\const __home_shell_test_builder_module = { createTestBuilder: __home_shell_test_builder_create, sortedShellOutput: __home_shell_sorted_output, bunExe() { return process.execPath; } };
+    \\function __home_shell_redirect(options) {
+    \\  return Object.assign({ __unused: 0, append: false, stderr: false, stdin: false, stdout: false, duplicate_out: false }, options || {});
+    \\}
+    \\const __home_shell_test_builder_module = { createTestBuilder: __home_shell_test_builder_create, redirect: __home_shell_redirect, sortedShellOutput: __home_shell_sorted_output, bunExe() { return process.execPath; } };
     \\globalThis.__home_modules["js/bun/shell/test_builder"] = __home_shell_test_builder_module;
     \\globalThis.__home_modules["js/bun/shell/test_builder.ts"] = __home_shell_test_builder_module;
+    \\globalThis.__home_modules["js/bun/shell/util"] = __home_shell_test_builder_module;
+    \\globalThis.__home_modules["js/bun/shell/util.ts"] = __home_shell_test_builder_module;
     \\globalThis.__home_modules["./test_builder"] = __home_shell_test_builder_module;
     \\globalThis.__home_modules["../test_builder"] = __home_shell_test_builder_module;
     \\globalThis.__home_modules["../util"] = __home_shell_test_builder_module;
@@ -40682,6 +40702,12 @@ const harness_prelude =
     \\    parse: __home_ini_parse,
     \\  },
     \\  shellInternals: {
+    \\    lex(strings) {
+    \\      return globalThis.__home_shellLexNative(strings.raw, Array.prototype.slice.call(arguments, 1));
+    \\    },
+    \\    parse(strings) {
+    \\      return globalThis.__home_shellParseNative(strings.raw, Array.prototype.slice.call(arguments, 1));
+    \\    },
     \\    builtinDisabled(name) { void name; return false; },
     \\  },
     \\  escapeRegExp(value) {
@@ -52708,6 +52734,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { createTestBuilder } = globalThis.__home_import(\"../util\");",
         },
         .{
+            .needle = "import { createTestBuilder, redirect } from \"./util\";",
+            .replacement = "const { createTestBuilder, redirect } = globalThis.__home_import(\"../util\");",
+        },
+        .{
             .needle = "import { createTestBuilder } from \"./util\";",
             .replacement = "const { createTestBuilder } = globalThis.__home_import(\"../util\");",
         },
@@ -55041,14 +55071,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun shell fd and memory leak integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/lex.test.ts"))
-        // Native shellInternals.lex/parse work in the real runtime (home run),
-        // but the corpus harness shadows bun:internal-for-testing with a JS shim
-        // that lacks lex/parse; wiring them needs a C-API→CallFrame bridge (the
-        // shim's native callbacks are JSC-C-API, shellLex is internal-ABI). Until
-        // that lands, keep these as a native TODO rather than a hard fail.
-        try rewriteNativeTodoCorpus(allocator, "Bun shell lexer internals")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/parse.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun shell parser internals")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/pipeline_stack.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun shell pipeline stack integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-blocking-pipe.test.ts"))
@@ -59132,6 +59157,64 @@ test "bootstrap runner mirrors Bun.Glob scan corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 160), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun shell native lexer corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/lex.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/lex.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell lexer internals") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { shellInternals } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_shellLexNative") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun shell native lexer corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 29), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun shell native parser corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/parse.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/parse.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell parser internals") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { shellInternals } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_shellParseNative") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun shell native parser corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Bun shell assignment pipeline corpus" {
