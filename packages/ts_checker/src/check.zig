@@ -88832,11 +88832,24 @@ pub const Checker = struct {
                         // `{ "data-prop": true; }`).
                         const elaboration_target = self.mergeJsxAttrsTargetForElaboration(effective_target) catch effective_target;
                         const construct_interface_tag = !tag_is_class_component and try self.jsxTagUsesConstructSignatures(el.tag);
-                        const fired_2741 = if (construct_interface_tag)
+                        const class_missing_target = if (tag_is_class_component)
+                            try self.jsxFirstMissingAttrsConstituent(display_attrs_t, effective_target)
+                        else
+                            null;
+                        const fired_missing = if (class_missing_target) |missing_target|
+                            try self.tryReportJsxChildMissingProperties(el.tag, display_attrs_t, missing_target)
+                        else if (construct_interface_tag)
                             false
                         else
                             self.tryReportSinglePropertyMissing(el.tag, hir_mod.none_node_id, display_attrs_t, elaboration_target) catch false;
-                        if (!fired_2741) {
+                        const fired_weak = !fired_missing and tag_is_class_component and
+                            try self.tryReportJsxWeakTypeNoOverlap(
+                                el.tag,
+                                display_attrs_t,
+                                elaboration_target,
+                                effective_target,
+                            );
+                        if (!fired_missing and !fired_weak) {
                             // Prefer tsc's structural-shape wording
                             // (`Type 'X' is not assignable to type 'Y'.`)
                             // when both attrs_t and the (substituted)
@@ -88982,7 +88995,8 @@ pub const Checker = struct {
                     self.hir.typeOf(op.value)
                 else
                     try self.checkExpression(op.value);
-                break :blk try self.flowTypeForAssignmentValue(op.value, raw);
+                const flowed = try self.flowTypeForAssignmentValue(op.value, raw);
+                break :blk self.jsxSpreadObjectMemberValueType(op.value, flowed, prop_t);
             };
             try self.appendOrReplaceObjectMember(members, .{
                 .name = name,
@@ -88993,6 +89007,21 @@ pub const Checker = struct {
                 .decl_node = prop,
             });
         }
+    }
+
+    fn jsxSpreadObjectMemberValueType(
+        self: *Checker,
+        value: NodeId,
+        flowed: TypeId,
+        prop_t: ?TypeId,
+    ) TypeId {
+        if (value == hir_mod.none_node_id or flowed >= self.interner.pool.typeCount()) return flowed;
+        if (!self.interner.pool.flagsOf(flowed).is_literal) return flowed;
+        // Boolean object-literal members stay fresh through tsgo's spread
+        // construction. String/number members retain freshness only when
+        // the contextual prop contains that exact literal.
+        if (self.hir.kindOf(value) == .literal_bool) return flowed;
+        return self.jsxDiagnosticBagMemberType(value, flowed, prop_t);
     }
 
     fn jsxSpreadTypeIsValid(self: *Checker, t: TypeId) CheckError!bool {
@@ -89477,7 +89506,12 @@ pub const Checker = struct {
     }
 
     fn jsxAttributeDiagnosticValueType(self: *Checker, value: NodeId, fallback: TypeId, prop_t: TypeId) CheckError!TypeId {
-        if (value == hir_mod.none_node_id) return types.Primitive.true_lit;
+        if (value == hir_mod.none_node_id) {
+            return if (self.typeHasLiteralConstituent(prop_t))
+                types.Primitive.true_lit
+            else
+                self.widenForInference(types.Primitive.true_lit);
+        }
         const widened = self.widenForInference(fallback);
         if (self.propertyKeyLiteralUnionPart(prop_t) == null) return widened;
         // Quoted JSX initializers are normalized as mutable strings
@@ -89488,6 +89522,22 @@ pub const Checker = struct {
         const ex = hir_mod.jsxExpressionOf(self.hir, value);
         if (ex.expression == hir_mod.none_node_id) return widened;
         return try self.expressionLiteralType(ex.expression, widened);
+    }
+
+    fn typeHasLiteralConstituent(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union)
+                self.interner.unionMembers(t)
+            else
+                self.interner.intersectionMembers(t);
+            for (members) |member| {
+                if (self.typeHasLiteralConstituent(member)) return true;
+            }
+            return false;
+        }
+        return flags.is_literal;
     }
 
     fn jsxTagVisibleOverloads(self: *Checker, tag: NodeId) ?[]const TypeId {
@@ -136666,16 +136716,31 @@ pub const Checker = struct {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         var saw_object = false;
-        for (self.interner.intersectionMembers(target)) |member| {
-            if (member >= self.interner.pool.typeCount()) return target;
-            if (!self.interner.pool.flagsOf(member).is_object_type) return target;
-            saw_object = true;
-            for (self.interner.objectMembers(member)) |m| {
-                try self.appendOrReplaceObjectMember(&members, m);
-            }
-        }
+        if (!try self.collectJsxAttrsTargetMembersForElaboration(target, &members, &saw_object)) return target;
         if (!saw_object) return target;
         return self.interner.internObjectType(members.items) catch target;
+    }
+
+    fn collectJsxAttrsTargetMembersForElaboration(
+        self: *Checker,
+        target: TypeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+        saw_object: *bool,
+    ) CheckError!bool {
+        if (target >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target)) |member| {
+                if (!try self.collectJsxAttrsTargetMembersForElaboration(member, members, saw_object)) return false;
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return false;
+        saw_object.* = true;
+        for (self.interner.objectMembers(target)) |member| {
+            try self.appendOrReplaceObjectMember(members, member);
+        }
+        return true;
     }
 
     /// Return the concrete managed-props constituent that owns the first
@@ -136702,6 +136767,47 @@ pub const Checker = struct {
             if (!try self.jsxAttributeAssignable(attr_t, prop.type)) return target;
         }
         return null;
+    }
+
+    fn jsxFirstMissingAttrsConstituent(
+        self: *Checker,
+        attrs_t: TypeId,
+        target: TypeId,
+    ) CheckError!?TypeId {
+        if (attrs_t >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return null;
+        const target_flags = self.interner.pool.flagsOf(target);
+        if (target_flags.is_intersection) {
+            for (self.interner.intersectionMembers(target)) |member| {
+                if (try self.jsxFirstMissingAttrsConstituent(attrs_t, member)) |found| return found;
+            }
+            return null;
+        }
+        if (!target_flags.is_object_type) return null;
+        for (self.interner.objectMembers(target)) |prop| {
+            if (prop.is_optional or prop.is_method) continue;
+            if (self.interner.objectMember(attrs_t, prop.name) == null) return target;
+        }
+        return null;
+    }
+
+    fn tryReportJsxWeakTypeNoOverlap(
+        self: *Checker,
+        anchor: NodeId,
+        source: TypeId,
+        relation_target: TypeId,
+        display_target: TypeId,
+    ) CheckError!bool {
+        if (!self.engine.weakTypeNoCommonProperties(source, relation_target)) return false;
+        const source_name = (try self.allocAnonymousObjectName(source)) orelse
+            (try self.allocSimpleTypeName(source)) orelse return false;
+        const target_name = (try self.allocJsxAttrsTargetName(anchor, display_target)) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' has no properties in common with type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(anchor, TsCodes.no_properties_in_common, msg);
+        return true;
     }
 
     /// Render an intersection target the way tsc's `getIntersectionType`
@@ -136733,6 +136839,49 @@ pub const Checker = struct {
         return buf.items;
     }
 
+    fn jsxIntersectionContainsUnion(self: *Checker, target: TypeId) bool {
+        if (target >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target);
+        if (flags.is_union) return true;
+        if (!flags.is_intersection) return false;
+        for (self.interner.intersectionMembers(target)) |member| {
+            if (self.jsxIntersectionContainsUnion(member)) return true;
+        }
+        return false;
+    }
+
+    fn allocJsxGroupedIntersectionName(self: *Checker, target: TypeId) CheckError!?[]const u8 {
+        if (target >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(target).is_intersection) {
+            return (try self.allocSimpleTypeName(target)) orelse
+                (try self.allocAnonymousObjectName(target));
+        }
+        const arena = self.diag_arena.allocator();
+        const members = self.interner.intersectionMembers(target);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var written: usize = 0;
+        for ([_]bool{ true, false }) |want_class_attrs| {
+            for (members) |member| {
+                const member_name = (try self.allocSimpleTypeName(member)) orelse
+                    (try self.allocAnonymousObjectName(member)) orelse
+                    (try self.allocJsxGroupedIntersectionName(member)) orelse continue;
+                const is_class_attrs = std.mem.startsWith(u8, member_name, "IntrinsicClassAttributes<");
+                if (is_class_attrs != want_class_attrs) continue;
+                if (written > 0) try buf.appendSlice(arena, " & ");
+                if (member < self.interner.pool.typeCount() and self.interner.pool.flagsOf(member).is_intersection) {
+                    const nested = (try self.allocJsxGroupedIntersectionName(member)) orelse member_name;
+                    try buf.append(arena, '(');
+                    try buf.appendSlice(arena, nested);
+                    try buf.append(arena, ')');
+                } else {
+                    try buf.appendSlice(arena, member_name);
+                }
+                written += 1;
+            }
+        }
+        return if (written == 0) null else buf.items;
+    }
+
     fn collectJsxPrunedIntersectionNames(
         self: *Checker,
         target: TypeId,
@@ -136751,9 +136900,13 @@ pub const Checker = struct {
     }
 
     fn allocJsxAttrsTargetName(self: *Checker, anchor: NodeId, target: TypeId) CheckError!?[]const u8 {
-        const tgt_text = (try self.allocJsxPrunedIntersectionName(target)) orelse
-            (try self.allocSimpleTypeName(target)) orelse
-            (try self.allocAnonymousObjectName(target)) orelse return null;
+        const preserve_grouping = self.jsxIntersectionContainsUnion(target);
+        const tgt_text = if (preserve_grouping)
+            (try self.allocJsxGroupedIntersectionName(target)) orelse return null
+        else
+            (try self.allocJsxPrunedIntersectionName(target)) orelse
+                (try self.allocSimpleTypeName(target)) orelse
+                (try self.allocAnonymousObjectName(target)) orelse return null;
         // Only prepend when JSX.IntrinsicAttributes is in scope ÃÂ¢ÃÂÃÂ
         // intrinsic-tag and untyped paths don't carry the prefix.
         if (!self.jsxHasIntrinsicAttributesDecl(anchor)) return tgt_text;
@@ -136762,6 +136915,13 @@ pub const Checker = struct {
         // members (e.g. `function Tag(x: {}) { ÃÂ¢ÃÂÃÂ¦ }`). Mirrors
         // `checkJsxChildrenProperty15` line 12.
         if (std.mem.eql(u8, tgt_text, "{}")) return "IntrinsicAttributes";
+        if (preserve_grouping) {
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "IntrinsicAttributes & ({s})",
+                .{tgt_text},
+            );
+        }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "IntrinsicAttributes & {s}",
@@ -149469,16 +149629,19 @@ test "checker: JSX class props validate required spread members" {
 
     var assign_errors: usize = 0;
     var excess_errors: usize = 0;
+    var missing_errors: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.type_not_assignable) assign_errors += 1;
         if (d.code == TsCodes.object_literal_excess_property) excess_errors += 1;
+        if (d.code == TsCodes.type_missing_properties) missing_errors += 1;
     }
     // tsc emits the unknown-attribute case as TS2322 with a structural
     // attrs-vs-target message (mirrored in `tsxAttributeResolution1`
     // lines 24/25/27); accept either TS2322 or TS2353 since both
     // signal the same upstream-reported gap.
     try T.expect(assign_errors >= 2);
-    try T.expect(excess_errors + assign_errors >= 3);
+    try T.expectEqual(@as(usize, 1), missing_errors);
+    try T.expect(excess_errors + assign_errors + missing_errors >= 3);
 }
 
 test "checker: intrinsic JSX structural errors do not resolve tags as values" {
@@ -149785,6 +149948,57 @@ test "checker: JSX parity class spread mismatch names concrete props in declarat
         s,
         TsCodes.type_not_assignable,
         "Type '{ x: 2; overwrite: string; y: true; }' is not assignable to type 'Prop'.",
+    ));
+}
+
+test "checker: JSX parity class spreads elaborate missing and weak managed props" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\interface RequiredProps { x: string; y: "2"; }
+        \\class Required extends React.Component<RequiredProps, {}> {
+        \\  render() { return <div />; }
+        \\}
+        \\class Weak extends React.Component<{}, {}> {
+        \\  render() { return <div />; }
+        \\}
+        \\const empty = {};
+        \\const unrelated = { prop1: false };
+        \\<Required {...empty} />;
+        \\<Weak {...unrelated} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_missing_properties,
+        "Type '{}' is missing the following properties from type 'RequiredProps': x, y",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.no_properties_in_common,
+        "Type '{ prop1: boolean; }' has no properties in common with type 'IntrinsicAttributes & IntrinsicClassAttributes<Weak> & { children?: ReactNode | undefined; }'.",
+    ));
+}
+
+test "checker: JSX parity union class props retain managed intersection grouping" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\type Props = { editable: false } | { editable: true; onEdit: (text: string) => void };
+        \\class Component extends React.Component<Props, {}> {
+        \\  render() { return <div />; }
+        \\}
+        \\<Component editable={true} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ editable: true; }' is not assignable to type 'IntrinsicAttributes & (IntrinsicClassAttributes<Component> & (Props & { children?: ReactNode | undefined; }))'.",
     ));
 }
 
