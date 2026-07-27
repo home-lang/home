@@ -4767,17 +4767,20 @@ fn runSpawnSyncNative(
     }
 
     const stdio = try readStdio(ctx, options, exception);
+    const timeout_ms = try readOptionalTimeoutMilliseconds(ctx, options, exception);
 
     var stdout_text: []u8 = &.{};
     var stderr_text: []u8 = &.{};
     var term: std.process.Child.Term = undefined;
     var captured = false;
+    var timed_out = false;
 
     if (stdio.stdout == .pipe or stdio.stderr == .pipe) {
-        const run_result = std.process.run(allocator, io, .{
+        const run_result = runSpawnSyncCaptured(allocator, io, .{
             .argv = argv_storage.items,
             .cwd = if (cwd.path) |path| .{ .path = path } else .inherit,
             .environ_map = environ_map,
+            .timeout_ms = timeout_ms,
         }) catch |err| {
             setExceptionFmt(ctx, exception, "Bun.spawnSync() failed: {s} cmd={s} cwd={s}", .{ @errorName(err), argv_storage.items[0], cwd.path orelse "(inherit)" });
             return error.NativeException;
@@ -4785,6 +4788,7 @@ fn runSpawnSyncNative(
         stdout_text = run_result.stdout;
         stderr_text = run_result.stderr;
         term = run_result.term;
+        timed_out = run_result.timed_out;
         captured = true;
     } else {
         var child = std.process.spawn(io, .{
@@ -4805,7 +4809,88 @@ fn runSpawnSyncNative(
         allocator.free(stderr_text);
     };
 
-    return makeSpawnResult(ctx, term, stdout_text, stderr_text);
+    const result = try makeSpawnResult(ctx, term, stdout_text, stderr_text);
+    if (timeout_ms != null) {
+        setBoolProperty(ctx, @ptrCast(result), "exitedDueToTimeout", timed_out);
+    }
+    return result;
+}
+
+const SpawnSyncCapturedOptions = struct {
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd,
+    environ_map: ?*const std.process.Environ.Map,
+    timeout_ms: ?i64,
+};
+
+const SpawnSyncCapturedResult = struct {
+    term: std.process.Child.Term,
+    stdout: []u8,
+    stderr: []u8,
+    timed_out: bool,
+};
+
+fn runSpawnSyncCaptured(
+    allocator: std.mem.Allocator,
+    io: Io,
+    options: SpawnSyncCapturedOptions,
+) !SpawnSyncCapturedResult {
+    var child = try std.process.spawn(io, .{
+        .argv = options.argv,
+        .cwd = options.cwd,
+        .environ_map = options.environ_map,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(io);
+
+    var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: Io.File.MultiReader = undefined;
+    multi_reader.init(allocator, io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer multi_reader.deinit();
+
+    const timeout: Io.Timeout = if (options.timeout_ms) |milliseconds|
+        (Io.Timeout{ .duration = .{ .raw = .fromMilliseconds(milliseconds), .clock = .awake } }).toDeadline(io)
+    else
+        .none;
+    var timed_out = false;
+
+    while (multi_reader.fill(64, timeout)) |_| {} else |err| switch (err) {
+        error.EndOfStream => {},
+        error.Timeout => {
+            timed_out = true;
+            terminateSpawnSyncChild(&child, io);
+            while (multi_reader.fill(64, .none)) |_| {} else |drain_err| switch (drain_err) {
+                error.EndOfStream => {},
+                else => |e| return e,
+            }
+        },
+        else => |e| return e,
+    }
+
+    try multi_reader.checkAnyError();
+    const term = try child.wait(io);
+    const stdout = try multi_reader.toOwnedSlice(0);
+    errdefer allocator.free(stdout);
+    const stderr = try multi_reader.toOwnedSlice(1);
+    errdefer allocator.free(stderr);
+
+    return .{
+        .term = term,
+        .stdout = stdout,
+        .stderr = stderr,
+        .timed_out = timed_out,
+    };
+}
+
+fn terminateSpawnSyncChild(child: *std.process.Child, io: Io) void {
+    if (comptime @import("builtin").os.tag == .windows) {
+        child.kill(io);
+        return;
+    }
+    const pid = child.id orelse return;
+    std.posix.kill(pid, .TERM) catch child.kill(io);
 }
 
 const StdioConfig = struct {
@@ -5180,6 +5265,19 @@ fn readOptionalStringProperty(
     return try valueToOwnedString(allocator, ctx, value, exception);
 }
 
+fn readOptionalTimeoutMilliseconds(
+    ctx: *JSContextRef,
+    object: *JSObject,
+    exception: extern_fns.ExceptionRef,
+) !?i64 {
+    const value = getProperty(ctx, object, "timeout", exception) orelse return null;
+    if (extern_fns.JSValueIsUndefined(ctx, value) or extern_fns.JSValueIsNull(ctx, value)) return null;
+    if (!extern_fns.JSValueIsNumber(ctx, value)) return error.PropertyMustBeNumber;
+    const number = extern_fns.JSValueToNumber(ctx, value, exception);
+    if (!std.math.isFinite(number) or number <= 0) return null;
+    return @intFromFloat(number);
+}
+
 fn makeSpawnResult(ctx: *JSContextRef, term: std.process.Child.Term, stdout_text: []const u8, stderr_text: []const u8) !*JSValue {
     const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
 
@@ -5189,11 +5287,15 @@ fn makeSpawnResult(ctx: *JSContextRef, term: std.process.Child.Term, stdout_text
         },
         .signal => |signal| {
             setNullProperty(ctx, object, "exitCode");
-            setNumberProperty(ctx, object, "signalCode", @intFromEnum(signal));
+            var signal_buf: [32]u8 = undefined;
+            const signal_name = try std.fmt.bufPrint(&signal_buf, "SIG{s}", .{@tagName(signal)});
+            try setStringProperty(ctx, object, "signalCode", signal_name);
         },
         .stopped => |signal| {
             setNullProperty(ctx, object, "exitCode");
-            setNumberProperty(ctx, object, "signalCode", @intFromEnum(signal));
+            var signal_buf: [32]u8 = undefined;
+            const signal_name = try std.fmt.bufPrint(&signal_buf, "SIG{s}", .{@tagName(signal)});
+            try setStringProperty(ctx, object, "signalCode", signal_name);
         },
         .unknown => |code| {
             setNumberProperty(ctx, object, "exitCode", code);

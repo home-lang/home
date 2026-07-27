@@ -3094,7 +3094,7 @@ const harness_prelude =
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const script = String(cmd[cmd.indexOf("-e") + 1] || cmd[cmd.indexOf("--eval") + 1] || "");
     \\  if (!(cmd.includes("-e") || cmd.includes("--eval"))) return null;
-    \\  const match = script.match(/process\.exit\(\s*(\d+)\s*\)/);
+    \\  const match = script.match(/^\s*process\.exit\(\s*(\d+)\s*\)\s*;?\s*$/);
     \\  if (!match) return null;
     \\  const code = Number(match[1]) || 0;
     \\  const result = __home_spawn_completed("", "", code);
@@ -55371,9 +55371,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn_waiter_thread.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess waiter thread resource usage integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-isolated-event-loop.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun spawnSync isolated event loop integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-no-microtask-drain.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun spawnSync microtask and native timeout integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/column-types.test.js"))
         try rewriteNativeTodoCorpus(allocator, "Bun SQLite column metadata integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js"))
@@ -72444,6 +72444,52 @@ test "bootstrap runner mirrors spawnSync timeout corpus" {
     try std.testing.expectEqual(@as(usize, 5), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors spawnSync microtask isolation corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawnsync-no-microtask-drain.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
+        std.debug.print(
+            "spawnSync microtask isolation corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 3), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors spawnSync event-loop isolation corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawnsync-isolated-event-loop.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
+        std.debug.print(
+            "spawnSync event-loop isolation corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 4), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 4), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
