@@ -88210,6 +88210,7 @@ pub const Checker = struct {
                         .is_optional = false,
                         .is_readonly = false,
                         .is_method = false,
+                        .decl_node = attr,
                     };
                     try self.appendOrReplaceObjectMember(&display_attr_members, display_member);
                     try self.appendOrReplaceObjectMember(&generic_spread_display_members, display_member);
@@ -88266,6 +88267,7 @@ pub const Checker = struct {
                                     .is_optional = false,
                                     .is_readonly = false,
                                     .is_method = false,
+                                    .decl_node = attr,
                                 };
                                 try self.appendOrReplaceObjectMember(&display_attr_members, contextual_display_member);
                                 try self.appendOrReplaceObjectMember(&generic_spread_display_members, contextual_display_member);
@@ -88672,6 +88674,8 @@ pub const Checker = struct {
                     // `attrs_t`. Mirrors tsgo's attributes type, which
                     // contains hyphenated members even though the
                     // relater ignores them (`isIgnoredJsxProperty`).
+                    self.sortJsxDisplayMembersByDeclarationOrder(display_attr_members.items);
+                    self.sortJsxDisplayMembersByDeclarationOrder(generic_spread_display_members.items);
                     const flat_display_attrs_t = self.interner.internObjectType(display_attr_members.items) catch attrs_t;
                     var display_attrs_t = flat_display_attrs_t;
                     if (generic_spread_types.items.len > 0) {
@@ -88843,7 +88847,18 @@ pub const Checker = struct {
                             // emitting a misshapen structural message.
                             const src_text = (try self.allocAnonymousObjectName(display_attrs_t)) orelse
                                 (try self.allocSimpleTypeName(display_attrs_t));
-                            const tgt_text = try self.allocJsxAttrsTargetName(el.tag, effective_target);
+                            const mismatch_constituent = if (tag_is_class_component and
+                                attrs_have_no_excess and
+                                try self.jsxRequiredPropsCovered(effective_target, attrs_t) and
+                                !attrs_values_assignable)
+                                try self.jsxFirstIncompatibleAttrsConstituent(display_attrs_t, effective_target)
+                            else
+                                null;
+                            const tgt_text = if (mismatch_constituent) |constituent|
+                                (try self.allocSimpleTypeName(constituent)) orelse
+                                    (try self.allocAnonymousObjectName(constituent))
+                            else
+                                try self.allocJsxAttrsTargetName(el.tag, effective_target);
                             if (src_text != null and tgt_text != null) {
                                 const msg = try std.fmt.allocPrint(
                                     self.diag_arena.allocator(),
@@ -88892,6 +88907,21 @@ pub const Checker = struct {
             }
         }
         try members.append(self.gpa, member);
+    }
+
+    /// tsgo spread symbols retain their originating declarations. Its
+    /// property enumeration consequently follows source declaration
+    /// position, not the order in which spread folds happened. Keep the
+    /// same ordering only for diagnostic display bags; relation bags retain
+    /// their runtime last-write-wins construction.
+    fn sortJsxDisplayMembersByDeclarationOrder(self: *Checker, members: []types.ObjectMember) void {
+        std.sort.insertion(types.ObjectMember, members, self, jsxDisplayMemberDeclarationLessThan);
+    }
+
+    fn jsxDisplayMemberDeclarationLessThan(self: *Checker, lhs: types.ObjectMember, rhs: types.ObjectMember) bool {
+        if (lhs.decl_node == hir_mod.none_node_id) return false;
+        if (rhs.decl_node == hir_mod.none_node_id) return true;
+        return self.hir.spanOf(lhs.decl_node).start < self.hir.spanOf(rhs.decl_node).start;
     }
 
     fn appendJsxSpreadMembers(
@@ -88960,6 +88990,7 @@ pub const Checker = struct {
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = false,
+                .decl_node = prop,
             });
         }
     }
@@ -136647,6 +136678,32 @@ pub const Checker = struct {
         return self.interner.internObjectType(members.items) catch target;
     }
 
+    /// Return the concrete managed-props constituent that owns the first
+    /// incompatible source property. tsgo's relation elaboration names this
+    /// constituent in a class JSX TS2322 head (`Prop`), while excess and
+    /// missing-property relations continue to name the complete managed
+    /// attributes intersection.
+    fn jsxFirstIncompatibleAttrsConstituent(
+        self: *Checker,
+        attrs_t: TypeId,
+        target: TypeId,
+    ) CheckError!?TypeId {
+        if (attrs_t >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return null;
+        const target_flags = self.interner.pool.flagsOf(target);
+        if (target_flags.is_intersection) {
+            for (self.interner.intersectionMembers(target)) |member| {
+                if (try self.jsxFirstIncompatibleAttrsConstituent(attrs_t, member)) |found| return found;
+            }
+            return null;
+        }
+        if (!target_flags.is_object_type) return null;
+        for (self.interner.objectMembers(target)) |prop| {
+            const attr_t = self.interner.objectMember(attrs_t, prop.name) orelse continue;
+            if (!try self.jsxAttributeAssignable(attr_t, prop.type)) return target;
+        }
+        return null;
+    }
+
     /// Render an intersection target the way tsc's `getIntersectionType`
     /// canonicalises it: empty object members (`{}`) are dropped when any
     /// non-empty member remains (`{ x: boolean; } & {}` →
@@ -149708,6 +149765,27 @@ test "checker: JSX parity later literal spread and any spread suppress explicit 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: JSX parity class spread mismatch names concrete props in declaration order" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\const obj1: { x: 2 } = { x: 2 };
+        \\interface Prop { x: 2; y: false; overwrite: string; }
+        \\class Component extends React.Component<Prop, {}> {
+        \\  render() { return <div />; }
+        \\}
+        \\<Component overwrite="hi" {...obj1} {...{ y: true }} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ x: 2; overwrite: string; y: true; }' is not assignable to type 'Prop'.",
+    ));
 }
 
 test "checker: JSX children respect fixed tuple arity" {
