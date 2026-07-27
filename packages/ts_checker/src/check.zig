@@ -24249,8 +24249,30 @@ pub const Checker = struct {
         const attrs_len = hir_mod.jsxAttrs(self.hir, el_node).len;
         const props_t = (self.jsxPropsType(el_node, el.tag, attrs_len) catch return false) orelse return false;
         if (self.typeIsAnyLike(props_t)) return false;
-        const prop_t = (self.lookupObjectMember(props_t, a.name) catch return false) orelse return false;
-        return self.firstSignatureType(prop_t) != null;
+        const prop_t = (self.jsxContextualPropType(props_t, el.tag, a.name) catch return false) orelse return false;
+        return self.jsxPropProvidesFunctionContext(prop_t);
+    }
+
+    fn jsxSpreadAttributeMemberHasContextualType(
+        self: *Checker,
+        spread_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        if (spread_node == hir_mod.none_node_id or self.hir.kindOf(spread_node) != .jsx_spread_attribute) return false;
+        const el_node = self.hir.parentOf(spread_node);
+        if (el_node == hir_mod.none_node_id) return false;
+        const el_kind = self.hir.kindOf(el_node);
+        if (el_kind != .jsx_element and el_kind != .jsx_self_closing) return false;
+        const el = hir_mod.jsxElementOf(self.hir, el_node);
+        const attrs_len = hir_mod.jsxAttrs(self.hir, el_node).len;
+        const props_t = (self.jsxPropsType(el_node, el.tag, attrs_len) catch return false) orelse return false;
+        if (self.typeIsAnyLike(props_t)) return false;
+        const prop_t = (self.jsxContextualPropType(props_t, el.tag, member_name) catch return false) orelse return false;
+        return self.jsxPropProvidesFunctionContext(prop_t);
+    }
+
+    fn jsxPropProvidesFunctionContext(self: *Checker, prop_t: TypeId) bool {
+        return self.typeIsAnyLike(prop_t) or self.firstSignatureType(prop_t) != null;
     }
 
     fn parameterHasContextualType(self: *Checker, fn_node: NodeId, param_node: NodeId) bool {
@@ -24380,6 +24402,10 @@ pub const Checker = struct {
                 },
                 .jsx_attribute => {
                     return self.jsxAttributeHasContextualType(cur);
+                },
+                .jsx_spread_attribute => {
+                    const member_name = contextual_member_name orelse return false;
+                    return self.jsxSpreadAttributeMemberHasContextualType(cur, member_name);
                 },
                 .decorator => {
                     return self.decoratorExpressionHasContextualType(cur, prev);
@@ -88082,8 +88108,8 @@ pub const Checker = struct {
             if (self.hir.kindOf(attr) != .jsx_spread_attribute) continue;
             has_spread_attr = true;
             const sp = hir_mod.jsxSpreadAttributeOf(self.hir, attr);
-            const spread_t = try self.checkedExpressionType(sp.expression);
             try self.checkJsxSpreadContextualCallbacks(sp.expression, props_t, el.tag);
+            const spread_t = try self.checkedExpressionType(sp.expression);
             if (self.typeIsAnyLike(spread_t)) has_any_spread = true;
         }
 
@@ -88122,6 +88148,7 @@ pub const Checker = struct {
         var spread_satisfies_target = false;
         var explicit_value_attr_count: usize = 0;
         var per_attr_assignability_fired = false;
+        var overload_value_mismatch_anchor: ?NodeId = null;
         for (attrs) |attr| {
             switch (self.hir.kindOf(attr)) {
                 .jsx_attribute => {
@@ -88132,9 +88159,23 @@ pub const Checker = struct {
                         saw_children_attr = true;
                         children_attr_node = attr;
                     }
+                    const initial_expr = self.jsxAttributeExpression(a.value);
+                    if (props_t) |target| {
+                        if (initial_expr != hir_mod.none_node_id and self.jsxValueIsFunctionLike(initial_expr)) {
+                            if (try self.jsxContextualPropType(target, el.tag, a.name)) |initial_prop_t| {
+                                if (self.typeIsAnyLike(initial_prop_t)) {
+                                    self.removeImplicitAnyDiagnosticsWithin(initial_expr);
+                                } else {
+                                    _ = try self.checkJsxContextualAttributeValue(a.value, initial_prop_t);
+                                }
+                            }
+                        }
+                    }
                     var value_t = try self.checkJsxAttributeValue(a.value);
                     var attr_bag_t = try self.jsxAttributeBagValueType(a.value, value_t);
-                    if (!std.mem.startsWith(u8, attr_name, "data-")) {
+                    const ignored_data_attr = std.mem.startsWith(u8, attr_name, "data-") and
+                        (try self.jsxContextualPropType(props_t, el.tag, a.name)) == null;
+                    if (!ignored_data_attr) {
                         // Include `key` in the attrs bag when the
                         // target carries no `IntrinsicAttributes`
                         // intersection (e.g. plain `function Tag(x: {})`).
@@ -88227,7 +88268,7 @@ pub const Checker = struct {
                                 per_attr_assignability_fired = true;
                                 continue;
                             }
-                            if (a.value != hir_mod.none_node_id) {
+                            {
                                 const ok = try self.jsxAttributeLiteralAssignable(a.value, prop_t) or
                                     try self.jsxAttributeAssignable(value_t, prop_t);
                                 // tsc swallows the explicit-attribute
@@ -88241,56 +88282,65 @@ pub const Checker = struct {
                                 // where obj7.x is a compatible string).
                                 const overridden = !ok and try self.jsxLaterSpreadProvidesCompatibleProp(attrs, attr, a.name, prop_t);
                                 if (!ok and !overridden and !(has_spread_attr and props_target_had_free)) {
-                                    per_attr_assignability_fired = true;
-                                    // Prefer tsc's value-level
-                                    // structural wording ÃÂ¢ÃÂÃÂ `Type '<src>'
-                                    // is not assignable to type '<dst>'.`
-                                    // ÃÂ¢ÃÂÃÂ anchored at the attribute, with
-                                    // the widened value type vs the
-                                    // prop's declared type. The
-                                    // simplified `JSX attribute value
-                                    // is not assignable to the target
-                                    // property.` is the fallback when
-                                    // either side fails to render.
-                                    const diagnostic_value = try self.jsxAttributeDiagnosticValueType(a.value, value_t, prop_t);
-                                    const widened_value = if (diagnostic_value != value_t)
-                                        diagnostic_value
-                                    else
-                                        self.widenForInference(diagnostic_value);
-                                    // tsc checks a value against an
-                                    // intersection target
-                                    // constituent-by-constituent and
-                                    // reports the FIRST failing one
-                                    // (`tsxUnionElementType3` line 34:
-                                    // `x="Hi"` against the union-SFC
-                                    // props intersection reports
-                                    // `Type 'string' is not assignable
-                                    // to type 'number'.`, never
-                                    // `'string & number'`).
-                                    const callable_intersection_name =
-                                        try self.allocJsxCallableIntersectionDiagnosticName(prop_t, value_t);
-                                    const report_prop_t = if (callable_intersection_name != null)
-                                        prop_t
-                                    else
-                                        try self.firstFailingIntersectionMember(value_t, prop_t);
-                                    const src_text = (try self.allocSimpleTypeName(widened_value)) orelse
-                                        (try self.allocAnonymousObjectName(widened_value));
-                                    const tgt_text = callable_intersection_name orelse
-                                        (try self.allocSimpleTypeName(report_prop_t)) orelse
-                                        (try self.allocAnonymousObjectName(report_prop_t));
-                                    if (src_text != null and tgt_text != null) {
-                                        const msg = try std.fmt.allocPrint(
-                                            self.diag_arena.allocator(),
-                                            "Type '{s}' is not assignable to type '{s}'.",
-                                            .{ src_text.?, tgt_text.? },
-                                        );
-                                        try self.diagnostics.append(self.gpa, .{
-                                            .node = attr,
-                                            .code = TsCodes.type_not_assignable,
-                                            .message = msg,
-                                        });
+                                    // JSX overload resolution owns the
+                                    // applicability failure. Defer the
+                                    // value mismatch so it becomes TS2769;
+                                    // after a spread, tsgo elaborates at
+                                    // the explicit attribute that failed.
+                                    if (self.jsxTagHasVisibleOverloads(el.tag)) {
+                                        if (has_spread_attr) overload_value_mismatch_anchor = attr;
                                     } else {
-                                        try self.report(attr, TsCodes.type_not_assignable, "JSX attribute value is not assignable to the target property.");
+                                        per_attr_assignability_fired = true;
+                                        // Prefer tsc's value-level
+                                        // structural wording ÃÂ¢ÃÂÃÂ `Type '<src>'
+                                        // is not assignable to type '<dst>'.`
+                                        // ÃÂ¢ÃÂÃÂ anchored at the attribute, with
+                                        // the widened value type vs the
+                                        // prop's declared type. The
+                                        // simplified `JSX attribute value
+                                        // is not assignable to the target
+                                        // property.` is the fallback when
+                                        // either side fails to render.
+                                        const diagnostic_value = try self.jsxAttributeDiagnosticValueType(a.value, value_t, prop_t);
+                                        const widened_value = if (diagnostic_value != value_t)
+                                            diagnostic_value
+                                        else
+                                            self.widenForInference(diagnostic_value);
+                                        // tsc checks a value against an
+                                        // intersection target
+                                        // constituent-by-constituent and
+                                        // reports the FIRST failing one
+                                        // (`tsxUnionElementType3` line 34:
+                                        // `x="Hi"` against the union-SFC
+                                        // props intersection reports
+                                        // `Type 'string' is not assignable
+                                        // to type 'number'.`, never
+                                        // `'string & number'`).
+                                        const callable_intersection_name =
+                                            try self.allocJsxCallableIntersectionDiagnosticName(prop_t, value_t);
+                                        const report_prop_t = if (callable_intersection_name != null)
+                                            prop_t
+                                        else
+                                            try self.firstFailingIntersectionMember(value_t, prop_t);
+                                        const src_text = (try self.allocSimpleTypeName(widened_value)) orelse
+                                            (try self.allocAnonymousObjectName(widened_value));
+                                        const tgt_text = callable_intersection_name orelse
+                                            (try self.allocSimpleTypeName(report_prop_t)) orelse
+                                            (try self.allocAnonymousObjectName(report_prop_t));
+                                        if (src_text != null and tgt_text != null) {
+                                            const msg = try std.fmt.allocPrint(
+                                                self.diag_arena.allocator(),
+                                                "Type '{s}' is not assignable to type '{s}'.",
+                                                .{ src_text.?, tgt_text.? },
+                                            );
+                                            try self.diagnostics.append(self.gpa, .{
+                                                .node = attr,
+                                                .code = TsCodes.type_not_assignable,
+                                                .message = msg,
+                                            });
+                                        } else {
+                                            try self.report(attr, TsCodes.type_not_assignable, "JSX attribute value is not assignable to the target property.");
+                                        }
                                     }
                                 }
                             }
@@ -88364,8 +88414,8 @@ pub const Checker = struct {
                     // implicit children get overwritten.
                     if (children_spread_anchor == null) children_spread_anchor = attr;
                     const sp = hir_mod.jsxSpreadAttributeOf(self.hir, attr);
-                    const spread_t = try self.checkedExpressionType(sp.expression);
                     try self.checkJsxSpreadContextualCallbacks(sp.expression, props_t, el.tag);
+                    const spread_t = try self.checkedExpressionType(sp.expression);
                     if (!try self.jsxSpreadTypeIsValid(spread_t)) {
                         try self.report(sp.expression, TsCodes.spread_types_object_only, "Spread types may only be created from object types.");
                     }
@@ -88430,7 +88480,7 @@ pub const Checker = struct {
         const tag_is_class_component = self.jsxTagIsClassComponent(el.tag);
         if (children.len > 0 and props_t != null and !self.jsxPropsTargetIsAnyLike(props_t.?) and !saw_children_attr) {
             const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
-            if (try self.lookupObjectMember(props_t.?, children_name)) |children_t| {
+            if (try self.jsxContextualPropType(props_t, el.tag, children_name)) |children_t| {
                 if (!tag_is_class_component and children.len == 1 and self.jsxChildrenTypeRequiresMoreThanCount(children_t, children.len)) {
                     const child_text = (try self.simpleDiagnosticTypeName(children_t)) orelse "";
                     const msg = try std.fmt.allocPrint(
@@ -88513,7 +88563,7 @@ pub const Checker = struct {
             var contextual_children_t: ?TypeId = null;
             if (props_t) |pt| {
                 if (!self.jsxPropsTargetIsAnyLike(pt)) {
-                    contextual_children_t = try self.lookupObjectMember(pt, children_name);
+                    contextual_children_t = try self.jsxContextualPropType(props_t, el.tag, children_name);
                 }
             }
             const children_member_t = try self.jsxChildrenMemberType(children, contextual_children_t);
@@ -88655,12 +88705,10 @@ pub const Checker = struct {
                         if (try self.jsxLibElementSyntheticType()) |t| return t;
                         return types.Primitive.any;
                     }
-                    const has_generic_spread = generic_spread_types.items.len > 0;
                     const attrs_match_overload = try self.jsxAttributesMatchOverload(
                         el.tag,
                         attrs_t,
-                        attrs.len,
-                        has_generic_spread,
+                        has_spread_attr,
                     );
                     const interface_overloads = try self.jsxTagInterfaceOverloads(el.tag);
                     const attrs_match_sigs = if (interface_overloads) |sigs|
@@ -88668,25 +88716,33 @@ pub const Checker = struct {
                             el.tag,
                             sigs,
                             attrs_t,
-                            attrs.len,
-                            has_generic_spread,
+                            has_spread_attr,
                         )
                     else
                         false;
-                    // A generic spread is preserved by tsgo as an
-                    // intersection (`T & { ...explicit }`), not a fresh
-                    // object literal. Excess-property checking therefore
-                    // does not apply to the composed bag, while required
-                    // properties and value relations still do.
+                    // Overload applicability above accounts for every
+                    // spread's non-fresh bag. The fallback single-target
+                    // path still excess-checks explicit attributes added
+                    // alongside a concrete spread; only a generic spread
+                    // makes the whole synthesized target indeterminate.
+                    const has_generic_spread = generic_spread_types.items.len > 0;
                     const attrs_have_no_excess = has_generic_spread or
                         try self.jsxAttrsHaveNoExcessMembersForTarget(el.tag, attrs_t, effective_target);
                     const attrs_values_assignable = try self.jsxAttributeBagValuesAssignable(attrs_t, effective_target);
                     if (self.jsxTagHasVisibleOverloads(el.tag) and !attrs_match_overload) {
-                        try self.report(self.jsxNoOverloadAnchor(el.tag, attrs), TsCodes.no_overload_matches, "No overload matches this call.");
+                        try self.report(
+                            self.jsxNoOverloadAnchor(el.tag, overload_value_mismatch_anchor),
+                            TsCodes.no_overload_matches,
+                            "No overload matches this call.",
+                        );
                         return types.Primitive.any;
                     }
                     if (interface_overloads != null and !attrs_match_sigs) {
-                        try self.report(self.jsxNoOverloadAnchor(el.tag, attrs), TsCodes.no_overload_matches, "No overload matches this call.");
+                        try self.report(
+                            self.jsxNoOverloadAnchor(el.tag, overload_value_mismatch_anchor),
+                            TsCodes.no_overload_matches,
+                            "No overload matches this call.",
+                        );
                         return types.Primitive.any;
                     }
                     // tsgo's `elaborateJsxComponents` replaces the
@@ -88719,11 +88775,19 @@ pub const Checker = struct {
                         // the plain single-signature bag errors below
                         // (`tsxSpreadAttributesResolution2`).
                         if (tag_is_class_component and self.jsxTagClassConstructSignatureCount(el.tag) >= 2) {
-                            try self.report(self.jsxNoOverloadAnchor(el.tag, attrs), TsCodes.no_overload_matches, "No overload matches this call.");
+                            try self.report(
+                                self.jsxNoOverloadAnchor(el.tag, overload_value_mismatch_anchor),
+                                TsCodes.no_overload_matches,
+                                "No overload matches this call.",
+                            );
                             return types.Primitive.any;
                         }
                         if (self.jsxTagHasVisibleOverloads(el.tag)) {
-                            try self.report(self.jsxNoOverloadAnchor(el.tag, attrs), TsCodes.no_overload_matches, "No overload matches this call.");
+                            try self.report(
+                                self.jsxNoOverloadAnchor(el.tag, overload_value_mismatch_anchor),
+                                TsCodes.no_overload_matches,
+                                "No overload matches this call.",
+                            );
                             return types.Primitive.any;
                         }
                         // Prefer tsc's more-specific TS2741
@@ -89898,19 +89962,24 @@ pub const Checker = struct {
             const name = self.propertyNameFromKeyNode(op.key) orelse continue;
             const prop_t = (try self.jsxContextualPropType(props_t, tag, name)) orelse continue;
             if (op.value != hir_mod.none_node_id and self.jsxValueIsFunctionLike(op.value)) {
-                if (self.firstSignatureType(prop_t)) |sig| try self.checkFunctionWithContextualSignature(op.value, sig);
+                if (self.firstSignatureType(prop_t)) |sig| {
+                    try self.checkFunctionWithContextualSignature(op.value, sig);
+                } else if (self.typeIsAnyLike(prop_t)) {
+                    self.removeImplicitAnyDiagnosticsWithin(op.value);
+                }
             }
         }
     }
 
-    fn jsxNoOverloadAnchor(self: *Checker, tag: NodeId, attrs: []const NodeId) NodeId {
+    fn jsxNoOverloadAnchor(self: *Checker, tag: NodeId, value_mismatch: ?NodeId) NodeId {
         _ = self;
-        _ = attrs;
         // `resolveJsxOpeningLikeElement` reports applicability failures
         // against the JSX tag name. Attribute-level elaborations may hang
-        // below that diagnostic, but the TS2769 head remains at the tag
-        // even when the attributes bag contains spreads.
-        return tag;
+        // below that diagnostic. When a post-spread explicit value causes
+        // the mismatch, JSX elaboration moves the TS2769 head to that
+        // attribute; structural and required-property failures stay at
+        // the tag.
+        return value_mismatch orelse tag;
     }
 
     /// Construct (preferred) or call signatures of a non-union tag
@@ -89951,13 +90020,12 @@ pub const Checker = struct {
         anchor: NodeId,
         sigs: []const TypeId,
         attrs_t: TypeId,
-        attr_count: usize,
-        has_generic_spread: bool,
+        has_spread: bool,
     ) CheckError!bool {
         for (sigs) |sig| {
             const params = self.interner.signatureParams(sig);
             if (params.len == 0) {
-                if (attr_count == 0) return true;
+                if (try self.jsxAttrsBagHasOnlyIgnoredMembers(attrs_t)) return true;
                 continue;
             }
             var target = params[0];
@@ -89970,9 +90038,15 @@ pub const Checker = struct {
                     target = self.substituteType(target, &subs) catch target;
                 }
             }
-            const no_excess = has_generic_spread or
+            const no_excess = has_spread or
                 try self.jsxAttrsHaveNoExcessMembersForTarget(anchor, attrs_t, target);
             if (no_excess and self.engine.isAssignableTo(attrs_t, target) catch false) return true;
+            if (no_excess and
+                try self.jsxRequiredPropsAssignable(target, attrs_t) and
+                try self.jsxAttributeBagValuesAssignable(attrs_t, target))
+            {
+                return true;
+            }
             if (no_excess and target_had_free and try self.jsxRequiredPropsAssignable(target, attrs_t)) return true;
         }
         return false;
@@ -90014,14 +90088,13 @@ pub const Checker = struct {
         self: *Checker,
         tag: NodeId,
         attrs_t: TypeId,
-        attr_count: usize,
-        has_generic_spread: bool,
+        has_spread: bool,
     ) CheckError!bool {
         const overloads = self.jsxTagVisibleOverloads(tag) orelse return false;
         for (overloads) |sig| {
             const params = self.interner.signatureParams(sig);
             if (params.len == 0) {
-                if (attr_count == 0) return true;
+                if (try self.jsxAttrsBagHasOnlyIgnoredMembers(attrs_t)) return true;
                 continue;
             }
             var target = params[0];
@@ -90034,12 +90107,30 @@ pub const Checker = struct {
                     target = self.substituteType(target, &subs) catch target;
                 }
             }
-            const no_excess = has_generic_spread or
+            const no_excess = has_spread or
                 try self.jsxAttrsHaveNoExcessMembersForTarget(tag, attrs_t, target);
             if (no_excess and self.engine.isAssignableTo(attrs_t, target) catch false) return true;
+            if (no_excess and
+                try self.jsxRequiredPropsAssignable(target, attrs_t) and
+                try self.jsxAttributeBagValuesAssignable(attrs_t, target))
+            {
+                return true;
+            }
             if (no_excess and target_had_free and try self.jsxRequiredPropsAssignable(target, attrs_t)) return true;
         }
         return false;
+    }
+
+    fn jsxAttrsBagHasOnlyIgnoredMembers(self: *Checker, attrs_t: TypeId) CheckError!bool {
+        if (attrs_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(attrs_t).is_object_type) return false;
+        const key_name = self.string_interner.intern("key") catch return error.OutOfMemory;
+        for (self.interner.objectMembers(attrs_t)) |member| {
+            if (member.name == key_name) continue;
+            if (std.mem.indexOfScalar(u8, self.string_interner.get(member.name), '-') != null) continue;
+            return false;
+        }
+        return true;
     }
 
     fn jsxAttrsHaveNoExcessMembersForTarget(self: *Checker, anchor: NodeId, attrs_t: TypeId, target: TypeId) CheckError!bool {
@@ -148545,7 +148636,12 @@ test "checker: JSX reports duplicate children from attr and body" {
 
 test "checker: JSX reports multiple children for single child prop" {
     const s = try newTsxSetup(
-        \\declare namespace JSX { interface Element {} }
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface ElementAttributesProperty { props: any; }
+        \\  interface ElementChildrenAttribute { children: any; }
+        \\  interface IntrinsicAttributes { key?: string; }
+        \\}
         \\interface Props { children: JSX.Element; }
         \\const Tag = (x: Props) => <div></div>;
         \\const k = <Tag><span></span><span></span></Tag>;
@@ -202138,6 +202234,42 @@ test "checker: JSX generic spread intersections suppress only excess properties"
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_overload_matches));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: JSX overloads accept ignored zero-arg bags and defer spread value failures" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\declare function ZeroThing(): JSX.Element;
+        \\declare function ZeroThing(props: { yy: number, yy1: string }): JSX.Element;
+        \\const emptySpread = <ZeroThing {...{}} />;
+        \\const ignoredAttr = <ZeroThing ignore-prop={100} />;
+        \\const ignoredSpread = <ZeroThing {...{ "ignore-prop": 200 }} />;
+        \\declare function ChildThing(props: { yxx: string }): JSX.Element;
+        \\declare function ChildThing(props: { yxx1: string; children: string }): JSX.Element;
+        \\declare function ChildThing(props: { yy: number; yy1: string }): JSX.Element;
+        \\declare function ChildThing(props: { yy: number; yy1: string; yy2: boolean }): JSX.Element;
+        \\declare function ChildThing(props: { data: string; "data-prop": boolean }): JSX.Element;
+        \\const childOverload = <ChildThing yxx1="ok">Hello</ChildThing>;
+        \\interface ButtonProps { onClick: () => void; children?: string; }
+        \\interface LinkProps { to: string; children?: string; }
+        \\declare function MainButton(props: ButtonProps): JSX.Element;
+        \\declare function MainButton(props: LinkProps): JSX.Element;
+        \\const clean = <MainButton onClick={() => {}} {...{ to: "world" }}>Hello</MainButton>;
+        \\const bad = <MainButton {...{ onClick() {} }} children={10} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.no_overload_matches) continue;
+        try T.expectEqual(hir_mod.NodeKind.jsx_attribute, s.hir.kindOf(diagnostic.node));
+        try T.expectEqualStrings(
+            "children",
+            s.sint.get(hir_mod.jsxAttributeOf(&s.hir, diagnostic.node).name),
+        );
+    }
 }
 
 test "checker: JSX inference falls back to an unsatisfied object constraint" {
