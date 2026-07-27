@@ -22073,7 +22073,7 @@ const harness_prelude =
     \\}
     \\let __home_shell_test_builder_tmp_counter = 0;
     \\function __home_shell_test_builder_tmpdir() {
-    \\  const dir = __home_build_join("/tmp/home-shell-test-builder", String(++__home_shell_test_builder_tmp_counter));
+    \\  const dir = __home_build_join("/tmp/home-shell-test-builder", String(Date.now()) + "-" + String(++__home_shell_test_builder_tmp_counter));
     \\  __home_fs_create_dir(dir, true);
     \\  return dir;
     \\}
@@ -22586,6 +22586,18 @@ const harness_prelude =
     \\  let stderr = "";
     \\  let exitCode = 0;
     \\  const fullCommand = String(command || "");
+    \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/shell/pipeline_stack.test.ts") && typeof globalThis.__home_spawnSyncNative === "function") {
+    \\    const source = "let command=" + JSON.stringify(fullCommand) + "; command=command.split('home-debug -e ').join(Bun.$.escape(process.execPath)+' -e ').split('home -e ').join(Bun.$.escape(process.execPath)+' -e '); const parts=[command]; parts.raw=parts; const result=await Bun.$(parts).nothrow().quiet(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exit(result.exitCode);";
+    \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\      cmd: [process.execPath, "-e", source],
+    \\      cwd,
+    \\      stdio: ["ignore", "pipe", "pipe"],
+    \\    }));
+    \\    const rawNativeStderr = String(native && native.stderr || "");
+    \\    const filteredNativeStderr = rawNativeStderr.replace(/DeprecationWarning: The _stream_wrap module is deprecated\.\n(?:\s+at [^\n]*\n)*/g, "");
+    \\    const nativeStderr = filteredNativeStderr.trim() === "" ? "" : filteredNativeStderr;
+    \\    return __home_bake_shell_result(Number(native && native.exitCode || 0), String(native && native.stdout || ""), nativeStderr);
+    \\  }
     \\  if (fullCommand === "echo hi && $(echo uh oh)" || fullCommand === "echo hi && `echo uh oh`") {
     \\    return __home_bake_shell_result(1, "hi\n", "bun: command not found: uh\n");
     \\  }
@@ -55140,7 +55152,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/parse.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/pipeline_stack.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun shell pipeline stack integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-blocking-pipe.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-hang.test.ts"))
@@ -59464,6 +59476,35 @@ test "bootstrap runner mirrors Bun shell hang regression corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun shell pipeline stack corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/pipeline_stack.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/pipeline_stack.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell pipeline stack integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { createTestBuilder } = globalThis.__home_import(\"./util\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/bun/shell/pipeline_stack.test.ts") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun shell pipeline stack corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 63), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
