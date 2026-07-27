@@ -96842,8 +96842,11 @@ pub const Checker = struct {
                 try self.checkExpression(f.body);
             if (self.isContextualFunctionExpressionLike(f.body)) {
                 ret_t = try self.functionExpressionInferenceSignature(f.body, body_t, true);
-            } else if (preserve_direct_literal_return) {
+            } else if (preserve_direct_literal_return or self.hir.kindOf(f.body) == .conditional) {
                 ret_t = try self.expressionLiteralType(f.body, body_t);
+                if (self.hir.kindOf(f.body) == .conditional) {
+                    ret_t = try self.valueNodeLiteralType(f.body, ret_t);
+                }
             } else {
                 ret_t = body_t;
             }
@@ -118335,12 +118338,54 @@ pub const Checker = struct {
                         self.generator_type_info.contains(inferred_param_ret) and
                         self.generator_type_info.contains(actual_ret);
                     if (!parameter_inference_already_fixed_generator) {
-                        try self.inferFromPair(pr, actual_ret, subs);
+                        try self.inferFromCallbackReturnPair(pr, actual_ret, subs);
                     }
                 }
             }
             return;
         }
+    }
+
+    fn inferFromCallbackReturnPair(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        if (param_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(param_t).is_type_parameter)
+        {
+            if (subs.get(param_t)) |existing| {
+                const inferred = self.widenForInference(arg_t);
+                const unrelated = !(self.engine.isAssignableTo(existing, inferred) catch false) and
+                    !(self.engine.isAssignableTo(inferred, existing) catch false);
+                if (unrelated and
+                    self.inferenceCandidateIsPrimitiveLike(existing) and
+                    self.inferenceCandidateIsPrimitiveLike(inferred))
+                {
+                    const combined = self.interner.internUnion(&.{ existing, inferred }) catch return error.OutOfMemory;
+                    try subs.put(self.gpa, param_t, combined);
+                    return;
+                }
+            }
+        }
+        try self.inferFromPair(param_t, arg_t, subs);
+    }
+
+    fn inferenceCandidateIsPrimitiveLike(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.inferenceCandidateIsPrimitiveLike(member)) return false;
+            }
+            return self.interner.unionMembers(t).len > 0;
+        }
+        return flags.is_string or
+            flags.is_number or
+            flags.is_boolean or
+            flags.is_bigint or
+            flags.is_symbol;
     }
 
     fn inferFromSameGenericInstantiation(
@@ -127165,18 +127210,26 @@ pub const Checker = struct {
     ) CheckError!bool {
         _ = self.generic_signature_params.get(source_sig) orelse return false;
         if (self.generic_signature_params.get(target_sig) != null) return false;
-        const instantiated_source = try self.instantiateGenericSignatureInContextOf(source_sig, target_sig);
-        if (try self.nestedSignatureKindMismatch(instantiated_source, target_sig, 0)) return false;
-        const source_params = self.interner.signatureParams(instantiated_source);
+        const erased_source = try self.eraseGenericSignature(source_sig);
+        if (try self.nestedSignatureKindMismatch(erased_source, target_sig, 0)) return false;
+        const source_params = self.interner.signatureParams(erased_source);
         const target_params = self.interner.signatureParams(target_sig);
-        if (self.signatureMinRequiredArgs(instantiated_source, source_params) > target_params.len) return false;
+        if (self.signatureMinRequiredArgs(erased_source, source_params) > target_params.len) return false;
         const shared_len = @min(source_params.len, target_params.len);
         for (0..shared_len) |i| {
             if (try self.callableShapeKindMismatch(source_params[i], target_params[i], 0)) return false;
         }
-        const source_ret = self.interner.signatureReturn(instantiated_source) orelse types.Primitive.void_t;
-        const target_ret = self.interner.signatureReturn(target_sig) orelse types.Primitive.void_t;
-        return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+        return try self.contextualFunctionSignatureAssignable(erased_source, target_sig);
+    }
+
+    fn eraseGenericSignature(self: *Checker, signature: TypeId) CheckError!TypeId {
+        const type_params = self.generic_signature_params.get(signature) orelse return signature;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        for (type_params) |type_param| {
+            try subs.put(self.gpa, type_param, types.Primitive.any);
+        }
+        return self.substituteType(signature, &subs) catch signature;
     }
 
     fn overloadedSourceSatisfiesGenericTarget(
@@ -128030,6 +128083,12 @@ pub const Checker = struct {
         try self.collectCallSignatures(target_t, &target_sigs);
         if (target_sigs.items.len == 0) return false;
         for (target_sigs.items) |target_sig| {
+            if (self.generic_signature_params.get(source_t) != null and
+                self.generic_signature_params.get(target_sig) == null)
+            {
+                if (!try self.genericSourceSatisfiesOverloadedTarget(source_t, target_sig)) return false;
+                continue;
+            }
             if (!try self.contextualFunctionSignatureAssignable(source_t, target_sig)) return false;
         }
         return true;
@@ -129656,6 +129715,15 @@ pub const Checker = struct {
                 return try self.functionExpressionTargetResult(fn_node, call_sig);
             }
             return .not_contextual;
+        }
+        const contextual_source_t = self.hir.typeOf(fn_node);
+        if (self.generic_signature_params.get(target_t) != null and
+            self.generic_signature_params.get(contextual_source_t) == null and
+            self.functionExpressionHasContextSensitiveParameters(fn_node))
+        {
+            var inferred_source = contextual_source_t;
+            try self.checkFunctionWithContextualSignatureMode(fn_node, target_t, false, &inferred_source);
+            if (try self.contextualFunctionSignatureAssignable(inferred_source, target_t)) return .assignable;
         }
         if (try self.functionExpressionContextualPredicate(fn_node)) |target_pred| {
             const source_pred = try self.predicateForFnNode(fn_node);
@@ -167518,6 +167586,50 @@ test "checker: overloaded generic callback sources instantiate per target signat
         TsCodes.argument_type_mismatch,
         "Argument of type '<T>(x: T, y: T) => string' is not assignable to parameter of type '{ (x: number): string; (x: number, y?: number): string; }'.",
     ));
+}
+
+test "checker: generic function expressions instantiate across overloaded callable targets" {
+    const b = try newBoundSetup(
+        \\declare function accept(cb: { (x: boolean): boolean; (x: string): string }): void;
+        \\accept(<T>(x: T) => x);
+        \\accept(<T, U>(x: T) => {
+        \\  let value!: U;
+        \\  return value;
+        \\});
+        \\declare function acceptNumber(cb: { (x: number): string; (x: number, y?: number): string }): void;
+        \\acceptNumber(<T>(x: T) => x);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+}
+
+test "checker: generic contextual signatures type arrow parameters before return inference" {
+    const b = try newBoundSetup(
+        \\const list: <A>(x: A) => A[] = x => [x];
+        \\type Identity = <A>(value: A) => A;
+        \\const identity: Identity = value => value;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: sibling callback return inferences combine primitive candidates" {
+    const b = try newBoundSetup(
+        \\function choose<T>(a: (x: T) => T, b: (x: T) => T) { return a; }
+        \\choose(x => 1, x => "");
+        \\function constrained<T extends "foo">(callback: (value: T) => T) { return callback; }
+        \\constrained((value: "foo" | "bar") => value === "foo" ? value : "foo");
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
 }
 
 test "checker: generic member overloads instantiate before overloaded callback selection" {
