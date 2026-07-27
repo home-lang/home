@@ -18922,12 +18922,14 @@ pub const Checker = struct {
     }
 
     /// Definite-assignment initialization is narrower than ordinary
-    /// assignability: an explicit `undefined` constituent means an
-    /// uninitialized binding already has a permitted value, but `void`
-    /// does not. TypeScript therefore reports TS2454 for
-    /// `let x: T | void; use(x)` while keeping `T | undefined` clean.
+    /// assignability: a direct `void` annotation and an explicit
+    /// `undefined` constituent permit the uninitialized value, but a
+    /// union merely containing `void` does not. TypeScript therefore
+    /// keeps `let x: void` and `let x: T | undefined` clean while
+    /// reporting TS2454 for `let x: T | void; use(x)`.
     fn typeIncludesExplicitUndefined(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
+        if (t == types.Primitive.void_t) return true;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_undefined) return true;
         if (!flags.is_union) return false;
@@ -85135,6 +85137,7 @@ pub const Checker = struct {
                             );
                         }
                         if (call_subs.count() > 0) {
+                            try self.normalizeCallInferenceSubstitutions(effective_callee_t, &call_subs);
                             try self.applyInferredConditionalConstraintsFromCallArgs(param_ts, arg_types.items, &call_subs);
                             try self.applyInferredConditionalConstraintsToSubs(effective_callee_t, &call_subs);
                             effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
@@ -96244,9 +96247,61 @@ pub const Checker = struct {
         defer subs.deinit(self.gpa);
         try self.inferCallSubstitutions(sig, args, arg_types, &subs);
         if (subs.count() == 0) return sig;
+        try self.normalizeCallInferenceSubstitutions(sig, &subs);
         try self.applyInferredConditionalConstraintsFromCallArgs(self.interner.signatureParams(sig), arg_types, &subs);
         try self.applyInferredConditionalConstraintsToSubs(sig, &subs);
         return self.substituteType(sig, &subs) catch sig;
+    }
+
+    fn normalizeCallInferenceSubstitutions(
+        self: *Checker,
+        sig: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const declared_params = self.generic_signature_params.get(sig) orelse return;
+        for (self.interner.signatureParams(sig)) |param_t| {
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            const param_flags = self.interner.pool.flagsOf(param_t);
+            if (!param_flags.is_object_type or param_flags.is_union or param_flags.is_intersection) continue;
+            for (declared_params) |declared_param| {
+                const name = self.typeParameterName(declared_param) orelse continue;
+                const constraint = self.typeParameterConstraint(declared_param) orelse continue;
+                if (constraint >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(constraint).is_object_type)
+                {
+                    continue;
+                }
+                var occurrences: usize = 0;
+                for (self.interner.objectMembers(param_t)) |member| {
+                    if (self.typeParameterName(member.type) != name) continue;
+                    occurrences += 1;
+                }
+                if (occurrences < 2) continue;
+
+                var inferred = subs.get(declared_param);
+                if (inferred == null) {
+                    var it = subs.iterator();
+                    while (it.next()) |entry| {
+                        if (self.typeParameterName(entry.key_ptr.*) == name) {
+                            inferred = entry.value_ptr.*;
+                            break;
+                        }
+                    }
+                }
+                const inferred_t = inferred orelse continue;
+                try subs.put(self.gpa, declared_param, inferred_t);
+                for (self.interner.objectMembers(param_t)) |member| {
+                    if (self.typeParameterName(member.type) == name) {
+                        try subs.put(self.gpa, member.type, inferred_t);
+                    }
+                }
+                if (self.interner.signatureReturn(sig)) |return_t| {
+                    if (self.typeParameterName(return_t) == name) {
+                        try subs.put(self.gpa, return_t, inferred_t);
+                    }
+                }
+            }
+        }
     }
 
     fn genericCallUnboundDiagnosticType(
@@ -96593,10 +96648,18 @@ pub const Checker = struct {
         return self.objectHasRequiredTargetMemberNames(current, target);
     }
 
-    fn declaredGenericInstanceofConstituent(self: *Checker, lhs: NodeId, target: TypeId) CheckError!?TypeId {
-        const target_name = self.knownTypeDisplayName(target) orelse return null;
-        const target_open = std.mem.indexOfScalar(u8, target_name, '<') orelse return null;
-        const target_base = target_name[0..target_open];
+    fn declaredGenericInstanceofConstituent(self: *Checker, lhs: NodeId, rhs: NodeId, target: TypeId) CheckError!?TypeId {
+        const target_class = self.classNameForInstanceType(target) orelse blk: {
+            if (self.hir.kindOf(rhs) != .identifier) break :blk null;
+            const rhs_name = hir_mod.identifierOf(self.hir, rhs).name;
+            if (!self.class_instance_types.contains(rhs_name)) break :blk null;
+            break :blk rhs_name;
+        };
+        const target_base = if (target_class == null) blk: {
+            const target_name = self.knownTypeDisplayName(target) orelse return null;
+            const target_open = std.mem.indexOfScalar(u8, target_name, '<') orelse return null;
+            break :blk target_name[0..target_open];
+        } else "";
         const annotation = self.visibleAnnotatedIdentifierTypeNode(lhs) orelse return null;
         if (self.hir.kindOf(annotation) != .union_type) return null;
 
@@ -96605,7 +96668,12 @@ pub const Checker = struct {
         for (hir_mod.unionTypeMembers(self.hir, annotation)) |member_node| {
             if (self.hir.kindOf(member_node) != .type_ref) continue;
             const ref = hir_mod.typeRefOf(self.hir, member_node);
-            if (!std.mem.eql(u8, self.string_interner.get(ref.name), target_base)) continue;
+            if (hir_mod.typeRefArgs(self.hir, member_node).len == 0) continue;
+            if (target_class) |class_name| {
+                if (ref.name != class_name) continue;
+            } else if (!std.mem.eql(u8, self.string_interner.get(ref.name), target_base)) {
+                continue;
+            }
             try matches.append(self.gpa, self.lowererLowerWithTypeParams(member_node) catch types.Primitive.unknown);
         }
         if (matches.items.len == 0) return null;
@@ -97807,7 +97875,7 @@ pub const Checker = struct {
             if (direct_target != null) {
                 if (self.typeIsAnyLike(target)) return;
                 if (when_true) {
-                    if (try self.declaredGenericInstanceofConstituent(b.lhs, target)) |declared_member| {
+                    if (try self.declaredGenericInstanceofConstituent(b.lhs, b.rhs, target)) |declared_member| {
                         try self.recordNarrow(id.name, declared_member);
                         return;
                     }
@@ -133092,6 +133160,12 @@ pub const Checker = struct {
 
     fn narrowedNamedTypeFitsDeclaredUnion(self: *Checker, use_node: NodeId, declared: TypeId, narrowed: TypeId) bool {
         if (declared >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(declared).is_union) return false;
+        if (self.knownTypeDisplayName(narrowed)) |narrowed_display| {
+            for (self.interner.unionMembers(declared)) |member| {
+                const member_display = self.knownTypeDisplayName(member) orelse continue;
+                if (std.mem.eql(u8, member_display, narrowed_display)) return true;
+            }
+        }
         const narrowed_name = self.namedTypeForId(narrowed) orelse return false;
         const narrowed_decl = self.findVisibleNamedTypeDecl(use_node, narrowed_name) orelse return false;
         for (self.interner.unionMembers(declared)) |member| {
@@ -152122,8 +152196,10 @@ test "checker: let including undefined is not tracked for TS2454" {
     }
 }
 
-test "checker: let including void remains tracked for TS2454" {
+test "checker: direct void is initialized but a union containing void is tracked for TS2454" {
     const s = try newSetup(
+        \\let directVoid: void;
+        \\directVoid;
         \\let withVoid: string | void;
         \\withVoid;
         \\let withUndefined: string | undefined;
@@ -159286,6 +159362,42 @@ test "checker: instanceof preserves a matching generic class union constituent" 
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.argument_type_mismatch, "Argument of type 'B<T>' is not assignable to parameter of type 'A<unknown>'."));
+}
+
+test "checker: instanceof preserves generic class constituents with parameter properties" {
+    const s = try newSetup(
+        \\class A<T> { constructor(private value: string) {} }
+        \\class B<T> {}
+        \\function acceptA<T>(value: A<T>) {}
+        \\function test<T>(value: A<T> | B<T>) {
+        \\  if (value instanceof B) acceptA(value);
+        \\  if (value instanceof A) acceptA(value);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.argument_type_mismatch, "Argument of type 'B<T>' is not assignable to parameter of type 'A<unknown>'."));
+}
+
+test "checker: generic object inference validates later sibling properties" {
+    const s = try newSetup(
+        \\class Base { x = ""; }
+        \\class Derived extends Base { y = ""; }
+        \\class Derived2 extends Base { z = ""; }
+        \\function f<T extends Base>(value: { x: T; y: T }) { return value.x; }
+        \\f({ x: new Derived(), y: new Derived2() });
+        \\function f2<T extends Base, U extends { x: T; y: T }>(value: U) { return value.x; }
+        \\f2({ x: new Derived(), y: new Derived2() });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'y' is missing in type 'Derived2' but required in type 'Derived'.",
+    ));
 }
 
 test "checker: function type parameter constraints see later parameters" {
