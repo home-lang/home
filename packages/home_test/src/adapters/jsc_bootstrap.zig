@@ -5259,13 +5259,32 @@ fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {
     return std.fs.path.join(allocator, &.{ cwd, "zig-out/bin/home" });
 }
 
+fn homeExecutableFromAncestorsAlloc(allocator: std.mem.Allocator, start: []const u8) !?[]u8 {
+    var current = start;
+    var depth: usize = 0;
+    while (depth < 12) : (depth += 1) {
+        const candidate = try std.fs.path.join(allocator, &.{ current, "zig-out/bin/home" });
+        if (pathExists(candidate)) return candidate;
+        allocator.free(candidate);
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == current.len) break;
+        current = parent;
+    }
+    return null;
+}
+
 fn preferredHomeExecutablePathAlloc(allocator: std.mem.Allocator) ![]u8 {
     const cwd = try currentWorkingDirectoryAlloc(allocator);
     defer allocator.free(cwd);
-    const installed = try std.fs.path.join(allocator, &.{ cwd, "zig-out/bin/home" });
-    if (pathExists(installed)) return installed;
-    allocator.free(installed);
-    return selfExePathAlloc(allocator);
+    if (try homeExecutableFromAncestorsAlloc(allocator, cwd)) |installed| return installed;
+
+    const self_exe = try selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+    const self_dir = std.fs.path.dirname(self_exe) orelse ".";
+    if (try homeExecutableFromAncestorsAlloc(allocator, self_dir)) |installed| return installed;
+
+    return allocator.dupe(u8, self_exe);
 }
 
 fn currentWorkingDirectoryAlloc(allocator: std.mem.Allocator) ![]u8 {

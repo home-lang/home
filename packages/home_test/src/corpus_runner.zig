@@ -23187,6 +23187,50 @@ const harness_prelude =
     \\    process.env = previousEnv;
     \\  }
     \\}
+    \\function __home_bake_shell_native_test(command, cwdPath, envMap) {
+    \\  const args = __home_bun_shell_words(command);
+    \\  if (args.length < 3 || args[0] !== process.execPath || args[1] !== "test") return null;
+    \\  const files = args.slice(2);
+    \\  if (files.some(arg => String(arg).startsWith("-"))) return null;
+    \\  if (files.length === 0) return null;
+    \\  if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.$ native test bridge is not installed");
+    \\  const cwd = String(cwdPath || process.cwd());
+    \\  let stdout = "";
+    \\  let passed = 0;
+    \\  let failed = 0;
+    \\  let todo = 0;
+    \\  let unsupported = 0;
+    \\  for (const file of files) {
+    \\    const path = String(file).startsWith("/") ? String(file) : __home_build_join(cwd, String(file));
+    \\    const child = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\      cmd: [process.execPath, "test", path],
+    \\      cwd,
+    \\      env: envMap || {},
+    \\      stdio: ["ignore", "pipe", "pipe"],
+    \\    }));
+    \\    const childStdout = String(child && child.stdout || "");
+    \\    const childStderr = __home_strip_ansi(String(child && child.stderr || ""));
+    \\    const passedMatch = childStderr.match(/tests passed:\s*(\d+)/);
+    \\    const failedMatch = childStderr.match(/tests failed:\s*(\d+)/);
+    \\    const todoMatch = childStderr.match(/tests todo:\s*(\d+)/);
+    \\    const unsupportedMatch = childStderr.match(/tests unsupported:\s*(\d+)/);
+    \\    if (!passedMatch || !failedMatch || !todoMatch || !unsupportedMatch) {
+    \\      return __home_bake_shell_result(Number(child && child.exitCode || 1), childStdout, childStderr);
+    \\    }
+    \\    stdout += childStdout;
+    \\    passed += Number(passedMatch[1]);
+    \\    failed += Number(failedMatch[1]);
+    \\    todo += Number(todoMatch[1]);
+    \\    unsupported += Number(unsupportedMatch[1]);
+    \\  }
+    \\  const total = passed + failed + todo + unsupported;
+    \\  const stderr = " " + String(passed) + " pass\n" +
+    \\    " " + String(failed + unsupported) + " fail\n" +
+    \\    (todo > 0 ? " " + String(todo) + " todo\n" : "") +
+    \\    "Ran " + String(total) + (total === 1 ? " test" : " tests") +
+    \\    " across " + String(files.length) + (files.length === 1 ? " file" : " files") + ".\n";
+    \\  return __home_bake_shell_result(failed + unsupported === 0 ? 0 : 1, stdout, stderr);
+    \\}
     \\function __home_bake_shell(command) {
     \\  const shell = {
     \\    command: String(command || ""),
@@ -23222,6 +23266,8 @@ const harness_prelude =
     \\      return result;
     \\    },
     \\    __home_run() {
+    \\      const nativeTestResult = __home_bake_shell_native_test(this.command, this.cwdPath || process.cwd(), this.envMap || {});
+    \\      if (nativeTestResult) return nativeTestResult;
     \\      const dir = __home_bake_virtual_dirs[this.cwdPath] || {};
     \\      if (/(?:^|\s)install(?:\s|$)/.test(this.command)) {
     \\        const scanInstall = __home_scan_install_fixture(this.cwdPath || process.cwd());
@@ -23398,7 +23444,8 @@ const harness_prelude =
     \\globalThis.global = globalThis;
     \\if (!process.versions) process.versions = {};
     \\if (!process.env) process.env = {};
-    \\if (!process.execPath) process.execPath = "home";
+    \\if (globalThis.__home_bun_executable) process.execPath = globalThis.__home_bun_executable;
+    \\else if (!process.execPath) process.execPath = "home";
     \\if (!process.argv) process.argv = [process.execPath];
     \\if (!process.execArgv) process.execArgv = [];
     \\if (!process.platform) process.platform = globalThis.__home_process_platform || "unknown";
@@ -26733,6 +26780,8 @@ const harness_prelude =
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.includes("iniInternals")) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install.test.ts") && /(?:^|\s)install(?:\s|$)/.test(command)) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
+    \\  const commandWords = __home_bun_shell_words(command);
+    \\  if (commandWords.length >= 3 && commandWords[0] === process.execPath && commandWords[1] === "test" && !commandWords.slice(2).some(arg => String(arg).startsWith("-"))) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (command.trim() === "pwd" || __home_current_file_is_bake_corpus()) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/util/which.test.ts")) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
@@ -55368,7 +55417,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-only.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test only fixture CLI reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-test.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test CLI runner behavior matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/pretty-format-overflow.test.ts"))
@@ -65589,6 +65638,36 @@ test "bootstrap runner mirrors only fixture corpus" {
         try std.testing.expectEqual(fixture.passed, file_run.result.passed);
         try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     }
+}
+
+test "bootstrap runner mirrors nested test.only CLI corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const source = try Io.Dir.cwd().readFileAlloc(
+        threaded.io(),
+        "packages/runtime/test/bun-corpus/js/bun/test/test-only.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/test-only.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("nested test.only CLI corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors bun test multi-file preload scheduling corpus" {
