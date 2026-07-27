@@ -20918,6 +20918,10 @@ const harness_prelude =
     \\    const treeShaking = !!(options && options.treeShaking);
     \\    const trimUnusedImports = options && Object.prototype.hasOwnProperty.call(options, "trimUnusedImports") ? !!options.trimUnusedImports : treeShaking;
     \\    const autoImportJSX = !!(options && options.autoImportJSX);
+    \\    const jsxFactory = typeof compilerOptions.jsxFactory === "string" ? compilerOptions.jsxFactory : undefined;
+    \\    const jsxFragmentFactory = typeof compilerOptions.jsxFragmentFactory === "string" ? compilerOptions.jsxFragmentFactory : undefined;
+    \\    const jsxMode = typeof compilerOptions.jsx === "string" ? compilerOptions.jsx.toLowerCase() : undefined;
+    \\    const jsxImportSource = typeof compilerOptions.jsxImportSource === "string" ? compilerOptions.jsxImportSource : undefined;
     \\    const definePairs = [];
     \\    const define = options && options.define;
     \\    if (define && typeof define === "object" && !Array.isArray(define)) {
@@ -20950,7 +20954,11 @@ const harness_prelude =
     \\      trimUnusedImports,
     \\      treeShaking,
     \\      eliminateExports,
-    \\      autoImportJSX
+    \\      autoImportJSX,
+    \\      jsxFactory,
+    \\      jsxFragmentFactory,
+    \\      jsxMode,
+    \\      jsxImportSource
     \\    );
     \\    this.scan = function(source, loader) {
     \\      validateLoader(loader);
@@ -55141,7 +55149,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/transpiler-truncated-utf8.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler truncated UTF-8 guard-page native regression")
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/transpiler-tsconfig-uaf.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler tsconfig lifetime and JSX factory regression")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/typescript/type-export.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun TypeScript type-only export module graph and CLI diagnostics")
     else if (std.mem.eql(u8, relative_path, "js/bun/udp/dgram.test.ts"))
@@ -60445,6 +60453,37 @@ test "bootstrap runner mirrors Bun shell sentinel hardening corpus" {
 
     if (file_run.result.status() != .passed) {
         std.debug.print("Bun shell sentinel hardening corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors transpiler tsconfig lifetime corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/transpiler/transpiler-tsconfig-uaf.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/transpiler/transpiler-tsconfig-uaf.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.Transpiler tsconfig lifetime and JSX factory regression") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Transpiler tsconfig lifetime") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "compilerOptions.jsxFactory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "compilerOptions.jsxFragmentFactory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "compilerOptions.jsxImportSource") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.Transpiler tsconfig lifetime corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);

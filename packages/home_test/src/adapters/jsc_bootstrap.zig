@@ -546,10 +546,18 @@ const TranspilerHandle = struct {
     tree_shaking: bool = false,
     trim_unused_imports: bool = false,
     auto_import_jsx: bool = false,
+    jsx_factory: ?[]u8 = null,
+    jsx_fragment: ?[]u8 = null,
+    jsx_import_source: ?[]u8 = null,
+    jsx_runtime: ?home_rt.options.JSX.Runtime = null,
+    jsx_development: ?bool = null,
     define_pairs: std.ArrayList([]const u8) = .empty,
     eliminate_exports: std.ArrayList([]const u8) = .empty,
 
     fn deinit(this: *TranspilerHandle, allocator: std.mem.Allocator) void {
+        if (this.jsx_factory) |value| allocator.free(value);
+        if (this.jsx_fragment) |value| allocator.free(value);
+        if (this.jsx_import_source) |value| allocator.free(value);
         for (this.define_pairs.items) |item| allocator.free(item);
         this.define_pairs.deinit(allocator);
         for (this.eliminate_exports.items) |item| allocator.free(item);
@@ -666,16 +674,63 @@ fn transpilerCreateNative(
     const tree_shaking = argument_count >= 11 and arguments[10] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[10]);
     const auto_import_jsx = argument_count >= 13 and arguments[12] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[12]);
 
+    var handle_stored = false;
+    var jsx_factory: ?[]u8 = null;
+    var jsx_fragment: ?[]u8 = null;
+    var jsx_import_source: ?[]u8 = null;
+    defer if (!handle_stored) {
+        if (jsx_factory) |value| allocator.free(value);
+        if (jsx_fragment) |value| allocator.free(value);
+        if (jsx_import_source) |value| allocator.free(value);
+    };
+    if (argument_count >= 14 and arguments[13] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[13]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[13])) {
+        jsx_factory = valueToOwnedString(allocator, actual_ctx, arguments[13].?, exception) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() jsxFactory failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+    if (argument_count >= 15 and arguments[14] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[14]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[14])) {
+        jsx_fragment = valueToOwnedString(allocator, actual_ctx, arguments[14].?, exception) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() jsxFragmentFactory failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+    if (argument_count >= 17 and arguments[16] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[16]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[16])) {
+        jsx_import_source = valueToOwnedString(allocator, actual_ctx, arguments[16].?, exception) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() jsxImportSource failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+
+    var jsx_runtime: ?home_rt.options.JSX.Runtime = null;
+    var jsx_development: ?bool = null;
+    if (argument_count >= 16 and arguments[15] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[15]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[15])) {
+        var jsx_mode_buf: [32]u8 = undefined;
+        const jsx_mode = valueToStackString(actual_ctx, arguments[15].?, exception, &jsx_mode_buf) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() tsconfig jsx mode failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        if (std.mem.eql(u8, jsx_mode, "classic") or std.mem.eql(u8, jsx_mode, "react")) {
+            jsx_runtime = .classic;
+        } else if (std.mem.eql(u8, jsx_mode, "automatic") or std.mem.eql(u8, jsx_mode, "react-jsx") or std.mem.eql(u8, jsx_mode, "react-jsxdev")) {
+            jsx_runtime = .automatic;
+            jsx_development = true;
+        }
+    }
+    if (jsx_import_source) |source| {
+        if (std.mem.startsWith(u8, source, "solid-js")) jsx_runtime = .solid;
+    }
+
     var define_pairs: std.ArrayList([]const u8) = .empty;
-    errdefer {
+    defer if (!handle_stored) {
         for (define_pairs.items) |item| allocator.free(item);
         define_pairs.deinit(allocator);
-    }
+    };
     var eliminate_exports: std.ArrayList([]const u8) = .empty;
-    errdefer {
+    defer if (!handle_stored) {
         for (eliminate_exports.items) |item| allocator.free(item);
         eliminate_exports.deinit(allocator);
-    }
+    };
 
     if (argument_count >= 9 and arguments[8] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[8]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[8])) {
         readStringArray(allocator, actual_ctx, arguments[8].?, exception, &define_pairs) catch |err| {
@@ -706,6 +761,11 @@ fn transpilerCreateNative(
         .tree_shaking = tree_shaking,
         .trim_unused_imports = trim_unused_imports,
         .auto_import_jsx = auto_import_jsx,
+        .jsx_factory = jsx_factory,
+        .jsx_fragment = jsx_fragment,
+        .jsx_import_source = jsx_import_source,
+        .jsx_runtime = jsx_runtime,
+        .jsx_development = jsx_development,
         .define_pairs = define_pairs,
         .eliminate_exports = eliminate_exports,
     };
@@ -716,6 +776,7 @@ fn transpilerCreateNative(
         setException(actual_ctx, exception, "Bun.Transpiler() failed: OutOfMemory");
         return null;
     };
+    handle_stored = true;
     return extern_fns.JSValueMakeNumber(actual_ctx, @floatFromInt(id));
 }
 
@@ -996,6 +1057,19 @@ fn transpileSourceWithBunParser(
     parser_options.features.minify_syntax = handle.minify_syntax;
     parser_options.features.minify_identifiers = handle.minify_identifiers;
     parser_options.features.dead_code_elimination = handle.dead_code_elimination or handle.minify_syntax or handle.tree_shaking or handle.eliminate_exports.items.len > 0;
+    if (handle.jsx_factory) |factory| {
+        parser_options.jsx.factory = try home_rt.options.JSX.Pragma.memberListToComponentsIfDifferent(ast_allocator, parser_options.jsx.factory, factory);
+    }
+    if (handle.jsx_fragment) |fragment| {
+        parser_options.jsx.fragment = try home_rt.options.JSX.Pragma.memberListToComponentsIfDifferent(ast_allocator, parser_options.jsx.fragment, fragment);
+    }
+    if (handle.jsx_runtime) |runtime| parser_options.jsx.runtime = runtime;
+    if (handle.jsx_development) |development| parser_options.jsx.development = development;
+    if (handle.jsx_import_source) |import_source| {
+        parser_options.jsx.package_name = import_source;
+        parser_options.jsx.setImportSource(ast_allocator);
+        parser_options.jsx.classic_import_source = import_source;
+    }
     const macro_transpiler = try nativeParserTranspiler();
     if (macro_transpiler.macro_context == null) {
         macro_transpiler.macro_context = home_rt.ast.Macro.MacroContext.init(macro_transpiler);
