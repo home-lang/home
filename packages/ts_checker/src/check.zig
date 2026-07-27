@@ -77572,6 +77572,7 @@ pub const Checker = struct {
         if (final_type == types.Primitive.none) return;
         const id = hir_mod.identifierOf(self.hir, v.name);
         if (try self.checkGlobalSymbolConstructorVarMerge(node)) return;
+        if (try self.checkGlobalPromiseConstructorVarMerge(node, final_type)) return;
         // `var` bindings hoist to the enclosing function-like (or
         // module / namespace / source-file) scope, so we walk past
         // intervening block/if/for/while/switch/try statements when
@@ -77768,6 +77769,50 @@ pub const Checker = struct {
         const msg = try self.formatSubsequentVarTypeMismatchWithTexts(
             "Symbol",
             "SymbolConstructor",
+            current_text,
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = v.name,
+            .code = TsCodes.subsequent_var_type_mismatch,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn checkGlobalPromiseConstructorVarMerge(self: *Checker, node: NodeId, final_type: TypeId) CheckError!bool {
+        if (self.hir.kindOf(node) != .var_decl or !self.nodeIsTopLevelOfSourceFile(node)) return false;
+        if (self.sourceFileSectionIsModule(node)) return false;
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, v.name);
+        if (!std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) return false;
+        if (self.sourceHasNoLibTrueDirective()) return false;
+
+        const has_lib_directive = if (self.source) |src| std.mem.indexOf(u8, src, "@lib") != null else false;
+        const has_promise_constructor = if (has_lib_directive)
+            !self.sourceLibDirectiveExcludes("es2015")
+        else
+            !self.sourceTargetExcludesLib("es2015");
+        if (!has_promise_constructor) return false;
+
+        if (v.type_annotation != hir_mod.none_node_id and self.hir.kindOf(v.type_annotation) == .type_ref) {
+            const ref = hir_mod.typeRefOf(self.hir, v.type_annotation);
+            if (ref.qualifier_len == 0 and
+                std.mem.eql(u8, self.string_interner.get(ref.name), "PromiseConstructor"))
+            {
+                return true;
+            }
+        }
+
+        const current_text = if (v.type_annotation != hir_mod.none_node_id)
+            (try self.allocTypeAnnotationDiagnosticName(v.type_annotation, false)) orelse
+                (try self.subsequentVarTypeText(final_type)) orelse
+                "unknown"
+        else
+            (try self.subsequentVarTypeText(final_type)) orelse "unknown";
+        const msg = try self.formatSubsequentVarTypeMismatchWithTexts(
+            "Promise",
+            "PromiseConstructor",
             current_text,
         );
         try self.diagnostics.append(self.gpa, .{
@@ -201451,6 +201496,44 @@ test "checker: global Symbol declaration merges with SymbolConstructor" {
     defer destroySetup(valid);
     try valid.checker.checkSourceFile(valid.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(valid, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: global Promise declaration merges with PromiseConstructor when its lib is active" {
+    const mismatch = try newSetup(
+        \\// @lib: es5,es2015.promise
+        \\var Promise: any;
+    );
+    defer destroySetup(mismatch);
+    try mismatch.checker.checkSourceFile(mismatch.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(mismatch, TsCodes.subsequent_var_type_mismatch));
+    try T.expectEqualStrings(
+        "Subsequent variable declarations must have the same type.  Variable 'Promise' must be of type 'PromiseConstructor', but here has type 'any'.",
+        checkerFirstMessageForCode(mismatch, TsCodes.subsequent_var_type_mismatch) orelse return error.MissingDiagnostic,
+    );
+
+    const valid = try newSetup(
+        \\// @lib: es5,es2015.promise
+        \\var Promise: PromiseConstructor;
+    );
+    defer destroySetup(valid);
+    try valid.checker.checkSourceFile(valid.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(valid, TsCodes.subsequent_var_type_mismatch));
+
+    const es5_only = try newSetup(
+        \\// @lib: es5
+        \\var Promise: any;
+    );
+    defer destroySetup(es5_only);
+    try es5_only.checker.checkSourceFile(es5_only.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(es5_only, TsCodes.subsequent_var_type_mismatch));
+
+    const module_local = try newSetup(
+        \\export {};
+        \\var Promise: any;
+    );
+    defer destroySetup(module_local);
+    try module_local.checker.checkSourceFile(module_local.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(module_local, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: import-equals conflicts with merged namespace class value" {

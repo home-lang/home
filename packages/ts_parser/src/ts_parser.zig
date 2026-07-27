@@ -210,6 +210,7 @@ pub const Parser = struct {
     parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
+    async_arrow_await_recovery_arrow_pos: ?u32 = null,
     /// Indices into `diagnostics` of TS2463 ("A binding pattern parameter
     /// cannot be optional in an implementation signature.") diagnostics
     /// emitted while parsing parameter lists. Body-less overload
@@ -9448,17 +9449,75 @@ pub const Parser = struct {
                 try self.reportCodeAt(after_colon.span.start, after_colon.line, 1134, "Variable declaration expected.");
                 _ = self.advance();
             } else {
-                while (self.peek().kind != .arrow and
-                    self.peek().kind != .semicolon and
-                    self.peek().kind != .comma and
-                    self.peek().kind != .eof)
-                {
-                    _ = self.advance();
+                var recovered_async_tail = false;
+                if (self.async_arrow_await_recovery_arrow_pos) |arrow_pos| recover_async_tail: {
+                    if (!tokenCanStartVariableBinding(after_colon.kind) or self.peekAt(1).kind != .less_than) {
+                        break :recover_async_tail;
+                    }
+
+                    var scan = self.cursor + 1;
+                    var angle_depth: usize = 0;
+                    while (scan < self.tokens.len) : (scan += 1) {
+                        switch (self.tokens[scan].kind) {
+                            .less_than => angle_depth += 1,
+                            .greater_than => {
+                                if (angle_depth == 0) break :recover_async_tail;
+                                angle_depth -= 1;
+                            },
+                            .arrow => {
+                                if (angle_depth != 0 or self.tokens[scan].span.start != arrow_pos) {
+                                    break :recover_async_tail;
+                                }
+
+                                const name_tok = self.advance();
+                                const name_id = try self.internToken(name_tok);
+                                const name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                                const any_id = self.interner.intern("any") catch return error.OutOfMemory;
+                                const any_type = try self.builder.addTypeRef(
+                                    .{ .start = name_tok.span.end, .end = name_tok.span.end },
+                                    any_id,
+                                    &.{},
+                                    &.{},
+                                );
+                                const recovered_decl = try self.builder.addVarDeclEx(
+                                    decl_kind,
+                                    tokenSpan(name_tok),
+                                    name,
+                                    any_type,
+                                    hir_mod.none_node_id,
+                                    false,
+                                    false,
+                                    is_ambient_decl,
+                                );
+                                try self.pending_statements.append(self.gpa, recovered_decl);
+
+                                const less_than = self.advance();
+                                try self.reportCodeAt(less_than.span.start, less_than.line, 1005, "',' expected.");
+                                while (self.cursor <= scan) _ = self.advance();
+                                self.async_arrow_await_recovery_arrow_pos = null;
+                                recovered_async_tail = true;
+                                recovered_initializer_arrow_tail = true;
+                                break :recover_async_tail;
+                            },
+                            .semicolon, .comma, .eof => break :recover_async_tail,
+                            else => {},
+                        }
+                    }
                 }
-                if (self.peek().kind == .arrow) {
-                    const arrow_tok = self.advance();
-                    try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "';' expected.");
-                    recovered_initializer_arrow_tail = true;
+
+                if (!recovered_async_tail) {
+                    while (self.peek().kind != .arrow and
+                        self.peek().kind != .semicolon and
+                        self.peek().kind != .comma and
+                        self.peek().kind != .eof)
+                    {
+                        _ = self.advance();
+                    }
+                    if (self.peek().kind == .arrow) {
+                        const arrow_tok = self.advance();
+                        try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "';' expected.");
+                        recovered_initializer_arrow_tail = true;
+                    }
                 }
             }
         }
@@ -13788,6 +13847,16 @@ pub const Parser = struct {
         };
         const start_tok = if (is_async) self.tokens[checkpoint] else self.peek();
 
+        if (is_async and self.peek().kind == .open_paren) {
+            if (self.asyncArrowAwaitRecoveryArrow(self.cursor)) |arrow_index| {
+                const arrow = self.tokens[arrow_index];
+                try self.reportCodeAt(arrow.span.start, arrow.line, 1109, "Expression expected.");
+                self.async_arrow_await_recovery_arrow_pos = arrow.span.start;
+                self.cursor = checkpoint;
+                return null;
+            }
+        }
+
         if (self.peek().kind == .kw_await and
             self.peekAt(1).kind == .arrow and
             self.async_function_depth > 0 and
@@ -13883,6 +13952,48 @@ pub const Parser = struct {
         }
         // Not an arrow — restore and fall through.
         self.cursor = checkpoint;
+        return null;
+    }
+
+    fn asyncArrowAwaitRecoveryArrow(self: *Parser, open_paren: u32) ?u32 {
+        var depth: usize = 0;
+        var i = open_paren;
+        var saw_await_arrow = false;
+        var close_paren: ?u32 = null;
+        while (i < self.tokens.len) : (i += 1) {
+            switch (self.tokens[i].kind) {
+                .open_paren => depth += 1,
+                .close_paren => {
+                    if (depth == 0) return null;
+                    depth -= 1;
+                    if (depth == 0) {
+                        close_paren = i;
+                        break;
+                    }
+                },
+                .kw_await => {
+                    if (depth == 1 and i + 1 < self.tokens.len and self.tokens[i + 1].kind == .arrow) {
+                        saw_await_arrow = true;
+                    }
+                },
+                .eof => return null,
+                else => {},
+            }
+        }
+        if (!saw_await_arrow) return null;
+        i = (close_paren orelse return null) + 1;
+        var angle_depth: usize = 0;
+        while (i < self.tokens.len) : (i += 1) {
+            switch (self.tokens[i].kind) {
+                .less_than => angle_depth += 1,
+                .greater_than => {
+                    if (angle_depth > 0) angle_depth -= 1;
+                },
+                .arrow => if (angle_depth == 0) return i,
+                .semicolon, .close_brace, .eof => return null,
+                else => {},
+            }
+        }
         return null;
     }
 
@@ -31310,6 +31421,33 @@ test "parser: await arrow parameter recovery anchors the first await" {
         if (d.code == 2524) try T.expectEqual(await_pos, d.pos);
         if (d.code == 1109) try T.expectEqual(arrow_pos, d.pos);
     }
+}
+
+test "parser: await arrow invalidates async arrow speculation" {
+    const src = "var foo = async (a = await => await): Promise<void> => {}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 0), countDiag(s, 2524));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1109));
+
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    var recovered_decl: ?hir_mod.NodeId = null;
+    for (stmts) |stmt| {
+        if (s.hir.kindOf(stmt) != .var_decl) continue;
+        const candidate = hir_mod.varDeclOf(&s.hir, stmt);
+        if (candidate.name == hir_mod.none_node_id or s.hir.kindOf(candidate.name) != .identifier) continue;
+        const candidate_name = hir_mod.identifierOf(&s.hir, candidate.name).name;
+        if (std.mem.eql(u8, s.interner.get(candidate_name), "Promise")) {
+            recovered_decl = stmt;
+            break;
+        }
+    }
+    const recovered = hir_mod.varDeclOf(&s.hir, recovered_decl orelse return error.MissingRecoveredDeclaration);
+    const recovered_type = hir_mod.typeRefOf(&s.hir, recovered.type_annotation);
+    try T.expectEqualStrings("any", s.interner.get(recovered_type.name));
 }
 
 test "parser: import type options recover consecutive commas" {
