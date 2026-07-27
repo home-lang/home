@@ -18370,7 +18370,11 @@ const harness_prelude =
     \\}
     \\function __home_s3_list_query(options) {
     \\  if (options === undefined || options === null) return "list-type=2";
-    \\  if (typeof options !== "object") throw new TypeError("S3Client.list options must be an object");
+    \\  if (typeof options !== "object") {
+    \\    const error = new TypeError("S3Client.list options must be an object");
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
     \\  const names = {
     \\    prefix: "prefix",
     \\    delimiter: "delimiter",
@@ -18386,7 +18390,98 @@ const harness_prelude =
     \\    if (value === undefined || value === null) continue;
     \\    params.push([names[optionName], String(value)]);
     \\  }
+    \\  params.sort((left, right) => left[0] < right[0] ? -1 : (left[0] > right[0] ? 1 : 0));
     \\  return params.map(([name, value]) => encodeURIComponent(name) + "=" + encodeURIComponent(value)).join("&");
+    \\}
+    \\function __home_s3_xml_tag(source, tag, from) {
+    \\  const open = "<" + tag + ">";
+    \\  const close = "</" + tag + ">";
+    \\  const start = source.indexOf(open, from || 0);
+    \\  if (start < 0) return undefined;
+    \\  const end = source.indexOf(close, start + open.length);
+    \\  if (end < 0) return undefined;
+    \\  return { value: __home_xml_decode(source.slice(start + open.length, end)), start, end: end + close.length };
+    \\}
+    \\function __home_s3_xml_top_tag(source, tag) {
+    \\  let from = 0;
+    \\  while (true) {
+    \\    const found = __home_s3_xml_tag(source, tag, from);
+    \\    if (!found) return undefined;
+    \\    const inContents = source.lastIndexOf("<Contents>", found.start) > source.lastIndexOf("</Contents>", found.start);
+    \\    const inPrefixes = source.lastIndexOf("<CommonPrefixes>", found.start) > source.lastIndexOf("</CommonPrefixes>", found.start);
+    \\    if (!inContents && !inPrefixes) return found.value;
+    \\    from = found.end;
+    \\  }
+    \\}
+    \\function __home_s3_parse_list_xml(xml) {
+    \\  const source = String(xml || "");
+    \\  const result = {};
+    \\  const stringFields = {
+    \\    Name: "name",
+    \\    Prefix: "prefix",
+    \\    Delimiter: "delimiter",
+    \\    StartAfter: "startAfter",
+    \\    EncodingType: "encodingType",
+    \\    ContinuationToken: "continuationToken",
+    \\    NextContinuationToken: "nextContinuationToken",
+    \\  };
+    \\  for (const tag of Object.keys(stringFields)) {
+    \\    const value = __home_s3_xml_top_tag(source, tag);
+    \\    if (value !== undefined && value !== "") result[stringFields[tag]] = value;
+    \\  }
+    \\  for (const [tag, field] of [["KeyCount", "keyCount"], ["MaxKeys", "maxKeys"]]) {
+    \\    const value = __home_s3_xml_top_tag(source, tag);
+    \\    if (value !== undefined && value !== "") result[field] = Number(value);
+    \\  }
+    \\  const truncated = __home_s3_xml_top_tag(source, "IsTruncated");
+    \\  if (truncated !== undefined) result.isTruncated = truncated === "true";
+    \\  const commonPrefixes = [];
+    \\  let prefixFrom = 0;
+    \\  while (true) {
+    \\    const blockStart = source.indexOf("<CommonPrefixes>", prefixFrom);
+    \\    if (blockStart < 0) break;
+    \\    const blockEnd = source.indexOf("</CommonPrefixes>", blockStart + 16);
+    \\    if (blockEnd < 0) break;
+    \\    const block = source.slice(blockStart + 16, blockEnd);
+    \\    let itemFrom = 0;
+    \\    while (true) {
+    \\      const prefix = __home_s3_xml_tag(block, "Prefix", itemFrom);
+    \\      if (!prefix) break;
+    \\      commonPrefixes.push({ prefix: prefix.value });
+    \\      itemFrom = prefix.end;
+    \\    }
+    \\    prefixFrom = blockEnd + 17;
+    \\  }
+    \\  if (commonPrefixes.length) result.commonPrefixes = commonPrefixes;
+    \\  const contents = [];
+    \\  let contentFrom = 0;
+    \\  while (true) {
+    \\    const blockStart = source.indexOf("<Contents>", contentFrom);
+    \\    if (blockStart < 0) break;
+    \\    const blockEnd = source.indexOf("</Contents>", blockStart + 10);
+    \\    if (blockEnd < 0) break;
+    \\    const block = source.slice(blockStart + 10, blockEnd);
+    \\    const entry = {};
+    \\    for (const [tag, field] of [["Key", "key"], ["ETag", "eTag"], ["LastModified", "lastModified"], ["StorageClass", "storageClass"]]) {
+    \\      const value = __home_s3_xml_tag(block, tag, 0);
+    \\      if (value !== undefined) entry[field] = value.value;
+    \\    }
+    \\    const size = __home_s3_xml_tag(block, "Size", 0);
+    \\    if (size && size.value !== "") entry.size = Number(size.value);
+    \\    const ownerBlock = __home_s3_xml_tag(block, "Owner", 0);
+    \\    if (ownerBlock) {
+    \\      const owner = {};
+    \\      const id = __home_s3_xml_tag(ownerBlock.value, "ID", 0);
+    \\      const displayName = __home_s3_xml_tag(ownerBlock.value, "DisplayName", 0);
+    \\      if (id && id.value !== "") owner.id = id.value;
+    \\      if (displayName && displayName.value !== "") owner.displayName = displayName.value;
+    \\      if (Object.keys(owner).length) entry.owner = owner;
+    \\    }
+    \\    if (Object.keys(entry).length) contents.push(entry);
+    \\    contentFrom = blockEnd + 11;
+    \\  }
+    \\  if (contents.length) result.contents = contents;
+    \\  return result;
     \\}
     \\function __home_s3_list(listOptions, clientOptions) {
     \\  let query;
@@ -18397,11 +18492,16 @@ const harness_prelude =
     \\  }
     \\  const options = clientOptions && typeof clientOptions === "object" ? clientOptions : {};
     \\  const endpoint = String(options.endpoint || "").replace(/\/+$/, "");
-    \\  if (!endpoint) return Promise.reject(new Error("S3Client.list requires an endpoint"));
+    \\  if (!endpoint) {
+    \\    const error = new Error("S3 credentials are missing");
+    \\    error.code = "ERR_S3_MISSING_CREDENTIALS";
+    \\    return Promise.reject(error);
+    \\  }
     \\  const bucket = String(options.bucket || "").replace(/^\/+|\/+$/g, "");
     \\  let url;
     \\  try {
-    \\    url = new URL(endpoint + (bucket ? "/" + encodeURIComponent(bucket) : "") + "?" + query);
+    \\    const path = options.__homeS3InstanceList ? "/" : (bucket ? "/" + encodeURIComponent(bucket) + "/" : "/");
+    \\    url = new URL(endpoint + path + "?" + query);
     \\  } catch (error) {
     \\    return Promise.reject(error);
     \\  }
@@ -18409,7 +18509,17 @@ const harness_prelude =
     \\  if (!handle || handle.stopped || typeof handle.fetch !== "function") {
     \\    return Promise.reject(new Error("S3Client.list request failed for " + url.href));
     \\  }
-    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET", headers: __home_s3_request_headers(options) })));
+    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET", headers: __home_s3_request_headers(options) }))).then(async response => {
+    \\    const body = response && typeof response.text === "function" ? await response.text() : "";
+    \\    if (!response || response.ok === false) {
+    \\      const error = new Error("S3Client.list request failed");
+    \\      const code = __home_s3_xml_tag(body, "Code", 0);
+    \\      error.code = code ? code.value : "UnknownError";
+    \\      error.status = response && response.status !== undefined ? response.status : 0;
+    \\      throw error;
+    \\    }
+    \\    return __home_s3_parse_list_xml(body);
+    \\  });
     \\}
     \\function __home_s3_request_payer(options) {
     \\  if (!options || options.requestPayer === undefined) return false;
@@ -21038,7 +21148,7 @@ const harness_prelude =
     \\      this.options.queueSize = Math.min(255, Math.trunc(queueSize));
     \\    }
     \\    this.file = (path, fileOptions) => __home_s3_file(this.options, path, fileOptions);
-    \\    this.list = (listOptions, requestOptions) => __home_s3_list(listOptions, Object.assign({}, this.options, requestOptions || {}));
+    \\    this.list = (listOptions, requestOptions) => __home_s3_list(listOptions, Object.assign({ __homeS3InstanceList: true }, this.options, requestOptions || {}));
     \\    this.presign = (path, presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {}));
     \\    this.write = (path, data, writeOptions) => __home_s3_write(path, data, Object.assign({}, this.options, writeOptions || {}));
     \\  }, {
@@ -55393,7 +55503,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-encode-overflow.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-objects.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "S3 list objects request encoding integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-requester-pays.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-storage-class.test.ts"))
@@ -64041,6 +64151,32 @@ test "bootstrap runner mirrors S3 list option encoding overflow corpus" {
     try std.testing.expectEqual(@as(usize, 5), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors S3 ListObjectsV2 corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_s3_parse_list_xml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_S3_MISSING_CREDENTIALS") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-list-objects.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 35 or summary.todo != 1) {
+        std.debug.print(
+            "S3 ListObjectsV2 corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 35), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 35), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
