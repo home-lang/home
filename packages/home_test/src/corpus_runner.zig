@@ -18365,6 +18365,49 @@ const harness_prelude =
     \\  params.sort((left, right) => left[0] < right[0] ? -1 : (left[0] > right[0] ? 1 : 0));
     \\  return base + "?" + params.map(([key, value]) => encodeURIComponent(key) + "=" + encodeURIComponent(value)).join("&");
     \\}
+    \\function __home_s3_list_query(options) {
+    \\  if (options === undefined || options === null) return "list-type=2";
+    \\  if (typeof options !== "object") throw new TypeError("S3Client.list options must be an object");
+    \\  const names = {
+    \\    prefix: "prefix",
+    \\    delimiter: "delimiter",
+    \\    continuationToken: "continuation-token",
+    \\    startAfter: "start-after",
+    \\    maxKeys: "max-keys",
+    \\    encodingType: "encoding-type",
+    \\    fetchOwner: "fetch-owner",
+    \\  };
+    \\  const params = [["list-type", "2"]];
+    \\  for (const optionName of Object.keys(names)) {
+    \\    const value = options[optionName];
+    \\    if (value === undefined || value === null) continue;
+    \\    params.push([names[optionName], String(value)]);
+    \\  }
+    \\  return params.map(([name, value]) => encodeURIComponent(name) + "=" + encodeURIComponent(value)).join("&");
+    \\}
+    \\function __home_s3_list(listOptions, clientOptions) {
+    \\  let query;
+    \\  try {
+    \\    query = __home_s3_list_query(listOptions);
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
+    \\  const options = clientOptions && typeof clientOptions === "object" ? clientOptions : {};
+    \\  const endpoint = String(options.endpoint || "").replace(/\/+$/, "");
+    \\  if (!endpoint) return Promise.reject(new Error("S3Client.list requires an endpoint"));
+    \\  const bucket = String(options.bucket || "").replace(/^\/+|\/+$/g, "");
+    \\  let url;
+    \\  try {
+    \\    url = new URL(endpoint + (bucket ? "/" + encodeURIComponent(bucket) : "") + "?" + query);
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
+    \\  const handle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
+    \\  if (!handle || handle.stopped || typeof handle.fetch !== "function") {
+    \\    return Promise.reject(new Error("S3Client.list request failed for " + url.href));
+    \\  }
+    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET" })));
+    \\}
     \\function __home_s3_validate_header_value(name, value) {
     \\  if (value === undefined || value === null) return;
     \\  if (/[\r\n]/.test(String(value))) throw new TypeError("S3 " + name + " must not contain CR/LF characters");
@@ -20878,6 +20921,7 @@ const harness_prelude =
     \\      this.options.queueSize = Math.min(255, Math.trunc(queueSize));
     \\    }
     \\    this.file = (path, fileOptions) => __home_s3_file(this.options, path, fileOptions);
+    \\    this.list = (listOptions, requestOptions) => __home_s3_list(listOptions, Object.assign({}, this.options, requestOptions || {}));
     \\    this.presign = (path, presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {}));
     \\    this.write = (path, data, writeOptions) => __home_s3_write(path, data, Object.assign({}, this.options, writeOptions || {}));
     \\  }, {
@@ -20886,6 +20930,9 @@ const harness_prelude =
     \\    },
     \\    presign(path, options) {
     \\      return __home_s3_presign_url(path, options);
+    \\    },
+    \\    list(listOptions, options) {
+    \\      return __home_s3_list(listOptions, options);
     \\    },
     \\  }),
     \\  Transpiler: function(options) {
@@ -55223,7 +55270,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-insecure.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "S3 HTTP endpoint error integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-encode-overflow.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "S3 list option encoding overflow validation")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-objects.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "S3 list objects request encoding integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-requester-pays.test.ts"))
@@ -63851,6 +63898,29 @@ test "bootstrap runner mirrors S3 presign response headers corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors S3 list option encoding overflow corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-list-encode-overflow.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
+        std.debug.print(
+            "S3 list option encoding overflow corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 5), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 5), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors S3 header injection corpus" {
