@@ -88240,7 +88240,13 @@ pub const Checker = struct {
                                 index_value_t
                             else
                                 try self.jsxOverloadPropType(el.tag, a.name));
-                        if (effective_prop_t_opt) |prop_t| {
+                        if (effective_prop_t_opt) |raw_prop_t| {
+                            const prop_t = if (a.value != hir_mod.none_node_id and
+                                self.typeHasBooleanPrimitivePart(raw_prop_t) and
+                                self.objectMemberAccessIsOptional(target, a.name))
+                                try self.unionWithUndefined(raw_prop_t)
+                            else
+                                raw_prop_t;
                             const contextual = try self.checkJsxContextualAttributeValue(a.value, prop_t);
                             if (contextual.value_type) |contextual_t| {
                                 value_t = contextual_t;
@@ -89469,6 +89475,7 @@ pub const Checker = struct {
     }
 
     fn jsxTagUsesConstructSignatures(self: *Checker, tag: NodeId) CheckError!bool {
+        if (self.jsxTagIsIntrinsic(tag)) return false;
         const tag_t = try self.checkedExpressionType(tag);
         var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
         defer signatures.deinit(self.gpa);
@@ -89537,7 +89544,7 @@ pub const Checker = struct {
         for (overloads) |sig| {
             const params = self.interner.signatureParams(sig);
             if (params.len == 0) continue;
-            if (try self.lookupObjectMember(params[0], name)) |prop_t| return prop_t;
+            if (try self.jsxTargetPropType(params[0], name)) |prop_t| return prop_t;
         }
         return null;
     }
@@ -90230,7 +90237,16 @@ pub const Checker = struct {
         if (!flags.is_object_type) return false;
         for (self.interner.objectMembers(target)) |member| {
             if (member.is_optional) continue;
-            const attr_t = self.interner.objectMember(attrs_t, member.name) orelse return false;
+            const attr_t = self.interner.objectMember(attrs_t, member.name) orelse {
+                if (try self.broadObjectPrototypeMember(member.name)) |inherited_t| {
+                    if (self.containsFreeTypeParameter(member.type) or
+                        try self.jsxAttributeAssignable(inherited_t, member.type))
+                    {
+                        continue;
+                    }
+                }
+                return false;
+            };
             if (self.containsFreeTypeParameter(member.type)) continue;
             if (!try self.jsxAttributeAssignable(attr_t, member.type)) return false;
         }
@@ -90301,7 +90317,9 @@ pub const Checker = struct {
         if (!flags.is_object_type) return false;
         for (self.interner.objectMembers(target)) |member| {
             if (member.is_optional) continue;
-            if (self.interner.objectMember(attrs_t, member.name) == null) return false;
+            if (self.interner.objectMember(attrs_t, member.name) != null) continue;
+            if ((try self.broadObjectPrototypeMember(member.name)) != null) continue;
+            return false;
         }
         return true;
     }
@@ -149346,6 +149364,39 @@ test "checker: JSX class props validate required spread members" {
     // signal the same upstream-reported gap.
     try T.expect(assign_errors >= 2);
     try T.expect(excess_errors + assign_errors >= 3);
+}
+
+test "checker: intrinsic JSX structural errors do not resolve tags as values" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface IntrinsicElements {
+        \\    test1: { required: string };
+        \\    div: { text?: string };
+        \\    input: { checked?: boolean };
+        \\    objectish: { toString(): string };
+        \\  }
+        \\}
+        \\const missing = <test1 />;
+        \\const badSpread = <div {...{ text: 100 }} />;
+        \\const optionalValue = <input checked="yes" />;
+        \\const inheritedObjectMember = <objectish {...{}} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    var saw_optional_target = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, diagnostic.message, "boolean | undefined") != null)
+        {
+            saw_optional_target = true;
+        }
+    }
+    try T.expect(saw_optional_target);
 }
 
 test "checker: JSX generic default props do not excess-check free target" {
