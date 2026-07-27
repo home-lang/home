@@ -21205,7 +21205,11 @@ pub const Checker = struct {
         if (self.thisTypeMarkerConstraint(container_t)) |this_t| {
             return self.checkObjectBindingPatternAgainstType(pattern_node, this_t, check_defaults);
         }
-        if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
+        if (container_t == types.Primitive.any) return;
+        if (container_t == types.Primitive.unknown) {
+            _ = try self.checkObjectBindingComputedKeysAgainstType(pattern_node, container_t);
+            return;
+        }
         // Destructuring against `null` / `undefined` ÃÂ¢ÃÂÃÂ tsc emits
         // TS2339 ("Property 'x' does not exist on type 'null'.") per
         // declared property. Mirrors fixtures `usingDeclarations.6`
@@ -21218,6 +21222,7 @@ pub const Checker = struct {
         }
         if (container_t >= self.interner.pool.typeCount()) return;
         if (container_t == types.Primitive.object_t) {
+            _ = try self.checkObjectBindingComputedKeysAgainstType(pattern_node, container_t);
             try self.checkObjectBindingPatternAgainstBroadObject(pattern_node, container_t);
             return;
         }
@@ -21712,6 +21717,14 @@ pub const Checker = struct {
     }
 
     fn checkObjectBindingComputedKeysAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!bool {
+        const parent = self.hir.parentOf(pattern_node);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .parameter) {
+            const pattern_param = hir_mod.parameterOf(self.hir, parent);
+            if (pattern_param.name == pattern_node and pattern_param.default_value != hir_mod.none_node_id) {
+                if (try self.computedBindingDefaultIsAnyWithoutEvaluation(pattern_param.default_value)) return false;
+            }
+        }
+
         var saw_dynamic = false;
         for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
             if (self.hir.kindOf(e) != .parameter) continue;
@@ -21733,34 +21746,63 @@ pub const Checker = struct {
         return saw_dynamic;
     }
 
+    fn computedBindingDefaultIsAnyWithoutEvaluation(self: *Checker, node: NodeId) CheckError!bool {
+        const cached = self.hir.typeOf(node);
+        if (cached != types.Primitive.none) return cached == types.Primitive.any;
+        return switch (self.hir.kindOf(node)) {
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, node);
+                const t = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(node);
+                break :blk t == types.Primitive.any;
+            },
+            .call_expr => blk: {
+                const call = hir_mod.callOf(self.hir, node);
+                var callee_t = self.hir.typeOf(call.callee);
+                if (callee_t == types.Primitive.none and self.hir.kindOf(call.callee) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, call.callee);
+                    callee_t = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(call.callee);
+                }
+                if (callee_t == types.Primitive.any) break :blk true;
+                const sig = self.firstSignatureType(callee_t) orelse break :blk false;
+                break :blk (self.interner.signatureReturn(sig) orelse types.Primitive.any) == types.Primitive.any;
+            },
+            .as_expr, .type_assertion => blk: {
+                const as_expr = hir_mod.asExpressionOf(self.hir, node);
+                if (as_expr.type_node == hir_mod.none_node_id) break :blk false;
+                break :blk (try self.lowererLowerWithTypeParams(as_expr.type_node)) == types.Primitive.any;
+            },
+            else => false,
+        };
+    }
+
     fn reportMissingIndexForComputedBindingKey(self: *Checker, node: NodeId, container_t: TypeId, key_t: TypeId) CheckError!bool {
-        if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return false;
-        if (key_t == types.Primitive.any or key_t == types.Primitive.unknown) {
-            // An `any`/`unknown` computed key is VALID for an object-type (or
-            // union) container — `obj[anyKey]` yields `any`, so tsc emits
-            // nothing (destructuringEvaluationOrder: `[order(1)]` over `{}`).
-            // It is only rejected when the container can't be indexed at all —
-            // a non-object primitive like `number` (for-of-excess-declarations:
-            // `[b]` over the `number` element of `[1]` → TS2538). Object/union
-            // containers fall through to the concrete-key index logic below,
-            // which no-ops for a non-literal `any`/`unknown` key.
-            const cont_indexable = container_t < self.interner.pool.typeCount() and
-                (self.interner.pool.flagsOf(container_t).is_object_type or
-                    self.interner.pool.flagsOf(container_t).is_union);
-            if (!cont_indexable) {
-                const key_text = if (key_t == types.Primitive.unknown) "unknown" else "any";
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Type '{s}' cannot be used as an index type.",
-                    .{key_text},
-                );
-                try self.diagnostics.append(self.gpa, .{
-                    .node = node,
-                    .code = TsCodes.type_cannot_be_used_as_index,
-                    .message = msg,
-                });
-                return true;
+        if (container_t == types.Primitive.any) return false;
+        if (container_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(container_t).is_union) {
+            var reported = false;
+            for (self.interner.unionMembers(container_t)) |member| {
+                if (try self.reportMissingIndexForComputedBindingKey(node, member, key_t)) reported = true;
             }
+            return reported;
+        }
+        if (key_t == types.Primitive.any or key_t == types.Primitive.unknown) {
+            if (container_t < self.interner.pool.typeCount()) {
+                const flags = self.interner.pool.flagsOf(container_t);
+                if (flags.is_object_type and
+                    (self.interner.objectStringIndex(container_t) != types.Primitive.none or
+                        self.interner.objectNumberIndex(container_t) != types.Primitive.none or
+                        self.interner.objectSymbolIndex(container_t) != types.Primitive.none))
+                {
+                    return false;
+                }
+            }
+            const key_text = if (key_t == types.Primitive.unknown) "unknown" else "any";
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' cannot be used as an index type.",
+                .{key_text},
+            );
+            try self.reportOnce(node, TsCodes.type_cannot_be_used_as_index, msg);
+            return true;
         }
         switch (self.hir.kindOf(node)) {
             .literal_string, .literal_number, .literal_bool, .literal_bigint => return false,
@@ -21777,13 +21819,6 @@ pub const Checker = struct {
         }
         if (container_t >= self.interner.pool.typeCount()) return false;
         const cf = self.interner.pool.flagsOf(container_t);
-        if (cf.is_union) {
-            var reported = false;
-            for (self.interner.unionMembers(container_t)) |member| {
-                if (try self.reportMissingIndexForComputedBindingKey(node, member, key_t)) reported = true;
-            }
-            return reported;
-        }
         if (!cf.is_object_type) return false;
         const key_kind = try self.dynamicComputedIndexKind(key_t) orelse return false;
         const has_index = switch (key_kind) {
@@ -28003,6 +28038,9 @@ pub const Checker = struct {
             else
                 types.Primitive.any;
             const declared_param_t = t;
+            if (!has_anno and pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .object_pattern) {
+                _ = try self.checkObjectBindingComputedKeysAgainstType(pp.name, declared_param_t);
+            }
             if (has_anno and pp.name != hir_mod.none_node_id) {
                 const name_kind = self.hir.kindOf(pp.name);
                 if (name_kind == .array_pattern or name_kind == .object_pattern) {
@@ -187863,10 +187901,10 @@ test "checker: for-of excess declaration visits computed binding key" {
 }
 
 test "checker: any-typed computed binding key over an object container does not emit TS2538" {
-    // `[order(1)]` is a genuine `any` key; destructured against an object
-    // element type `{}`, `obj[anyKey]` yields `any`, so tsc emits nothing.
-    // (The for-of-excess case keeps TS2538 because its container is the
-    // primitive `number`.) Mirrors destructuringEvaluationOrder.
+    // The object-pattern default `order(0)` is `any`, so the effective
+    // destructuring container is `any` and accepts the computed key.
+    // The for-of-excess case keeps TS2538 because its container is the
+    // primitive `number`. Mirrors destructuringEvaluationOrder.
     const s = try newSetup(
         \\let order = (n: any): any => n;
         \\let [{ [order(1)]: y } = order(0)] = [{}];
@@ -187876,6 +187914,24 @@ test "checker: any-typed computed binding key over an object container does not 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_cannot_be_used_as_index);
     }
+}
+
+test "checker: computed binding keys require an applicable container index" {
+    const s = try newSetup(
+        \\declare let anyKey: any;
+        \\function declaration({ [anyKey]: x }) {}
+        \\const arrow = ({ [anyKey]: y }) => {};
+        \\declare const broad: object;
+        \\const { [anyKey]: z } = broad;
+        \\declare const indexed: { [key: string]: any };
+        \\const { [anyKey]: accepted } = indexed;
+        \\declare const dynamic: any;
+        \\const { [anyKey]: acceptedFromAny } = dynamic;
+        \\function defaulted({ [anyKey]: acceptedFromDefault } = dynamic) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
 }
 
 test "checker: default export merging with namespace and interface anchors at name" {
