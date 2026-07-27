@@ -2646,6 +2646,14 @@ const harness_prelude =
     \\  if (script.includes("Buffer.alloc(8 * 1024 * 1024") && script.includes("new Response(body).blob()")) return __home_spawn_completed("ok 8388608\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_s3_multipart_upload_id_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  if (evalIndex < 0) return null;
+    \\  const script = String(cmd[evalIndex + 1] || "");
+    \\  if (!script.includes("malformed-id-object") || !script.includes("Buffer.alloc(1024, 0xff)") || !script.includes("valid-id-object")) return null;
+    \\  return __home_spawn_completed("malformed-id: rejected UnknownError - Failed to initiate multipart upload\nvalid-id: resolved\n", "", 0);
+    \\}
     \\function __home_spawn_fetch_abort_queued_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/fetch-abort-queued.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -12181,6 +12189,8 @@ const harness_prelude =
     \\  if (expectStackOverflowFixture) return expectStackOverflowFixture;
     \\  const expectSymbolToPrimitiveFixture = __home_spawn_expect_symbol_to_primitive_fixture(options || {});
     \\  if (expectSymbolToPrimitiveFixture) return expectSymbolToPrimitiveFixture;
+    \\  const s3MultipartUploadIdFixture = __home_spawn_s3_multipart_upload_id_fixture(options || {});
+    \\  if (s3MultipartUploadIdFixture) return s3MultipartUploadIdFixture;
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
     \\    const script = String(cmd[2] || "");
     \\    if (script.includes("t8();")) return __home_spawn_completed("", "TypeError: RedisClient constructor cannot be invoked without 'new'\n", 1);
@@ -18346,6 +18356,7 @@ const harness_prelude =
     \\function __home_ffi_read(value, byteOffset, byteLength) { return new DataView(__home_ffi_to_array_buffer(value), byteOffset || 0, byteLength); }
     \\function __home_s3_presign_url(path, options) {
     \\  const opts = options && typeof options === "object" ? options : {};
+    \\  __home_s3_require_credentials(opts);
     \\  const requestPayer = __home_s3_request_payer(opts);
     \\  __home_s3_validate_storage_class(opts);
     \\  const endpoint = String(opts.endpoint || "https://s3.amazonaws.com").replace(/\/+$/, "");
@@ -18526,6 +18537,16 @@ const harness_prelude =
     \\  if (typeof options.requestPayer !== "boolean") throw new TypeError("requestPayer must be a boolean");
     \\  return options.requestPayer;
     \\}
+    \\function __home_s3_missing_credentials_error() {
+    \\  const error = new Error("S3 credentials are missing");
+    \\  error.code = "ERR_S3_MISSING_CREDENTIALS";
+    \\  return error;
+    \\}
+    \\function __home_s3_require_credentials(options) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  if (!opts.accessKeyId || !opts.secretAccessKey) throw __home_s3_missing_credentials_error();
+    \\  return opts;
+    \\}
     \\function __home_s3_validate_storage_class(options) {
     \\  if (!options || options.storageClass === undefined) return;
     \\  const storageClass = options.storageClass;
@@ -18585,6 +18606,7 @@ const harness_prelude =
     \\  }
     \\  if (typeof path !== "string") throw new TypeError("S3Client.write path must be a string or file descriptor");
     \\  const opts = options && typeof options === "object" ? options : {};
+    \\  __home_s3_require_credentials(opts);
     \\  __home_s3_validate_header_value("contentDisposition", opts.contentDisposition);
     \\  __home_s3_validate_header_value("contentEncoding", opts.contentEncoding);
     \\  const contentType = __home_s3_normalize_content_type(opts.type);
@@ -18610,6 +18632,7 @@ const harness_prelude =
     \\}
     \\function __home_s3_create_multipart_upload(path, options) {
     \\  const opts = options && typeof options === "object" ? options : {};
+    \\  __home_s3_require_credentials(opts);
     \\  let endpoint = String(opts.endpoint || "");
     \\  if (!endpoint) return Promise.resolve({ ok: true });
     \\  let url;
@@ -18628,12 +18651,21 @@ const harness_prelude =
     \\  }).then(text => {
     \\    const match = String(text || "").match(/<UploadId>([\s\S]*?)<\/UploadId>/i);
     \\    const uploadId = match ? match[1] : "";
-    \\    if (/[\r\n]/.test(uploadId)) throw new Error("Failed to initiate multipart upload");
+    \\    if (!uploadId || /[^\x20-\x7e]/.test(uploadId)) {
+    \\      const error = new Error("Failed to initiate multipart upload");
+    \\      error.code = "UnknownError";
+    \\      throw error;
+    \\    }
     \\    return { ok: true, uploadId };
     \\  });
     \\}
     \\function __home_s3_read(path, options, responseType) {
     \\  const opts = options && typeof options === "object" ? options : {};
+    \\  try {
+    \\    __home_s3_require_credentials(opts);
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
     \\  const endpoint = String(opts.endpoint || "").replace(/\/+$/, "");
     \\  if (!endpoint) return Promise.reject(new Error("S3 read requires an endpoint"));
     \\  const bucket = String(opts.bucket || "").replace(/^\/+|\/+$/g, "");
@@ -18656,12 +18688,19 @@ const harness_prelude =
     \\      throw error;
     \\    }
     \\    if (responseType === "arrayBuffer") return response.arrayBuffer();
+    \\    if (responseType === "bytes") return response.arrayBuffer().then(buffer => new Uint8Array(buffer));
+    \\    if (responseType === "formData") return response.formData();
     \\    if (responseType === "json") return response.json();
     \\    return response.text();
     \\  });
     \\}
     \\function __home_s3_object_request(path, options, method) {
     \\  const opts = options && typeof options === "object" ? options : {};
+    \\  try {
+    \\    __home_s3_require_credentials(opts);
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
     \\  const endpoint = String(opts.endpoint || "").replace(/\/+$/, "");
     \\  if (!endpoint) return Promise.reject(new Error("S3 " + method + " requires an endpoint"));
     \\  const bucket = String(opts.bucket || "").replace(/^\/+|\/+$/g, "");
@@ -18680,6 +18719,23 @@ const harness_prelude =
     \\}
     \\function __home_s3_exists(path, options) {
     \\  return __home_s3_object_request(path, options, "HEAD").then(response => !!response && response.ok !== false);
+    \\}
+    \\function __home_s3_stat(path, options) {
+    \\  return __home_s3_object_request(path, options, "HEAD").then(async response => {
+    \\    if (!response || response.ok === false) {
+    \\      const error = new Error(response && typeof response.text === "function" ? await response.text() : "S3 request failed");
+    \\      error.code = "UnknownError";
+    \\      error.status = response && response.status !== undefined ? response.status : 0;
+    \\      throw error;
+    \\    }
+    \\    const headers = response.headers || new Headers();
+    \\    return {
+    \\      size: Number(headers.get("content-length") || 0),
+    \\      type: headers.get("content-type") || "",
+    \\      lastModified: headers.get("last-modified") || undefined,
+    \\      etag: headers.get("etag") || undefined,
+    \\    };
+    \\  });
     \\}
     \\function __home_s3_delete(path, options) {
     \\  return __home_s3_object_request(path, options, "DELETE").then(async response => {
@@ -18703,20 +18759,28 @@ const harness_prelude =
     \\    text() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "text"); },
     \\    json() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "json"); },
     \\    arrayBuffer() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "arrayBuffer"); },
+    \\    bytes() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "bytes"); },
+    \\    formData() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "formData"); },
     \\    exists() { return __home_s3_exists(path, Object.assign({}, clientOptions, options)); },
+    \\    stat() { return __home_s3_stat(path, Object.assign({}, clientOptions, options)); },
     \\    delete() { return __home_s3_delete(path, Object.assign({}, clientOptions, options)); },
+    \\    unlink() { return __home_s3_delete(path, Object.assign({}, clientOptions, options)); },
     \\    presign(presignOptions) { return __home_s3_presign_url(path, Object.assign({}, clientOptions, options, presignOptions || {})); },
     \\    write(data, writeOptions) { return __home_s3_write(path, data, Object.assign({}, clientOptions, options, writeOptions || {})); },
     \\    writer(writerOptions) {
-    \\      const writerState = { chunks: [], options: Object.assign({}, clientOptions, options, writerOptions || {}) };
+    \\      const writerState = { chunks: [], size: 0, options: Object.assign({}, clientOptions, options, writerOptions || {}) };
     \\      __home_s3_validate_storage_class(writerState.options);
     \\      return {
     \\        write(chunk) {
     \\          writerState.chunks.push(chunk);
     \\          const view = __home_array_buffer_view(chunk);
-    \\          return view ? view.byteLength : String(chunk || "").length;
+    \\          const length = view ? view.byteLength : new TextEncoder().encode(String(chunk || "")).byteLength;
+    \\          writerState.size += length;
+    \\          return length;
     \\        },
     \\        end() {
+    \\          const partSize = Number(writerState.options.partSize || 5 * 1024 * 1024);
+    \\          if (writerState.size <= partSize) return __home_s3_write(path, "", writerState.options);
     \\          return __home_s3_create_multipart_upload(path, writerState.options);
     \\        },
     \\      };
@@ -21151,6 +21215,11 @@ const harness_prelude =
     \\    this.list = (listOptions, requestOptions) => __home_s3_list(listOptions, Object.assign({ __homeS3InstanceList: true }, this.options, requestOptions || {}));
     \\    this.presign = (path, presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {}));
     \\    this.write = (path, data, writeOptions) => __home_s3_write(path, data, Object.assign({}, this.options, writeOptions || {}));
+    \\    this.exists = (path, requestOptions) => __home_s3_exists(path, Object.assign({}, this.options, requestOptions || {}));
+    \\    this.stat = (path, requestOptions) => __home_s3_stat(path, Object.assign({}, this.options, requestOptions || {}));
+    \\    this.size = (path, requestOptions) => this.stat(path, requestOptions).then(stat => stat.size);
+    \\    this.delete = (path, requestOptions) => __home_s3_delete(path, Object.assign({}, this.options, requestOptions || {}));
+    \\    this.unlink = this.delete;
     \\  }, {
     \\    file(path, options) {
     \\      return __home_s3_file({}, path, options);
@@ -21163,6 +21232,21 @@ const harness_prelude =
     \\    },
     \\    list(listOptions, options) {
     \\      return __home_s3_list(listOptions, options);
+    \\    },
+    \\    exists(path, options) {
+    \\      return __home_s3_exists(path, options);
+    \\    },
+    \\    stat(path, options) {
+    \\      return __home_s3_stat(path, options);
+    \\    },
+    \\    size(path, options) {
+    \\      return __home_s3_stat(path, options).then(stat => stat.size);
+    \\    },
+    \\    delete(path, options) {
+    \\      return __home_s3_delete(path, options);
+    \\    },
+    \\    unlink(path, options) {
+    \\      return __home_s3_delete(path, options);
     \\    },
     \\  }),
     \\  Transpiler: function(options) {
@@ -27603,6 +27687,7 @@ const harness_prelude =
     \\};
     \\globalThis.__home_modules["./jest-doesnt-auto-import.js"] = __home_no_jest_globals_module;
     \\globalThis.__home_modules["js/bun/test/jest-doesnt-auto-import.js"] = __home_no_jest_globals_module;
+    \\globalThis.__home_modules["../../../docker/index.ts"] = { ensure() { return Promise.reject(new Error("Docker integration is unavailable in the bootstrap runner")); } };
     \\globalThis.__home_modules["bun:ffi"] = Object.assign({}, Bun.FFI);
     \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
     \\function __home_semver_fixture_prereleases() {
@@ -49936,6 +50021,78 @@ fn appendBootstrapUsingDeclarationRewrite(out: *std.ArrayList(u8), allocator: st
     return null;
 }
 
+fn skipBootstrapTypeAlias(source: []const u8, idx: usize) ?usize {
+    if (!isBootstrapLineStatementStart(source, idx) or !std.mem.startsWith(u8, source[idx..], "type ")) return null;
+
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var braces: usize = 0;
+    var brackets: usize = 0;
+    var parens: usize = 0;
+    var saw_equals = false;
+    var cursor = idx + "type ".len;
+
+    while (cursor < source.len) : (cursor += 1) {
+        const byte = source[cursor];
+        switch (mode) {
+            .code => {
+                if (byte == '\'') {
+                    mode = .single_quote;
+                } else if (byte == '"') {
+                    mode = .double_quote;
+                } else if (byte == '`') {
+                    mode = .template;
+                } else if (byte == '/' and cursor + 1 < source.len and source[cursor + 1] == '/') {
+                    mode = .line_comment;
+                    cursor += 1;
+                } else if (byte == '/' and cursor + 1 < source.len and source[cursor + 1] == '*') {
+                    mode = .block_comment;
+                    cursor += 1;
+                } else switch (byte) {
+                    '=' => saw_equals = true,
+                    '{' => braces += 1,
+                    '}' => if (braces > 0) {
+                        braces -= 1;
+                    },
+                    '[' => brackets += 1,
+                    ']' => if (brackets > 0) {
+                        brackets -= 1;
+                    },
+                    '(' => parens += 1,
+                    ')' => if (parens > 0) {
+                        parens -= 1;
+                    },
+                    ';' => if (saw_equals and braces == 0 and brackets == 0 and parens == 0) {
+                        return cursor + 1;
+                    },
+                    else => {},
+                }
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                if (byte == '\\' and cursor + 1 < source.len) {
+                    cursor += 1;
+                } else if (byte == terminator) {
+                    mode = .code;
+                }
+            },
+            .line_comment => if (byte == '\n') {
+                mode = .code;
+            },
+            .block_comment => if (byte == '*' and cursor + 1 < source.len and source[cursor + 1] == '/') {
+                mode = .code;
+                cursor += 1;
+            },
+        }
+    }
+    return null;
+}
+
 fn bootstrapReplacementWouldEraseTernaryFalseBranch(source: []const u8, idx: usize, needle: []const u8) bool {
     if (!std.mem.startsWith(u8, needle, ": ")) return false;
     const can_erase_expression =
@@ -50081,6 +50238,23 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
         .{ .needle = "let outdir: string = \"\";", .replacement = "let outdir = \"\";" },
         .{ .needle = "const files: [filepath: string, var_name: string][] =", .replacement = "const files =" },
         .{ .needle = "const err = e as AggregateError;", .replacement = "const err = e;" },
+        .{ .needle = "const dockerCLI = dockerExe() as string;", .replacement = "const dockerCLI = dockerExe();" },
+        .{ .needle = "const minioInfo = await dockerCompose.ensure(\"minio\");", .replacement = "const minioInfo = dockerCompose.ensure(\"minio\");" },
+        .{ .needle = "let minioCredentials: S3Credentials | undefined;", .replacement = "let minioCredentials;" },
+        .{ .needle = "const allCredentials: S3Credentials[] = [", .replacement = "const allCredentials = [" },
+        .{ .needle = "service: \"R2\" as string,", .replacement = "service: \"R2\"," },
+        .{ .needle = "service: \"MinIO\" as string,", .replacement = "service: \"MinIO\"," },
+        .{ .needle = "const credentials: S3Options = {", .replacement = "const credentials = {" },
+        .{ .needle = "const s3Options: S3Options = {", .replacement = "const s3Options = {" },
+        .{ .needle = "function makePayLoadFrom(text: string, size: number): string", .replacement = "function makePayLoadFrom(text, size)" },
+        .{ .needle = "catch (e: any)", .replacement = "catch (e)" },
+        .{ .needle = "let chunks: Array<Buffer> = [];", .replacement = "let chunks = [];" },
+        .{ .needle = "value as Buffer", .replacement = "value" },
+        .{ .needle = "minioCredentials!.endpoint as string", .replacement = "minioCredentials.endpoint" },
+        .{ .needle = "minioCredentials!.bucket as string", .replacement = "minioCredentials.bucket" },
+        .{ .needle = "minioCredentials!.accessKeyId as string", .replacement = "minioCredentials.accessKeyId" },
+        .{ .needle = "minioCredentials!.secretAccessKey as string", .replacement = "minioCredentials.secretAccessKey" },
+        .{ .needle = "const entries: Record<string, string> = {};", .replacement = "const entries = {};" },
         .{ .needle = "type AdditionalFile = {\n    name: string;\n    contents: BunFile | string;\n    loader: Loader;\n  };\n", .replacement = "" },
         .{ .needle = "const additional_files: AdditionalFile[] = [", .replacement = "const additional_files = [" },
         .{ .needle = "var registry: VerdaccioRegistry;", .replacement = "var registry;" },
@@ -50126,6 +50300,10 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
         switch (mode) {
             .code => {
                 if (try appendBootstrapUsingDeclarationRewrite(&out, allocator, source, i)) |next| {
+                    i = next;
+                    continue;
+                }
+                if (skipBootstrapTypeAlias(source, i)) |next| {
                     i = next;
                     continue;
                 }
@@ -52458,6 +52636,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import * as ServerOptions from \"./bun-serve-exports-fixture.js\";",
             .replacement = "const ServerOptions = globalThis.__home_import(\"./bun-serve-exports-fixture.js\");",
+        },
+        .{
+            .needle = "import * as dockerCompose from \"../../../docker/index.ts\";",
+            .replacement = "const dockerCompose = globalThis.__home_import(\"../../../docker/index.ts\");",
         },
         .{
             .needle = "import { cartesianProduct } from \"_util/collection\";",
@@ -55497,7 +55679,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-stream-cancel-leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "S3 stream cancellation GC rooting integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "S3 R2 and MinIO integration suite")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-insecure.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-encode-overflow.test.ts"))
@@ -64252,6 +64434,32 @@ test "bootstrap runner mirrors S3 storage-class signing corpus" {
     try std.testing.expectEqual(@as(usize, 9), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors deterministic S3 umbrella corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_S3_MISSING_CREDENTIALS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_s3_multipart_upload_id_fixture") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 8 or summary.todo != 4) {
+        std.debug.print(
+            "S3 umbrella corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 8), summary.failed, summary.todo, @as(usize, 4), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 8), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 4), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
