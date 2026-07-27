@@ -551,6 +551,7 @@ const TranspilerHandle = struct {
     jsx_import_source: ?[]u8 = null,
     jsx_runtime: ?home_rt.options.JSX.Runtime = null,
     jsx_development: ?bool = null,
+    repl_mode: bool = false,
     define_pairs: std.ArrayList([]const u8) = .empty,
     eliminate_exports: std.ArrayList([]const u8) = .empty,
 
@@ -673,6 +674,7 @@ fn transpilerCreateNative(
     const trim_unused_imports = argument_count >= 10 and arguments[9] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[9]);
     const tree_shaking = argument_count >= 11 and arguments[10] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[10]);
     const auto_import_jsx = argument_count >= 13 and arguments[12] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[12]);
+    const repl_mode = argument_count >= 18 and arguments[17] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[17]);
 
     var handle_stored = false;
     var jsx_factory: ?[]u8 = null;
@@ -766,6 +768,7 @@ fn transpilerCreateNative(
         .jsx_import_source = jsx_import_source,
         .jsx_runtime = jsx_runtime,
         .jsx_development = jsx_development,
+        .repl_mode = repl_mode,
         .define_pairs = define_pairs,
         .eliminate_exports = eliminate_exports,
     };
@@ -1016,6 +1019,16 @@ fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoa
     };
 }
 
+fn isLikelyReplObjectLiteral(source: []const u8) bool {
+    var start: usize = 0;
+    while (start < source.len and std.ascii.isWhitespace(source[start])) start += 1;
+    if (start >= source.len or source[start] != '{') return false;
+
+    var end = source.len;
+    while (end > 0 and std.ascii.isWhitespace(source[end - 1])) end -= 1;
+    return end == 0 or source[end - 1] != ';';
+}
+
 // Real Bun parser/printer path used for TypeScript transform parity. Keep the
 // targeted fixtures above for known snapshot gaps while this cone converges.
 fn transpileSourceWithBunParser(
@@ -1039,7 +1052,12 @@ fn transpileSourceWithBunParser(
     defer ast_scope.exit();
 
     var log = home_rt.logger.Log.init(ast_allocator);
-    var source = home_rt.logger.Source.initPathString(runtimeLoaderName(loader), source_text);
+    var repl_source: ?[]u8 = null;
+    defer if (repl_source) |value| allocator.free(value);
+    if (handle.repl_mode and isLikelyReplObjectLiteral(source_text)) {
+        repl_source = try std.fmt.allocPrint(allocator, "({s})", .{source_text});
+    }
+    var source = home_rt.logger.Source.initPathString(runtimeLoaderName(loader), repl_source orelse source_text);
     const define = try home_rt.defines.Define.init(ast_allocator, null, null, false, false);
     defer define.deinit();
 
@@ -1056,7 +1074,9 @@ fn transpileSourceWithBunParser(
     parser_options.features.top_level_await = true;
     parser_options.features.minify_syntax = handle.minify_syntax;
     parser_options.features.minify_identifiers = handle.minify_identifiers;
-    parser_options.features.dead_code_elimination = handle.dead_code_elimination or handle.minify_syntax or handle.tree_shaking or handle.eliminate_exports.items.len > 0;
+    parser_options.features.dead_code_elimination = !handle.repl_mode and (handle.dead_code_elimination or handle.minify_syntax or handle.tree_shaking or handle.eliminate_exports.items.len > 0);
+    parser_options.features.repl_mode = handle.repl_mode;
+    parser_options.repl_mode = handle.repl_mode;
     if (handle.jsx_factory) |factory| {
         parser_options.jsx.factory = try home_rt.options.JSX.Pragma.memberListToComponentsIfDifferent(ast_allocator, parser_options.jsx.factory, factory);
     }

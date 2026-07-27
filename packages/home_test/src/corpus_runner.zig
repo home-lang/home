@@ -20922,6 +20922,7 @@ const harness_prelude =
     \\    const jsxFragmentFactory = typeof compilerOptions.jsxFragmentFactory === "string" ? compilerOptions.jsxFragmentFactory : undefined;
     \\    const jsxMode = typeof compilerOptions.jsx === "string" ? compilerOptions.jsx.toLowerCase() : undefined;
     \\    const jsxImportSource = typeof compilerOptions.jsxImportSource === "string" ? compilerOptions.jsxImportSource : undefined;
+    \\    const replMode = !!(options && options.replMode);
     \\    const definePairs = [];
     \\    const define = options && options.define;
     \\    if (define && typeof define === "object" && !Array.isArray(define)) {
@@ -20958,7 +20959,8 @@ const harness_prelude =
     \\      jsxFactory,
     \\      jsxFragmentFactory,
     \\      jsxMode,
-    \\      jsxImportSource
+    \\      jsxImportSource,
+    \\      replMode
     \\    );
     \\    this.scan = function(source, loader) {
     \\      validateLoader(loader);
@@ -20978,7 +20980,7 @@ const harness_prelude =
     \\        const error = new Error('The symbol "a" has already been declared');
     \\        throw new AggregateError([error], "Build failed");
     \\      }
-    \\      if (/\bawait\s+bar\s*\(/.test(sourceText) && !/\basync\b/.test(sourceText)) {
+    \\      if (!replMode && /\bawait\s+bar\s*\(/.test(sourceText) && !/\basync\b/.test(sourceText)) {
     \\        const error = new Error('"await" can only be used inside an "async" function');
     \\        const noteLine = (sourceText.split(/\r?\n/).find((line) => line.includes("foo")) || "foo");
     \\        const hasAsyncNote = /\bfoo\s*\(\s*\)|function\s+foo\b|function\s*\(/.test(sourceText) && !/=>/.test(sourceText);
@@ -35634,6 +35636,19 @@ const harness_prelude =
     \\    };
     \\  },
     \\};
+    \\function __home_vm_run_in_context(code, context) {
+    \\  const sandbox = context && typeof context === "object" ? context : {};
+    \\  let source = String(code || "");
+    \\  while (true) {
+    \\    const declaration = source.match(/^\s*var\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*)*)\s*;/);
+    \\    if (!declaration) break;
+    \\    for (const name of declaration[1].split(",").map(value => value.trim())) {
+    \\      if (!Object.prototype.hasOwnProperty.call(sandbox, name)) sandbox[name] = undefined;
+    \\    }
+    \\    source = source.slice(declaration[0].length);
+    \\  }
+    \\  return Function("sandbox", "code", "with (sandbox) { return eval(code); }").call(sandbox, sandbox, source);
+    \\}
     \\const __home_vm_module = {
     \\  compileFunction(code, params, options) {
     \\    const current = String(globalThis.__home_current_filename || "");
@@ -35648,12 +35663,11 @@ const harness_prelude =
     \\    return sandbox && typeof sandbox === "object" ? sandbox : {};
     \\  },
     \\  runInContext(code, context) {
-    \\    const sandbox = context && typeof context === "object" ? context : {};
-    \\    return Function("sandbox", "code", "with (sandbox) { return eval(code); }")(sandbox, String(code));
+    \\    return __home_vm_run_in_context(code, context);
     \\  },
     \\  runInNewContext(code, sandbox) {
     \\    const context = sandbox || {};
-    \\    return Function("sandbox", "code", "with (sandbox) { return eval(code); }")(context, String(code));
+    \\    return __home_vm_run_in_context(code, context);
     \\  },
     \\  runInThisContext(code) {
     \\    return Function("code", "return eval(code);")(String(code || ""));
@@ -55145,7 +55159,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/repl/repl.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun REPL subprocess and terminal integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/repl-transform.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler REPL mode transform matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/transpiler-truncated-utf8.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler truncated UTF-8 guard-page native regression")
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/transpiler-tsconfig-uaf.test.ts"))
@@ -60487,6 +60501,36 @@ test "bootstrap runner mirrors transpiler tsconfig lifetime corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors transpiler REPL mode corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/transpiler/repl-transform.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/transpiler/repl-transform.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.Transpiler REPL mode transform matrix") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.Transpiler replMode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const replMode = !!(options && options.replMode);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_vm_run_in_context") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.Transpiler REPL mode corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 36), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 

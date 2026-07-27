@@ -3944,6 +3944,11 @@ pub fn NewParser_(
 
             // oroigianlly was !=- modepassthrough
             if (!p.fn_only_data_visit.is_this_nested) {
+                // In the REPL, top-level `this` must evaluate to the global object.
+                // The REPL wraps user input in an arrow IIFE without an `exports`
+                // binding, so preserve `this` and let the arrow inherit its receiver.
+                if (p.options.repl_mode) return null;
+
                 if (p.has_es_module_syntax and p.commonjs_named_exports.count() == 0) {
                     // In an ES6 module, "this" is supposed to be undefined. Instead of
                     // doing this at runtime using "fn.call(undefined)", we do it at
