@@ -16999,7 +16999,7 @@ pub const Checker = struct {
             v.init == hir_mod.none_node_id and
             self.varDeclHasTypeAnnotation(node) and
             !self.varDeclHasExplicitAnyAnnotation(node) and
-            !self.varDeclTypeIncludesUndefined(node) and
+            !self.varDeclTypeIncludesExplicitUndefined(node) and
             !self.varDeclHasDefiniteAssertion(node) and
             !self.isGlobalSymbolConstructorVarDecl(node) and
             (v.type_annotation == hir_mod.none_node_id or !self.typeAnnotationReferencesGenericWithoutArgs(v.type_annotation)) and
@@ -18897,7 +18897,7 @@ pub const Checker = struct {
         return self.typeContainsSymbol(t);
     }
 
-    fn varDeclTypeIncludesUndefined(self: *Checker, node: NodeId) bool {
+    fn varDeclTypeIncludesExplicitUndefined(self: *Checker, node: NodeId) bool {
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => {},
             else => return false,
@@ -18906,19 +18906,37 @@ pub const Checker = struct {
         if (v.type_annotation == hir_mod.none_node_id) {
             const t = (self.jsDocTypeForLeadingNode(node) catch null) orelse return false;
             if (t == types.Primitive.any or t == types.Primitive.unknown) return false;
-            return self.typeIncludesUndefined(t);
+            return self.typeIncludesExplicitUndefined(t);
         }
         const t = self.hir.typeOf(node);
         if (t != types.Primitive.none) {
             if (t == types.Primitive.any or t == types.Primitive.unknown) return false;
-            return self.typeIncludesUndefined(t);
+            return self.typeIncludesExplicitUndefined(t);
         }
         const lowered = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
             self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation) catch return false
         else
             self.lowererLowerWithTypeParams(v.type_annotation) catch return false;
         if (lowered == types.Primitive.any or lowered == types.Primitive.unknown) return false;
-        return self.typeIncludesUndefined(lowered);
+        return self.typeIncludesExplicitUndefined(lowered);
+    }
+
+    /// Definite-assignment initialization is narrower than ordinary
+    /// assignability: an explicit `undefined` constituent means an
+    /// uninitialized binding already has a permitted value, but `void`
+    /// does not. TypeScript therefore reports TS2454 for
+    /// `let x: T | void; use(x)` while keeping `T | undefined` clean.
+    fn typeIncludesExplicitUndefined(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_undefined) return true;
+        if (!flags.is_union) return false;
+        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (member >= self.interner.pool.typeCount()) continue;
+            if (self.interner.pool.flagsOf(member).is_undefined) return true;
+        }
+        return false;
     }
 
     /// True when `type_annotation` syntactically references a generic
@@ -84570,6 +84588,9 @@ pub const Checker = struct {
                     try self.checkInstantiationExpressionTypeArguments(node, callee_t, type_arg_nodes);
                     break :blk callee_t;
                 }
+                if (try self.builtinObjectAssignCallType(c.callee, args, arg_types.items)) |assign_t| {
+                    break :blk try self.optionalChainResult(assign_t, call_is_optional_chain);
+                }
                 try self.checkRewriteRelativeImportCall(node, c.callee, args);
                 try self.checkBareRequireCallImport(c.callee, args);
                 if (try self.virtualCommonJsRequireCallType(c.callee, args)) |require_t| {
@@ -102199,12 +102220,13 @@ pub const Checker = struct {
         // construction uses class typing handled elsewhere.
         const sig_then = try self.seedAnySig2(any_t);
         const sig_one = try self.seedAnySig1(any_t);
-        const sig_with_resolvers = try self.seedAnySig0(any_t);
+        const sig_zero = try self.seedAnySig0(any_t);
+        const sig_resolve = self.interner.internIntersection(&.{ sig_zero, sig_one }) catch return error.OutOfMemory;
         const m = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("then") catch return error.OutOfMemory, .type = sig_then, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("catch") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("finally") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
-            .{ .name = self.string_interner.intern("resolve") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("resolve") catch return error.OutOfMemory, .type = sig_resolve, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("reject") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("all") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("allSettled") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -102213,7 +102235,7 @@ pub const Checker = struct {
             // ES2024: `Promise.withResolvers()` returns
             // `{ promise: Promise<T>, resolve, reject }`. Modeled as
             // `(): any` until tuple-of-named-fields landing is wired.
-            .{ .name = self.string_interner.intern("withResolvers") catch return error.OutOfMemory, .type = sig_with_resolvers, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("withResolvers") catch return error.OutOfMemory, .type = sig_zero, .is_optional = false, .is_readonly = false, .is_method = true },
         };
         return self.interner.internObjectType(&m) catch return error.OutOfMemory;
     }
@@ -107246,6 +107268,131 @@ pub const Checker = struct {
             if (std.mem.eql(u8, s, b)) return true;
         }
         return false;
+    }
+
+    /// Model the generic `Object.assign` overloads from lib.es2015.core:
+    ///
+    ///   assign<T extends {}, U>(target: T, source: U): T & U
+    ///   assign(target: object, ...sources: any[]): any
+    ///
+    /// The library cache cannot attach checker-owned generic-signature
+    /// metadata, so its structural member remains an arity-only fallback.
+    /// Calls on the unshadowed global are resolved here, where source type
+    /// parameters and their constraints are available.
+    fn builtinObjectAssignCallType(
+        self: *Checker,
+        callee: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!?TypeId {
+        if (args.len < 2 or args.len != arg_types.len) return null;
+        if (self.hir.kindOf(callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, callee);
+        if (!std.mem.eql(u8, self.string_interner.get(member.name), "assign")) return null;
+        if (self.hir.kindOf(member.object) != .identifier) return null;
+        const object_id = hir_mod.identifierOf(self.hir, member.object);
+        if (!std.mem.eql(u8, self.string_interner.get(object_id.name), "Object")) return null;
+
+        const global_object = lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner) catch
+            return error.OutOfMemory;
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t != global_object) return null;
+        for (args) |arg| {
+            if (self.hir.kindOf(arg) == .spread) return null;
+        }
+
+        const target_t = arg_types[0];
+        const empty_object = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        const accepts_empty = try self.objectAssignTargetSatisfies(target_t, empty_object);
+        const accepts_object = try self.objectAssignTargetSatisfies(target_t, types.Primitive.object_t);
+
+        if (!accepts_empty and !accepts_object) {
+            try self.reportObjectAssignOverloadFailure(args[0], target_t, arg_types[1]);
+            // Overload resolution recovers with the first generic overload.
+            // Its failed `T extends {}` inference fixes T to `{}`, leaving
+            // the source intersection as the observable return type.
+            if (args.len <= 4) return try self.objectAssignIntersection(arg_types[1..]);
+            return types.Primitive.any;
+        }
+        if (!accepts_empty) return types.Primitive.any;
+        if (args.len > 4) return types.Primitive.any;
+        return try self.objectAssignIntersection(arg_types);
+    }
+
+    fn objectAssignTargetSatisfies(self: *Checker, target_t: TypeId, constraint_t: TypeId) CheckError!bool {
+        if (self.typeIsAnyLike(target_t)) return true;
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        if (self.interner.pool.flagsOf(target_t).is_type_parameter) {
+            const constraint = self.typeParameterConstraint(target_t) orelse return false;
+            return try self.checkerAssignableTo(constraint, constraint_t);
+        }
+        return try self.checkerAssignableTo(target_t, constraint_t);
+    }
+
+    fn objectAssignIntersection(self: *Checker, members: []const TypeId) CheckError!TypeId {
+        if (members.len == 0) return types.Primitive.any;
+        if (members.len == 1) return members[0];
+        return self.interner.internIntersection(members) catch return error.OutOfMemory;
+    }
+
+    fn reportObjectAssignOverloadFailure(
+        self: *Checker,
+        target_node: NodeId,
+        target_t: TypeId,
+        source_t: TypeId,
+    ) CheckError!void {
+        const arena = self.diag_arena.allocator();
+        const target_name = (try self.allocSimpleTypeName(target_t)) orelse "T";
+        const source_name = (try self.allocSimpleTypeName(source_t)) orelse "U";
+
+        const first_children = try arena.alloc(DiagnosticChainEntry, 1);
+        first_children[0] = .{
+            .code = TsCodes.argument_type_mismatch,
+            .message = try std.fmt.allocPrint(
+                arena,
+                "Argument of type '{s}' is not assignable to parameter of type '{{}}'.",
+                .{target_name},
+            ),
+        };
+        const second_children = try arena.alloc(DiagnosticChainEntry, 1);
+        second_children[0] = .{
+            .code = TsCodes.argument_type_mismatch,
+            .message = try std.fmt.allocPrint(
+                arena,
+                "Argument of type '{s}' is not assignable to parameter of type 'object'.",
+                .{target_name},
+            ),
+        };
+        const chain = try arena.alloc(DiagnosticChainEntry, 2);
+        chain[0] = .{
+            .code = TsCodes.overload_n_error,
+            .message = try std.fmt.allocPrint(
+                arena,
+                "Overload 1 of 4, '(target: {{}}, source: {s}): {{}} & {s}', gave the following error.",
+                .{ source_name, source_name },
+            ),
+            .children = first_children,
+        };
+        chain[1] = .{
+            .code = TsCodes.overload_n_error,
+            .message = "Overload 2 of 4, '(target: object, ...sources: any[]): any', gave the following error.",
+            .children = second_children,
+        };
+
+        const empty_object = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        const empty_related = try self.sourceTypeParameterConstraintHintRelated(target_t, empty_object);
+        const object_related = try self.sourceTypeParameterConstraintHintRelated(target_t, types.Primitive.object_t);
+        const related = try arena.alloc(RelatedInfo, empty_related.len + object_related.len);
+        @memcpy(related[0..empty_related.len], empty_related);
+        @memcpy(related[empty_related.len..], object_related);
+
+        try self.diagnostics.append(self.gpa, .{
+            .node = target_node,
+            .code = TsCodes.no_overload_matches,
+            .message = "No overload matches this call.",
+            .chain = chain,
+            .related = related,
+        });
     }
 
     fn reportCannotFindName(
@@ -133286,7 +133433,100 @@ pub const Checker = struct {
             return try self.report(node, TsCodes.type_not_assignable, msg);
         }
         if (try self.tryReportElementAccessVarDeclTypeNotAssignable(node, init_node, source, target)) return;
+        if (try self.tryReportAnnotatedCallableIntersectionVarDeclMismatch(node, target_node, source, target)) return;
         try self.reportTypeNotAssignable(node, source, target, fallback);
+    }
+
+    /// Prefer source annotation text when an intersection contains a call
+    /// signature. Generic signature metadata is checker-owned and keyed by
+    /// structural TypeId, so an unused generic signature (`<T>() => void`)
+    /// can share its interned shape with a non-generic `() => void`.
+    /// Relation diagnostics must render the declaration actually written at
+    /// the target, not metadata left by another structurally identical use.
+    fn tryReportAnnotatedCallableIntersectionVarDeclMismatch(
+        self: *Checker,
+        node: NodeId,
+        target_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!bool {
+        if (target >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(target).is_intersection)
+        {
+            return false;
+        }
+        const annotation_node = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return false;
+        if (self.hir.kindOf(annotation_node) != .intersection_type) return false;
+
+        var callable_node = hir_mod.none_node_id;
+        var callable_t = types.Primitive.none;
+        for (hir_mod.intersectionTypeMembers(self.hir, annotation_node)) |member_node| {
+            const member_t = self.lowererLowerWithTypeParams(member_node) catch continue;
+            if (!self.interner.isSignature(member_t)) continue;
+            callable_node = member_node;
+            callable_t = member_t;
+            break;
+        }
+        if (callable_node == hir_mod.none_node_id) return false;
+        if (try self.checkerAssignableTo(source, callable_t)) return false;
+
+        const source_name = (try self.allocSimpleTypeName(source)) orelse
+            (try self.allocObjectTypeShapeWithUndefined(source)) orelse return false;
+        const target_name = try self.allocAnnotatedIntersectionTypeName(annotation_node);
+        const callable_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(callable_node));
+        const arrow = std.mem.lastIndexOf(u8, callable_name, "=>") orelse return false;
+        const callable_left = std.mem.trimEnd(u8, callable_name[0..arrow], " \t");
+        const callable_right = std.mem.trimStart(u8, callable_name[arrow + 2 ..], " \t");
+        const signature_name = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s}: {s}",
+            .{ callable_left, callable_right },
+        );
+
+        const nested = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+        nested[0] = .{
+            .code = TsCodes.type_provides_no_match_for_signature,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' provides no match for the signature '{s}'.",
+                .{ source_name, signature_name },
+            ),
+        };
+        const chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+        chain[0] = .{
+            .code = TsCodes.type_not_assignable,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, callable_name },
+            ),
+            .children = nested,
+        };
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.type_not_assignable,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, target_name },
+            ),
+            .chain = chain,
+        });
+        return true;
+    }
+
+    fn allocAnnotatedIntersectionTypeName(self: *Checker, annotation_node: NodeId) CheckError![]const u8 {
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        for (hir_mod.intersectionTypeMembers(self.hir, annotation_node), 0..) |member_node, index| {
+            if (index != 0) try out.appendSlice(arena, " & ");
+            const member_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(member_node));
+            const member_t = self.lowererLowerWithTypeParams(member_node) catch types.Primitive.none;
+            if (self.interner.isSignature(member_t)) try out.append(arena, '(');
+            try out.appendSlice(arena, member_name);
+            if (self.interner.isSignature(member_t)) try out.append(arena, ')');
+        }
+        return out.items;
     }
 
     fn tryReportInstanceofLogicalAndVarDeclMismatch(
@@ -151882,6 +152122,29 @@ test "checker: let including undefined is not tracked for TS2454" {
     }
 }
 
+test "checker: let including void remains tracked for TS2454" {
+    const s = try newSetup(
+        \\let withVoid: string | void;
+        \\withVoid;
+        \\let withUndefined: string | undefined;
+        \\withUndefined;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
+    var saw_void = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.used_before_assignment and
+            std.mem.eql(u8, diagnostic.message, "Variable 'withVoid' is used before being assigned."))
+        {
+            saw_void = true;
+        }
+    }
+    try T.expect(saw_void);
+}
+
 test "checker: module function captures only report never-assigned bindings" {
     const s = try newSetup(
         \\export {};
@@ -170297,6 +170560,38 @@ test "checker: lib ÃÂ¢ÃÂÃÂ Object.assign accepts multiple sourc
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.expected_n_arguments);
         try T.expect(d.code != TsCodes.not_callable);
+    }
+}
+
+test "checker: Object.assign enforces generic target constraints and recovers source type" {
+    const b = try newBoundSetup(
+        \\const func = <T>() => {};
+        \\const assign = <T, U>(a: T, b: U) => Object.assign(a, b);
+        \\const res: (() => void) & { func: any } = assign(() => {}, { func });
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeWithMessage(b, TsCodes.no_overload_matches, "No overload matches this call."));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '{ func: <T>() => void; }' is not assignable to type '(() => void) & { func: any; }'.",
+    ));
+}
+
+test "checker: Promise.resolve accepts zero and one argument" {
+    const s = try newSetup(
+        \\Promise.resolve();
+        \\Promise.resolve(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != TsCodes.expected_n_arguments);
     }
 }
 

@@ -2409,7 +2409,14 @@ pub const Engine = struct {
     fn computeCallableObjectAssignableToSignature(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
         defer self.gpa.free(source_members);
+        const target_payload_idx = self.pool().payloadOf(target);
+        if (target_payload_idx >= self.interner.pool.signature_payloads.items.len) return false;
+        const target_is_construct = self.interner.pool.signature_payloads.items[target_payload_idx].is_construct;
+        const expected_name = if (target_is_construct) "__construct" else "__call";
         for (source_members) |sm| {
+            const si = self.string_interner orelse return false;
+            const member_name = si.getOptional(sm.name) orelse continue;
+            if (!std.mem.eql(u8, member_name, expected_name)) continue;
             if (sm.type >= self.interner.pool.typeCount()) continue;
             const sf = self.pool().flagsOf(sm.type);
             if (!sf.is_signature) continue;
@@ -2887,6 +2894,23 @@ test "Engine: Function callable object is assignable to a zero-parameter signatu
         .{ .name = call_id, .type = with_required, .is_optional = false, .is_readonly = false, .is_method = true },
     });
     try T.expect(!try e.isAssignableTo(with_required_obj, target));
+}
+
+test "Engine: signature-valued property does not make its object callable" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const func_id = try sint.intern("func");
+    const function_t = try ti.internSignature(&.{}, Primitive.void_t, false);
+    const source = try ti.internObjectType(&.{
+        .{ .name = func_id, .type = function_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try e.isAssignableTo(source, function_t));
 }
 
 test "Engine: structural object — weak optional target requires common source property" {
