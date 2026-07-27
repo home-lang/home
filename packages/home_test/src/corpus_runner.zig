@@ -6968,6 +6968,198 @@ const harness_prelude =
     \\    if (buffer) globalThis.__home_array_buffer_transfer_locks.delete(buffer);
     \\  }
     \\}
+    \\function __home_react_element(type, props, children, options) {
+    \\  const elementProps = Object.assign({}, props || {});
+    \\  if (children !== undefined) elementProps.children = Array.isArray(children) ? children : [children];
+    \\  return {
+    \\    $$typeof: Symbol.for(options && options.reactVersion === 18 ? "react.element" : "react.transitional.element"),
+    \\    type,
+    \\    key: null,
+    \\    ref: null,
+    \\    props: elementProps,
+    \\  };
+    \\}
+    \\function __home_react_create_element(type, props) {
+    \\  const children = Array.prototype.slice.call(arguments, 2);
+    \\  return __home_react_element(type, props, children, { reactVersion: 18 });
+    \\}
+    \\function __home_markdown_react_type(name, components) {
+    \\  const override = components && components[name];
+    \\  return typeof override === "string" || typeof override === "function" ? override : name;
+    \\}
+    \\function __home_markdown_react_node(name, props, children, components, options) {
+    \\  return __home_react_element(__home_markdown_react_type(name, components), props, children, options);
+    \\}
+    \\function __home_markdown_react_text(value, components, options) {
+    \\  const text = __home_markdown_decode_entities(value);
+    \\  const output = [];
+    \\  let offset = 0;
+    \\  const breaks = / {2,}\n|\n/g;
+    \\  let match;
+    \\  while ((match = breaks.exec(text)) !== null) {
+    \\    if (match.index > offset) output.push(text.slice(offset, match.index));
+    \\    if (match[0] === "\n") output.push("\n");
+    \\    else output.push(__home_markdown_react_node("br", {}, undefined, components, options));
+    \\    offset = match.index + match[0].length;
+    \\  }
+    \\  if (offset < text.length) output.push(text.slice(offset));
+    \\  return output;
+    \\}
+    \\function __home_markdown_react_inline(source, components, options) {
+    \\  const text = String(source || "");
+    \\  const patterns = [
+    \\    { name: "image", re: /!\[([^\]]*)\]\((\S+?)(?:\s+["']([^"']*)["'])?\)/ },
+    \\    { name: "link", re: /\[([^\]]*)\]\((\S+?)(?:\s+["']([^"']*)["'])?\)/ },
+    \\    { name: "code", re: /`([^`]*)`/ },
+    \\    { name: "strong_em", re: /\*\*([^*]*?)\*([^*]+)\*\*\*/ },
+    \\    { name: "strong", re: /\*\*([\s\S]*?)\*\*|__([\s\S]*?)__/ },
+    \\    { name: "del", re: /~~([\s\S]*?)~~/ },
+    \\    { name: "em", re: /\*([^*\n]+?)\*|_([^_\n]+?)_/ },
+    \\  ];
+    \\  let best = null;
+    \\  for (const pattern of patterns) {
+    \\    const match = pattern.re.exec(text);
+    \\    if (match && (!best || match.index < best.match.index)) best = { pattern, match };
+    \\  }
+    \\  if (!best) return __home_markdown_react_text(text, components, options);
+    \\  const output = __home_markdown_react_inline(text.slice(0, best.match.index), components, options);
+    \\  const name = best.pattern.name;
+    \\  if (name === "image") {
+    \\    const props = { src: best.match[2], alt: __home_markdown_decode_entities(best.match[1]) };
+    \\    if (best.match[3] !== undefined) props.title = best.match[3];
+    \\    output.push(__home_markdown_react_node("img", props, undefined, components, options));
+    \\  } else if (name === "link") {
+    \\    const props = { href: best.match[2] };
+    \\    if (best.match[3] !== undefined) props.title = best.match[3];
+    \\    output.push(__home_markdown_react_node("a", props, __home_markdown_react_inline(best.match[1], components, options), components, options));
+    \\  } else if (name === "strong_em") {
+    \\    const children = __home_markdown_react_inline(best.match[1], components, options);
+    \\    children.push(__home_markdown_react_node("em", {}, __home_markdown_react_inline(best.match[2], components, options), components, options));
+    \\    output.push(__home_markdown_react_node("strong", {}, children, components, options));
+    \\  } else {
+    \\    const children = __home_markdown_react_inline(best.match[1] === undefined ? best.match[2] : best.match[1], components, options);
+    \\    output.push(__home_markdown_react_node(name, {}, children, components, options));
+    \\  }
+    \\  output.push(...__home_markdown_react_inline(text.slice(best.match.index + best.match[0].length), components, options));
+    \\  return output;
+    \\}
+    \\function __home_markdown_react_list(lines, startIndex, components, options, depth) {
+    \\  const first = __home_markdown_list_match(lines[startIndex]);
+    \\  const indent = first.indent;
+    \\  const ordered = first.ordered;
+    \\  const start = first.start;
+    \\  const items = [];
+    \\  let index = startIndex;
+    \\  while (index < lines.length) {
+    \\    const item = __home_markdown_list_match(lines[index]);
+    \\    if (!item || item.indent !== indent || item.ordered !== ordered) break;
+    \\    const children = __home_markdown_react_inline(item.content, components, options);
+    \\    index++;
+    \\    while (index < lines.length) {
+    \\      const nested = __home_markdown_list_match(lines[index]);
+    \\      if (!nested || nested.indent <= indent) break;
+    \\      const renderedNested = __home_markdown_react_list(lines, index, components, options, depth + 1);
+    \\      children.push(renderedNested.node);
+    \\      index = renderedNested.next;
+    \\    }
+    \\    items.push(__home_markdown_react_node("li", {}, children, components, options));
+    \\  }
+    \\  const props = ordered ? { start } : {};
+    \\  return {
+    \\    node: __home_markdown_react_node(ordered ? "ol" : "ul", props, items, components, options),
+    \\    next: index,
+    \\  };
+    \\}
+    \\function __home_markdown_react_blocks(source, components, options) {
+    \\  const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    \\  const output = [];
+    \\  let index = 0;
+    \\  while (index < lines.length) {
+    \\    const line = lines[index];
+    \\    if (line.trim() === "") {
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    const fence = line.match(/^```([^\s`]*)\s*$/);
+    \\    if (fence) {
+    \\      index++;
+    \\      const body = [];
+    \\      while (index < lines.length && !/^```\s*$/.test(lines[index])) body.push(lines[index++]);
+    \\      if (index < lines.length) index++;
+    \\      output.push(__home_markdown_react_node("pre", { language: fence[1] || undefined }, [body.join("\n") + "\n"], components, options));
+    \\      continue;
+    \\    }
+    \\    const heading = line.match(/^(#{1,6})\s+([\s\S]*?)\s*#*\s*$/);
+    \\    if (heading) {
+    \\      const props = {};
+    \\      if (options && options.headings && (options.headings === true || options.headings.ids)) props.id = __home_markdown_heading_slug(heading[2]);
+    \\      output.push(__home_markdown_react_node("h" + heading[1].length, props, __home_markdown_react_inline(heading[2], components, options), components, options));
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+    \\      output.push(__home_markdown_react_node("hr", {}, undefined, components, options));
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    if (/^>\s?/.test(line)) {
+    \\      const quoted = [];
+    \\      while (index < lines.length && /^>\s?/.test(lines[index])) quoted.push(lines[index++].replace(/^>\s?/, ""));
+    \\      output.push(__home_markdown_react_node("blockquote", {}, __home_markdown_react_blocks(quoted.join("\n"), components, options), components, options));
+    \\      continue;
+    \\    }
+    \\    if (__home_markdown_list_match(line)) {
+    \\      const list = __home_markdown_react_list(lines, index, components, options, 0);
+    \\      output.push(list.node);
+    \\      index = list.next;
+    \\      continue;
+    \\    }
+    \\    if (line.includes("|") && index + 1 < lines.length && /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(lines[index + 1])) {
+    \\      const splitRow = row => row.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
+    \\      const headers = splitRow(line);
+    \\      index += 2;
+    \\      const rows = [];
+    \\      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") rows.push(splitRow(lines[index++]));
+    \\      const headCells = headers.map(cell => __home_markdown_react_node("th", {}, __home_markdown_react_inline(cell, components, options), components, options));
+    \\      const head = __home_markdown_react_node("thead", {}, [__home_markdown_react_node("tr", {}, headCells, components, options)], components, options);
+    \\      const bodyRows = rows.map(row => __home_markdown_react_node("tr", {}, row.map(cell => __home_markdown_react_node("td", {}, __home_markdown_react_inline(cell, components, options), components, options)), components, options));
+    \\      const body = __home_markdown_react_node("tbody", {}, bodyRows, components, options);
+    \\      output.push(__home_markdown_react_node("table", {}, [head, body], components, options));
+    \\      continue;
+    \\    }
+    \\    const paragraph = [line];
+    \\    index++;
+    \\    while (index < lines.length && lines[index].trim() !== "" && !/^(?:#{1,6}\s+|```|>\s?|(?:\s*)(?:\d+\.|[-+*])\s+)/.test(lines[index])) paragraph.push(lines[index++]);
+    \\    output.push(__home_markdown_react_node("p", {}, __home_markdown_react_inline(paragraph.join("\n"), components, options), components, options));
+    \\  }
+    \\  return output;
+    \\}
+    \\function __home_markdown_react(source, components, options) {
+    \\  if (typeof source !== "string" && !ArrayBuffer.isView(source) && !(source instanceof ArrayBuffer)) throw new TypeError("Bun.markdown.react expects a string or buffer");
+    \\  const text = typeof source === "string" ? source : new TextDecoder().decode(ArrayBuffer.isView(source) ? source : new Uint8Array(source));
+    \\  return __home_react_element(Symbol.for("react.fragment"), {}, __home_markdown_react_blocks(text, components || {}, options || {}), options || {});
+    \\}
+    \\function __home_react_escape(value) {
+    \\  return String(value).replace(/[&<>"]/g, ch => ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : "&quot;");
+    \\}
+    \\function __home_react_render_to_string(node) {
+    \\  if (node === null || node === undefined || node === false || node === true) return "";
+    \\  if (Array.isArray(node)) return node.map(__home_react_render_to_string).join("");
+    \\  if (typeof node === "string" || typeof node === "number") return __home_react_escape(node);
+    \\  if (node.type === Symbol.for("react.fragment")) return __home_react_render_to_string(node.props && node.props.children);
+    \\  if (typeof node.type === "function") return __home_react_render_to_string(node.type(node.props || {}));
+    \\  const tag = String(node.type);
+    \\  const props = node.props || {};
+    \\  let attributes = "";
+    \\  for (const key of Object.keys(props)) {
+    \\    if (key === "children" || key === "language" || props[key] === undefined || props[key] === null || props[key] === false || typeof props[key] === "function") continue;
+    \\    const name = key === "className" ? "class" : key;
+    \\    if (props[key] === true) attributes += " " + name + '=""';
+    \\    else attributes += " " + name + '="' + __home_react_escape(props[key]) + '"';
+    \\  }
+    \\  if (tag === "img" || tag === "hr" || tag === "br") return "<" + tag + attributes + "/>";
+    \\  return "<" + tag + attributes + ">" + __home_react_render_to_string(props.children) + "</" + tag + ">";
+    \\}
     \\function __home_spawn_markdown_entrypoint_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/markdown-entrypoint.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -21185,6 +21377,7 @@ const harness_prelude =
     \\    ansi: __home_markdown_ansi,
     \\    html: __home_markdown_html,
     \\    render: __home_markdown_render,
+    \\    react: __home_markdown_react,
     \\  },
     \\  escapeHTML(value) {
     \\    return ("" + value).replace(/[&<>"']/g, ch => {
@@ -28431,8 +28624,13 @@ const harness_prelude =
     \\    return { protocol: "grpc", options: options || {} };
     \\  },
     \\};
-    \\globalThis.__home_modules["react"] = { default: { createElement() { return {}; } }, createElement() { return {}; }, Fragment: Symbol.for("react.fragment") };
-    \\globalThis.__home_modules["react-dom/server"] = { renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; } };
+    \\const __home_react_module = { createElement: __home_react_create_element, Fragment: Symbol.for("react.fragment") };
+    \\__home_react_module.default = __home_react_module;
+    \\globalThis.__home_modules["react"] = __home_react_module;
+    \\globalThis.__home_modules["react-dom/server"] = {
+    \\  renderToString: __home_react_render_to_string,
+    \\  renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; },
+    \\};
     \\globalThis.__home_modules["@testing-library/react"] = { cleanup() {} };
     \\globalThis.__home_modules["@testing-library/jest-dom/matchers"] = {
     \\  toBeInTheDocument(received) {
@@ -52865,6 +53063,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { heapStats } = globalThis.__home_import(\"bun:jsc\");",
         },
         .{
+            .needle = "import React from \"react\";",
+            .replacement = "const React = globalThis.__home_import(\"react\").default;",
+        },
+        .{
+            .needle = "import { renderToString } from \"react-dom/server\";",
+            .replacement = "const { renderToString } = globalThis.__home_import(\"react-dom/server\");",
+        },
+        .{
             .needle = "import { cartesianProduct } from \"_util/collection\";",
             .replacement = "const { cartesianProduct } = globalThis.__home_import(\"_util/collection\");",
         },
@@ -55812,7 +56018,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-heading-ids.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-react.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.markdown React renderer integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-render-callback.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-spec.test.ts"))
@@ -57790,6 +57996,33 @@ test "bootstrap runner mirrors Bun markdown render callback corpus" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 37), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Bun markdown React corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "react: __home_markdown_react") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_react_render_to_string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "react.transitional.element") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/md-react.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 68 or summary.todo != 0) {
+        std.debug.print(
+            "Bun markdown React corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 68), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 68), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
