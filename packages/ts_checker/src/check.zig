@@ -40739,21 +40739,58 @@ pub const Checker = struct {
     }
 
     fn classPrivateMembersOverlapOther(self: *Checker, class_t: TypeId, other_t: TypeId) bool {
-        const class_name = self.classNameForInstanceType(class_t) orelse return false;
         for (self.interner.objectMembers(class_t)) |member| {
             if (member.visibility != .private) continue;
-            const declaring_class = self.privateMemberDeclaringClass(class_name, member.name) orelse class_name;
             const other_member = self.interner.objectMemberInfo(other_t, member.name) orelse continue;
-            if (other_member.visibility == .private) {
-                if (self.classNameForInstanceType(other_t)) |other_class| {
-                    if (self.privateMemberDeclaringClass(other_class, member.name)) |other_declaring_class| {
-                        if (other_declaring_class == declaring_class) continue;
-                    }
-                }
-            }
+            if (other_member.visibility == .private and
+                self.privateMembersShareDeclaration(class_t, member, other_t, other_member)) continue;
             return true;
         }
         return false;
+    }
+
+    fn privateMembersShareDeclaration(
+        self: *Checker,
+        left_t: TypeId,
+        left: types.ObjectMember,
+        right_t: TypeId,
+        right: types.ObjectMember,
+    ) bool {
+        const left_decl = self.memberDeclaringClassNode(left.decl_node);
+        const right_decl = self.memberDeclaringClassNode(right.decl_node);
+        if (left_decl != hir_mod.none_node_id and right_decl != hir_mod.none_node_id) {
+            return left_decl == right_decl;
+        }
+
+        const left_class = self.classNameForInstanceType(left_t) orelse
+            self.interfaceInheritedVisibilityClass(left_t) orelse return false;
+        const right_class = self.classNameForInstanceType(right_t) orelse
+            self.interfaceInheritedVisibilityClass(right_t) orelse return false;
+        const left_origin = self.privateMemberDeclaringClass(left_class, left.name) orelse left_class;
+        const right_origin = self.privateMemberDeclaringClass(right_class, right.name) orelse right_class;
+        return left_origin == right_origin;
+    }
+
+    fn memberOwnerDiagnosticTypeName(
+        self: *Checker,
+        t: TypeId,
+        member: types.ObjectMember,
+    ) CheckError!?[]const u8 {
+        var current = member.decl_node;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            const kind = self.hir.kindOf(current);
+            if (kind != .class_decl and kind != .class_expr and kind != .interface_decl) continue;
+            const name = self.declarationName(current) orelse break;
+            return self.string_interner.get(name);
+        }
+        return (try self.allocSimpleTypeName(t)) orelse try self.allocObjectTypeShape(t);
+    }
+
+    fn accessibilityDiagnosticTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (self.classNameForInstanceType(t)) |class_name| {
+            return self.string_interner.get(class_name);
+        }
+        return (try self.allocSimpleTypeName(t)) orelse try self.allocObjectTypeShape(t);
     }
 
     fn classProtectedStructuralMismatch(self: *Checker, target_t: TypeId, source_t: TypeId) bool {
@@ -83680,17 +83717,6 @@ pub const Checker = struct {
                 // duplicate TS2322 reports at the same position. The
                 // generic emit is therefore suppressed; see
                 // `wideningTuples4.ts(3,9)` for the motivating case.
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and !target_is_js_function_prototype_object_assignment and a.op == null and
-                    self.unnarrowedAnnotatedUnionType(a.value) == null and
-                    self.classPrivateStructuralMismatch(target_t, value_t))
-                {
-                    // Render `Type 'X' is not assignable to type 'Y'.`
-                    // when both type names resolve; otherwise fall
-                    // back to the terse form. Mirrors
-                    // `assignmentCompatWithObjectMembersAccessibility.ts`
-                    // baseline prose for class-private overlap mismatches.
-                    try self.reportTypeNotAssignable(node, value_t, target_t, "Type is not assignable to declared type.");
-                }
                 const remapped_mapped_assignment_diag_fired = a.op == null and
                     !target_is_destructuring and
                     !target_is_untyped_uninitialized_var and
@@ -133672,11 +133698,7 @@ pub const Checker = struct {
                 const src_private = sm.visibility == .private;
                 const tgt_private = tm.visibility == .private;
                 if (src_private and tgt_private) {
-                    const src_class = self.classNameForInstanceType(source) orelse break;
-                    const tgt_class = self.classNameForInstanceType(target) orelse break;
-                    const src_decl = self.privateMemberDeclaringClass(src_class, sm.name) orelse src_class;
-                    const tgt_decl = self.privateMemberDeclaringClass(tgt_class, tm.name) orelse tgt_class;
-                    if (src_decl == tgt_decl) break;
+                    if (self.privateMembersShareDeclaration(source, sm, target, tm)) break;
                     const prop_str = self.string_interner.get(tm.name);
                     const msg = try std.fmt.allocPrint(
                         arena,
@@ -133692,10 +133714,9 @@ pub const Checker = struct {
                 // `{1}` = type where private, `{2}` = type where public.
                 const private_t: TypeId = if (src_private) source else target;
                 const public_t: TypeId = if (src_private) target else source;
-                const priv_name = (try self.allocSimpleTypeName(private_t)) orelse
-                    (try self.allocObjectTypeShape(private_t)) orelse break;
-                const pub_name = (try self.allocSimpleTypeName(public_t)) orelse
-                    (try self.allocObjectTypeShape(public_t)) orelse break;
+                const private_member = if (src_private) sm else tm;
+                const priv_name = (try self.memberOwnerDiagnosticTypeName(private_t, private_member)) orelse break;
+                const pub_name = (try self.accessibilityDiagnosticTypeName(public_t)) orelse break;
                 const msg = try std.fmt.allocPrint(
                     arena,
                     "Property '{s}' is private in type '{s}' but not in type '{s}'.",
@@ -182970,6 +182991,71 @@ test "checker: sibling constrained type parameters nest subtype mismatch under T
         try T.expectEqual(@as(usize, 0), d.related.len);
     }
     try T.expectEqual(@as(u32, 2), mismatch_count);
+}
+
+test "checker: class-derived interface assignments preserve private origin" {
+    const s = try newSetup(
+        \\namespace P {
+        \\  interface I { foo: string; }
+        \\  class E { private foo: string; }
+        \\  declare var i: I;
+        \\  declare var e: E;
+        \\  i = e;
+        \\  e = i;
+        \\}
+        \\namespace N {
+        \\  class Base { private foo: string; }
+        \\  interface I extends Base {}
+        \\  declare var a: { foo: string; };
+        \\  declare var b: Base;
+        \\  declare var i: I;
+        \\  class D { public foo: string; }
+        \\  class E { private foo: string; }
+        \\  declare var d: D;
+        \\  declare var e: E;
+        \\  a = b;
+        \\  a = i;
+        \\  a = d;
+        \\  a = e;
+        \\  b = a;
+        \\  b = i;
+        \\  b = d;
+        \\  b = e;
+        \\  i = a;
+        \\  i = b;
+        \\  i = d;
+        \\  i = e;
+        \\  d = a;
+        \\  d = b;
+        \\  d = i;
+        \\  d = e;
+        \\  e = a;
+        \\  e = b;
+        \\  e = i;
+        \\  e = d;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 18), checkerCountCode(s, TsCodes.type_not_assignable));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        try T.expectEqual(@as(usize, 1), d.chain.len);
+        try T.expect(std.mem.indexOf(u8, d.chain[0].message, "N.") == null);
+        try T.expect(std.mem.indexOf(u8, d.chain[0].message, "P.") == null);
+        if (std.mem.indexOf(u8, d.message, "'I'") != null and
+            std.mem.indexOf(u8, d.chain[0].message, "separate declarations") == null)
+        {
+            if (std.mem.indexOf(u8, d.message, "'Base'") != null or
+                std.mem.indexOf(u8, d.message, "'D'") != null or
+                std.mem.indexOf(u8, d.message, "'{ foo: string; }'") != null)
+            {
+                try T.expect(std.mem.indexOf(u8, d.chain[0].message, "private in type 'Base'") != null);
+            } else {
+                try T.expect(std.mem.indexOf(u8, d.chain[0].message, "not in type 'I'") != null);
+            }
+        }
+    }
 }
 
 test "checker: same type parameter is self-assignable" {
