@@ -856,7 +856,8 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    b.installArtifact(exe);
+    const install_home_exe = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install_home_exe.step);
 
     // Create 'hm' symlink as shorthand for 'home'
     const install_hm_symlink = b.addInstallBinFile(exe.getEmittedBin(), "hm");
@@ -1427,6 +1428,7 @@ pub fn build(b: *std.Build) void {
     // home_test: only the public facade is wired in.
     const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
     const run_home_test_tests = b.addRunArtifact(home_test_tests);
+    run_home_test_tests.step.dependOn(&install_home_exe.step);
     dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");
 
     const home_test_bun_tier0_tests = b.addTest(.{

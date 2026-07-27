@@ -30276,6 +30276,12 @@ const harness_prelude =
     \\  return { url: server.url, ca: useHttps ? __home_harness_tls.cert : undefined, server, stop() { return server.stop(); }, async [Symbol.asyncDispose]() { return server.stop(); } };
     \\}
     \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"].bunExe = function() {
+    \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/shell/shell-cmdsub-crash.test.ts")) {
+    \\    return globalThis.__home_bun_executable || process.execPath;
+    \\  }
+    \\  return process.execPath;
+    \\};
     \\globalThis.__home_modules["harness"].pack = __home_harness_pack;
     \\globalThis.__home_modules["./registry/fixtures/audit/audit-fixtures"] = { resolveBulkAdvisoryFixture: __home_resolve_bulk_advisory_fixture };
     \\globalThis.__home_modules["./buildNoThrow"] = {
@@ -58671,7 +58677,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options, spawnOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_options(options, spawnOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cli/install/bun-run.test.ts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(__home_native_spawn_options(options))") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!process.env) process.env = {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.execPath = \"home\"") != null);
@@ -59329,6 +59335,7 @@ test "bootstrap runner mirrors Bun shell command substitution crash corpus" {
     // so the fabricated-output fixture was removed. Assert it's gone; the run
     // below is the real regression.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_shell_cmdsub_crash_fixture") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return globalThis.__home_bun_executable || process.execPath;") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -86073,7 +86080,7 @@ test "bootstrap runner prepares bun pm pkg corpus for native cli" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_sync_pm_pkg_native") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options || {})") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(__home_native_spawn_options(options || {}))") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "runPmPkg([\"get\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "runPmPkg([\"set\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "runPmPkg([\"delete\"") != null);

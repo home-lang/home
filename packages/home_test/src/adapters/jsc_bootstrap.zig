@@ -125,6 +125,17 @@ pub const Runtime = struct {
     }
 
     fn installNativeBindings(self: *Runtime) void {
+        const allocator = std.heap.smp_allocator;
+        const home_executable = preferredHomeExecutablePathAlloc(allocator) catch null;
+        defer if (home_executable) |path| allocator.free(path);
+        if (home_executable) |path| {
+            setStringProperty(
+                self.engine.currentContext(),
+                @ptrCast(self.engine.currentGlobalObject()),
+                "__home_bun_executable",
+                path,
+            ) catch {};
+        }
         setStringProperty(
             self.engine.currentContext(),
             @ptrCast(self.engine.currentGlobalObject()),
@@ -5028,6 +5039,15 @@ fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {
     const cwd = try currentWorkingDirectoryAlloc(allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, "zig-out/bin/home" });
+}
+
+fn preferredHomeExecutablePathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const cwd = try currentWorkingDirectoryAlloc(allocator);
+    defer allocator.free(cwd);
+    const installed = try std.fs.path.join(allocator, &.{ cwd, "zig-out/bin/home" });
+    if (pathExists(installed)) return installed;
+    allocator.free(installed);
+    return selfExePathAlloc(allocator);
 }
 
 fn currentWorkingDirectoryAlloc(allocator: std.mem.Allocator) ![]u8 {
