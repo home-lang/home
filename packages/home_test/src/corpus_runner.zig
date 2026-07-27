@@ -22660,7 +22660,7 @@ const harness_prelude =
     \\  let exitCode = 0;
     \\  const fullCommand = String(command || "");
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/shell/pipeline_stack.test.ts") && typeof globalThis.__home_spawnSyncNative === "function") {
-    \\    const source = "let command=" + JSON.stringify(fullCommand) + "; command=command.split('home-debug -e ').join(Bun.$.escape(process.execPath)+' -e ').split('home -e ').join(Bun.$.escape(process.execPath)+' -e '); const parts=[command]; parts.raw=parts; const result=await Bun.$(parts).nothrow().quiet(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exit(result.exitCode);";
+    \\    const source = "const command=" + JSON.stringify(fullCommand) + "; const parts=[command]; parts.raw=parts; const result=await Bun.$(parts).nothrow().quiet(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exit(result.exitCode);";
     \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
     \\      cmd: [process.execPath, "-e", source],
     \\      cwd,
@@ -41305,6 +41305,9 @@ const harness_prelude =
     \\  if (name === "./abort-controller-fixture" && globalThis.__home_current_dirname === "regression/issue") {
     \\    return "regression/issue/abort-controller-fixture.js";
     \\  }
+    \\  if (name === "./util" && globalThis.__home_current_dirname === "js/bun/shell") {
+    \\    return "js/bun/shell/util";
+    \\  }
     \\  if (name === "semver") {
     \\    return "node_modules/semver/semver.js";
     \\  }
@@ -52950,11 +52953,11 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "import { createTestBuilder, redirect } from \"./util\";",
-            .replacement = "const { createTestBuilder, redirect } = globalThis.__home_import(\"../util\");",
+            .replacement = "const { createTestBuilder, redirect } = globalThis.__home_import(\"./util\");",
         },
         .{
             .needle = "import { createTestBuilder } from \"./util\";",
-            .replacement = "const { createTestBuilder } = globalThis.__home_import(\"../util\");",
+            .replacement = "const { createTestBuilder } = globalThis.__home_import(\"./util\");",
         },
         .{
             .needle = "import { createTestBuilder, sortedShellOutput } from \"../util\";",
@@ -59480,7 +59483,7 @@ test "bootstrap runner mirrors Bun shell assignment pipeline corpus" {
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell assignment pipeline parser") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { createTestBuilder } = globalThis.__home_import(\"../util\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { createTestBuilder } = globalThis.__home_import(\"./util\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_shell_assignment_pipeline_sequence") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
