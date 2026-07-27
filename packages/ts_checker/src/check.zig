@@ -22922,6 +22922,23 @@ pub const Checker = struct {
         return promise_t;
     }
 
+    fn buildStructuralPromiseLike(self: *Checker, value_t: TypeId) CheckError!TypeId {
+        const cb_sig = self.interner.internSignature(&[_]TypeId{value_t}, types.Primitive.any, false) catch return error.OutOfMemory;
+        const then_sig = self.interner.internSignature(&[_]TypeId{cb_sig}, types.Primitive.any, false) catch return error.OutOfMemory;
+        const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{.{
+            .name = then_id,
+            .type = then_sig,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = true,
+        }};
+        const promise_like_t = self.interner.internObjectType(&members) catch return error.OutOfMemory;
+        const promise_like_name = self.string_interner.intern("PromiseLike") catch return error.OutOfMemory;
+        try self.registerAliasDisplayName(promise_like_t, promise_like_name, &[_]TypeId{value_t});
+        return promise_like_t;
+    }
+
     fn buildIteratorResultObject(self: *Checker, value_t: TypeId) CheckError!TypeId {
         const value_id = self.string_interner.intern("value") catch return error.OutOfMemory;
         const done_id = self.string_interner.intern("done") catch return error.OutOfMemory;
@@ -61447,9 +61464,14 @@ pub const Checker = struct {
                         // structural Promise (`{ then: (cb: (v: T) =>
                         // any) => any }`) on the fly. This lets
                         // downstream `Awaited<ÃÂ¢ÃÂÃÂ¦>` / `await ÃÂ¢ÃÂÃÂ¦` peel it.
-                        if (std.mem.eql(u8, name_str, "Promise")) {
+                        if (std.mem.eql(u8, name_str, "Promise") or
+                            std.mem.eql(u8, name_str, "PromiseLike"))
+                        {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             const inner = try self.lowererLowerWithTypeParams(args[0]);
+                            if (std.mem.eql(u8, name_str, "PromiseLike")) {
+                                return try self.buildStructuralPromiseLike(inner);
+                            }
                             return try self.buildStructuralPromise(inner);
                         }
                         // `Awaited<T>` (TS 4.5) ÃÂ¢ÃÂÃÂ recursively unwrap
@@ -82369,13 +82391,19 @@ pub const Checker = struct {
             try self.checkExpression(m.object);
         const sig = self.nonConstructCallSignatureOfType(receiver_t) orelse return;
         const expected_args_t = try self.internTupleFromTypes(self.interner.signatureParams(sig), false);
+        if (self.hir.kindOf(args[1]) == .array_literal and
+            try self.arrayLiteralAssignableToTupleTarget(args[1], expected_args_t, false))
+        {
+            return;
+        }
         if (self.engine.isAssignableTo(arg_types[1], expected_args_t) catch true) return;
         if (self.diagnosticExistsOnNode(args[1], TsCodes.argument_type_mismatch)) return;
         const arg_text = (try self.simpleDiagnosticTypeName(arg_types[1])) orelse "any";
+        const expected_text = (try self.simpleDiagnosticTypeName(expected_args_t)) orelse "[]";
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Argument of type '{s}' is not assignable to parameter of type '[]'.",
-            .{arg_text},
+            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+            .{ arg_text, expected_text },
         );
         try self.diagnostics.append(self.gpa, .{
             .node = args[1],
@@ -83939,11 +83967,13 @@ pub const Checker = struct {
                         break :blk self.lowerBuiltinObjectType(self.string_interner.get(id.name)) orelse types.Primitive.any;
                     }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) {
-                        try self.checkPromiseConstructorResolveArity(args, type_arg_nodes);
-                        const payload_t = if (try self.inferPromiseConstructorPayload(args)) |payload|
-                            payload
+                        const contextual_payload = self.contextualPromiseConstructorPayload(node);
+                        const inferred_payload = try self.inferPromiseConstructorPayload(args);
+                        const payload_t = if (type_arg_nodes.len > 0)
+                            self.lowererLowerWithTypeParams(type_arg_nodes[0]) catch types.Primitive.unknown
                         else
-                            types.Primitive.any;
+                            contextual_payload orelse inferred_payload orelse types.Primitive.any;
+                        try self.checkPromiseConstructorResolveCalls(args, payload_t);
                         break :blk try self.buildStructuralPromise(payload_t);
                     }
                     if (self.isBuiltinObjectConstructor(id.name)) {
@@ -93913,10 +93943,20 @@ pub const Checker = struct {
         return null;
     }
 
-    fn checkPromiseConstructorResolveArity(
+    fn contextualPromiseConstructorPayload(self: *Checker, node: NodeId) ?TypeId {
+        const target_t = self.contextualTargetTypeForExpression(node) orelse
+            self.enclosingReturnTargetType(node) orelse
+            return null;
+        return switch (self.promiseLikeResult(target_t)) {
+            .promised => |payload| payload,
+            .none, .malformed => null,
+        };
+    }
+
+    fn checkPromiseConstructorResolveCalls(
         self: *Checker,
         args: []const NodeId,
-        type_arg_nodes: []const NodeId,
+        payload_t: TypeId,
     ) CheckError!void {
         if (args.len == 0) return;
         const executor = args[0];
@@ -93927,14 +93967,42 @@ pub const Checker = struct {
         const first_param = hir_mod.parameterOf(self.hir, params[0]);
         if (first_param.name == hir_mod.none_node_id or self.hir.kindOf(first_param.name) != .identifier) return;
         const resolve_name = hir_mod.identifierOf(self.hir, first_param.name).name;
-        const payload_t = if (type_arg_nodes.len > 0)
-            self.lowererLowerWithTypeParams(type_arg_nodes[0]) catch types.Primitive.unknown
-        else if (try self.inferPromiseConstructorPayload(args)) |payload|
-            payload
-        else
-            types.Primitive.unknown;
-        if (self.parameterTypeAllowsVoidOmission(payload_t)) return;
-        try self.reportPromiseResolveZeroArgCalls(executor, resolve_name);
+        if (!self.parameterTypeAllowsVoidOmission(payload_t)) {
+            try self.reportPromiseResolveZeroArgCalls(executor, resolve_name);
+        }
+        try self.reportPromiseResolveArgumentMismatches(executor, resolve_name, payload_t);
+    }
+
+    fn reportPromiseResolveArgumentMismatches(
+        self: *Checker,
+        executor: NodeId,
+        resolve_name: hir_mod.StringId,
+        payload_t: TypeId,
+    ) CheckError!void {
+        const promise_like_t = try self.buildStructuralPromiseLike(payload_t);
+        const target_t = self.interner.internUnion(&.{ payload_t, promise_like_t }) catch return error.OutOfMemory;
+        try self.registerDiagnosticUnionDisplayName(target_t, &.{ payload_t, promise_like_t });
+
+        const node_count: NodeId = std.math.cast(NodeId, self.hir.kinds.items.len) orelse std.math.maxInt(NodeId);
+        var node: NodeId = 1;
+        while (node < node_count) : (node += 1) {
+            if (self.hir.kindOf(node) != .call_expr) continue;
+            if (!self.callIsInsideFunction(node, executor)) continue;
+            const c = hir_mod.callOf(self.hir, node);
+            if (self.hir.kindOf(c.callee) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.callee).name != resolve_name) continue;
+            const call_args = hir_mod.callArgs(self.hir, node);
+            if (call_args.len == 0) continue;
+            const value_node = call_args[0];
+            if (self.diagnosticExistsOnNode(value_node, TsCodes.argument_type_mismatch)) continue;
+            const value_t = try self.checkExpression(value_node);
+            if (self.isArgumentAssignableToParam(value_node, value_t, target_t) catch true) continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = value_node,
+                .code = TsCodes.argument_type_mismatch,
+                .message = try self.formatArgumentNotAssignable(value_t, target_t, 0),
+            });
+        }
     }
 
     fn reportPromiseResolveZeroArgCalls(
@@ -98306,7 +98374,7 @@ pub const Checker = struct {
                 .code = TsCodes.arguments_in_arrow_es5,
                 .message = msg,
             }) catch return types.Primitive.any;
-            return types.Primitive.any;
+            return self.argumentsObjectType() catch types.Primitive.any;
         }
         if (std.mem.eql(u8, name_str, "arguments") and
             self.argumentsInsideAsyncNonArrowFunction(node) and
@@ -110614,7 +110682,7 @@ pub const Checker = struct {
     /// Returns `null` when the literal isn't a return value, the
     /// enclosing function lacks a declared return type, or the
     /// declared return type fails to lower.
-    fn objectLiteralEnclosingReturnTargetType(self: *Checker, node: NodeId) ?TypeId {
+    fn enclosingReturnTargetType(self: *Checker, node: NodeId) ?TypeId {
         const parent = self.hir.parentOf(node);
         if (parent == hir_mod.none_node_id) return null;
         if (self.hir.kindOf(parent) != .return_stmt) return null;
@@ -110628,6 +110696,10 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn objectLiteralEnclosingReturnTargetType(self: *Checker, node: NodeId) ?TypeId {
+        return self.enclosingReturnTargetType(node);
     }
 
     fn lowerReturnTypeAnnotationWithCircularityGuard(self: *Checker, fn_node: NodeId, type_node: NodeId) CheckError!TypeId {
@@ -161794,6 +161866,64 @@ test "checker: new Promise executor resolve call infers awaited payload" {
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: async helpers validate Promise resolve T or PromiseLike T" {
+    const s = try newSetup(
+        \\new Promise<void>(resolve => resolve(null));
+        \\new Promise<void>(resolve => resolve(undefined));
+        \\new Promise<number>(resolve => resolve(1));
+        \\new Promise<number>(resolve => resolve(Promise.resolve(1)));
+        \\function returnsVoid(): Promise<void> {
+        \\  return new Promise(resolve => resolve(null));
+        \\}
+        \\const assignedVoid: Promise<void> = new Promise(resolve => resolve(null));
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    const msg = checkerFirstMessageForCode(s, TsCodes.argument_type_mismatch) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Argument of type 'null' is not assignable to parameter of type 'void | PromiseLike<void>'.",
+        msg,
+    );
+}
+
+test "checker: async helpers retain ES5 IArguments for apply tuple checks" {
+    const s = try newSetup(
+        \\// @target: ES5, ES2015
+        \\class C {
+        \\  method() {
+        \\    function zero() {}
+        \\    function one(value: number) {}
+        \\    const bad0 = async () => zero.apply(this, arguments);
+        \\    const bad1 = async () => one.apply(this, arguments);
+        \\    const good = async () => one.apply(this, [1]);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.arguments_in_arrow_es5));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    var saw_empty = false;
+    var saw_number = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.argument_type_mismatch) continue;
+        saw_empty = saw_empty or std.mem.eql(
+            u8,
+            d.message,
+            "Argument of type 'IArguments' is not assignable to parameter of type '[]'.",
+        );
+        saw_number = saw_number or std.mem.eql(
+            u8,
+            d.message,
+            "Argument of type 'IArguments' is not assignable to parameter of type '[number]'.",
+        );
+    }
+    try T.expect(saw_empty);
+    try T.expect(saw_number);
 }
 
 test "checker: TS2794 suggests Promise<void> for zero-arg Promise resolver" {
