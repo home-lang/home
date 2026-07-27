@@ -55346,7 +55346,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6879/6879.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "mock.module live re-export binding integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module-resolve-log.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "mock.module missing package resolver integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "mock.module dynamic import and live binding matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-failures.test.ts"))
@@ -98005,6 +98005,35 @@ test "Bun test import rewrite preserves shebangs" {
 
     try std.testing.expect(std.mem.startsWith(u8, rewritten, "#!/usr/bin/env bun\n"));
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __filename") != null);
+}
+
+test "bootstrap runner mirrors mock.module missing package resolution corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/mock/mock-module-resolve-log.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/mock/mock-module-resolve-log.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "mock.module missing package resolver integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await globalThis.__home_dynamic_import(\"this-package-does-not-exist-abcdef123\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.module = __home_mock_module") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("mock.module missing package corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "failure recorder keeps the first failing file" {
