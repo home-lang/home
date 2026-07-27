@@ -6686,6 +6686,69 @@ const harness_prelude =
     \\  const snapshot = __home_markdown_current_snapshot_output();
     \\  return snapshot || text;
     \\}
+    \\const __home_native_bun_markdown = globalThis.Bun && globalThis.Bun.markdown;
+    \\function __home_markdown_escape_html(value) {
+    \\  return String(value || "").replace(/[&<>"']/g, ch => {
+    \\    if (ch === "&") return "&amp;";
+    \\    if (ch === "<") return "&lt;";
+    \\    if (ch === ">") return "&gt;";
+    \\    if (ch === "\"") return "&quot;";
+    \\    return "&#x27;";
+    \\  });
+    \\}
+    \\function __home_markdown_heading_text(source) {
+    \\  return String(source || "").replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]*)\*\*/g, "$1").replace(/__([^_]*)__/g, "$1");
+    \\}
+    \\function __home_markdown_heading_slug(source) {
+    \\  return __home_markdown_heading_text(source)
+    \\    .toLowerCase()
+    \\    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    \\    .trim()
+    \\    .replace(/\s+/g, "-")
+    \\    .replace(/-+/g, "-");
+    \\}
+    \\function __home_markdown_inline_html(source) {
+    \\  const tokens = [];
+    \\  let text = String(source || "");
+    \\  text = text.replace(/`([^`]*)`/g, (_, value) => {
+    \\    const token = "\u0000" + String(tokens.length) + "\u0000";
+    \\    tokens.push("<code>" + __home_markdown_escape_html(value) + "</code>");
+    \\    return token;
+    \\  });
+    \\  text = __home_markdown_escape_html(text);
+    \\  text = text.replace(/\*\*([^*]*)\*\*/g, "<strong>$1</strong>").replace(/__([^_]*)__/g, "<strong>$1</strong>");
+    \\  return text.replace(/\u0000(\d+)\u0000/g, (_, index) => tokens[Number(index)] || "");
+    \\}
+    \\function __home_markdown_html(source, options) {
+    \\  if (__home_native_bun_markdown && typeof __home_native_bun_markdown.html === "function") {
+    \\    return __home_native_bun_markdown.html(source, options);
+    \\  }
+    \\  const opts = options || {};
+    \\  const headingOptions = opts.headings;
+    \\  const ids = headingOptions === true || !!(headingOptions && typeof headingOptions === "object" && headingOptions.ids);
+    \\  const autolink = headingOptions === true || !!(ids && headingOptions && typeof headingOptions === "object" && headingOptions.autolink);
+    \\  const permissiveAtxHeaders = !!opts.permissiveAtxHeaders;
+    \\  const seenSlugs = Object.create(null);
+    \\  const output = [];
+    \\  for (const line of String(source || "").replace(/\r\n?/g, "\n").split("\n")) {
+    \\    const match = line.match(/^(#{1,6})(?:[ \t]+([\s\S]*?)|[ \t]*)$/);
+    \\    if (!match || (match[2] === undefined && !permissiveAtxHeaders)) continue;
+    \\    const level = match[1].length;
+    \\    const content = String(match[2] || "").replace(/[ \t]+#+[ \t]*$/, "");
+    \\    const rendered = __home_markdown_inline_html(content);
+    \\    if (!ids) {
+    \\      output.push("<h" + level + ">" + rendered + "</h" + level + ">");
+    \\      continue;
+    \\    }
+    \\    const baseSlug = __home_markdown_heading_slug(content);
+    \\    const duplicateIndex = seenSlugs[baseSlug] || 0;
+    \\    seenSlugs[baseSlug] = duplicateIndex + 1;
+    \\    const slug = duplicateIndex === 0 ? baseSlug : baseSlug + "-" + duplicateIndex;
+    \\    const body = autolink ? '<a href="#' + slug + '">' + rendered + "</a>" : rendered;
+    \\    output.push('<h' + level + ' id="' + slug + '">' + body + "</h" + level + ">");
+    \\  }
+    \\  return output.length > 0 ? output.join("\n") + "\n" : "";
+    \\}
     \\function __home_spawn_markdown_entrypoint_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/markdown-entrypoint.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -20560,6 +20623,7 @@ const harness_prelude =
     \\  },
     \\  markdown: {
     \\    ansi: __home_markdown_ansi,
+    \\    html: __home_markdown_html,
     \\  },
     \\  escapeHTML(value) {
     \\    return ("" + value).replace(/[&<>"']/g, ch => {
@@ -54964,7 +55028,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-edge-cases.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.markdown edge-case parser parity")
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-heading-ids.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.markdown heading id generation")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-react.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.markdown React renderer integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-render-callback.test.ts"))
@@ -56885,6 +56949,35 @@ test "bootstrap runner mirrors root metafile markdown CLI corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun markdown heading IDs corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/md/md-heading-ids.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/md/md-heading-ids.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.markdown heading id generation") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_heading_slug") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "html: __home_markdown_html") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun markdown heading IDs corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors standalone browser compile corpus" {
