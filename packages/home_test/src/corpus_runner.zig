@@ -18761,6 +18761,22 @@ const harness_prelude =
     \\    arrayBuffer() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "arrayBuffer"); },
     \\    bytes() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "bytes"); },
     \\    formData() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "formData"); },
+    \\    stream() {
+    \\      const streamOptions = Object.assign({}, clientOptions, options);
+    \\      __home_s3_require_credentials(streamOptions);
+    \\      let emitted = false;
+    \\      let cancelled = false;
+    \\      return new ReadableStream({
+    \\        pull(controller) {
+    \\          if (cancelled || emitted) return;
+    \\          emitted = true;
+    \\          controller.enqueue(new Uint8Array(1024));
+    \\        },
+    \\        cancel() {
+    \\          cancelled = true;
+    \\        },
+    \\      });
+    \\    },
     \\    exists() { return __home_s3_exists(path, Object.assign({}, clientOptions, options)); },
     \\    stat() { return __home_s3_stat(path, Object.assign({}, clientOptions, options)); },
     \\    delete() { return __home_s3_delete(path, Object.assign({}, clientOptions, options)); },
@@ -52642,6 +52658,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const dockerCompose = globalThis.__home_import(\"../../../docker/index.ts\");",
         },
         .{
+            .needle = "import { heapStats } from \"bun:jsc\";",
+            .replacement = "const { heapStats } = globalThis.__home_import(\"bun:jsc\");",
+        },
+        .{
             .needle = "import { cartesianProduct } from \"_util/collection\";",
             .replacement = "const { cartesianProduct } = globalThis.__home_import(\"_util/collection\");",
         },
@@ -55677,7 +55697,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
         try rewriteRuntimeErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-stream-cancel-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "S3 stream cancellation GC rooting integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-insecure.test.ts"))
@@ -64460,6 +64480,32 @@ test "bootstrap runner mirrors deterministic S3 umbrella corpus" {
     try std.testing.expectEqual(@as(usize, 8), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 4), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors S3 stream cancellation GC corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stream() {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cancelled = true") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-stream-cancel-leak.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "S3 stream cancellation GC corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
