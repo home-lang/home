@@ -1438,6 +1438,9 @@ pub const TsCodes = struct {
     /// `asyncImportedPromise_es6`, `asyncQualifiedReturnType_es6`,
     /// and `asyncFunctionDeclaration15_es6`.
     pub const async_return_must_be_promise_did_you_mean: u32 = 1064;
+    /// TS1055 — downlevel async emit needs the annotation's runtime
+    /// constructor value to satisfy `PromiseConstructorLike`.
+    pub const async_return_not_promise_compatible_es5: u32 = 1055;
     pub const async_return_must_be_valid_promise_or_no_callable_then: u32 = 1058;
     pub const type_referenced_in_own_then_callback: u32 = 1062;
     /// TS1065 - "The return type of an async function or method must
@@ -6468,19 +6471,23 @@ pub const Checker = struct {
                     }
                 }
                 const r = hir_mod.returnOf(self.hir, node);
-                const ret_t: TypeId = if (suppress_recovered_top_level_return)
+                const raw_ret_t: TypeId = if (suppress_recovered_top_level_return)
                     types.Primitive.void_t
                 else if (r.value != hir_mod.none_node_id)
                     try self.checkExpression(r.value)
                 else
                     types.Primitive.void_t;
                 if (self.current_async_function_return_check and r.value != hir_mod.none_node_id) {
-                    switch (self.awaitedChainIssue(ret_t)) {
+                    switch (self.awaitedChainIssue(raw_ret_t)) {
                         .none => {},
-                        .malformed_then => try self.reportAsyncReturnInvalidThenable(r.value),
-                        .recursive_then => try self.reportTypeReferencedInOwnThenCallback(r.value),
+                        .malformed_then => try self.reportAsyncReturnInvalidThenable(self.asyncReturnDiagnosticAnchor(node)),
+                        .recursive_then => try self.reportTypeReferencedInOwnThenCallback(self.asyncReturnDiagnosticAnchor(node)),
                     }
                 }
+                const ret_t = if (self.current_async_function_return_check)
+                    self.evalAwaited(raw_ret_t)
+                else
+                    raw_ret_t;
                 if (self.current_generator_info) |gen| {
                     if (!(self.engine.isAssignableTo(ret_t, gen.return_type) catch true)) {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to generator return type.");
@@ -6511,7 +6518,27 @@ pub const Checker = struct {
                     }
                 } else if (self.current_function_return_t) |declared| {
                     var emitted_nullish_return_mismatch = false;
-                    if (declared == types.Primitive.never and
+                    if (self.strict_flags.strict_null_checks and
+                        r.value == hir_mod.none_node_id and
+                        self.declaredReturnRejectsNullish(declared, types.Primitive.undefined_t))
+                    {
+                        const target_name = (try self.allocAssignmentDiagnosticTypeName(declared)) orelse
+                            (try self.simpleDiagnosticTypeName(declared)) orelse
+                            "unknown";
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Type 'undefined' is not assignable to type '{s}'.",
+                            .{target_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.type_not_assignable,
+                            .message = msg,
+                        });
+                        emitted_nullish_return_mismatch = true;
+                    }
+                    if (!emitted_nullish_return_mismatch and
+                        declared == types.Primitive.never and
                         ret_t != types.Primitive.none and
                         ret_t != types.Primitive.any and
                         ret_t != types.Primitive.unknown and
@@ -14108,17 +14135,17 @@ pub const Checker = struct {
         if (f.flags.is_generator) return;
         if (f.return_type == hir_mod.none_node_id) return;
         const rt = f.return_type;
+        if (self.target_emit_es5) {
+            try self.checkAsyncReturnTypeIsPromiseEs5(node, rt);
+            return;
+        }
         if (self.hir.kindOf(rt) != .type_ref) {
-            try self.reportAsyncReturnNotPromise(rt);
+            try self.reportAsyncReturnDidYouMeanAwaited(rt);
             return;
         }
         const r = hir_mod.typeRefOf(self.hir, rt);
         if (r.qualifier_len != 0) {
-            if (self.asyncReturnAllowsPromiseDerivedClass() and try self.typeRefNamesPromiseDerivedClass(rt)) {
-                try self.checkAsyncPromiseConstructorValue(rt);
-                return;
-            }
-            try self.reportAsyncReturnQualifiedDidYouMeanPromise(rt);
+            try self.reportAsyncReturnDidYouMeanAwaited(rt);
             return;
         }
         // Bare `Promise` is the accepted base case. Type aliases
@@ -14166,15 +14193,55 @@ pub const Checker = struct {
         }
         // Bare type-ref name we can wrap with a concrete suggestion:
         // emit the TS1064 "Did you mean to write 'Promise<X>'?" variant.
-        try self.reportAsyncReturnDidYouMeanPromise(rt, name_str);
+        try self.reportAsyncReturnDidYouMeanAwaited(rt);
     }
 
-    fn asyncReturnAllowsPromiseDerivedClass(self: *Checker) bool {
-        return self.target_emit_es5;
+    fn checkAsyncReturnTypeIsPromiseEs5(self: *Checker, fn_node: NodeId, rt: NodeId) CheckError!void {
+        if (self.hir.kindOf(rt) == .type_ref) {
+            const r = hir_mod.typeRefOf(self.hir, rt);
+            const name = self.string_interner.get(r.name);
+            if (r.qualifier_len == 0 and std.mem.eql(u8, name, "Promise")) {
+                try self.checkAsyncPromiseConstructorValue(rt);
+                try self.checkAsyncReturnAwaitedType(rt, fn_node);
+                return;
+            }
+            if (r.qualifier_len == 0 and
+                self.typeRefNameResolvesToPromiseAlias(fn_node, r.name) and
+                self.rootHasTopLevelGlobalValueDecl(rt, name))
+            {
+                try self.checkAsyncReturnAwaitedType(rt, fn_node);
+                return;
+            }
+            if (try self.typeRefNamesPromiseDerivedClass(rt)) {
+                try self.checkAsyncReturnAwaitedType(rt, fn_node);
+                return;
+            }
+            if (r.qualifier_len == 0 and self.localNameIsImportBinding(r.name, rt)) {
+                const lowered_rt = self.lowererLowerWithTypeParams(rt) catch types.Primitive.none;
+                if (lowered_rt == types.Primitive.any or lowered_rt == types.Primitive.unknown) return;
+            }
+        }
+        const display = try self.asyncEs5ReturnTypeDisplay(rt);
+        try self.reportAsyncReturnNotPromiseCompatibleEs5(rt, display);
+    }
+
+    fn checkAsyncReturnAwaitedType(self: *Checker, rt: NodeId, fn_node: NodeId) CheckError!void {
+        const return_t = self.lowererLowerWithTypeParams(rt) catch return;
+        switch (self.awaitedChainIssue(return_t)) {
+            .none => {},
+            .malformed_then => try self.reportAsyncReturnInvalidThenable(self.functionNameOrNode(fn_node)),
+            .recursive_then => try self.reportTypeReferencedInOwnThenCallback(self.functionNameOrNode(fn_node)),
+        }
     }
 
     fn typeRefNamesPromiseDerivedClass(self: *Checker, type_ref_node: NodeId) CheckError!bool {
-        const decl = self.visibleClassDeclForHeritageTypeRef(type_ref_node) orelse return false;
+        if (self.hir.kindOf(type_ref_node) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, type_ref_node);
+        const decl = self.visibleClassDeclForHeritageTypeRef(type_ref_node) orelse
+            (if (r.qualifier_len == 0)
+                try self.localNameRelativeImportClassDecl(r.name, type_ref_node)
+            else
+                null) orelse return false;
         const c = hir_mod.classOf(self.hir, decl);
         if (c.extends == hir_mod.none_node_id) return false;
         const parent = (try self.qualifiedClassKeyForExtends(c.extends)) orelse return false;
@@ -14189,6 +14256,61 @@ pub const Checker = struct {
             const parent = self.class_parent.get(cur) orelse return false;
             if (std.mem.eql(u8, self.string_interner.get(parent), "Promise")) return true;
             cur = parent;
+        }
+        return false;
+    }
+
+    fn functionNameOrNode(self: *Checker, node: NodeId) NodeId {
+        switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr, .arrow_fn => {},
+            else => return node,
+        }
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        return if (f.name != hir_mod.none_node_id) f.name else node;
+    }
+
+    fn asyncEs5ReturnTypeDisplay(self: *Checker, rt: NodeId) CheckError![]const u8 {
+        if (self.hir.kindOf(rt) == .type_ref) {
+            const entity_name = try self.allocTypeRefEntityName(rt);
+            if (self.visibleClassDeclForHeritageTypeRef(rt) != null) {
+                return try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof {s}", .{entity_name});
+            }
+            return entity_name;
+        }
+        const return_t = self.lowererLowerWithTypeParams(rt) catch types.Primitive.unknown;
+        return (try self.allocSimpleTypeName(return_t)) orelse
+            (try self.allocObjectTypeShape(return_t)) orelse
+            "unknown";
+    }
+
+    fn allocTypeRefEntityName(self: *Checker, type_ref_node: NodeId) CheckError![]const u8 {
+        const r = hir_mod.typeRefOf(self.hir, type_ref_node);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_ref_node);
+        if (qualifiers.len == 0) return self.string_interner.get(r.name);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        for (qualifiers) |qualifier| {
+            if (self.hir.kindOf(qualifier) != .identifier) continue;
+            if (buf.items.len > 0) try buf.append(arena, '.');
+            try buf.appendSlice(arena, self.string_interner.get(hir_mod.identifierOf(self.hir, qualifier).name));
+        }
+        if (buf.items.len > 0) try buf.append(arena, '.');
+        try buf.appendSlice(arena, self.string_interner.get(r.name));
+        return buf.items;
+    }
+
+    fn typeRefClassHasMalformedThen(self: *Checker, type_ref_node: NodeId) CheckError!bool {
+        const decl = self.visibleClassDeclForHeritageTypeRef(type_ref_node) orelse return false;
+        const then_name = self.string_interner.intern("then") catch return error.OutOfMemory;
+        for (hir_mod.classMembers(self.hir, decl)) |member| {
+            switch (self.hir.kindOf(member)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const f = hir_mod.fnDeclOf(self.hir, member);
+                    const member_name = (try self.classMemberNameFromFunctionName(f.name)) orelse continue;
+                    if (member_name == then_name and hir_mod.fnParams(self.hir, member).len == 0) return true;
+                },
+                else => {},
+            }
         }
         return false;
     }
@@ -14239,17 +14361,6 @@ pub const Checker = struct {
         return false;
     }
 
-    /// Emit the TS1065 no-suggestion variant: used for return types
-    /// where a `Promise<X>` wrap doesn't apply (qualified names, unions,
-    /// intersections, object literals, primitives, etc.).
-    fn reportAsyncReturnNotPromise(self: *Checker, node: NodeId) CheckError!void {
-        try self.report(
-            node,
-            TsCodes.async_return_must_be_promise,
-            "The return type of an async function or method must be the global Promise<T> type.",
-        );
-    }
-
     /// Emit the TS1064 "Did you mean to write 'Promise<X>'?" suggestion
     /// variant: used when the return type is a bare type-ref name that
     /// we can suggest wrapping in `Promise<…>`.
@@ -14266,17 +14377,57 @@ pub const Checker = struct {
         );
     }
 
-    fn reportAsyncReturnQualifiedDidYouMeanPromise(self: *Checker, node: NodeId) CheckError!void {
-        const r = hir_mod.typeRefOf(self.hir, node);
-        const args = hir_mod.typeRefArgs(self.hir, node);
-        if (args.len == 0) {
-            try self.reportAsyncReturnNotPromise(node);
-            return;
+    fn reportAsyncReturnDidYouMeanAwaited(self: *Checker, node: NodeId) CheckError!void {
+        var return_t = self.lowererLowerWithTypeParams(node) catch types.Primitive.unknown;
+        if (self.hir.kindOf(node) == .type_ref) {
+            const r = hir_mod.typeRefOf(self.hir, node);
+            if (r.qualifier_len == 0) {
+                if (self.visibleClassDeclForHeritageTypeRef(node)) |decl| {
+                    try self.checkClassDecl(decl);
+                    return_t = self.class_instance_types.get(r.name) orelse return_t;
+                } else if ((return_t == types.Primitive.any or return_t == types.Primitive.unknown) and
+                    !std.mem.eql(u8, self.string_interner.get(r.name), "PromiseLike"))
+                {
+                    try self.reportAsyncReturnDidYouMeanPromise(node, self.string_interner.get(r.name));
+                    return;
+                }
+            }
         }
-        const inner_t = self.lowererLowerWithTypeParams(args[0]) catch types.Primitive.any;
-        const inner_name = (try self.allocSimpleTypeName(inner_t)) orelse
-            self.string_interner.get(r.name);
-        try self.reportAsyncReturnDidYouMeanPromise(node, inner_name);
+        const awaited_t = awaited: {
+            if (self.hir.kindOf(node) == .type_ref) {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                const args = hir_mod.typeRefArgs(self.hir, node);
+                if (r.qualifier_len != 0 and args.len > 0) {
+                    const promised_t = self.lowererLowerWithTypeParams(args[0]) catch types.Primitive.any;
+                    break :awaited self.evalAwaited(promised_t);
+                }
+                if (r.qualifier_len == 0 and
+                    std.mem.eql(u8, self.string_interner.get(r.name), "PromiseLike") and
+                    args.len > 0)
+                {
+                    const promised_t = self.lowererLowerWithTypeParams(args[0]) catch types.Primitive.any;
+                    break :awaited self.evalAwaited(promised_t);
+                }
+                if (try self.typeRefClassHasMalformedThen(node)) break :awaited types.Primitive.void_t;
+            }
+            break :awaited switch (self.awaitedChainIssue(return_t)) {
+                .malformed_then => types.Primitive.void_t,
+                .none, .recursive_then => self.evalAwaited(return_t),
+            };
+        };
+        const awaited_name = (try self.allocSimpleTypeName(awaited_t)) orelse
+            (try self.allocObjectTypeShape(awaited_t)) orelse
+            "void";
+        try self.reportAsyncReturnDidYouMeanPromise(node, awaited_name);
+    }
+
+    fn reportAsyncReturnNotPromiseCompatibleEs5(self: *Checker, node: NodeId, display: []const u8) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not a valid async function return type in ES5 because it does not refer to a Promise-compatible constructor value.",
+            .{display},
+        );
+        try self.report(node, TsCodes.async_return_not_promise_compatible_es5, msg);
     }
 
     fn reportAsyncReturnMissingPromiseType(self: *Checker, node: NodeId) CheckError!void {
@@ -14374,6 +14525,7 @@ pub const Checker = struct {
             // For async functions tsc checks the *promised* type, so
             // `Promise<void>` is treated as `void` (no diagnostic).
             const unwrapped = if (f.flags.is_async) self.evalAwaited(declared_t) else declared_t;
+            if (f.flags.is_async and self.awaitedChainIssue(declared_t) != .none) return;
             // An async function's promised type that resolves to a FREE
             // type parameter is only legitimate (TS2355-worthy) when a
             // type parameter is actually in lexical scope (the function's
@@ -14873,7 +15025,7 @@ pub const Checker = struct {
                     };
                 }
             }
-        } else if (!f.flags.is_generator and !f.flags.is_async) {
+        } else if (!f.flags.is_generator) {
             // Capture the declared/contextual return type so `return
             // <expr>;` statements inside the body can validate against
             // it and emit TS2322. A contextual target validates return
@@ -14906,13 +15058,16 @@ pub const Checker = struct {
                 else
                     types.Primitive.none;
             };
-            if (declared != types.Primitive.none and
-                declared != types.Primitive.any and
-                declared != types.Primitive.unknown and
-                declared != types.Primitive.void_t and
-                declared != types.Primitive.undefined_t)
+            const body_declared = if (f.flags.is_async) self.evalAwaited(declared) else declared;
+            const async_awaited_type_is_valid = !f.flags.is_async or self.awaitedChainIssue(declared) == .none;
+            if (async_awaited_type_is_valid and
+                body_declared != types.Primitive.none and
+                body_declared != types.Primitive.any and
+                body_declared != types.Primitive.unknown and
+                body_declared != types.Primitive.void_t and
+                body_declared != types.Primitive.undefined_t)
             {
-                self.current_function_return_t = declared;
+                self.current_function_return_t = body_declared;
                 self.current_function_return_node = if (f.return_type != hir_mod.none_node_id) f.return_type else hir_mod.none_node_id;
                 self.current_function_return_sig = contextual_sig;
                 self.current_function_return_from_jsdoc = declared_from_jsdoc;
@@ -14945,21 +15100,25 @@ pub const Checker = struct {
             if (self.current_async_function_return_check) {
                 switch (self.awaitedChainIssue(expr_t)) {
                     .none => {},
-                    .malformed_then => try self.reportAsyncReturnInvalidThenable(f.body),
-                    .recursive_then => try self.reportTypeReferencedInOwnThenCallback(f.body),
+                    .malformed_then => try self.reportAsyncReturnInvalidThenable(self.asyncReturnDiagnosticAnchor(f.body)),
+                    .recursive_then => try self.reportTypeReferencedInOwnThenCallback(self.asyncReturnDiagnosticAnchor(f.body)),
                 }
             }
+            const body_expr_t = if (self.current_async_function_return_check)
+                self.evalAwaited(expr_t)
+            else
+                expr_t;
             if (self.current_function_return_t) |declared| {
                 if (self.hir.kindOf(f.body) == .satisfies_expr) {
-                    _ = try self.checkSatisfiesExpressionInContext(f.body, expr_t, declared, .assignment);
-                } else if (try self.tryReportRemappedMappedElementAccessReturnMismatch(f.body, expr_t, declared)) {
+                    _ = try self.checkSatisfiesExpressionInContext(f.body, body_expr_t, declared, .assignment);
+                } else if (try self.tryReportRemappedMappedElementAccessReturnMismatch(f.body, body_expr_t, declared)) {
                     if (self.current_function_return_sig) |sig| {
                         try self.attachExpectedTypeFromSignatureReturnRelated(sig);
                     }
                 } else if (!(try self.literalExpressionAssignableToTarget(f.body, declared)) and
-                    !(try self.checkerAssignableTo(expr_t, declared)))
+                    !(try self.checkerAssignableTo(body_expr_t, declared)))
                 {
-                    try self.reportTypeNotAssignable(f.body, expr_t, declared, "Type is not assignable to function return type.");
+                    try self.reportTypeNotAssignable(f.body, body_expr_t, declared, "Type is not assignable to function return type.");
                     if (self.current_function_return_sig) |sig| {
                         try self.attachExpectedTypeFromSignatureReturnRelated(sig);
                     }
@@ -22525,6 +22684,17 @@ pub const Checker = struct {
             }
         }
         return .none;
+    }
+
+    fn asyncReturnDiagnosticAnchor(self: *Checker, node: NodeId) NodeId {
+        var current = node;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            switch (self.hir.kindOf(current)) {
+                .fn_decl, .fn_expr, .arrow_fn => return self.functionNameOrNode(current),
+                else => {},
+            }
+        }
+        return node;
     }
 
     fn reportAsyncReturnInvalidThenable(self: *Checker, node: NodeId) CheckError!void {
@@ -136782,6 +136952,23 @@ pub const Checker = struct {
     }
 
     fn localNameRelativeImportClassOrFunctionValueType(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        const decl = try self.localNameRelativeImportDeclaration(local_name, anchor) orelse return null;
+        const decl_name = self.declarationName(decl) orelse return null;
+        const kind = self.hir.kindOf(decl);
+        if (kind == .class_decl or kind == .class_expr) {
+            try self.checkClassDecl(decl);
+            if (self.class_static_types.get(decl_name)) |static_t| return static_t;
+            return self.hir.typeOf(decl);
+        }
+        if (kind == .fn_decl or kind == .fn_expr) {
+            try self.checkFnDeclWithFlowBoundary(decl);
+            const fn_t = self.hir.typeOf(decl);
+            return if (fn_t != types.Primitive.none) fn_t else types.Primitive.any;
+        }
+        return null;
+    }
+
+    fn localNameRelativeImportDeclaration(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?NodeId {
         if (!self.sourceHasVirtualFilenameSections()) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
@@ -136811,21 +136998,16 @@ pub const Checker = struct {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name != wanted) continue;
-                const dk = self.hir.kindOf(decl);
-                if (dk == .class_decl or dk == .class_expr) {
-                    try self.checkClassDecl(decl);
-                    if (self.class_static_types.get(wanted)) |static_t| return static_t;
-                    return self.hir.typeOf(decl);
-                }
-                if (dk == .fn_decl or dk == .fn_expr) {
-                    try self.checkFnDeclWithFlowBoundary(decl);
-                    const fn_t = self.hir.typeOf(decl);
-                    return if (fn_t != types.Primitive.none) fn_t else types.Primitive.any;
-                }
-                return null;
+                return decl;
             }
         }
         return null;
+    }
+
+    fn localNameRelativeImportClassDecl(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?NodeId {
+        const decl = try self.localNameRelativeImportDeclaration(local_name, anchor) orelse return null;
+        const kind = self.hir.kindOf(decl);
+        return if (kind == .class_decl or kind == .class_expr) decl else null;
     }
 
     /// True when `type_node` is the synthetic `type_ref` to `const`
@@ -174260,6 +174442,109 @@ test "checker: async function with non-Promise return type emits TS1064/TS1065" 
     try T.expect(saw_number_suggestion);
     try T.expect(saw_thenable_suggestion);
     try T.expect(saw_qualified_suggestion);
+}
+
+test "checker: ES5 async return annotations require Promise-compatible constructor values" {
+    const s = try newSetup(
+        \\type PromiseAlias<T> = Promise<T>;
+        \\declare class Thenable { then(): void; }
+        \\async function objectResult(): {} {}
+        \\async function anyResult(): any {}
+        \\async function numberResult(): number {}
+        \\async function promiseLikeResult(): PromiseLike<void> {}
+        \\async function thenableResult(): Thenable {}
+        \\async function aliasResult(): PromiseAlias<void> {}
+        \\type RuntimePromise<T> = Promise<T>;
+        \\declare var RuntimePromise: typeof Promise;
+        \\async function runtimeAliasResult(): RuntimePromise<void> {}
+        \\async function promiseResult(): Promise<void> {}
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.async_return_not_promise_compatible_es5));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.async_return_must_be_promise_did_you_mean));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.async_return_not_promise_compatible_es5,
+        "Type 'typeof Thenable' is not a valid async function return type in ES5 because it does not refer to a Promise-compatible constructor value.",
+    ));
+}
+
+test "checker: ES5 async return accepts an imported Promise subclass" {
+    const s = try newSetup(
+        \\// @filename: /task.ts
+        \\export class Task<T> extends Promise<T> {}
+        \\// @filename: /main.ts
+        \\import { Task } from "./task";
+        \\async function example<T>(): Task<T> { return null as any; }
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.async_return_not_promise_compatible_es5));
+}
+
+test "checker: native async return suggestions use awaited annotation types" {
+    const s = try newSetup(
+        \\declare class Thenable { then(): void; }
+        \\async function objectResult(): {} {}
+        \\async function promiseLikeResult(): PromiseLike<void> {}
+        \\async function thenableResult(): Thenable {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.async_return_must_be_promise_did_you_mean,
+        "The return type of an async function or method must be the global Promise<T> type. Did you mean to write 'Promise<{}>'?",
+    ));
+    var void_suggestions: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.async_return_must_be_promise_did_you_mean and
+            std.mem.eql(
+                u8,
+                diagnostic.message,
+                "The return type of an async function or method must be the global Promise<T> type. Did you mean to write 'Promise<void>'?",
+            ))
+        {
+            void_suggestions += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), void_suggestions);
+}
+
+test "checker: async bodies validate promised returns and anchor malformed thenables" {
+    const s = try newSetup(
+        \\type MyPromise<T> = Promise<T>;
+        \\declare class Thenable { then(): void; }
+        \\declare let promiseNumber: Promise<number>;
+        \\declare let aliasNumber: MyPromise<number>;
+        \\async function missing<T>(): Promise<T> { return; }
+        \\async function acceptsPromise(): Promise<number> { return promiseNumber; }
+        \\const acceptsAlias = async (): Promise<number> => aliasNumber;
+        \\const acceptsPromiseForAlias = async (): MyPromise<number> => promiseNumber;
+        \\async function malformed() { return new Thenable(); }
+        \\async function explicitMalformed(): Thenable {}
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_null_checks = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'undefined' is not assignable to type 'T'.",
+    ));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.fn_must_return_value));
+    var saw_name_anchor = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.async_return_must_be_valid_promise_or_no_callable_then) continue;
+        if (std.mem.eql(u8, s.checker.nodeSourceTextOrEmpty(diagnostic.node), "malformed")) {
+            saw_name_anchor = true;
+        }
+    }
+    try T.expect(saw_name_anchor);
 }
 
 test "checker: async return typed by an unresolved imported name does not emit TS1064" {
