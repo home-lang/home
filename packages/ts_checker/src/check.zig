@@ -54941,7 +54941,8 @@ pub const Checker = struct {
                 if (final_anchor == hir_mod.none_node_id) continue;
                 const display_owner = if (merged_owner != hir_mod.none_node_id) merged_owner else node;
                 const prop_str = self.classOrInterfaceMemberDisplayName(display_owner, m.name);
-                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string");
+                const index_decl = self.mergedInterfaceIndexSignatureNode(node, "string");
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string", m.decl_node, index_decl);
                 if (self.diagnosticExistsWithMessage(final_anchor, TsCodes.property_not_assignable_to_index_type, msg)) continue;
                 try self.diagnostics.append(self.gpa, .{
                     .node = final_anchor,
@@ -54968,7 +54969,8 @@ pub const Checker = struct {
                 if (final_anchor == hir_mod.none_node_id) continue;
                 const display_owner = if (merged_owner != hir_mod.none_node_id) merged_owner else node;
                 const prop_str = self.classOrInterfaceMemberDisplayName(display_owner, m.name);
-                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number");
+                const index_decl = self.mergedInterfaceIndexSignatureNode(node, "number");
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number", m.decl_node, index_decl);
                 if (self.diagnosticExistsWithMessage(final_anchor, TsCodes.property_not_assignable_to_index_type, msg)) continue;
                 try self.diagnostics.append(self.gpa, .{
                     .node = final_anchor,
@@ -55000,7 +55002,8 @@ pub const Checker = struct {
                 // the bare `Symbol.<member>` form; wrap it here.
                 const inner = if (self.computedMemberNameInner(raw)) |c| c else raw;
                 const prop_str = try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{inner});
-                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, symbol_idx, "symbol");
+                const index_decl = self.mergedInterfaceIndexSignatureNode(node, "symbol");
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, symbol_idx, "symbol", m.decl_node, index_decl);
                 const merged_owner = self.mergedInterfaceMemberOwner(node, m.decl_node);
                 const local_anchor = self.classOrInterfaceMemberNode(node, m.name);
                 const anchor = if (merged_owner != hir_mod.none_node_id) m.decl_node else local_anchor;
@@ -55076,7 +55079,7 @@ pub const Checker = struct {
                 if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
                 const anchor = if (m.decl_node != hir_mod.none_node_id) m.decl_node else container;
                 const prop_str = self.classOrInterfaceMemberDisplayName(container, m.name);
-                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string");
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string", m.decl_node, hir_mod.none_node_id);
                 try self.diagnostics.append(self.gpa, .{
                     .node = anchor,
                     .code = TsCodes.property_not_assignable_to_index_type,
@@ -55092,7 +55095,7 @@ pub const Checker = struct {
                 if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
                 const anchor = if (m.decl_node != hir_mod.none_node_id) m.decl_node else container;
                 const prop_str = self.classOrInterfaceMemberDisplayName(container, m.name);
-                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number");
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number", m.decl_node, hir_mod.none_node_id);
                 try self.diagnostics.append(self.gpa, .{
                     .node = anchor,
                     .code = TsCodes.property_not_assignable_to_index_type,
@@ -55115,12 +55118,48 @@ pub const Checker = struct {
     /// prose for fixtures like
     /// `interfaceWithStringIndexerHidingBaseTypeIndexer.ts(13,5)`
     /// and `interfaceWithStringIndexerHidingBaseTypeIndexer3.ts(13,5)`.
+    fn declaredIndexMemberTypeName(self: *Checker, decl_node: NodeId) ?[]const u8 {
+        if (decl_node == hir_mod.none_node_id) return null;
+        const type_node = switch (self.hir.kindOf(decl_node)) {
+            .interface_member => hir_mod.interfaceMemberOf(self.hir, decl_node).type_node,
+            .index_signature => hir_mod.indexSignatureOf(self.hir, decl_node).value_type,
+            else => return null,
+        };
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .typeof_type) return null;
+        const source_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(type_node), " \t\r\n");
+        return if (source_text.len == 0) null else source_text;
+    }
+
+    fn normalizedIndexTypeDiagnosticName(self: *Checker, index_type: TypeId) !?[]const u8 {
+        if (index_type < self.interner.pool.typeCount() and self.interner.pool.flagsOf(index_type).is_union) {
+            var saw_number = false;
+            var numeric_only = true;
+            for (self.interner.unionMembers(index_type)) |member| {
+                if (member == types.Primitive.number_t) {
+                    saw_number = true;
+                    continue;
+                }
+                if (self.enumNameFromNominal(member) != null) continue;
+                if (member < self.interner.pool.typeCount()) {
+                    const flags = self.interner.pool.flagsOf(member);
+                    if (flags.is_enum_literal and flags.is_number) continue;
+                }
+                numeric_only = false;
+                break;
+            }
+            if (saw_number and numeric_only) return "number";
+        }
+        return try self.simpleDiagnosticTypeName(index_type);
+    }
+
     fn formatPropertyNotAssignableToIndexType(
         self: *Checker,
         prop_str: []const u8,
         prop_type: TypeId,
         index_type: TypeId,
         index_kind: []const u8,
+        prop_decl: NodeId,
+        index_decl: NodeId,
     ) ![]const u8 {
         // Signature types render via `allocCallSignatureFnTypeName` as
         // `() => Foo` / `new (x: T) => U`. Pins TS2411 prose for
@@ -55128,6 +55167,7 @@ pub const Checker = struct {
         // `computedPropertyNames40_ES6.ts(8,5)` and
         // `computedPropertyNames40_ES5.ts(8,5)`.
         const prop_type_text: ?[]const u8 = blk: {
+            if (self.declaredIndexMemberTypeName(prop_decl)) |n| break :blk n;
             if (try self.simpleDiagnosticTypeName(prop_type)) |n| break :blk n;
             if (try self.allocObjectTypeShape(prop_type)) |s| break :blk s;
             if (self.interner.isSignature(prop_type)) {
@@ -55136,7 +55176,8 @@ pub const Checker = struct {
             break :blk null;
         };
         const index_type_text: ?[]const u8 = blk: {
-            if (try self.simpleDiagnosticTypeName(index_type)) |n| break :blk n;
+            if (self.declaredIndexMemberTypeName(index_decl)) |n| break :blk n;
+            if (try self.normalizedIndexTypeDiagnosticName(index_type)) |n| break :blk n;
             if (try self.allocObjectTypeShape(index_type)) |s| break :blk s;
             if (self.interner.isSignature(index_type)) {
                 if (try self.allocCallSignatureFnTypeName(index_type, null)) |s| break :blk s;
@@ -110175,7 +110216,7 @@ pub const Checker = struct {
         {
             if (!(self.engine.isAssignableTo(member_t, number_idx) catch true)) {
                 if (display_name) |dn| {
-                    const msg = try self.formatPropertyNotAssignableToIndexType(dn, member_t, number_idx, "number");
+                    const msg = try self.formatPropertyNotAssignableToIndexType(dn, member_t, number_idx, "number", hir_mod.none_node_id, hir_mod.none_node_id);
                     try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, msg);
                 } else {
                     try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to number index type.");
@@ -110185,7 +110226,7 @@ pub const Checker = struct {
         if (!key_is_symbol and string_idx != types.Primitive.none and string_idx != types.Primitive.any) {
             if (!(self.engine.isAssignableTo(member_t, string_idx) catch true)) {
                 if (display_name) |dn| {
-                    const msg = try self.formatPropertyNotAssignableToIndexType(dn, member_t, string_idx, "string");
+                    const msg = try self.formatPropertyNotAssignableToIndexType(dn, member_t, string_idx, "string", hir_mod.none_node_id, hir_mod.none_node_id);
                     try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, msg);
                 } else {
                     try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to string index type.");
@@ -184592,6 +184633,50 @@ test "checker: TS2411 renders prop and index type names" {
         }
     }
     try T.expect(saw_2411);
+}
+
+test "checker: TS2411 normalizes numeric enum unions and preserves typeof annotations" {
+    const s = try newSetup(
+        \\enum E { a, b }
+        \\function f() {}
+        \\namespace f { export const value = 1; }
+        \\interface I {
+        \\  [key: string]: E | number;
+        \\  text: string;
+        \\  callable: typeof f;
+        \\}
+        \\interface J {
+        \\  [key: string]: typeof f;
+        \\  value: E;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_text = false;
+    var saw_callable = false;
+    var saw_index_callable = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_not_assignable_to_index_type) continue;
+        if (std.mem.eql(
+            u8,
+            diag.message,
+            "Property 'text' of type 'string' is not assignable to 'string' index type 'number'.",
+        )) saw_text = true;
+        if (std.mem.eql(
+            u8,
+            diag.message,
+            "Property 'callable' of type 'typeof f' is not assignable to 'string' index type 'number'.",
+        )) saw_callable = true;
+        if (std.mem.eql(
+            u8,
+            diag.message,
+            "Property 'value' of type 'E' is not assignable to 'string' index type 'typeof f'.",
+        )) saw_index_callable = true;
+    }
+    try T.expect(saw_text);
+    try T.expect(saw_callable);
+    try T.expect(saw_index_callable);
 }
 
 test "checker: TS2345 renders argument and parameter type names" {
