@@ -217,6 +217,11 @@ pub const Parser = struct {
     /// signatures suppress TS2463 (mirrors tsc's
     /// `checkParameterDeclaration` `IsImplementationSignature` gate).
     pending_ts2463_indices: std.ArrayListUnmanaged(u32),
+    /// Indices into `diagnostics` of TS2842 ("unused renaming")
+    /// diagnostics emitted for destructuring parameters. Body-less
+    /// function and method signatures retain these likely-type-annotation
+    /// diagnostics; implementation signatures suppress them.
+    pending_ts2842_indices: std.ArrayListUnmanaged(u32),
     /// Parser-emitted TS18016 diagnostics for `#name in value` outside a
     /// class. Upstream owns these in checker grammar diagnostics, so they
     /// are suppressed when the file has a true parse diagnostic.
@@ -349,6 +354,7 @@ pub const Parser = struct {
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
             .pending_ts2463_indices = .empty,
+            .pending_ts2842_indices = .empty,
             .pending_outside_private_brand_diag_indices = .empty,
             .pending_var_let_strict_positions = .empty,
             .disallow_arrow_return_type = false,
@@ -398,6 +404,7 @@ pub const Parser = struct {
         self.jsx_comma_recovery_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
+        self.pending_ts2842_indices.deinit(self.gpa);
         self.pending_outside_private_brand_diag_indices.deinit(self.gpa);
         self.pending_var_let_strict_positions.deinit(self.gpa);
         self.synthetic_infer_check_nodes.deinit(self.gpa);
@@ -4162,13 +4169,14 @@ pub const Parser = struct {
         self.parameter_list_arrow_is_comma = true;
         defer self.parameter_list_arrow_is_comma = saved_arrow_is_comma;
         const fn_ts2463_base: usize = self.pending_ts2463_indices.items.len;
+        const fn_ts2842_base: usize = self.pending_ts2842_indices.items.len;
         var owns_params = false;
         const params: []NodeId = if (recovered_missing_name_arrow) blk: {
             if (self.peek().kind == .arrow) _ = self.advance();
             break :blk &.{};
         } else blk: {
             owns_params = true;
-            break :blk try self.parseParameterList();
+            break :blk try self.parsePotentialBodylessSignatureParameterList();
         };
         defer if (owns_params) self.gpa.free(params);
         const recovered_body_as_missing_close = self.parameter_list_recovered_body_as_missing_close;
@@ -4260,6 +4268,7 @@ pub const Parser = struct {
         // no body, so any TS2463 emitted while parsing this parameter
         // list must be retracted. Mirrors
         // `optionalBindingParametersInOverloads{1,2}`.
+        try self.commitOrDropPendingTs2842(fn_ts2842_base, body != hir_mod.none_node_id);
         try self.commitOrDropPendingTs2463(fn_ts2463_base, body != hir_mod.none_node_id);
         return try self.builder.addFnDeclGeneric(
             .{ .start = start.span.start, .end = end_pos },
@@ -4300,6 +4309,41 @@ pub const Parser = struct {
             }
         }
         self.pending_ts2463_indices.items.len = base;
+    }
+
+    /// Commit or drop TS2842 diagnostics recorded while parsing the
+    /// current parameter list. These diagnostics apply to body-less
+    /// signatures, where `{ value: Type }` is likely a mistaken type
+    /// annotation, and are suppressed for implementation parameters.
+    fn commitOrDropPendingTs2842(self: *Parser, base: usize, has_body: bool) ParseError!void {
+        if (self.pending_ts2842_indices.items.len <= base) return;
+        if (!has_body) {
+            self.pending_ts2842_indices.items.len = base;
+            return;
+        }
+        const indices = self.pending_ts2842_indices.items[base..];
+        var i: usize = indices.len;
+        while (i > 0) {
+            i -= 1;
+            const idx = indices[i];
+            if (idx < self.diagnostics.items.len and self.diagnostics.items[idx].code == 2842) {
+                _ = self.diagnostics.orderedRemove(idx);
+            }
+        }
+        self.pending_ts2842_indices.items.len = base;
+    }
+
+    fn parsePotentialBodylessSignatureParameterList(self: *Parser) ParseError![]NodeId {
+        const diag_base = self.diagnostics.items.len;
+        self.fn_type_binding_pattern_depth += 1;
+        defer self.fn_type_binding_pattern_depth -= 1;
+        const params = try self.parseParameterList();
+        errdefer self.gpa.free(params);
+        for (diag_base..self.diagnostics.items.len) |diag_idx| {
+            if (self.diagnostics.items[diag_idx].code != 2842) continue;
+            try self.pending_ts2842_indices.append(self.gpa, @intCast(diag_idx));
+        }
+        return params;
     }
 
     /// Parse a parenthesized parameter list. Allocates the result slice;
@@ -5909,7 +5953,8 @@ pub const Parser = struct {
                     if (is_generator) self.generator_depth += 1;
                     if (mods.is_async) self.async_function_depth += 1;
                     const method_ts2463_base: usize = self.pending_ts2463_indices.items.len;
-                    const params = try self.parseParameterList();
+                    const method_ts2842_base: usize = self.pending_ts2842_indices.items.len;
+                    const params = try self.parsePotentialBodylessSignatureParameterList();
                     if (is_generator) self.generator_depth -= 1;
                     if (mods.is_async) self.async_function_depth -= 1;
                     defer self.gpa.free(params);
@@ -6046,6 +6091,7 @@ pub const Parser = struct {
                     // overload — TS only fires it on implementation
                     // signatures. Mirrors tsc's
                     // `checkParameterDeclaration` body-presence gate.
+                    try self.commitOrDropPendingTs2842(method_ts2842_base, body != hir_mod.none_node_id);
                     try self.commitOrDropPendingTs2463(method_ts2463_base, body != hir_mod.none_node_id);
                     const name_id = try self.internPropertyName(name_tok, name_span);
                     const name_node = try self.builder.addIdentifier(name_span, name_id);
@@ -25018,6 +25064,36 @@ test "parser: function type destructuring renames report TS2842" {
     try T.expect(saw_b_from_a);
     try T.expect(saw_a_from_b);
     try T.expect(saw_related);
+}
+
+test "parser: body-less destructuring signatures retain TS2842" {
+    var s = try newTestSetup(
+        \\declare function overload({ y1: string }): void;
+        \\function implementation({ y1: string }): void {}
+        \\class C {
+        \\  method({ y2: number }): void;
+        \\  implementation({ y2: number }): void {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    var saw_string = false;
+    var saw_number = false;
+    var related_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 2842) continue;
+        count += 1;
+        if (std.mem.indexOf(u8, d.message, "'string' is an unused renaming of 'y1'") != null) saw_string = true;
+        if (std.mem.indexOf(u8, d.message, "'number' is an unused renaming of 'y2'") != null) saw_number = true;
+        for (d.related) |rel| {
+            if (rel.code == 2843) related_count += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expect(saw_string);
+    try T.expect(saw_number);
+    try T.expectEqual(@as(usize, 2), related_count);
 }
 
 test "parser: type annotation — literal types" {
