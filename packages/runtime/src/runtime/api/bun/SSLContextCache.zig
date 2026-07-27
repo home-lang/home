@@ -13,8 +13,10 @@
 //     and `CRYPTO_EX_DATA` — opaque + extern stubs; the `boringssl_sys`
 //     leaf in home_rt does not yet re-export these.
 //   - `uws.create_bun_socket_error_t`, `uws.SocketContext.BunSocketContextOptions`,
-//     `SSLConfig`, and `c.us_ssl_ctx_cache_ex_idx` — modeled as locally-
-//     defined opaque/enum stubs so the file compiles standalone.
+//     and `SSLConfig` — modeled as locally-defined opaque/enum stubs so the
+//     file compiles standalone. `c.us_ssl_ctx_cache_ex_idx` binds to the real
+//     getter exported by the linked `openssl.c.o` when `enable_jsc_link` is
+//     set, and falls back to 0 only in the standalone test build.
 //   - The on-free C callback (`bun_ssl_ctx_cache_on_free`) is preserved
 //     verbatim so the comptime force-link reference below stays valid.
 //
@@ -191,12 +193,24 @@ pub fn deinit(self: *SSLContextCache) void {
 }
 
 pub const c = struct {
-    /// Registered alongside the other usockets ex_data slots in
-    /// `us_ex_idx_init` (pthread_once-guarded). Soft-linked through a
-    /// function-pointer indirection so the file builds standalone; reassign
-    /// in the wire-up TU when the real symbol is available.
-    pub var us_ssl_ctx_cache_ex_idx: *const fn () callconv(.c) c_int = stub_ex_idx;
-    fn stub_ex_idx() callconv(.c) c_int {
+    /// The cache ex_data slot registered in `openssl.c`'s `us_ex_idx_init`
+    /// (pthread_once-guarded), whose `CRYPTO_EX_free` is
+    /// `bun_ssl_ctx_cache_on_free` — the callback that tombstones an entry when
+    /// BoringSSL drops the CTX's last ref. The real getter is exported by the
+    /// linked `openssl.c.o` whenever the bun objects are linked
+    /// (`enable_jsc_link`). In the standalone test build there is no C to link,
+    /// and none of the cache-index paths are exercised, so fall back to 0.
+    ///
+    /// Getting this wrong is a use-after-free: an index of 0 has no free
+    /// callback, so the tombstone never fires, the map keeps a freed `SSL_CTX*`,
+    /// and the next `getOrCreate` for the same digest hands out (and
+    /// `SSL_CTX_up_ref`s) freed memory — crashing later in `SSL_new` /
+    /// `ssl_cert_dup`. See issue #78.
+    pub fn us_ssl_ctx_cache_ex_idx() callconv(.c) c_int {
+        if (comptime home_rt.enable_jsc_link) {
+            const real = @extern(*const fn () callconv(.c) c_int, .{ .name = "us_ssl_ctx_cache_ex_idx" });
+            return real();
+        }
         return 0;
     }
 };
