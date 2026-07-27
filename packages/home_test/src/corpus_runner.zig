@@ -18346,6 +18346,7 @@ const harness_prelude =
     \\function __home_ffi_read(value, byteOffset, byteLength) { return new DataView(__home_ffi_to_array_buffer(value), byteOffset || 0, byteLength); }
     \\function __home_s3_presign_url(path, options) {
     \\  const opts = options && typeof options === "object" ? options : {};
+    \\  const requestPayer = __home_s3_request_payer(opts);
     \\  const endpoint = String(opts.endpoint || "https://s3.amazonaws.com").replace(/\/+$/, "");
     \\  const bucket = String(opts.bucket || "");
     \\  const key = String(path || "").replace(/^\/+/, "");
@@ -18360,6 +18361,7 @@ const harness_prelude =
     \\  if (opts.contentDisposition) params.push(["response-content-disposition", String(opts.contentDisposition)]);
     \\  if (opts.type) params.push(["response-content-type", String(opts.type)]);
     \\  if (opts.acl) params.push(["X-Amz-Acl", String(opts.acl)]);
+    \\  if (requestPayer) params.push(["x-amz-request-payer", "requester"]);
     \\  if (opts.storageClass) params.push(["X-Amz-Storage-Class", String(opts.storageClass)]);
     \\  params.push(["X-Amz-Signature", "home"]);
     \\  params.sort((left, right) => left[0] < right[0] ? -1 : (left[0] > right[0] ? 1 : 0));
@@ -18406,7 +18408,43 @@ const harness_prelude =
     \\  if (!handle || handle.stopped || typeof handle.fetch !== "function") {
     \\    return Promise.reject(new Error("S3Client.list request failed for " + url.href));
     \\  }
-    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET" })));
+    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET", headers: __home_s3_request_headers(options) })));
+    \\}
+    \\function __home_s3_request_payer(options) {
+    \\  if (!options || options.requestPayer === undefined) return false;
+    \\  if (typeof options.requestPayer !== "boolean") throw new TypeError("requestPayer must be a boolean");
+    \\  return options.requestPayer;
+    \\}
+    \\function __home_s3_request_headers(options, initialHeaders) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  const headers = new Headers(initialHeaders);
+    \\  const signedHeaders = [];
+    \\  for (const name of ["content-disposition", "content-encoding", "content-md5"]) {
+    \\    if (headers.has(name)) signedHeaders.push(name);
+    \\  }
+    \\  signedHeaders.push("host", "x-amz-content-sha256", "x-amz-date");
+    \\  headers.set("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+    \\  headers.set("x-amz-date", "19700101T000000Z");
+    \\  if (opts.acl) {
+    \\    headers.set("x-amz-acl", String(opts.acl));
+    \\    signedHeaders.push("x-amz-acl");
+    \\  }
+    \\  if (__home_s3_request_payer(opts)) {
+    \\    headers.set("x-amz-request-payer", "requester");
+    \\    signedHeaders.push("x-amz-request-payer");
+    \\  }
+    \\  if (opts.sessionToken) {
+    \\    headers.set("x-amz-security-token", String(opts.sessionToken));
+    \\    signedHeaders.push("x-amz-security-token");
+    \\  }
+    \\  if (opts.storageClass) {
+    \\    headers.set("x-amz-storage-class", String(opts.storageClass));
+    \\    signedHeaders.push("x-amz-storage-class");
+    \\  }
+    \\  signedHeaders.sort();
+    \\  const credential = String(opts.accessKeyId || "home") + "/19700101/" + String(opts.region || "us-east-1") + "/s3/aws4_request";
+    \\  headers.set("authorization", "AWS4-HMAC-SHA256 Credential=" + credential + ", SignedHeaders=" + signedHeaders.join(";") + ", Signature=home");
+    \\  return headers;
     \\}
     \\function __home_s3_validate_header_value(name, value) {
     \\  if (value === undefined || value === null) return;
@@ -18434,6 +18472,7 @@ const harness_prelude =
     \\  if (opts.contentDisposition) headers.set("content-disposition", String(opts.contentDisposition));
     \\  if (opts.contentEncoding) headers.set("content-encoding", String(opts.contentEncoding));
     \\  if (contentType) headers.set("content-type", contentType);
+    \\  const signedHeaders = __home_s3_request_headers(opts, headers);
     \\  let endpoint = String(opts.endpoint || "");
     \\  if (!endpoint) return Promise.resolve({ ok: true });
     \\  let url;
@@ -18445,7 +18484,7 @@ const harness_prelude =
     \\  url.pathname = (url.pathname.replace(/\/+$/, "") || "") + "/" + String(opts.bucket || "").replace(/^\/+|\/+$/g, "") + "/" + String(path).replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
     \\  const handle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
     \\  if (handle && !handle.stopped && typeof handle.fetch === "function") {
-    \\    return Promise.resolve(handle.fetch(new Request(url.href, { method: String(opts.method || "PUT"), headers, body: typeof data === "string" ? data : undefined }))).then(() => ({ ok: true }));
+    \\    return Promise.resolve(handle.fetch(new Request(url.href, { method: String(opts.method || "PUT"), headers: signedHeaders, body: typeof data === "string" ? data : undefined }))).then(() => ({ ok: true }));
     \\  }
     \\  return Promise.resolve({ ok: true });
     \\}
@@ -18463,7 +18502,7 @@ const harness_prelude =
     \\  url.search = "?uploads=";
     \\  const handle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
     \\  if (!handle || handle.stopped || typeof handle.fetch !== "function") return Promise.resolve({ ok: true });
-    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "POST" }))).then(response => {
+    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "POST", headers: __home_s3_request_headers(opts) }))).then(response => {
     \\    if (!response || typeof response.text !== "function") return "";
     \\    return response.text();
     \\  }).then(text => {
@@ -18489,7 +18528,7 @@ const harness_prelude =
     \\  if (!handle || handle.stopped || typeof handle.fetch !== "function") {
     \\    return Promise.reject(new Error("S3 read request failed for " + url.href));
     \\  }
-    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET" }))).then(async response => {
+    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method: "GET", headers: __home_s3_request_headers(opts) }))).then(async response => {
     \\    if (!response || response.ok === false) {
     \\      const error = new Error(response && typeof response.text === "function" ? await response.text() : "S3 request failed");
     \\      error.code = "UnknownError";
@@ -18499,6 +18538,37 @@ const harness_prelude =
     \\    if (responseType === "arrayBuffer") return response.arrayBuffer();
     \\    if (responseType === "json") return response.json();
     \\    return response.text();
+    \\  });
+    \\}
+    \\function __home_s3_object_request(path, options, method) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  const endpoint = String(opts.endpoint || "").replace(/\/+$/, "");
+    \\  if (!endpoint) return Promise.reject(new Error("S3 " + method + " requires an endpoint"));
+    \\  const bucket = String(opts.bucket || "").replace(/^\/+|\/+$/g, "");
+    \\  const key = String(path || "").replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+    \\  let url;
+    \\  try {
+    \\    url = new URL(endpoint + (bucket ? "/" + encodeURIComponent(bucket) : "") + "/" + key);
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
+    \\  const handle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
+    \\  if (!handle || handle.stopped || typeof handle.fetch !== "function") {
+    \\    return Promise.reject(new Error("S3 " + method + " request failed for " + url.href));
+    \\  }
+    \\  return Promise.resolve(handle.fetch(new Request(url.href, { method, headers: __home_s3_request_headers(opts) })));
+    \\}
+    \\function __home_s3_exists(path, options) {
+    \\  return __home_s3_object_request(path, options, "HEAD").then(response => !!response && response.ok !== false);
+    \\}
+    \\function __home_s3_delete(path, options) {
+    \\  return __home_s3_object_request(path, options, "DELETE").then(async response => {
+    \\    if (!response || response.ok === false) {
+    \\      const error = new Error(response && typeof response.text === "function" ? await response.text() : "S3 request failed");
+    \\      error.code = "UnknownError";
+    \\      error.status = response && response.status !== undefined ? response.status : 0;
+    \\      throw error;
+    \\    }
     \\  });
     \\}
     \\function __home_s3_file(clientOptions, path, fileOptions) {
@@ -18511,6 +18581,8 @@ const harness_prelude =
     \\    text() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "text"); },
     \\    json() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "json"); },
     \\    arrayBuffer() { return __home_s3_read(path, Object.assign({}, clientOptions, options), "arrayBuffer"); },
+    \\    exists() { return __home_s3_exists(path, Object.assign({}, clientOptions, options)); },
+    \\    delete() { return __home_s3_delete(path, Object.assign({}, clientOptions, options)); },
     \\    presign(presignOptions) { return __home_s3_presign_url(path, Object.assign({}, clientOptions, options, presignOptions || {})); },
     \\    write(data, writeOptions) { return __home_s3_write(path, data, Object.assign({}, clientOptions, options, writeOptions || {})); },
     \\    writer(writerOptions) {
@@ -20956,6 +21028,9 @@ const harness_prelude =
     \\    this.presign = (path, presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {}));
     \\    this.write = (path, data, writeOptions) => __home_s3_write(path, data, Object.assign({}, this.options, writeOptions || {}));
     \\  }, {
+    \\    file(path, options) {
+    \\      return __home_s3_file({}, path, options);
+    \\    },
     \\    write(path, data) {
     \\      return __home_s3_write(path, data, arguments[2] || {});
     \\    },
@@ -55305,7 +55380,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-objects.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "S3 list objects request encoding integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-requester-pays.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "S3 requester-pays signing integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-storage-class.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "S3 storage class signing and multipart integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
@@ -63972,6 +64047,32 @@ test "bootstrap runner mirrors S3 insecure HTTP endpoint corpus" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors S3 requester-pays signing corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "x-amz-request-payer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_s3_request_headers") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-requester-pays.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 10 or summary.todo != 0) {
+        std.debug.print(
+            "S3 requester-pays signing corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 10), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 10), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
