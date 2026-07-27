@@ -15227,13 +15227,16 @@ pub const Checker = struct {
             else
                 expr_t;
             if (self.current_function_return_t) |declared| {
+                const object_literal_assignable = self.hir.kindOf(f.body) == .object_literal and
+                    (self.objectLiteralAssignableToTarget(f.body, body_expr_t, declared) catch false);
                 if (self.hir.kindOf(f.body) == .satisfies_expr) {
                     _ = try self.checkSatisfiesExpressionInContext(f.body, body_expr_t, declared, .assignment);
                 } else if (try self.tryReportRemappedMappedElementAccessReturnMismatch(f.body, body_expr_t, declared)) {
                     if (self.current_function_return_sig) |sig| {
                         try self.attachExpectedTypeFromSignatureReturnRelated(sig);
                     }
-                } else if (!(try self.literalExpressionAssignableToTarget(f.body, declared)) and
+                } else if (!object_literal_assignable and
+                    !(try self.literalExpressionAssignableToTarget(f.body, declared)) and
                     !(try self.checkerAssignableTo(body_expr_t, declared)))
                 {
                     try self.reportTypeNotAssignable(f.body, body_expr_t, declared, "Type is not assignable to function return type.");
@@ -22820,6 +22823,9 @@ pub const Checker = struct {
         const then_id = self.string_interner.intern("then") catch return .none;
         const then_t = self.interner.objectMember(t, then_id) orelse return .none;
         const then_sig = self.callableSignatureType(then_t) orelse return .none;
+        if (self.signatureThisParam(then_sig)) |this_t| {
+            if (!(self.thisContextAssignableTo(t, this_t) catch false)) return .malformed;
+        }
         const then_params = self.interner.signatureParams(then_sig);
         if (then_params.len == 0) return .malformed;
         const cb_sig = self.callableSignatureType(then_params[0]) orelse return .malformed;
@@ -22989,7 +22995,9 @@ pub const Checker = struct {
 
     fn buildStructuralPromiseLike(self: *Checker, value_t: TypeId) CheckError!TypeId {
         const cb_sig = self.interner.internSignature(&[_]TypeId{value_t}, types.Primitive.any, false) catch return error.OutOfMemory;
-        const then_sig = self.interner.internSignature(&[_]TypeId{cb_sig}, types.Primitive.any, false) catch return error.OutOfMemory;
+        const optional_any = self.interner.internUnion(&.{ types.Primitive.any, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        const then_sig = self.interner.internSignature(&.{ cb_sig, optional_any }, types.Primitive.any, false) catch return error.OutOfMemory;
+        try self.signature_min_args.put(self.gpa, then_sig, 0);
         const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
         const members = [_]types.ObjectMember{.{
             .name = then_id,
@@ -32797,6 +32805,14 @@ pub const Checker = struct {
             try self.class_name_by_static.put(self.gpa, partial_static_t, cid.name);
             if (!self.class_static_types.contains(cid.name)) {
                 try self.class_static_types.put(self.gpa, cid.name, partial_static_t);
+            }
+            if (class_param_ids.items.len > 0 and !self.generic_aliases.contains(cid.name)) {
+                const partial_params = try self.gpa.dupe(TypeId, class_param_ids.items);
+                try self.generic_aliases.put(self.gpa, cid.name, .{
+                    .params = partial_params,
+                    .body = partial_instance_t,
+                    .body_node = hir_mod.none_node_id,
+                });
             }
             try self.recordNarrow(cid.name, partial_instance_t);
         }
@@ -94634,7 +94650,7 @@ pub const Checker = struct {
             if (common_overload_this.items.len == 0) return;
             saw_this_param = true;
             for (common_overload_this.items) |this_t| {
-                if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
+                if (try self.thisContextAssignableTo(receiver_t, this_t)) return;
                 try unmet_this.append(self.gpa, this_t);
             }
         } else {
@@ -94677,7 +94693,7 @@ pub const Checker = struct {
                         }
                         // Check the actual receiver (the union) against
                         // the effective `this`-type for this branch.
-                        if (self.engine.isAssignableTo(receiver_t, effective_this) catch false) continue;
+                        if (try self.thisContextAssignableTo(receiver_t, effective_this)) continue;
                         var seen = false;
                         for (unmet_this.items) |existing| {
                             if (existing == effective_this) {
@@ -94697,7 +94713,7 @@ pub const Checker = struct {
                 for (call_sigs.items) |sig| {
                     const this_t = self.signatureThisParam(sig) orelse continue;
                     saw_this_param = true;
-                    if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
+                    if (try self.thisContextAssignableTo(receiver_t, this_t)) return;
                     // Track unique unmet `this` types ÃÂ¢ÃÂÃÂ when the receiver is
                     // a union of method-bearing types each requiring its own
                     // `this`, upstream tsc intersects them in the diagnostic.
@@ -94743,6 +94759,38 @@ pub const Checker = struct {
             }
         }
         try self.report(call_node, TsCodes.this_context_not_assignable, "The 'this' context is not assignable to method's 'this' type.");
+    }
+
+    fn thisContextAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        const source_args = self.alias_type_args.get(source_t);
+        const target_args = self.alias_type_args.get(target_t);
+        if (source_args != null and target_args != null and source_args.?.len == target_args.?.len) {
+            const source_name = try self.genericInstanceBaseName(source_t);
+            const target_name = try self.genericInstanceBaseName(target_t);
+            if (source_name != null and target_name != null and source_name.? == target_name.?) {
+                if (self.generic_aliases.get(source_name.?)) |info| {
+                    if (info.params.len == source_args.?.len) {
+                        for (info.params, source_args.?, target_args.?) |param_t, source_arg, target_arg| {
+                            const variance = self.typeParameterVariance(param_t);
+                            const unresolved_used_variance = variance == .bivariant and
+                                self.typeContainsInferenceTarget(info.body, param_t, 0);
+                            switch (variance) {
+                                .covariant => if (!try self.typeArgumentAssignableTo(source_arg, target_arg)) return false,
+                                .contravariant => if (!try self.typeArgumentAssignableTo(target_arg, source_arg)) return false,
+                                .invariant => {
+                                    if (!try self.typeArgumentAssignableTo(source_arg, target_arg)) return false;
+                                    if (!try self.typeArgumentAssignableTo(target_arg, source_arg)) return false;
+                                },
+                                .bivariant => if (unresolved_used_variance and
+                                    !try self.typeArgumentAssignableTo(source_arg, target_arg)) return false,
+                            }
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+        return try self.checkerAssignableTo(source_t, target_t);
     }
 
     fn methodThisReceiverDisplayName(self: *Checker, receiver_node: NodeId, receiver_t: TypeId) CheckError!?[]const u8 {
@@ -201260,6 +201308,44 @@ test "checker: async generator protocols preserve yield-star and next semantics"
         b,
         TsCodes.type_not_assignable,
         "Type 'AsyncGenerator<number, any, any>' is not assignable to type 'Iterator<number, any, any>'.",
+    ));
+}
+
+test "checker: generic thenables validate explicit this for calls and await" {
+    const b = try newBoundSetup(
+        \\// @target: esnext
+        \\type Either<E, A> = Left<E> | Right<A>;
+        \\type Left<E> = { tag: 'Left', e: E };
+        \\type Right<A> = { tag: 'Right', a: A };
+        \\const mkLeft = <E>(e: E): Either<E, never> => ({ tag: 'Left', e });
+        \\const mkRight = <A>(a: A): Either<never, A> => ({ tag: 'Right', a });
+        \\class EPromise<E, A> implements PromiseLike<A> {
+        \\  static fail<E>(e: E): EPromise<E, never> {
+        \\    return new EPromise(Promise.resolve(mkLeft(e)));
+        \\  }
+        \\  constructor(readonly p: PromiseLike<Either<E, A>>) {}
+        \\  then<B = A, B1 = never>(
+        \\    this: EPromise<never, A>,
+        \\    onfulfilled?: ((value: A) => B | PromiseLike<B>) | null | undefined,
+        \\    onrejected?: ((reason: any) => B1 | PromiseLike<B1>) | null | undefined
+        \\  ): PromiseLike<B | B1> {
+        \\    return this.p.then(value => onfulfilled?.((value as Right<A>).a), onrejected);
+        \\  }
+        \\}
+        \\const failed: EPromise<number, string> = EPromise.fail(1);
+        \\failed.then(value => value.toUpperCase());
+        \\async function test() { await failed; }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.this_context_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.await_operand_must_be_valid_promise_or_no_callable_then));
+    try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+    try T.expect(!checkerHasCode(b, TsCodes.expected_n_arguments));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.this_context_not_assignable,
+        "The 'this' context of type 'EPromise<number, string>' is not assignable to method's 'this' of type 'EPromise<never, string>'.",
     ));
 }
 
