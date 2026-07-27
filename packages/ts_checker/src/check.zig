@@ -53339,8 +53339,18 @@ pub const Checker = struct {
                     const optional_ok = pm.is_optional or !cm.is_optional;
                     if (optional_ok and self.interfaceSelfTypeMemberOverride(node, ext_node, cm, pm)) break;
                     const contextual_generic_relation = try self.contextualGenericHeritageSignatureAssignable(cm.type, pm.type);
+                    const strict_property_signature_mismatch = contextual_generic_relation == null and
+                        !cm.is_method and
+                        !pm.is_method and
+                        cm_flags.is_signature and
+                        pm_flags.is_signature and
+                        self.generic_signature_params.get(cm.type) == null and
+                        self.generic_signature_params.get(pm.type) == null and
+                        try self.strictHeritagePropertySignatureMismatch(cm.type, pm.type);
                     const type_ok = if (contextual_generic_relation) |ok|
                         ok
+                    else if (strict_property_signature_mismatch)
+                        false
                     else
                         try self.heritageAssignableDeep(cm.type, pm.type);
                     const outer_type_param_generic_override = optional_ok and
@@ -53365,8 +53375,7 @@ pub const Checker = struct {
                     // still require inference the contextual relater lacks.
                     if (optional_ok and
                         !outer_type_param_generic_override and
-                        (contextual_generic_relation == null or
-                            self.generic_signature_params.get(pm.type) != null) and
+                        contextual_generic_relation == null and
                         cm_flags.is_signature and
                         self.generic_signature_params.get(cm.type) != null)
                     {
@@ -53897,12 +53906,30 @@ pub const Checker = struct {
         target_t: TypeId,
     ) CheckError!?bool {
         if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return null;
-        _ = self.generic_signature_params.get(source_t) orelse return null;
-        if (self.generic_signature_params.get(target_t) != null) {
-            return try self.genericSignaturesAlphaAssignable(source_t, target_t);
+        const source_params = self.generic_signature_params.get(source_t) orelse return null;
+        if (self.generic_signature_params.get(target_t)) |target_params| {
+            if (source_params.len != target_params.len) return null;
+            return try self.genericSignaturesAlphaAssignable(source_t, target_t, false, true, false);
         }
         const instantiated = try self.instantiateGenericSignatureInContextOf(source_t, target_t);
         return try self.contextualFunctionSignatureAssignable(instantiated, target_t);
+    }
+
+    fn strictHeritagePropertySignatureMismatch(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return false;
+        const source_params = self.interner.signatureParams(source_t);
+        const target_params = self.interner.signatureParams(target_t);
+        if (self.signatureMinRequiredArgs(source_t, source_params) > target_params.len) return true;
+        const shared_len = @min(source_params.len, target_params.len);
+        for (0..shared_len) |i| {
+            if (!self.typeIncludesUndefined(target_params[i])) continue;
+            if (!(self.engine.isAssignableTo(target_params[i], source_params[i]) catch false)) return true;
+        }
+        return false;
     }
 
     fn genericHeritageOverrideUsesOuterTypeParameter(self: *Checker, child_t: TypeId, parent_t: TypeId) CheckError!bool {
@@ -70625,7 +70652,13 @@ pub const Checker = struct {
                         (self.interner.pool.flagsOf(init_type).is_union or
                             self.interner.pool.flagsOf(init_type).is_intersection)) and
                     self.unrelatedTypeParameterAssignment(init_type, declared_type)) break :blk false;
-                if (try self.genericSignaturesAlphaAssignable(init_type, declared_type)) break :blk true;
+                if (try self.genericSignaturesAlphaAssignable(
+                    init_type,
+                    declared_type,
+                    false,
+                    self.strict_flags.strict_function_types,
+                    false,
+                )) break :blk true;
                 break :blk try self.checkerAssignableTo(init_type, declared_type);
             };
             try self.checkArrayLiteralContextualElements(v.init, declared_type);
@@ -72857,6 +72890,12 @@ pub const Checker = struct {
         const source_type_param_count = if (self.generic_signature_params.get(source_t)) |params| params.len else 0;
         const target_type_param_count = if (self.generic_signature_params.get(target_t)) |params| params.len else 0;
         if (source_type_param_count == 0 and target_type_param_count == 0) return false;
+        if (source_type_param_count == 0 and
+            target_type_param_count > 0 and
+            try self.signatureContainsTypeParameterOutsideOwnParams(source_t))
+        {
+            return true;
+        }
 
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
@@ -79362,10 +79401,10 @@ pub const Checker = struct {
         const kind = self.hir.kindOf(node);
         if (kind != .arrow_fn and kind != .fn_expr and kind != .fn_decl) return null;
         const f = hir_mod.fnDeclOf(self.hir, node);
+        const rendered = (try self.allocCallableSignatureNameOmittingOptionalUndefined(t)) orelse return null;
         if (f.return_type != hir_mod.none_node_id and
             self.hir.kindOf(f.return_type) != .type_predicate_type)
         {
-            const rendered = (try self.allocCallableSignatureNameOmittingOptionalUndefined(t)) orelse return null;
             const arrow = std.mem.lastIndexOf(u8, rendered, "=>") orelse return rendered;
             const return_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(f.return_type), " \t\r\n");
             if (return_text.len != 0) {
@@ -79376,7 +79415,18 @@ pub const Checker = struct {
                 );
             }
         }
-        return try self.allocCallableSignatureNameOmittingOptionalUndefined(t);
+        if (!self.strict_flags.strict_null_checks and self.interner.isSignature(t)) {
+            const ret_t = self.interner.signatureReturn(t) orelse types.Primitive.any;
+            if (ret_t == types.Primitive.null_t or ret_t == types.Primitive.undefined_t) {
+                const arrow = std.mem.lastIndexOf(u8, rendered, "=>") orelse return rendered;
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "{s}=> any",
+                    .{rendered[0..arrow]},
+                );
+            }
+        }
+        return rendered;
     }
 
     fn sourceTypeForVarDeclAssignmentReport(self: *Checker, init_node: NodeId, init_t: TypeId, target_t: TypeId) CheckError!TypeId {
@@ -96849,6 +96899,11 @@ pub const Checker = struct {
                 }
             } else {
                 ret_t = body_t;
+            }
+            if (!self.strict_flags.strict_null_checks and
+                (ret_t == types.Primitive.null_t or ret_t == types.Primitive.undefined_t))
+            {
+                ret_t = types.Primitive.any;
             }
         }
 
@@ -115719,6 +115774,11 @@ pub const Checker = struct {
     fn genericSignatureAssignmentAssignable(self: *Checker, source: TypeId, target: TypeId) bool {
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
         if (!self.interner.isSignature(source) or !self.interner.isSignature(target)) return false;
+        if (self.generic_signature_params.get(source) == null or
+            self.generic_signature_params.get(target) == null)
+        {
+            return false;
+        }
         if (!self.containsFreeTypeParameter(source) or !self.containsFreeTypeParameter(target)) return false;
         if (self.interner.signatureParams(source).len != self.interner.signatureParams(target).len) return false;
         return self.interner.signatureParams(source).len == 0;
@@ -117050,7 +117110,7 @@ pub const Checker = struct {
                     !self.jsxCommaRecoveryContains(self.hir.spanOf(b.lhs).start) and
                     !self.expressionHasObservableSideEffect(b.lhs))
                 {
-                    try self.report(b.lhs, TsCodes.comma_left_unused, "Left side of comma operator is unused and has no side effects.");
+                    try self.reportOnce(b.lhs, TsCodes.comma_left_unused, "Left side of comma operator is unused and has no side effects.");
                 }
                 if (self.hir.kindOf(b.rhs) == .arrow_fn or self.hir.kindOf(b.rhs) == .fn_expr) {
                     if (self.contextualTargetTypeForExpression(node)) |target_t| {
@@ -119611,7 +119671,6 @@ pub const Checker = struct {
     ) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) return if (subs.contains(t) or self.isThisTypeParameter(t)) null else t;
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |member| {
                 if (self.firstUnboundFreeTypeParameter(member, subs)) |tp| return tp;
@@ -119647,6 +119706,7 @@ pub const Checker = struct {
             }
             return null;
         }
+        if (flags.is_type_parameter) return if (subs.contains(t) or self.isThisTypeParameter(t)) null else t;
         return null;
     }
 
@@ -127037,7 +127097,14 @@ pub const Checker = struct {
         return false;
     }
 
-    fn genericSignaturesAlphaAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+    fn genericSignaturesAlphaAssignable(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+        strict_arity: bool,
+        strict_variance: bool,
+        ignore_return_types: bool,
+    ) CheckError!bool {
         if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
         const source_flags = self.interner.pool.flagsOf(source_t);
         const target_flags = self.interner.pool.flagsOf(target_t);
@@ -127078,13 +127145,23 @@ pub const Checker = struct {
 
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
-        if (self.signatureMinRequiredArgs(source_t, source_params) > target_params.len) return false;
+        if (strict_arity) {
+            if (source_params.len > target_params.len) return false;
+        } else if (self.signatureMinRequiredArgs(source_t, source_params) > target_params.len) {
+            return false;
+        }
         const shared_len = @min(source_params.len, target_params.len);
         for (source_params[0..shared_len], 0..) |source_param, i| {
             const target_param = try self.substituteType(target_params[i], &subs);
-            if (!(self.engine.isAssignableTo(target_param, source_param) catch false)) return false;
+            const contravariant = self.engine.isAssignableTo(target_param, source_param) catch false;
+            if (!contravariant and
+                (strict_variance or !(self.engine.isAssignableTo(source_param, target_param) catch false)))
+            {
+                return false;
+            }
         }
 
+        if (ignore_return_types) return true;
         const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
         const target_ret_raw = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
         if (target_ret_raw == types.Primitive.void_t) return true;
@@ -127106,7 +127183,13 @@ pub const Checker = struct {
         const source_params = self.generic_signature_params.get(source_t) orelse return null;
         const target_params = self.generic_signature_params.get(target_t) orelse return null;
         if (source_params.len == 0 or source_params.len != target_params.len) return null;
-        return try self.genericSignaturesAlphaAssignable(source_t, target_t);
+        return try self.genericSignaturesAlphaAssignable(
+            source_t,
+            target_t,
+            false,
+            self.strict_flags.strict_function_types,
+            false,
+        );
     }
 
     /// TypeScript contextually instantiates a generic source signature when
@@ -129614,6 +129697,17 @@ pub const Checker = struct {
     fn functionExpressionParametersAssignableToTarget(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return true;
         if (!try self.signatureThisTypesAssignable(source_t, target_t)) return false;
+        if (self.generic_signature_params.get(source_t) != null and
+            self.generic_signature_params.get(target_t) != null)
+        {
+            return try self.genericSignaturesAlphaAssignable(
+                source_t,
+                target_t,
+                false,
+                self.strict_flags.strict_function_types,
+                true,
+            );
+        }
         const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.any;
         const source_params = self.interner.signatureParams(source_t);
         const source_this = self.signatureThisParam(source_t);
@@ -136468,6 +136562,25 @@ pub const Checker = struct {
         return try self.allocCallableSignatureNameWithOptionalMode(t, true);
     }
 
+    fn signatureDeclaredOwnTypeParameterName(
+        self: *Checker,
+        signature: TypeId,
+        param_index: usize,
+    ) ?[]const u8 {
+        const param_nodes = self.signature_param_nodes.get(signature) orelse return null;
+        if (param_index >= param_nodes.len) return null;
+        const param_node = param_nodes[param_index];
+        if (self.hir.kindOf(param_node) != .parameter) return null;
+        const annotation = hir_mod.parameterOf(self.hir, param_node).type_annotation;
+        const annotation_name = self.bareTypeNodeName(annotation) orelse return null;
+        const own_params = self.generic_signature_params.get(signature) orelse return null;
+        for (own_params) |own_param| {
+            const own_name = self.interner.typeParameterName(own_param) orelse continue;
+            if (own_name == annotation_name) return self.string_interner.get(own_name);
+        }
+        return null;
+    }
+
     fn allocCallableSignatureNameWithOptionalMode(
         self: *Checker,
         t: TypeId,
@@ -136540,7 +136653,30 @@ pub const Checker = struct {
                 const reduced = try self.subtractUndefined(p);
                 if (reduced != types.Primitive.never) display_p = reduced;
             }
-            if (try self.allocSignatureConstituentDisplayName(display_p)) |pn| {
+            const own_type_param_name: ?[]const u8 = self.signatureDeclaredOwnTypeParameterName(t, i) orelse own_name: {
+                if (display_p < self.interner.pool.typeCount()) {
+                    const display_flags = self.interner.pool.flagsOf(display_p);
+                    if (display_flags.is_type_parameter and
+                        !display_flags.is_union and
+                        !display_flags.is_intersection and
+                        !display_flags.is_object_type and
+                        !display_flags.is_signature)
+                    {
+                        const display_name = self.interner.typeParameterName(display_p) orelse break :own_name null;
+                        break :own_name self.string_interner.get(display_name);
+                    }
+                }
+                const own_params = self.generic_signature_params.get(t) orelse break :own_name null;
+                for (own_params) |own_param| {
+                    if (display_p != own_param) continue;
+                    const own_name = self.interner.typeParameterName(own_param) orelse break :own_name null;
+                    break :own_name self.string_interner.get(own_name);
+                }
+                break :own_name null;
+            };
+            if (own_type_param_name) |pn| {
+                try sig_buf.appendSlice(arena, pn);
+            } else if (try self.allocSignatureConstituentDisplayName(display_p)) |pn| {
                 try sig_buf.appendSlice(arena, pn);
             } else {
                 try sig_buf.appendSlice(arena, "any");
@@ -202459,6 +202595,83 @@ test "checker: direct generic signature relations use contextual instantiation a
         }
     }
     try T.expect(saw_nested_decl_names);
+}
+
+test "checker: optional generic signature parity keeps non-strict assignment bivariant" {
+    const b = try newBoundSetup(
+        \\declare let zero: <T>() => T;
+        \\declare let optional: <T>(x?: T) => T;
+        \\declare let required: <T>(x: T) => T;
+        \\zero = optional;
+        \\optional = zero;
+        \\optional = required;
+        \\required = optional;
+        \\zero = required;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var assignment_errors: usize = 0;
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable) assignment_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), assignment_errors);
+}
+
+test "checker: optional generic signature parity retains declaration identity" {
+    const b = try newBoundSetup(
+        \\class Base {
+        \\  target: <T>() => T;
+        \\}
+        \\class Outer<T> {
+        \\  source: () => T;
+        \\  assign(base: Base) { base.target = this.source; }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var assignment_errors: usize = 0;
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable) assignment_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), assignment_errors);
+}
+
+test "checker: optional generic signature parity widens non-strict nullish arrow returns" {
+    const b = try newBoundSetup(
+        \\class Base {
+        \\  zero: <T>() => T;
+        \\  assign() { this.zero = <T>(x: T) => null; }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var saw_widened = false;
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.eql(
+                u8,
+                diagnostic.message,
+                "Type '<T>(x: T) => any' is not assignable to type '<T>() => T'.",
+            ))
+        {
+            saw_widened = true;
+        }
+    }
+    try T.expect(saw_widened);
+}
+
+test "checker: contextual inference reports each unused comma operand once" {
+    const b = try newBoundSetup(
+        \\type ObjType = { x: (p: number) => string; y: (p: string) => number };
+        \\var obj: ObjType = { x: x => (x, undefined), y: y => (y, undefined) };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var comma_errors: usize = 0;
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.comma_left_unused) comma_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 2), comma_errors);
 }
 
 test "checker: nested overloads preserve call and construct signature kinds" {
