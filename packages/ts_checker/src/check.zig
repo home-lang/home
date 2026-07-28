@@ -137364,6 +137364,7 @@ pub const Checker = struct {
     }
 
     fn reportNoOverlapComparison(self: *Checker, node: NodeId, lhs_node: NodeId, rhs_node: NodeId, lhs: TypeId, rhs: TypeId) !void {
+        if (try self.noOverlapComparisonFlowUnreachable(node)) return;
         const pos = self.adjustedComparisonDiagnosticPos(node);
         // When one operand is a literal type but the other is the
         // base primitive of a DIFFERENT family (e.g. `"foo" == 42`,
@@ -137399,6 +137400,77 @@ pub const Checker = struct {
             }
         }
         try self.reportAt(node, pos, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
+    }
+
+    fn noOverlapComparisonFlowUnreachable(self: *Checker, node: NodeId) CheckError!bool {
+        var child = node;
+        var parent = self.hir.parentOf(child);
+        var depth: u8 = 0;
+        while (parent != hir_mod.none_node_id and depth < 64) : ({
+            child = parent;
+            parent = self.hir.parentOf(parent);
+            depth += 1;
+        }) {
+            switch (self.hir.kindOf(parent)) {
+                .logical_op => {
+                    const logical = hir_mod.logicalOf(self.hir, parent);
+                    if (logical.rhs != child) continue;
+                    const lhs_result = try self.staticNoOverlapEqualityResult(logical.lhs, 0) orelse continue;
+                    if ((logical.op == .@"or" and lhs_result) or
+                        (logical.op == .@"and" and !lhs_result))
+                    {
+                        return true;
+                    }
+                },
+                .if_stmt => {
+                    const statement = hir_mod.ifOf(self.hir, parent);
+                    const cond_result = try self.staticNoOverlapEqualityResult(statement.cond, 0) orelse continue;
+                    if (statement.then_branch == child and !cond_result) return true;
+                    if (statement.else_branch == child and cond_result) return true;
+                },
+                .fn_decl, .fn_expr, .arrow_fn => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn staticNoOverlapEqualityResult(self: *Checker, node: NodeId, depth: u8) CheckError!?bool {
+        if (node == hir_mod.none_node_id or depth > 32) return null;
+        switch (self.hir.kindOf(node)) {
+            .binary_op => {
+                const binary = hir_mod.binopOf(self.hir, node);
+                switch (binary.op) {
+                    .eq, .eq_strict, .neq, .neq_strict => {},
+                    else => return null,
+                }
+                const raw_lhs = self.hir.typeOf(binary.lhs);
+                const raw_rhs = self.hir.typeOf(binary.rhs);
+                if (raw_lhs == types.Primitive.none or raw_rhs == types.Primitive.none) return null;
+                const lhs = try self.comparisonOperandType(binary.lhs, raw_lhs);
+                const rhs = try self.comparisonOperandType(binary.rhs, raw_rhs);
+                const no_overlap = !try self.typesHaveComparableOverlap(lhs, rhs) or
+                    self.templateTypesHaveNoOverlap(lhs, rhs);
+                if (!no_overlap) return null;
+                return binary.op == .neq or binary.op == .neq_strict;
+            },
+            .logical_op => {
+                const logical = hir_mod.logicalOf(self.hir, node);
+                const lhs = try self.staticNoOverlapEqualityResult(logical.lhs, depth + 1) orelse return null;
+                return switch (logical.op) {
+                    .@"or" => if (lhs)
+                        true
+                    else
+                        try self.staticNoOverlapEqualityResult(logical.rhs, depth + 1),
+                    .@"and" => if (!lhs)
+                        false
+                    else
+                        try self.staticNoOverlapEqualityResult(logical.rhs, depth + 1),
+                    .nullish => null,
+                };
+            },
+            else => return null,
+        }
     }
 
     fn tryReportInvalidTypeofComparison(self: *Checker, node: NodeId, lhs: NodeId, rhs: NodeId) CheckError!bool {
@@ -170848,6 +170920,24 @@ test "checker: incompatible string literal equality emits TS2367" {
         if (d.code == TsCodes.no_overlap_comparison) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: no-overlap inequality short-circuits later comparison diagnostics" {
+    const s = try newSetup(
+        \\interface I1 { p1: number }
+        \\interface I2 extends I1 { p2: number }
+        \\interface I3 { p3: number }
+        \\declare let y: I1 & I3;
+        \\declare let z: I2;
+        \\if (y === z || z === y) {
+        \\} else if (y !== z || z !== y) {
+        \\} else if (y == z || z == y) {
+        \\} else if (y != z || z != y) {
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.no_overlap_comparison));
 }
 
 test "checker: literal equality TS2367 names disjoint literal types" {
