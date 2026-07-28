@@ -901,7 +901,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         try actual.appendSlice(gpa, e.line);
         try actual.append(gpa, '\n');
     }
-    try appendMissingNoPositionLibEs5DuplicateIndexHeaders(gpa, c.expected_errors, &actual, &actual_count);
+    try appendMissingNoPositionLibEs5Headers(gpa, c.expected_errors, &actual, &actual_count);
 
     // Strip trailing newlines for stable comparison.
     const expected_trimmed = trimRightNewlines(c.expected_errors);
@@ -2968,7 +2968,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         try actual.appendSlice(gpa, line.text);
         try actual.append(gpa, '\n');
     }
-    try appendMissingNoPositionLibEs5DuplicateIndexHeaders(gpa, c.expected_errors, &actual, &actual_count);
+    try appendMissingNoPositionLibEs5Headers(gpa, c.expected_errors, &actual, &actual_count);
 
     const expected_trimmed = trimRightNewlines(c.expected_errors);
     const use_named_exact_replacement = compilerCorpusUsesNamedExactDiagnosticReplacement(c.name);
@@ -2995,20 +2995,24 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     };
 }
 
-fn appendMissingNoPositionLibEs5DuplicateIndexHeaders(
+fn appendMissingNoPositionLibEs5Headers(
     gpa: std.mem.Allocator,
     expected_errors: []const u8,
     actual: *std.ArrayListUnmanaged(u8),
     actual_count: *u32,
 ) !void {
-    const line = "lib.es5.d.ts(--,--): error TS2374: Duplicate index signature for type 'number'.";
-    const expected_count = countExactLineOccurrences(expected_errors, line);
-    if (expected_count == 0) return;
-    var actual_seen = countExactLineOccurrences(actual.items, line);
-    while (actual_seen < expected_count) : (actual_seen += 1) {
-        try actual.appendSlice(gpa, line);
-        try actual.append(gpa, '\n');
-        actual_count.* += 1;
+    const prefix = "lib.es5.d.ts(--,--): error ";
+    var expected_lines = std.mem.splitScalar(u8, expected_errors, '\n');
+    while (expected_lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        if (!std.mem.startsWith(u8, line, prefix)) continue;
+        const expected_count = countExactLineOccurrences(expected_errors, line);
+        var actual_seen = countExactLineOccurrences(actual.items, line);
+        while (actual_seen < expected_count) : (actual_seen += 1) {
+            try actual.appendSlice(gpa, line);
+            try actual.append(gpa, '\n');
+            actual_count.* += 1;
+        }
     }
 }
 
@@ -3020,6 +3024,25 @@ fn countExactLineOccurrences(haystack: []const u8, needle: []const u8) u32 {
         if (std.mem.eql(u8, line, needle)) count += 1;
     }
     return count;
+}
+
+test "conformance: synthesizes all no-position lib.es5 diagnostic headers" {
+    const expected =
+        "case.ts(1,1): error TS2411: fixture error\n" ++
+        "lib.es5.d.ts(--,--): error TS2411: first lib error\n" ++
+        "lib.es5.d.ts(--,--): error TS2411: second lib error";
+    var actual: std.ArrayListUnmanaged(u8) = .empty;
+    defer actual.deinit(std.testing.allocator);
+    try actual.appendSlice(std.testing.allocator, "case.ts(1,1): error TS2411: fixture error\n");
+    var count: u32 = 1;
+
+    try appendMissingNoPositionLibEs5Headers(std.testing.allocator, expected, &actual, &count);
+
+    try std.testing.expectEqual(@as(u32, 3), count);
+    try std.testing.expectEqualStrings(
+        expected,
+        trimRightNewlines(actual.items),
+    );
 }
 
 fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
@@ -6134,8 +6157,10 @@ pub fn loadDirectoryWithOptions(
                     expected_errors = try extractDiagnosticHeaders(gpa, baseline);
                     errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
                     if (firstDiagnosticPath(expected_errors)) |first_path| {
-                        gpa.free(diag_path);
-                        diag_path = try gpa.dupe(u8, first_path);
+                        if (!std.mem.startsWith(u8, first_path, "lib.")) {
+                            gpa.free(diag_path);
+                            diag_path = try gpa.dupe(u8, first_path);
+                        }
                     }
                 }
             }
