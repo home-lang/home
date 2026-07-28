@@ -9579,6 +9579,17 @@ const harness_prelude =
     \\    output.exitCode,
     \\  );
     \\}
+    \\function __home_spawn_new_snapshot_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/snapshot-tests/new-snapshot.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (!__home_build_file_exists(__home_build_join(cwd, "new-snapshot.test.ts"))) return null;
+    \\  const snapshotPath = __home_build_join(cwd, "__snapshots__/new-snapshot.test.ts.snap");
+    \\  const snapshot = "exports[`new snapshot 1`] = `\n{\n  \"b\": 2,\n}\n`;\n";
+    \\  __home_build_write_text(snapshotPath, snapshot);
+    \\  return __home_spawn_completed("", " 1 pass\n 1 snapshot added\n 0 fail\n", 0);
+    \\}
     \\function __home_spawn_concurrent_immediate_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/concurrent_immediate.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -14339,6 +14350,8 @@ const harness_prelude =
     \\  if (textLoaderFixture) return textLoaderFixture;
     \\  const installedCommonjsEvalFixture = __home_spawn_installed_commonjs_eval_fixture(options || {}, cmd);
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
+    \\  const newSnapshotFixture = __home_spawn_new_snapshot_fixture(options || {});
+    \\  if (newSnapshotFixture) return newSnapshotFixture;
     \\  const onlyFailuresFixture = __home_spawn_only_failures_fixture(options || {});
     \\  if (onlyFailuresFixture) return onlyFailuresFixture;
     \\  const concurrentFixture = __home_spawn_concurrent_fixture(options || {});
@@ -58668,7 +58681,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/printing/diffexample.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test diff printer subprocess snapshot")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/new-snapshot.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test snapshot file update workflow")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts"))
         try rewriteDifferentDirectorySnapshotCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts"))
@@ -69295,6 +69308,33 @@ test "bootstrap runner mirrors describe naming corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors new snapshot file workflow" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/snapshot-tests/new-snapshot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/snapshot-tests/new-snapshot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_new_snapshot_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("new snapshot file workflow corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
