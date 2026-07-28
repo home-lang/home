@@ -85937,24 +85937,26 @@ pub const Checker = struct {
                         static_access.receiver_t
                     else
                         try self.checkExpression(m.object);
-                    var member_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
-                    defer member_sigs.deinit(self.gpa);
-                    try self.collectNamedMemberSignatures(receiver_t, m.name, &member_sigs);
-                    if (member_sigs.items.len == 1) {
-                        effective_callee_t = member_sigs.items[0];
-                        recovered_declared_signature = true;
-                        // For optional-chain calls (`o.b?.()`) or strict-null
-                        // member calls the collected member signature can be
-                        // `fn | undefined`; mirror the callee_t narrowing so a
-                        // single-call-signature member is still recognized as
-                        // callable. The possibly-undefined case is reported
-                        // separately (TS2722). Fixes callChain `o3.b?.()`.
-                        if (call_is_optional_chain or
-                            (self.strict_flags.strict_null_checks and
-                                !self.typeIsAnyLike(effective_callee_t) and
-                                self.typeIncludesUndefined(effective_callee_t)))
-                        {
-                            effective_callee_t = self.subtractNullUndefined(effective_callee_t) catch effective_callee_t;
+                    if (!self.callCalleeAlreadyHasMissingPropertyDiagnostic(c.callee)) {
+                        var member_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+                        defer member_sigs.deinit(self.gpa);
+                        try self.collectNamedMemberSignatures(receiver_t, m.name, &member_sigs);
+                        if (member_sigs.items.len == 1) {
+                            effective_callee_t = member_sigs.items[0];
+                            recovered_declared_signature = true;
+                            // For optional-chain calls (`o.b?.()`) or strict-null
+                            // member calls the collected member signature can be
+                            // `fn | undefined`; mirror the callee_t narrowing so a
+                            // single-call-signature member is still recognized as
+                            // callable. The possibly-undefined case is reported
+                            // separately (TS2722). Fixes callChain `o3.b?.()`.
+                            if (call_is_optional_chain or
+                                (self.strict_flags.strict_null_checks and
+                                    !self.typeIsAnyLike(effective_callee_t) and
+                                    self.typeIncludesUndefined(effective_callee_t)))
+                            {
+                                effective_callee_t = self.subtractNullUndefined(effective_callee_t) catch effective_callee_t;
+                            }
                         }
                     }
                 }
@@ -86824,7 +86826,23 @@ pub const Checker = struct {
                         if (try self.broadObjectPrototypeMember(m.name)) |t| {
                             break :blk try self.optionalChainResult(t, member_is_optional_chain);
                         }
-                        try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
+                        const annotated_union = if (access_flags.is_union)
+                            self.unnarrowedAnnotatedUnionType(m.object)
+                        else
+                            null;
+                        const annotation_node = if (annotated_union != null)
+                            self.visibleAnnotatedIdentifierTypeNode(m.object)
+                        else
+                            null;
+                        if (annotation_node != null and self.hir.kindOf(annotation_node.?) == .union_type) {
+                            try self.reportPropertyDoesNotExistOnTypeText(
+                                node,
+                                m.name,
+                                try self.canonicalNamedUnionAnnotationText(annotation_node.?),
+                            );
+                        } else {
+                            try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
+                        }
                         break :blk types.Primitive.any;
                     }
                 }
@@ -156443,6 +156461,33 @@ test "checker: union call and construct signatures combine parameters and return
         }
     }
     try T.expect(saw_date_return_union);
+}
+
+test "checker: missing union members preserve generic display without argument cascade" {
+    const s = try newSetup(
+        \\interface MemberI1<T> { onlyInI1(value: string): T; }
+        \\interface MemberI2<T> { onlyInI2(value: string): T; }
+        \\declare let value: MemberI1<number> | MemberI2<number>;
+        \\value.onlyInI2(10);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    var saw_generic_union_display = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(
+                u8,
+                diagnostic.message,
+                "MemberI1<number> | MemberI2<number>",
+            ) != null)
+        {
+            saw_generic_union_display = true;
+        }
+    }
+    try T.expect(saw_generic_union_display);
 }
 
 test "checker: valid union-callable calls stay clean (no spurious TS2554)" {
