@@ -27558,10 +27558,13 @@ const harness_prelude =
     \\  return {
     \\    isNot,
     \\    promise: "",
-    \\    equals: __home_deep_equal,
+    \\    equals(received, expected) {
+    \\      return __home_deep_equal(received, expected, false, new Map());
+    \\    },
     \\    utils: {
     \\      printReceived(value) { return __home_format(value); },
     \\      printExpected(value) { return __home_format(value); },
+    \\      RECEIVED_COLOR(value) { return String(value); },
     \\    },
     \\  };
     \\}
@@ -27921,10 +27924,30 @@ const harness_prelude =
     \\    },
     \\    toEqual(expected) {
     \\      if (arguments.length < 1) __home_fail("toEqual() requires 1 argument");
+    \\      if (expected && typeof expected.asymmetricMatch === "function") {
+    \\        const result = expected.asymmetricMatch(value);
+    \\        if (__home_is_thenable(result)) {
+    \\          return Promise.resolve(result).then(pass => {
+    \\            __home_assert(!!pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\          });
+    \\        }
+    \\        __home_assert(!!result, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\        return;
+    \\      }
     \\      __home_assert(__home_deep_equal(value, expected, false, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
     \\    },
     \\    toStrictEqual(expected) {
     \\      if (arguments.length < 1) __home_fail("toStrictEqual() requires 1 argument");
+    \\      if (expected && typeof expected.asymmetricMatch === "function") {
+    \\        const result = expected.asymmetricMatch(value);
+    \\        if (__home_is_thenable(result)) {
+    \\          return Promise.resolve(result).then(pass => {
+    \\            __home_assert(!!pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
+    \\          });
+    \\        }
+    \\        __home_assert(!!result, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
+    \\        return;
+    \\      }
     \\      __home_assert(__home_deep_equal(value, expected, true, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
     \\    },
     \\    toThrow(expected) {
@@ -28351,7 +28374,15 @@ const harness_prelude =
     \\};
     \\expect.extend = function(matchers) {
     \\  if (matchers === null || typeof matchers !== "object" || matchers.__home_is_jest_object === true) throw new TypeError("expect.extend() expected an object containing matchers");
-    \\  for (const name of Object.keys(matchers)) {
+    \\  const names = [];
+    \\  let matcherSource = matchers;
+    \\  while (matcherSource && matcherSource !== Object.prototype) {
+    \\    for (const name of Object.getOwnPropertyNames(matcherSource)) {
+    \\      if (name !== "constructor" && !names.includes(name)) names.push(name);
+    \\    }
+    \\    matcherSource = Object.getPrototypeOf(matcherSource);
+    \\  }
+    \\  for (const name of names) {
     \\    const matcher = matchers[name];
     \\    if (typeof matcher !== "function") {
     \\      const type = matcher === null ? "null" : typeof matcher;
@@ -50233,6 +50264,16 @@ const harness_prelude =
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
+    \\expect.anything = function() {
+    \\  return {
+    \\    asymmetricMatch(received) {
+    \\      return received !== null && received !== undefined;
+    \\    },
+    \\    toString() {
+    \\      return "Anything";
+    \\    },
+    \\  };
+    \\};
     \\function __home_expect_string_matching(pattern, inverse) {
     \\  return {
     \\    __home_expect_string_matching: true,
@@ -57880,7 +57921,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-assertions.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-extend.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "bun test expect.extend cross-runner matcher matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect.test.js"))
         try rewriteNativeTodoCorpus(allocator, "bun test expect cross-runner matcher matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/failure-skip.test.ts"))
@@ -75283,6 +75324,34 @@ test "bootstrap runner mirrors expect.extend preload corpus" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors expect.extend matcher matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.anything = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.getOwnPropertyNames(matcherSource)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "RECEIVED_COLOR(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return __home_deep_equal(received, expected, false, new Map())") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/expect-extend.test.js");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 28 or summary.todo != 0) {
+        std.debug.print(
+            "expect.extend matcher matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 28), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 28), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
