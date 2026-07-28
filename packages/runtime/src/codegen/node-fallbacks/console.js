@@ -1,0 +1,1 @@
+var console_default=console;export{console_default as default};

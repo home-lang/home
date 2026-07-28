@@ -1,0 +1,1 @@
+import*as promises from"node:timers/promises";var{setTimeout,clearTimeout,setInterval,setImmediate,clearInterval,clearImmediate}=globalThis,_unrefActive=()=>{};export{setTimeout,setInterval,setImmediate,promises,clearTimeout,clearInterval,clearImmediate,_unrefActive};

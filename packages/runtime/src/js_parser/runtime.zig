@@ -174,10 +174,11 @@ pub const Runtime = struct {
     pub fn sourceCode() string {
         // Serve the real runtime module (`runtime.js`) directly, embedded at
         // compile time. Upstream ships a minified/tree-shaken `runtime.out.js`
-        // produced by codegen, but Home's `runtimeEmbedFile(.codegen, ...)` is a
-        // stub that returns "" (see home.zig) — so `bun:wrap` was served empty and
-        // every helper imported from it (decorators, private fields, ESM/CJS
-        // interop) failed to link at runtime. `runtime.js` is self-contained valid
+        // produced by codegen; Home embeds the un-minified `runtime.js` instead
+        // (the codegen artifact is never generated here). Before this, `bun:wrap`
+        // was served empty and every helper imported from it (decorators, private
+        // fields, ESM/CJS interop) failed to link at runtime. `runtime.js` is
+        // self-contained valid
         // ESM (all internal helpers defined inline, no imports), so JSC parses it
         // directly; the upstream minification is a size optimization, not a
         // correctness requirement. `usingHelperSource` (concatenated by the module

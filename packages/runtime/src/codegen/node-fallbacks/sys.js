@@ -1,0 +1,1 @@
+export*from"util";import*as default2 from"util";export{default2 as default};

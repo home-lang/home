@@ -2069,13 +2069,21 @@ pub fn runtimeEmbedFile(comptime root: RuntimeEmbedRoot, comptime sub_path: []co
     // EncodedJSValue/JSFunctionCall…), so TinyCC failed at the first declaration
     // with `';' expected (got '<symbol>')`. The `.src` root maps to
     // packages/runtime/src — this file's own directory — so embed those at
-    // compile time (portable). The `.codegen` root points at generated output
-    // not reachable relative to here; those callers (bun-error assets,
-    // runtime.out.js, node_fallbacks) keep the empty-string behavior.
+    // compile time (portable).
+    //
+    // The `.codegen` root originally pointed at Bun's generated build output
+    // (unreachable here), so those callers used to get "". We now vendor the
+    // fully-bundled, self-contained codegen artifacts for the pinned Bun into
+    // `packages/runtime/src/codegen/` and embed them at compile time (mirrors
+    // the `.src` path). This unblocks node builtin polyfills for browser-target
+    // bundling (node_fallbacks/*.js), the dev-server fallback error overlay
+    // (bun-error/index.js + bun-error.css, fallback-decoder.js), and the eval
+    // feedback prompt (eval/feedback.ts) — all of which previously served an
+    // empty module/asset at runtime.
     if (comptime root == .src or root == .src_eager) {
         return @embedFile(sub_path);
     }
-    return "";
+    return @embedFile("codegen/" ++ sub_path);
 }
 
 pub const HTTPThread = struct {
