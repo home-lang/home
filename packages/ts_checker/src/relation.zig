@@ -326,6 +326,11 @@ pub const Engine = struct {
     /// to a reference of `Checker.rest_signatures` so the engine sees
     /// real-time updates.
     rest_signatures: ?*const std.AutoHashMapUnmanaged(TypeId, void) = null,
+    /// Apparent uppercase `Object` instance types registered by the
+    /// checker. Values inherit this surface implicitly: absent target
+    /// members are supplied by Object.prototype, while explicit source
+    /// members must still be compatible with the inherited declaration.
+    upper_object_targets: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Current nesting depth of `computeAssignable`. Recursive generic
     /// aliases such as `type Foo<T> = T | { x: Foo<T> }` can produce a
     /// fresh `TypeId` at each instantiation level, so the
@@ -362,6 +367,10 @@ pub const Engine = struct {
 
     pub fn setRestSignatures(self: *Engine, rs: *const std.AutoHashMapUnmanaged(TypeId, void)) void {
         self.rest_signatures = rs;
+    }
+
+    pub fn registerUpperObjectTarget(self: *Engine, t: TypeId) !void {
+        try self.upper_object_targets.put(self.gpa, t, {});
     }
 
     pub fn clearRelationStackDepthOverflow(self: *Engine) void {
@@ -509,6 +518,7 @@ pub const Engine = struct {
 
     pub fn deinit(self: *Engine) void {
         self.cache.deinit();
+        self.upper_object_targets.deinit(self.gpa);
         self.source_stack.deinit(self.gpa);
         self.target_stack.deinit(self.gpa);
     }
@@ -874,6 +884,9 @@ pub const Engine = struct {
             }
             return false;
         }
+        if (self.upper_object_targets.contains(target)) {
+            return try self.computeUpperObjectAssignable(source, target);
+        }
 
         // Weak-type / common-property rule (TS2559). When the target is
         // a weak type (all members optional, no signatures/index infos —
@@ -1129,6 +1142,75 @@ pub const Engine = struct {
 
         // Primitive-vs-primitive: only identity matches at this layer.
         return false;
+    }
+
+    fn computeUpperObjectAssignable(self: *Engine, source: TypeId, target: TypeId) !bool {
+        if (source == Primitive.never or source == Primitive.any) return true;
+        if (source == Primitive.unknown) return false;
+        if (source == Primitive.null_t or source == Primitive.undefined_t or source == Primitive.void_t) {
+            return !self.strict_null_checks;
+        }
+        if (source == Primitive.object_t or
+            source == Primitive.string_t or
+            source == Primitive.number_t or
+            source == Primitive.boolean_t or
+            source == Primitive.bigint_t or
+            source == Primitive.symbol_t)
+        {
+            return true;
+        }
+        if (source >= self.pool().typeCount() or target >= self.pool().typeCount()) return false;
+        const sf = self.pool().flagsOf(source);
+        if (sf.is_string or sf.is_number or sf.is_boolean or sf.is_bigint or sf.is_symbol or sf.is_enum_literal) {
+            return true;
+        }
+        if (self.isNumericEnumNominal(source)) return true;
+        if (sf.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(source) orelse return false;
+            if (constraint == source) return false;
+            return self.isAssignableTo(constraint, target);
+        }
+        if (sf.is_intersection) {
+            const members = self.interner.intersectionMembers(source);
+            const snapshot = try self.interner.gpa.dupe(TypeId, members);
+            defer self.interner.gpa.free(snapshot);
+            for (snapshot) |member| {
+                if (!try self.computeUpperObjectAssignable(member, target)) return false;
+            }
+            return true;
+        }
+        if (sf.is_signature) return true;
+        if (!sf.is_object_type) return false;
+
+        for (self.interner.objectMembers(target)) |target_member| {
+            const source_member_t = self.interner.objectMember(source, target_member.name) orelse continue;
+            if (!try self.isAssignableTo(source_member_t, target_member.type)) return false;
+        }
+
+        const target_string = self.interner.objectStringIndex(target);
+        if (target_string != Primitive.none) {
+            for (self.interner.objectMembers(source)) |source_member| {
+                if (!try self.isAssignableTo(source_member.type, target_string)) return false;
+            }
+            const source_string = self.interner.objectStringIndex(source);
+            if (source_string != Primitive.none and !try self.isAssignableTo(source_string, target_string)) return false;
+            const source_number = self.interner.objectNumberIndex(source);
+            if (source_number != Primitive.none and !try self.isAssignableTo(source_number, target_string)) return false;
+        }
+
+        const target_number = self.interner.objectNumberIndex(target);
+        if (target_number != Primitive.none) {
+            if (self.string_interner) |si| {
+                for (self.interner.objectMembers(source)) |source_member| {
+                    const name = si.getOptional(source_member.name) orelse continue;
+                    if (!isNumericName(name)) continue;
+                    if (!try self.isAssignableTo(source_member.type, target_number)) return false;
+                }
+            }
+            const source_number = self.interner.objectNumberIndex(source);
+            if (source_number != Primitive.none and !try self.isAssignableTo(source_number, target_number)) return false;
+        }
+        return true;
     }
 
     fn isNumberLikeForEnumAssign(self: *Engine, source: TypeId) bool {
@@ -2156,7 +2238,8 @@ pub const Engine = struct {
         }
         if (self.strict_null_checks) {
             const source_members_for_index = self.interner.objectMembers(source);
-            if (target_str_idx != Primitive.none) {
+            const target_has_any_string_index = target_str_idx == Primitive.any;
+            if (target_str_idx != Primitive.none and !target_has_any_string_index) {
                 // Prefer a structural indexer; otherwise — but only
                 // when the source actually has named members — every
                 // named property must be assignable to the target's
@@ -2189,7 +2272,9 @@ pub const Engine = struct {
                     }
                 }
             }
-            if (target_num_idx != Primitive.none) {
+            if (target_num_idx != Primitive.none and
+                !(target_has_any_string_index and target_num_idx == Primitive.any))
+            {
                 // Number indexers accept either a matching source
                 // indexer, the source's string indexer (numeric keys
                 // collapse to strings at runtime), or every
@@ -2202,9 +2287,11 @@ pub const Engine = struct {
                 } else if (source_members_for_index.len == 0) {
                     return false;
                 } else if (self.string_interner) |sint| {
+                    var saw_numeric_member = false;
                     for (source_members_for_index) |sm| {
                         const name_bytes = sint.getOptional(sm.name) orelse continue;
                         if (!isNumericName(name_bytes)) continue;
+                        saw_numeric_member = true;
                         // A numeric-named optional property contributes its
                         // implicit `| undefined` to the number-index check
                         // under strictNullChecks: `{ 1?: string }` is NOT
@@ -2217,6 +2304,7 @@ pub const Engine = struct {
                         const sm_eff = try self.effectiveOptionalMemberType(sm);
                         if (!try self.isAssignableTo(sm_eff, target_num_idx)) return false;
                     }
+                    if (!saw_numeric_member) return false;
                 }
             }
             if (target_sym_idx != Primitive.none) {
@@ -2311,13 +2399,16 @@ pub const Engine = struct {
         const target_members = self.interner.objectMembers(target);
         if (self.strict_null_checks) {
             const target_str_idx = self.interner.objectStringIndex(target);
+            const target_has_any_string_index = target_str_idx == Primitive.any;
             if (target_str_idx != Primitive.none and
+                !target_has_any_string_index and
                 !try self.intersectionObjectAssignableToStringIndex(source, target_str_idx))
             {
                 return false;
             }
             const target_num_idx = self.interner.objectNumberIndex(target);
             if (target_num_idx != Primitive.none and
+                !(target_has_any_string_index and target_num_idx == Primitive.any) and
                 !try self.intersectionObjectAssignableToNumberIndex(source, target_num_idx))
             {
                 return false;
@@ -2955,6 +3046,37 @@ test "Engine: structural object — optional source prop cannot satisfy required
         .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
     });
     try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: any string index suppresses structural index requirements" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictNullChecks(true);
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const value_name = try sint.intern("value");
+    const object_t = try ti.internObjectType(&.{
+        .{ .name = value_name, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const number_any = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.none, Primitive.any, Primitive.none);
+    const string_any = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.any, Primitive.none, Primitive.none);
+    const both_any = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.any, Primitive.any, Primitive.none);
+    const string_any_number_number = try ti.internObjectTypeWithIndexAndSymbol(
+        &.{},
+        Primitive.any,
+        Primitive.number_t,
+        Primitive.none,
+    );
+
+    try T.expect(try e.isAssignableTo(number_any, string_any));
+    try T.expect(try e.isAssignableTo(object_t, string_any));
+    try T.expect(!try e.isAssignableTo(object_t, number_any));
+    try T.expect(try e.isAssignableTo(object_t, both_any));
+    try T.expect(!try e.isAssignableTo(object_t, string_any_number_number));
 }
 
 test "Engine: plain array is not assignable to fixed tuple target" {
