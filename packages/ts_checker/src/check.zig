@@ -85716,7 +85716,13 @@ pub const Checker = struct {
                 // narrowing/index lookups so the diagnostic fires
                 // even when the resolved type is identical inside
                 // and outside the class.
-                const access_obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
+                const access_obj_t = self.typeParameterBaseConstraint(obj_t) orelse obj_t;
+                const missing_access_obj_t = if (obj_t < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(obj_t).is_type_parameter and
+                    self.hir.kindOf(m.object) != .call_expr)
+                    obj_t
+                else
+                    access_obj_t;
                 if (self.genericAliasMemberIsCircularIndexedAccess(obj_t, m.name)) {
                     try self.reportExcessivelyDeepTypeInstantiationAt(node);
                     break :blk types.Primitive.any;
@@ -85930,7 +85936,7 @@ pub const Checker = struct {
                     if (try self.broadObjectPrototypeMember(m.name)) |t| {
                         break :blk try self.optionalChainResult(t, member_is_optional_chain);
                     }
-                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
                     break :blk types.Primitive.any;
                 }
                 // Lib lookup: primitive receivers consult the
@@ -85947,7 +85953,7 @@ pub const Checker = struct {
                         if (try self.primitivePrototypeMember(access_obj_t, m.name)) |t| {
                             break :blk try self.optionalChainResult(t, member_is_optional_chain);
                         }
-                        try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
                         break :blk types.Primitive.any;
                     }
                 }
@@ -86162,7 +86168,7 @@ pub const Checker = struct {
                     } else if (self.directNamespaceVariableAnnotationText(m.object)) |target_text| {
                         try self.reportPropertyDoesNotExistOnTypeText(node, m.name, target_text);
                     } else {
-                        try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
                     }
                 } else if (self.interner.pool.flagsOf(access_obj_t).is_intersection) {
                     if (try self.reportUncheckedJsUndeclaredPrivateName(node, m.name)) {
@@ -86365,7 +86371,12 @@ pub const Checker = struct {
                             break :blk try self.optionalChainResult(enum_t, element_is_optional_chain);
                         }
                     }
-                    const access_obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
+                    const access_obj_t = self.typeParameterBaseConstraint(obj_t) orelse obj_t;
+                    if (access_obj_t != obj_t) {
+                        if (try self.lookupObjectMember(access_obj_t, lit.value)) |t| {
+                            break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                        }
+                    }
                     if (self.typeHasStringPrimitivePart(access_obj_t) or
                         self.typeHasNumericPrimitivePart(access_obj_t) or
                         self.typeHasBooleanPrimitivePart(access_obj_t))
@@ -117520,6 +117531,9 @@ pub const Checker = struct {
                 if (self.typeMaybeStringLike(lhs_eff) or self.typeMaybeStringLike(rhs_eff)) {
                     break :blk types.Primitive.string_t;
                 }
+                if (lhs_eff == types.Primitive.any and rhs_eff == types.Primitive.any) {
+                    break :blk types.Primitive.any;
+                }
                 if (self.typeMaybeNumericLike(lhs_eff) and self.typeMaybeNumericLike(rhs_eff)) {
                     break :blk types.Primitive.number_t;
                 }
@@ -120776,7 +120790,10 @@ pub const Checker = struct {
         const payload_idx = self.interner.pool.payloadOf(t);
         if (flags.is_type_parameter) {
             if (self.isThisTypeParameter(t)) return;
-            if (!subs.contains(t)) try subs.put(self.gpa, t, types.Primitive.unknown);
+            if (!subs.contains(t)) {
+                const fallback = self.typeParameterBaseConstraint(t) orelse types.Primitive.unknown;
+                try subs.put(self.gpa, t, fallback);
+            }
             return;
         }
         if (flags.is_union) {
@@ -129195,7 +129212,7 @@ pub const Checker = struct {
                 }
             }
         }
-        const constraint = self.typeParameterConstraint(target_ret) orelse return false;
+        const constraint = self.typeParameterBaseConstraint(target_ret) orelse return false;
         if (constraint == target_ret or
             constraint == types.Primitive.none or
             constraint == types.Primitive.any or
@@ -144285,6 +144302,56 @@ test "checker: heritage follows type parameter chains to concrete constraints" {
     try bad.base.checker.checkSourceFile(bad.base.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(bad.base, TsCodes.property_not_assignable_to_index_type));
     try T.expectEqual(@as(usize, 1), checkerCountCode(bad.base, TsCodes.property_not_assignable_to_base));
+}
+
+test "checker: constrained property access separates lookup and diagnostic types" {
+    const b = try newBoundSetup(
+        \\class A {
+        \\    foo(): string { return ""; }
+        \\}
+        \\var holder = {
+        \\    direct: <U extends T, T extends A>(x: U): U => {
+        \\        var known = x["foo"]();
+        \\        return known + x.notHere();
+        \\    },
+        \\};
+        \\declare var make: {
+        \\    <U extends T, T extends A>(): U;
+        \\};
+        \\make().notHere();
+        \\function dateDirect<T extends Date>(x: T) {
+        \\    x.notHere();
+        \\}
+        \\declare var makeDate: {
+        \\    <T extends Date>(): T;
+        \\};
+        \\makeDate().notHere();
+        \\function anyAddition<T>(x: T): T {
+        \\    var a: any = x;
+        \\    return a + a;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = false, .no_implicit_any = false });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expect(hasDiagnosticCodeMessage(b.base, TsCodes.property_does_not_exist, "Property 'notHere' does not exist on type 'U'."));
+    try T.expect(hasDiagnosticCodeMessage(b.base, TsCodes.property_does_not_exist, "Property 'notHere' does not exist on type 'A'."));
+    try T.expect(hasDiagnosticCodeMessage(b.base, TsCodes.property_does_not_exist, "Property 'notHere' does not exist on type 'T'."));
+    try T.expect(hasDiagnosticCodeMessage(b.base, TsCodes.property_does_not_exist, "Property 'notHere' does not exist on type 'Date'."));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(b.base, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'U'."));
+}
+
+test "checker: constrained callback addition preserves generic widening" {
+    const b = try newBoundSetup(
+        \\declare function g8<T>(x: T, f: (p: T) => T): T;
+        \\const x11 = g8(1, x => x + 1);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
 }
 
 test "checker: nested function declaration is in scope in wrapped/recursive constraints" {
