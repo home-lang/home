@@ -40023,6 +40023,15 @@ const harness_prelude =
     \\  const value = (++__home_crypto_random_uuid_counter).toString(16).padStart(12, "0");
     \\  return "00000000-0000-4000-8000-" + value.slice(-12);
     \\}
+    \\function __home_crypto_timing_safe_equal(left, right) {
+    \\  const a = __home_array_buffer_view(left);
+    \\  const b = __home_array_buffer_view(right);
+    \\  if (!a || !b) throw new TypeError("The input must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView");
+    \\  if (a.byteLength !== b.byteLength) throw new RangeError("Input buffers must have the same byte length");
+    \\  let different = 0;
+    \\  for (let i = 0; i < a.byteLength; i++) different |= a[i] ^ b[i];
+    \\  return different === 0;
+    \\}
     \\const __home_crypto_constants = { RSA_NO_PADDING: 3, RSA_PKCS1_PADDING: 1, RSA_PKCS1_OAEP_PADDING: 4 };
     \\const __home_crypto_rsa_records = new WeakMap();
     \\function __home_crypto_option_key(options) {
@@ -40544,6 +40553,7 @@ const harness_prelude =
     \\  }
     \\}
     \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, DiffieHellman: __home_crypto_DiffieHellman, DiffieHellmanGroup: __home_crypto_DiffieHellmanGroup, ECDH: __home_crypto_ECDH, Hash: __home_crypto_Hash, Hmac: __home_crypto_Hmac, KeyObject: __home_crypto_KeyObject, Sign: __home_crypto_Sign, Verify: __home_crypto_Verify, constants: __home_crypto_constants, createCipheriv: __home_crypto_create_cipheriv, createDecipheriv: __home_crypto_create_decipheriv, createDiffieHellman: __home_crypto_create_diffie_hellman, createDiffieHellmanGroup: __home_crypto_create_diffie_hellman_group, createECDH: __home_crypto_create_ecdh, createHash: __home_crypto_create_hash, createHmac: __home_crypto_create_hmac, createPrivateKey: __home_crypto_create_private_key, createPublicKey: __home_crypto_create_public_key, createSecretKey: __home_crypto_create_secret_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, diffieHellman: __home_crypto_diffie_hellman, generateKey: __home_crypto_generate_key, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, generateKeySync: __home_crypto_generate_key_sync, generatePrime: __home_crypto_generate_prime, generatePrimeSync: __home_crypto_generate_prime_sync, getCiphers: __home_crypto_get_ciphers, getCurves: __home_crypto_get_curves, getDiffieHellman: __home_crypto_get_diffie_hellman, getHashes: __home_crypto_get_hashes, getRandomValues: __home_crypto_get_random_values, hash: __home_crypto_hash_one_shot, hkdf: __home_crypto_hkdf, pbkdf2: __home_crypto_pbkdf2, pbkdf2Sync: __home_crypto_pbkdf2_sync, privateDecrypt(options, data) { return __home_crypto_rsa_decrypt("private", options, data); }, privateEncrypt(options, data) { return __home_crypto_rsa_encrypt("private", options, data); }, publicDecrypt(options, data) { return __home_crypto_rsa_decrypt("public", options, data); }, publicEncrypt(options, data) { return __home_crypto_rsa_encrypt("public", options, data); }, randomBytes: __home_crypto_random_bytes, randomFill: __home_crypto_random_fill, randomFillSync: __home_crypto_random_fill_sync, randomInt: __home_crypto_random_int, randomUUID: __home_crypto_random_uuid, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
+    \\__home_crypto_module.timingSafeEqual = __home_crypto_timing_safe_equal;
     \\function __home_crypto_name(fn, name) { try { Object.defineProperty(fn, "name", { configurable: true, value: name }); } catch (error) {} }
     \\__home_crypto_name(__home_crypto_Hash, "Hash");
     \\__home_crypto_name(__home_crypto_Hmac, "Hmac");
@@ -56386,6 +56396,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { dlopen, linkSymbols } = globalThis.__home_import(\"bun:ffi\");",
         },
         .{
+            .needle = "import { ptr, read } from \"bun:ffi\";",
+            .replacement = "const { ptr, read } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
             .needle = "import { cc, CString, ptr, type FFIFunction, type Library } from \"bun:ffi\";",
             .replacement = "const { cc, CString, ptr } = globalThis.__home_import(\"bun:ffi\");",
         },
@@ -56776,6 +56790,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import assert from \"assert\";",
             .replacement = "const assert = globalThis.__home_import(\"assert\");",
+        },
+        .{
+            .needle = "import crypto from \"crypto\";",
+            .replacement = "const crypto = globalThis.__home_import(\"crypto\");",
+        },
+        .{
+            .needle = "import { statSync } from \"fs\";",
+            .replacement = "const { statSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import vm from \"node:vm\";",
+            .replacement = "const vm = globalThis.__home_import(\"node:vm\");",
         },
         .{
             .needle = "import path, { join } from \"path\";",
@@ -58773,7 +58799,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun:jsc native VM introspection")
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/domjit.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "JSC DOMJIT native intrinsic stress")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/heapStats-mimalloc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/native-constructor-identity.test.ts"))
@@ -70370,6 +70396,41 @@ test "bootstrap runner mirrors bun:jsc mimalloc heap statistics corpus" {
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors JSC DOMJIT intrinsic stress corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/jsc/domjit.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSC DOMJIT native intrinsic stress") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let iter of [1000, 10000, 100000, 1000000])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let i = 0; i < 1000000; i++)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"FFI ptr and read\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_crypto_timing_safe_equal") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("JSC DOMJIT intrinsic stress corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 46), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors spawn stdin destroy after exit corpus" {
