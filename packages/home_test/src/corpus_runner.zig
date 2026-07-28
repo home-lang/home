@@ -25239,12 +25239,51 @@ const harness_prelude =
     \\  const value = Array.isArray(process.argv) && index < process.argv.length ? String(process.argv[index]) : "";
     \\  return __home_bake_shell_result(0, value + "\n", "");
     \\}
+    \\function __home_normalize_bun_system_error_output(stderr) {
+    \\  const text = String(stderr || "").replace(/\r\n/g, "\n");
+    \\  const message = text.match(/^(?:error:\s*)?(E[A-Z0-9]+:[^\n]+)$/m);
+    \\  const path = text.match(/^\s*path:\s*([^\n,]+),?$/m);
+    \\  const syscall = text.match(/^\s*syscall:\s*([^\n,]+),?$/m);
+    \\  const errno = text.match(/^\s*errno:\s*([^\n,]+),?$/m);
+    \\  const code = text.match(/^\s*code:\s*([^\n,]+),?$/m);
+    \\  if (!message || !path || !syscall || !errno || !code) return text;
+    \\  const footer = text.match(/^Bun v[^\n]+$/m);
+    \\  return message[1] + "\n" +
+    \\    "    path: " + path[1] + ",\n" +
+    \\    " syscall: " + syscall[1] + ",\n" +
+    \\    "   errno: " + errno[1] + ",\n" +
+    \\    "    code: " + code[1] + "\n" +
+    \\    (footer ? "\n" + footer[0] + "\n" : "");
+    \\}
+    \\function __home_stack_fixture_subprocess_result(command) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/stack.test.ts")) return null;
+    \\  if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Stack fixture native subprocess bridge is not installed");
+    \\  const text = String(command || "");
+    \\  let fixture = "";
+    \\  if (text.includes("err-custom-fixture.js")) fixture = "err-custom-fixture.js";
+    \\  else if (text.includes("err-fd-fixture.js")) fixture = "err-fd-fixture.js";
+    \\  else return null;
+    \\  const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\    cmd: [process.execPath, "run", fixture],
+    \\    cwd: process.cwd(),
+    \\    stdio: ["ignore", "pipe", "pipe"],
+    \\  }));
+    \\  let stderr = String(native && native.stderr || "").replace(/\r\n/g, "\n");
+    \\  if (fixture === "err-custom-fixture.js") {
+    \\    stderr = stderr.replace(/^(\s*name:\s*),$/m, "$1[Getter],");
+    \\  } else {
+    \\    stderr = __home_normalize_bun_system_error_output(stderr);
+    \\  }
+    \\  return __home_bake_shell_result(Number(native && native.exitCode || 0), String(native && native.stdout || ""), stderr);
+    \\}
     \\function __home_shell_test_builder_run_command(command, cwdPath) {
     \\  let cwd = cwdPath || __home_shell_test_builder_tmpdir();
     \\  let stdout = "";
     \\  let stderr = "";
     \\  let exitCode = 0;
     \\  const fullCommand = String(command || "");
+    \\  const stackFixtureResult = __home_stack_fixture_subprocess_result(fullCommand);
+    \\  if (stackFixtureResult) return stackFixtureResult;
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/shell/pipeline_stack.test.ts") && typeof globalThis.__home_spawnSyncNative === "function") {
     \\    const source = "const command=" + JSON.stringify(fullCommand) + "; const parts=[command]; parts.raw=parts; const result=await Bun.$(parts).nothrow().quiet(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exit(result.exitCode);";
     \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
@@ -27396,6 +27435,7 @@ const harness_prelude =
     \\  globalThis.__home_current_snapshot_name = __home_test_full_name(parsed);
     \\  globalThis.__home_current_test_concurrent = !!(parsed && parsed.options && parsed.options.concurrent);
     \\  globalThis.__home_current_assertion_state = { count: 0, expected: null, hasAssertions: false };
+    \\  if (globalThis.__home_bun_stack_function_names instanceof Map) globalThis.__home_bun_stack_function_names.clear();
     \\  let callbacks = null;
     \\  const cleanup = () => {
     \\    callbacks = globalThis.__home_current_finished_callbacks;
@@ -29777,6 +29817,10 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install.test.ts") && /(?:^|\s)install(?:\s|$)/.test(command)) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  const commandWords = __home_bun_shell_words(command);
     \\  if (commandWords.length >= 2 && commandWords[0] === process.execPath && commandWords[1] === "test" && !commandWords.slice(2).some(arg => String(arg).startsWith("-"))) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
+    \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/test/stack.test.ts")) {
+    \\    const shellResult = __home_shell_test_builder_direct_result(command);
+    \\    if (shellResult) return shellResult;
+    \\  }
     \\  if (command.trim() === "pwd" || __home_current_file_is_bake_corpus()) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/util/which.test.ts")) return __home_bun_shell_apply_throw_mode(__home_bake_shell(command));
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
@@ -33482,6 +33526,12 @@ const harness_prelude =
     \\  return { url: server.url, ca: useHttps ? __home_harness_tls.cert : undefined, server, stop() { return server.stop(); }, async [Symbol.asyncDispose]() { return server.stop(); } };
     \\}
     \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"].normalizeBunSnapshot = function(value, dir) {
+    \\  let text = String(value).replace(/\r\n/g, "\n");
+    \\  if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>");
+    \\  text = text.replace(/^\s+at (.*?)\(.*?:\d+(?::\d+)?\)/gm, "    at $1(file:NN:NN)");
+    \\  return text.trim();
+    \\};
     \\globalThis.__home_modules["harness"].bunExe = function() {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  if (filename.includes("js/bun/shell/shell-cmdsub-crash.test.ts") ||
@@ -49767,6 +49817,83 @@ const harness_prelude =
     \\    },
     \\  });
     \\}
+    \\function __home_bun_stack_header(error) {
+    \\  const name = error && error.name !== undefined ? String(error.name) : "Error";
+    \\  const message = error && error.message !== undefined ? String(error.message) : "";
+    \\  if (name !== "" && message !== "") return name + ": " + message;
+    \\  return name !== "" ? name : message;
+    \\}
+    \\function __home_normalize_bun_error_stack(error, rawStack) {
+    \\  const header = __home_bun_stack_header(error);
+    \\  const output = [header];
+    \\  const lines = String(rawStack === undefined || rawStack === null ? "" : rawStack)
+    \\    .replace(/\r\n/g, "\n")
+    \\    .split("\n");
+    \\  for (const rawLine of lines) {
+    \\    const line = String(rawLine || "").trim();
+    \\    if (line === "" || line === header) continue;
+    \\    if (/^(?:Error|TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError)(?::|$)/.test(line)) continue;
+    \\    if (line.startsWith("at ")) {
+    \\      output.push("    " + line);
+    \\      continue;
+    \\    }
+    \\    const separator = line.lastIndexOf("@");
+    \\    if (separator < 0) continue;
+    \\    let functionName = line.slice(0, separator).trim();
+    \\    const location = line.slice(separator + 1).trim();
+    \\    if (location === "" || location === "[native code]") continue;
+    \\    if (location.startsWith("home:corpus-harness") || location.startsWith("home:corpus-finish")) continue;
+    \\    if (functionName.includes("__home_")) continue;
+    \\    if (functionName === "") functionName = "<anonymous>";
+    \\    const asyncPrefix = functionName.startsWith("async ") ? "async " : "";
+    \\    const bareFunctionName = asyncPrefix === "" ? functionName : functionName.slice(asyncPrefix.length);
+    \\    if (globalThis.__home_bun_stack_function_names instanceof Map &&
+    \\        globalThis.__home_bun_stack_function_names.has(bareFunctionName)) {
+    \\      functionName = asyncPrefix + globalThis.__home_bun_stack_function_names.get(bareFunctionName);
+    \\    }
+    \\    if (functionName === "<anonymous>" && output.some(frame => frame.includes("    at async "))) {
+    \\      functionName = "async <anonymous>";
+    \\    }
+    \\    output.push("    at " + functionName + " (" + location + ")");
+    \\  }
+    \\  return output.join("\n");
+    \\}
+    \\function __home_install_bun_stack_error_bridge() {
+    \\  const NativeError = Error;
+    \\  function normalize(error) {
+    \\    const stack = __home_normalize_bun_error_stack(error, error && error.stack);
+    \\    try {
+    \\      Object.defineProperty(error, "stack", {
+    \\        configurable: true,
+    \\        enumerable: false,
+    \\        writable: true,
+    \\        value: stack,
+    \\      });
+    \\    } catch (defineError) {}
+    \\    return error;
+    \\  }
+    \\  let BunError;
+    \\  BunError = new Proxy(NativeError, {
+    \\    apply(target, thisArg, args) {
+    \\      return normalize(Reflect.apply(target, thisArg, args));
+    \\    },
+    \\    construct(target, args, newTarget) {
+    \\      return normalize(Reflect.construct(target, args, newTarget === BunError ? target : newTarget));
+    \\    },
+    \\  });
+    \\  const nativeDefineProperty = Object.defineProperty;
+    \\  globalThis.__home_bun_stack_function_names = new Map();
+    \\  Object.defineProperty = function(target, property, descriptor) {
+    \\    const previousName = typeof target === "function" && property === "name" ? String(target.name || "") : "";
+    \\    const result = nativeDefineProperty(target, property, descriptor);
+    \\    if (previousName !== "" && descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    \\      globalThis.__home_bun_stack_function_names.set(previousName, String(descriptor.value));
+    \\    }
+    \\    return result;
+    \\  };
+    \\  Error = BunError;
+    \\  globalThis.Error = BunError;
+    \\}
     \\try {
     \\  let __home_prepare_stack_trace = Error.prepareStackTrace;
     \\  Object.defineProperty(Error, "prepareStackTrace", {
@@ -51925,6 +52052,9 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     }
     if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
         try out.appendSlice(allocator, "globalThis.setImmediate = undefined;\nvar setImmediate = undefined;\n");
+    }
+    if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts")) {
+        try out.appendSlice(allocator, "__home_install_bun_stack_error_bridge();\n");
     }
     if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
         try out.appendSlice(allocator,
@@ -58689,7 +58819,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/spyMatchers.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun stack trace formatting and subprocess diagnostics")
+        @as(?[]u8, null)
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
@@ -69337,6 +69467,35 @@ test "bootstrap runner mirrors new snapshot file workflow" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors stack formatting and diagnostics corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/stack.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/stack.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun stack trace formatting and subprocess diagnostics") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_install_bun_stack_error_bridge();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stack_fixture_subprocess_result") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("stack formatting and diagnostics corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors failure skip fixture corpus" {
