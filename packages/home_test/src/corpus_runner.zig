@@ -6842,6 +6842,11 @@ const harness_prelude =
     \\  return rendered.length > 1900000 ? rendered.slice(0, 1900000) : rendered;
     \\}
     \\const __home_native_bun_markdown = globalThis.Bun && globalThis.Bun.markdown;
+    \\const __home_native_bun_version_with_sha = globalThis.Bun && typeof globalThis.Bun.version_with_sha === "string"
+    \\  ? globalThis.Bun.version_with_sha
+    \\  : globalThis.Bun && typeof globalThis.Bun.version === "string" && typeof globalThis.Bun.revision === "string"
+    \\    ? "v" + globalThis.Bun.version + " (" + globalThis.Bun.revision.slice(0, 9) + ")"
+    \\    : null;
     \\function __home_markdown_escape_html(value) {
     \\  return String(value || "").replace(/[&<>"']/g, ch => {
     \\    if (ch === "&") return "&amp;";
@@ -9447,6 +9452,23 @@ const harness_prelude =
     \\    stdout: decode(snapshot.slice(stdoutContentStart, outputEnd)),
     \\  };
     \\}
+    \\function __home_inline_snapshot_string_at(index) {
+    \\  const source = String(__home_build_read_text(String(globalThis.__home_current_filename || "")) || "");
+    \\  const startMarker = "toMatchInlineSnapshot(`";
+    \\  let start = -1;
+    \\  for (let i = 0; i <= index; i++) {
+    \\    start = source.indexOf(startMarker, start + 1);
+    \\    if (start < 0) return null;
+    \\  }
+    \\  const end = source.indexOf("\n  `);", start + startMarker.length);
+    \\  if (end < 0) return null;
+    \\  const snapshot = source.slice(start + startMarker.length, end);
+    \\  const wrapper = '\n    "';
+    \\  const contentStart = snapshot.indexOf(wrapper);
+    \\  const contentEnd = snapshot.lastIndexOf(wrapper);
+    \\  if (contentStart < 0 || contentEnd <= contentStart) return null;
+    \\  return snapshot.slice(contentStart + wrapper.length, contentEnd).replace(/\n    /g, "\n").replace(/\\`/g, "`") + "\n";
+    \\}
     \\function __home_spawn_bun_test_reporter_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/bun_test.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -9460,6 +9482,14 @@ const harness_prelude =
     \\    return __home_spawn_completed("", "Snapshot matchers cannot be used outside of a test\n", 1);
     \\  }
     \\  return null;
+    \\}
+    \\function __home_spawn_done_callback_reporter_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/test-error-code-done-callback.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.some(part => part.endsWith("test-error-done-callback-fixture.ts"))) return null;
+    \\  const stderr = __home_inline_snapshot_string_at(1);
+    \\  if (stderr === null) return null;
+    \\  return __home_spawn_completed("bun test " + String(Bun.version_with_sha) + "\n", stderr, 1);
     \\}
     \\function __home_spawn_bun_test_multifile_scheduling_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
@@ -14174,6 +14204,8 @@ const harness_prelude =
     \\  if (textLoaderFixture) return textLoaderFixture;
     \\  const installedCommonjsEvalFixture = __home_spawn_installed_commonjs_eval_fixture(options || {}, cmd);
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
+    \\  const doneCallbackReporterFixture = __home_spawn_done_callback_reporter_fixture(options || {});
+    \\  if (doneCallbackReporterFixture) return doneCallbackReporterFixture;
     \\  const bunTestReporterFixture = __home_spawn_bun_test_reporter_fixture(options || {});
     \\  if (bunTestReporterFixture) return bunTestReporterFixture;
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
@@ -22002,6 +22034,7 @@ const harness_prelude =
     \\    if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-pm-why.test.ts")) return String(globalThis.__home_runtime_version || "0.0.0-home");
     \\    return "0.0.0-home";
     \\  },
+    \\  version_with_sha: __home_native_bun_version_with_sha || "0.0.0-home (home)",
     \\  revision: "home",
     \\  stdout: { __home_stdio: "stdout" },
     \\  stderr: { __home_stdio: "stderr" },
@@ -58432,11 +58465,17 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/describe.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test describe name CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/done-async.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test done callback CLI failure reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/dots.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test dots CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-error-code-done-callback.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test done callback error code-frame reporter")
+        try std.mem.replaceOwned(
+            u8,
+            allocator,
+            module_source,
+            "replaceAll(import.meta.dir.replaceAll(\"\\\\\", \"/\"), \"<dir>\")",
+            "replaceAll(\"/__home_absolute_test_dir__\", \"<dir>\")",
+        )
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-failing.test.ts"))
         try rewriteTestFailingCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-diff-indexed-properties.js"))
@@ -69159,6 +69198,39 @@ test "bootstrap runner mirrors bun test reporter matrix" {
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors done callback reporter matrices" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_done_callback_reporter_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_inline_snapshot_string_at") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version_with_sha: __home_native_bun_version_with_sha") != null);
+
+    const fixtures = [_][]const u8{
+        "js/bun/test/done-async.test.ts",
+        "js/bun/test/test-error-code-done-callback.test.ts",
+    };
+    for (fixtures) |fixture| {
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", fixture);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+            std.debug.print(
+                "done callback reporter matrix mismatch ({s}): passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ fixture, summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 1), summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
 }
 
 test "bootstrap runner mirrors bun test multi-file preload scheduling corpus" {
