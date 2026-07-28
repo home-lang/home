@@ -38873,6 +38873,7 @@ const harness_prelude =
     \\    if (value.cause instanceof Error) output += "\n[cause]: " + value.cause.name + ": " + value.cause.message + "\n";
     \\    return output;
     \\  }
+    \\  if (value && typeof value === "object" && typeof __home_histograms !== "undefined" && __home_histograms.has(value)) return "Histogram { count: " + value.count + ", min: " + value.min + ", max: " + value.max + " }";
     \\  if (value && typeof value === "object") {
     \\    if (seen.has(value)) return "[Circular *1]";
     \\    seen.add(value);
@@ -51916,6 +51917,97 @@ const harness_prelude =
     \\    performance.onresourcetimingbufferfull = null;
     \\  }
     \\}
+    \\function __home_histogram_error(code, message, ErrorType) {
+    \\  const error = new (ErrorType || RangeError)(message);
+    \\  error.code = code;
+    \\  return error;
+    \\}
+    \\function __home_histogram_numeric_option(value, name, fallback) {
+    \\  if (value === undefined) return fallback;
+    \\  if (typeof value !== "number" && typeof value !== "bigint") throw __home_histogram_error("ERR_INVALID_ARG_TYPE", "The \"" + name + "\" argument must be of type number or bigint", TypeError);
+    \\  return Number(value);
+    \\}
+    \\const __home_histograms = new WeakSet();
+    \\function __home_histogram(options) {
+    \\  options = options || {};
+    \\  if (options.figures !== undefined && typeof options.figures !== "number") throw __home_histogram_error("ERR_INVALID_ARG_TYPE", "The \"options.figures\" argument must be of type number", TypeError);
+    \\  this.lowest = __home_histogram_numeric_option(options.lowest, "options.lowest", 1);
+    \\  this.highest = __home_histogram_numeric_option(options.highest, "options.highest", Number.MAX_SAFE_INTEGER);
+    \\  this.figures = options.figures === undefined ? 3 : options.figures;
+    \\  if (!Number.isInteger(this.figures) || this.figures < 1 || this.figures > 5) throw __home_histogram_error("ERR_OUT_OF_RANGE", "The value of \"options.figures\" is out of range");
+    \\  if (!Number.isFinite(this.lowest) || this.lowest < 1) throw __home_histogram_error("ERR_OUT_OF_RANGE", "The value of \"options.lowest\" is out of range");
+    \\  if (!Number.isFinite(this.highest) || this.highest < this.lowest * 2) throw __home_histogram_error("ERR_OUT_OF_RANGE", "The value of \"options.highest\" is out of range");
+    \\  __home_histograms.add(this);
+    \\  Object.defineProperty(this, "__home_values", { value: [], writable: true });
+    \\  Object.defineProperty(this, "__home_exceeds", { value: 0, writable: true });
+    \\  Object.defineProperty(this, "__home_delta_start", { value: null, writable: true });
+    \\}
+    \\__home_histogram.prototype.record = function(value) {
+    \\  if (typeof value !== "number" && typeof value !== "bigint") throw __home_histogram_error("ERR_INVALID_ARG_TYPE", "The \"val\" argument must be of type number or bigint", TypeError);
+    \\  const numeric = Number(value);
+    \\  if (!Number.isFinite(numeric) || numeric < 1) throw __home_histogram_error("ERR_OUT_OF_RANGE", "The value of \"val\" is out of range");
+    \\  if (numeric > this.highest) this.__home_exceeds++;
+    \\  else this.__home_values.push(numeric);
+    \\};
+    \\__home_histogram.prototype.recordDelta = function() {
+    \\  const now = Date.now() * 1000000;
+    \\  if (this.__home_delta_start !== null) this.record(Math.max(1, now - this.__home_delta_start));
+    \\  this.__home_delta_start = now;
+    \\};
+    \\__home_histogram.prototype.reset = function() {
+    \\  this.__home_values.length = 0;
+    \\  this.__home_exceeds = 0;
+    \\  this.__home_delta_start = null;
+    \\};
+    \\__home_histogram.prototype.add = function(other) {
+    \\  if (!other || !__home_histograms.has(other)) throw __home_histogram_error("ERR_INVALID_ARG_TYPE", "The \"other\" argument must be a Histogram", TypeError);
+    \\  for (const value of other.__home_values) {
+    \\    if (value > this.highest) this.__home_exceeds++;
+    \\    else this.__home_values.push(value);
+    \\  }
+    \\  this.__home_exceeds += other.__home_exceeds;
+    \\};
+    \\__home_histogram.prototype.percentile = function(percentile) {
+    \\  const p = Number(percentile);
+    \\  if (!Number.isFinite(p) || p <= 0 || p > 100) throw __home_histogram_error("ERR_OUT_OF_RANGE", "The value of \"percentile\" is out of range");
+    \\  if (this.__home_values.length === 0) return 0;
+    \\  const sorted = this.__home_values.slice().sort((a, b) => a - b);
+    \\  return sorted[Math.max(0, Math.ceil(p * sorted.length / 100) - 1)];
+    \\};
+    \\__home_histogram.prototype.percentileBigInt = function(percentile) {
+    \\  return BigInt(Math.trunc(this.percentile(percentile)));
+    \\};
+    \\Object.defineProperties(__home_histogram.prototype, {
+    \\  count: { get() { return this.__home_values.length; } },
+    \\  countBigInt: { get() { return BigInt(this.count); } },
+    \\  min: { get() { return this.count ? Math.min(...this.__home_values) : 9223372036854776000; } },
+    \\  minBigInt: { get() { return this.count ? BigInt(Math.trunc(this.min)) : 9223372036854775807n; } },
+    \\  max: { get() { return this.count ? Math.max(...this.__home_values) : 0; } },
+    \\  maxBigInt: { get() { return BigInt(Math.trunc(this.max)); } },
+    \\  exceeds: { get() { return this.__home_exceeds; } },
+    \\  exceedsBigInt: { get() { return BigInt(this.__home_exceeds); } },
+    \\  mean: { get() { return this.count ? this.__home_values.reduce((sum, value) => sum + value, 0) / this.count : NaN; } },
+    \\  stddev: { get() { if (!this.count) return NaN; const mean = this.mean; return Math.sqrt(this.__home_values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / this.count); } },
+    \\  percentiles: { get() { return __home_histogram_percentiles(this); } },
+    \\  percentilesBigInt: { get() { return __home_histogram_percentiles(this); } },
+    \\});
+    \\function __home_histogram_percentiles(histogram) {
+    \\  const result = new Map();
+    \\  if (!histogram.count) return result;
+    \\  for (const p of [0, 50, 75, 90, 99, 100]) result.set(p, p === 0 ? histogram.minBigInt : histogram.percentileBigInt(p));
+    \\  return result;
+    \\}
+    \\__home_histogram.prototype.toJSON = function() {
+    \\  const percentiles = {};
+    \\  for (const [key, value] of this.percentiles) percentiles[key] = value;
+    \\  return { count: this.count, min: this.min, max: this.max, mean: this.mean, exceeds: this.exceeds, stddev: this.stddev, percentiles };
+    \\};
+    \\function __home_create_histogram(options) {
+    \\  return new __home_histogram(options);
+    \\}
+    \\const __home_perf_hooks_module = { performance, createHistogram: __home_create_histogram };
+    \\globalThis.__home_modules["perf_hooks"] = __home_perf_hooks_module;
+    \\globalThis.__home_modules["node:perf_hooks"] = __home_perf_hooks_module;
     \\if (typeof MessagePort !== "function") {
     \\  var MessagePort = function() {};
     \\}
@@ -56800,6 +56892,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { statSync } = globalThis.__home_import(\"fs\");",
         },
         .{
+            .needle = "import { createHistogram } from \"perf_hooks\";",
+            .replacement = "const { createHistogram } = globalThis.__home_import(\"perf_hooks\");",
+        },
+        .{
             .needle = "import vm from \"node:vm\";",
             .replacement = "const vm = globalThis.__home_import(\"node:vm\");",
         },
@@ -58841,7 +58937,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/patch/patch.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun:internal-for-testing patch internals")
     else if (std.mem.eql(u8, relative_path, "js/bun/perf_hooks/histogram.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "node:perf_hooks histogram native integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugin-namespace-drive-letter.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugins.test.ts"))
@@ -70431,6 +70527,41 @@ test "bootstrap runner mirrors JSC DOMJIT intrinsic stress corpus" {
     try std.testing.expectEqual(@as(usize, 46), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 4), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors perf_hooks histogram corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/perf_hooks/histogram.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "node:perf_hooks histogram native integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "recordDelta timing accuracy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "createHistogram({ lowest: 1n, highest: 1000n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_create_histogram") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:perf_hooks\"]") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("perf_hooks histogram corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 38), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors spawn stdin destroy after exit corpus" {
