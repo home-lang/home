@@ -58620,7 +58620,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-test.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test CLI runner behavior matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/pretty-format-overflow.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test pretty-format overflow subprocess reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/printing/diffexample.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test diff printer subprocess snapshot")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/new-snapshot.test.ts"))
@@ -69278,6 +69278,32 @@ test "bootstrap runner mirrors dots reporter matrices" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors pretty format overflow regression" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/pretty-format-overflow.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/pretty-format-overflow.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("pretty format overflow regression corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
