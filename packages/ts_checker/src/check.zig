@@ -37541,6 +37541,26 @@ pub const Checker = struct {
             }
             if (all_methods) continue;
 
+            // A run of class fields is bound declaration-by-declaration.
+            // Once the first field owns the canonical key, every later field
+            // is a duplicate, not merely the second declaration in the run.
+            // This matters for numerically equivalent spellings such as
+            // `1`, `1.0`, `1.`, and `1.00`.
+            var all_fields = true;
+            for (group_idx.items) |idx| {
+                if (entries.items[idx].kind != .field) {
+                    all_fields = false;
+                    break;
+                }
+            }
+            if (all_fields) {
+                for (group_idx.items[1..]) |idx| {
+                    const e = entries.items[idx];
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                }
+                continue;
+            }
+
             // Emit at the SECOND occurrence with that occurrence's
             // display text. For groups of 3+ (e.g. field+getter+setter)
             // we still emit just once at the second site ÃÂ¢ÃÂÃÂ tsc's
@@ -42878,6 +42898,7 @@ pub const Checker = struct {
 
     fn heritageAssignableDepth(self: *Checker, source: TypeId, target: TypeId, depth: u8) anyerror!bool {
         if (source == target) return true;
+        if (self.numberLikeAssignableToNumericEnum(source, target)) return true;
         if (depth >= 16) return self.engine.isAssignableTo(source, target);
         if (target < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target).is_type_parameter and
@@ -55204,25 +55225,26 @@ pub const Checker = struct {
     }
 
     fn normalizedIndexTypeDiagnosticName(self: *Checker, index_type: TypeId) !?[]const u8 {
-        if (index_type < self.interner.pool.typeCount() and self.interner.pool.flagsOf(index_type).is_union) {
-            var saw_number = false;
-            var numeric_only = true;
-            for (self.interner.unionMembers(index_type)) |member| {
-                if (member == types.Primitive.number_t) {
-                    saw_number = true;
-                    continue;
-                }
-                if (self.enumNameFromNominal(member) != null) continue;
-                if (member < self.interner.pool.typeCount()) {
-                    const flags = self.interner.pool.flagsOf(member);
-                    if (flags.is_enum_literal and flags.is_number) continue;
-                }
-                numeric_only = false;
-                break;
-            }
-            if (saw_number and numeric_only) return "number";
-        }
+        if (self.numericEnumUnionIncludesNumber(index_type)) return "number";
         return try self.simpleDiagnosticTypeName(index_type);
+    }
+
+    fn numericEnumUnionIncludesNumber(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        var saw_number = false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (member == types.Primitive.number_t) {
+                saw_number = true;
+                continue;
+            }
+            if (self.enumNameFromNominal(member) != null) continue;
+            if (member < self.interner.pool.typeCount()) {
+                const flags = self.interner.pool.flagsOf(member);
+                if (flags.is_enum_literal and flags.is_number) continue;
+            }
+            return false;
+        }
+        return saw_number;
     }
 
     fn formatPropertyNotAssignableToIndexType(
@@ -55240,6 +55262,13 @@ pub const Checker = struct {
         // `computedPropertyNames40_ES6.ts(8,5)` and
         // `computedPropertyNames40_ES5.ts(8,5)`.
         const prop_type_text: ?[]const u8 = blk: {
+            if (prop_type < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(prop_type).is_union)
+            {
+                if (try self.normalizedIndexTypeDiagnosticName(prop_type)) |n| {
+                    if (std.mem.eql(u8, n, "number")) break :blk n;
+                }
+            }
             if (self.declaredIndexMemberTypeName(prop_decl)) |n| break :blk n;
             if (try self.simpleDiagnosticTypeName(prop_type)) |n| break :blk n;
             if (try self.allocObjectTypeShape(prop_type)) |s| break :blk s;
@@ -72463,13 +72492,20 @@ pub const Checker = struct {
         return false;
     }
 
-    /// TypeScript permits the broad `number` type for numeric enum members so
-    /// enums remain usable as bit flags. Numeric literal sources are handled
-    /// separately and still have to match the member's value.
-    fn numberAssignableToNumericEnumLiteral(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
-        if (source_t != types.Primitive.number_t or target_t >= self.interner.pool.typeCount()) return false;
+    /// TypeScript permits broad `number` values for numeric enums and reduces
+    /// unions made only from numeric enums plus `number` to the same broad
+    /// relation. Numeric literal sources still use the member-value checks.
+    fn numberLikeAssignableToNumericEnum(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (target_t >= self.interner.pool.typeCount()) return false;
         const target_flags = self.interner.pool.flagsOf(target_t);
-        return target_flags.is_enum_literal and target_flags.is_number;
+        const target_is_numeric_enum = if (target_flags.is_enum_literal and target_flags.is_number)
+            true
+        else if (self.enumNameFromNominal(target_t)) |enum_name|
+            self.numeric_enums.contains(enum_name)
+        else
+            false;
+        if (!target_is_numeric_enum) return false;
+        return source_t == types.Primitive.number_t or self.numericEnumUnionIncludesNumber(source_t);
     }
 
     fn checkerAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -72511,7 +72547,7 @@ pub const Checker = struct {
         if (self.stringLiteralValueFromType(source_t)) |sid| {
             if (try self.stringLiteralAssignableToType(sid, target_t)) return true;
         }
-        if (self.numberAssignableToNumericEnumLiteral(source_t, target_t)) return true;
+        if (self.numberLikeAssignableToNumericEnum(source_t, target_t)) return true;
         if (try self.booleanPrimitiveAssignableToApparentObjectTarget(source_t, target_t)) return true;
         if (self.enumIdentityInfo(source_t) != null and
             self.primitiveAssertionMatchesWrapper(types.Primitive.number_t, target_t))
@@ -84023,6 +84059,7 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
+                var constructor_accessibility_failed = false;
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Symbol")) {
@@ -84047,6 +84084,7 @@ pub const Checker = struct {
                             .{self.string_interner.get(id.name)},
                         );
                         try self.report(node, TsCodes.constructor_is_private, msg);
+                        constructor_accessibility_failed = true;
                     } else if (self.protected_constructor_classes.contains(id.name) and
                         !self.nodeIsInsideClass(node, id.name) and
                         !self.nodeIsInsideSubclassOf(node, id.name))
@@ -84057,7 +84095,12 @@ pub const Checker = struct {
                             .{self.string_interner.get(id.name)},
                         );
                         try self.report(node, TsCodes.constructor_is_protected, msg);
+                        constructor_accessibility_failed = true;
                     }
+                    // Upstream resolves an inaccessible constructor through
+                    // its error-call signature. The `new` expression is
+                    // therefore `any`, and overload/arity checks stop here.
+                    if (constructor_accessibility_failed) break :blk types.Primitive.any;
                     if (self.abstract_classes.contains(id.name)) {
                         try self.report(
                             node,
@@ -174483,6 +174526,7 @@ test "checker: broad number assigns to numeric enum member but wrong literal doe
     const s = try newSetup(
         \\enum E { A, B }
         \\declare let n: number;
+        \\let whole: E = n;
         \\let a: E.A = 0;
         \\a = 2;
         \\a = n;
@@ -185739,6 +185783,14 @@ test "checker: TS2411 normalizes numeric enum unions and preserves typeof annota
         \\  [key: string]: typeof f;
         \\  value: E;
         \\}
+        \\interface K {
+        \\  [key: string]: string;
+        \\  numeric: E | number;
+        \\}
+        \\interface L {
+        \\  [key: string]: E;
+        \\  compatibleNumeric: E | number;
+        \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -185746,6 +185798,8 @@ test "checker: TS2411 normalizes numeric enum unions and preserves typeof annota
     var saw_text = false;
     var saw_callable = false;
     var saw_index_callable = false;
+    var saw_numeric_prop = false;
+    var rejected_compatible_numeric = false;
     for (s.checker.diagnostics.items) |diag| {
         if (diag.code != TsCodes.property_not_assignable_to_index_type) continue;
         if (std.mem.eql(
@@ -185763,10 +185817,20 @@ test "checker: TS2411 normalizes numeric enum unions and preserves typeof annota
             diag.message,
             "Property 'value' of type 'E' is not assignable to 'string' index type 'typeof f'.",
         )) saw_index_callable = true;
+        if (std.mem.eql(
+            u8,
+            diag.message,
+            "Property 'numeric' of type 'number' is not assignable to 'string' index type 'string'.",
+        )) saw_numeric_prop = true;
+        if (std.mem.indexOf(u8, diag.message, "Property 'compatibleNumeric'") != null) {
+            rejected_compatible_numeric = true;
+        }
     }
     try T.expect(saw_text);
     try T.expect(saw_callable);
     try T.expect(saw_index_callable);
+    try T.expect(saw_numeric_prop);
+    try T.expect(!rejected_compatible_numeric);
 }
 
 test "checker: TS2345 renders argument and parameter type names" {
@@ -186209,6 +186273,8 @@ test "checker: numeric literal duplicate keys collide regardless of formatting" 
         \\class C {
         \\  1: number;
         \\  1.0: number;
+        \\  1.: number;
+        \\  1.00: number;
         \\}
     );
     defer destroySetup(s);
@@ -186217,7 +186283,7 @@ test "checker: numeric literal duplicate keys collide regardless of formatting" 
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
     }
-    try T.expect(dup_count >= 1);
+    try T.expectEqual(@as(usize, 3), dup_count);
 }
 
 test "checker: string-named class fields collide with TS2300" {
@@ -197687,6 +197753,27 @@ test "checker: TS2674 fires for new on a class with a protected constructor" {
             try T.expectEqualStrings("Constructor of class 'C' is protected and only accessible within the class declaration.", d.message);
         }
     }
+}
+
+test "checker: inaccessible constructor calls recover as any" {
+    const s = try newSetup(
+        \\class PrivateC {
+        \\  private constructor(x: number) {}
+        \\}
+        \\const p = new PrivateC();
+        \\const pf: () => void = p.constructor;
+        \\class ProtectedC {
+        \\  protected constructor(x: number) {}
+        \\}
+        \\const q = new ProtectedC();
+        \\const qf: () => void = q.constructor;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_is_private));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_is_protected));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2673 does not fire for new inside the declaring class" {
