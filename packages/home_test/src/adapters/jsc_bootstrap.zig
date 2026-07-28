@@ -3,6 +3,8 @@ const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 
 const Io = std.Io;
+extern fn mi_stats_get_json(size: usize, buffer: ?[*:0]u8) ?[*:0]u8;
+extern fn mi_heap_dump_json(include_blocks: bool, hash_addresses: bool) ?[*:0]u8;
 // The real Bun parser cone only compiles when macros are disabled
 // (`-Denable_macros=false`). Couple the `Bun.Transpiler` API probe to that:
 // default macros-on builds keep the heuristic transpiler (faithful default,
@@ -159,6 +161,18 @@ pub const Runtime = struct {
             self.engine.currentGlobalObject(),
             "__home_spawnSyncNative",
             spawnSyncNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_mimallocStatsJsonNative",
+            mimallocStatsJsonNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_mimallocDumpJsonNative",
+            mimallocDumpJsonNative,
         );
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
@@ -4674,6 +4688,56 @@ fn spawnSyncNative(
         return null;
     };
     return result;
+}
+
+fn mimallocStatsJsonNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = argument_count;
+    _ = arguments;
+    const actual_ctx = ctx.?;
+    const json = mi_stats_get_json(0, null) orelse {
+        setException(actual_ctx, exception, "bun:jsc heapStats() could not read mimalloc statistics");
+        return null;
+    };
+    defer home_rt.mimalloc.mi_free(json);
+    return makeStringValue(actual_ctx, std.mem.span(json)) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "bun:jsc heapStats() could not return mimalloc statistics: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn mimallocDumpJsonNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const include_blocks = argument_count >= 1 and
+        arguments[0] != null and
+        extern_fns.JSValueToBoolean(actual_ctx, arguments[0]);
+    const hash_addresses = @import("builtin").mode != .Debug;
+    const json = mi_heap_dump_json(include_blocks, hash_addresses) orelse {
+        setException(actual_ctx, exception, "bun:jsc heapStats() could not read the mimalloc heap dump");
+        return null;
+    };
+    defer home_rt.mimalloc.mi_free(json);
+    return makeStringValue(actual_ctx, std.mem.span(json)) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "bun:jsc heapStats() could not return the mimalloc heap dump: {s}", .{@errorName(err)});
+        return null;
+    };
 }
 
 fn runSpawnSyncNative(

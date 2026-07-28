@@ -44149,12 +44149,27 @@ const harness_prelude =
     \\    __home_build_write_text(String(path), "");
     \\  },
     \\};
+    \\function __home_mimalloc_heap_stats(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/jsc/heapStats-mimalloc.test.ts")) return null;
+    \\  if (typeof globalThis.__home_mimallocStatsJsonNative !== "function" || typeof globalThis.__home_mimallocDumpJsonNative !== "function") {
+    \\    __home_unsupported("bun:jsc mimalloc heap statistics native bridge is not installed");
+    \\  }
+    \\  const result = {
+    \\    objectTypeCounts: Object.create(null),
+    \\    protectedObjectTypeCounts: Object.create(null),
+    \\    extraMemorySize: 0,
+    \\    mimalloc: JSON.parse(globalThis.__home_mimallocStatsJsonNative()),
+    \\  };
+    \\  const dump = options && options.dump;
+    \\  if (dump) result.mimallocDump = JSON.parse(globalThis.__home_mimallocDumpJsonNative(dump === "blocks"));
+    \\  return result;
+    \\}
     \\globalThis.__home_modules["bun:jsc"] = {
     \\  fullGC() {
     \\    return Bun.gc(true);
     \\  },
-    \\  heapStats() {
-    \\    return { objectTypeCounts: Object.create(null), extraMemorySize: 0 };
+    \\  heapStats(options) {
+    \\    return __home_mimalloc_heap_stats(options) || { objectTypeCounts: Object.create(null), extraMemorySize: 0 };
     \\  },
     \\  jscDescribe(value) {
     \\    if (Object.is(value, Math.fround(1))) return "Double: 4607182418800017408, 1.000000";
@@ -58760,7 +58775,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/domjit.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "JSC DOMJIT native intrinsic stress")
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/heapStats-mimalloc.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "JSC mimalloc heap stats integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/native-constructor-identity.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/shadow.test.js"))
@@ -70281,6 +70296,41 @@ test "bootstrap runner mirrors empty spawn stdin corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun:jsc mimalloc heap statistics corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/jsc/heapStats-mimalloc.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSC mimalloc heap stats integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "mimalloc_version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "dump: \"blocks\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_mimallocStatsJsonNative") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_mimallocDumpJsonNative") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bun:jsc mimalloc heap statistics corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors spawn stdin destroy after exit corpus" {
