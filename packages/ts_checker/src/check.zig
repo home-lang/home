@@ -38050,6 +38050,52 @@ pub const Checker = struct {
         return self.declarationName(class_node);
     }
 
+    fn unionConstituentMemberInfo(
+        self: *Checker,
+        constituent_t: TypeId,
+        prop_name: hir_mod.StringId,
+    ) ?types.ObjectMember {
+        var current_t = constituent_t;
+        var depth: usize = 0;
+        while (current_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(current_t).is_type_parameter and
+            depth < 64) : (depth += 1)
+        {
+            const constraint_t = self.typeParameterConstraint(current_t) orelse return null;
+            if (constraint_t == current_t) return null;
+            current_t = constraint_t;
+        }
+        return self.interner.objectMemberInfo(current_t, prop_name);
+    }
+
+    fn unionCommonNonPublicMemberClass(
+        self: *Checker,
+        obj_t: TypeId,
+        prop_name: hir_mod.StringId,
+        visibility: types.MemberVisibility,
+    ) ?hir_mod.StringId {
+        if (obj_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(obj_t).is_union)
+        {
+            return null;
+        }
+        var common_decl = hir_mod.none_node_id;
+        var common_class: ?hir_mod.StringId = null;
+        for (self.interner.unionMembers(obj_t)) |constituent_t| {
+            const member = self.unionConstituentMemberInfo(constituent_t, prop_name) orelse return null;
+            if (member.visibility != visibility or member.decl_node == hir_mod.none_node_id) return null;
+            if (common_decl == hir_mod.none_node_id) {
+                common_decl = member.decl_node;
+                const class_node = self.memberDeclaringClassNode(member.decl_node);
+                if (class_node == hir_mod.none_node_id) return null;
+                common_class = self.declarationName(class_node);
+            } else if (member.decl_node != common_decl) {
+                return null;
+            }
+        }
+        return common_class;
+    }
+
     fn checkPrivateMemberAccess(
         self: *Checker,
         node: NodeId,
@@ -38059,6 +38105,7 @@ pub const Checker = struct {
         const class_name = self.class_name_by_instance.get(obj_t) orelse
             self.class_name_by_static.get(obj_t) orelse
             self.objectMemberVisibilityClass(obj_t, prop_name, .private) orelse
+            self.unionCommonNonPublicMemberClass(obj_t, prop_name, .private) orelse
             self.interfaceInheritedVisibilityClass(obj_t) orelse
             return;
         // A private member is private to its DECLARING class — walk the
@@ -39132,6 +39179,8 @@ pub const Checker = struct {
         else if (self.class_name_by_static.get(obj_t)) |name|
             .{ .class_name = name, .is_static = true }
         else if (self.objectMemberVisibilityClass(obj_t, prop_name, .protected)) |name|
+            .{ .class_name = name, .is_static = false }
+        else if (self.unionCommonNonPublicMemberClass(obj_t, prop_name, .protected)) |name|
             .{ .class_name = name, .is_static = false }
         else if (self.interfaceInheritedVisibilityClass(obj_t)) |name|
             .{ .class_name = name, .is_static = false }
@@ -80680,16 +80729,34 @@ pub const Checker = struct {
             defer self.gpa.free(members);
             var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
             defer resolved.deinit(self.gpa);
+            var first_decl = hir_mod.none_node_id;
+            var saw_non_public = false;
+            var saw_distinct_declaration = false;
+            var saw_non_property_fallback = false;
             for (members) |member_t| {
                 if (try self.lookupObjectMember(member_t, name)) |t| {
                     try resolved.append(self.gpa, t);
+                    if (self.unionConstituentMemberInfo(member_t, name)) |member| {
+                        saw_non_public = saw_non_public or member.visibility != .public;
+                        if (member.decl_node == hir_mod.none_node_id) {
+                            saw_non_property_fallback = true;
+                        } else if (first_decl == hir_mod.none_node_id) {
+                            first_decl = member.decl_node;
+                        } else if (member.decl_node != first_decl) {
+                            saw_distinct_declaration = true;
+                        }
+                    } else {
+                        saw_non_property_fallback = true;
+                    }
                 } else if (self.namedPropertyIndexType(member_t, name)) |t| {
                     try resolved.append(self.gpa, t);
+                    saw_non_property_fallback = true;
                 } else {
                     return null;
                 }
             }
             if (resolved.items.len == 0) return null;
+            if (saw_non_public and (saw_distinct_declaration or saw_non_property_fallback)) return null;
             return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
         }
         if (flags.is_intersection) {
@@ -86838,7 +86905,7 @@ pub const Checker = struct {
                             try self.reportPropertyDoesNotExistOnTypeText(
                                 node,
                                 m.name,
-                                try self.canonicalNamedUnionAnnotationText(annotation_node.?),
+                                try self.canonicalNamedUnionAnnotationTextByName(annotation_node.?),
                             );
                         } else {
                             try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
@@ -116243,10 +116310,30 @@ pub const Checker = struct {
     }
 
     fn canonicalNamedUnionAnnotationText(self: *Checker, annotation: NodeId) CheckError![]const u8 {
+        return self.canonicalNamedUnionAnnotationTextInner(annotation, false);
+    }
+
+    fn canonicalNamedUnionAnnotationTextByName(
+        self: *Checker,
+        annotation: NodeId,
+    ) CheckError![]const u8 {
+        return self.canonicalNamedUnionAnnotationTextInner(annotation, true);
+    }
+
+    fn canonicalNamedUnionAnnotationTextInner(
+        self: *Checker,
+        annotation: NodeId,
+        sort_by_name: bool,
+    ) CheckError![]const u8 {
         if (self.hir.kindOf(annotation) != .union_type) {
             return try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(annotation));
         }
-        const Part = struct { node: NodeId, declaration_pos: u32, ordinal: usize };
+        const Part = struct {
+            node: NodeId,
+            declaration_pos: u32,
+            reference_name: []const u8,
+            ordinal: usize,
+        };
         var parts: std.ArrayListUnmanaged(Part) = .empty;
         defer parts.deinit(self.gpa);
         for (hir_mod.unionTypeMembers(self.hir, annotation), 0..) |member_node, ordinal| {
@@ -116258,7 +116345,12 @@ pub const Checker = struct {
                 self.hir.spanOf(decl).start
             else
                 std.math.maxInt(u32);
-            try parts.append(self.gpa, .{ .node = member_node, .declaration_pos = declaration_pos, .ordinal = ordinal });
+            try parts.append(self.gpa, .{
+                .node = member_node,
+                .declaration_pos = declaration_pos,
+                .reference_name = self.string_interner.get(ref.name),
+                .ordinal = ordinal,
+            });
         }
         var i: usize = 1;
         while (i < parts.items.len) : (i += 1) {
@@ -116266,8 +116358,13 @@ pub const Checker = struct {
             var j = i;
             while (j > 0) : (j -= 1) {
                 const previous = parts.items[j - 1];
-                if (previous.declaration_pos < part.declaration_pos or
-                    (previous.declaration_pos == part.declaration_pos and previous.ordinal < part.ordinal)) break;
+                if (sort_by_name) {
+                    const order = std.mem.order(u8, previous.reference_name, part.reference_name);
+                    if (order == .lt or (order == .eq and previous.ordinal < part.ordinal)) break;
+                } else {
+                    if (previous.declaration_pos < part.declaration_pos or
+                        (previous.declaration_pos == part.declaration_pos and previous.ordinal < part.ordinal)) break;
+                }
                 parts.items[j] = previous;
             }
             parts.items[j] = part;
@@ -156488,6 +156585,39 @@ test "checker: missing union members preserve generic display without argument c
         }
     }
     try T.expect(saw_generic_union_display);
+}
+
+test "checker: union properties reject distinct private and protected declarations" {
+    const s = try newSetup(
+        \\class AccessDefault { member = ""; }
+        \\class AccessPublic { public member = ""; }
+        \\class AccessProtected { protected member = ""; }
+        \\class AccessPrivate { private member = 0; }
+        \\class AccessBase { protected sharedProtected = ""; private sharedPrivate = ""; }
+        \\class AccessLeft extends AccessBase {}
+        \\class AccessRight extends AccessBase {}
+        \\declare let publicPair: AccessDefault | AccessPublic;
+        \\declare let protectedPair: AccessDefault | AccessProtected;
+        \\declare let privatePair: AccessPublic | AccessPrivate;
+        \\declare let privateWithIndex: AccessPrivate | { [key: string]: number };
+        \\declare let sharedPair: AccessLeft | AccessRight;
+        \\publicPair.member;
+        \\protectedPair.member;
+        \\privatePair.member;
+        \\privateWithIndex.member;
+        \\sharedPair.sharedProtected;
+        \\sharedPair.sharedPrivate;
+        \\declare let directProtected: AccessProtected;
+        \\declare let directPrivate: AccessPrivate;
+        \\directProtected.member;
+        \\directPrivate.member;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.protected_member_access));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.private_member_access));
 }
 
 test "checker: valid union-callable calls stay clean (no spurious TS2554)" {
