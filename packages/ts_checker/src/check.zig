@@ -15245,6 +15245,8 @@ pub const Checker = struct {
                     if (self.current_function_return_sig) |sig| {
                         try self.attachExpectedTypeFromSignatureReturnRelated(sig);
                     }
+                } else if (self.diagnosticExists(f.body, TsCodes.conversion_may_be_mistake)) {
+                    // The failed assertion is the primary diagnostic.
                 } else if (!object_literal_assignable and
                     !(try self.literalExpressionAssignableToTarget(f.body, declared)) and
                     !(try self.checkerAssignableTo(body_expr_t, declared)))
@@ -141969,6 +141971,7 @@ pub const Checker = struct {
 
     fn checkTypeAssertionOverlap(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
         if (self.assertionIsInsideTypedObjectLiteralVarInit(node)) return;
+        if (self.assertionTargetHasGenericArityDiagnostic(node)) return;
         if (self.typeIsAnyLike(source_t) or self.typeIsAnyLike(target_t)) return;
         if (self.assertionTargetIsFunctionObject(target_t)) return;
         if (self.nullAssertionTargetIsPermissive(target_t)) return;
@@ -141997,17 +142000,37 @@ pub const Checker = struct {
         try self.emitConversionMayBeMistake(node, source_t, target_t);
     }
 
+    fn assertionTargetHasGenericArityDiagnostic(self: *Checker, node: NodeId) bool {
+        const kind = self.hir.kindOf(node);
+        if (kind != .as_expr and kind != .type_assertion) return false;
+        const type_node = hir_mod.asExpressionOf(self.hir, node).type_node;
+        if (type_node == hir_mod.none_node_id) return false;
+        const span = self.hir.spanOf(type_node);
+        for (self.diagnostics.items) |d| {
+            if (d.code != TsCodes.generic_type_requires_args and
+                d.code != TsCodes.generic_type_requires_between_args)
+            {
+                continue;
+            }
+            const diagnostic_span = self.hir.spanOf(d.node);
+            if (diagnostic_span.start >= span.start and diagnostic_span.end <= span.end) return true;
+        }
+        return false;
+    }
+
     /// Format and emit TS2352 ("Conversion ... may be a mistake ...").
     /// When both endpoints are nameable, mirror upstream's verbose
     /// form including the "convert to 'unknown' first" hint; otherwise
     /// fall back to the bare message that pre-dated the helper.
     fn emitConversionMayBeMistake(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
-        if (try self.allocSimpleTypeName(source_t)) |source_name| {
-            if (try self.allocSimpleTypeName(target_t)) |target_name| {
+        const source_name = try self.assertionDiagnosticTypeName(node, source_t);
+        if (source_name) |source_display| {
+            const target_name = try self.assertionDiagnosticTypeName(node, target_t);
+            if (target_name) |target_display| {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Conversion of type '{s}' to type '{s}' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
-                    .{ source_name, target_name },
+                    .{ source_display, target_display },
                 );
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
@@ -142024,6 +142047,34 @@ pub const Checker = struct {
             .code = TsCodes.conversion_may_be_mistake,
             .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
         });
+    }
+
+    fn assertionDiagnosticTypeName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
+        const display = (try self.simpleDiagnosticTypeName(t)) orelse
+            (try self.allocSimpleTypeName(t)) orelse return null;
+        var namespace_names: [16][]const u8 = undefined;
+        var namespace_count: usize = 0;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id and namespace_count < namespace_names.len) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .namespace_decl) continue;
+            const name_node = hir_mod.namespaceOf(self.hir, cur).name;
+            if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) continue;
+            namespace_names[namespace_count] = self.string_interner.get(hir_mod.identifierOf(self.hir, name_node).name);
+            namespace_count += 1;
+        }
+        if (namespace_count == 0) return display;
+
+        var prefix: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        var i = namespace_count;
+        while (i > 0) {
+            i -= 1;
+            if (prefix.items.len != 0) try prefix.append(arena, '.');
+            try prefix.appendSlice(arena, namespace_names[i]);
+        }
+        try prefix.append(arena, '.');
+        if (std.mem.startsWith(u8, display, prefix.items)) return display[prefix.items.len..];
+        return display;
     }
 
     fn typeAssertionDiagnosticPos(self: *Checker, node: NodeId) ?u32 {
@@ -142190,16 +142241,13 @@ pub const Checker = struct {
     }
 
     fn nullAssertionTargetIsPermissive(self: *Checker, target_t: TypeId) bool {
-        if (self.containsFreeTypeParameter(target_t) and !self.isThisTypeParameter(target_t)) return true;
-
         const target_flags = self.interner.pool.flagsOf(target_t);
-        if (target_flags.is_object_type) {
-            const string_idx = self.interner.objectStringIndex(target_t);
-            if (self.typeIsAnyLike(string_idx)) return true;
-            const number_idx = self.interner.objectNumberIndex(target_t);
-            if (self.typeIsAnyLike(number_idx)) return true;
+        if (target_flags.is_type_parameter and
+            !self.isThisTypeParameter(target_t) and
+            self.typeParameterConstraint(target_t) == null)
+        {
+            return true;
         }
-
         return false;
     }
 
@@ -158609,17 +158657,66 @@ test "checker: invalid this assertion suppresses TS2352 cascade" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
-test "checker: null assertion to generic array target is allowed" {
+test "checker: null assertion to generic array target reports TS2352" {
     const s = try newSetup(
         \\function f<T>() {
         \\  return <T[]>null;
         \\}
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.conversion_may_be_mistake);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+}
+
+test "checker: null assertion permits only bare unconstrained type parameters" {
+    const s = try newSetup(
+        \\namespace Errors {
+        \\  export class Base { foo: string = ""; }
+        \\  export function constrained<T extends Base>() { return <T>null; }
+        \\  export function genericArray<U>() { return <U[]>null; }
+        \\  export let concrete = <Base>null;
+        \\}
+        \\function unconstrained<T>() { return <T>null; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.conversion_may_be_mistake,
+        "Conversion of type 'null' to type 'Base' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
+    ));
+}
+
+test "checker: contextual generic array assertion suppresses return cascade" {
+    const s = try newSetup(
+        \\declare function foo(a: (x: number) => string[]): typeof a;
+        \\declare function foo(a: any): any;
+        \\foo(<T, U>(x: T) => <U[]>null);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: generic assertion arity diagnostic suppresses TS2352 cascade" {
+    const s = try newSetup(
+        \\class C<T> {}
+        \\namespace M {
+        \\  export class E<T> {}
+        \\}
+        \\let c = <C>null;
+        \\let e = <M.E>null;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.generic_type_requires_args));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
 test "checker: assertion from union with overlapping constituent stays silent" {
