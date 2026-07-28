@@ -69026,9 +69026,17 @@ pub const Checker = struct {
     }
 
     fn typeIsBuiltinFunctionObject(self: *Checker, t: TypeId) bool {
+        return self.typeIsBuiltinFunctionObjectDepth(t, 0);
+    }
+
+    fn typeIsBuiltinFunctionObjectDepth(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth >= 16) return false;
         if (t >= self.interner.pool.typeCount()) return false;
         if (self.builtin_object_names.get(t)) |name| {
             if (std.mem.eql(u8, name, "Function")) return true;
+        }
+        if (self.decl_single_base.get(t)) |base_t| {
+            if (base_t != t and self.typeIsBuiltinFunctionObjectDepth(base_t, depth + 1)) return true;
         }
         if (!self.interner.pool.flagsOf(t).is_object_type) return false;
         const call_id = self.string_interner.intern("__call") catch return false;
@@ -84312,6 +84320,25 @@ pub const Checker = struct {
                 }
                 if (try self.namespaceClassInstanceTypeForNew(c.callee)) |namespace_class_t| {
                     break :blk namespace_class_t;
+                }
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const builtin_id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (std.mem.eql(u8, self.string_interner.get(builtin_id.name), "Function")) {
+                        const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+                        if (type_arg_nodes.len > 0) {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Expected 0 type arguments, but got {d}.",
+                                .{type_arg_nodes.len},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = type_arg_nodes[0],
+                                .code = TsCodes.expected_n_type_arguments,
+                                .message = msg,
+                            });
+                        }
+                        break :blk self.lowerBuiltinObjectType("Function") orelse types.Primitive.any;
+                    }
                 }
                 if (try self.checkNewConstructSignatures(node, c.callee, callee_t, args, arg_types.items)) |ret| {
                     if (self.hir.kindOf(c.callee) == .identifier) {
@@ -110209,13 +110236,19 @@ pub const Checker = struct {
         // though they pass our default `isAssignableTo` heuristic.
         const constraint_is_object = constraint == types.Primitive.object_t;
         const arg_is_nullish = arg_t == types.Primitive.null_t or arg_t == types.Primitive.undefined_t;
+        const broad_function_to_call = self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, constraint);
         var chain: []const DiagnosticChainEntry = &.{};
         if (signature_constraint) |info| {
-            if (self.typeArgSatisfiesSignatureConstraint(arg_t, info)) return;
+            if (!broad_function_to_call and self.typeArgSatisfiesSignatureConstraint(arg_t, info)) return;
             chain = try self.typeArgSignatureConstraintChain(arg_t, info);
         } else if (!constraint_is_object) {
             chain = try self.typeArgTupleConstraintChain(arg_t, constraint);
-            if (chain.len == 0 and (self.engine.isAssignableTo(arg_t, constraint) catch true)) return;
+            if (!broad_function_to_call and
+                chain.len == 0 and
+                (self.engine.isAssignableTo(arg_t, constraint) catch true))
+            {
+                return;
+            }
         } else {
             if (!arg_is_nullish and (self.engine.isAssignableTo(arg_t, constraint) catch true)) return;
             if (arg_t == types.Primitive.object_t) return;
@@ -121178,6 +121211,12 @@ pub const Checker = struct {
             if (self.tuple_trailing_variadic_types.get(t)) |variadic_t| {
                 try self.tuple_trailing_variadic_types.put(self.gpa, new_obj, try self.substituteType(variadic_t, subs));
             }
+            if (self.builtin_object_names.get(t)) |builtin_name| {
+                try self.builtin_object_names.put(self.gpa, new_obj, builtin_name);
+            }
+            if (self.decl_single_base.get(t)) |base_t| {
+                try self.decl_single_base.put(self.gpa, new_obj, try self.substituteType(base_t, subs));
+            }
             if (self.generator_type_info.get(t)) |gen| {
                 try self.generator_type_info.put(self.gpa, new_obj, .{
                     .yield_type = try self.substituteType(gen.yield_type, subs),
@@ -122818,6 +122857,7 @@ pub const Checker = struct {
         param_ts: []const TypeId,
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!void {
+        if (args.len > param_ts.len) return;
         const n = @min(args.len, @min(arg_types.len, param_ts.len));
         var i: usize = 0;
         while (i < n) : (i += 1) {
@@ -122857,7 +122897,11 @@ pub const Checker = struct {
                 }
                 if (try self.literalSatisfiesRecursiveTemplatePathConstraint(raw_constraint, candidate_t, subs)) continue;
                 if (self.functionObjectTargetAcceptsArgument(candidate_t, constraint, 0)) continue;
-                if (self.engine.isAssignableTo(candidate_t, constraint) catch true) continue;
+                if (!self.builtinFunctionSourceCannotSatisfyCallTarget(candidate_t, constraint) and
+                    (self.engine.isAssignableTo(candidate_t, constraint) catch true))
+                {
+                    continue;
+                }
                 const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                     try self.formatArgumentNotAssignable(arg_t, constraint, i);
                 try self.diagnostics.append(self.gpa, .{
@@ -122870,7 +122914,11 @@ pub const Checker = struct {
             }
             if (arg_t == types.Primitive.any or arg_t == types.Primitive.unknown or arg_t == types.Primitive.never) continue;
             if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) continue;
-            if (self.engine.isAssignableTo(arg_t, constraint) catch true) continue;
+            if (!self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, constraint) and
+                (self.engine.isAssignableTo(arg_t, constraint) catch true))
+            {
+                continue;
+            }
             const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                 try self.formatArgumentNotAssignable(arg_t, constraint, i);
             try self.diagnostics.append(self.gpa, .{
@@ -123776,6 +123824,17 @@ pub const Checker = struct {
             self.widenLiteralType(arg_t)
         else
             arg_t;
+        if (self.typeIsBuiltinFunctionObject(param_t)) {
+            const arg_text = (try self.simpleDiagnosticTypeName(display_arg_t)) orelse
+                (try self.allocSimpleTypeName(display_arg_t));
+            if (arg_text) |text| {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument of type '{s}' is not assignable to parameter of type 'Function'.",
+                    .{text},
+                );
+            }
+        }
         if (self.propertyKeyLiteralUnionPart(param_t)) |literal_param_t| {
             const arg_is_union = arg_t < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(arg_t).is_union;
@@ -123851,6 +123910,13 @@ pub const Checker = struct {
             );
         }
         if (try self.argumentCallOverloadSetNames(arg_t, param_t)) |pair| {
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                .{ pair.arg, pair.param },
+            );
+        }
+        if (try self.argumentNamedSourceToCallSignatureNames(display_arg_t, param_t)) |pair| {
             return try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -123952,6 +124018,26 @@ pub const Checker = struct {
             "Argument is not assignable to parameter at position {d}.",
             .{position},
         );
+    }
+
+    fn argumentNamedSourceToCallSignatureNames(
+        self: *Checker,
+        arg_t: TypeId,
+        param_t: TypeId,
+    ) CheckError!?struct { arg: []const u8, param: []const u8 } {
+        if (arg_t >= self.interner.pool.typeCount()) return null;
+        const arg_flags = self.interner.pool.flagsOf(arg_t);
+        if (!arg_flags.is_type_parameter and
+            !self.objectHasCallOrConstructSignature(arg_t) and
+            !self.typeIsBuiltinFunctionObject(arg_t))
+        {
+            return null;
+        }
+        if (self.typeIsBuiltinFunctionObject(param_t)) return null;
+        const param_sig = self.firstSignatureType(param_t) orelse return null;
+        const arg_text = (try self.allocSimpleTypeName(arg_t)) orelse return null;
+        const param_text = (try self.allocCallableSignatureName(param_sig)) orelse return null;
+        return .{ .arg = arg_text, .param = param_text };
     }
 
     fn argumentConstructSignatureNames(
@@ -127376,6 +127462,7 @@ pub const Checker = struct {
         if (self.sameTypeParameterName(arg_t, param_t)) return true;
         if (try self.sameEnclosingTypeParameterDisplay(arg_node, arg_t, param_t)) return true;
         if (self.functionObjectTargetAcceptsArgument(arg_t, param_t, 0)) return true;
+        if (self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, param_t)) return false;
         if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
@@ -127479,6 +127566,12 @@ pub const Checker = struct {
         }
         if (!self.typeIsBuiltinFunctionObject(target_t)) return false;
         return self.typeIsCallableOrConstructable(source_t, depth + 1);
+    }
+
+    fn builtinFunctionSourceCannotSatisfyCallTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        return self.typeIsBuiltinFunctionObject(source_t) and
+            self.firstSignatureType(target_t) != null and
+            !self.typeIsBuiltinFunctionObject(target_t);
     }
 
     fn typeIsCallableOrConstructable(self: *Checker, t: TypeId, depth: u8) bool {
@@ -144094,6 +144187,49 @@ test "checker: Function constraints accept callable and constructable arguments"
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+}
+
+test "checker: Function constraint failures keep upstream call diagnostics" {
+    const b = try newBoundSetup(
+        \\function accept<T extends Function>(value: T): T { return value; }
+        \\accept(1);
+        \\accept(1, () => {});
+        \\function narrow<T extends (x: string) => string>(value: T): T { return value; }
+        \\declare const broad: Function;
+        \\class C { value = ""; }
+        \\declare const constructable: { new (x: string): string };
+        \\interface F2 extends Function { value: string; }
+        \\declare const f2: F2;
+        \\narrow(broad);
+        \\narrow(new Function());
+        \\narrow(C);
+        \\narrow(constructable);
+        \\narrow(f2);
+        \\function forward<T extends { (): void }, U extends T>(x: T, y: U) {
+        \\    narrow(x);
+        \\    narrow(y);
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 8), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.expected_n_arguments));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'number' is not assignable to parameter of type 'Function'.",
+    ));
+    const call_target = "(x: string) => string";
+    const expected_sources = [_][]const u8{ "Function", "typeof C", "new (x: string) => string", "F2", "T", "U" };
+    for (expected_sources) |source| {
+        const message = try std.fmt.allocPrint(
+            T.allocator,
+            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+            .{ source, call_target },
+        );
+        defer T.allocator.free(message);
+        try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.argument_type_mismatch, message));
+    }
 }
 
 test "checker: nested function declaration is in scope in wrapped/recursive constraints" {
