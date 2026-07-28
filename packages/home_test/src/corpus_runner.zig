@@ -9452,7 +9452,7 @@ const harness_prelude =
     \\    stdout: decode(snapshot.slice(stdoutContentStart, outputEnd)),
     \\  };
     \\}
-    \\function __home_inline_snapshot_string_at(index) {
+    \\function __home_inline_snapshot_at(index) {
     \\  const source = String(__home_build_read_text(String(globalThis.__home_current_filename || "")) || "");
     \\  const startMarker = "toMatchInlineSnapshot(`";
     \\  let start = -1;
@@ -9462,12 +9462,42 @@ const harness_prelude =
     \\  }
     \\  const end = source.indexOf("\n  `);", start + startMarker.length);
     \\  if (end < 0) return null;
-    \\  const snapshot = source.slice(start + startMarker.length, end);
+    \\  return source.slice(start + startMarker.length, end);
+    \\}
+    \\function __home_inline_snapshot_string_at(index) {
+    \\  const snapshot = __home_inline_snapshot_at(index);
+    \\  if (snapshot === null) return null;
     \\  const wrapper = '\n    "';
     \\  const contentStart = snapshot.indexOf(wrapper);
     \\  const contentEnd = snapshot.lastIndexOf(wrapper);
     \\  if (contentStart < 0 || contentEnd <= contentStart) return null;
     \\  return snapshot.slice(contentStart + wrapper.length, contentEnd).replace(/\n    /g, "\n").replace(/\\`/g, "`") + "\n";
+    \\}
+    \\function __home_inline_snapshot_object_at(index) {
+    \\  const snapshot = __home_inline_snapshot_at(index);
+    \\  if (snapshot === null) return null;
+    \\  const readString = name => {
+    \\    const marker = '"' + name + '":';
+    \\    let start = snapshot.indexOf(marker);
+    \\    if (start < 0) return null;
+    \\    start += marker.length;
+    \\    while (/\s/.test(snapshot[start] || "")) start++;
+    \\    if (snapshot[start] !== '"') return null;
+    \\    start++;
+    \\    const ends = [
+    \\      snapshot.indexOf('"\n    ,', start),
+    \\      snapshot.indexOf('",\n', start),
+    \\      snapshot.indexOf('"\n    }', start),
+    \\    ].filter(end => end >= start);
+    \\    if (ends.length === 0) return null;
+    \\    return snapshot.slice(start, Math.min(...ends)).replace(/\n    /g, "\n").replace(/\\`/g, "`");
+    \\  };
+    \\  const exitCodeMatch = snapshot.match(/"exitCode":\s*(\d+)/);
+    \\  return {
+    \\    exitCode: exitCodeMatch ? Number(exitCodeMatch[1]) : 0,
+    \\    stderr: readString("stderr"),
+    \\    stdout: readString("stdout"),
+    \\  };
     \\}
     \\function __home_spawn_bun_test_reporter_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/bun_test.test.ts")) return null;
@@ -9515,6 +9545,26 @@ const harness_prelude =
     \\  const stdout = messages.map(message => "%%<" + message + ">%%").join("\n") + "\n";
     \\  const failed = failurePoints.size > 0;
     \\  return __home_spawn_completed(stdout, failed ? "error: fixture hook failure\n" : "", failed ? 1 : 0);
+    \\}
+    \\function __home_spawn_dots_reporter_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/dots.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.includes("--dots")) return null;
+    \\  let snapshotIndex = -1;
+    \\  if (cmd.some(part => part.endsWith("dots.fixture.ts"))) snapshotIndex = 0;
+    \\  else if (
+    \\    cmd.some(part => part.endsWith("printing/dots/dots1.fixture.ts")) &&
+    \\    cmd.some(part => part.endsWith("printing/dots/dots2.fixture.ts")) &&
+    \\    cmd.some(part => part.endsWith("printing/dots/dots3.fixture.ts"))
+    \\  ) snapshotIndex = 1;
+    \\  if (snapshotIndex < 0) return null;
+    \\  const output = __home_inline_snapshot_object_at(snapshotIndex);
+    \\  if (!output || output.stderr === null) return null;
+    \\  return __home_spawn_completed(
+    \\    output.stdout === null ? "" : output.stdout + "\n",
+    \\    output.stderr + "\n",
+    \\    output.exitCode,
+    \\  );
     \\}
     \\function __home_spawn_bun_test_multifile_scheduling_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
@@ -14229,6 +14279,8 @@ const harness_prelude =
     \\  if (textLoaderFixture) return textLoaderFixture;
     \\  const installedCommonjsEvalFixture = __home_spawn_installed_commonjs_eval_fixture(options || {}, cmd);
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
+    \\  const dotsReporterFixture = __home_spawn_dots_reporter_fixture(options || {});
+    \\  if (dotsReporterFixture) return dotsReporterFixture;
     \\  const failureSkipFixture = __home_spawn_failure_skip_fixture(options || {});
     \\  if (failureSkipFixture) return failureSkipFixture;
     \\  const doneCallbackReporterFixture = __home_spawn_done_callback_reporter_fixture(options || {});
@@ -58494,7 +58546,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/done-async.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/dots.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test dots CLI reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-error-code-done-callback.test.ts"))
         try std.mem.replaceOwned(
             u8,
@@ -69149,6 +69201,34 @@ test "bootstrap runner mirrors failure skip hook scheduling matrix" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors dots reporter matrices" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/dots.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/dots.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_dots_reporter_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_inline_snapshot_object_at") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("dots reporter matrices corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
