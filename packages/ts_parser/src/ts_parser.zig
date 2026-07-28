@@ -11946,8 +11946,11 @@ pub const Parser = struct {
         defer method_optionality.deinit(self.gpa);
         var accessor_pairs = std.AutoHashMapUnmanaged(hir_mod.StringId, AccessorPair){};
         defer accessor_pairs.deinit(self.gpa);
+        var first_member_token: ?Token = null;
+        var reported_mapped_member = false;
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
+            if (first_member_token == null) first_member_token = t;
             // A statement in an anonymous object type used as a return
             // annotation terminates that type's recovery. In
             // `function f(x): x is { return true; }`, TypeScript consumes
@@ -12016,6 +12019,15 @@ pub const Parser = struct {
                 if (try self.tryParseIndexSignature(out, false, false)) {
                     if (self.type_member_list_leave_close) return true;
                     continue;
+                }
+                if (!reported_mapped_member and
+                    t.kind == .open_bracket and
+                    self.peekAt(1).kind == .identifier and
+                    self.peekAt(2).kind == .kw_in)
+                {
+                    const anchor = first_member_token orelse t;
+                    try self.reportCodeAt(anchor.span.start, anchor.line, 7061, "A mapped type may not declare properties or methods.");
+                    reported_mapped_member = true;
                 }
                 if (try self.tryParseComputedTypeMember(out, false)) continue;
                 // Not an index signature or supported computed key.
@@ -12461,6 +12473,8 @@ pub const Parser = struct {
         const start_tok = self.peek();
         if (self.peek().kind != .open_bracket) return false;
         if (self.computedTypeMemberLooksMalformedIndexSignature()) return false;
+        const is_mapped_member_syntax =
+            self.peekAt(1).kind == .identifier and self.peekAt(2).kind == .kw_in;
         _ = self.advance();
         const key_expr = self.parseExpression() catch {
             self.cursor = checkpoint;
@@ -12486,10 +12500,12 @@ pub const Parser = struct {
                 // `computedPropertyNamesDeclarationEmit3_ES{5,6}` for
                 // `["" + ""](): void` inside `interface I` and DE4 for
                 // the same shape inside `var v: { ... }`.
-                if (self.parsing_interface_body) {
-                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
-                } else {
-                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1170, "A computed property name in a type literal must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+                if (!is_mapped_member_syntax) {
+                    if (self.parsing_interface_body) {
+                        try self.reportCodeAt(start_tok.span.start, start_tok.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+                    } else {
+                        try self.reportCodeAt(start_tok.span.start, start_tok.line, 1170, "A computed property name in a type literal must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+                    }
                 }
                 break :blk @as(hir_mod.StringId, 0);
             }
@@ -31589,6 +31605,35 @@ test "parser: TS7061 fires for a method declared in a mapped type" {
 
     const d = findDiag(s, 7061) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("A mapped type may not declare properties or methods.", d.message);
+}
+
+test "parser: TS7061 recognizes mapped syntax after a type member" {
+    var s = try newTestSetup(
+        \\type M = {
+        \\  ordinary: string;
+        \\  [K in Keys]: number;
+        \\};
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const d = findDiag(s, 7061) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 1), countDiag(s, 7061));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1170));
+    try T.expectEqual(@as(u32, 2), d.line);
+}
+
+test "parser: TS7061 classifies mapped syntax in interfaces" {
+    var s = try newTestSetup(
+        \\interface M {
+        \\  [K in Keys]: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 7061));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1169));
 }
 
 test "parser: TS7061 stays clean for a well-formed mapped type" {

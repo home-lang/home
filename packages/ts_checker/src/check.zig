@@ -18672,6 +18672,14 @@ pub const Checker = struct {
         return false;
     }
 
+    fn computedClassMemberIsMappedTypeSyntax(self: *Checker, key: NodeId) bool {
+        if (key == hir_mod.none_node_id or self.hir.kindOf(key) != .binary_op) return false;
+        const binary = hir_mod.binopOf(self.hir, key);
+        if (binary.op != .in or self.hir.kindOf(binary.lhs) != .identifier or self.hir.kindOf(binary.rhs) != .identifier) return false;
+        const rhs_name = hir_mod.identifierOf(self.hir, binary.rhs).name;
+        return self.typeAliasDeclForNameAt(rhs_name, key) != null;
+    }
+
     /// Returns true when the class field's source text contains a
     /// definite-assignment assertion (`!`) immediately after the
     /// member name and before the `:` type annotation. Examples:
@@ -33605,8 +33613,16 @@ pub const Checker = struct {
                         (op.value != hir_mod.none_node_id and
                             (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) and
                             self.memberSourceLooksMethod(m));
+                    const is_mapped_member_syntax = op_is_computed and self.computedClassMemberIsMappedTypeSyntax(op.key);
                     var computed_op_key_t: TypeId = types.Primitive.none;
-                    if (op_is_computed) {
+                    if (is_mapped_member_syntax) {
+                        try self.report(m, 7061, "A mapped type may not declare properties or methods.");
+                        const binary = hir_mod.binopOf(self.hir, op.key);
+                        const lhs = hir_mod.identifierOf(self.hir, binary.lhs);
+                        const rhs = hir_mod.identifierOf(self.hir, binary.rhs);
+                        try self.reportCannotFindNamePlain(binary.lhs, lhs.name);
+                        try self.reportTypeOnlyUsedAsValueOnce(binary.rhs, rhs.name);
+                    } else if (op_is_computed) {
                         const tp_ref_node = self.computedNameTypeParamReferenceNode(op.key, type_params);
                         if (tp_ref_node != hir_mod.none_node_id) {
                             try self.report(tp_ref_node, 2467, "A computed property name cannot reference a type parameter from its containing type.");
@@ -33720,7 +33736,7 @@ pub const Checker = struct {
                             dynamic_initializer_checked = true;
                             break :blk try self.checkExpression(op.value);
                         } else types.Primitive.none;
-                        if (op_is_computed and !op_is_method and dynamic_field_t != types.Primitive.none) {
+                        if (op_is_computed and !is_mapped_member_syntax and !op_is_method and dynamic_field_t != types.Primitive.none) {
                             const dynamic_string_idx: *TypeId = if (op.is_static) &static_string_idx else &string_idx;
                             const dynamic_number_idx: *TypeId = if (op.is_static) &static_number_idx else &number_idx;
                             const dynamic_symbol_idx: *TypeId = if (op.is_static) &static_symbol_idx else &symbol_idx;
@@ -71083,7 +71099,13 @@ pub const Checker = struct {
             } else {
                 if (!contextual_literal_diag_emitted) {
                     try self.checkRemappedMappedIndexedDecl(node, declared_type, v.init);
-                    try self.checkGenericValueMappedTargetDecl(node, v.type_annotation, init_type, v.init);
+                    try self.checkGenericValueMappedTargetDecl(
+                        if (v.name != hir_mod.none_node_id) v.name else node,
+                        v.type_annotation,
+                        declared_type,
+                        init_type,
+                        v.init,
+                    );
                 }
             }
             // TS2353: fresh-object-literal excess-property check.
@@ -126961,8 +126983,9 @@ pub const Checker = struct {
 
     fn checkGenericValueMappedTargetDecl(
         self: *Checker,
-        node: NodeId,
+        diagnostic_node: NodeId,
         type_annotation: NodeId,
+        declared_type: TypeId,
         init_type: TypeId,
         init_node: NodeId,
     ) !void {
@@ -126987,7 +127010,28 @@ pub const Checker = struct {
 
         const m = hir_mod.mappedTypeOf(self.hir, info.body_node);
         if (!self.mappedTargetRequiresGenericSourceCheck(m)) return;
-        try self.reportOnce(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+        const source_name = (try self.allocSimpleTypeName(init_type)) orelse
+            return try self.reportTypeNotAssignable(
+                diagnostic_node,
+                init_type,
+                declared_type,
+                "Type is not assignable to declared type.",
+            );
+        const target_name = std.mem.trim(u8, self.nodeSourceTextOrEmpty(type_annotation), " \t\r\n");
+        if (target_name.len == 0) {
+            return try self.reportTypeNotAssignable(
+                diagnostic_node,
+                init_type,
+                declared_type,
+                "Type is not assignable to declared type.",
+            );
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(diagnostic_node, TsCodes.type_not_assignable, msg);
     }
 
     fn mappedTargetRequiresGenericSourceCheck(self: *Checker, m: hir_mod.MappedTypePayload) bool {
@@ -206421,4 +206465,44 @@ test "checker: expanding recursive generic assignments are rejected" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: mapped generic declaration mismatch names source and target" {
+    const s = try newSetup(
+        \\type Modify<T> = { [P in keyof T as P extends string ? `bool${P}` : P]: T[P] };
+        \\function assign<T>(value: T) {
+        \\  let modified: Modify<T> = value;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqualStrings(
+        "Type 'T' is not assignable to type 'Modify<T>'.",
+        checkerFirstMessageForCode(s, TsCodes.type_not_assignable) orelse return error.MissingDiagnostic,
+    );
+}
+
+test "checker: mapped syntax in class fields uses TS7061" {
+    const s = try newSetup(
+        \\type Keys = "a" | "b";
+        \\class C {
+        \\  [K in Keys]: any;
+        \\}
+        \\const D = class {
+        \\  [K in Keys]: any;
+        \\};
+        \\const E = class {
+        \\  [K in "a" | "b"]: any;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 7061));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 1166));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_only_used_as_value));
 }
