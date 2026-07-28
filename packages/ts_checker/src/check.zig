@@ -62586,6 +62586,7 @@ pub const Checker = struct {
                 // to round-trip through `lowererLowerWithTypeParams`.
                 const ft = hir_mod.fnTypeOf(self.hir, type_node);
                 const ft_type_params = self.hir.childSlice(ft.type_params_start, ft.type_params_len);
+                try self.checkTypeParameterDeclList(ft_type_params);
                 if (ft_type_params.len > 0) try self.pushNarrowScope();
                 defer if (ft_type_params.len > 0) self.popNarrowScope();
                 for (ft_type_params) |tp| {
@@ -125631,6 +125632,9 @@ pub const Checker = struct {
 
         for (names.items, 0..) |name, i| {
             if (!self.typeParameterConstraintHasCycle(name, names.items, constraints.items, i)) continue;
+            const tp = hir_mod.typeParameterOf(self.hir, type_params[i]);
+            const target_node = if (tp.constraint != hir_mod.none_node_id) tp.constraint else type_params[i];
+            if (self.diagnosticExists(target_node, TsCodes.circular_constraint)) continue;
             // Include the parameter name so the message matches
             // upstream's `Type parameter 'T' has a circular constraint.`
             // shape. Mirrors `intrinsicKeyword.ts` baseline.
@@ -125644,8 +125648,6 @@ pub const Checker = struct {
             // exists (e.g. column of `T` in `<U extends T, ...>`),
             // mirroring upstream's reporting position from
             // `typeParameterIndirectlyConstrainedToItself.ts`.
-            const tp = hir_mod.typeParameterOf(self.hir, type_params[i]);
-            const target_node = if (tp.constraint != hir_mod.none_node_id) tp.constraint else type_params[i];
             const related = if (self.circularConstraintOriginNode(name, names.items, constraints.items, type_params, i)) |origin_node|
                 try self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
                     .node = origin_node,
@@ -198605,6 +198607,19 @@ test "checker: circular type-parameter constraints carry TS2751 related info" {
     }
     try T.expectEqual(@as(usize, 2), found_primary);
     try T.expectEqual(@as(usize, 2), found_related);
+}
+
+test "checker: call and construct signatures report circular type-parameter constraints once" {
+    const s = try newSetup(
+        \\let signatures: {
+        \\  <T extends T>(): void;
+        \\  new <U extends V, V extends U>(): object;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.circular_constraint));
 }
 
 test "checker: TS2716 stays silent for a non-circular default referencing an earlier parameter" {
