@@ -1840,15 +1840,10 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
         try src.appendSlice(allocator, "\n");
     }
 
-    // Write to a temp module and run it through the full VM.
-    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
-    // Bun parses inline eval as TypeScript even when runtime flags precede
-    // `-e` (the security-scanner bootstrap relies on this for its type-only
-    // declarations), so keep the temp module on the TypeScript loader path.
-    const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.ts", .{std.c.getpid()}) catch
-        return false;
-    Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items }) catch return false;
-    runFileViaVMOpts(allocator, tmp_path, &.{}, true) catch |err| {
+    // Bun evaluates inline code as a virtual `<cwd>/[eval]` TypeScript module.
+    // Keeping that synthetic path is important: relative imports in `-e`
+    // resolve from the caller's cwd, not from an implementation temp directory.
+    runFileViaVMOpts(allocator, "[eval]", &.{}, true, src.items) catch |err| {
         std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
         std.process.exit(1);
     };
@@ -1858,8 +1853,8 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
 /// Run `home -e <code>` (no `--print`) through the FULL VirtualMachine — the
 /// same faithful path as a `.ts`/`.js` file run — instead of the reduced
 /// `evalCommand` shim engine. `bun -e` treats inline source as TypeScript by
-/// default, so the code is written to a `.ts` temp and the VM's real transpiler
-/// strips the types. This gives inline eval the complete Bun runtime (real
+/// default, so the code is exposed through the VM's virtual `[eval]` module and
+/// the real transpiler strips the types. This gives inline eval the complete Bun runtime (real
 /// globals) and, crucially, the faithful uncaught-error printer (source preview
 /// + stack + version footer, lone-surrogate-safe) rather than the shim's bare
 /// `error: <message>` line. `extra_args` become `process.argv[2..]`.
@@ -1872,11 +1867,7 @@ fn runInlineEvalViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args
     try src.appendSlice(allocator, code);
     try src.appendSlice(allocator, "\n");
 
-    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.ts", .{std.c.getpid()}) catch
-        return error.NameTooLong;
-    try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items });
-    try runFileViaVMOpts(allocator, tmp_path, extra_args, true);
+    try runFileViaVMOpts(allocator, "[eval]", extra_args, true, src.items);
 }
 
 /// Preload modules named via `--require`/`-r`/`--preload` on the implicit-run
@@ -1889,10 +1880,16 @@ var g_user_preloads: []const []const u8 = &.{};
 var g_user_conditions: []const []const u8 = &.{};
 
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
-    return runFileViaVMOpts(allocator, file_path, extra_args, false);
+    return runFileViaVMOpts(allocator, file_path, extra_args, false, null);
 }
 
-fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8, inject_node_globals: bool) !void {
+fn runFileViaVMOpts(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    extra_args: []const [:0]const u8,
+    inject_node_globals: bool,
+    eval_source_text: ?[]const u8,
+) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1967,6 +1964,15 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
     vm.arena = &arena;
     vm.allocator = arena.allocator();
 
+    // The module loader recognizes `<cwd>/[eval]` and reads its contents from
+    // `eval_source` instead of disk. Besides matching Bun's implementation,
+    // this makes `import "./relative.js"` inside `-e` resolve against cwd.
+    if (eval_source_text) |source_text| {
+        const eval_source = try allocator.create(home_rt.logger.Source);
+        eval_source.* = home_rt.logger.Source.initPathString(abs_path, source_text);
+        vm.module_loader.eval_source = eval_source;
+    }
+
     // `process.argv` is built as [execPath, scriptPath, ...vm.argv]; vm.argv holds
     // the user's script arguments. Without this, `home file.js a b c` (and the
     // Bun.spawn(cmd:[bunExe(),script,arg]) shape Bun's tests use) would see an
@@ -2011,10 +2017,9 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
     }
 
     vm.main_is_html_entrypoint = false;
-    // `-e`/eval (inject_node_globals) loads an internal /tmp/home-eval-*.ts temp
-    // file as `main`; flag it so createArgv omits it from process.argv, matching
+    // Synthetic eval entries are omitted from process.argv, matching
     // `bun -e` (argv = [exe, ...userArgs], no script path).
-    vm.main_is_eval_entry = inject_node_globals;
+    vm.main_is_eval_entry = eval_source_text != null;
 
     // Hand control to JSC under the API lock; start() loads + runs the entry.
     VmRunState.instance = .{ .vm = vm, .entry_path = abs_path };
@@ -3820,7 +3825,8 @@ fn isJsLikeCorpusFile(path: []const u8) bool {
 fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
     return std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/jsc-stress/jsc-stress.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts");
+        std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts");
 }
 
 fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
@@ -3944,10 +3950,11 @@ test "bun corpus target parser skips subset flag values" {
     try std.testing.expect(argTargetsBunCorpus(&args) == null);
 }
 
-test "bun:jsc corpus matrix requires the full native VM" {
+test "ported Bun corpus matrices requiring runtime services use the full native VM" {
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc/bun-jsc.test.ts"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc-stress/jsc-stress.test.ts"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc-stress/fixtures/simd-baseline.test.ts"));
+    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/import-attributes/import-attributes.test.ts"));
     try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc/heapStats-mimalloc.test.ts"));
 }
 

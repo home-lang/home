@@ -33,11 +33,8 @@ console: *ConsoleObject,
 log: *logger.Log,
 main: []const u8 = "",
 main_is_html_entrypoint: bool = false,
-/// True when `main` is an internal `-e`/eval entry (Home runs `-e` by writing
-/// the source to a temp file and loading it as the module). Bun's `-e` uses a
-/// synthetic `[eval]` path that `createArgv` already skips; Home's temp path
-/// would otherwise leak into `process.argv[1]`. Set for the eval path so
-/// `createArgv` omits it, matching `bun -e` (argv = [exe, ...userArgs]).
+/// True when `main` is the synthetic `[eval]` module. `createArgv` omits this
+/// internal entry, matching `bun -e` (argv = [exe, ...userArgs]).
 main_is_eval_entry: bool = false,
 main_resolved_path: bun.String = bun.String.empty,
 main_hash: u32 = 0,

@@ -288,14 +288,27 @@ fn getAST(
         .jsx, .tsx, .js, .ts => {
             const trace = bun.perf.trace("Bundler.ParseJS");
             defer trace.end();
+
+            // Bundling must always parse its inputs, including files previously
+            // emitted by Bun and marked with `// @bun`. The runtime module
+            // loader may opt out of a second transpilation, but propagating that
+            // flag into a bundle task produces an `already_bundled` result with
+            // no AST. Reading `.ast` from that union used to panic a background
+            // worker instead of returning a build diagnostic.
+            var parser_opts = opts;
+            parser_opts.features.dont_bundle_twice = false;
+
             return if (try resolver.caches.js.parse(
                 transpiler.allocator,
-                opts,
+                parser_opts,
                 transpiler.options.define,
                 log,
                 source,
             )) |res|
-                JSAst.init(res.ast)
+                switch (res) {
+                    .ast => |ast| JSAst.init(ast),
+                    .already_bundled, .cached => return error.UnexpectedBundlerParserResult,
+                }
             else switch (opts.module_type == .esm) {
                 inline else => |as_undefined| try getEmptyAST(
                     log,

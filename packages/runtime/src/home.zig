@@ -4686,51 +4686,81 @@ pub const allocators = struct {
         };
     }
 
-    pub fn BSSStringList(comptime _: usize, comptime _: usize) type {
+    /// Append-only, pointer-stable string storage.
+    ///
+    /// The resolver shares these stores with background bundler threads and
+    /// keeps the returned slices for the lifetime of the filesystem cache.
+    /// Consequently both the byte storage and the slice metadata must remain
+    /// stable while appends are serialized. This mirrors Bun's BSS-backed
+    /// design: common strings use a fixed buffer, while oversized/excess
+    /// strings use individually owned overflow allocations.
+    pub fn BSSStringList(comptime _count: usize, comptime _item_length: usize) type {
+        const item_length = _item_length + 1;
+        const count = _count * 2;
+
         return struct {
             const Self = @This();
+            const EmptyType = struct {
+                len: usize = 0,
+            };
 
+            backing_buf: [count * item_length]u8 = undefined,
+            backing_buf_used: usize = 0,
+            slice_buf: [count][]const u8 = undefined,
+            slice_buf_used: usize = 0,
+            overflow_buffers: std.ArrayList([]u8) = .empty,
             allocator: std.mem.Allocator,
+            mutex: Mutex = .{},
+
             pub var instance: *Self = undefined;
+            pub var loaded = false;
 
             pub fn init(allocator: std.mem.Allocator) *Self {
-                instance = allocator.create(Self) catch outOfMemory();
-                instance.* = .{ .allocator = allocator };
+                if (!loaded) {
+                    instance = allocator.create(Self) catch outOfMemory();
+                    instance.* = .{ .allocator = allocator };
+                    loaded = true;
+                }
                 return instance;
             }
 
             pub fn deinit(self: *Self) void {
+                for (self.overflow_buffers.items) |buffer| {
+                    self.allocator.free(buffer);
+                }
+                self.overflow_buffers.deinit(self.allocator);
                 self.allocator.destroy(self);
+                loaded = false;
+            }
+
+            pub inline fn isOverflowing() bool {
+                return loaded and instance.slice_buf_used >= count;
+            }
+
+            pub fn exists(self: *const Self, value: []const u8) bool {
+                return allocators.isSliceInBuffer(value, &self.backing_buf);
+            }
+
+            pub fn editableSlice(slice: []const u8) []u8 {
+                return @constCast(slice);
             }
 
             pub fn append(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
-                switch (@typeInfo(AppendType)) {
-                    .array => |array| {
-                        if (array.child == u8) return try self.allocator.dupe(u8, value[0..]);
-                        if (array.child == []const u8) {
-                            var total: usize = 0;
-                            for (value) |part| total += part.len;
-                            const out = try self.allocator.alloc(u8, total);
-                            var offset: usize = 0;
-                            for (value) |part| {
-                                @memcpy(out[offset..][0..part.len], part);
-                                offset += part.len;
-                            }
-                            return out;
-                        }
-                        @compileError("unsupported BSSStringList append array type");
-                    },
-                    .pointer => return try self.allocator.dupe(u8, value),
-                    else => @compileError("unsupported BSSStringList append type"),
-                }
+                self.mutex.lock();
+                defer self.mutex.unlock();
+                return try self.doAppend(AppendType, value);
             }
 
             pub fn appendMutable(self: *Self, comptime AppendType: type, value: AppendType) OOM![]u8 {
                 return @constCast(try self.append(AppendType, value));
             }
 
+            pub fn getMutable(self: *Self, requested_len: usize) OOM![]u8 {
+                return try self.appendMutable(EmptyType, .{ .len = requested_len });
+            }
+
             pub fn printWithType(self: *Self, comptime fmt_: []const u8, comptime Args: type, args: Args) OOM![]const u8 {
-                const out = try self.allocator.alloc(u8, std.fmt.count(fmt_, args));
+                const out = try self.getMutable(std.fmt.count(fmt_, args));
                 return std.fmt.bufPrint(out, fmt_, args) catch unreachable;
             }
 
@@ -4741,18 +4771,95 @@ pub const allocators = struct {
             pub fn appendLowerCase(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
                 const input = switch (@typeInfo(AppendType)) {
                     .pointer => value,
-                    .array => value[0..],
+                    .array => |array| if (array.child == u8)
+                        value[0..]
+                    else
+                        @compileError("unsupported BSSStringList appendLowerCase array type"),
                     else => @compileError("unsupported BSSStringList appendLowerCase type"),
                 };
-                const out = try self.allocator.alloc(u8, input.len);
+
+                self.mutex.lock();
+                defer self.mutex.unlock();
+
+                const out = @constCast(try self.doAppend(EmptyType, .{ .len = input.len }));
                 for (input, 0..) |char, index| {
                     out[index] = std.ascii.toLower(char);
                 }
                 return out;
             }
 
-            pub fn exists(_: *const Self, _: []const u8) bool {
-                return false;
+            inline fn valueLength(comptime AppendType: type, value: AppendType) usize {
+                if (AppendType == EmptyType) return value.len;
+
+                return switch (@typeInfo(AppendType)) {
+                    .pointer => |pointer| if (pointer.child == u8)
+                        value.len
+                    else
+                        @compileError("unsupported BSSStringList append pointer type"),
+                    .array => |array| if (array.child == u8)
+                        value.len
+                    else blk: {
+                        var total_len: usize = 0;
+                        for (value) |part| total_len += part.len;
+                        break :blk total_len;
+                    },
+                    else => @compileError("unsupported BSSStringList append type"),
+                };
+            }
+
+            inline fn copyValue(destination: []u8, comptime AppendType: type, value: AppendType) void {
+                if (AppendType == EmptyType) return;
+
+                switch (@typeInfo(AppendType)) {
+                    .pointer => |pointer| {
+                        if (pointer.child != u8) @compileError("unsupported BSSStringList append pointer type");
+                        @memcpy(destination, value);
+                    },
+                    .array => |array| {
+                        if (array.child == u8) {
+                            @memcpy(destination, value[0..]);
+                        } else {
+                            var remainder = destination;
+                            for (value) |part| {
+                                @memcpy(remainder[0..part.len], part);
+                                remainder = remainder[part.len..];
+                            }
+                        }
+                    },
+                    else => @compileError("unsupported BSSStringList append type"),
+                }
+            }
+
+            inline fn doAppend(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
+                const payload_len = valueLength(AppendType, value);
+                const storage_len = payload_len + 1;
+                var stored: []const u8 = undefined;
+
+                if (storage_len <= self.backing_buf.len - self.backing_buf_used) {
+                    const start = self.backing_buf_used;
+                    self.backing_buf_used += storage_len;
+                    const destination = self.backing_buf[start .. start + payload_len];
+                    copyValue(destination, AppendType, value);
+                    self.backing_buf[start + payload_len] = 0;
+                    stored = destination;
+                } else {
+                    const buffer = try self.allocator.alloc(u8, storage_len);
+                    errdefer self.allocator.free(buffer);
+                    copyValue(buffer[0..payload_len], AppendType, value);
+                    buffer[payload_len] = 0;
+                    try self.overflow_buffers.append(self.allocator, buffer);
+                    stored = buffer[0..payload_len];
+                }
+
+                if (self.slice_buf_used < count) {
+                    self.slice_buf[self.slice_buf_used] = stored;
+                    const result = self.slice_buf[self.slice_buf_used];
+                    self.slice_buf_used += 1;
+                    return result;
+                }
+
+                self.slice_buf_used += 1;
+                return stored;
             }
         };
     }
@@ -6697,6 +6804,73 @@ test "home_rt: substrate compiles" {
         "fd0b6f1a271fca0b8124b69f230b100f4d636af6",
         upstream_sha,
     );
+}
+
+test "home_rt: BSSStringList keeps fixed and overflow strings stable" {
+    const Store = allocators.BSSStringList(2, 4);
+    const store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const first = try store.append([]const u8, "alpha");
+    const copied_from_store = try store.append(@TypeOf(first), first);
+    const joined = try store.append([2][]const u8, .{ "ga", "mma" });
+    const overflow = try store.append([]const u8, "overflow");
+
+    try std.testing.expectEqualStrings("alpha", first);
+    try std.testing.expectEqualStrings("alpha", copied_from_store);
+    try std.testing.expectEqualStrings("gamma", joined);
+    try std.testing.expectEqualStrings("overflow", overflow);
+    try std.testing.expect(first.ptr != copied_from_store.ptr);
+    try std.testing.expect(store.exists(first));
+    try std.testing.expectEqual(@as(u8, 0), first.ptr[first.len]);
+    try std.testing.expectEqual(@as(u8, 0), overflow.ptr[overflow.len]);
+    try std.testing.expect(Store.isOverflowing());
+
+    const lowercase = try store.appendLowerCase([]const u8, "HoMe");
+    try std.testing.expectEqualStrings("home", lowercase);
+}
+
+test "home_rt: BSSStringList serializes concurrent appenders" {
+    const Store = allocators.BSSStringList(4, 8);
+    const Context = struct {
+        store: *Store,
+        failed: *std.atomic.Value(bool),
+        value: []const u8,
+
+        fn run(context: *@This()) void {
+            for (0..128) |_| {
+                const stored = context.store.append([]const u8, context.value) catch {
+                    context.failed.store(true, .release);
+                    return;
+                };
+                if (!std.mem.eql(u8, stored, context.value)) {
+                    context.failed.store(true, .release);
+                    return;
+                }
+            }
+        }
+    };
+
+    const store = Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    var failed = std.atomic.Value(bool).init(false);
+    var contexts = [_]Context{
+        .{ .store = store, .failed = &failed, .value = "alpha" },
+        .{ .store = store, .failed = &failed, .value = "bravo" },
+        .{ .store = store, .failed = &failed, .value = "charlie" },
+        .{ .store = store, .failed = &failed, .value = "delta" },
+    };
+    var threads: [contexts.len]std.Thread = undefined;
+
+    for (&threads, &contexts) |*thread, *context| {
+        thread.* = try std.Thread.spawn(.{}, Context.run, .{context});
+    }
+    for (threads) |thread| thread.join();
+
+    try std.testing.expect(!failed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, contexts.len * 128), store.slice_buf_used);
+    try std.testing.expect(Store.isOverflowing());
 }
 
 test "home_rt: getThreadCount clamps to the [2, 1024] range" {
