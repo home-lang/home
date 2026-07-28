@@ -59161,7 +59161,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-no-microtask-drain.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/column-types.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "Bun SQLite column metadata integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js"))
         try rewriteNativeTodoCorpus(allocator, "Bun SQLite datetime timezone integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js"))
