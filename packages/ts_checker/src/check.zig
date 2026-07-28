@@ -6202,10 +6202,24 @@ pub const Checker = struct {
         const id = hir_mod.identifierOf(self.hir, ta.name);
         const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
         if (type_params.len == 0) {
-            // Non-generic alias ÃÂ¢ÃÂÃÂ `type_names` lookup is enough; record
-            // a stub so forward references to plain `Alias` resolve.
+            // Valid container recursion needs a stable symbolic reference
+            // while the body is lowered. A plain `unknown` placeholder
+            // permanently unrolls `type T = Box<T>` into `Box<unknown>`;
+            // constrain a fresh parameter to the completed body instead so
+            // recursive relations can close through their pending-pair cache.
             if (!self.type_names.contains(id.name)) {
-                try self.type_names.put(self.gpa, id.name, types.Primitive.unknown);
+                const placeholder = if (self.typeNodeContainsAliasReferenceDeep(ta.aliased, id.name, 0) and
+                    !self.typeNodeContainsAliasReferenceInConditionalAliasArgument(ta.aliased, id.name, 0))
+                    try self.interner.internFreshTypeParameterWithFlags(
+                        id.name,
+                        types.Primitive.unknown,
+                        types.Primitive.none,
+                        .bivariant,
+                        false,
+                    )
+                else
+                    types.Primitive.unknown;
+                try self.type_names.put(self.gpa, id.name, placeholder);
             }
             return;
         }
@@ -17763,6 +17777,9 @@ pub const Checker = struct {
                 !(self.nodeHasAncestorKind(ref_node, .logical_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .switch_case) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .assignment) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !((self.nodeHasAncestorKind(ref_node, .as_expr) or
+                    self.nodeHasAncestorKind(ref_node, .type_assertion)) and
+                    self.varDeclHasTypeAnnotation(decl_node)) and
                 !((self.nodeHasAncestorKind(ref_node, .var_decl) or
                     self.nodeHasAncestorKind(ref_node, .let_decl) or
                     self.nodeHasAncestorKind(ref_node, .const_decl)) and self.varDeclHasTypeAnnotation(decl_node)) and
@@ -25626,6 +25643,111 @@ pub const Checker = struct {
                     if (self.typeNodeContainsAliasReferenceDeep(p.type_annotation, alias_name, depth + 1)) break :blk true;
                 }
                 break :blk self.typeNodeContainsAliasReferenceDeep(ft.return_type, alias_name, depth + 1);
+            },
+            else => false,
+        };
+    }
+
+    fn typeNodeContainsAliasReferenceInConditionalAliasArgument(
+        self: *Checker,
+        node: NodeId,
+        alias_name: hir_mod.StringId,
+        depth: u8,
+    ) bool {
+        if (node == hir_mod.none_node_id or depth > 64) return false;
+        return switch (self.hir.kindOf(node)) {
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, node);
+                const args = hir_mod.typeRefArgs(self.hir, node);
+                if (args.len > 0) {
+                    if (self.findTypeAliasDeclInScope(node, ref.name)) |decl| {
+                        const alias = hir_mod.typeAliasOf(self.hir, decl);
+                        if (self.hir.kindOf(alias.aliased) == .conditional_type) {
+                            for (args) |arg| {
+                                if (self.typeNodeContainsAliasReferenceDeep(arg, alias_name, depth + 1)) {
+                                    break :blk true;
+                                }
+                            }
+                        }
+                    }
+                }
+                for (args) |arg| {
+                    if (self.typeNodeContainsAliasReferenceInConditionalAliasArgument(arg, alias_name, depth + 1)) {
+                        break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            .object_type => blk: {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    if (self.hir.kindOf(member) != .interface_member) continue;
+                    const im = hir_mod.interfaceMemberOf(self.hir, member);
+                    if (self.typeNodeContainsAliasReferenceInConditionalAliasArgument(im.type_node, alias_name, depth + 1)) {
+                        break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            .array_type => self.typeNodeContainsAliasReferenceInConditionalAliasArgument(
+                hir_mod.arrayTypeOf(self.hir, node).element,
+                alias_name,
+                depth + 1,
+            ),
+            .readonly_type => self.typeNodeContainsAliasReferenceInConditionalAliasArgument(
+                hir_mod.readonlyTypeOf(self.hir, node).operand,
+                alias_name,
+                depth + 1,
+            ),
+            .optional_type => self.typeNodeContainsAliasReferenceInConditionalAliasArgument(
+                hir_mod.optionalTypeOf(self.hir, node).operand,
+                alias_name,
+                depth + 1,
+            ),
+            .rest_type => self.typeNodeContainsAliasReferenceInConditionalAliasArgument(
+                hir_mod.restTypeOf(self.hir, node).operand,
+                alias_name,
+                depth + 1,
+            ),
+            .keyof_type => self.typeNodeContainsAliasReferenceInConditionalAliasArgument(
+                hir_mod.keyofTypeOf(self.hir, node).operand,
+                alias_name,
+                depth + 1,
+            ),
+            .indexed_access_type => blk: {
+                const indexed = hir_mod.indexedAccessTypeOf(self.hir, node);
+                break :blk self.typeNodeContainsAliasReferenceInConditionalAliasArgument(indexed.object, alias_name, depth + 1) or
+                    self.typeNodeContainsAliasReferenceInConditionalAliasArgument(indexed.index, alias_name, depth + 1);
+            },
+            .conditional_type => blk: {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, node);
+                break :blk self.typeNodeContainsAliasReferenceInConditionalAliasArgument(conditional.check, alias_name, depth + 1) or
+                    self.typeNodeContainsAliasReferenceInConditionalAliasArgument(conditional.extends, alias_name, depth + 1) or
+                    self.typeNodeContainsAliasReferenceInConditionalAliasArgument(conditional.true_branch, alias_name, depth + 1) or
+                    self.typeNodeContainsAliasReferenceInConditionalAliasArgument(conditional.false_branch, alias_name, depth + 1);
+            },
+            .union_type => blk: {
+                for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeContainsAliasReferenceInConditionalAliasArgument(member, alias_name, depth + 1)) {
+                        break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            .intersection_type => blk: {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeContainsAliasReferenceInConditionalAliasArgument(member, alias_name, depth + 1)) {
+                        break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            .tuple_type => blk: {
+                for (hir_mod.tupleTypeElements(self.hir, node)) |member| {
+                    if (self.typeNodeContainsAliasReferenceInConditionalAliasArgument(member, alias_name, depth + 1)) {
+                        break :blk true;
+                    }
+                }
+                break :blk false;
             },
             else => false,
         };
@@ -57723,12 +57845,27 @@ pub const Checker = struct {
             else
                 null;
             if (alias_name) |an| try self.alias_lower_in_progress.put(self.gpa, an, {});
+            const recursive_placeholder = if (alias_name) |an| blk: {
+                const placeholder = self.type_names.get(an) orelse break :blk types.Primitive.none;
+                if (placeholder >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(placeholder).is_type_parameter)
+                {
+                    break :blk types.Primitive.none;
+                }
+                break :blk placeholder;
+            } else types.Primitive.none;
             const aliased_t = blk: {
                 defer if (alias_name) |an| {
                     _ = self.alias_lower_in_progress.remove(an);
                 };
                 break :blk try self.lowererLowerWithTypeParams(ta.aliased);
             };
+            if (recursive_placeholder != types.Primitive.none) {
+                const payload_idx = self.interner.pool.payloadOf(recursive_placeholder);
+                if (payload_idx < self.interner.pool.type_parameter_payloads.items.len) {
+                    self.interner.pool.type_parameter_payloads.items[payload_idx].constraint = aliased_t;
+                }
+            }
             self.hir.setType(node, aliased_t);
             if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, ta.name);
@@ -62314,19 +62451,23 @@ pub const Checker = struct {
                         // interface (`Mx<T,K>{p1:T}`, `NumArray extends Array<T>`)
                         // or a real alias `body_node` keeps detection on and still
                         // reports TS4109/TS2456. Pins directDependenceBetweenTypeAliases.
-                        const iface_deferred = info.body_node == hir_mod.none_node_id and
+                        const empty_interface_body = info.body_node == hir_mod.none_node_id and
                             info.body < self.interner.pool.typeCount() and
                             self.interner.pool.flagsOf(info.body).is_object_type and
                             self.interner.objectMembers(info.body).len == 0;
-                        const circ_floor_saved = self.circ_ctx_floor;
-                        if (iface_deferred) self.circ_ctx_floor = self.circ_ctx_stack.items.len;
                         var i: usize = 0;
                         while (i < npairs) : (i += 1) {
-                            const arg_t = try self.lowerTypeArgWithInferConstraint(args[i], info.params[i], &direct_infer_counts);
+                            const defer_interface_arg = info.body_node == hir_mod.none_node_id and
+                                (empty_interface_body or self.interfaceTypeArgumentIsDeferred(args[i], 0));
+                            const arg_t = arg_blk: {
+                                const circ_floor_saved = self.circ_ctx_floor;
+                                if (defer_interface_arg) self.circ_ctx_floor = self.circ_ctx_stack.items.len;
+                                defer self.circ_ctx_floor = circ_floor_saved;
+                                break :arg_blk try self.lowerTypeArgWithInferConstraint(args[i], info.params[i], &direct_infer_counts);
+                            };
                             try subs.put(self.gpa, info.params[i], arg_t);
                             try self.checkTypeArgSatisfiesConstraint(args[i], info.params[i], arg_t);
                         }
-                        if (iface_deferred) self.circ_ctx_floor = circ_floor_saved;
                         // Fill remaining type-parameters with their
                         // declaration-site defaults (`<T, U = number>`)
                         // for partial application like `Pair<string>`.
@@ -65433,6 +65574,26 @@ pub const Checker = struct {
         }
     }
 
+    fn interfaceTypeArgumentIsDeferred(self: *Checker, node: NodeId, depth: u8) bool {
+        if (node == hir_mod.none_node_id or depth > 32) return false;
+        return switch (self.hir.kindOf(node)) {
+            .identifier => true,
+            .type_ref => blk: {
+                for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                    if (!self.interfaceTypeArgumentIsDeferred(arg, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            .union_type => blk: {
+                for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
+                    if (!self.interfaceTypeArgumentIsDeferred(member, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn tupleElementHasOptionalMarker(self: *Checker, elem: NodeId) bool {
         const src = self.source orelse return false;
         const span = self.hir.spanOf(elem);
@@ -68478,6 +68639,15 @@ pub const Checker = struct {
                 const decl = self.findTypeAliasDeclInScope(type_node, r.name) orelse return null;
                 const ta = hir_mod.typeAliasOf(self.hir, decl);
                 if (self.hir.kindOf(ta.aliased) == .tuple_type) return ta.aliased;
+                if (self.hir.kindOf(ta.aliased) == .union_type) {
+                    var tuple_member: ?NodeId = null;
+                    for (hir_mod.unionTypeMembers(self.hir, ta.aliased)) |member| {
+                        const candidate = self.tupleAnnotationSourceNode(member) orelse continue;
+                        if (tuple_member != null) return null;
+                        tuple_member = candidate;
+                    }
+                    return tuple_member;
+                }
                 return null;
             },
             else => return null,
@@ -68503,11 +68673,51 @@ pub const Checker = struct {
     }
 
     fn expressionAssignableToTypeNode(self: *Checker, expr: NodeId, type_node: NodeId) CheckError!bool {
+        if (self.unionAnnotationSourceNode(type_node)) |union_node| {
+            var expr_t = self.hir.typeOf(expr);
+            if (expr_t == types.Primitive.none) expr_t = try self.checkExpression(expr);
+            for (hir_mod.unionTypeMembers(self.hir, union_node)) |member_node| {
+                if (self.hir.kindOf(expr) == .array_literal) {
+                    if (self.tupleAnnotationSourceNode(member_node)) |tuple_node| {
+                        if (self.tupleTypeHasRestElement(tuple_node) and
+                            try self.checkArrayLiteralAgainstTupleAnnotation(expr, tuple_node))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                const member_t = try self.lowererLowerWithTypeParams(member_node);
+                if (try self.literalExpressionAssignableToTarget(expr, member_t)) return true;
+                if (self.engine.isAssignableTo(expr_t, member_t) catch false) return true;
+            }
+            return false;
+        }
         const target_t = try self.lowererLowerWithTypeParams(type_node);
         if (try self.functionExpressionAssignableToTarget(expr, target_t)) return true;
+        if (self.hir.kindOf(expr) == .array_literal) {
+            if (self.tupleAnnotationSourceNode(type_node)) |tuple_node| {
+                if (self.tupleTypeHasRestElement(tuple_node) and
+                    try self.checkArrayLiteralAgainstTupleAnnotation(expr, tuple_node))
+                {
+                    return true;
+                }
+            }
+            if (try self.arrayLiteralAssignableToTarget(expr, target_t)) return true;
+        }
         const expr_t = try self.checkExpression(expr);
         if (try self.literalExpressionAssignableToTarget(expr, target_t)) return true;
         return self.engine.isAssignableTo(expr_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn unionAnnotationSourceNode(self: *Checker, type_node: NodeId) ?NodeId {
+        if (type_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(type_node) == .union_type) return type_node;
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const ref = hir_mod.typeRefOf(self.hir, type_node);
+        if (ref.qualifier_len != 0 or ref.args_len != 0) return null;
+        const decl = self.findTypeAliasDeclInScope(type_node, ref.name) orelse return null;
+        const alias = hir_mod.typeAliasOf(self.hir, decl);
+        return if (self.hir.kindOf(alias.aliased) == .union_type) alias.aliased else null;
     }
 
     fn tupleAnnotationMinRequiredCount(self: *Checker, tuple_node: NodeId) usize {
@@ -71302,6 +71512,17 @@ pub const Checker = struct {
         // If both are present, check assignability.
         const final_type: TypeId = if (declared_type != types.Primitive.none) declared_type else init_type;
         if (declared_type != types.Primitive.none and v.init != hir_mod.none_node_id) {
+            if (self.hir.kindOf(v.init) == .array_literal and
+                v.type_annotation != hir_mod.none_node_id and
+                self.unionAnnotationSourceNode(v.type_annotation) != null and
+                self.tupleAnnotationSourceNode(v.type_annotation) != null)
+            {
+                // Array inference runs before contextual assignment and can
+                // tentatively compare elements against a recursive alias's
+                // current expansion. Contextual tuple checking below owns the
+                // final diagnostics, so clear those provisional TS2322s.
+                self.removePriorDiagnosticsInNodeSpan(v.init, TsCodes.type_not_assignable);
+            }
             const assignability_diag_count = self.diagnostics.items.len;
             const required_discriminant_mismatch = try self.tryReportRequiredDiscriminantPropertyMismatch(v.init, declared_type);
             if (self.hir.kindOf(v.init) == .object_literal and
@@ -71441,7 +71662,12 @@ pub const Checker = struct {
             };
             try self.checkArrayLiteralContextualElements(v.init, declared_type);
             var contextual_literal_diag_emitted = false;
+            const recursive_tuple_annotation_ok = ok and
+                v.type_annotation != hir_mod.none_node_id and
+                self.unionAnnotationSourceNode(v.type_annotation) != null and
+                self.tupleAnnotationSourceNode(v.type_annotation) != null;
             if (!(ok and self.arrayTargetElementIsTupleShaped(declared_type)) and
+                !recursive_tuple_annotation_ok and
                 self.hir.kindOf(v.init) == .array_literal and
                 try self.tryReportArrayLiteralArrayElementMismatch(v.init, declared_type))
             {
@@ -75379,7 +75605,13 @@ pub const Checker = struct {
         if (try self.jsDocKeyofTextToType(src, trimmed)) |keyof_t| return keyof_t;
         if (try self.jsDocIndexedAccessTextToType(src, trimmed)) |indexed_t| return indexed_t;
         if (try self.jsDocQualifiedNamespaceTextToType(src, trimmed)) |qualified_t| return qualified_t;
-        if (std.mem.endsWith(u8, trimmed, "[]")) {
+        if (std.mem.eql(u8, trimmed, "readonly []")) {
+            return try self.internTupleFromTypes(&.{}, true);
+        }
+        if (!jsDocSplitTopLevelAny(trimmed, '|') and
+            !jsDocSplitTopLevelAny(trimmed, '&') and
+            std.mem.endsWith(u8, trimmed, "[]"))
+        {
             const elem_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 2], " \t\r\n");
             if (try self.jsDocTypeTextToType(src, elem_text)) |elem_t| {
                 return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
@@ -76186,6 +76418,9 @@ pub const Checker = struct {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id) return null;
         const name = self.string_interner.intern(base) catch return error.OutOfMemory;
+        if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) {
+            return types.Primitive.any;
+        }
         if (self.sourceHasVirtualFilenameSections() and self.sourceHasLexicalValueDeclarationText(name)) {
             return types.Primitive.any;
         }
@@ -76391,7 +76626,7 @@ pub const Checker = struct {
             return instantiated;
         }
 
-        if (try self.jsDocGenericTypedefTypeTextToType(src, name, args_text, type_text)) |typedef_t| {
+        if (try self.jsDocGenericTypedefTypeTextToType(src, name, args_text)) |typedef_t| {
             return typedef_t;
         }
 
@@ -76407,9 +76642,12 @@ pub const Checker = struct {
         src: []const u8,
         name: []const u8,
         args_text: []const u8,
-        display_text: []const u8,
     ) CheckError!?TypeId {
         if (name.len == 0) return null;
+        const alias_name = self.string_interner.intern(name) catch return error.OutOfMemory;
+        if (self.resolving_jsdoc_typedef_aliases.contains(alias_name)) return types.Primitive.any;
+        try self.resolving_jsdoc_typedef_aliases.put(self.gpa, alias_name, {});
+        defer _ = self.resolving_jsdoc_typedef_aliases.remove(alias_name);
 
         var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer arg_types.deinit(self.gpa);
@@ -76462,7 +76700,7 @@ pub const Checker = struct {
             if (subs.count() > 0) {
                 typedef_t = self.substituteType(typedef_t, &subs) catch typedef_t;
             }
-            try self.registerAliasDisplayText(typedef_t, display_text);
+            try self.registerAliasDisplayName(typedef_t, alias_name, arg_types.items);
             return typedef_t;
         }
         return null;
@@ -78656,35 +78894,31 @@ pub const Checker = struct {
         if (members.items.len == 0) return null;
         const obj_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         if (is_inline_braced_object) {
-            const inner = std.mem.trim(u8, trimmed_outer[1 .. trimmed_outer.len - 1], " \t\r\n");
-            const display = try std.fmt.allocPrint(self.diag_arena.allocator(), "{{ {s}; }}", .{inner});
-            try self.registerAliasDisplayText(obj_t, display);
+            if (try self.allocAnonymousObjectName(obj_t)) |display| {
+                try self.registerAliasDisplayText(obj_t, display);
+            }
         }
         return obj_t;
     }
 
     fn jsDocStringIndexerFromTypeText(self: *Checker, type_text: []const u8) ?TypeId {
         _ = self;
-        const compact = struct {
-            fn containsNeedle(haystack: []const u8, needle: []const u8) bool {
-                return std.mem.indexOf(u8, haystack, needle) != null;
-            }
-        }.containsNeedle;
-        if (compact(type_text, "Object.<string,string>") or
-            compact(type_text, "Object.<string, string>") or
-            compact(type_text, "Object<string,string>") or
-            compact(type_text, "Object<string, string>") or
-            compact(type_text, "Record<string,string>") or
-            compact(type_text, "Record<string, string>"))
+        const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        if (std.mem.eql(u8, trimmed, "Object.<string,string>") or
+            std.mem.eql(u8, trimmed, "Object.<string, string>") or
+            std.mem.eql(u8, trimmed, "Object<string,string>") or
+            std.mem.eql(u8, trimmed, "Object<string, string>") or
+            std.mem.eql(u8, trimmed, "Record<string,string>") or
+            std.mem.eql(u8, trimmed, "Record<string, string>"))
         {
             return types.Primitive.string_t;
         }
-        if (compact(type_text, "Object.<string,number>") or
-            compact(type_text, "Object.<string, number>") or
-            compact(type_text, "Object<string,number>") or
-            compact(type_text, "Object<string, number>") or
-            compact(type_text, "Record<string,number>") or
-            compact(type_text, "Record<string, number>"))
+        if (std.mem.eql(u8, trimmed, "Object.<string,number>") or
+            std.mem.eql(u8, trimmed, "Object.<string, number>") or
+            std.mem.eql(u8, trimmed, "Object<string,number>") or
+            std.mem.eql(u8, trimmed, "Object<string, number>") or
+            std.mem.eql(u8, trimmed, "Record<string,number>") or
+            std.mem.eql(u8, trimmed, "Record<string, number>"))
         {
             return types.Primitive.number_t;
         }
@@ -83984,9 +84218,34 @@ pub const Checker = struct {
         const elem_t = try self.arrayElementType(t);
         if (elem_t == types.Primitive.none) return null;
         if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, elem_t, &self.rest_signatures)) |proto| {
-            if (self.interner.objectMember(proto, name)) |member_t| return member_t;
+            if (self.interner.objectMember(proto, name)) |member_t| {
+                try self.registerSyntheticArrayMethodTypeParameters(name, member_t);
+                return member_t;
+            }
         } else |_| {}
         return try self.lookupDeclaredArrayMember(elem_t, name);
+    }
+
+    fn registerSyntheticArrayMethodTypeParameters(
+        self: *Checker,
+        name: hir_mod.StringId,
+        signature: TypeId,
+    ) CheckError!void {
+        if (!self.interner.isSignature(signature) or self.generic_signature_params.contains(signature)) return;
+        const method = self.string_interner.get(name);
+        if (!std.mem.eql(u8, method, "map") and
+            !std.mem.eql(u8, method, "flatMap") and
+            !std.mem.eql(u8, method, "reduce") and
+            !std.mem.eql(u8, method, "reduceRight"))
+        {
+            return;
+        }
+        const type_param = self.firstFreeTypeParameter(signature) orelse return;
+        const type_param_name = self.typeParameterName(type_param) orelse return;
+        if (!std.mem.eql(u8, self.string_interner.get(type_param_name), "U")) return;
+        const owned = try self.gpa.alloc(TypeId, 1);
+        owned[0] = type_param;
+        try self.generic_signature_params.put(self.gpa, signature, owned);
     }
 
     fn constructorPrototypeAccess(self: *Checker, obj_name: hir_mod.StringId, prop_name: hir_mod.StringId) CheckError!?TypeId {
@@ -85100,6 +85359,8 @@ pub const Checker = struct {
                             false
                         else if (self.readonlyArrayLikeAssignmentShouldFail(a.value, assignment_check_value_t, target_t))
                             false
+                        else if (try self.recursiveTupleAliasAssignmentResult(a.value, a.target)) |recursive_tuple_ok|
+                            recursive_tuple_ok
                         else if (try self.tupleSpreadIdentifierAssignmentResult(a.value, a.target)) |tuple_spread_ok|
                             tuple_spread_ok
                         else if (self.tupleSourceCannotSatisfyVariadicTarget(tuple_relation_source_t, target_t))
@@ -96938,6 +97199,7 @@ pub const Checker = struct {
             if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, num_idx, &self.rest_signatures)) |proto| {
                 for (self.interner.objectMembers(proto)) |member| {
                     if (member.name == name) {
+                        try self.registerSyntheticArrayMethodTypeParameters(name, member.type);
                         try self.collectCallSignatures(member.type, out);
                     }
                 }
@@ -111742,6 +112004,139 @@ pub const Checker = struct {
         return try self.variadicTupleTypeParameterAssignableTo(source_t, target_t);
     }
 
+    fn recursiveTupleAliasAssignmentResult(
+        self: *Checker,
+        source_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!?bool {
+        if (source_node == hir_mod.none_node_id or target_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(source_node) != .identifier or self.hir.kindOf(target_node) != .identifier) return null;
+        const source_type_node = self.visibleAnnotatedIdentifierTypeNode(source_node) orelse return null;
+        const target_type_node = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return null;
+        if (self.hir.kindOf(source_type_node) != .type_ref or self.hir.kindOf(target_type_node) != .type_ref) return null;
+        const source_ref = hir_mod.typeRefOf(self.hir, source_type_node);
+        const target_ref = hir_mod.typeRefOf(self.hir, target_type_node);
+        if (source_ref.qualifier_len != 0 or source_ref.args_len != 0 or
+            target_ref.qualifier_len != 0 or target_ref.args_len != 0)
+        {
+            return null;
+        }
+        const source_decl = self.findTypeAliasDeclInScope(source_type_node, source_ref.name) orelse return null;
+        const target_decl = self.findTypeAliasDeclInScope(target_type_node, target_ref.name) orelse return null;
+        const source_alias = hir_mod.typeAliasOf(self.hir, source_decl);
+        const target_alias = hir_mod.typeAliasOf(self.hir, target_decl);
+        if (source_alias.type_params_len != 0 or target_alias.type_params_len != 0) return null;
+        if (self.hir.kindOf(source_alias.aliased) != .tuple_type or
+            self.hir.kindOf(target_alias.aliased) != .tuple_type)
+        {
+            return null;
+        }
+        if (!self.typeNodeContainsAliasReferenceDeep(source_alias.aliased, source_ref.name, 0) or
+            !self.typeNodeContainsAliasReferenceDeep(target_alias.aliased, target_ref.name, 0))
+        {
+            return null;
+        }
+        return try self.recursiveTupleAliasTypeNodesAssignable(
+            source_alias.aliased,
+            target_alias.aliased,
+            source_ref.name,
+            target_ref.name,
+            0,
+        );
+    }
+
+    fn recursiveTupleAliasTypeNodesAssignable(
+        self: *Checker,
+        source_node: NodeId,
+        target_node: NodeId,
+        source_alias_name: hir_mod.StringId,
+        target_alias_name: hir_mod.StringId,
+        depth: u8,
+    ) CheckError!bool {
+        if (source_node == hir_mod.none_node_id or target_node == hir_mod.none_node_id or depth > 64) return false;
+        const source_kind = self.hir.kindOf(source_node);
+        const target_kind = self.hir.kindOf(target_node);
+        if (source_kind == .type_ref and target_kind == .type_ref) {
+            const source_ref = hir_mod.typeRefOf(self.hir, source_node);
+            const target_ref = hir_mod.typeRefOf(self.hir, target_node);
+            if (source_ref.qualifier_len == 0 and source_ref.args_len == 0 and
+                target_ref.qualifier_len == 0 and target_ref.args_len == 0 and
+                source_ref.name == source_alias_name and target_ref.name == target_alias_name)
+            {
+                return true;
+            }
+            if (source_ref.name != target_ref.name or
+                source_ref.qualifier_len != target_ref.qualifier_len or
+                source_ref.args_len != target_ref.args_len)
+            {
+                return false;
+            }
+            const source_args = hir_mod.typeRefArgs(self.hir, source_node);
+            const target_args = hir_mod.typeRefArgs(self.hir, target_node);
+            for (source_args, target_args) |source_arg, target_arg| {
+                if (!try self.recursiveTupleAliasTypeNodesAssignable(
+                    source_arg,
+                    target_arg,
+                    source_alias_name,
+                    target_alias_name,
+                    depth + 1,
+                )) return false;
+            }
+            return true;
+        }
+        if (source_kind != target_kind) return false;
+        switch (source_kind) {
+            .tuple_type => {
+                const source_elements = hir_mod.tupleTypeElements(self.hir, source_node);
+                const target_elements = hir_mod.tupleTypeElements(self.hir, target_node);
+                if (source_elements.len != target_elements.len) return false;
+                for (source_elements, target_elements) |source_element, target_element| {
+                    if (!try self.recursiveTupleAliasTypeNodesAssignable(
+                        source_element,
+                        target_element,
+                        source_alias_name,
+                        target_alias_name,
+                        depth + 1,
+                    )) return false;
+                }
+                return true;
+            },
+            .array_type => return self.recursiveTupleAliasTypeNodesAssignable(
+                hir_mod.arrayTypeOf(self.hir, source_node).element,
+                hir_mod.arrayTypeOf(self.hir, target_node).element,
+                source_alias_name,
+                target_alias_name,
+                depth + 1,
+            ),
+            .rest_type => return self.recursiveTupleAliasTypeNodesAssignable(
+                hir_mod.restTypeOf(self.hir, source_node).operand,
+                hir_mod.restTypeOf(self.hir, target_node).operand,
+                source_alias_name,
+                target_alias_name,
+                depth + 1,
+            ),
+            .optional_type => return self.recursiveTupleAliasTypeNodesAssignable(
+                hir_mod.optionalTypeOf(self.hir, source_node).operand,
+                hir_mod.optionalTypeOf(self.hir, target_node).operand,
+                source_alias_name,
+                target_alias_name,
+                depth + 1,
+            ),
+            .readonly_type => return self.recursiveTupleAliasTypeNodesAssignable(
+                hir_mod.readonlyTypeOf(self.hir, source_node).operand,
+                hir_mod.readonlyTypeOf(self.hir, target_node).operand,
+                source_alias_name,
+                target_alias_name,
+                depth + 1,
+            ),
+            else => {
+                const source_t = try self.lowererLowerWithTypeParams(source_node);
+                const target_t = try self.lowererLowerWithTypeParams(target_node);
+                return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+            },
+        }
+    }
+
     fn variadicTupleTypeParameterAssignableTo(self: *Checker, source: TypeId, target: TypeId) CheckError!?bool {
         if (source == target) return true;
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return null;
@@ -121249,6 +121644,7 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !void {
         if (self.noInferInnerType(param_t) != null) return;
+        const nested_array_inference_fixed = try self.seedRecursiveArrayInferenceFromNestedElements(param_t, arg_node, subs);
         _ = try self.inferFromArrayLiteralToTrailingMappedVariadic(param_t, arg_node, subs);
         if (param_t >= types.Primitive.first_dynamic and
             param_t < self.interner.pool.typeCount() and
@@ -121371,7 +121767,78 @@ pub const Checker = struct {
         }
         if (try self.inferFromConstructSignatureArgument(param_t, arg_t, subs)) return;
         try self.inferStableIndexedElementArgument(param_t, arg_t, arg_node, subs);
+        if (nested_array_inference_fixed) return;
         try self.inferFromPair(param_t, arg_t, subs);
+    }
+
+    fn seedRecursiveArrayInferenceFromNestedElements(
+        self: *Checker,
+        param_t: TypeId,
+        arg_node: NodeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        if (arg_node == hir_mod.none_node_id or self.hir.kindOf(arg_node) != .array_literal) return false;
+        if (param_t >= self.interner.pool.typeCount()) return false;
+        const param_elem_t = self.interner.objectNumberIndex(param_t);
+        if (param_elem_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(param_elem_t).is_union)
+        {
+            return false;
+        }
+
+        var direct_type_param = types.Primitive.none;
+        var nested_target = types.Primitive.none;
+        for (self.interner.unionMembers(param_elem_t)) |member| {
+            if (member >= self.interner.pool.typeCount()) continue;
+            const flags = self.interner.pool.flagsOf(member);
+            if (flags.is_type_parameter and !flags.is_union and !flags.is_intersection) {
+                if (direct_type_param != types.Primitive.none) return false;
+                direct_type_param = member;
+            }
+        }
+        if (direct_type_param == types.Primitive.none) return false;
+        for (self.interner.unionMembers(param_elem_t)) |member| {
+            if (member == direct_type_param or member >= self.interner.pool.typeCount()) continue;
+            if (!self.interner.pool.flagsOf(member).is_object_type) continue;
+            if (self.interner.objectNumberIndex(member) == types.Primitive.none) continue;
+            if (!self.containsFreeTypeParameter(member)) continue;
+            if (nested_target != types.Primitive.none) return false;
+            nested_target = member;
+        }
+        if (nested_target == types.Primitive.none) return false;
+
+        var nested_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer nested_subs.deinit(self.gpa);
+        var direct_candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer direct_candidates.deinit(self.gpa);
+        for (hir_mod.arrayLiteralElements(self.hir, arg_node)) |element| {
+            if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
+            var element_t = self.hir.typeOf(element);
+            if (element_t == types.Primitive.none) element_t = try self.checkExpression(element);
+            if (self.hir.kindOf(element) == .array_literal) {
+                try self.inferFromPair(nested_target, element_t, &nested_subs);
+                continue;
+            }
+            const candidate = self.widenForInference(element_t);
+            var duplicate = false;
+            for (direct_candidates.items) |existing| {
+                if (existing == candidate) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) try direct_candidates.append(self.gpa, candidate);
+        }
+
+        var nested_candidate = nested_subs.get(direct_type_param) orelse return false;
+        if (direct_candidates.items.len > 1) {
+            const direct_union = self.interner.internUnion(direct_candidates.items) catch return error.OutOfMemory;
+            if (!(self.engine.isAssignableTo(direct_union, nested_candidate) catch false)) {
+                nested_candidate = self.interner.internUnion(&.{ nested_candidate, direct_union }) catch return error.OutOfMemory;
+            }
+        }
+        try subs.put(self.gpa, direct_type_param, nested_candidate);
+        return true;
     }
 
     fn inferFromObjectLiteralArgument(
@@ -123758,6 +124225,10 @@ pub const Checker = struct {
                 stop_after_arg_mismatch = true;
                 continue;
             }
+            if (try self.tryReportRecursiveArrayInferenceMismatch(args[i], sig, fixed_pos, param_t)) {
+                stop_after_arg_mismatch = true;
+                continue;
+            }
             const arg_diag_start = self.diagnostics.items.len;
             const structurally_assignable = self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             const predicate_assignable = if (declared_param_predicate) |target_pred|
@@ -124092,6 +124563,253 @@ pub const Checker = struct {
                     }
                 }
             }
+        }
+    }
+
+    fn tryReportRecursiveArrayInferenceMismatch(
+        self: *Checker,
+        arg_node: NodeId,
+        sig: TypeId,
+        param_index: usize,
+        param_t: TypeId,
+    ) CheckError!bool {
+        if (arg_node == hir_mod.none_node_id or self.hir.kindOf(arg_node) != .array_literal) return false;
+        const syntax = self.recursiveArrayParameterElementSyntax(sig, param_index) orelse return false;
+        var direct_nodes: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer direct_nodes.deinit(self.gpa);
+        var direct_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer direct_types.deinit(self.gpa);
+        var nested_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer nested_types.deinit(self.gpa);
+        for (hir_mod.arrayLiteralElements(self.hir, arg_node)) |element| {
+            if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
+            if (self.hir.kindOf(element) == .array_literal) {
+                try self.collectRecursiveArrayLiteralLeafTypes(element, &nested_types);
+                continue;
+            }
+            var element_t = self.hir.typeOf(element);
+            if (element_t == types.Primitive.none) element_t = try self.checkExpression(element);
+            const candidate = self.widenForInference(element_t);
+            var seen = false;
+            for (direct_types.items) |existing| {
+                if (existing == candidate) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                try direct_nodes.append(self.gpa, element);
+                try direct_types.append(self.gpa, candidate);
+            }
+        }
+        if (direct_types.items.len != 1 or nested_types.items.len == 0) return false;
+        const nested_candidate = if (nested_types.items.len == 1)
+            nested_types.items[0]
+        else
+            self.interner.internUnion(nested_types.items) catch return error.OutOfMemory;
+        if (self.engine.isAssignableTo(direct_types.items[0], nested_candidate) catch false) return false;
+
+        const replacement = (try self.allocSimpleTypeName(nested_candidate)) orelse return false;
+        var target_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer target_buf.deinit(self.gpa);
+        try self.renderRecursiveArrayInferenceTypeNode(
+            syntax.element_node,
+            syntax.type_param_name,
+            replacement,
+            &target_buf,
+        );
+        const source_name = (try self.allocSimpleTypeName(direct_types.items[0])) orelse return false;
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_buf.items },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = direct_nodes.items[0],
+            .code = TsCodes.type_not_assignable,
+            .message = message,
+        });
+        _ = param_t;
+        return true;
+    }
+
+    const RecursiveArrayParameterSyntax = struct {
+        element_node: NodeId,
+        type_param_name: hir_mod.StringId,
+    };
+
+    fn recursiveArrayParameterElementSyntax(
+        self: *Checker,
+        sig: TypeId,
+        param_index: usize,
+    ) ?RecursiveArrayParameterSyntax {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return null;
+        if (param_index >= param_nodes.len) return null;
+        const param_node = param_nodes[param_index];
+        if (self.hir.kindOf(param_node) != .parameter) return null;
+        const annotation = hir_mod.parameterOf(self.hir, param_node).type_annotation;
+        if (annotation == hir_mod.none_node_id) return null;
+
+        var element_node = annotation;
+        var type_param_name: ?hir_mod.StringId = null;
+        if (self.hir.kindOf(annotation) == .array_type) {
+            element_node = hir_mod.arrayTypeOf(self.hir, annotation).element;
+        } else if (self.hir.kindOf(annotation) == .type_ref) {
+            const ref = hir_mod.typeRefOf(self.hir, annotation);
+            const args = hir_mod.typeRefArgs(self.hir, annotation);
+            const ref_name = self.string_interner.get(ref.name);
+            if ((std.mem.eql(u8, ref_name, "Array") or std.mem.eql(u8, ref_name, "ReadonlyArray")) and args.len == 1) {
+                element_node = args[0];
+            } else {
+                const decl = self.findTypeAliasDeclInScope(annotation, ref.name) orelse return null;
+                const alias = hir_mod.typeAliasOf(self.hir, decl);
+                switch (self.hir.kindOf(alias.aliased)) {
+                    .array_type => element_node = hir_mod.arrayTypeOf(self.hir, alias.aliased).element,
+                    .type_ref => {
+                        const body_ref = hir_mod.typeRefOf(self.hir, alias.aliased);
+                        const body_args = hir_mod.typeRefArgs(self.hir, alias.aliased);
+                        const body_name = self.string_interner.get(body_ref.name);
+                        if (body_ref.qualifier_len != 0 or
+                            (!std.mem.eql(u8, body_name, "Array") and
+                                !std.mem.eql(u8, body_name, "ReadonlyArray")) or
+                            body_args.len != 1)
+                        {
+                            return null;
+                        }
+                        element_node = body_args[0];
+                    },
+                    else => return null,
+                }
+                const alias_params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+                if (alias_params.len != 1 or self.hir.kindOf(alias_params[0]) != .type_parameter) return null;
+                type_param_name = hir_mod.typeParameterOf(self.hir, alias_params[0]).name;
+            }
+        } else {
+            return null;
+        }
+        if (self.hir.kindOf(element_node) != .union_type) return null;
+        if (type_param_name == null) {
+            for (hir_mod.unionTypeMembers(self.hir, element_node)) |member| {
+                const candidate = self.bareTypeRefName(member) orelse continue;
+                if (self.typeParamDeclNameVisibleFrom(param_node, candidate)) {
+                    type_param_name = candidate;
+                    break;
+                }
+            }
+        }
+        const name = type_param_name orelse return null;
+        var saw_nested_array = false;
+        for (hir_mod.unionTypeMembers(self.hir, element_node)) |member| {
+            if (self.typeNodeContainsAliasReferenceDeep(member, name, 0) and
+                (self.hir.kindOf(member) == .array_type or
+                    (self.hir.kindOf(member) == .type_ref and hir_mod.typeRefArgs(self.hir, member).len > 0)))
+            {
+                saw_nested_array = true;
+                break;
+            }
+        }
+        return if (saw_nested_array) .{
+            .element_node = element_node,
+            .type_param_name = name,
+        } else null;
+    }
+
+    fn typeParamDeclNameVisibleFrom(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            const fn_decl = hir_mod.fnDeclOf(self.hir, cur);
+            for (self.hir.childSlice(fn_decl.type_params_start, fn_decl.type_params_len)) |type_param| {
+                if (self.hir.kindOf(type_param) == .type_parameter and
+                    hir_mod.typeParameterOf(self.hir, type_param).name == name)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    fn collectRecursiveArrayLiteralLeafTypes(
+        self: *Checker,
+        array_node: NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        for (hir_mod.arrayLiteralElements(self.hir, array_node)) |element| {
+            if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
+            if (self.hir.kindOf(element) == .array_literal) {
+                try self.collectRecursiveArrayLiteralLeafTypes(element, out);
+                continue;
+            }
+            var element_t = self.hir.typeOf(element);
+            if (element_t == types.Primitive.none) element_t = try self.checkExpression(element);
+            const candidate = self.widenForInference(element_t);
+            try self.appendUniqueTypeId(out, candidate);
+        }
+    }
+
+    fn renderRecursiveArrayInferenceTypeNode(
+        self: *Checker,
+        node: NodeId,
+        type_param_name: hir_mod.StringId,
+        replacement: []const u8,
+        out: *std.ArrayListUnmanaged(u8),
+    ) std.mem.Allocator.Error!void {
+        switch (self.hir.kindOf(node)) {
+            .union_type => {
+                for (hir_mod.unionTypeMembers(self.hir, node), 0..) |member, i| {
+                    if (i > 0) try out.appendSlice(self.gpa, " | ");
+                    try self.renderRecursiveArrayInferenceTypeNode(member, type_param_name, replacement, out);
+                }
+            },
+            .array_type => {
+                const element = hir_mod.arrayTypeOf(self.hir, node).element;
+                const needs_parens = self.hir.kindOf(element) == .union_type or
+                    self.hir.kindOf(element) == .intersection_type;
+                if (needs_parens) try out.append(self.gpa, '(');
+                try self.renderRecursiveArrayInferenceTypeNode(element, type_param_name, replacement, out);
+                if (needs_parens) try out.append(self.gpa, ')');
+                try out.appendSlice(self.gpa, "[]");
+            },
+            .type_ref => {
+                const ref = hir_mod.typeRefOf(self.hir, node);
+                const args = hir_mod.typeRefArgs(self.hir, node);
+                const name = self.string_interner.get(ref.name);
+                if (ref.qualifier_len == 0 and ref.name == type_param_name) {
+                    try out.appendSlice(self.gpa, replacement);
+                } else if (ref.qualifier_len == 0 and
+                    (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) and
+                    args.len == 1)
+                {
+                    const element = args[0];
+                    const needs_parens = self.hir.kindOf(element) == .union_type or
+                        self.hir.kindOf(element) == .intersection_type;
+                    if (needs_parens) try out.append(self.gpa, '(');
+                    try self.renderRecursiveArrayInferenceTypeNode(element, type_param_name, replacement, out);
+                    if (needs_parens) try out.append(self.gpa, ')');
+                    try out.appendSlice(self.gpa, "[]");
+                } else {
+                    try out.appendSlice(self.gpa, name);
+                    if (args.len > 0) {
+                        try out.append(self.gpa, '<');
+                        for (args, 0..) |arg, i| {
+                            if (i > 0) try out.appendSlice(self.gpa, ", ");
+                            try self.renderRecursiveArrayInferenceTypeNode(arg, type_param_name, replacement, out);
+                        }
+                        try out.append(self.gpa, '>');
+                    }
+                }
+            },
+            .identifier => {
+                const name = hir_mod.identifierOf(self.hir, node).name;
+                try out.appendSlice(
+                    self.gpa,
+                    if (name == type_param_name) replacement else self.string_interner.get(name),
+                );
+            },
+            else => try self.renderTypeNodeText(node, out),
         }
     }
 
@@ -128784,7 +129502,9 @@ pub const Checker = struct {
         var elem_t = try self.arrayElementType(object_t);
         if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
         if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, elem_t, &self.rest_signatures)) |proto| {
-            return self.interner.objectMember(proto, key);
+            const member_t = self.interner.objectMember(proto, key) orelse return null;
+            try self.registerSyntheticArrayMethodTypeParameters(key, member_t);
+            return member_t;
         } else |_| {
             return null;
         }
@@ -130110,15 +130830,23 @@ pub const Checker = struct {
         else
             self.hir.typeOf(arg_node);
         if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_signature) return false;
+        var relation_source_t = source_t;
+        if (!self.containsFreeTypeParameter(target_t) and
+            self.containsFreeTypeParameter(source_t) and
+            self.functionExpressionHasContextSensitiveParameters(arg_node))
+        {
+            try self.checkFunctionWithContextualSignatureMode(arg_node, target_t, false, &relation_source_t);
+        }
         const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.any;
         const target_ret_is_literal = target_ret < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_ret).is_literal;
         const needs_contextual_literal_relation = target_ret_is_literal and
             self.functionExpressionHasContextSensitiveParameters(arg_node);
-        const relation_source_t = if (needs_contextual_literal_relation)
-            (try self.contextualFunctionExpressionDiagnosticSignature(arg_node, source_t, target_t)) orelse source_t
-        else
-            source_t;
+        if (needs_contextual_literal_relation) {
+            relation_source_t =
+                (try self.contextualFunctionExpressionDiagnosticSignature(arg_node, relation_source_t, target_t)) orelse
+                relation_source_t;
+        }
         if (needs_contextual_literal_relation) {
             const relation_ret = self.interner.signatureReturn(relation_source_t) orelse types.Primitive.void_t;
             if (!(self.engine.isAssignableTo(relation_ret, target_ret) catch false)) return false;
@@ -143710,8 +144438,143 @@ pub const Checker = struct {
             try self.emitConversionMayBeMistake(node, source_t, target_t);
             return;
         }
+        if (try self.privateGenericAssertionSyntaxHasNoOverlap(node)) {
+            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            return;
+        }
+        if (try self.privateClassAssertionHasNoDirectionalOverlap(source_t, target_t)) {
+            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            return;
+        }
         if (try self.typesHaveComparableOverlap(source_t, target_t)) return;
         try self.emitConversionMayBeMistake(node, source_t, target_t);
+    }
+
+    fn privateGenericAssertionSyntaxHasNoOverlap(self: *Checker, node: NodeId) CheckError!bool {
+        const kind = self.hir.kindOf(node);
+        if (kind != .as_expr and kind != .type_assertion) return false;
+        const assertion = hir_mod.asExpressionOf(self.hir, node);
+        if (assertion.expr == hir_mod.none_node_id or self.hir.kindOf(assertion.expr) != .identifier) return false;
+        if (assertion.type_node == hir_mod.none_node_id or self.hir.kindOf(assertion.type_node) != .type_ref) return false;
+
+        const source_node = self.visibleAnnotatedIdentifierTypeNode(assertion.expr) orelse return false;
+        if (self.hir.kindOf(source_node) != .type_ref) return false;
+        const source_ref = hir_mod.typeRefOf(self.hir, source_node);
+        if (source_ref.qualifier_len != 0 or source_ref.args_len == 0) return false;
+
+        const target_ref = hir_mod.typeRefOf(self.hir, assertion.type_node);
+        if (target_ref.qualifier_len != 0) return false;
+        const target_decl = self.findVisibleNamedClassDecl(node, target_ref.name) orelse
+            self.findTopLevelClassDecl(node, target_ref.name) orelse return false;
+        const target_extends = hir_mod.classOf(self.hir, target_decl).extends;
+        if (target_extends == hir_mod.none_node_id or self.hir.kindOf(target_extends) != .type_ref) return false;
+        const extends_ref = hir_mod.typeRefOf(self.hir, target_extends);
+        if (extends_ref.qualifier_len != 0 or extends_ref.name != source_ref.name) return false;
+
+        const source_args = hir_mod.typeRefArgs(self.hir, source_node);
+        const base_args = hir_mod.typeRefArgs(self.hir, target_extends);
+        if (source_args.len == 0 or source_args.len != base_args.len) return false;
+        const base_decl = self.findVisibleNamedClassDecl(node, source_ref.name) orelse
+            self.findTopLevelClassDecl(node, source_ref.name) orelse return false;
+        const base = hir_mod.classOf(self.hir, base_decl);
+        const type_params = self.hir.childSlice(base.type_params_start, base.type_params_len);
+
+        const count = @min(type_params.len, source_args.len);
+        for (type_params[0..count], 0..) |type_param_node, i| {
+            if (self.hir.kindOf(type_param_node) != .type_parameter) continue;
+            const type_param_name = hir_mod.typeParameterOf(self.hir, type_param_node).name;
+            if (!self.privateClassMemberUsesTypeParameter(base_decl, type_param_name)) continue;
+            const source_arg_t = try self.lowererLowerWithTypeParams(source_args[i]);
+            const base_arg_t = try self.lowererLowerWithTypeParams(base_args[i]);
+            if (source_arg_t == base_arg_t) continue;
+            if (!(self.engine.isIdenticalTo(source_arg_t, base_arg_t) catch false)) return true;
+        }
+        return false;
+    }
+
+    fn privateClassMemberUsesTypeParameter(
+        self: *Checker,
+        class_node: NodeId,
+        type_param_name: hir_mod.StringId,
+    ) bool {
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            switch (self.hir.kindOf(member)) {
+                .object_property => {
+                    const prop = hir_mod.objectPropertyOf(self.hir, member);
+                    if (prop.visibility != .private or prop.type_annotation == hir_mod.none_node_id) continue;
+                    if (self.typeNodeContainsAliasReferenceDeep(prop.type_annotation, type_param_name, 0)) return true;
+                },
+                .fn_decl, .fn_expr => {
+                    const fn_decl = hir_mod.fnDeclOf(self.hir, member);
+                    if (!fn_decl.flags.is_private) continue;
+                    if (self.typeNodeContainsAliasReferenceDeep(fn_decl.return_type, type_param_name, 0)) return true;
+                    for (hir_mod.fnParams(self.hir, member)) |param_node| {
+                        if (self.hir.kindOf(param_node) != .parameter) continue;
+                        const param = hir_mod.parameterOf(self.hir, param_node);
+                        if (self.typeNodeContainsAliasReferenceDeep(param.type_annotation, type_param_name, 0)) return true;
+                    }
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn privateClassAssertionHasNoDirectionalOverlap(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (self.classNameForInstanceType(source_t) == null or
+            self.classNameForInstanceType(target_t) == null)
+        {
+            return false;
+        }
+        var has_private = false;
+        for (self.interner.objectMembers(source_t)) |member| {
+            if (member.visibility == .private) {
+                has_private = true;
+                break;
+            }
+        }
+        if (!has_private) {
+            for (self.interner.objectMembers(target_t)) |member| {
+                if (member.visibility == .private) {
+                    has_private = true;
+                    break;
+                }
+            }
+        }
+        if (!has_private) return false;
+        if (try self.privateClassAssertionBaseInstantiationMismatch(source_t, target_t)) return true;
+        if (try self.checkerAssignableTo(source_t, target_t)) return false;
+        return !try self.checkerAssignableTo(target_t, source_t);
+    }
+
+    fn privateClassAssertionBaseInstantiationMismatch(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        const source_name = self.classNameForInstanceType(source_t) orelse return false;
+        var missing_required = false;
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            if (target_member.is_optional) continue;
+            if (self.interner.objectMemberInfo(source_t, target_member.name) == null) {
+                missing_required = true;
+                break;
+            }
+        }
+        if (!missing_required) return false;
+
+        var base = target_t;
+        var depth: u8 = 0;
+        while (depth < 32) : (depth += 1) {
+            base = self.decl_single_base.get(base) orelse return false;
+            if (self.classNameForInstanceType(base) != source_name) continue;
+            return !try self.checkerAssignableTo(base, source_t);
+        }
+        return false;
     }
 
     fn assertionTargetHasGenericArityDiagnostic(self: *Checker, node: NodeId) bool {
@@ -160520,6 +161383,25 @@ test "checker: null assertion to generic array target reports TS2352" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
+test "checker: private generic assertions use directional overlap and track definite assignment" {
+    const s = try newSetup(
+        \\interface T1 {}
+        \\interface T2 { z: any }
+        \\class C1<T> { private x: any; }
+        \\class C2 extends C1<T1> { y: any; }
+        \\var c1: C1<T2>;
+        \\<C2>c1;
+        \\class C3<T> { private x: T; }
+        \\class C4 extends C3<T1> { y: any; }
+        \\var c3: C3<T2>;
+        \\<C4>c3;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
 test "checker: null assertion permits only bare unconstrained type parameters" {
     const s = try newSetup(
         \\namespace Errors {
@@ -169951,6 +170833,37 @@ test "checker: variance inference tolerates recursive array aliases" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+}
+
+test "checker: recursive union aliases contextually select their tuple branch" {
+    const s = try newSetup(
+        \\type HypertextNode = string | [string, { [key: string]: unknown }, ...HypertextNode[]];
+        \\const node: HypertextNode = [
+        \\  "div",
+        \\  { id: "parent" },
+        \\  ["span", { id: "child" }, "text"],
+        \\];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: recursive array inference prioritizes nested candidates" {
+    const s = try newSetup(
+        \\type RecArray<T> = Array<T | RecArray<T>>;
+        \\declare function flat<T>(a: RecArray<T>): Array<T>;
+        \\declare function flat1<T>(a: Array<T | Array<T>>): Array<T>;
+        \\declare function flat2<T>(a: Array<T | Array<T | Array<T>>>): Array<T>;
+        \\flat([1, ["a"]]);
+        \\flat1([1, ["a"]]);
+        \\flat2([1, ["a"]]);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: variance inference tolerates recursive generic methods" {
@@ -183712,6 +184625,40 @@ test "checker: checkjs recursive JSDoc typedef aliases do not recurse forever" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len < 20);
+}
+
+test "checker: checkjs recursive typedef unions resolve sibling aliases and readonly empty tuples" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @Filename: recursive.js
+        \\/** @typedef {ReadonlyArray<Json>} JsonArray */
+        \\/** @typedef {{ readonly [key: string]: Json }} JsonRecord */
+        \\/** @typedef {boolean | number | string | null | JsonRecord | JsonArray | readonly []} Json */
+        \\/** @type {Json} */
+        \\const value = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: checkjs generic typedef intersections retain required outer members" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/** @template T
+        \\ * @typedef {{
+        \\ *   $A: { [K in keyof T]?: XMLObject<T[K]>[] },
+        \\ *   $O: { [K in keyof T]?: { $$?: Record<string, string> } },
+        \\ *   $$?: Record<string, string>,
+        \\ * } & { [K in keyof T]?: XMLObject<T[K]> }} XMLObject<T>
+        \\ */
+        \\/** @type {XMLObject<{foo:string}>} */
+        \\const value = {};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: checkjs virtual JSDoc typedef is visible to TS type refs" {
@@ -204365,6 +205312,10 @@ test "checker: legitimately body-recursive generics do not emit TS4109/4110" {
         \\let x: List<number> = { value: 1, next: null };
         \\interface Tree<T> { v: T; kids: Tree<T>[]; }
         \\let t: Tree<string> = { v: "a", kids: [] };
+        \\interface IBox<T> { value: T; }
+        \\type T1 = IBox<T1>;
+        \\type T2 = IBox<IBox<T2>>;
+        \\type Box2 = IBox<Box2 | number>;
         \\type Box<T> = { value: T };
         \\type Nested = Box<Box<Box<string>>>;
         \\declare const n: Nested;
@@ -204374,6 +205325,7 @@ test "checker: legitimately body-recursive generics do not emit TS4109/4110" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.circular_type_arguments));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.circular_tuple_type_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: alias whose type argument references itself reports TS4109" {
@@ -204846,6 +205798,22 @@ test "checker: Array.prototype.reduce<U> infers result type from the initial val
     // `U` is inferred from the `"seed"` initial value -> `string`. The
     // reduce result is the scalar `U`, not an array.
     try T.expectEqual(types.Primitive.string_t, t);
+}
+
+test "checker: Array.prototype.reduce<U> accepts and applies explicit type arguments" {
+    const s = try newSetup(
+        \\type Tree = [number, Tree][];
+        \\const values: number[] = [1, 2, 3];
+        \\const tree = values.reduce<Tree>((node, value) => node, []);
+        \\tree;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const tree_decl = hir_mod.varDeclOf(&s.hir, stmts[2]);
+    try T.expectEqual(s.hir.typeOf(stmts[0]), s.hir.typeOf(tree_decl.init));
 }
 
 test "checker: Array.prototype reduce without initial value returns element type" {
