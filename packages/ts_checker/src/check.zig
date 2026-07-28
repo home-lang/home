@@ -71153,6 +71153,199 @@ pub const Checker = struct {
         }
     }
 
+    fn objectLiteralHasContextualFunctionProperty(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .object_literal) return false;
+        for (hir_mod.objectLiteralProps(self.hir, node)) |property_node| {
+            if (self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            if (property.value == hir_mod.none_node_id) continue;
+            const value_kind = self.hir.kindOf(property.value);
+            if (value_kind == .arrow_fn or value_kind == .fn_expr or value_kind == .fn_decl) return true;
+        }
+        return false;
+    }
+
+    fn objectLiteralUnionMismatchReportsAtDeclaration(self: *Checker, node: NodeId, target: TypeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .object_literal) return false;
+        if (target >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target).is_union) return false;
+        return !self.objectLiteralHasContextualFunctionProperty(node);
+    }
+
+    const ObjectUnionDiagnosticTarget = struct {
+        node: NodeId,
+        type: TypeId,
+    };
+
+    fn bestObjectUnionDiagnosticTarget(
+        self: *Checker,
+        source: TypeId,
+        annotation: NodeId,
+    ) CheckError!?ObjectUnionDiagnosticTarget {
+        if (annotation == hir_mod.none_node_id or self.hir.kindOf(annotation) != .union_type) return null;
+        if (source >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source).is_object_type) return null;
+        var best: ?ObjectUnionDiagnosticTarget = null;
+        var best_overlap: usize = 0;
+        for (hir_mod.unionTypeMembers(self.hir, annotation)) |member_node| {
+            const member_t = try self.lowererLowerWithTypeParams(member_node);
+            if (member_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(member_t).is_object_type) continue;
+            var overlap: usize = 0;
+            for (self.interner.objectMembers(member_t)) |member| {
+                if (self.interner.objectMember(source, member.name) != null) overlap += 1;
+            }
+            if (best == null or overlap >= best_overlap) {
+                best = .{ .node = member_node, .type = member_t };
+                best_overlap = overlap;
+            }
+        }
+        return best;
+    }
+
+    fn reportObjectLiteralUnionDeclarationMismatch(
+        self: *Checker,
+        node: NodeId,
+        annotation: NodeId,
+        source: TypeId,
+    ) CheckError!bool {
+        const candidate = (try self.bestObjectUnionDiagnosticTarget(source, annotation)) orelse return false;
+        const source_name = (try self.allocObjectTypeShapeWithUndefined(source)) orelse
+            (try self.allocSimpleTypeName(source)) orelse return false;
+        const target_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(annotation));
+        const candidate_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(candidate.node));
+        const arena = self.diag_arena.allocator();
+        const message = try std.fmt.allocPrint(
+            arena,
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
+        const child_message = try std.fmt.allocPrint(
+            arena,
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, candidate_name },
+        );
+        const children = try self.buildAssignabilityElaborationChain(source, candidate.type);
+        const chain = try arena.alloc(DiagnosticChainEntry, 1);
+        chain[0] = .{
+            .code = TsCodes.type_not_assignable,
+            .message = child_message,
+            .children = children,
+        };
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.type_not_assignable,
+            .message = message,
+            .chain = chain,
+        });
+        return true;
+    }
+
+    fn tryReportContextualFunctionUnionPropertyMismatch(
+        self: *Checker,
+        init_node: NodeId,
+        target: TypeId,
+    ) CheckError!bool {
+        if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .object_literal) return false;
+        if (target >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target).is_union) return false;
+        const arena = self.diag_arena.allocator();
+        for (hir_mod.objectLiteralProps(self.hir, init_node)) |property_node| {
+            if (self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            if (property.value == hir_mod.none_node_id or !self.isContextualFunctionExpressionLike(property.value)) continue;
+            const property_name = self.propertyNameFromKeyNode(property.key) orelse continue;
+
+            var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer signatures.deinit(self.gpa);
+            var first_member: ?types.ObjectMember = null;
+            for (self.interner.unionMembers(target)) |target_member_t| {
+                if (target_member_t >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(target_member_t).is_object_type)
+                {
+                    continue;
+                }
+                var target_member_opt: ?types.ObjectMember = null;
+                for (self.interner.objectMembers(target_member_t)) |member| {
+                    if (member.name == property_name) {
+                        target_member_opt = member;
+                        break;
+                    }
+                }
+                const target_member = target_member_opt orelse continue;
+                const signature = self.firstSignatureType(target_member.type) orelse continue;
+                try signatures.append(self.gpa, signature);
+                if (first_member == null) {
+                    first_member = target_member;
+                }
+            }
+            if (signatures.items.len < 2 or first_member == null) continue;
+            const source_sig = try self.contextualFunctionSignatureWithInferredReturn(property.value, signatures.items[0]);
+            const source_return = self.interner.signatureReturn(source_sig) orelse continue;
+            var matches = false;
+            for (signatures.items) |signature| {
+                const target_return = self.interner.signatureReturn(signature) orelse continue;
+                if (try self.checkerAssignableTo(source_return, target_return)) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (matches) continue;
+
+            const source_name = (try self.allocCallableSignatureName(source_sig)) orelse return false;
+            var target_name_buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer target_name_buf.deinit(self.gpa);
+            for (signatures.items, 0..) |signature, index| {
+                if (index > 0) try target_name_buf.appendSlice(self.gpa, " | ");
+                try target_name_buf.append(self.gpa, '(');
+                try target_name_buf.appendSlice(
+                    self.gpa,
+                    (try self.allocCallableSignatureName(signature)) orelse return false,
+                );
+                try target_name_buf.append(self.gpa, ')');
+            }
+            const target_name = try arena.dupe(u8, target_name_buf.items);
+            const candidate_name = (try self.allocCallableSignatureName(signatures.items[0])) orelse return false;
+            const message = try std.fmt.allocPrint(
+                arena,
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, target_name },
+            );
+            const child_message = try std.fmt.allocPrint(
+                arena,
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, candidate_name },
+            );
+            const child_children = try self.buildAssignabilityElaborationChain(source_sig, signatures.items[0]);
+            const chain = try arena.alloc(DiagnosticChainEntry, 1);
+            chain[0] = .{
+                .code = TsCodes.type_not_assignable,
+                .message = child_message,
+                .children = child_children,
+            };
+            const anchor = if (property.key != hir_mod.none_node_id) property.key else property_node;
+            try self.diagnostics.append(self.gpa, .{
+                .node = anchor,
+                .code = TsCodes.type_not_assignable,
+                .message = message,
+                .chain = chain,
+            });
+            if (first_member.?.decl_node != hir_mod.none_node_id) {
+                const target_display = (try self.allocSimpleTypeName(target)) orelse "object";
+                const related_message = try std.fmt.allocPrint(
+                    arena,
+                    "The expected type comes from property '{s}' which is declared here on type '{s}'",
+                    .{ self.string_interner.get(first_member.?.name), target_display },
+                );
+                const related = try arena.alloc(RelatedInfo, 1);
+                related[0] = .{
+                    .node = first_member.?.decl_node,
+                    .code = TsCodes.expected_type_from_property,
+                    .message = related_message,
+                };
+                self.diagnostics.items[self.diagnostics.items.len - 1].related = related;
+            }
+            return true;
+        }
+        return false;
+    }
+
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
 
@@ -71382,6 +71575,9 @@ pub const Checker = struct {
                     init_type = contextual_t;
                 }
                 self.clearContextualAnyObjectLiteralNullishImplicitAnyDiagnostics(v.init, declared_type, init_diag_start);
+                if (self.objectLiteralUnionMismatchReportsAtDeclaration(v.init, declared_type)) {
+                    self.removePriorDiagnosticsInNodeSpan(v.init, TsCodes.type_not_assignable);
+                }
             }
             // Anonymous class-expression assigned to a `var X = class {ÃÂ¢ÃÂÃÂ¦}`
             // (or `let`/`const`) binding: register the static-side type
@@ -71749,7 +71945,14 @@ pub const Checker = struct {
                     // upstream baselines (`renamed.ts`, etc.).
                     const callable_excess_covers_missing_fn =
                         try self.objectLiteralCallableExcessCoversMissingFunction(v.init, init_type, declared_type);
-                    if (!direct_shorthand_excess_property_diag_emitted and !callable_excess_covers_missing_fn and
+                    const callable_union_property_diag_emitted =
+                        self.hir.kindOf(v.init) == .object_literal and
+                        declared_type < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(declared_type).is_union and
+                        self.objectLiteralHasContextualFunctionProperty(v.init) and
+                        try self.tryReportContextualFunctionUnionPropertyMismatch(v.init, declared_type);
+                    if (!callable_union_property_diag_emitted and
+                        !direct_shorthand_excess_property_diag_emitted and !callable_excess_covers_missing_fn and
                         (self.hir.kindOf(v.init) == .array_literal or
                             !(try self.tryReportSinglePropertyMissing(diag_node, v.init, init_type, declared_type))))
                     {
@@ -71758,7 +71961,9 @@ pub const Checker = struct {
                         // not assignable, anchor the diagnostic at the
                         // value position with full type prose. Mirrors
                         // upstream `nonPrimitiveAsProperty.ts(7,28)`.
-                        if (!try self.tryReportObjectLiteralPropertyMismatch(v.init, declared_type)) {
+                        if (self.objectLiteralUnionMismatchReportsAtDeclaration(v.init, declared_type) or
+                            !try self.tryReportObjectLiteralPropertyMismatch(v.init, declared_type))
+                        {
                             if (!try self.tryReportStringLiteralUnionSuggestionNode(diag_node, v.init, declared_type)) {
                                 const tuple_annotation_mismatch = if (v.type_annotation != hir_mod.none_node_id and self.hir.kindOf(v.init) == .array_literal)
                                     if (self.tupleAnnotationSourceNode(v.type_annotation)) |tuple_node|
@@ -71779,7 +71984,11 @@ pub const Checker = struct {
                                     if (!try self.tryReportVarDeclSignaturePredicateAssignment(diag_node, v.init, v.type_annotation, report_source, declared_type)) {
                                         if (!try self.tryReportConditionalImportedNamespaceNotAssignable(diag_node, v.init, declared_type)) {
                                             const target_node = if (v.name != hir_mod.none_node_id) v.name else node;
-                                            try self.reportVarDeclTypeNotAssignable(diag_node, v.init, target_node, report_source, init_type, declared_type, "Type is not assignable to declared type.");
+                                            if (!self.objectLiteralUnionMismatchReportsAtDeclaration(v.init, declared_type) or
+                                                !try self.reportObjectLiteralUnionDeclarationMismatch(target_node, v.type_annotation, report_source))
+                                            {
+                                                try self.reportVarDeclTypeNotAssignable(diag_node, v.init, target_node, report_source, init_type, declared_type, "Type is not assignable to declared type.");
+                                            }
                                         }
                                         try self.attachMissingAwaitRelated(v.init, init_type, declared_type);
                                         if (self.isContextualFunctionExpressionLike(v.init)) {
@@ -136867,6 +137076,26 @@ pub const Checker = struct {
                 }
             }
         }
+        if (source < self.interner.pool.typeCount() and
+            target < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source).is_union and
+            !self.interner.pool.flagsOf(target).is_union)
+        {
+            var saw_assignable = false;
+            var incompatible: ?TypeId = null;
+            for (self.interner.unionMembers(source)) |member| {
+                if (self.engine.isAssignableTo(member, target) catch false) {
+                    saw_assignable = true;
+                } else if (incompatible == null) {
+                    incompatible = member;
+                }
+            }
+            if (saw_assignable and incompatible != null) {
+                const children = try arena.alloc(DiagnosticChainEntry, 1);
+                children[0] = try self.typeNotAssignableChainEntry(incompatible.?, target, false);
+                return .{ .code = TsCodes.type_not_assignable, .message = msg, .children = children };
+            }
+        }
         if (include_nullish_child) {
             if (try self.nullishSourceAssignabilityChain(source, target)) |child| {
                 const children = try arena.alloc(DiagnosticChainEntry, 1);
@@ -161472,6 +161701,37 @@ test "checker: contextual function union rejects incompatible return" {
         s,
         TsCodes.type_not_assignable,
         "Type '(foo: number, bar: string) => boolean' is not assignable to type '((n: number, s: string) => number) | ((n: number, s: string) => string)'.",
+    ));
+}
+
+test "checker: contextual object unions retain declaration and property diagnostic ownership" {
+    const s = try newSetup(
+        \\declare var value: string | number;
+        \\var objectValue: { prop: string } | { prop: number } = { prop: value };
+        \\interface StringResult { method(a: string, b: number): string; }
+        \\interface NumberResult { method(a: string, b: number): number; }
+        \\var callable: StringResult | NumberResult = {
+        \\  method: (a, b) => value,
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ prop: string | number; }' is not assignable to type '{ prop: string; } | { prop: number; }'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '(a: string, b: number) => string | number' is not assignable to type '((a: string, b: number) => string) | ((a: string, b: number) => number)'.",
     ));
 }
 
