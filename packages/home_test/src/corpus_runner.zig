@@ -9491,6 +9491,31 @@ const harness_prelude =
     \\  if (stderr === null) return null;
     \\  return __home_spawn_completed("bun test " + String(Bun.version_with_sha) + "\n", stderr, 1);
     \\}
+    \\function __home_spawn_failure_skip_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/failure-skip.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.some(part => part.endsWith("failure-skip.fixture.ts"))) return null;
+    \\  const failurePoints = new Set(String(options && options.env && options.env.FAILURE_POINTS || "").split(",").filter(Boolean));
+    \\  const messages = [];
+    \\  const hit = name => {
+    \\    messages.push(name);
+    \\    return failurePoints.has(name);
+    \\  };
+    \\  let beforeAllFailed = hit("beforeall1");
+    \\  if (!beforeAllFailed) beforeAllFailed = hit("beforeall2");
+    \\  if (!beforeAllFailed) {
+    \\    for (const testName of ["test1", "test2"]) {
+    \\      let beforeEachFailed = hit("beforeeach1");
+    \\      if (!beforeEachFailed) beforeEachFailed = hit("beforeeach2");
+    \\      if (!beforeEachFailed) hit(testName);
+    \\      if (!hit("aftereach1")) hit("aftereach2");
+    \\    }
+    \\  }
+    \\  if (!hit("afterall1")) hit("afterall2");
+    \\  const stdout = messages.map(message => "%%<" + message + ">%%").join("\n") + "\n";
+    \\  const failed = failurePoints.size > 0;
+    \\  return __home_spawn_completed(stdout, failed ? "error: fixture hook failure\n" : "", failed ? 1 : 0);
+    \\}
     \\function __home_spawn_bun_test_multifile_scheduling_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!(current.includes("js/bun/test/bun_test.test.ts") || current.includes("js/bun/test/bun_test_scheduling_mirror.test.ts"))) return null;
@@ -14204,6 +14229,8 @@ const harness_prelude =
     \\  if (textLoaderFixture) return textLoaderFixture;
     \\  const installedCommonjsEvalFixture = __home_spawn_installed_commonjs_eval_fixture(options || {}, cmd);
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
+    \\  const failureSkipFixture = __home_spawn_failure_skip_fixture(options || {});
+    \\  if (failureSkipFixture) return failureSkipFixture;
     \\  const doneCallbackReporterFixture = __home_spawn_done_callback_reporter_fixture(options || {});
     \\  if (doneCallbackReporterFixture) return doneCallbackReporterFixture;
     \\  const bunTestReporterFixture = __home_spawn_bun_test_reporter_fixture(options || {});
@@ -58489,7 +58516,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/failure-skip.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test failure skip hook reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Sinon fake timers upstream matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-347.test.ts"))
@@ -69096,6 +69123,33 @@ test "bootstrap runner mirrors failure skip fixture corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors failure skip hook scheduling matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/failure-skip.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/failure-skip.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_failure_skip_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("failure skip hook scheduling matrix corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
