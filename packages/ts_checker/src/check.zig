@@ -13593,7 +13593,9 @@ pub const Checker = struct {
                     try case_literal_types.append(self.gpa, lit_t);
                 }
                 if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
-                if (!try self.typesHaveComparableOverlap(discriminant_lit_t, case_t)) {
+                if (!self.intersectionReducesToNeverForAssignability(discriminant_lit_t) and
+                    !try self.typesHaveComparableOverlap(discriminant_lit_t, case_t))
+                {
                     const discriminant_diag_t = if (ident_discriminant_diag_t != types.Primitive.none) ident_discriminant_diag_t else discriminant_lit_t;
                     try self.reportSwitchCaseNotComparable(
                         case_p.value,
@@ -17651,6 +17653,7 @@ pub const Checker = struct {
                 !(self.nodeHasAncestorKind(ref_node, .element_access) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .binary_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .logical_op) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !(self.nodeHasAncestorKind(ref_node, .switch_case) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .assignment) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !((self.nodeHasAncestorKind(ref_node, .var_decl) or
                     self.nodeHasAncestorKind(ref_node, .let_decl) or
@@ -89064,10 +89067,14 @@ pub const Checker = struct {
                         if (try self.jsxLibElementSyntheticType()) |t| return t;
                         return types.Primitive.any;
                     }
+                    const has_generic_spread = generic_spread_types.items.len > 0;
+                    const explicit_attrs_t = try self.jsxExplicitAttributesBagType(explicit_attrs.items);
                     const attrs_match_overload = try self.jsxAttributesMatchOverload(
                         el.tag,
                         attrs_t,
                         has_spread_attr,
+                        has_generic_spread,
+                        explicit_attrs_t,
                     );
                     const interface_overloads = try self.jsxTagInterfaceOverloads(el.tag);
                     const attrs_match_sigs = if (interface_overloads) |sigs|
@@ -89076,6 +89083,8 @@ pub const Checker = struct {
                             sigs,
                             attrs_t,
                             has_spread_attr,
+                            has_generic_spread,
+                            explicit_attrs_t,
                         )
                     else
                         false;
@@ -89084,13 +89093,18 @@ pub const Checker = struct {
                     // path still excess-checks explicit attributes added
                     // alongside a concrete spread; only a generic spread
                     // makes the whole synthesized target indeterminate.
-                    const has_generic_spread = generic_spread_types.items.len > 0;
                     const attrs_have_no_excess = has_generic_spread or
                         try self.jsxAttrsHaveNoExcessMembersForTarget(el.tag, attrs_t, effective_target);
                     const attrs_values_assignable = try self.jsxAttributeBagValuesAssignable(attrs_t, effective_target);
                     if (self.jsxTagHasVisibleOverloads(el.tag) and !attrs_match_overload) {
+                        const report_anchor = if (overload_value_mismatch_anchor) |anchor|
+                            anchor
+                        else if (has_spread_attr and !has_generic_spread)
+                            try self.jsxAttrsStructuralMismatchAnchor(el.tag, attrs, effective_target)
+                        else
+                            el.tag;
                         try self.report(
-                            self.jsxNoOverloadAnchor(el.tag, overload_value_mismatch_anchor),
+                            report_anchor,
                             TsCodes.no_overload_matches,
                             "No overload matches this call.",
                         );
@@ -90417,8 +90431,8 @@ pub const Checker = struct {
         // against the JSX tag name. Attribute-level elaborations may hang
         // below that diagnostic. When a post-spread explicit value causes
         // the mismatch, JSX elaboration moves the TS2769 head to that
-        // attribute; structural and required-property failures stay at
-        // the tag.
+        // attribute. Structural post-spread failures are anchored
+        // separately by `jsxAttrsStructuralMismatchAnchor`.
         return value_mismatch orelse tag;
     }
 
@@ -90461,6 +90475,8 @@ pub const Checker = struct {
         sigs: []const TypeId,
         attrs_t: TypeId,
         has_spread: bool,
+        has_generic_spread: bool,
+        explicit_attrs_t: TypeId,
     ) CheckError!bool {
         for (sigs) |sig| {
             const params = self.interner.signatureParams(sig);
@@ -90478,8 +90494,9 @@ pub const Checker = struct {
                     target = self.substituteType(target, &subs) catch target;
                 }
             }
-            const no_excess = has_spread or
-                try self.jsxAttrsHaveNoExcessMembersForTarget(anchor, attrs_t, target);
+            const excess_attrs_t = if (has_spread) explicit_attrs_t else attrs_t;
+            const no_excess = has_generic_spread or
+                try self.jsxAttrsHaveNoExcessMembersForTarget(anchor, excess_attrs_t, target);
             if (no_excess and self.engine.isAssignableTo(attrs_t, target) catch false) return true;
             if (no_excess and
                 try self.jsxRequiredPropsAssignable(target, attrs_t) and
@@ -90529,6 +90546,8 @@ pub const Checker = struct {
         tag: NodeId,
         attrs_t: TypeId,
         has_spread: bool,
+        has_generic_spread: bool,
+        explicit_attrs_t: TypeId,
     ) CheckError!bool {
         const overloads = self.jsxTagVisibleOverloads(tag) orelse return false;
         for (overloads) |sig| {
@@ -90547,8 +90566,9 @@ pub const Checker = struct {
                     target = self.substituteType(target, &subs) catch target;
                 }
             }
-            const no_excess = has_spread or
-                try self.jsxAttrsHaveNoExcessMembersForTarget(tag, attrs_t, target);
+            const excess_attrs_t = if (has_spread) explicit_attrs_t else attrs_t;
+            const no_excess = has_generic_spread or
+                try self.jsxAttrsHaveNoExcessMembersForTarget(tag, excess_attrs_t, target);
             if (no_excess and self.engine.isAssignableTo(attrs_t, target) catch false) return true;
             if (no_excess and
                 try self.jsxRequiredPropsAssignable(target, attrs_t) and
@@ -90559,6 +90579,23 @@ pub const Checker = struct {
             if (no_excess and target_had_free and try self.jsxRequiredPropsAssignable(target, attrs_t)) return true;
         }
         return false;
+    }
+
+    fn jsxExplicitAttributesBagType(self: *Checker, attrs: []const NodeId) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (attrs) |attr| {
+            if (self.hir.kindOf(attr) != .jsx_attribute) continue;
+            const jsx_attr = hir_mod.jsxAttributeOf(self.hir, attr);
+            try self.appendOrReplaceObjectMember(&members, .{
+                .name = jsx_attr.name,
+                .type = types.Primitive.any,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn jsxAttrsBagHasOnlyIgnoredMembers(self: *Checker, attrs_t: TypeId) CheckError!bool {
@@ -154578,6 +154615,41 @@ test "checker: switch discriminant and cases participate in TS2454" {
     try T.expect(found);
 }
 
+test "checker: typed switch case expressions participate in TS2454" {
+    const s = try newSetup(
+        \\var impossible: string & number;
+        \\var str: string;
+        \\switch (impossible) {
+        \\  case impossible:
+        \\  case str:
+        \\    break;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.used_before_assignment));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.switch_case_not_comparable));
+}
+
+test "checker: switch unions retain disjoint case comparability errors" {
+    const s = try newSetup(
+        \\var value: string | number;
+        \\var flag: boolean;
+        \\switch (value) {
+        \\  case flag:
+        \\    break;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.used_before_assignment));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.switch_case_not_comparable));
+}
+
 test "checker: namespace body participates in TS2454 scan" {
     const s = try newSetup(
         \\namespace N {
@@ -204746,6 +204818,40 @@ test "checker: JSX overloads accept ignored zero-arg bags and defer spread value
             s.sint.get(hir_mod.jsxAttributeOf(&s.hir, diagnostic.node).name),
         );
     }
+}
+
+test "checker: JSX overloads excess-check explicit attrs beside concrete spreads" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\interface ButtonProps { onClick: (key: "left" | "right") => void; }
+        \\interface LinkProps { goTo: "home" | "contact"; }
+        \\function MainButton(props: ButtonProps): JSX.Element;
+        \\function MainButton(props: LinkProps): JSX.Element;
+        \\function MainButton(props: ButtonProps | LinkProps): JSX.Element {
+        \\  return {} as JSX.Element;
+        \\}
+        \\const spreadButton = <MainButton {...{ onClick: (key) => key }} extra />;
+        \\const directButton = <MainButton onClick={(key) => key} extra />;
+        \\const spreadLink = <MainButton {...{ goTo: "home" }} extra />;
+        \\const directLink = <MainButton goTo="home" extra />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    var attr_anchors: usize = 0;
+    var tag_anchors: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.no_overload_matches) continue;
+        switch (s.hir.kindOf(diagnostic.node)) {
+            .jsx_attribute => attr_anchors += 1,
+            .identifier => tag_anchors += 1,
+            else => {},
+        }
+    }
+    try T.expectEqual(@as(usize, 2), attr_anchors);
+    try T.expectEqual(@as(usize, 2), tag_anchors);
 }
 
 test "checker: JSX inference falls back to an unsatisfied object constraint" {
