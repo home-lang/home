@@ -73814,6 +73814,13 @@ pub const Checker = struct {
         if (try self.contextualGenericSignatureRelation(source_t, target_t)) |ok| return ok;
         if (try self.genericSignaturesAlphaRelation(source_t, target_t)) |ok| return ok;
         if (try self.genericSignatureRelationMismatch(source_t, target_t)) return false;
+        if (self.interner.isSignature(source_t) and
+            self.interner.isSignature(target_t) and
+            self.rest_signatures.contains(target_t) and
+            !self.rest_signatures.contains(source_t))
+        {
+            return try self.contextualFunctionSignatureAssignable(source_t, target_t);
+        }
         if (try self.nonNullableIntersectionSourceAssignableToTarget(source_t, target_t)) return true;
         if (self.typeParameterSourceAssignableToMappedTarget(source_t, target_t)) return true;
         if (self.mappedSourceAssignableToTypeParameterTarget(source_t, target_t)) return true;
@@ -99135,6 +99142,7 @@ pub const Checker = struct {
             try self.inferRestTupleFromSignatureParams(
                 param_sig,
                 target_params,
+                source_sig,
                 self.interner.signatureParams(source_sig),
                 subs,
             );
@@ -118885,6 +118893,13 @@ pub const Checker = struct {
                     changed = true;
                 }
             }
+            if (state == .normal and
+                std.ascii.isWhitespace(ch) and
+                std.mem.endsWith(u8, buf.items, "..."))
+            {
+                changed = true;
+                continue;
+            }
             try buf.append(arena, ch);
             switch (state) {
                 .normal => switch (ch) {
@@ -121296,9 +121311,32 @@ pub const Checker = struct {
             if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
             const pp = try self.gpa.dupe(TypeId, self.interner.signatureParams(param_t));
             defer self.gpa.free(pp);
-            const ap = try self.gpa.dupe(TypeId, self.interner.signatureParams(arg_t));
-            defer self.gpa.free(ap);
-            try self.inferRestTupleFromSignatureParams(param_t, pp, ap, subs);
+            if (self.generic_signature_params.get(arg_t) != null and
+                self.generic_signature_params.get(param_t) == null and
+                self.signatureHasBareGenericRestParam(param_t))
+            {
+                if (self.interner.signatureReturn(param_t)) |return_t| {
+                    if (return_t < pool.typeCount()) {
+                        const return_flags = pool.flagsOf(return_t);
+                        if (return_flags.is_type_parameter and
+                            !return_flags.is_union and
+                            !return_flags.is_intersection and
+                            !return_flags.is_object_type and
+                            !return_flags.is_signature and
+                            !subs.contains(return_t))
+                        {
+                            try subs.put(self.gpa, return_t, types.Primitive.unknown);
+                        }
+                    }
+                }
+                return;
+            }
+            const raw_ap = self.interner.signatureParams(arg_t);
+            var logical_ap: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer logical_ap.deinit(self.gpa);
+            _ = try self.appendLogicalSignatureInferenceParams(arg_t, raw_ap, &logical_ap);
+            const ap = logical_ap.items;
+            try self.inferRestTupleFromSignatureParams(param_t, pp, arg_t, raw_ap, subs);
             const m = @min(pp.len, ap.len);
             var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer source_subs.deinit(self.gpa);
@@ -122046,6 +122084,7 @@ pub const Checker = struct {
         self: *Checker,
         param_sig: TypeId,
         param_params: []const TypeId,
+        arg_sig: TypeId,
         arg_params: []const TypeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!void {
@@ -122055,9 +122094,43 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(rest_param_t).is_type_parameter) return;
         if (subs.contains(rest_param_t)) return;
         const fixed_count = param_params.len - 1;
-        if (arg_params.len < fixed_count) return;
-        const tuple_t = try self.internTupleFromTypes(arg_params[fixed_count..], false);
+        var logical_args: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer logical_args.deinit(self.gpa);
+        const source_min = try self.appendLogicalSignatureInferenceParams(arg_sig, arg_params, &logical_args);
+        if (logical_args.items.len < fixed_count) return;
+        const rest_min = if (source_min > fixed_count) source_min - fixed_count else 0;
+        const tuple_t = try self.internTupleFromTypesWithMinRequired(
+            logical_args.items[fixed_count..],
+            rest_min,
+            false,
+        );
         try subs.put(self.gpa, rest_param_t, tuple_t);
+    }
+
+    fn appendLogicalSignatureInferenceParams(
+        self: *Checker,
+        sig: TypeId,
+        params: []const TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!usize {
+        if (!self.rest_signatures.contains(sig) or params.len == 0) {
+            try out.appendSlice(self.gpa, params);
+            return self.signatureMinRequiredArgs(sig, params);
+        }
+        const fixed_count = params.len - 1;
+        try out.appendSlice(self.gpa, params[0..fixed_count]);
+        const rest_t = params[params.len - 1];
+        const rest_len = self.fixedTupleLength(rest_t) orelse {
+            try out.append(self.gpa, rest_t);
+            return self.signatureMinRequiredArgs(sig, params);
+        };
+        for (0..@as(usize, @intCast(rest_len))) |index| {
+            const element_t = self.tupleElementType(rest_t, index);
+            if (element_t == types.Primitive.none) break;
+            try out.append(self.gpa, element_t);
+        }
+        const fixed_min = @min(self.signatureMinRequiredArgs(sig, params), fixed_count);
+        return fixed_min + self.tupleRestMinRequiredCount(rest_t);
     }
 
     fn signatureHasBareGenericRestParam(self: *Checker, sig: TypeId) bool {
@@ -122070,6 +122143,15 @@ pub const Checker = struct {
     }
 
     fn internTupleFromTypes(self: *Checker, elem_types: []const TypeId, readonly: bool) CheckError!TypeId {
+        return self.internTupleFromTypesWithMinRequired(elem_types, elem_types.len, readonly);
+    }
+
+    fn internTupleFromTypesWithMinRequired(
+        self: *Checker,
+        elem_types: []const TypeId,
+        min_required: usize,
+        readonly: bool,
+    ) CheckError!TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         for (elem_types, 0..) |t, i| {
@@ -122079,7 +122161,7 @@ pub const Checker = struct {
             try members.append(self.gpa, .{
                 .name = name,
                 .type = t,
-                .is_optional = false,
+                .is_optional = i >= min_required,
                 .is_readonly = readonly,
                 .is_method = false,
             });
@@ -132296,6 +132378,7 @@ pub const Checker = struct {
     }
 
     fn contextualTargetParamAssignableToSource(self: *Checker, target_param: TypeId, source_param: TypeId) CheckError!bool {
+        if (target_param == types.Primitive.any and source_param == types.Primitive.never) return false;
         if (self.engine.isAssignableTo(target_param, source_param) catch false) return true;
         if (target_param >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target_param);
@@ -138269,10 +138352,20 @@ pub const Checker = struct {
             if (!source_has or !target_has) continue;
             const source_param = self.memberSignatureTypeAtPosition(source, i);
             const target_param = self.memberSignatureTypeAtPosition(target, i);
-            if (source_param == types.Primitive.any or target_param == types.Primitive.any) continue;
+            const any_to_never = target_param == types.Primitive.any and source_param == types.Primitive.never;
+            if (!any_to_never and
+                (source_param == types.Primitive.any or target_param == types.Primitive.any))
+            {
+                continue;
+            }
             const generic_mismatch = check_generic_mismatch and
                 try self.genericObjectTypeParameterMismatch(target_param, source_param, 0);
-            if (!generic_mismatch and (self.engine.isAssignableTo(target_param, source_param) catch true)) continue;
+            if (!generic_mismatch and
+                !any_to_never and
+                (self.engine.isAssignableTo(target_param, source_param) catch true))
+            {
+                continue;
+            }
             const src_idx = if (i < source_params.len) i else source_params.len - 1;
             const tgt_idx = if (i < target_params.len) i else target_params.len - 1;
             const src_param_name = try self.signatureParamNameAt(source, src_idx);
@@ -179995,6 +180088,9 @@ test "checker: annotation normalization distinguishes template and object braces
 
     const object = try s.checker.normalizedTypeAnnotationText("{ value: `${T}` }");
     try T.expectEqualStrings("{ value: `${T}`; }", object);
+
+    const rest = try s.checker.normalizedTypeAnnotationText("(... args: any[]) => void");
+    try T.expectEqualStrings("(...args: any[]) => void", rest);
 }
 
 test "checker: capitalize and uncapitalize normalize template literal prefixes" {
@@ -181228,6 +181324,75 @@ test "checker: captured generic rest rejects a callback with an extra required p
     try T.expectEqualStrings(
         "Source provides no match for required element at position 0 in target.",
         diagnostic.chain[0].children[0].children[0].children[0].message,
+    );
+}
+
+test "checker: generic bind inference slices tuple-backed rest signatures" {
+    const s = try newSetup(
+        \\function bind<T, U extends unknown[], V>(f: (x: T, ...rest: U) => V, x: T) {
+        \\  return (...rest: U) => f(x, ...rest);
+        \\}
+        \\declare const required: (x: number, y: string, z: boolean) => string[];
+        \\const required1 = bind(required, 1);
+        \\const required2 = bind(required1, "x");
+        \\const required3 = bind(required2, true);
+        \\required1("x", true);
+        \\required2(true);
+        \\required3();
+        \\declare const optional: (x: number, y?: string, z?: boolean) => string[];
+        \\const optional1 = bind(optional, 1);
+        \\const optional2 = bind(optional1, "x");
+        \\const optional3 = bind(optional2, true);
+        \\optional1();
+        \\optional1("x");
+        \\optional2();
+        \\optional2(true);
+        \\optional3();
+        \\function call<T extends unknown[], U>(f: (...args: T) => U, ...args: T) {
+        \\  return f(...args);
+        \\}
+        \\declare function generic<A, B>(a: A, b: B): A | B;
+        \\call(generic, "x", 1);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: any array rest target rejects required never parameter" {
+    const s = try newSetup(
+        \\declare let target: (...args: any[]) => void;
+        \\declare let source: (value: never) => void;
+        \\target = source;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    const diagnostic = for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) break d;
+    } else return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Type '(value: never) => void' is not assignable to type '(...args: any[]) => void'.",
+        diagnostic.message,
+    );
+    try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+    try T.expectEqualStrings(
+        "Types of parameters 'value' and 'args' are incompatible.",
+        diagnostic.chain[0].message,
+    );
+    try T.expectEqualStrings(
+        "Type 'any' is not assignable to type 'never'.",
+        diagnostic.chain[0].children[0].message,
     );
 }
 
