@@ -6695,6 +6695,16 @@ pub const Checker = struct {
                     }
                     if (!emitted_nullish_return_mismatch and
                         r.value != hir_mod.none_node_id and
+                        self.typeIsEmptyObjectType(declared) and
+                        ret_t < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(ret_t).is_type_parameter and
+                        !(try self.checkerAssignableTo(ret_t, declared)))
+                    {
+                        try self.reportTypeNotAssignable(node, ret_t, declared, "Type is not assignable to function return type.");
+                        emitted_nullish_return_mismatch = true;
+                    }
+                    if (!emitted_nullish_return_mismatch and
+                        r.value != hir_mod.none_node_id and
                         ret_t != types.Primitive.none and
                         ret_t != types.Primitive.any and
                         ret_t != types.Primitive.unknown and
@@ -13564,6 +13574,8 @@ pub const Checker = struct {
             null;
         var case_literal_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer case_literal_types.deinit(self.gpa);
+        var fallthrough_case_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer fallthrough_case_types.deinit(self.gpa);
         var has_default = false;
         var all_value_cases_exit = true;
         var first_default_clause = false;
@@ -13594,13 +13606,24 @@ pub const Checker = struct {
                     try self.checkExcessProperties(case_p.value, discriminant_t);
                 }
                 const case_t = self.switchCaseComparableType(case_p.value, case_expr_t) catch case_expr_t;
-                if (try self.expressionNarrowLiteralType(case_p.value)) |lit_t| {
+                const case_literal_t = if (self.hir.kindOf(case_p.value) == .literal_null)
+                    types.Primitive.null_t
+                else
+                    try self.expressionNarrowLiteralType(case_p.value);
+                if (case_literal_t) |lit_t| {
                     try case_literal_types.append(self.gpa, lit_t);
                 }
+                const case_narrow_t = case_literal_t orelse if (discriminant_t == types.Primitive.unknown)
+                    case_t
+                else
+                    types.Primitive.none;
+                if (case_narrow_t != types.Primitive.none) {
+                    try fallthrough_case_types.append(self.gpa, case_narrow_t);
+                }
                 if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
-                if (!self.intersectionReducesToNeverForAssignability(discriminant_lit_t) and
-                    !try self.typesHaveComparableOverlap(discriminant_lit_t, case_t))
-                {
+                const case_is_comparable = self.intersectionReducesToNeverForAssignability(discriminant_lit_t) or
+                    try self.typesHaveComparableOverlap(discriminant_lit_t, case_t);
+                if (!case_is_comparable) {
                     const discriminant_diag_t = if (ident_discriminant_diag_t != types.Primitive.none) ident_discriminant_diag_t else discriminant_lit_t;
                     try self.reportSwitchCaseNotComparable(
                         case_p.value,
@@ -13610,10 +13633,23 @@ pub const Checker = struct {
                         ident_discriminant_diag_name,
                     );
                 }
-                if (is_disc_narrowable) {
+                if (case_is_comparable and is_disc_narrowable) {
                     try self.applyDiscriminatedNarrow(sw.discriminant, case_p.value, true);
-                } else if (is_ident_narrowable) {
-                    try self.applyIdentifierLiteralNarrow(sw.discriminant, case_p.value, true);
+                } else if (case_is_comparable and is_ident_narrowable) {
+                    if (fallthrough_case_types.items.len != 0) {
+                        const id = hir_mod.identifierOf(self.hir, sw.discriminant);
+                        const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(sw.discriminant);
+                        const target = if (fallthrough_case_types.items.len == 1)
+                            fallthrough_case_types.items[0]
+                        else
+                            self.interner.internUnion(fallthrough_case_types.items) catch types.Primitive.unknown;
+                        try self.registerStringLiteralUnionDisplayText(target);
+                        const narrowed = if (current == types.Primitive.unknown)
+                            target
+                        else
+                            try self.narrowTypeByPredicate(current, target);
+                        try self.recordNarrow(id.name, narrowed);
+                    }
                 }
             } else if (is_disc_narrowable) {
                 has_default = true;
@@ -13641,6 +13677,10 @@ pub const Checker = struct {
             }
 
             for (stmts) |s| try self.checkStatement(s);
+
+            if (case_p.value == hir_mod.none_node_id or self.caseClauseStatementsExit(stmts)) {
+                fallthrough_case_types.clearRetainingCapacity();
+            }
 
             // TS7029 (`noFallthroughCasesInSwitch`): a non-empty clause
             // whose control flow can reach its end falls through into
@@ -13866,6 +13906,29 @@ pub const Checker = struct {
         try self.registerAliasDisplayText(t, buf.items);
     }
 
+    fn registerStringLiteralUnionDisplayText(self: *Checker, t: TypeId) CheckError!void {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return;
+        if (self.alias_display_names.contains(t)) return;
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer names.deinit(self.gpa);
+        for (self.interner.unionMembers(t)) |member| {
+            const literal = self.interner.literalOfOrNull(member) orelse return;
+            const sid = switch (literal) {
+                .string_lit => |value| value,
+                else => return,
+            };
+            try names.append(self.gpa, try self.allocStringLiteralDisplay(sid));
+        }
+        std.mem.sort([]const u8, names.items, {}, lessThanStringLiteralText);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        for (names.items, 0..) |name, idx| {
+            if (idx > 0) try buf.appendSlice(arena, " | ");
+            try buf.appendSlice(arena, name);
+        }
+        try self.registerAliasDisplayText(t, buf.items);
+    }
+
     fn switchTrueCaseRootName(self: *Checker, case_value: NodeId) CheckError!?hir_mod.StringId {
         if (case_value == hir_mod.none_node_id or self.hir.kindOf(case_value) != .binary_op) return null;
         const b = hir_mod.binopOf(self.hir, case_value);
@@ -13974,12 +14037,15 @@ pub const Checker = struct {
     fn applyIdentifierLiteralNarrow(self: *Checker, ident: NodeId, lit_node: NodeId, positive: bool) !void {
         if (self.hir.kindOf(ident) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, ident);
-        const lit_t = (try self.expressionNarrowLiteralType(lit_node)) orelse return;
+        const lit_t = if (self.hir.kindOf(lit_node) == .literal_null)
+            types.Primitive.null_t
+        else
+            (try self.expressionNarrowLiteralType(lit_node)) orelse return;
+        const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(ident);
         if (positive) {
-            try self.recordNarrow(id.name, lit_t);
+            try self.recordNarrow(id.name, try self.narrowTypeByPredicate(current, lit_t));
         } else {
-            const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(ident);
-            const narrowed = self.subtractType(current, lit_t) catch current;
+            const narrowed = self.subtractTypeByPredicate(current, lit_t) catch current;
             try self.recordNarrow(id.name, narrowed);
         }
     }
@@ -14652,9 +14718,14 @@ pub const Checker = struct {
                 self.containsFreeTypeParameter(unwrapped) and
                 !self.hasEnclosingTypeParameters(node)) return;
             if (unwrapped == types.Primitive.any or
-                unwrapped == types.Primitive.unknown or
                 unwrapped == types.Primitive.void_t or
                 unwrapped == types.Primitive.undefined_t) return;
+            if (unwrapped == types.Primitive.unknown and
+                f.return_type != hir_mod.none_node_id and
+                !self.returnTypeAnnotationIsKnown(f.return_type))
+            {
+                return;
+            }
             if (unwrapped == types.Primitive.never) {
                 try self.reportAt(
                     report_node,
@@ -14664,7 +14735,7 @@ pub const Checker = struct {
                 );
                 return;
             }
-            if (self.typeIsOnlyImplicitReturnAllowed(unwrapped)) return;
+            if (unwrapped != types.Primitive.unknown and self.typeIsOnlyImplicitReturnAllowed(unwrapped)) return;
             // tsc splits the annotation-present, fall-through case on
             // whether the body contains any explicit value-returning
             // statement (`hasExplicitReturn`):
@@ -14834,6 +14905,21 @@ pub const Checker = struct {
         }
         if (flags.is_any or flags.is_unknown or flags.is_undefined or flags.is_void or flags.is_never) return true;
         return false;
+    }
+
+    fn returnTypeAnnotationIsKnown(self: *Checker, type_node: NodeId) bool {
+        if (type_node == hir_mod.none_node_id) return false;
+        const name = switch (self.hir.kindOf(type_node)) {
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, type_node);
+                if (ref.qualifier_len != 0 or ref.args_len != 0) return true;
+                break :blk ref.name;
+            },
+            .identifier => hir_mod.identifierOf(self.hir, type_node).name,
+            else => return true,
+        };
+        if (std.mem.eql(u8, self.string_interner.get(name), "unknown")) return true;
+        return self.typeRefNameExists(name) or self.visibleTypeDeclarationExistsAt(type_node, name);
     }
 
     fn checkJsDocFunctionTypeTag(self: *Checker, node: NodeId) CheckError!void {
@@ -15430,8 +15516,15 @@ pub const Checker = struct {
             .expression_stmt, .call_expr => self.hir.typeOf(node) == types.Primitive.never,
             .block_stmt => blk: {
                 const stmts = hir_mod.blockStmts(self.hir, node);
-                if (stmts.len == 0) break :blk false;
-                break :blk self.statementDefinitelyExits(stmts[stmts.len - 1]);
+                var i = stmts.len;
+                while (i > 0) {
+                    i -= 1;
+                    switch (self.hir.kindOf(stmts[i])) {
+                        .type_alias_decl, .interface_decl => continue,
+                        else => break :blk self.statementDefinitelyExits(stmts[i]),
+                    }
+                }
+                break :blk false;
             },
             .if_stmt => blk: {
                 const i = hir_mod.ifOf(self.hir, node);
@@ -15458,10 +15551,16 @@ pub const Checker = struct {
         var has_default = false;
         var has_true = false;
         var has_false = false;
-        for (cases) |case_node| {
+        var suffix_exits = false;
+        var i = cases.len;
+        while (i > 0) {
+            i -= 1;
+            const case_node = cases[i];
             const c = hir_mod.switchCaseOf(self.hir, case_node);
             const stmts = hir_mod.switchCaseStmts(self.hir, case_node);
-            if (stmts.len == 0 or !self.statementDefinitelyExits(stmts[stmts.len - 1])) return false;
+            const clause_exits = self.switchCaseStatementsDefinitelyExit(stmts);
+            if (!clause_exits and !suffix_exits) return false;
+            suffix_exits = clause_exits or suffix_exits;
             if (c.value == hir_mod.none_node_id) {
                 has_default = true;
                 continue;
@@ -17008,6 +17107,7 @@ pub const Checker = struct {
             v.init == hir_mod.none_node_id and
             self.varDeclHasTypeAnnotation(node) and
             !self.varDeclHasExplicitAnyAnnotation(node) and
+            !self.varDeclHasExplicitUnknownAnnotation(node) and
             !self.varDeclTypeIncludesExplicitUndefined(node) and
             !self.varDeclHasDefiniteAssertion(node) and
             !self.isGlobalSymbolConstructorVarDecl(node) and
@@ -17044,6 +17144,7 @@ pub const Checker = struct {
                                 v.init == hir_mod.none_node_id and
                                 self.varDeclHasTypeAnnotation(stmt) and
                                 !self.varDeclHasExplicitAnyAnnotation(stmt) and
+                                !self.varDeclHasExplicitUnknownAnnotation(stmt) and
                                 !self.varDeclHasDefiniteAssertion(stmt))
                                 stmt
                             else
@@ -18877,6 +18978,17 @@ pub const Checker = struct {
         if (self.hir.kindOf(v.type_annotation) != .type_ref) return false;
         const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
         return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "any");
+    }
+
+    fn varDeclHasExplicitUnknownAnnotation(self: *Checker, node: NodeId) bool {
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return false,
+        }
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.type_annotation == hir_mod.none_node_id or self.hir.kindOf(v.type_annotation) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
+        return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "unknown");
     }
 
     /// Returns true when a `let`/`var` declaration uses the
@@ -21350,6 +21462,9 @@ pub const Checker = struct {
         if (container_t == types.Primitive.any) return;
         if (container_t == types.Primitive.unknown) {
             _ = try self.checkObjectBindingComputedKeysAgainstType(pattern_node, container_t);
+            if (self.objectBindingPatternHasRest(pattern_node)) {
+                _ = try self.reportObjectRestBindingFromNonObject(pattern_node);
+            }
             return;
         }
         // Destructuring against `null` / `undefined` ÃÂ¢ÃÂÃÂ tsc emits
@@ -28195,11 +28310,7 @@ pub const Checker = struct {
                     else => break :blk null,
                 }
                 const target_t = self.contextualTargetTypeForFunction(node) orelse break :blk null;
-                if (target_t >= self.interner.pool.typeCount() or
-                    !self.interner.pool.flagsOf(target_t).is_union)
-                {
-                    break :blk null;
-                }
+                if (target_t >= self.interner.pool.typeCount()) break :blk null;
                 if (self.containsFreeTypeParameter(target_t)) break :blk null;
                 break :blk self.contextualParameterTypeForFunctionParam(node, p, target_t);
             } else null;
@@ -62679,6 +62790,12 @@ pub const Checker = struct {
                 const k = hir_mod.keyofTypeOf(self.hir, type_node);
                 const operand = try self.lowererLowerWithTypeParams(k.operand);
                 if (operand == types.Primitive.any) return try self.propertyKeyUnionType();
+                if (self.containsFreeTypeParameter(operand) and
+                    operand < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(operand).is_intersection)
+                {
+                    return self.interner.internKeyof(operand) catch return error.OutOfMemory;
+                }
                 var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
                 defer key_names.deinit(self.gpa);
                 var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -73378,7 +73495,8 @@ pub const Checker = struct {
     fn intersectionCombinedConstraint(self: *Checker, t: TypeId) CheckError!?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(t).is_intersection) return null;
-        const members = self.interner.intersectionMembers(t);
+        const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(t));
+        defer self.gpa.free(members);
         if (members.len == 0) return null;
         var current: TypeId = try self.intersectionConstraintPart(members[0]);
         var changed = current != members[0];
@@ -73426,17 +73544,25 @@ pub const Checker = struct {
             var parts: std.ArrayListUnmanaged(TypeId) = .empty;
             defer parts.deinit(self.gpa);
             if (a_is_union and b_is_union) {
-                for (self.interner.unionMembers(a)) |am| {
-                    for (self.interner.unionMembers(b)) |bm| {
+                const a_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(a));
+                defer self.gpa.free(a_members);
+                const b_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(b));
+                defer self.gpa.free(b_members);
+                for (a_members) |am| {
+                    for (b_members) |bm| {
                         try self.appendUniqueConstraintType(&parts, try self.intersectConstraintTypes(am, bm));
                     }
                 }
             } else if (a_is_union) {
-                for (self.interner.unionMembers(a)) |am| {
+                const a_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(a));
+                defer self.gpa.free(a_members);
+                for (a_members) |am| {
                     try self.appendUniqueConstraintType(&parts, try self.intersectConstraintTypes(am, b));
                 }
             } else {
-                for (self.interner.unionMembers(b)) |bm| {
+                const b_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(b));
+                defer self.gpa.free(b_members);
+                for (b_members) |bm| {
                     try self.appendUniqueConstraintType(&parts, try self.intersectConstraintTypes(a, bm));
                 }
             }
@@ -85158,6 +85284,12 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
+                if (callee_t == types.Primitive.unknown) {
+                    if (self.shouldReportUnknownOperand(c.callee)) {
+                        try self.reportUnknownObjectOperand(c.callee);
+                    }
+                    break :blk types.Primitive.any;
+                }
                 var constructor_accessibility_failed = false;
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
@@ -85733,6 +85865,12 @@ pub const Checker = struct {
                     }
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
+                }
+                if (raw_callee_t == types.Primitive.unknown) {
+                    if (self.shouldReportUnknownOperand(c.callee)) {
+                        try self.reportUnknownObjectOperand(c.callee);
+                    }
+                    break :blk types.Primitive.any;
                 }
                 try self.recordCommonJsDefinePropertyExportNarrow(node);
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
@@ -86593,12 +86731,10 @@ pub const Checker = struct {
                     // the upstream TS2339-on-any diagnostic.
                     obj_t = types.Primitive.any;
                 }
-                if (obj_t == types.Primitive.unknown and self.shouldReportUnknownReference(m.object)) {
-                    try self.reportUnknownReference(m.object);
-                    break :blk types.Primitive.any;
-                }
-                if (self.shouldReportObjectUnknown(m.object, obj_t)) {
-                    try self.reportObjectIsUnknown(m.object);
+                if (obj_t == types.Primitive.unknown) {
+                    if (self.shouldReportUnknownOperand(m.object)) {
+                        try self.reportUnknownObjectOperand(m.object);
+                    }
                     break :blk types.Primitive.any;
                 }
                 if (obj_t == types.Primitive.never and
@@ -87230,12 +87366,13 @@ pub const Checker = struct {
                     });
                     break :blk types.Primitive.any;
                 }
-                if (obj_t == types.Primitive.unknown and self.shouldReportUnknownReference(e.object)) {
-                    try self.reportUnknownReference(e.object);
+                if (obj_t == types.Primitive.unknown) {
+                    if (self.shouldReportUnknownOperand(e.object)) {
+                        try self.reportUnknownObjectOperand(e.object);
+                    }
                     break :blk types.Primitive.any;
                 }
-                if (self.shouldReportObjectUnknown(e.object, obj_t)) {
-                    try self.reportObjectIsUnknown(e.object);
+                if (try self.reportMismatchedGenericKeyofIndex(node, obj_t, idx_t)) {
                     break :blk types.Primitive.any;
                 }
                 if (try self.unionTupleLiteralIndexAccess(index_receiver_t, union_tuple_idx_t)) |access| {
@@ -90472,7 +90609,7 @@ pub const Checker = struct {
     }
 
     fn objectSpreadSourceIsValid(self: *Checker, t: TypeId) CheckError!bool {
-        if (self.typeIsAnyLike(t)) return true;
+        if (self.typeIsAny(t)) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_never) return true;
@@ -93874,16 +94011,18 @@ pub const Checker = struct {
         if (self.type_names.get(name)) |existing| return existing;
         const element_t = (try self.jsxLibElementSyntheticType()) orelse
             (self.interner.internObjectType(&.{}) catch return error.OutOfMemory);
-        // The fixture lib types `ReactFragment = {} | Array<ReactChild
-        // | any[] | boolean>`: the empty-object arm accepts any
-        // non-nullish value — including function children
-        // (`checkJsxChildrenProperty9`: `{(user) => <h2/>}` inside
-        // `<div>` is fine). Keep it alongside the array arm so the
-        // enriched `Element` surface (type/props/key) doesn't narrow
-        // fragment acceptance.
-        const fragment_empty_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        // The legacy fixture lib types `ReactFragment = {} |
+        // Array<...>`, while React 18 removed the broad `{}` arm.
+        // Preserve the legacy arm so function children remain valid
+        // there, but do not make React 18's `ReactNode` an
+        // unknown-like union.
         const fragment_array_t = self.interner.internObjectTypeWithIndex(&.{}, types.Primitive.none, element_t) catch return error.OutOfMemory;
-        const fragment_t = self.interner.internUnion(&[_]TypeId{ fragment_empty_t, fragment_array_t }) catch return error.OutOfMemory;
+        const fragment_t = if (self.sourceHasReact18JsxReference())
+            fragment_array_t
+        else blk: {
+            const fragment_empty_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+            break :blk self.interner.internUnion(&[_]TypeId{ fragment_empty_t, fragment_array_t }) catch return error.OutOfMemory;
+        };
         const members = [_]TypeId{
             element_t,
             types.Primitive.string_t,
@@ -93907,6 +94046,11 @@ pub const Checker = struct {
     fn sourceHasReact16JsxReference(self: *Checker) bool {
         const src = self.source orelse return false;
         return std.mem.indexOf(u8, src, "/.lib/react16") != null;
+    }
+
+    fn sourceHasReact18JsxReference(self: *Checker) bool {
+        const src = self.source orelse return false;
+        return std.mem.indexOf(u8, src, "/.lib/react18/") != null;
     }
 
     /// `{ children?: ReactNode | undefined }` — the children
@@ -98831,6 +98975,16 @@ pub const Checker = struct {
         return try self.applyTypeofTargetUnion(name orelse return false, first_node, targets.items);
     }
 
+    fn applyFalseAndEqualityChain(self: *Checker, lhs: NodeId, rhs: NodeId) CheckError!bool {
+        var targets: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer targets.deinit(self.gpa);
+        var name: ?hir_mod.StringId = null;
+        var first_node: NodeId = hir_mod.none_node_id;
+        if (!try self.collectEqualityChainTargets(lhs, .@"and", false, &name, &first_node, &targets)) return false;
+        if (!try self.collectEqualityChainTargets(rhs, .@"and", false, &name, &first_node, &targets)) return false;
+        return try self.applyTypeofTargetUnion(name orelse return false, first_node, targets.items);
+    }
+
     fn nodeIsNullLiteralish(self: *Checker, node: NodeId) bool {
         if (self.hir.kindOf(node) == .literal_null) return true;
         if (self.hir.kindOf(node) != .identifier) return false;
@@ -98897,6 +99051,41 @@ pub const Checker = struct {
             const joined = try self.internConditionalUnion(&.{ entry.value_ptr.*, rhs_t });
             try self.recordMemberNarrow(entry.key_ptr.*, joined);
         }
+    }
+
+    fn unknownEqualityNarrowCandidate(self: *Checker, node: NodeId) CheckError!?TypeId {
+        if (try self.expressionNarrowLiteralType(node)) |literal_t| return literal_t;
+        var candidate_t = self.hir.typeOf(node);
+        if (candidate_t == types.Primitive.none) candidate_t = try self.checkExpression(node);
+        if (candidate_t == types.Primitive.none or
+            candidate_t == types.Primitive.any or
+            candidate_t == types.Primitive.unknown)
+        {
+            return null;
+        }
+        if (candidate_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(candidate_t);
+        if (flags.is_union or flags.is_intersection) return null;
+        return candidate_t;
+    }
+
+    fn applyUnknownEqualityGuard(
+        self: *Checker,
+        unknown_node: NodeId,
+        other_node: NodeId,
+        op: hir_mod.BinOp,
+        positive: bool,
+    ) CheckError!bool {
+        if (self.hir.kindOf(unknown_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, unknown_node);
+        const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(unknown_node);
+        if (current != types.Primitive.unknown) return false;
+        if (self.nodeIsNullLiteralish(other_node) or self.nodeIsUndefinedLiteralish(other_node)) return false;
+        if (op == .eq or op == .neq) return true;
+        if (!positive) return true;
+        const candidate_t = (try self.unknownEqualityNarrowCandidate(other_node)) orelse return true;
+        try self.recordNarrow(id.name, candidate_t);
+        return true;
     }
 
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
@@ -99054,6 +99243,8 @@ pub const Checker = struct {
                         try self.applyTypeGuard(l.lhs, true);
                         try self.applyTypeGuard(l.rhs, true);
                     } else if (try self.applyFalseAndTypeofChain(l.lhs, l.rhs)) {
+                        return;
+                    } else if (try self.applyFalseAndEqualityChain(l.lhs, l.rhs)) {
                         return;
                     }
                     return;
@@ -99301,6 +99492,8 @@ pub const Checker = struct {
             const u = hir_mod.unaryOf(self.hir, b.rhs);
             if (u.op == .typeof and try self.applyTypeofExpressionGuard(u.operand, b.lhs, positive)) return;
         }
+        if (try self.applyUnknownEqualityGuard(b.lhs, b.rhs, b.op, positive)) return;
+        if (try self.applyUnknownEqualityGuard(b.rhs, b.lhs, b.op, positive)) return;
         // X === <literal> / X !== <literal> ÃÂ¢ÃÂÃÂ narrow X to the
         // literal type in the positive branch, subtract it in the
         // negative branch. Covers `s === "hello"`, `n === 42`,
@@ -99344,11 +99537,11 @@ pub const Checker = struct {
                     else => unreachable,
                 }
             };
+            const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(b.lhs);
             if (positive) {
-                try self.recordNarrow(id.name, lit_t);
+                try self.recordNarrow(id.name, try self.narrowTypeByPredicate(current, lit_t));
             } else {
-                const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(b.lhs);
-                const narrowed = self.subtractType(current, lit_t) catch current;
+                const narrowed = self.subtractTypeByPredicate(current, lit_t) catch current;
                 try self.recordNarrow(id.name, narrowed);
             }
             return;
@@ -118353,6 +118546,49 @@ pub const Checker = struct {
         return (try self.expressionNarrowLiteralType(operand)) orelse checked_t;
     }
 
+    fn reducibleGenericIntersectionComparisonType(self: *Checker, t: TypeId) CheckError!?TypeId {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_intersection) return null;
+        const members = self.interner.intersectionMembers(t);
+        if (members.len != 2) return null;
+
+        var type_param: TypeId = types.Primitive.none;
+        var nullable_object: TypeId = types.Primitive.none;
+        for (members) |member| {
+            if (member < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(member).is_type_parameter and
+                !self.interner.pool.flagsOf(member).is_union and
+                !self.interner.pool.flagsOf(member).is_intersection)
+            {
+                type_param = member;
+            } else {
+                nullable_object = member;
+            }
+        }
+        if (type_param == types.Primitive.none or !self.typeIsExactEmptyObjectNullUnion(nullable_object)) return null;
+        const constraint = self.typeParameterConstraint(type_param) orelse return null;
+        if (constraint == types.Primitive.any or constraint == types.Primitive.unknown) return null;
+        if (!(self.engine.isAssignableTo(constraint, nullable_object) catch false)) return null;
+        return type_param;
+    }
+
+    fn typeIsExactEmptyObjectNullUnion(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        const members = self.interner.unionMembers(t);
+        if (members.len != 2) return false;
+        var has_null = false;
+        var has_empty_object = false;
+        for (members) |member| {
+            if (member == types.Primitive.null_t) {
+                has_null = true;
+            } else if (self.typeIsEmptyObjectType(member)) {
+                has_empty_object = true;
+            } else {
+                return false;
+            }
+        }
+        return has_null and has_empty_object;
+    }
+
     fn enclosingLoopBodyAssignsIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -118483,6 +118719,40 @@ pub const Checker = struct {
         const b = hir_mod.binopOf(self.hir, node);
         const lhs = try self.checkExpression(b.lhs);
         const rhs = try self.checkExpression(b.rhs);
+        const unknown_operand_is_invalid = switch (b.op) {
+            .add,
+            .sub,
+            .mul,
+            .div,
+            .mod,
+            .pow,
+            .bit_and,
+            .bit_or,
+            .bit_xor,
+            .shl,
+            .shr,
+            .shr_unsigned,
+            .lt,
+            .le,
+            .gt,
+            .ge,
+            => true,
+            else => false,
+        };
+        if (unknown_operand_is_invalid and
+            (lhs == types.Primitive.unknown or rhs == types.Primitive.unknown))
+        {
+            if (lhs == types.Primitive.unknown and self.shouldReportUnknownOperand(b.lhs)) {
+                try self.reportUnknownObjectOperand(b.lhs);
+            }
+            if (rhs == types.Primitive.unknown and self.shouldReportUnknownOperand(b.rhs)) {
+                try self.reportUnknownObjectOperand(b.rhs);
+            }
+            return switch (b.op) {
+                .lt, .le, .gt, .ge => types.Primitive.boolean_t,
+                else => types.Primitive.number_t,
+            };
+        }
         return switch (b.op) {
             // Arithmetic ÃÂ¢ÃÂÃÂ number unless either side is string (matches JS).
             .add => blk: {
@@ -118689,11 +118959,21 @@ pub const Checker = struct {
                 // use the structural relation as a whole.
                 const cmp_lhs = try self.comparisonOperandType(b.lhs, lhs);
                 const cmp_rhs = try self.comparisonOperandType(b.rhs, rhs);
+                const reduced_generic_lhs = try self.reducibleGenericIntersectionComparisonType(cmp_lhs);
+                const reduced_generic_rhs = try self.reducibleGenericIntersectionComparisonType(cmp_rhs);
+                const generic_intersection_no_overlap =
+                    (reduced_generic_lhs != null and self.isConcretePrimitiveLike(cmp_rhs)) or
+                    (reduced_generic_rhs != null and self.isConcretePrimitiveLike(cmp_lhs));
                 if (!invalid_typeof_comparison and
-                    (!try self.typesHaveComparableOverlap(cmp_lhs, cmp_rhs) or
+                    (generic_intersection_no_overlap or
+                        !try self.typesHaveComparableOverlap(cmp_lhs, cmp_rhs) or
                         self.templateTypesHaveNoOverlap(cmp_lhs, cmp_rhs)))
                 {
-                    try self.reportNoOverlapComparison(node, b.lhs, b.rhs, cmp_lhs, cmp_rhs);
+                    const diagnostic_lhs = reduced_generic_lhs orelse
+                        if (reduced_generic_rhs != null) self.widenLiteralType(cmp_lhs) else cmp_lhs;
+                    const diagnostic_rhs = reduced_generic_rhs orelse
+                        if (reduced_generic_lhs != null) self.widenLiteralType(cmp_rhs) else cmp_rhs;
+                    try self.reportNoOverlapComparison(node, b.lhs, b.rhs, diagnostic_lhs, diagnostic_rhs);
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -118863,6 +119143,12 @@ pub const Checker = struct {
             try self.checkExpression(u.operand);
         return switch (u.op) {
             .neg, .plus, .bit_not => blk: {
+                if (operand_t == types.Primitive.unknown) {
+                    if (self.shouldReportUnknownOperand(u.operand)) {
+                        try self.reportUnknownObjectOperand(u.operand);
+                    }
+                    break :blk types.Primitive.number_t;
+                }
                 if (self.typeContainsSymbol(operand_t)) {
                     // tsc anchors TS2469 at the operand (including any
                     // wrapping parens), not at the leading operator.
@@ -119511,7 +119797,23 @@ pub const Checker = struct {
         try self.applyTypeGuard(c.cond, false);
         const ff = try self.checkExpression(c.else_branch);
         self.popNarrowScope();
+        if (self.contextualLiteralUnionReturnTarget(node) != null) {
+            const contextual_tt = try self.valueNodeLiteralType(c.then_branch, tt);
+            const contextual_ff = try self.valueNodeLiteralType(c.else_branch, ff);
+            return self.internConditionalUnion(&.{ contextual_tt, contextual_ff });
+        }
         return self.internConditionalUnion(&.{ tt, ff });
+    }
+
+    fn contextualLiteralUnionReturnTarget(self: *Checker, node: NodeId) ?TypeId {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return null;
+        const kind = self.hir.kindOf(parent);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
+        const f = hir_mod.fnDeclOf(self.hir, parent);
+        if (f.body != node) return null;
+        const target = self.contextualReturnTypeForFunctionKind(parent, f.flags.is_async) orelse return null;
+        return if (self.declaredReturnNeedsLiteralAssignabilityCheck(target)) target else null;
     }
 
     fn reportKnownTruthyCallableCondition(
@@ -120778,6 +121080,50 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn reportMismatchedGenericKeyofIndex(
+        self: *Checker,
+        access_node: NodeId,
+        object_t: TypeId,
+        index_t: TypeId,
+    ) CheckError!bool {
+        if (object_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(object_t).is_type_parameter)
+        {
+            return false;
+        }
+        const operand = self.directKeyofOperand(index_t) orelse return false;
+        if (operand >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(operand).is_intersection)
+        {
+            return false;
+        }
+        var has_object_parameter = false;
+        var has_empty_object = false;
+        for (self.interner.intersectionMembers(operand)) |member| {
+            if (member == object_t) has_object_parameter = true;
+            if (self.typeIsEmptyObjectType(member)) has_empty_object = true;
+        }
+        if (!has_object_parameter or !has_empty_object) return false;
+        const operand_name = (try self.allocSimpleTypeName(operand)) orelse "T & {}";
+        const key_name = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "keyof ({s})",
+            .{operand_name},
+        );
+        const object_name = (try self.allocSimpleTypeName(object_t)) orelse "T";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' cannot be used to index type '{s}'.",
+            .{ key_name, object_name },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = access_node,
+            .code = TsCodes.type_cannot_be_used_to_index_type,
+            .message = msg,
+        });
+        return true;
     }
 
     fn typeIsDirectKeyofOperand(self: *Checker, t: TypeId, operand_t: TypeId) bool {
@@ -122465,8 +122811,17 @@ pub const Checker = struct {
         if (flags.is_keyof) {
             // `keyof T` after substitution may resolve eagerly.
             const k = self.interner.pool.keyof_payloads.items[self.interner.pool.payloadOf(t)];
-            const new_operand = try self.substituteType(k.operand, subs);
+            const substituted_operand = try self.substituteType(k.operand, subs);
+            const new_operand = try self.reduceNeverIntersectionsForAssignability(substituted_operand);
             if (new_operand == types.Primitive.any) return self.propertyKeyUnionType() catch return t;
+            if (new_operand == types.Primitive.never) return self.propertyKeyUnionType() catch return t;
+            if (new_operand == types.Primitive.unknown or
+                new_operand == types.Primitive.null_t or
+                new_operand == types.Primitive.undefined_t or
+                new_operand == types.Primitive.void_t)
+            {
+                return types.Primitive.never;
+            }
             var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
             defer key_names.deinit(self.gpa);
             var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -124999,6 +125354,23 @@ pub const Checker = struct {
         const reduced_param_t = try self.reduceNeverIntersectionsForAssignability(param_t);
         if (reduced_param_t != param_t) {
             return self.formatArgumentNotAssignable(arg_t, reduced_param_t, position);
+        }
+        if (param_t == types.Primitive.never and
+            (arg_t == types.Primitive.null_t or
+                arg_t == types.Primitive.undefined_t or
+                arg_t == types.Primitive.void_t))
+        {
+            const arg_name: []const u8 = if (arg_t == types.Primitive.null_t)
+                "null"
+            else if (arg_t == types.Primitive.undefined_t)
+                "undefined"
+            else
+                "void";
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Argument of type '{s}' is not assignable to parameter of type 'never'.",
+                .{arg_name},
+            );
         }
         // Mirror tsc's diagnostic widening: when the source side is a
         // literal type (e.g. `1`) but the target is its base primitive
@@ -137636,6 +138008,29 @@ pub const Checker = struct {
         return saw_objectish and saw_primitive;
     }
 
+    fn intersectionNullishEmptyObjectReducesToNever(self: *Checker, t: TypeId) bool {
+        if (!self.strict_flags.strict_null_checks or
+            t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(t).is_intersection or
+            self.interner.pool.payloadOf(t) >= self.interner.pool.intersection_payloads.items.len)
+        {
+            return false;
+        }
+        var saw_nullish = false;
+        var saw_empty_object = false;
+        for (self.interner.intersectionMembers(t)) |member| {
+            if (member == types.Primitive.null_t or
+                member == types.Primitive.undefined_t or
+                member == types.Primitive.void_t)
+            {
+                saw_nullish = true;
+            } else if (self.typeIsEmptyObjectType(member)) {
+                saw_empty_object = true;
+            }
+        }
+        return saw_nullish and saw_empty_object;
+    }
+
     fn reduceNeverIntersectionsForAssignability(self: *Checker, t: TypeId) CheckError!TypeId {
         if (t >= self.interner.pool.typeCount()) return t;
         const flags = self.interner.pool.flagsOf(t);
@@ -137666,6 +138061,7 @@ pub const Checker = struct {
     fn intersectionReducesToNeverForAssignability(self: *Checker, t: TypeId) bool {
         if (self.intersectionNeverReduction(t) != null) return true;
         if (self.intersectionPrimitiveObjectReducesToNever(t)) return true;
+        if (self.intersectionNullishEmptyObjectReducesToNever(t)) return true;
         if (self.intersectionPrimitiveBasesReduceToNever(t)) return true;
         return self.intersectionLiteralMembersReduceToNever(t);
     }
@@ -141380,6 +141776,55 @@ pub const Checker = struct {
             t == types.Primitive.unknown and
             !self.shouldReportUnknownReference(node) and
             !self.nodeIsEntityNameExpression(node);
+    }
+
+    fn shouldReportUnknownOperand(self: *Checker, node: NodeId) bool {
+        if (self.shouldReportUnknownReference(node)) return true;
+        if (self.identifierReferencesUnannotatedRestParameter(node)) return false;
+        if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
+            return self.typeAnnotationSemanticallyUnknown(type_node, 0);
+        }
+        return self.strict_flags.strict_null_checks;
+    }
+
+    fn identifierReferencesUnannotatedRestParameter(self: *Checker, node: NodeId) bool {
+        const name_node = self.visibleUnannotatedVariableIdentifierNode(node) orelse return false;
+        const parent = self.hir.parentOf(name_node);
+        return parent != hir_mod.none_node_id and
+            self.hir.kindOf(parent) == .parameter and
+            hir_mod.parameterOf(self.hir, parent).flags.is_rest;
+    }
+
+    fn typeAnnotationSemanticallyUnknown(self: *Checker, type_node: NodeId, depth: u8) bool {
+        if (type_node == hir_mod.none_node_id or depth >= 8) return false;
+        switch (self.hir.kindOf(type_node)) {
+            .type_ref => {
+                const ref = hir_mod.typeRefOf(self.hir, type_node);
+                if (ref.qualifier_len != 0) return false;
+                if (std.mem.eql(u8, self.string_interner.get(ref.name), "unknown")) return true;
+                const alias_decl = self.typeAliasDeclForNameAt(ref.name, type_node) orelse return false;
+                return self.typeAnnotationSemanticallyUnknown(
+                    hir_mod.typeAliasOf(self.hir, alias_decl).aliased,
+                    depth + 1,
+                );
+            },
+            .identifier => {
+                const name = hir_mod.identifierOf(self.hir, type_node).name;
+                if (std.mem.eql(u8, self.string_interner.get(name), "unknown")) return true;
+                const alias_decl = self.typeAliasDeclForNameAt(name, type_node) orelse return false;
+                return self.typeAnnotationSemanticallyUnknown(
+                    hir_mod.typeAliasOf(self.hir, alias_decl).aliased,
+                    depth + 1,
+                );
+            },
+            .union_type => {
+                for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| {
+                    if (self.typeAnnotationSemanticallyUnknown(member, depth + 1)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
     }
 
     fn shouldReportUnknownReference(self: *Checker, node: NodeId) bool {
@@ -151310,6 +151755,56 @@ test "checker: unknown receiver TS2571 is gated by strict null checks" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.object_is_unknown));
+}
+
+test "checker: strict unknown operands report TS18046 consistently" {
+    const b = try newBoundSetup(
+        \\function f(x: unknown) {
+        \\  x.foo;
+        \\  x[0];
+        \\  x();
+        \\  new x();
+        \\  x >= 0;
+        \\  x + 1;
+        \\  x * 2;
+        \\  -x;
+        \\  +x;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 9), checkerCountCode(b.base, TsCodes.unknown_catch_variable));
+}
+
+test "checker: unknown equality and switch clauses narrow positive branches" {
+    const b = try newBoundSetup(
+        \\type Response = "yes" | "no" | "idk";
+        \\let validate: (x: unknown) => Response =
+        \\  x => x === "yes" || x === "no" ? x : "idk";
+        \\function parse(x: unknown): Response {
+        \\  switch (x) {
+        \\    case "yes":
+        \\    case "no":
+        \\    case "maybe":
+        \\      return x;
+        \\    default:
+        \\      throw new Error();
+        \\  }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '\"maybe\" | \"no\" | \"yes\"' is not assignable to type 'Response'.",
+    ));
 }
 
 test "checker: truthy unknown in RHS emits TS2638" {

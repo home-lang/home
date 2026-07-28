@@ -855,6 +855,7 @@ pub const Engine = struct {
         // Union on the target: source must assign to *some* member.
         if (tf.is_union) {
             if (source == Primitive.boolean_t and self.unionContainsBooleanLiterals(target)) return true;
+            if (source == Primitive.unknown and try self.unionCoversUnknown(target)) return true;
             const members = self.interner.unionMembers(target);
             const snapshot = try self.interner.gpa.dupe(TypeId, members);
             defer self.interner.gpa.free(snapshot);
@@ -1142,6 +1143,30 @@ pub const Engine = struct {
 
         // Primitive-vs-primitive: only identity matches at this layer.
         return false;
+    }
+
+    fn unionCoversUnknown(self: *Engine, t: TypeId) !bool {
+        if (!self.strict_null_checks or
+            t >= self.pool().typeCount() or
+            !self.pool().flagsOf(t).is_union)
+        {
+            return false;
+        }
+        const members = self.interner.unionMembers(t);
+        if (members.len < 3) return false;
+        var has_empty_object = false;
+        var has_null = false;
+        var has_undefined = false;
+        for (members) |member| {
+            if (member == Primitive.null_t) {
+                has_null = true;
+            } else if (member == Primitive.undefined_t) {
+                has_undefined = true;
+            } else if (self.isEmptyObjectType(member)) {
+                has_empty_object = true;
+            }
+        }
+        return has_empty_object and has_null and has_undefined;
     }
 
     fn computeUpperObjectAssignable(self: *Engine, source: TypeId, target: TypeId) !bool {
@@ -2255,6 +2280,8 @@ pub const Engine = struct {
                 // Pins `multipleStringIndexers.ts(18,5)`.
                 if (source_str_idx != Primitive.none) {
                     if (!try self.isAssignableTo(source_str_idx, target_str_idx)) return false;
+                } else if (source_num_idx != Primitive.none) {
+                    return false;
                 } else if (source_members_for_index.len == 0) {
                     return false;
                 } else {
@@ -2816,6 +2843,29 @@ test "Engine: unknown is the universal sink" {
     try T.expect(!try e.isAssignableTo(Primitive.unknown, Primitive.string_t));
 }
 
+test "Engine: strict unknown assigns only to unknown-like unions" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictNullChecks(true);
+
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const value_name = try sint.intern("value");
+    const empty_object = try ti.internObjectType(&.{});
+    const required_object = try ti.internObjectType(&.{
+        .{ .name = value_name, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const covered = try ti.internUnion(&.{ empty_object, Primitive.null_t, Primitive.undefined_t });
+    const covered_with_extra = try ti.internUnion(&.{ empty_object, required_object, Primitive.null_t, Primitive.undefined_t });
+    const object_only = try ti.internUnion(&.{ required_object, Primitive.null_t, Primitive.undefined_t });
+
+    try T.expect(try e.isAssignableTo(Primitive.unknown, covered));
+    try T.expect(try e.isAssignableTo(Primitive.unknown, covered_with_extra));
+    try T.expect(!try e.isAssignableTo(Primitive.unknown, object_only));
+}
+
 test "Engine: literal assigns to its primitive but not vice versa" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
@@ -3064,6 +3114,8 @@ test "Engine: any string index suppresses structural index requirements" {
     });
     const number_any = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.none, Primitive.any, Primitive.none);
     const string_any = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.any, Primitive.none, Primitive.none);
+    const number_unknown = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.none, Primitive.unknown, Primitive.none);
+    const string_unknown = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.unknown, Primitive.none, Primitive.none);
     const both_any = try ti.internObjectTypeWithIndexAndSymbol(&.{}, Primitive.any, Primitive.any, Primitive.none);
     const string_any_number_number = try ti.internObjectTypeWithIndexAndSymbol(
         &.{},
@@ -3073,6 +3125,7 @@ test "Engine: any string index suppresses structural index requirements" {
     );
 
     try T.expect(try e.isAssignableTo(number_any, string_any));
+    try T.expect(!try e.isAssignableTo(number_unknown, string_unknown));
     try T.expect(try e.isAssignableTo(object_t, string_any));
     try T.expect(!try e.isAssignableTo(object_t, number_any));
     try T.expect(try e.isAssignableTo(object_t, both_any));
