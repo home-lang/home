@@ -4296,6 +4296,10 @@ pub const Checker = struct {
     /// Keep a side table of those real tuple origins so diagnostic-only
     /// paths don't mistake plain `{ 0; 1; length }` objects for tuples.
     tuple_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Array syntax and mapped-array instantiation also lower to structural
+    /// object types. Preserve their origin so diagnostics don't mistake
+    /// custom `{ length; [n: number] }` interfaces for real arrays.
+    array_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Exact element type of an unbounded trailing tuple rest. The object
     /// representation's number index is the union of every tuple element,
     /// but a literal index beyond the fixed prefix resolves specifically to
@@ -4764,6 +4768,7 @@ pub const Checker = struct {
         self.commonjs_export_narrows.deinit(self.gpa);
         self.checkjs_object_expando_narrows.deinit(self.gpa);
         self.tuple_origin_types.deinit(self.gpa);
+        self.array_origin_types.deinit(self.gpa);
         self.tuple_trailing_rest_types.deinit(self.gpa);
         self.tuple_trailing_variadic_types.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
@@ -60999,7 +61004,24 @@ pub const Checker = struct {
             self.type_instantiation_overflow = false;
             self.instantiation_anchor_node = hir_mod.none_node_id;
         }
+        if (self.typeNodeHasArraySyntax(type_node)) {
+            try self.array_origin_types.put(self.gpa, result, {});
+        }
         return result;
+    }
+
+    fn typeNodeHasArraySyntax(self: *Checker, type_node: NodeId) bool {
+        if (type_node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(type_node)) {
+            .array_type => true,
+            .readonly_type => self.typeNodeHasArraySyntax(hir_mod.readonlyTypeOf(self.hir, type_node).operand),
+            .type_ref => blk: {
+                const name = self.bareTypeNodeName(type_node) orelse break :blk false;
+                const text = self.string_interner.get(name);
+                break :blk std.mem.eql(u8, text, "Array") or std.mem.eql(u8, text, "ReadonlyArray");
+            },
+            else => false,
+        };
     }
 
     fn lowerSpeculativeConditionalBranch(self: *Checker, check_node: NodeId, branch_node: NodeId) CheckError!TypeId {
@@ -62154,7 +62176,7 @@ pub const Checker = struct {
                                 kb.appendSlice(self.gpa, std.fmt.bufPrint(&nbuf, ",{d}", .{at}) catch break :memo) catch break :memo;
                             }
                             if (self.alias_instantiation_memo.get(kb.items)) |hit| {
-                                if (allow_alias_display and hit != info.body and !self.alias_display_names.contains(hit)) {
+                                if (allow_alias_display and !self.alias_display_names.contains(hit)) {
                                     try self.registerAliasDisplayNameInner(hit, r.name, alias_arg_list.items, false);
                                 }
                                 return hit;
@@ -62185,11 +62207,15 @@ pub const Checker = struct {
                                 const arg_t = subs.get(param_t) orelse continue;
                                 try self.recordNarrow(tp.name, arg_t);
                             }
+                            if (try self.instantiateMappedAliasAnyArray(info.body_node, info, &subs)) |mapped_array_t| {
+                                self.memoPutAliasInstantiation(&memo_key, memo_defer_baseline, mapped_array_t, info.body);
+                                return mapped_array_t;
+                            }
                             const mapped_t = self.evalMappedType(info.body_node) catch blk_m: {
                                 self.instantiation_defer_events +%= 1;
                                 break :blk_m info.body;
                             };
-                            if (allow_alias_display and mapped_t != info.body) {
+                            if (allow_alias_display) {
                                 try self.registerAliasDisplayName(mapped_t, r.name, alias_arg_list.items);
                             }
                             self.memoPutAliasInstantiation(&memo_key, memo_defer_baseline, mapped_t, info.body);
@@ -62219,7 +62245,9 @@ pub const Checker = struct {
                             };
                             if (allow_alias_display and eval_t != info.body) {
                                 const body_kind = self.hir.kindOf(info.body_node);
-                                if (body_kind != .conditional_type or !self.alias_display_names.contains(eval_t)) {
+                                if ((body_kind != .conditional_type and body_kind != .type_ref) or
+                                    !self.alias_display_names.contains(eval_t))
+                                {
                                     // Skip the remove + re-render when the
                                     // existing registration is IDENTICAL
                                     // (same alias name + same args ⇒ same
@@ -67303,6 +67331,56 @@ pub const Checker = struct {
         return value_t;
     }
 
+    fn instantiateMappedAliasAnyArray(
+        self: *Checker,
+        node: NodeId,
+        info: GenericAliasInfo,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?TypeId {
+        if (self.hir.kindOf(node) != .mapped_type) return null;
+        const mapped = hir_mod.mappedTypeOf(self.hir, node);
+        if (mapped.remap != hir_mod.none_node_id or
+            mapped.constraint == hir_mod.none_node_id or
+            self.hir.kindOf(mapped.constraint) != .keyof_type)
+        {
+            return null;
+        }
+        const source_node = hir_mod.keyofTypeOf(self.hir, mapped.constraint).operand;
+        const source_name = self.bareTypeNodeName(source_node) orelse return null;
+        var source_param = types.Primitive.none;
+        for (info.params) |param_t| {
+            if (self.typeParameterName(param_t) == source_name) {
+                source_param = param_t;
+                break;
+            }
+        }
+        if (source_param == types.Primitive.none or
+            subs.get(source_param) != types.Primitive.any or
+            !self.typeParameterHasArrayOrTupleConstraint(source_param) or
+            mapped.type_param == hir_mod.none_node_id or
+            self.hir.kindOf(mapped.type_param) != .type_parameter)
+        {
+            return null;
+        }
+
+        const key_name = hir_mod.typeParameterOf(self.hir, mapped.type_param).name;
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        try self.recordNarrow(key_name, types.Primitive.number_t);
+        var element_t = try self.lowererLowerWithTypeParams(mapped.value);
+        if (self.strict_flags.strict_null_checks) {
+            element_t = switch (mapped.optional) {
+                1 => try self.unionWithUndefined(element_t),
+                2 => try self.subtractUndefined(element_t),
+                else => element_t,
+            };
+        }
+        const array_t = self.interner.internArrayType(self.string_interner, element_t) catch return error.OutOfMemory;
+        try self.array_origin_types.put(self.gpa, array_t, {});
+        if (mapped.readonly == 1) try self.readonly_index_types.put(self.gpa, array_t, {});
+        return array_t;
+    }
+
     fn evalMappedType(self: *Checker, node: NodeId) CheckError!TypeId {
         const m = hir_mod.mappedTypeOf(self.hir, node);
         if (m.constraint == hir_mod.none_node_id or m.value == hir_mod.none_node_id) {
@@ -70999,7 +71077,9 @@ pub const Checker = struct {
                     const excess_diag_count = self.diagnostics.items.len;
                     try self.checkExcessProperties(v.init, declared_type);
                     excess_property_diag_emitted = self.diagnostics.items.len > excess_diag_count;
-                    if (!excess_property_diag_emitted and !self.callExpressionHasAnyArgument(v.init)) {
+                    if (!excess_property_diag_emitted and
+                        !(self.callExpressionHasAnyArgument(v.init) and self.typeIsAnyLike(init_type)))
+                    {
                         const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
                         if (!(try self.tryReportSinglePropertyMissing(diag_node, v.init, init_type, declared_type))) {
                             if (!try self.tryReportObjectLiteralPropertyMismatch(v.init, declared_type)) {
@@ -71028,7 +71108,7 @@ pub const Checker = struct {
                             }
                         }
                     }
-                } else if (!self.callExpressionHasAnyArgument(v.init)) {
+                } else if (!(self.callExpressionHasAnyArgument(v.init) and self.typeIsAnyLike(init_type))) {
                     const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
                     if (self.hir.kindOf(v.init) == .object_literal) {
                         const excess_diag_count = self.diagnostics.items.len;
@@ -99534,6 +99614,11 @@ pub const Checker = struct {
         if (!source_flags.is_object_type or !target_flags.is_object_type) return null;
         if (source_flags.is_tuple or target_flags.is_tuple) return null;
         if (self.fixedTupleLength(source_t) != null or self.fixedTupleLength(target_t) != null) return null;
+        if (self.array_origin_types.contains(target_t) and
+            !self.objectTypeIsArrayLikeContainer(source_t))
+        {
+            return false;
+        }
         const source_elem = self.interner.objectNumberIndex(source_t);
         const target_elem = if (self.generator_type_info.get(target_t)) |iterable|
             iterable.yield_type
@@ -119733,6 +119818,39 @@ pub const Checker = struct {
         return k.operand;
     }
 
+    fn homomorphicMappedTypeParameter(self: *Checker, mapped_t: TypeId) ?TypeId {
+        if (mapped_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(mapped_t).is_mapped) return null;
+        const operand = self.directKeyofOperand(self.interner.mappedPayload(mapped_t).constraint) orelse return null;
+        if (operand >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(operand).is_type_parameter) return null;
+        return operand;
+    }
+
+    fn typeParameterHasArrayOrTupleConstraint(self: *Checker, type_param: TypeId) bool {
+        const constraint = self.typeParameterConstraint(type_param) orelse return false;
+        return self.everyTypeIsArrayOrTuple(constraint);
+    }
+
+    fn everyTypeIsArrayOrTuple(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.everyTypeIsArrayOrTuple(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.everyTypeIsArrayOrTuple(constraint);
+        }
+        return self.isTupleShapedTarget(t) or self.objectTypeIsArrayLikeContainer(t);
+    }
+
     fn limitedReverseMappedSourceTypeParameter(self: *Checker, mapped_t: TypeId) ?TypeId {
         if (mapped_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(mapped_t);
@@ -119913,6 +120031,7 @@ pub const Checker = struct {
             .is_method = false,
         }};
         const array_t = self.interner.internObjectTypeWithIndex(&members, types.Primitive.none, element) catch return error.OutOfMemory;
+        try self.array_origin_types.put(self.gpa, array_t, {});
         try self.readonly_index_types.put(self.gpa, array_t, {});
         return array_t;
     }
@@ -120987,11 +121106,17 @@ pub const Checker = struct {
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!TypeId {
         const m = self.interner.mappedPayload(mapped_t);
-        const constraint = try self.substituteType(m.constraint, subs);
         const raw_key_tp = if (self.mappedTemplateIndexedAccess(m.template)) |indexed|
             indexed.key_tp
         else
             self.mappedTemplateKeyTypeParameter(m.template);
+        if (self.homomorphicMappedTypeParameter(mapped_t)) |source_tp| {
+            const source_t = try self.substituteType(source_tp, subs);
+            if (source_t == types.Primitive.any and self.typeParameterHasArrayOrTupleConstraint(source_tp)) {
+                return try self.instantiateMappedArrayType(m, raw_key_tp, subs);
+            }
+        }
+        const constraint = try self.substituteType(m.constraint, subs);
         const template = try self.substituteType(m.template, subs);
         var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer keys.deinit(self.gpa);
@@ -121078,6 +121203,29 @@ pub const Checker = struct {
             ) catch return error.OutOfMemory;
         }
         return self.interner.internMapped(constraint, template, m.readonly, m.optional) catch return error.OutOfMemory;
+    }
+
+    fn instantiateMappedArrayType(
+        self: *Checker,
+        mapped: types.MappedPayload,
+        key_tp: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        var element_t = try self.substituteType(mapped.template, subs);
+        if (key_tp != types.Primitive.none) {
+            element_t = try self.substituteMappedIndexTemplate(element_t, key_tp, types.Primitive.number_t);
+        }
+        if (self.strict_flags.strict_null_checks) {
+            element_t = switch (mapped.optional) {
+                .add => try self.unionWithUndefined(element_t),
+                .remove => try self.subtractUndefined(element_t),
+                .none => element_t,
+            };
+        }
+        const array_t = self.interner.internArrayType(self.string_interner, element_t) catch return error.OutOfMemory;
+        try self.array_origin_types.put(self.gpa, array_t, {});
+        if (mapped.readonly == .add) try self.readonly_index_types.put(self.gpa, array_t, {});
+        return array_t;
     }
 
     fn substituteMappedIndexTemplate(
@@ -121370,6 +121518,9 @@ pub const Checker = struct {
             }
             if (self.readonly_index_types.contains(t)) {
                 try self.readonly_index_types.put(self.gpa, new_obj, {});
+            }
+            if (self.array_origin_types.contains(t)) {
+                try self.array_origin_types.put(self.gpa, new_obj, {});
             }
             if (self.isActualTupleType(t)) {
                 try self.markTupleOrigin(new_obj);
@@ -135605,6 +135756,10 @@ pub const Checker = struct {
         };
         if (!source_is_object_shaped) return false;
 
+        if (try self.tryReportNonArrayToArrayMissingProperties(diag_node, source, target)) {
+            return true;
+        }
+
         // When target is a tuple and source is a number-indexed array
         // shape (e.g. `number[]`), upstream tsc emits the generic
         // TS2322 ("Type 'number[]' is not assignable to type
@@ -135800,6 +135955,29 @@ pub const Checker = struct {
             );
             try self.report(diag_node, TsCodes.type_missing_properties, msg);
         }
+        return true;
+    }
+
+    fn tryReportNonArrayToArrayMissingProperties(
+        self: *Checker,
+        diag_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!bool {
+        if (self.actualTupleLength(target) != null or
+            !self.array_origin_types.contains(target) or
+            self.objectTypeIsArrayLikeContainer(source))
+        {
+            return false;
+        }
+        const source_name = (try self.missingPropertyTypeName(source)) orelse return false;
+        const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is missing the following properties from type '{s}': length, pop, push, concat, and 25 more.",
+            .{ source_name, target_name },
+        );
+        try self.report(diag_node, TsCodes.type_missing_properties_truncated, msg);
         return true;
     }
 
@@ -167604,6 +167782,29 @@ test "checker: identity homomorphic mapped arrays preserve array-like source" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: homomorphic mapped any follows declaration-site array constraint" {
+    const s = try newSetup(
+        \\type Arrayish<T extends unknown[]> = { [K in keyof T]: T[K] };
+        \\type Objectish<T extends unknown> = { [K in keyof T]: T[K] };
+        \\type IndirectArrayish<U extends unknown[]> = Objectish<U>;
+        \\declare let arrayish: Arrayish<any>;
+        \\declare let objectish: Objectish<any>;
+        \\declare let indirect: IndirectArrayish<any>;
+        \\let arr: any[];
+        \\arr = arrayish;
+        \\arr = objectish;
+        \\arr = indirect;
+        \\declare function stringifyPair<T extends readonly [any, any]>(arr: T): { -readonly [K in keyof T]: string };
+        \\let pair: [any, any] = stringifyPair(undefined as any);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: mapped type `as` identity clause preserves key set" {
