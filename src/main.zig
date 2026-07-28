@@ -3817,6 +3817,10 @@ fn isJsLikeCorpusFile(path: []const u8) bool {
     return false;
 }
 
+fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
+    return std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts");
+}
+
 fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
     const without_dot = if (std.mem.startsWith(u8, path, "./")) path[2..] else path;
     var end = without_dot.len;
@@ -3936,6 +3940,11 @@ fn failBunCorpusSubsetArg(reason: []const u8, value: []const u8) noreturn {
 test "bun corpus target parser skips subset flag values" {
     const args = [_][:0]const u8{ "--bun-corpus-native-subset", "packages/runtime/test/bun-corpus" };
     try std.testing.expect(argTargetsBunCorpus(&args) == null);
+}
+
+test "bun:jsc corpus matrix requires the full native VM" {
+    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc/bun-jsc.test.ts"));
+    try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc/heapStats-mimalloc.test.ts"));
 }
 
 test "bun corpus target parser resolves roots, directories, and descendant files" {
@@ -4235,6 +4244,27 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    // VM-introspection tests must run in Home's full Bun-compatible VM. The
+    // generic corpus adapter intentionally uses a plain JSGlobalContext and
+    // therefore cannot expose VM-owned APIs such as bun:jsc heap/JIT state,
+    // structured cloning, sampling profiles, or source origins.
+    if (build_options.enable_jsc) {
+        if (argTargetsBunCorpus(args)) |target| {
+            switch (target) {
+                .file => |file| {
+                    if (bunCorpusFileRequiresFullVm(file.relative_path)) {
+                        runTestsViaVM(allocator, args) catch |err| {
+                            std.debug.print("{s}error:{s} native test run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+                            std.process.exit(1);
+                        };
+                        return;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
     // Experimental: route bun-corpus files through the FULL native VM
     // (TestCommand.exec → real globals + module loader) instead of the
     // shim-based corpus runner, so corpus tests get Home's real Buffer/fs/etc.
