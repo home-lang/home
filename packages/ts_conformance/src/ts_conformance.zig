@@ -857,6 +857,10 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const a_is_global = a.file.len == 0;
             const b_is_global = b.file.len == 0;
             if (a_is_global != b_is_global) return a_is_global;
+            if (a_is_global) {
+                if (a.code != b.code) return a.code < b.code;
+                return a.src_idx < b.src_idx;
+            }
             const a_is_entry = std.mem.eql(u8, a.file, ctx.case_path);
             const b_is_entry = std.mem.eql(u8, b.file, ctx.case_path);
             if (a_is_entry != b_is_entry) return a_is_entry;
@@ -942,17 +946,51 @@ const ActualDiagnosticLine = struct {
     file: []const u8,
     line: u32,
     col: u32,
+    code: u32,
     order: usize,
     text: []u8,
 
     fn lessThan(_: void, a: ActualDiagnosticLine, b: ActualDiagnosticLine) bool {
         const file_order = std.mem.order(u8, a.file, b.file);
         if (file_order != .eq) return file_order == .lt;
+        if (a.file.len == 0) {
+            if (a.code != b.code) return a.code < b.code;
+            return a.order < b.order;
+        }
         if (a.line != b.line) return a.line < b.line;
         if (a.col != b.col) return a.col < b.col;
+        if (a.code != b.code) return a.code < b.code;
         return a.order < b.order;
     }
 };
+
+test "conformance: program diagnostics sort same-position globals by code" {
+    var higher_text = [_]u8{'b'};
+    var lower_text = [_]u8{'a'};
+    var lines = [_]ActualDiagnosticLine{
+        .{
+            .file = "",
+            .line = 1,
+            .col = 1,
+            .code = 5107,
+            .order = 0,
+            .text = &higher_text,
+        },
+        .{
+            .file = "",
+            .line = 99,
+            .col = 99,
+            .code = 2318,
+            .order = 1,
+            .text = &lower_text,
+        },
+    };
+
+    std.mem.sort(ActualDiagnosticLine, &lines, {}, ActualDiagnosticLine.lessThan);
+
+    try std.testing.expectEqual(@as(u32, 2318), lines[0].code);
+    try std.testing.expectEqual(@as(u32, 5107), lines[1].code);
+}
 
 const ScriptGlobalSpaces = struct {
     types: std.StringHashMapUnmanaged(void) = .empty,
@@ -2905,6 +2943,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .file = if (d.is_global) "" else pf.diag_path,
                 .line = diag_line,
                 .col = diag_col,
+                .code = code,
                 .order = actual_lines.items.len,
                 .text = formatted,
             });
@@ -6502,6 +6541,7 @@ fn appendOutDirRootDirDiagnostics(
                 .file = f.path,
                 .line = line_no,
                 .col = spec.col,
+                .code = 6059,
                 .order = actual_lines.items.len,
                 .text = text,
             });
@@ -6521,6 +6561,7 @@ fn appendOutDirRootDirDiagnostics(
         .file = "",
         .line = lc.line,
         .col = lc.col,
+        .code = 5011,
         .order = actual_lines.items.len,
         .text = text,
     });
@@ -6592,6 +6633,7 @@ fn appendOneTsconfigPathsValidationDiagnostics(
                 .file = diag_path,
                 .line = pos.line,
                 .col = pos.col,
+                .code = 5063,
                 .order = actual_lines.items.len,
                 .text = formatted,
             });
@@ -6693,6 +6735,7 @@ fn appendJsonDoubleQuoteDiagnostic(
         .file = diag_path,
         .line = pos.line,
         .col = pos.col,
+        .code = 1327,
         .order = actual_lines.items.len,
         .text = formatted,
     });

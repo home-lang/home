@@ -19150,6 +19150,21 @@ pub const Checker = struct {
         return null;
     }
 
+    fn sourceHasReferenceLibDirective(self: *Checker, wanted: []const u8) bool {
+        const src = self.source orelse return false;
+        var line_start: usize = 0;
+        while (line_start < src.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
+            const raw_line = src[line_start..line_end];
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (self.referenceLibNameFromLine(line, line_start)) |ref_lib| {
+                if (std.ascii.eqlIgnoreCase(ref_lib.name, wanted)) return true;
+            }
+            line_start = if (line_end < src.len) line_end + 1 else src.len;
+        }
+        return false;
+    }
+
     fn referenceLibNameIsKnown(name: []const u8) bool {
         inline for (reference_lib_names) |candidate| {
             if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
@@ -29760,6 +29775,25 @@ pub const Checker = struct {
     fn checkNoLibRequiredGlobalTypes(self: *Checker, root: NodeId, stmts: []const NodeId) CheckError!void {
         if (!self.sourceHasNoLibTrueDirective()) return;
         const RequiredGlobal = struct { name: []const u8, arity: usize };
+        const core_names = [_][]const u8{
+            "Array",
+            "Boolean",
+            "Function",
+            "IArguments",
+            "Number",
+            "Object",
+            "RegExp",
+            "String",
+        };
+        var core_globals_complete = true;
+        for (core_names) |name| {
+            if (self.topLevelGlobalTypeDecl(stmts, name) != null) continue;
+            core_globals_complete = false;
+            break;
+        }
+        const require_extended_function_globals =
+            !core_globals_complete or
+            self.sourceDirectiveValueMentions("declaration", "true");
         const required = [_]RequiredGlobal{
             .{ .name = "Array", .arity = 1 },
             .{ .name = "Boolean", .arity = 0 },
@@ -29774,6 +29808,12 @@ pub const Checker = struct {
         };
         const anchor = if (stmts.len > 0) stmts[0] else root;
         for (required) |global| {
+            if (!require_extended_function_globals and
+                (std.mem.eql(u8, global.name, "CallableFunction") or
+                    std.mem.eql(u8, global.name, "NewableFunction")))
+            {
+                continue;
+            }
             const decl = self.topLevelGlobalTypeDecl(stmts, global.name) orelse {
                 try self.reportMissingGlobalTypeOnce(anchor, global.name);
                 continue;
@@ -66523,6 +66563,7 @@ pub const Checker = struct {
 
     fn lowerBuiltinObjectTypeRaw(self: *Checker, name: []const u8) ?TypeId {
         if (std.mem.eql(u8, name, "Element") or std.mem.eql(u8, name, "HTMLElement")) {
+            if (self.sourceLibDirectiveExcludesDomElement()) return null;
             return self.htmlElementType() catch types.Primitive.unknown;
         }
         if (std.mem.eql(u8, name, "Document")) {
@@ -101609,6 +101650,8 @@ pub const Checker = struct {
     }
 
     fn sourceLibDirectiveExcludesDomElement(self: *Checker) bool {
+        if (self.sourceHasNoLibTrueDirective()) return true;
+        if (self.sourceHasReferenceLibDirective("dom")) return false;
         const src = self.source orelse return false;
         const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
@@ -121982,6 +122025,9 @@ pub const Checker = struct {
             else
                 true;
             const ok = satisfies_context_ok or (structurally_assignable and predicate_assignable);
+            if (!ok) {
+                _ = self.discardAnnotatedCallbackContextualReturnDiagnostics(args[i]);
+            }
             const contextual_ok = if (!ok)
                 self.unresolvedRestTupleCallbackFromPriorArrayArg(args, param_ts, i, param_t) catch false
             else
@@ -128653,6 +128699,46 @@ pub const Checker = struct {
             if (start >= span.start and start < span.end) return true;
         }
         return false;
+    }
+
+    fn discardAnnotatedCallbackContextualReturnDiagnostics(
+        self: *Checker,
+        arg_node: NodeId,
+    ) bool {
+        if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
+        const f = hir_mod.fnDeclOf(self.hir, arg_node);
+        var has_annotated_parameter = false;
+        for (hir_mod.fnParams(self.hir, arg_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            if (hir_mod.parameterOf(self.hir, param_node).type_annotation == hir_mod.none_node_id) continue;
+            has_annotated_parameter = true;
+            break;
+        }
+        if (!has_annotated_parameter or
+            f.return_type != hir_mod.none_node_id or
+            f.body == hir_mod.none_node_id or
+            self.hir.kindOf(f.body) == .block_stmt)
+        {
+            return false;
+        }
+
+        const span = self.hir.spanOf(arg_node);
+        var write_i: usize = 0;
+        var removed_return_mismatch = false;
+        for (self.diagnostics.items) |diagnostic| {
+            const start = self.diagnosticStart(diagnostic);
+            if (diagnostic.code == TsCodes.type_not_assignable and
+                start >= span.start and
+                start < span.end)
+            {
+                removed_return_mismatch = true;
+                continue;
+            }
+            self.diagnostics.items[write_i] = diagnostic;
+            write_i += 1;
+        }
+        if (removed_return_mismatch) self.diagnostics.shrinkRetainingCapacity(write_i);
+        return removed_return_mismatch;
     }
 
     fn tryReportContextualFunctionReturnMissingProperty(
@@ -149564,6 +149650,41 @@ test "checker: reference lib directives validate known library names" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_lib_definition_suggestion));
 }
 
+test "checker: noLib ignores reference lib DOM types in favor of local declarations" {
+    const s = try newSetup(
+        \\// @noLib: true
+        \\/// <reference lib="dom" />
+        \\interface Object {}
+        \\interface Array<T> {}
+        \\interface String {}
+        \\interface Boolean {}
+        \\interface Number {}
+        \\interface Function {}
+        \\interface RegExp {}
+        \\interface IArguments {}
+        \\interface CallableFunction {}
+        \\interface NewableFunction {}
+        \\export interface HTMLElement { field: string; }
+        \\export const elem: HTMLElement = { field: "a" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
+}
+
+test "checker: reference lib DOM overrides an explicit ES library set" {
+    const s = try newSetup(
+        \\// @lib: esnext
+        \\/// <reference lib="dom" preserve="true" />
+        \\export declare const elem: HTMLElement;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
 test "checker: reference lib directive reports unknown library" {
     const s = try newSetup(
         \\/// <reference lib="madeup" />
@@ -152611,6 +152732,13 @@ test "checker: method decorators under noLib require TypedPropertyDescriptor" {
         \\// @noLib: true
         \\// @experimentalDecorators: true
         \\interface Object { }
+        \\interface Array<T> { }
+        \\interface String { }
+        \\interface Boolean { }
+        \\interface Number { }
+        \\interface Function { }
+        \\interface RegExp { }
+        \\interface IArguments { }
         \\declare function dec(t, k, d);
         \\class C {
         \\  @dec
@@ -152619,11 +152747,16 @@ test "checker: method decorators under noLib require TypedPropertyDescriptor" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
+    var descriptor_missing = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.cannot_find_global_type and std.mem.indexOf(u8, d.message, "TypedPropertyDescriptor") != null) found = true;
+        if (d.code == TsCodes.cannot_find_global_type and
+            std.mem.indexOf(u8, d.message, "TypedPropertyDescriptor") != null)
+        {
+            descriptor_missing = true;
+        }
     }
-    try T.expect(found);
+    try T.expect(descriptor_missing);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_global_type));
 }
 
 test "checker: TS2318 reports missing noLib required globals" {
@@ -168698,6 +168831,22 @@ test "checker: any argument inference suppresses declared call result mismatch" 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: annotated callback return mismatch reports at the argument boundary" {
+    const s = try newSetup(
+        \\declare function foo3(cb: (x: number) => number): typeof cb;
+        \\const result = foo3((x: number) => "");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '(x: number) => string' is not assignable to parameter of type '(x: number) => number'.",
+    ));
 }
 
 test "checker: returned generic function enforces substituted scalar constraint" {
