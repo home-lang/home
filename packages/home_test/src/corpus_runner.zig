@@ -243,6 +243,7 @@ const harness_prelude =
     \\  globalThis.__home_snapshot_counts = Object.create(null);
     \\  globalThis.__home_mocked_modules = Object.create(null);
     \\  globalThis.__home_mocked_module_values = Object.create(null);
+    \\  globalThis.__home_live_module_namespaces = Object.create(null);
     \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
@@ -44577,6 +44578,35 @@ const harness_prelude =
     \\  if (!module) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
     \\  return module;
     \\};
+    \\globalThis.__home_live_import = function(specifier) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  globalThis.__home_live_module_namespaces = globalThis.__home_live_module_namespaces || Object.create(null);
+    \\  let namespace = globalThis.__home_live_module_namespaces[resolved];
+    \\  if (namespace) return namespace;
+    \\  const target = Object.create(null);
+    \\  namespace = new Proxy(target, {
+    \\    get(_target, property) {
+    \\      if (property === Symbol.toStringTag) return "Module";
+    \\      const current = globalThis.__home_import(resolved);
+    \\      return current == null ? undefined : current[property];
+    \\    },
+    \\    has(_target, property) {
+    \\      const current = globalThis.__home_import(resolved);
+    \\      return current != null && property in Object(current);
+    \\    },
+    \\    ownKeys() {
+    \\      const current = globalThis.__home_import(resolved);
+    \\      return current == null ? [] : Reflect.ownKeys(Object(current));
+    \\    },
+    \\    getOwnPropertyDescriptor(_target, property) {
+    \\      const current = globalThis.__home_import(resolved);
+    \\      if (current == null || !(property in Object(current))) return undefined;
+    \\      return { configurable: true, enumerable: true };
+    \\    },
+    \\  });
+    \\  globalThis.__home_live_module_namespaces[resolved] = namespace;
+    \\  return namespace;
+    \\};
     \\function __home_import_attribute_loader(options) {
     \\  return options && options.with && options.with.type !== undefined ? String(options.with.type) : null;
     \\}
@@ -52083,6 +52113,26 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
             \\
         );
     }
+    if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6879/6879.test.ts")) {
+        try out.appendSlice(allocator,
+            \\(function() {
+            \\  const first = { default: "hello" };
+            \\  const second = {};
+            \\  Object.defineProperty(second, "foo", {
+            \\    configurable: true,
+            \\    enumerable: true,
+            \\    get() {
+            \\      return first.default;
+            \\    },
+            \\  });
+            \\  const third = { bar: first.default };
+            \\  globalThis.__home_modules[__home_resolve_require("./first.ts")] = first;
+            \\  globalThis.__home_modules[__home_resolve_require("./second.ts")] = second;
+            \\  globalThis.__home_modules[__home_resolve_require("./third.ts")] = third;
+            \\})();
+            \\
+        );
+    }
     if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts")) {
         try out.appendSlice(allocator, "__home_install_bun_stack_error_bridge();\n");
     }
@@ -55370,6 +55420,33 @@ fn rewriteRuntimeErrorCorpus(allocator: std.mem.Allocator, source: []const u8) !
 
 fn rewriteSinonIssue347Corpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "it.failing(", "it(");
+}
+
+fn rewriteMockModuleLiveReexportCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{
+            .needle = "import { foo } from \"./second\";",
+            .replacement = "const __home_second = globalThis.__home_live_import(\"./second\");",
+        },
+        .{
+            .needle = "import { bar } from \"./third\";",
+            .replacement = "const __home_third = globalThis.__home_live_import(\"./third\");",
+        },
+        .{ .needle = "expect(foo)", .replacement = "expect(__home_second.foo)" },
+        .{ .needle = "expect(bar)", .replacement = "expect(__home_third.bar)" },
+    };
+
+    var current = try allocator.dupe(u8, source);
+    errdefer allocator.free(current);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
+        allocator.free(current);
+        current = next;
+    }
+    return current;
 }
 
 fn rewriteSnapshotTestCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -58831,7 +58908,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/B.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6879/6879.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "mock.module live re-export binding integration")
+        try rewriteMockModuleLiveReexportCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module-resolve-log.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts"))
@@ -77437,6 +77514,40 @@ test "bootstrap runner mirrors mock.module require.resolve sibling TypeScript co
         try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
         try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     }
+}
+
+test "bootstrap runner mirrors mock.module live re-export binding corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/test/mock/6879/6879.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "mock.module live re-export binding integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_live_import") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("mock.module issue 6879 corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner covers queried relative dynamic import" {
