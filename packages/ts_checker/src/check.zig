@@ -24710,10 +24710,157 @@ pub const Checker = struct {
         return null;
     }
 
-    fn contextualParameterTypeForSignature(self: *Checker, sig: TypeId, param_index: usize) ?TypeId {
+    fn contextualParameterTypeForSignature(
+        self: *Checker,
+        sig: TypeId,
+        param_index: usize,
+        source_is_rest: bool,
+    ) ?TypeId {
         const params = self.interner.signatureParams(sig);
-        if (param_index >= params.len) return null;
-        return params[param_index];
+        if (!self.rest_signatures.contains(sig)) {
+            if (param_index >= params.len) return null;
+            return params[param_index];
+        }
+        if (params.len == 0) return null;
+        const fixed_count = params.len - 1;
+        if (param_index < fixed_count) return params[param_index];
+        if (source_is_rest) return params[params.len - 1];
+        return self.contextualRestTupleElementType(params[params.len - 1], param_index - fixed_count);
+    }
+
+    fn contextualRestTupleElementType(self: *Checker, rest_t: TypeId, index: usize) ?TypeId {
+        if (rest_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(rest_t).is_union) {
+            const element_t = self.tupleElementType(rest_t, index);
+            return if (element_t == types.Primitive.none) null else element_t;
+        }
+        var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer candidates.deinit(self.gpa);
+        for (self.interner.unionMembers(rest_t)) |member| {
+            const element_t = self.tupleElementType(member, index);
+            if (element_t == types.Primitive.none) return null;
+            var seen = false;
+            for (candidates.items) |candidate| {
+                if (candidate == element_t) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) candidates.append(self.gpa, element_t) catch return null;
+        }
+        if (candidates.items.len == 0) return null;
+        if (candidates.items.len == 1) return candidates.items[0];
+        return self.interner.internUnion(candidates.items) catch null;
+    }
+
+    fn resolveContextualTypeAliasNode(self: *Checker, anchor: NodeId, type_node: NodeId) ?NodeId {
+        var current = type_node;
+        var depth: u8 = 0;
+        while (depth < 8 and current != hir_mod.none_node_id and self.hir.kindOf(current) == .type_ref) : (depth += 1) {
+            const ref = hir_mod.typeRefOf(self.hir, current);
+            if (ref.qualifier_len != 0 or ref.args_len != 0) break;
+            const decl = self.findVisibleNamedTypeDecl(anchor, ref.name) orelse break;
+            if (self.hir.kindOf(decl) != .type_alias_decl) break;
+            const aliased = hir_mod.typeAliasOf(self.hir, decl).aliased;
+            if (aliased == hir_mod.none_node_id or aliased == current) break;
+            current = aliased;
+        }
+        return if (current == hir_mod.none_node_id) null else current;
+    }
+
+    fn contextualRestAnnotationElementType(
+        self: *Checker,
+        anchor: NodeId,
+        type_node: NodeId,
+        index: usize,
+    ) CheckError!?TypeId {
+        const resolved = self.resolveContextualTypeAliasNode(anchor, type_node) orelse return null;
+        switch (self.hir.kindOf(resolved)) {
+            .union_type => {
+                var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer candidates.deinit(self.gpa);
+                for (hir_mod.unionTypeMembers(self.hir, resolved)) |member| {
+                    const candidate = (try self.contextualRestAnnotationElementType(anchor, member, index)) orelse return null;
+                    var seen = false;
+                    for (candidates.items) |existing| {
+                        if (existing == candidate) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) try candidates.append(self.gpa, candidate);
+                }
+                if (candidates.items.len == 0) return null;
+                if (candidates.items.len == 1) return candidates.items[0];
+                return self.interner.internUnion(candidates.items) catch return error.OutOfMemory;
+            },
+            .tuple_type => {
+                const elements = hir_mod.tupleTypeElements(self.hir, resolved);
+                if (index >= elements.len) return null;
+                return try self.lowererLowerWithTypeParams(elements[index]);
+            },
+            .array_type => return try self.lowererLowerWithTypeParams(hir_mod.arrayTypeOf(self.hir, resolved).element),
+            else => {
+                const rest_t = try self.lowererLowerWithTypeParams(resolved);
+                const element_t = self.tupleElementType(rest_t, index);
+                return if (element_t == types.Primitive.none) null else element_t;
+            },
+        }
+    }
+
+    fn contextualParameterTypeFromFunctionAnnotation(
+        self: *Checker,
+        fn_node: NodeId,
+        param_node: NodeId,
+    ) CheckError!?TypeId {
+        const parent = self.hir.parentOf(fn_node);
+        if (parent == hir_mod.none_node_id) return null;
+        const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind != .var_decl and parent_kind != .let_decl and parent_kind != .const_decl) return null;
+        const declaration = hir_mod.varDeclOf(self.hir, parent);
+        if (declaration.init != fn_node or declaration.type_annotation == hir_mod.none_node_id) return null;
+        const target_node = self.resolveContextualTypeAliasNode(parent, declaration.type_annotation) orelse return null;
+        if (self.hir.kindOf(target_node) != .fn_type) return null;
+        const source_index = self.functionValueParameterIndex(fn_node, param_node) orelse return null;
+        const source_is_rest = self.hir.kindOf(param_node) == .parameter and
+            hir_mod.parameterOf(self.hir, param_node).flags.is_rest;
+        const target_fn = hir_mod.fnTypeOf(self.hir, target_node);
+        var target_index: usize = 0;
+        for (self.hir.childSlice(target_fn.params_start, target_fn.params_len)) |target_param_node| {
+            if (self.hir.kindOf(target_param_node) != .parameter) continue;
+            if (self.isThisParameter(target_param_node)) continue;
+            const target_param = hir_mod.parameterOf(self.hir, target_param_node);
+            if (!target_param.flags.is_rest) {
+                if (target_index == source_index and target_param.type_annotation != hir_mod.none_node_id) {
+                    return try self.lowererLowerWithTypeParams(target_param.type_annotation);
+                }
+                target_index += 1;
+                continue;
+            }
+            if (source_index < target_index or target_param.type_annotation == hir_mod.none_node_id) return null;
+            if (source_is_rest) return try self.lowererLowerWithTypeParams(target_param.type_annotation);
+            return try self.contextualRestAnnotationElementType(
+                parent,
+                target_param.type_annotation,
+                source_index - target_index,
+            );
+        }
+        return null;
+    }
+
+    fn functionAnnotationProvidesAllParameterContext(
+        self: *Checker,
+        fn_node: NodeId,
+    ) CheckError!?bool {
+        var saw_value_param = false;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            if (param.type_annotation != hir_mod.none_node_id) return null;
+            saw_value_param = true;
+            if ((try self.contextualParameterTypeFromFunctionAnnotation(fn_node, param_node)) == null) return false;
+        }
+        return if (saw_value_param) true else null;
     }
 
     fn mergeContextualParameterType(self: *Checker, current: *TypeId, candidate: TypeId) bool {
@@ -24753,6 +24900,8 @@ pub const Checker = struct {
     fn contextualParameterTypeForFunctionParam(self: *Checker, fn_node: NodeId, param_node: NodeId, target_t: TypeId) ?TypeId {
         if (self.functionExceedsContextualSignatureArity(fn_node, target_t)) return null;
         const param_index = self.functionValueParameterIndex(fn_node, param_node) orelse return null;
+        const source_is_rest = self.hir.kindOf(param_node) == .parameter and
+            hir_mod.parameterOf(self.hir, param_node).flags.is_rest;
         if (target_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(target_t);
         var found: TypeId = types.Primitive.none;
@@ -24763,7 +24912,7 @@ pub const Checker = struct {
                 self.collectCallSignatures(member, &sigs) catch return null;
                 if (sigs.items.len == 0) continue;
                 if (sigs.items.len > 1) return null;
-                const candidate = self.contextualParameterTypeForSignature(sigs.items[0], param_index) orelse return null;
+                const candidate = self.contextualParameterTypeForSignature(sigs.items[0], param_index, source_is_rest) orelse return null;
                 if (!self.mergeContextualParameterType(&found, candidate)) return null;
             }
             return if (found == types.Primitive.none) null else found;
@@ -24773,7 +24922,7 @@ pub const Checker = struct {
         defer sigs.deinit(self.gpa);
         self.collectCallSignatures(target_t, &sigs) catch return null;
         for (sigs.items) |sig| {
-            const candidate = self.contextualParameterTypeForSignature(sig, param_index) orelse return null;
+            const candidate = self.contextualParameterTypeForSignature(sig, param_index, source_is_rest) orelse return null;
             if (!self.mergeContextualParameterType(&found, candidate)) return null;
         }
         return if (found == types.Primitive.none) null else found;
@@ -24900,18 +25049,41 @@ pub const Checker = struct {
         if (call.callee != fn_node) return null;
         const args = hir_mod.callArgs(self.hir, parent);
         if (is_rest) {
-            if (param_index >= args.len) {
-                return self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
-            }
             var elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
             defer elem_types.deinit(self.gpa);
-            var i = param_index;
-            while (i < args.len) : (i += 1) {
-                var arg_t = try self.checkExpression(args[i]);
-                if (self.hir.kindOf(args[i]) == .spread) {
-                    arg_t = try self.iterableElementType(arg_t);
+            var flattened_index: usize = 0;
+            for (args) |arg| {
+                const arg_t = try self.checkExpression(arg);
+                if (self.hir.kindOf(arg) != .spread) {
+                    if (flattened_index >= param_index) {
+                        try elem_types.append(self.gpa, self.widenForInference(arg_t));
+                    }
+                    flattened_index += 1;
+                    continue;
                 }
-                try elem_types.append(self.gpa, self.widenForInference(arg_t));
+                if (!self.isTupleShapedTarget(arg_t)) {
+                    const elem_t = try self.iterableElementType(arg_t);
+                    try elem_types.append(self.gpa, self.widenForInference(elem_t));
+                    flattened_index += 1;
+                    continue;
+                }
+                const known_count = if (self.fixedTupleLength(arg_t)) |len|
+                    @as(usize, @intCast(len))
+                else
+                    self.tupleFixedPrefixCount(arg_t);
+                for (0..known_count) |tuple_index| {
+                    if (flattened_index + tuple_index < param_index) continue;
+                    const elem_t = self.tupleElementType(arg_t, tuple_index);
+                    if (elem_t == types.Primitive.none) continue;
+                    try elem_types.append(self.gpa, self.widenForInference(elem_t));
+                }
+                flattened_index += known_count;
+                if (self.fixedTupleLength(arg_t) == null) {
+                    const tail_t = self.tupleRestTailElementType(arg_t);
+                    if (tail_t != types.Primitive.none) {
+                        try elem_types.append(self.gpa, self.widenForInference(tail_t));
+                    }
+                }
             }
             const elem_t = if (elem_types.items.len == 0)
                 types.Primitive.any
@@ -24921,14 +25093,39 @@ pub const Checker = struct {
                 self.interner.internUnion(elem_types.items) catch return error.OutOfMemory;
             return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
         }
-        if (param_index >= args.len) {
-            return if (self.strict_flags.strict_null_checks)
-                types.Primitive.undefined_t
+        var flattened_index: usize = 0;
+        for (args) |arg| {
+            const arg_t = try self.checkExpression(arg);
+            if (self.hir.kindOf(arg) != .spread) {
+                if (flattened_index == param_index) return self.widenForInference(arg_t);
+                flattened_index += 1;
+                continue;
+            }
+            if (!self.isTupleShapedTarget(arg_t)) {
+                if (param_index >= flattened_index) {
+                    return self.widenForInference(try self.iterableElementType(arg_t));
+                }
+                flattened_index += 1;
+                continue;
+            }
+            const known_count = if (self.fixedTupleLength(arg_t)) |len|
+                @as(usize, @intCast(len))
             else
-                types.Primitive.any;
+                self.tupleFixedPrefixCount(arg_t);
+            if (param_index >= flattened_index and param_index < flattened_index + known_count) {
+                const elem_t = self.tupleElementType(arg_t, param_index - flattened_index);
+                if (elem_t != types.Primitive.none) return self.widenForInference(elem_t);
+            }
+            flattened_index += known_count;
+            if (self.fixedTupleLength(arg_t) == null and param_index >= flattened_index) {
+                const tail_t = self.tupleRestTailElementType(arg_t);
+                if (tail_t != types.Primitive.none) return self.widenForInference(tail_t);
+            }
         }
-        const arg_t = try self.checkExpression(args[param_index]);
-        return self.widenForInference(arg_t);
+        return if (self.strict_flags.strict_null_checks)
+            types.Primitive.undefined_t
+        else
+            types.Primitive.any;
     }
 
     fn satisfiesProvidesContextualType(self: *Checker, satisfies_node: NodeId, fn_node: NodeId) bool {
@@ -28412,6 +28609,9 @@ pub const Checker = struct {
                 break :blk sig_params[value_param_index];
             } else null;
             const contextual_tuple_param_t: ?TypeId = if (!has_anno and !has_jsdoc_param_type and !is_this_param) blk: {
+                if (try self.contextualParameterTypeFromFunctionAnnotation(node, p)) |syntax_t| {
+                    break :blk syntax_t;
+                }
                 const target_t = (self.contextualTupleElementTargetForFunction(node) catch null) orelse break :blk null;
                 break :blk self.contextualParameterTypeForFunctionParam(node, p, target_t);
             } else null;
@@ -28430,6 +28630,9 @@ pub const Checker = struct {
                 switch (self.hir.kindOf(parent)) {
                     .assignment, .var_decl, .let_decl, .const_decl => {},
                     else => break :blk null,
+                }
+                if (try self.contextualParameterTypeFromFunctionAnnotation(node, p)) |syntax_t| {
+                    break :blk syntax_t;
                 }
                 const target_t = self.contextualTargetTypeForFunction(node) orelse break :blk null;
                 if (target_t >= self.interner.pool.typeCount()) break :blk null;
@@ -124010,7 +124213,7 @@ pub const Checker = struct {
 
     fn spreadArgArityContribution(self: *Checker, arg_t: TypeId) usize {
         if (self.fixedTupleLength(arg_t)) |len| {
-            return @max(@as(usize, @intCast(len)), 1);
+            return @as(usize, @intCast(len));
         }
         const fixed_prefix = self.tupleFixedPrefixCount(arg_t);
         return @max(fixed_prefix, 1);
@@ -124531,6 +124734,10 @@ pub const Checker = struct {
                 continue;
             }
             if (try self.tryReportRecursiveArrayInferenceMismatch(args[i], sig, fixed_pos, param_t)) {
+                stop_after_arg_mismatch = true;
+                continue;
+            }
+            if (try self.tryReportContextualCallbackExceedsGenericRestMinimum(call_node, args[i], fixed_pos)) {
                 stop_after_arg_mismatch = true;
                 continue;
             }
@@ -130064,6 +130271,227 @@ pub const Checker = struct {
         return false;
     }
 
+    fn enclosingTypeParameterConstraintText(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) ?[]const u8 {
+        var current = self.hir.parentOf(anchor);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            const kind = self.hir.kindOf(current);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn and kind != .fn_type) continue;
+            for (hir_mod.fnTypeParams(self.hir, current)) |type_param_node| {
+                if (self.hir.kindOf(type_param_node) != .type_parameter) continue;
+                const type_param = hir_mod.typeParameterOf(self.hir, type_param_node);
+                if (type_param.name != name or type_param.constraint == hir_mod.none_node_id) continue;
+                const text = std.mem.trim(
+                    u8,
+                    self.nodeSourceTextOrEmpty(type_param.constraint),
+                    " \t\r\n",
+                );
+                return if (text.len > 0) text else null;
+            }
+        }
+        return null;
+    }
+
+    fn tryReportContextualCallbackExceedsGenericRestMinimum(
+        self: *Checker,
+        call_node: NodeId,
+        arg_node: NodeId,
+        argument_index: usize,
+    ) CheckError!bool {
+        const arg_kind = self.hir.kindOf(arg_node);
+        if (arg_kind != .arrow_fn and arg_kind != .fn_expr) return false;
+        if (self.hir.kindOf(call_node) != .call_expr) return false;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .identifier) return false;
+        const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+        const declaration = self.findVisibleSameNameValueBinding(call.callee, callee_name) orelse return false;
+        if (self.hir.kindOf(declaration) != .fn_decl and self.hir.kindOf(declaration) != .fn_expr) return false;
+        var target_param_node: NodeId = hir_mod.none_node_id;
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, declaration)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            if (value_index == argument_index) {
+                target_param_node = param_node;
+                break;
+            }
+            value_index += 1;
+        }
+        if (target_param_node == hir_mod.none_node_id) return false;
+        const target_param = hir_mod.parameterOf(self.hir, target_param_node);
+        if (target_param.type_annotation == hir_mod.none_node_id) return false;
+        const target_fn_node = self.resolveContextualTypeAliasNode(target_param_node, target_param.type_annotation) orelse return false;
+        if (self.hir.kindOf(target_fn_node) != .fn_type) return false;
+        const target_fn = hir_mod.fnTypeOf(self.hir, target_fn_node);
+        var target_fixed: usize = 0;
+        var rest_type_node: NodeId = hir_mod.none_node_id;
+        for (self.hir.childSlice(target_fn.params_start, target_fn.params_len)) |nested_param_node| {
+            if (self.hir.kindOf(nested_param_node) != .parameter or self.isThisParameter(nested_param_node)) continue;
+            const nested_param = hir_mod.parameterOf(self.hir, nested_param_node);
+            if (nested_param.flags.is_rest) {
+                rest_type_node = nested_param.type_annotation;
+                break;
+            }
+            target_fixed += 1;
+        }
+        if (rest_type_node == hir_mod.none_node_id or self.hir.kindOf(rest_type_node) != .type_ref) return false;
+        const rest_ref = hir_mod.typeRefOf(self.hir, rest_type_node);
+        if (rest_ref.qualifier_len != 0 or rest_ref.args_len != 0) return false;
+        for (hir_mod.fnTypeParams(self.hir, declaration)) |type_param_node| {
+            if (self.hir.kindOf(type_param_node) != .type_parameter) continue;
+            if (hir_mod.typeParameterOf(self.hir, type_param_node).name == rest_ref.name) return false;
+        }
+        var source_required: usize = 0;
+        for (hir_mod.fnParams(self.hir, arg_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            if (param.flags.is_optional or param.flags.is_rest or param.default_value != hir_mod.none_node_id) continue;
+            source_required += 1;
+        }
+        if (source_required <= target_fixed) return false;
+
+        const arena = self.diag_arena.allocator();
+        const generic_name = self.string_interner.get(rest_ref.name);
+        var source_signature: std.ArrayListUnmanaged(u8) = .empty;
+        try source_signature.append(arena, '(');
+        var source_value_index: usize = 0;
+        var first_extra_name: ?[]const u8 = null;
+        var tuple_text: std.ArrayListUnmanaged(u8) = .empty;
+        try tuple_text.append(arena, '[');
+        var tuple_first = true;
+        for (hir_mod.fnParams(self.hir, arg_node)) |source_param_node| {
+            if (self.hir.kindOf(source_param_node) != .parameter or self.isThisParameter(source_param_node)) continue;
+            const source_param = hir_mod.parameterOf(self.hir, source_param_node);
+            const source_name = if (source_param.name != hir_mod.none_node_id and
+                self.hir.kindOf(source_param.name) == .identifier)
+                self.string_interner.get(hir_mod.identifierOf(self.hir, source_param.name).name)
+            else
+                "arg";
+            if (source_value_index > 0) try source_signature.appendSlice(arena, ", ");
+            if (source_param.flags.is_rest) try source_signature.appendSlice(arena, "...");
+            try source_signature.appendSlice(arena, source_name);
+            try source_signature.appendSlice(arena, ": ");
+            if (source_value_index < target_fixed) {
+                var fixed_index: usize = 0;
+                var fixed_type_node: NodeId = hir_mod.none_node_id;
+                for (self.hir.childSlice(target_fn.params_start, target_fn.params_len)) |nested_param_node| {
+                    if (self.hir.kindOf(nested_param_node) != .parameter or self.isThisParameter(nested_param_node)) continue;
+                    const nested_param = hir_mod.parameterOf(self.hir, nested_param_node);
+                    if (nested_param.flags.is_rest) break;
+                    if (fixed_index == source_value_index) {
+                        fixed_type_node = nested_param.type_annotation;
+                        break;
+                    }
+                    fixed_index += 1;
+                }
+                const fixed_text = std.mem.trim(
+                    u8,
+                    self.nodeSourceTextOrEmpty(fixed_type_node),
+                    " \t\r\n",
+                );
+                try source_signature.appendSlice(arena, if (fixed_text.len > 0) fixed_text else "any");
+            } else if (source_param.flags.is_rest) {
+                try source_signature.appendSlice(arena, generic_name);
+                try source_signature.appendSlice(arena, "[number][]");
+            } else {
+                if (first_extra_name == null) first_extra_name = source_name;
+                const indexed_text = try std.fmt.allocPrint(arena, "{s}[{d}]", .{
+                    generic_name,
+                    source_value_index - target_fixed,
+                });
+                try source_signature.appendSlice(arena, indexed_text);
+            }
+
+            if (source_value_index >= target_fixed) {
+                if (!tuple_first) try tuple_text.appendSlice(arena, ", ");
+                tuple_first = false;
+                if (source_param.flags.is_rest) try tuple_text.appendSlice(arena, "...");
+                try tuple_text.appendSlice(arena, source_name);
+                try tuple_text.appendSlice(arena, ": ");
+                if (source_param.flags.is_rest) {
+                    try tuple_text.appendSlice(arena, generic_name);
+                    try tuple_text.appendSlice(arena, "[number][]");
+                } else {
+                    const indexed_text = try std.fmt.allocPrint(arena, "{s}[{d}]", .{
+                        generic_name,
+                        source_value_index - target_fixed,
+                    });
+                    try tuple_text.appendSlice(arena, indexed_text);
+                }
+            }
+            source_value_index += 1;
+        }
+        try source_signature.appendSlice(arena, ") => void");
+        try tuple_text.append(arena, ']');
+
+        const target_text_raw = std.mem.trim(u8, self.nodeSourceTextOrEmpty(target_fn_node), " \t\r\n");
+        const target_text = if (target_text_raw.len > 0) target_text_raw else "(...args: any[]) => void";
+        const message = try std.fmt.allocPrint(
+            arena,
+            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+            .{ source_signature.items, target_text },
+        );
+
+        const target_rest_param = blk: {
+            for (self.hir.childSlice(target_fn.params_start, target_fn.params_len)) |nested_param_node| {
+                if (self.hir.kindOf(nested_param_node) != .parameter) continue;
+                const nested_param = hir_mod.parameterOf(self.hir, nested_param_node);
+                if (!nested_param.flags.is_rest) continue;
+                if (nested_param.name != hir_mod.none_node_id and self.hir.kindOf(nested_param.name) == .identifier) {
+                    break :blk self.string_interner.get(hir_mod.identifierOf(self.hir, nested_param.name).name);
+                }
+            }
+            break :blk "args";
+        };
+        const source_extra = first_extra_name orelse "arg";
+        const constraint_text = self.enclosingTypeParameterConstraintText(declaration, rest_ref.name) orelse "any[]";
+
+        const no_match = try arena.alloc(DiagnosticChainEntry, 1);
+        no_match[0] = .{
+            .code = TsCodes.source_no_match_required_element,
+            .message = "Source provides no match for required element at position 0 in target.",
+        };
+        const constraint_child = try arena.alloc(DiagnosticChainEntry, 1);
+        constraint_child[0] = .{
+            .code = TsCodes.type_not_assignable,
+            .message = try std.fmt.allocPrint(
+                arena,
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ constraint_text, tuple_text.items },
+            ),
+            .children = no_match,
+        };
+        const generic_child = try arena.alloc(DiagnosticChainEntry, 1);
+        generic_child[0] = .{
+            .code = TsCodes.type_not_assignable,
+            .message = try std.fmt.allocPrint(
+                arena,
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ generic_name, tuple_text.items },
+            ),
+            .children = constraint_child,
+        };
+        const chain = try arena.alloc(DiagnosticChainEntry, 1);
+        chain[0] = .{
+            .code = TsCodes.types_of_parameters_incompatible,
+            .message = try std.fmt.allocPrint(
+                arena,
+                "Types of parameters '{s}' and '{s}' are incompatible.",
+                .{ source_extra, target_rest_param },
+            ),
+            .children = generic_child,
+        };
+        try self.diagnostics.append(self.gpa, .{
+            .node = arg_node,
+            .code = TsCodes.argument_type_mismatch,
+            .message = message,
+            .chain = chain,
+        });
+        return true;
+    }
+
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
         if (self.noInferInnerType(param_t)) |inner| return self.isArgumentAssignableToParam(arg_node, arg_t, inner);
         if (self.sameTypeParameterName(arg_t, param_t)) return true;
@@ -133609,11 +134037,14 @@ pub const Checker = struct {
             if (pp.flags.is_optional or pp.flags.is_rest or pp.default_value != hir_mod.none_node_id) continue;
             source_required_params += 1;
         }
-        if (source_required_params > target_params.len) return .not_contextual;
+        const annotation_supplies_all_params = (try self.functionAnnotationProvidesAllParameterContext(fn_node)) orelse false;
+        if (!annotation_supplies_all_params and source_required_params > target_params.len) return .not_contextual;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.body == hir_mod.none_node_id) return .not_contextual;
         const target_ret = self.interner.signatureReturn(target_t) orelse return .not_contextual;
-        if (!try self.functionExpressionParametersAssignableToTarget(self.hir.typeOf(fn_node), target_t)) {
+        if (!annotation_supplies_all_params and
+            !try self.functionExpressionParametersAssignableToTarget(self.hir.typeOf(fn_node), target_t))
+        {
             return .not_contextual;
         }
         if (f.flags.is_generator) {
@@ -180734,6 +181165,70 @@ test "checker: spread tuple argument expands into fixed rest signature slots" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: direct IIFE tuple spreads flatten into positional parameters" {
+    const s = try newSetup(
+        \\declare const fixed: [number, boolean, string];
+        \\declare const empty: [];
+        \\(function (a, b, c) {})(...fixed);
+        \\(function (a, b, c) {})(1, true, "ok", ...empty);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: tuple union rest annotations contextually type ordinary and rest callbacks" {
+    const s = try newSetup(
+        \\type Args = [number, string] | [number, Error];
+        \\type Fn = (...args: Args) => number;
+        \\const ordinary: Fn = (value, detail) => value;
+        \\const rest: Fn = (...args) => args[0];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.yield_star_not_iterable));
+}
+
+test "checker: captured generic rest rejects a callback with an extra required prefix" {
+    const s = try newSetup(
+        \\function outer<T extends any[]>(tuple: T) {
+        \\  function use(cb: (x: number, ...args: T) => void) {}
+        \\  use((...x) => {});
+        \\  use((a, ...x) => {});
+        \\  use((a, b, ...x) => {});
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    const diagnostic = for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) break d;
+    } else return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Argument of type '(a: number, b: T[0], ...x: T[number][]) => void' is not assignable to parameter of type '(x: number, ...args: T) => void'.",
+        diagnostic.message,
+    );
+    try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+    try T.expectEqual(@as(u32, TsCodes.types_of_parameters_incompatible), diagnostic.chain[0].code);
+    try T.expectEqualStrings("Types of parameters 'b' and 'args' are incompatible.", diagnostic.chain[0].message);
+    try T.expectEqualStrings(
+        "Type 'T' is not assignable to type '[b: T[0], ...x: T[number][]]'.",
+        diagnostic.chain[0].children[0].message,
+    );
+    try T.expectEqualStrings(
+        "Type 'any[]' is not assignable to type '[b: T[0], ...x: T[number][]]'.",
+        diagnostic.chain[0].children[0].children[0].message,
+    );
+    try T.expectEqualStrings(
+        "Source provides no match for required element at position 0 in target.",
+        diagnostic.chain[0].children[0].children[0].children[0].message,
+    );
 }
 
 test "checker: non-tuple spread into fixed parameter reports TS2556" {
