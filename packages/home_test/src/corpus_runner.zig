@@ -2317,6 +2317,33 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_spawn_stdin_sink() {
+    \\  let ended = false;
+    \\  let bytesWritten = 0;
+    \\  function byteLength(value) {
+    \\    if (value === undefined || value === null) return 0;
+    \\    if (typeof value === "string") return new TextEncoder().encode(value).length;
+    \\    if (typeof value.byteLength === "number") return value.byteLength;
+    \\    if (typeof value.length === "number") return value.length;
+    \\    return new TextEncoder().encode(String(value)).length;
+    \\  }
+    \\  return {
+    \\    write(value) {
+    \\      if (ended) return 0;
+    \\      const length = byteLength(value);
+    \\      bytesWritten += length;
+    \\      return length;
+    \\    },
+    \\    flush() {
+    \\      return 0;
+    \\    },
+    \\    end(value) {
+    \\      if (!ended && arguments.length > 0) this.write(value);
+    \\      ended = true;
+    \\      return bytesWritten;
+    \\    },
+    \\  };
+    \\}
     \\function __home_normalize_spawn_options(options) {
     \\  const source = options || {};
     \\  if (!Array.isArray(source.cmd)) return source;
@@ -22847,12 +22874,16 @@ const harness_prelude =
     \\    const stderr = result.stderr || "";
     \\    const stdoutPipe = __home_spawn_pipe_text(stdout);
     \\    const stderrPipe = __home_spawn_pipe_text(stderr);
+    \\    const stdinPipe = options && (options.stdin === "pipe" || (Array.isArray(options.stdio) && options.stdio[0] === "pipe"))
+    \\      ? __home_spawn_stdin_sink()
+    \\      : undefined;
     \\    const exited = Promise.resolve(result.exitCode == null ? 1 : result.exitCode).then(code => {
     \\      if (stdoutPipe && typeof stdoutPipe === "object") stdoutPipe.__home_exited = true;
     \\      if (stderrPipe && typeof stderrPipe === "object") stderrPipe.__home_exited = true;
     \\      return code;
     \\    });
     \\    return {
+    \\      stdin: stdinPipe,
     \\      stdout: stdoutPipe,
     \\      stderr: stderrPipe,
     \\      exited,
@@ -58967,7 +58998,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-socketpair-shutdown.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess socketpair shutdown integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-destroy.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess stdin destroy after exit integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-pipe-fd-leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess stdin pipe fd leak integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts"))
@@ -70250,6 +70281,41 @@ test "bootstrap runner mirrors empty spawn stdin corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors spawn stdin destroy after exit corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/spawn/spawn-stdin-destroy.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess stdin destroy after exit integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await Bun.sleep(80)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await child.stdin.flush()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await child.stdin.end()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_stdin_sink()") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("spawn stdin destroy corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors node http nested cork corpus" {
