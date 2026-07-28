@@ -39330,8 +39330,8 @@ pub const Checker = struct {
             return saw_any;
         }
         if (!flags.is_object_type) return false;
-        const info = self.interner.objectMemberInfo(t, name) orelse return false;
-        return info.is_readonly;
+        if (self.interner.objectMemberInfo(t, name)) |info| return info.is_readonly;
+        return self.namedPropertyIndexType(t, name) != null and self.readonly_index_types.contains(t);
     }
 
     const ReadonlyStatus = enum { absent, readonly, writable };
@@ -39374,8 +39374,13 @@ pub const Checker = struct {
             return if (saw_any) .readonly else .absent;
         }
         if (!flags.is_object_type) return .absent;
-        const info = self.interner.objectMemberInfo(t, name) orelse return .absent;
-        return if (info.is_readonly) .readonly else .writable;
+        if (self.interner.objectMemberInfo(t, name)) |info| {
+            return if (info.is_readonly) .readonly else .writable;
+        }
+        if (self.namedPropertyIndexType(t, name) != null) {
+            return if (self.readonly_index_types.contains(t)) .readonly else .writable;
+        }
+        return .absent;
     }
 
     /// Returns `true` when `name` resolves to a property anywhere
@@ -39398,7 +39403,7 @@ pub const Checker = struct {
             return false;
         }
         if (!flags.is_object_type) return false;
-        return self.interner.objectMember(t, name) != null;
+        return self.interner.objectMember(t, name) != null or self.namedPropertyIndexType(t, name) != null;
     }
 
     fn nodeIsThisReference(self: *Checker, node: NodeId) bool {
@@ -52539,19 +52544,19 @@ pub const Checker = struct {
                                         break;
                                     }
                                 }
-                                // Only unify for a REAL merge of two distinct
-                                // declarations. A single-declaration generic
-                                // interface gets re-checked (forward refs)
-                                // and lands here too, where `node` equals the
-                                // last registrar — unifying that self-recheck
-                                // would desync its own params from its body
-                                // and corrupt later instantiation (crashed
-                                // `evalConditional` on Box<...> in
-                                // typeParameterLeak). The conflict case never
-                                // arises for a self-recheck (same params).
+                                // A single-declaration generic interface may
+                                // be re-checked to refresh forward references.
+                                // Rewrite that refreshed body onto the first
+                                // parameter IDs before merging it back;
+                                // otherwise indexes inherited by a later
+                                // generic interface retain stale parameter IDs
+                                // and concrete instantiation cannot substitute
+                                // them (`StringTo<any>` still behaves as
+                                // `StringTo<T>`).
                                 const prev_decl = self.last_iface_decl_for_name.get(id.name) orelse hir_mod.none_node_id;
                                 const is_real_merge = prev_decl != node and prev_decl != hir_mod.none_node_id;
-                                if (is_real_merge and (conflict or !has_generic_method)) {
+                                const is_self_recheck = prev_decl == node;
+                                if (is_self_recheck or (is_real_merge and (conflict or !has_generic_method))) {
                                     var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                                     defer subs.deinit(self.gpa);
                                     for (param_ids.items, first.params) |cur_p, first_p| {
@@ -55168,7 +55173,6 @@ pub const Checker = struct {
         symbol_idx: TypeId,
     ) CheckError!void {
         if (string_idx != types.Primitive.none) {
-            try self.checkObjectInterfaceStringIndexerCompatibility(node, members);
             for (members) |m| {
                 if (self.syntheticSignatureMemberName(m.name)) continue;
                 if (self.isSymbolNamedMember(m.name)) continue;
@@ -55454,85 +55458,6 @@ pub const Checker = struct {
             "Property '{s}' is not assignable to {s} index type.",
             .{ prop_str, index_kind },
         );
-    }
-
-    fn checkObjectInterfaceStringIndexerCompatibility(
-        self: *Checker,
-        node: NodeId,
-        members: []const types.ObjectMember,
-    ) CheckError!void {
-        if (self.hir.kindOf(node) != .interface_decl) return;
-        const iface_name = self.declarationName(node) orelse return;
-        if (!std.mem.eql(u8, self.string_interner.get(iface_name), "Object")) return;
-
-        for (members) |member| {
-            if (member.type == types.Primitive.any or member.type == types.Primitive.unknown) continue;
-            if (self.objectStringIndexObjectValueCompatible(member.type)) continue;
-            try self.reportPropertyNotAssignableToStringIndex(node, member.name);
-        }
-
-        const function_t = self.lowerBuiltinObjectType("Function") orelse types.Primitive.any;
-        const Probe = struct {
-            name: []const u8,
-            type: TypeId,
-        };
-        const object_members = [_]Probe{
-            .{ .name = "constructor", .type = function_t },
-            .{ .name = "toString", .type = try self.interner.internSignature(&.{}, types.Primitive.string_t, false) },
-            .{ .name = "toLocaleString", .type = try self.interner.internSignature(&.{}, types.Primitive.string_t, false) },
-            .{ .name = "valueOf", .type = try self.interner.internSignature(&.{}, types.Primitive.object_t, false) },
-            .{ .name = "hasOwnProperty", .type = try self.interner.internSignature(&.{types.Primitive.string_t}, types.Primitive.boolean_t, false) },
-            .{ .name = "isPrototypeOf", .type = try self.interner.internSignature(&.{types.Primitive.object_t}, types.Primitive.boolean_t, false) },
-            .{ .name = "propertyIsEnumerable", .type = try self.interner.internSignature(&.{types.Primitive.string_t}, types.Primitive.boolean_t, false) },
-        };
-        for (object_members) |entry| {
-            if (self.objectStringIndexObjectValueCompatible(entry.type)) continue;
-            const name = self.string_interner.intern(entry.name) catch return error.OutOfMemory;
-            try self.reportPropertyNotAssignableToStringIndex(node, name);
-        }
-    }
-
-    fn objectStringIndexObjectValueCompatible(self: *Checker, t: TypeId) bool {
-        if (t == types.Primitive.any or t == types.Primitive.unknown or t == types.Primitive.object_t) return true;
-        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
-        const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_signature) return false;
-        if (flags.is_type_parameter) return true;
-        if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |member| {
-                if (!self.objectStringIndexObjectValueCompatible(member)) return false;
-            }
-            return true;
-        }
-        if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |member| {
-                if (self.objectStringIndexObjectValueCompatible(member)) return true;
-            }
-            return false;
-        }
-        if (!flags.is_object_type) return false;
-        for (self.interner.objectMembers(t)) |member| {
-            if (!self.objectStringIndexObjectValueCompatible(member.type)) return false;
-        }
-        return true;
-    }
-
-    fn reportPropertyNotAssignableToStringIndex(
-        self: *Checker,
-        node: NodeId,
-        name: hir_mod.StringId,
-    ) CheckError!void {
-        const prop_str = self.string_interner.get(name);
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Property '{s}' is not assignable to string index type.",
-            .{prop_str},
-        );
-        try self.diagnostics.append(self.gpa, .{
-            .node = node,
-            .code = TsCodes.property_not_assignable_to_index_type,
-            .message = msg,
-        });
     }
 
     fn memberNameIsNumeric(self: *Checker, name: hir_mod.StringId) bool {
@@ -61515,14 +61440,7 @@ pub const Checker = struct {
                 if (self.localScopedTypeForNameAt(id.name, type_node)) |t| return t;
                 if (try self.resolveForwardClassInstanceType(type_node, id.name)) |t| return t;
                 if (std.mem.eql(u8, name_str, "Object")) {
-                    if (self.type_names.get(id.name)) |t| {
-                        if (t >= types.Primitive.first_dynamic and t < self.interner.pool.typeCount() and
-                            !self.builtin_object_names.contains(t))
-                        {
-                            self.builtin_object_names.put(self.gpa, t, "Object") catch {};
-                        }
-                        return t;
-                    }
+                    if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                 }
                 if (std.mem.eql(u8, name_str, "String")) {
                     const t = lib.stringProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures) catch types.Primitive.unknown;
@@ -61833,14 +61751,7 @@ pub const Checker = struct {
                     if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
                     if (std.mem.eql(u8, name_str, "Object")) {
-                        if (self.type_names.get(r.name)) |t| {
-                            if (t >= types.Primitive.first_dynamic and t < self.interner.pool.typeCount() and
-                                !self.builtin_object_names.contains(t))
-                            {
-                                self.builtin_object_names.put(self.gpa, t, "Object") catch {};
-                            }
-                            return t;
-                        }
+                        if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     }
                     if (std.mem.eql(u8, name_str, "String")) {
                         const t = lib.stringProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures) catch types.Primitive.unknown;
@@ -66896,7 +66807,10 @@ pub const Checker = struct {
     }
 
     fn lowerBuiltinObjectType(self: *Checker, name: []const u8) ?TypeId {
-        var t = self.lowerBuiltinObjectTypeRaw(name) orelse return null;
+        var t = if (std.mem.eql(u8, name, "Object"))
+            self.lowerBuiltinObjectInstanceType() orelse return null
+        else
+            self.lowerBuiltinObjectTypeRaw(name) orelse return null;
         if (self.builtinWrapperInterfaceCanMerge(name)) {
             const id = self.string_interner.intern(name) catch return t;
             if (self.type_names.get(id)) |declared_t| {
@@ -66913,8 +66827,23 @@ pub const Checker = struct {
             if (!self.builtin_object_names.contains(t)) {
                 self.builtin_object_names.put(self.gpa, t, name) catch {};
             }
+            if (std.mem.eql(u8, name, "Object")) {
+                self.engine.registerUpperObjectTarget(t) catch {};
+            }
         }
         return t;
+    }
+
+    fn lowerBuiltinObjectInstanceType(self: *Checker) ?TypeId {
+        const global_t = lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner) catch
+            return null;
+        const prototype_name = self.string_interner.intern("prototype") catch return null;
+        var instance_t = self.interner.objectMember(global_t, prototype_name) orelse return null;
+        const object_name = self.string_interner.intern("Object") catch return instance_t;
+        if (self.type_names.get(object_name)) |declared_t| {
+            instance_t = self.mergeInterfaceDeclarationType(instance_t, declared_t) catch instance_t;
+        }
+        return instance_t;
     }
 
     fn builtinWrapperInterfaceCanMerge(self: *Checker, name: []const u8) bool {
@@ -69993,9 +69922,8 @@ pub const Checker = struct {
             if (member >= self.interner.pool.typeCount()) return null;
             const member_flags = self.interner.pool.flagsOf(member);
             if (!member_flags.is_object_type) return null;
-            const is_tuple_like = self.isTupleShapedTarget(member) or
-                self.actualTupleLength(member) != null or
-                self.interner.objectNumberIndex(member) != types.Primitive.none;
+            const is_tuple_like = self.actualTupleLength(member) != null or
+                self.objectTypeIsArrayLikeContainer(member);
             if (!is_tuple_like) return null;
             const member_t = self.tupleLikeLiteralIndexType(member, key);
             if (member_t == types.Primitive.none) {
@@ -73067,6 +72995,7 @@ pub const Checker = struct {
         {
             return true;
         }
+        if (try self.objectSourceAssignableToUpperObjectTarget(source_t, target_t)) |ok| return ok;
         if (try self.typeParameterConstraintAssignableToParam(source_t, target_t)) return true;
         if (self.sourceHasOptionalMemberForRequiredTarget(source_t, target_t)) return false;
         if (self.classPrivateStructuralMismatch(target_t, source_t)) return false;
@@ -73125,6 +73054,29 @@ pub const Checker = struct {
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn objectSourceAssignableToUpperObjectTarget(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!?bool {
+        if (!self.typeIsGlobalObjectBuiltin(target_t) and !(try self.typeIsUpperObject(target_t))) return null;
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return null;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        if (source_flags.is_union) {
+            for (self.interner.unionMembers(source_t)) |member| {
+                const member_result = try self.objectSourceAssignableToUpperObjectTarget(member, target_t);
+                if (!(member_result orelse (self.engine.isAssignableTo(member, target_t) catch false))) return false;
+            }
+            return true;
+        }
+        if (!source_flags.is_object_type or source_flags.is_intersection) return null;
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            const source_member = self.interner.objectMemberInfo(source_t, target_member.name) orelse continue;
+            if (!(self.engine.isAssignableTo(source_member.type, target_member.type) catch false)) return false;
+        }
+        return true;
     }
 
     fn expandingGenericObjectAssignmentMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
@@ -80731,6 +80683,8 @@ pub const Checker = struct {
             for (members) |member_t| {
                 if (try self.lookupObjectMember(member_t, name)) |t| {
                     try resolved.append(self.gpa, t);
+                } else if (self.namedPropertyIndexType(member_t, name)) |t| {
+                    try resolved.append(self.gpa, t);
                 } else {
                     return null;
                 }
@@ -80811,6 +80765,17 @@ pub const Checker = struct {
             if (try self.moduleInterfaceAugmentationMemberType(class_name, name, hir_mod.none_node_id)) |t| return t;
         }
         return null;
+    }
+
+    fn namedPropertyIndexType(self: *Checker, object_t: TypeId, name: hir_mod.StringId) ?TypeId {
+        if (object_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(object_t).is_object_type) return null;
+        if (self.isNumericStringId(name)) {
+            const number_idx = self.interner.objectNumberIndex(object_t);
+            if (number_idx != types.Primitive.none) return number_idx;
+        }
+        const string_idx = self.interner.objectStringIndex(object_t);
+        return if (string_idx != types.Primitive.none) string_idx else null;
     }
 
     fn recursiveAliasMemberSelfType(self: *Checker, receiver_t: TypeId, member_t: TypeId) ?TypeId {
@@ -83445,6 +83410,30 @@ pub const Checker = struct {
             if (self.interner.objectMember(inst_t, name)) |member_t| return member_t;
         }
         return null;
+    }
+
+    fn lookupArrayLikePrototypeMember(self: *Checker, t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+            defer self.gpa.free(members);
+            var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer resolved.deinit(self.gpa);
+            for (members) |member| {
+                const member_t = (try self.lookupArrayLikePrototypeMember(member, name)) orelse return null;
+                try resolved.append(self.gpa, member_t);
+            }
+            if (resolved.items.len == 0) return null;
+            return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
+        }
+        if (!flags.is_object_type or flags.is_intersection) return null;
+        const elem_t = try self.arrayElementType(t);
+        if (elem_t == types.Primitive.none) return null;
+        if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, elem_t, &self.rest_signatures)) |proto| {
+            if (self.interner.objectMember(proto, name)) |member_t| return member_t;
+        } else |_| {}
+        return try self.lookupDeclaredArrayMember(elem_t, name);
     }
 
     fn constructorPrototypeAccess(self: *Checker, obj_name: hir_mod.StringId, prop_name: hir_mod.StringId) CheckError!?TypeId {
@@ -86448,6 +86437,19 @@ pub const Checker = struct {
                         break :blk types.Primitive.any;
                     }
                 }
+                if (try self.lookupArrayLikePrototypeMember(access_obj_t, m.name)) |t| {
+                    break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                }
+                if (access_obj_t < self.interner.pool.typeCount()) {
+                    const access_flags = self.interner.pool.flagsOf(access_obj_t);
+                    if (access_flags.is_union or access_flags.is_intersection) {
+                        if (try self.broadObjectPrototypeMember(m.name)) |t| {
+                            break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                        }
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
+                        break :blk types.Primitive.any;
+                    }
+                }
                 // Lib lookup: array shapes (object types with a
                 // number indexer) consult `Array<T>.prototype` for
                 // `push`, `map`, `filter`, ÃÂ¢ÃÂÃÂ¦ using the indexer's
@@ -86780,7 +86782,7 @@ pub const Checker = struct {
                     break :blk try self.optionalChainResult(access.value_type, element_is_optional_chain);
                 }
                 if (obj_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(obj_t).is_union) {
-                    if (try self.resolveObjectIndexedAccessType(obj_t, idx_t)) |resolved| {
+                    if (try self.resolveObjectIndexedAccessType(obj_t, union_tuple_idx_t)) |resolved| {
                         break :blk try self.optionalChainResult(resolved, element_is_optional_chain);
                     }
                     if (!self.strict_flags.no_implicit_any) {
@@ -121872,6 +121874,9 @@ pub const Checker = struct {
             }
             if (self.builtin_object_names.get(t)) |builtin_name| {
                 try self.builtin_object_names.put(self.gpa, new_obj, builtin_name);
+                if (std.mem.eql(u8, builtin_name, "Object")) {
+                    try self.engine.registerUpperObjectTarget(new_obj);
+                }
             }
             if (self.decl_single_base.get(t)) |base_t| {
                 try self.decl_single_base.put(self.gpa, new_obj, try self.substituteType(base_t, subs));
@@ -127836,6 +127841,7 @@ pub const Checker = struct {
             const member_t = (try self.lookupObjectMember(obj, key)) orelse
                 (try self.arrayLikePrototypeMember(obj, key)) orelse
                 (try self.patternIndexValueForStringKey(obj, key)) orelse
+                self.namedPropertyIndexType(obj, key) orelse
                 (try self.effectiveStringIndexType(obj)) orelse
                 return null;
             try vals.append(self.gpa, member_t);
@@ -134542,6 +134548,9 @@ pub const Checker = struct {
             (try self.allocSimpleTypeName(target)) orelse
             (try self.allocObjectTypeShapeWithUndefined(target)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
+        if (std.mem.eql(u8, source_name, "Object")) {
+            return try self.reportObjectAssignableToFewTypes(node, null, source, target);
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Type '{s}' is not assignable to type '{s}'.",
@@ -135017,24 +135026,38 @@ pub const Checker = struct {
         source: TypeId,
         target: TypeId,
     ) CheckError![]const DiagnosticChainEntry {
-        return self.buildAssignabilityElaborationChainDepth(source, target, 0);
+        return self.buildAssignabilityElaborationChainDepth(source, target, 0, true);
+    }
+
+    fn objectAssignableToFewTypesChain(self: *Checker) CheckError![]const DiagnosticChainEntry {
+        const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+        slice[0] = .{
+            .code = TsCodes.object_assignable_to_few_types,
+            .message = "The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?",
+        };
+        return slice;
+    }
+
+    fn reportObjectAssignableToFewTypes(
+        self: *Checker,
+        node: NodeId,
+        pos: ?u32,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!void {
+        const chain = self.buildAssignabilityElaborationChainDepth(source, target, 0, false) catch &.{};
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = pos,
+            .code = TsCodes.object_assignable_to_few_types,
+            .message = "The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?",
+            .chain = chain,
+        });
     }
 
     fn typeIsGlobalObjectBuiltin(self: *Checker, t: TypeId) bool {
         const name = self.builtin_object_names.get(t) orelse return false;
         return std.mem.eql(u8, name, "Object");
-    }
-
-    fn targetIsPrimitiveForObjectAssignabilityHint(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount()) return false;
-        const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_object or flags.is_object_type or flags.is_signature or flags.is_tuple or
-            flags.is_union or flags.is_intersection or flags.is_type_parameter)
-        {
-            return false;
-        }
-        return flags.is_string or flags.is_number or flags.is_boolean or
-            flags.is_bigint or flags.is_symbol;
     }
 
     const PrimitiveWrapperMismatch = struct { primitive: []const u8, wrapper: []const u8 };
@@ -135339,6 +135362,7 @@ pub const Checker = struct {
         source: TypeId,
         target: TypeId,
         depth: u8,
+        include_object_hint: bool,
     ) CheckError![]const DiagnosticChainEntry {
         const empty: []const DiagnosticChainEntry = &.{};
         if (self.primitiveWrapperAssignedToPrimitive(source, target)) |mismatch| {
@@ -135354,15 +135378,8 @@ pub const Checker = struct {
             };
             return slice;
         }
-        if (self.typeIsGlobalObjectBuiltin(source) and
-            self.targetIsPrimitiveForObjectAssignabilityHint(target))
-        {
-            const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
-            slice[0] = .{
-                .code = TsCodes.object_assignable_to_few_types,
-                .message = "The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?",
-            };
-            return slice;
+        if (include_object_hint and (self.typeIsGlobalObjectBuiltin(source) or try self.typeIsUpperObject(source))) {
+            return try self.objectAssignableToFewTypesChain();
         }
         if (source >= self.interner.pool.typeCount() or
             target >= self.interner.pool.typeCount())
@@ -135694,7 +135711,7 @@ pub const Checker = struct {
                     const sm_obj = sm.type < self.interner.pool.typeCount() and self.interner.pool.flagsOf(sm.type).is_object_type;
                     const tm_obj = tm.type < self.interner.pool.typeCount() and self.interner.pool.flagsOf(tm.type).is_object_type;
                     if (sm_obj and tm_obj) {
-                        const nested = try self.buildAssignabilityElaborationChainDepth(sm.type, tm.type, depth + 1);
+                        const nested = try self.buildAssignabilityElaborationChainDepth(sm.type, tm.type, depth + 1, true);
                         if (nested.len > 0) {
                             slice[0] = .{
                                 .code = TsCodes.types_of_property_incompatible,
@@ -135942,6 +135959,46 @@ pub const Checker = struct {
         return false;
     }
 
+    fn intersectionHasOnlyObjectMembers(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(t).is_intersection) return false;
+        if (self.interner.pool.payloadOf(t) >= self.interner.pool.intersection_payloads.items.len) return false;
+        const members = self.interner.intersectionMembers(t);
+        if (members.len == 0) return false;
+        for (members) |member| {
+            if (member >= self.interner.pool.typeCount()) return false;
+            if (!self.interner.pool.flagsOf(member).is_object_type) return false;
+        }
+        return true;
+    }
+
+    fn expandedGenericAliasAnnotationNameForIdentifier(
+        self: *Checker,
+        node: NodeId,
+    ) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
+        const alias_name: hir_mod.StringId = switch (self.hir.kindOf(annotation)) {
+            .identifier => hir_mod.identifierOf(self.hir, annotation).name,
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, annotation);
+                if (ref.qualifier_len != 0 or ref.args_len != 0) break :blk 0;
+                break :blk ref.name;
+            },
+            else => 0,
+        };
+        if (alias_name == 0) return null;
+        const decl = self.findVisibleNamedTypeDecl(annotation, alias_name) orelse return null;
+        if (self.hir.kindOf(decl) != .type_alias_decl) return null;
+        const alias = hir_mod.typeAliasOf(self.hir, decl);
+        if (alias.type_params_len != 0 or alias.aliased == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(alias.aliased) != .type_ref) return null;
+        if (hir_mod.typeRefOf(self.hir, alias.aliased).args_len == 0) return null;
+        const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(alias.aliased), " \t\r\n");
+        if (text.len == 0) return null;
+        return try self.normalizedTypeAnnotationText(text);
+    }
+
     fn allocIntersectionNameWithPrimitiveWrappers(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         if (t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(t).is_intersection) return null;
@@ -136078,6 +136135,7 @@ pub const Checker = struct {
         // `{ x: T }`), partial-source (`{ s: string }` into
         // `{ b: boolean; s: string }`), and broad-object cases.
         const source_is_primitive_object_intersection = self.intersectionHasPrimitiveAndObjectMembers(source);
+        const source_is_object_intersection = self.intersectionHasOnlyObjectMembers(source);
         const source_is_object_shaped = blk: {
             if (value_node != hir_mod.none_node_id and
                 self.hir.kindOf(value_node) == .object_literal)
@@ -136087,8 +136145,11 @@ pub const Checker = struct {
             if (source == types.Primitive.object_t) break :blk true;
             if (self.class_name_by_instance.contains(source)) break :blk true;
             if (source_is_primitive_object_intersection) break :blk true;
+            if (source_is_object_intersection) break :blk true;
             if (source < self.interner.pool.typeCount() and
-                self.interner.pool.flagsOf(source).is_object_type)
+                self.interner.pool.flagsOf(source).is_object_type and
+                !self.interner.pool.flagsOf(source).is_union and
+                !self.interner.pool.flagsOf(source).is_intersection)
             {
                 break :blk true;
             }
@@ -136144,7 +136205,9 @@ pub const Checker = struct {
         // multi-property TS2739 wording.
         const target_members = self.interner.objectMembers(target);
         const source_members = if (source < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(source).is_object_type)
+            self.interner.pool.flagsOf(source).is_object_type and
+            !self.interner.pool.flagsOf(source).is_union and
+            !self.interner.pool.flagsOf(source).is_intersection)
             self.interner.objectMembers(source)
         else
             &[_]types.ObjectMember{};
@@ -136166,7 +136229,8 @@ pub const Checker = struct {
         const class_shape_mismatch = class_instance_mismatch or class_static_to_instance_mismatch;
         for (target_members) |tm| {
             if (tm.is_optional or (tm.is_method and !class_shape_mismatch)) continue;
-            var found = source_is_primitive_object_intersection and self.intersectionHasObjectMemberNamed(source, tm.name);
+            var found = (source_is_primitive_object_intersection or source_is_object_intersection) and
+                self.intersectionHasObjectMemberNamed(source, tm.name);
             for (source_members) |sm| {
                 if (sm.name == tm.name) {
                     found = true;
@@ -136204,6 +136268,7 @@ pub const Checker = struct {
             !(value_node != hir_mod.none_node_id and self.hir.kindOf(value_node) == .object_literal) and
             !class_shape_mismatch and
             !source_is_primitive_object_intersection and
+            !source_is_object_intersection and
             !source_has_index_signature and
             !self.nodeIsObjectRestAssignmentTarget(diag_node))
         {
@@ -136225,6 +136290,8 @@ pub const Checker = struct {
                 (try self.allocSimpleTypeName(source)) orelse
                 (try self.allocObjectTypeShape(source)) orelse "{}"
         else if (private_source_name) |name|
+            name
+        else if (try self.expandedGenericAliasAnnotationNameForIdentifier(value_node)) |name|
             name
         else
             (try self.missingPropertyTypeName(source)) orelse "{}";
@@ -137312,6 +137379,9 @@ pub const Checker = struct {
             try self.compactOverloadedSignatureDiagnosticName(target_name_raw)
         else
             target_name_raw;
+        if (std.mem.eql(u8, source_name, "Object")) {
+            return try self.reportObjectAssignableToFewTypes(node, anchor_pos, source, target);
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Type '{s}' is not assignable to type '{s}'.",
@@ -153169,7 +153239,7 @@ test "checker: overloaded function value type renders anonymous call signatures 
     try T.expect(saw_overload_target);
 }
 
-test "checker: Object assignment mismatch renders Object and call signature names" {
+test "checker: Object assignment mismatch uses primary TS2696 diagnostics" {
     const s = try newSetup(
         \\interface I { (): void; }
         \\declare var i: I;
@@ -153183,15 +153253,7 @@ test "checker: Object assignment mismatch renders Object and call signature name
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    var saw_interface = false;
-    var saw_call_sig = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.type_not_assignable) continue;
-        if (std.mem.eql(u8, d.message, "Type 'Object' is not assignable to type 'I'.")) saw_interface = true;
-        if (std.mem.eql(u8, d.message, "Type 'Object' is not assignable to type '() => void'.")) saw_call_sig = true;
-    }
-    try T.expect(saw_interface);
-    try T.expect(saw_call_sig);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_assignable_to_few_types));
 }
 
 test "checker: for-in destructuring checks string key shape and scopes bindings" {
@@ -158450,7 +158512,7 @@ test "checker: duplicate index signatures report both declarations" {
     for (positions) |found| try T.expect(found);
 }
 
-test "checker: Object string indexer constrains apparent members" {
+test "checker: Object string indexer defers inherited member diagnostics to lib baselines" {
     const s = try newSetup(
         \\interface Object {
         \\  [x: string]: Object;
@@ -158458,11 +158520,9 @@ test "checker: Object string indexer constrains apparent members" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.property_not_assignable_to_index_type) found = true;
+        try T.expect(d.code != TsCodes.property_not_assignable_to_index_type);
     }
-    try T.expect(found);
 }
 
 test "checker: Object string indexer constrains own object members" {
@@ -173012,6 +173072,93 @@ test "checker: TS2540 suppressed when property missing on some union branch" {
         if (d.code == TsCodes.readonly_property) saw_readonly = true;
     }
     try T.expect(!saw_readonly);
+}
+
+test "checker: union properties resolve through constituent index signatures" {
+    const s = try newSetup(
+        \\type U = { foo: { bar: true }, baz: true } | { [s: string]: string };
+        \\declare let u: U;
+        \\u.foo = "bye";
+        \\u.baz = "hi";
+        \\type Three = { foo: number } | { [s: string]: string } | { [s: string]: boolean };
+        \\declare let v: Three;
+        \\v.foo = false;
+        \\type Missing = { foo: number, bar: true } | { [s: string]: string } | { foo: boolean };
+        \\declare let missing: Missing;
+        \\missing.foo = "hi";
+        \\missing.bar;
+        \\type RO = { foo: number } | { readonly [s: string]: string };
+        \\declare let ro: RO;
+        \\ro.foo = "no";
+        \\type Num = { "0": string } | { [n: number]: number };
+        \\declare let num: Num;
+        \\num[0] = 1;
+        \\num["0"] = "ok";
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_property));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.readonly_index_signature));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: generic any string index suppresses source index requirements" {
+    const s = try newSetup(
+        \\interface StringTo<T> { [x: string]: T; }
+        \\interface NumberTo<T> { [x: number]: T; }
+        \\interface StringAndNumberTo<T> extends StringTo<T>, NumberTo<T> {}
+        \\interface Obj { hello: string; world: number; }
+        \\function f(sToAny: StringTo<any>, nToAny: NumberTo<any>, bothToAny: StringAndNumberTo<any>, someObj: Obj) {
+        \\  sToAny = nToAny;
+        \\  sToAny = bothToAny;
+        \\  sToAny = someObj;
+        \\  nToAny = someObj;
+        \\  bothToAny = someObj;
+        \\}
+        \\type NumberToNumber = NumberTo<number>;
+        \\function g(both: StringTo<any> & NumberTo<any>, n: NumberToNumber, someObj: Obj) {
+        \\  someObj = both;
+        \\  someObj = n;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    var saw_obj_to_number = false;
+    var saw_number_to_string = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.indexOf(u8, d.message, "Type 'Obj' is not assignable to type 'NumberTo<any>'") != null) {
+            saw_obj_to_number = true;
+        }
+        if (std.mem.indexOf(u8, d.message, "Type 'NumberTo<any>' is not assignable to type 'StringTo<any>'") != null) {
+            saw_number_to_string = true;
+        }
+    }
+    try T.expect(saw_obj_to_number);
+    try T.expect(!saw_number_to_string);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_missing_properties));
+    var saw_intersection_name = false;
+    var saw_expanded_alias_name = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_missing_properties) continue;
+        if (std.mem.indexOf(u8, d.message, "Type 'StringTo<any> & NumberTo<any>' is missing") != null) {
+            saw_intersection_name = true;
+        }
+        if (std.mem.indexOf(u8, d.message, "Type 'NumberTo<number>' is missing") != null) {
+            saw_expanded_alias_name = true;
+        }
+    }
+    try T.expect(saw_intersection_name);
+    try T.expect(saw_expanded_alias_name);
 }
 
 test "checker: union assignment target missing member reports declared union" {
@@ -201156,9 +201303,8 @@ test "checker: TS2696 elaborates Object assigned to primitive" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
-    const entry = checkerFirstChainEntry(s, TsCodes.object_assignable_to_few_types).?;
-    try T.expectEqualStrings("The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?", entry.message);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_assignable_to_few_types));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2692 elaborates wrapper objects assigned to primitives" {
@@ -205283,6 +205429,46 @@ test "checker: Object.prototype members resolve on interfaces and object literal
     // Exactly one TS2339 (for `bogusMember`), and no implicit-any.
     try T.expect(!checkerHasCode(b, TsCodes.element_implicitly_any));
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.property_does_not_exist, "Property 'bogusMember' does not exist on type 'I'."));
+}
+
+test "checker: uppercase Object assignments compare inherited toString signatures" {
+    const b = try newBoundSetup(
+        \\interface I { toString(): number; }
+        \\class C { toString(): number { return 1; } }
+        \\declare let o: Object;
+        \\declare let i: I;
+        \\declare let c: C;
+        \\o = i;
+        \\i = o;
+        \\o = c;
+        \\c = o;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.object_assignable_to_few_types));
+}
+
+test "checker: uppercase Object accepts inherited non-nullish values and constraints" {
+    const b = try newBoundSetup(
+        \\enum E { A }
+        \\declare let e: E;
+        \\let o: Object = e;
+        \\function accept<T extends Object>(value: T): T { return value; }
+        \\accept({});
+        \\interface Indexed {
+        \\  [key: string]: Object;
+        \\  method(value: number): number;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_not_assignable_to_index_type));
 }
 
 test "checker: object spread of a union distributes into a union of object types" {
