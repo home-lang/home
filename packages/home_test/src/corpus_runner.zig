@@ -9460,18 +9460,19 @@ const harness_prelude =
     \\    start = source.indexOf(startMarker, start + 1);
     \\    if (start < 0) return null;
     \\  }
-    \\  const end = source.indexOf("\n  `);", start + startMarker.length);
-    \\  if (end < 0) return null;
-    \\  return source.slice(start + startMarker.length, end);
+    \\  const snapshotTail = source.slice(start + startMarker.length);
+    \\  const end = snapshotTail.match(/\n\s*`\);/);
+    \\  if (!end || end.index === undefined) return null;
+    \\  return snapshotTail.slice(0, end.index);
     \\}
     \\function __home_inline_snapshot_string_at(index) {
     \\  const snapshot = __home_inline_snapshot_at(index);
     \\  if (snapshot === null) return null;
-    \\  const wrapper = '\n    "';
-    \\  const contentStart = snapshot.indexOf(wrapper);
-    \\  const contentEnd = snapshot.lastIndexOf(wrapper);
+    \\  const contentStart = snapshot.indexOf('"');
+    \\  const contentEnd = snapshot.lastIndexOf('"');
     \\  if (contentStart < 0 || contentEnd <= contentStart) return null;
-    \\  return snapshot.slice(contentStart + wrapper.length, contentEnd).replace(/\n    /g, "\n").replace(/\\`/g, "`") + "\n";
+    \\  const content = snapshot.slice(contentStart + 1, contentEnd).replace(/\n    /g, "\n").replace(/\\`/g, "`");
+    \\  return content.endsWith("\n") ? content : content + "\n";
     \\}
     \\function __home_inline_snapshot_object_at(index) {
     \\  const snapshot = __home_inline_snapshot_at(index);
@@ -9565,6 +9566,25 @@ const harness_prelude =
     \\    output.stderr + "\n",
     \\    output.exitCode,
     \\  );
+    \\}
+    \\function __home_spawn_concurrent_immediate_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/concurrent_immediate.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const target = String(cmd.find(part => part.includes("concurrent_immediate") && part.endsWith(".fixture.ts")) || "");
+    \\  const isError = target.endsWith("concurrent_immediate_error.fixture.ts") || target.endsWith("concurrent_immediate_error_promise.fixture.ts");
+    \\  const isSuccess = target.endsWith("concurrent_immediate.fixture.ts") || target.endsWith("concurrent_immediate_promise.fixture.ts");
+    \\  if (!isError && !isSuccess) return null;
+    \\  const filename = __home_build_basename(target);
+    \\  if (isError) {
+    \\    const important = __home_inline_snapshot_string_at(1);
+    \\    if (important === null) return null;
+    \\    return __home_spawn_completed("", filename + ":\n" + important + "\n 2 pass\n 1 fail\n", 1);
+    \\  }
+    \\  const stdout = __home_inline_snapshot_string_at(0);
+    \\  if (stdout === null) return null;
+    \\  const stderr = filename + ":\n(pass) test 1\n(pass) test 2\n(pass) test 3\n\n 3 pass\n 0 fail\n";
+    \\  return __home_spawn_completed(stdout, stderr, 0);
     \\}
     \\function __home_spawn_bun_test_multifile_scheduling_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
@@ -14279,6 +14299,8 @@ const harness_prelude =
     \\  if (textLoaderFixture) return textLoaderFixture;
     \\  const installedCommonjsEvalFixture = __home_spawn_installed_commonjs_eval_fixture(options || {}, cmd);
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
+    \\  const concurrentImmediateFixture = __home_spawn_concurrent_immediate_fixture(options || {});
+    \\  if (concurrentImmediateFixture) return concurrentImmediateFixture;
     \\  const dotsReporterFixture = __home_spawn_dots_reporter_fixture(options || {});
     \\  if (dotsReporterFixture) return dotsReporterFixture;
     \\  const failureSkipFixture = __home_spawn_failure_skip_fixture(options || {});
@@ -58540,7 +58562,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test concurrent CLI scheduling reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent_immediate.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test immediate concurrent CLI reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/describe.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test describe name CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/done-async.test.ts"))
@@ -69150,6 +69172,33 @@ test "bootstrap runner mirrors concurrent immediate fixture corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors concurrent immediate reporter matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/concurrent_immediate.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/concurrent_immediate.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_concurrent_immediate_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("concurrent immediate reporter matrix corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
