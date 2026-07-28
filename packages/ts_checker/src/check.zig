@@ -32109,6 +32109,7 @@ pub const Checker = struct {
                 }
             } else {
                 if (im.name == 0) continue; // computed — out of scope.
+                if (self.recursiveRequiredMappedPropertyInfo(node, member) != null) continue;
                 const member_str = self.string_interner.get(im.name);
                 try self.checkInferExtendsPrivateNamesInTypeNode(im.type_node, stmts);
                 const root = self.annotationBareName(im.type_node) orelse continue;
@@ -52287,6 +52288,17 @@ pub const Checker = struct {
             // name == 0 means a computed key ÃÂ¢ÃÂÃÂ skip until we have
             // late-bound key support.
             if (im.name == 0) continue;
+            if (self.recursiveRequiredMappedPropertyInfo(node, m)) |cycle| {
+                try self.reportSelfReferencedInterfacePropertyAtKey(m, im.name);
+                try self.reportInstantiatedMappedPropertyCircularOnce(
+                    cycle.selector_mapped,
+                    im.name,
+                    m,
+                    im.type_node,
+                    cycle.selector_source_param,
+                    cycle.interface_name,
+                );
+            }
             if (it.name != hir_mod.none_node_id and
                 self.hir.kindOf(it.name) == .identifier and
                 im.type_node != hir_mod.none_node_id and
@@ -57595,6 +57607,7 @@ pub const Checker = struct {
                     return;
                 }
                 if (self.typeAliasHasDirectCircularDependency(ta.aliased, id.name, id.name, 0)) {
+                    try self.reportMappedAliasCircularConstraint(ta.aliased);
                     try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
                     try self.type_names.put(self.gpa, id.name, types.Primitive.any);
@@ -58102,6 +58115,145 @@ pub const Checker = struct {
         });
     }
 
+    const RecursiveRequiredMappedPropertyInfo = struct {
+        selector_mapped: NodeId,
+        selector_source_param: hir_mod.StringId,
+        interface_name: hir_mod.StringId,
+    };
+
+    fn typeAliasSingleTypeParameterName(self: *Checker, alias_decl: NodeId) ?hir_mod.StringId {
+        if (alias_decl == hir_mod.none_node_id or self.hir.kindOf(alias_decl) != .type_alias_decl) return null;
+        const alias = hir_mod.typeAliasOf(self.hir, alias_decl);
+        const params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+        if (params.len != 1 or self.hir.kindOf(params[0]) != .type_parameter) return null;
+        return hir_mod.typeParameterOf(self.hir, params[0]).name;
+    }
+
+    fn bareTypeNodeHasName(self: *Checker, node: NodeId, expected: hir_mod.StringId) bool {
+        return if (self.bareTypeNodeName(node)) |name| name == expected else false;
+    }
+
+    /// Recognize the recursive required-property projection used by
+    /// `Child<T> = { [P in NonOptionalKeys<T>]: T[P] }`. The key
+    /// selector must be an indexed homomorphic mapped type whose
+    /// conditional removes properties accepting `undefined`.
+    fn recursiveRequiredMappedPropertyInfo(
+        self: *Checker,
+        interface_node: NodeId,
+        member: NodeId,
+    ) ?RecursiveRequiredMappedPropertyInfo {
+        if (self.hir.kindOf(interface_node) != .interface_decl or
+            self.hir.kindOf(member) != .interface_member)
+        {
+            return null;
+        }
+        const interface_decl = hir_mod.interfaceOf(self.hir, interface_node);
+        if (interface_decl.name == hir_mod.none_node_id or
+            self.hir.kindOf(interface_decl.name) != .identifier)
+        {
+            return null;
+        }
+        const im = hir_mod.interfaceMemberOf(self.hir, member);
+        if (im.is_method or im.is_optional or im.type_node == hir_mod.none_node_id or
+            self.hir.kindOf(im.type_node) != .type_ref)
+        {
+            return null;
+        }
+        const interface_name = hir_mod.identifierOf(self.hir, interface_decl.name).name;
+        const projection_ref = hir_mod.typeRefOf(self.hir, im.type_node);
+        if (projection_ref.qualifier_len != 0) return null;
+        const projection_args = hir_mod.typeRefArgs(self.hir, im.type_node);
+        if (projection_args.len != 1 or !self.bareTypeNodeHasName(projection_args[0], interface_name)) return null;
+
+        const projection_decl = self.findTypeAliasDeclInScope(im.type_node, projection_ref.name) orelse return null;
+        const projection_param = self.typeAliasSingleTypeParameterName(projection_decl) orelse return null;
+        const projection_alias = hir_mod.typeAliasOf(self.hir, projection_decl);
+        if (self.hir.kindOf(projection_alias.aliased) != .mapped_type) return null;
+        const projection = hir_mod.mappedTypeOf(self.hir, projection_alias.aliased);
+        if (projection.type_param == hir_mod.none_node_id or
+            self.hir.kindOf(projection.type_param) != .type_parameter or
+            projection.value == hir_mod.none_node_id or
+            self.hir.kindOf(projection.value) != .indexed_access_type or
+            projection.constraint == hir_mod.none_node_id or
+            self.hir.kindOf(projection.constraint) != .type_ref)
+        {
+            return null;
+        }
+        const projection_key = hir_mod.typeParameterOf(self.hir, projection.type_param).name;
+        const projection_value = hir_mod.indexedAccessTypeOf(self.hir, projection.value);
+        if (!self.bareTypeNodeHasName(projection_value.object, projection_param) or
+            !self.bareTypeNodeHasName(projection_value.index, projection_key))
+        {
+            return null;
+        }
+
+        const selector_ref = hir_mod.typeRefOf(self.hir, projection.constraint);
+        if (selector_ref.qualifier_len != 0) return null;
+        const selector_args = hir_mod.typeRefArgs(self.hir, projection.constraint);
+        if (selector_args.len != 1 or !self.bareTypeNodeHasName(selector_args[0], projection_param)) return null;
+        const selector_decl = self.findTypeAliasDeclInScope(projection.constraint, selector_ref.name) orelse return null;
+        const selector_source_param = self.typeAliasSingleTypeParameterName(selector_decl) orelse return null;
+        const selector_alias = hir_mod.typeAliasOf(self.hir, selector_decl);
+        if (self.hir.kindOf(selector_alias.aliased) != .indexed_access_type) return null;
+        const selector_indexed = hir_mod.indexedAccessTypeOf(self.hir, selector_alias.aliased);
+        if (self.hir.kindOf(selector_indexed.object) != .mapped_type or
+            self.hir.kindOf(selector_indexed.index) != .keyof_type or
+            !self.bareTypeNodeHasName(hir_mod.keyofTypeOf(self.hir, selector_indexed.index).operand, selector_source_param))
+        {
+            return null;
+        }
+        const selector = hir_mod.mappedTypeOf(self.hir, selector_indexed.object);
+        if (selector.type_param == hir_mod.none_node_id or
+            self.hir.kindOf(selector.type_param) != .type_parameter or
+            self.hir.kindOf(selector.constraint) != .keyof_type or
+            !self.bareTypeNodeHasName(hir_mod.keyofTypeOf(self.hir, selector.constraint).operand, selector_source_param) or
+            self.hir.kindOf(selector.value) != .conditional_type)
+        {
+            return null;
+        }
+        const selector_key = hir_mod.typeParameterOf(self.hir, selector.type_param).name;
+        const conditional = hir_mod.conditionalTypeOf(self.hir, selector.value);
+        if (!self.bareTypeNodeHasName(conditional.check, self.string_interner.intern("undefined") catch return null) or
+            self.hir.kindOf(conditional.extends) != .indexed_access_type or
+            !self.bareTypeNodeHasName(conditional.false_branch, selector_key))
+        {
+            return null;
+        }
+        const selected_property = hir_mod.indexedAccessTypeOf(self.hir, conditional.extends);
+        if (!self.bareTypeNodeHasName(selected_property.object, selector_source_param) or
+            !self.bareTypeNodeHasName(selected_property.index, selector_key))
+        {
+            return null;
+        }
+        return .{
+            .selector_mapped = selector_indexed.object,
+            .selector_source_param = selector_source_param,
+            .interface_name = interface_name,
+        };
+    }
+
+    fn reportSelfReferencedInterfacePropertyAtKey(
+        self: *Checker,
+        member: NodeId,
+        property_name: hir_mod.StringId,
+    ) CheckError!void {
+        const key = hir_mod.interfaceMemberKeyExpr(self.hir, member);
+        const anchor = if (key != hir_mod.none_node_id) key else member;
+        if (self.diagnosticExists(anchor, TsCodes.self_referenced_type_annotation)) return;
+        const raw_name = std.mem.trim(u8, self.nodeSourceTextOrEmpty(anchor), " \t\r\n");
+        const display_name = if (raw_name.len > 0) raw_name else self.string_interner.get(property_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' is referenced directly or indirectly in its own type annotation.",
+            .{display_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .code = TsCodes.self_referenced_type_annotation,
+            .message = msg,
+        });
+    }
+
     fn reportSelfIndexedObjectTypeMembers(
         self: *Checker,
         object_type_node: NodeId,
@@ -58377,6 +58529,19 @@ pub const Checker = struct {
         try self.reportTypeAliasCircular(name_node, name_id);
     }
 
+    fn reportMappedAliasCircularConstraint(self: *Checker, node: NodeId) CheckError!void {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .mapped_type) return;
+        const mapped = hir_mod.mappedTypeOf(self.hir, node);
+        if (mapped.type_param == hir_mod.none_node_id or self.hir.kindOf(mapped.type_param) != .type_parameter) return;
+        const type_param = hir_mod.typeParameterOf(self.hir, mapped.type_param);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type parameter '{s}' has a circular constraint.",
+            .{self.string_interner.get(type_param.name)},
+        );
+        try self.reportOnce(mapped.constraint, TsCodes.circular_constraint, msg);
+    }
+
     /// True when an earlier `var/let/const <name>` declaration exists
     /// in the same enclosing block as `node` (and same virtual section
     /// when multi-file fixtures are in play). Used to suppress TS2502
@@ -58551,6 +58716,22 @@ pub const Checker = struct {
                     if (self.typeAliasHasDirectCircularDependency(member, target_name, current_name, depth)) break :blk true;
                 }
                 break :blk false;
+            },
+            .mapped_type => blk: {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                if (self.typeAliasHasDirectCircularDependency(mapped.constraint, target_name, current_name, depth)) break :blk true;
+                if (mapped.remap != hir_mod.none_node_id and
+                    self.typeAliasHasDirectCircularDependency(mapped.remap, target_name, current_name, depth))
+                {
+                    break :blk true;
+                }
+                break :blk self.typeAliasHasDirectCircularDependency(mapped.value, target_name, current_name, depth);
+            },
+            .keyof_type => self.typeAliasHasDirectCircularDependency(hir_mod.keyofTypeOf(self.hir, node).operand, target_name, current_name, depth),
+            .indexed_access_type => blk: {
+                const indexed = hir_mod.indexedAccessTypeOf(self.hir, node);
+                if (self.typeAliasHasDirectCircularDependency(indexed.object, target_name, current_name, depth)) break :blk true;
+                break :blk self.typeAliasHasDirectCircularDependency(indexed.index, target_name, current_name, depth);
             },
             .rest_type => self.typeAliasHasDirectCircularDependency(hir_mod.restTypeOf(self.hir, node).operand, target_name, current_name, depth),
             else => false,
@@ -60937,6 +61118,43 @@ pub const Checker = struct {
         return ok;
     }
 
+    /// Detect a mapped alias whose recursive branch reapplies the exact
+    /// same formal arguments, for example
+    /// `{ [P in keyof T]: Circular<T> }`. Such an instantiation cannot
+    /// make progress for a concrete `T`; report TS2589 at the use site
+    /// instead of returning the declaration-time symbolic body forever.
+    /// Recursive mapped transforms such as `Transform<T[P]>` do not
+    /// match because their recursive argument is structurally smaller.
+    fn concreteMappedAliasRecursesWithoutProgress(
+        self: *Checker,
+        type_node: NodeId,
+        alias_name: hir_mod.StringId,
+        info: GenericAliasInfo,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) bool {
+        if (info.body_node == hir_mod.none_node_id or
+            self.hir.kindOf(info.body_node) != .mapped_type or
+            self.nodeHasAncestor(type_node, info.body_node))
+        {
+            return false;
+        }
+        for (info.params) |param_t| {
+            const arg_t = subs.get(param_t) orelse return false;
+            if (self.containsFreeTypeParameter(arg_t)) return false;
+        }
+        const mapped = hir_mod.mappedTypeOf(self.hir, info.body_node);
+        if (mapped.value == hir_mod.none_node_id or self.hir.kindOf(mapped.value) != .type_ref) return false;
+        const recursive_ref = hir_mod.typeRefOf(self.hir, mapped.value);
+        if (recursive_ref.qualifier_len != 0 or recursive_ref.name != alias_name) return false;
+        const recursive_args = hir_mod.typeRefArgs(self.hir, mapped.value);
+        if (recursive_args.len != info.params.len) return false;
+        for (recursive_args, info.params) |arg_node, param_t| {
+            const arg_name = self.bareTypeNodeName(arg_node) orelse return false;
+            if (self.typeParameterName(param_t) != arg_name) return false;
+        }
+        return true;
+    }
+
     /// Store a completed generic-alias instantiation in the memo, when
     /// safe. `memo_key` is the gpa-owned key produced at lookup time
     /// (null when this instantiation isn't memoizable); ownership
@@ -62041,6 +62259,10 @@ pub const Checker = struct {
                         _ = self.type_arg_lower_in_progress.remove(type_node);
                         _ = self.circ_ctx_stack.pop();
                         arg_lower_marked = false;
+                        if (self.concreteMappedAliasRecursesWithoutProgress(type_node, r.name, info, &subs)) {
+                            try self.reportExcessivelyDeepTypeInstantiationAt(type_node);
+                            return types.Primitive.any;
+                        }
                         if (std.mem.eql(u8, self.string_interner.get(r.name), "Static") and
                             args.len >= 1 and
                             info.body_node != hir_mod.none_node_id and
@@ -67089,83 +67311,100 @@ pub const Checker = struct {
     /// Render a type-syntax node to a tsc-faithful single-line string
     /// for diagnostic prose — currently the mapped-type argument of
     /// TS2615 (`{ [P in keyof T]: undefined extends T[P] ? never : P; }`).
-    /// Pure and additive: renders the NODE as written, so bound type
-    /// parameters appear un-substituted (`keyof T`, not `keyof X`). An
-    /// instantiation-aware layer (substituting the active narrow-scope
-    /// bindings) is a follow-up step. Mirrors the `.d.ts` printer's
-    /// spacing and adds mapped-type bodies. Covered node kinds: type
+    /// Pure and additive: the base entry point renders the node as
+    /// written, while the internal entry point can replace one bound
+    /// type parameter with its concrete instantiation for TS2615.
+    /// Mirrors the `.d.ts` printer's spacing and adds mapped-type bodies.
+    /// Covered node kinds: type
     /// references, keyof / typeof, indexed access, conditional, union /
     /// intersection / array / tuple, literals, and mapped types; object
     /// and function type literals render as `…` placeholders until the
     /// next layer adds member printing.
     fn renderTypeNodeText(self: *Checker, node: NodeId, out: *std.ArrayListUnmanaged(u8)) std.mem.Allocator.Error!void {
+        return self.renderTypeNodeTextSubstituting(node, out, null, null);
+    }
+
+    fn renderTypeNodeTextSubstituting(
+        self: *Checker,
+        node: NodeId,
+        out: *std.ArrayListUnmanaged(u8),
+        substitute_name: ?hir_mod.StringId,
+        replacement_name: ?hir_mod.StringId,
+    ) std.mem.Allocator.Error!void {
         const a = self.gpa;
         if (node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(node)) {
-            .identifier => try out.appendSlice(a, self.string_interner.get(hir_mod.identifierOf(self.hir, node).name)),
+            .identifier => {
+                const name = hir_mod.identifierOf(self.hir, node).name;
+                try out.appendSlice(a, self.string_interner.get(if (substitute_name == name) replacement_name orelse name else name));
+            },
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, node);
                 for (hir_mod.typeRefQualifier(self.hir, node)) |q| {
                     try out.appendSlice(a, self.string_interner.get(hir_mod.identifierOf(self.hir, q).name));
                     try out.append(a, '.');
                 }
-                try out.appendSlice(a, self.string_interner.get(r.name));
+                const rendered_name = if (r.qualifier_len == 0 and substitute_name == r.name)
+                    replacement_name orelse r.name
+                else
+                    r.name;
+                try out.appendSlice(a, self.string_interner.get(rendered_name));
                 const args = hir_mod.typeRefArgs(self.hir, node);
                 if (args.len > 0) {
                     try out.append(a, '<');
                     for (args, 0..) |arg, i| {
                         if (i > 0) try out.appendSlice(a, ", ");
-                        try self.renderTypeNodeText(arg, out);
+                        try self.renderTypeNodeTextSubstituting(arg, out, substitute_name, replacement_name);
                     }
                     try out.append(a, '>');
                 }
             },
             .keyof_type => {
                 try out.appendSlice(a, "keyof ");
-                try self.renderTypeNodeText(hir_mod.keyofTypeOf(self.hir, node).operand, out);
+                try self.renderTypeNodeTextSubstituting(hir_mod.keyofTypeOf(self.hir, node).operand, out, substitute_name, replacement_name);
             },
             .typeof_type => {
                 try out.appendSlice(a, "typeof ");
-                try self.renderTypeNodeText(hir_mod.typeofTypeOf(self.hir, node).operand, out);
+                try self.renderTypeNodeTextSubstituting(hir_mod.typeofTypeOf(self.hir, node).operand, out, substitute_name, replacement_name);
             },
             .indexed_access_type => {
                 const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
-                try self.renderTypeNodeText(ia.object, out);
+                try self.renderTypeNodeTextSubstituting(ia.object, out, substitute_name, replacement_name);
                 try out.append(a, '[');
-                try self.renderTypeNodeText(ia.index, out);
+                try self.renderTypeNodeTextSubstituting(ia.index, out, substitute_name, replacement_name);
                 try out.append(a, ']');
             },
             .conditional_type => {
                 const c = hir_mod.conditionalTypeOf(self.hir, node);
-                try self.renderTypeNodeText(c.check, out);
+                try self.renderTypeNodeTextSubstituting(c.check, out, substitute_name, replacement_name);
                 try out.appendSlice(a, " extends ");
-                try self.renderTypeNodeText(c.extends, out);
+                try self.renderTypeNodeTextSubstituting(c.extends, out, substitute_name, replacement_name);
                 try out.appendSlice(a, " ? ");
-                try self.renderTypeNodeText(c.true_branch, out);
+                try self.renderTypeNodeTextSubstituting(c.true_branch, out, substitute_name, replacement_name);
                 try out.appendSlice(a, " : ");
-                try self.renderTypeNodeText(c.false_branch, out);
+                try self.renderTypeNodeTextSubstituting(c.false_branch, out, substitute_name, replacement_name);
             },
             .union_type => {
                 for (hir_mod.unionTypeMembers(self.hir, node), 0..) |m, i| {
                     if (i > 0) try out.appendSlice(a, " | ");
-                    try self.renderTypeNodeText(m, out);
+                    try self.renderTypeNodeTextSubstituting(m, out, substitute_name, replacement_name);
                 }
             },
             .intersection_type => {
                 for (hir_mod.intersectionTypeMembers(self.hir, node), 0..) |m, i| {
                     if (i > 0) try out.appendSlice(a, " & ");
-                    try self.renderTypeNodeText(m, out);
+                    try self.renderTypeNodeTextSubstituting(m, out, substitute_name, replacement_name);
                 }
             },
             .array_type => {
-                try self.renderTypeNodeText(hir_mod.arrayTypeOf(self.hir, node).element, out);
+                try self.renderTypeNodeTextSubstituting(hir_mod.arrayTypeOf(self.hir, node).element, out, substitute_name, replacement_name);
                 try out.appendSlice(a, "[]");
             },
             .tuple_type => {
                 try out.append(a, '[');
                 for (hir_mod.tupleTypeElements(self.hir, node), 0..) |e, i| {
                     if (i > 0) try out.appendSlice(a, ", ");
-                    try self.renderTypeNodeText(e, out);
+                    try self.renderTypeNodeTextSubstituting(e, out, substitute_name, replacement_name);
                 }
                 try out.append(a, ']');
             },
@@ -67207,10 +67446,10 @@ pub const Checker = struct {
                     try out.append(a, 'P');
                 }
                 try out.appendSlice(a, " in ");
-                try self.renderTypeNodeText(mt.constraint, out);
+                try self.renderTypeNodeTextSubstituting(mt.constraint, out, substitute_name, replacement_name);
                 if (mt.remap != hir_mod.none_node_id) {
                     try out.appendSlice(a, " as ");
-                    try self.renderTypeNodeText(mt.remap, out);
+                    try self.renderTypeNodeTextSubstituting(mt.remap, out, substitute_name, replacement_name);
                 }
                 try out.append(a, ']');
                 switch (mt.optional) {
@@ -67219,7 +67458,7 @@ pub const Checker = struct {
                     else => {},
                 }
                 try out.appendSlice(a, ": ");
-                try self.renderTypeNodeText(mt.value, out);
+                try self.renderTypeNodeTextSubstituting(mt.value, out, substitute_name, replacement_name);
                 try out.appendSlice(a, "; }");
             },
             // Object / function type literals need member printing — a
@@ -67276,6 +67515,51 @@ pub const Checker = struct {
             self.instantiation_anchor_node
         else
             node;
+        try self.report(report_node, TsCodes.mapped_property_circular, msg);
+    }
+
+    fn reportInstantiatedMappedPropertyCircularOnce(
+        self: *Checker,
+        mapped_node: NodeId,
+        key_name: hir_mod.StringId,
+        member_node: NodeId,
+        report_node: NodeId,
+        source_param: hir_mod.StringId,
+        concrete_name: hir_mod.StringId,
+    ) CheckError!void {
+        const target = mappedPropertyResolutionTarget(mapped_node, key_name);
+        if (self.reported_mapped_property_cycles.contains(target)) return;
+        try self.reported_mapped_property_cycles.put(self.gpa, target, {});
+
+        var mapped_text: std.ArrayListUnmanaged(u8) = .empty;
+        defer mapped_text.deinit(self.gpa);
+        try self.renderTypeNodeTextSubstituting(
+            mapped_node,
+            &mapped_text,
+            source_param,
+            concrete_name,
+        );
+        const key_node = if (member_node != hir_mod.none_node_id and self.hir.kindOf(member_node) == .interface_member)
+            hir_mod.interfaceMemberKeyExpr(self.hir, member_node)
+        else
+            hir_mod.none_node_id;
+        const key_anchor = if (key_node != hir_mod.none_node_id) key_node else member_node;
+        const raw_key = std.mem.trim(u8, self.nodeSourceTextOrEmpty(key_anchor), " \t\r\n");
+        const property_display = if (key_node != hir_mod.none_node_id and self.hir.kindOf(key_node) == .literal_string)
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "\"{s}\"",
+                .{self.string_interner.get(hir_mod.literalStringOf(self.hir, key_node).value)},
+            )
+        else if (raw_key.len > 0)
+            raw_key
+        else
+            self.string_interner.get(key_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type of property '{s}' circularly references itself in mapped type '{s}'.",
+            .{ property_display, mapped_text.items },
+        );
         try self.report(report_node, TsCodes.mapped_property_circular, msg);
     }
 
@@ -202996,6 +203280,43 @@ test "checker: direct recursive mapped alias does not report TS2615" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.mapped_property_circular));
+}
+
+test "checker: recursive mapped aliases report declaration and instantiation cycles" {
+    const s = try newSetup(
+        \\type Recurse = { [K in keyof Recurse]: Recurse[K] };
+        \\type Recurse1 = { [K in keyof Recurse2]: Recurse2[K] };
+        \\type Recurse2 = { [K in keyof Recurse1]: Recurse1[K] };
+        \\export type Circular<T> = { [P in keyof T]: Circular<T> };
+        \\type Tup = [number, number, number, number];
+        \\function foo(arg: Circular<Tup>): Tup { return arg; }
+        \\type NonOptionalKeys<T> = { [P in keyof T]: undefined extends T[P] ? never : P }[keyof T];
+        \\type Child<T> = { [P in NonOptionalKeys<T>]: T[P] };
+        \\export interface ListWidget {
+        \\    "type": "list";
+        \\    "each": Child<ListWidget>;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .declaration = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_alias_circular));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.circular_constraint));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.self_referenced_type_annotation));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.mapped_property_circular));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.interface_property_private_name));
+
+    const self_ref = checkerFirstMessageForCode(s, TsCodes.self_referenced_type_annotation) orelse
+        return error.MissingDiagnostic;
+    try T.expectEqualStrings("'\"each\"' is referenced directly or indirectly in its own type annotation.", self_ref);
+    const mapped_cycle = checkerFirstMessageForCode(s, TsCodes.mapped_property_circular) orelse
+        return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Type of property '\"each\"' circularly references itself in mapped type '{ [P in keyof ListWidget]: undefined extends ListWidget[P] ? never : P; }'.",
+        mapped_cycle,
+    );
 }
 
 // Lib-coverage expansion (w7): the high-frequency Array / String members
