@@ -72723,7 +72723,60 @@ pub const Checker = struct {
         if (try self.variadicTupleTypeParameterAssignableTo(source_t, target_t)) |ok| return ok;
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
+        if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn expandingGenericObjectAssignmentMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!source_flags.is_object_type or source_flags.is_signature or source_flags.is_union or source_flags.is_intersection) return false;
+        if (!target_flags.is_object_type or target_flags.is_signature or target_flags.is_union or target_flags.is_intersection) return false;
+
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            const member_t = target_member.type;
+            if (member_t >= self.interner.pool.typeCount()) continue;
+            const member_flags = self.interner.pool.flagsOf(member_t);
+            if (!member_flags.is_type_parameter or
+                member_flags.is_object_type or
+                member_flags.is_signature or
+                member_flags.is_union or
+                member_flags.is_intersection or
+                self.isThisTypeParameter(member_t))
+            {
+                continue;
+            }
+            const source_member_t = self.interner.objectMember(source_t, target_member.name) orelse continue;
+            if (source_member_t == member_t or source_member_t >= self.interner.pool.typeCount()) continue;
+            const source_member_flags = self.interner.pool.flagsOf(source_member_t);
+            if (!source_member_flags.is_object_type or source_member_flags.is_signature) continue;
+            if (self.typeContainsSpecificTypeParameter(source_member_t, member_t, 0)) return true;
+        }
+        return false;
+    }
+
+    fn typeContainsSpecificTypeParameter(self: *Checker, t: TypeId, type_param: TypeId, depth: u8) bool {
+        if (t == type_param) return true;
+        if (depth >= 6 or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeContainsSpecificTypeParameter(member, type_param, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeContainsSpecificTypeParameter(member, type_param, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type or flags.is_signature) return false;
+        for (self.interner.objectMembers(t)) |member| {
+            if (self.typeContainsSpecificTypeParameter(member.type, type_param, depth + 1)) return true;
+        }
+        return false;
     }
 
     fn mappedSourceAssignableToOpenAnyIndexTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
@@ -206343,4 +206396,29 @@ test "checker: namespace parity batch uses class and enum static sides" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.subsequent_var_type_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_does_not_exist_static_member));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+}
+
+test "checker: expanding recursive generic assignments are rejected" {
+    const s = try newSetup(
+        \\interface List<T> {
+        \\  data: T;
+        \\  next: List<T>;
+        \\  owner: OwnerList<T>;
+        \\}
+        \\interface OwnerList<T> extends List<List<T>> {
+        \\  name: string;
+        \\}
+        \\declare let concreteList: List<string>;
+        \\declare let concreteOwner: OwnerList<string>;
+        \\concreteList = concreteOwner;
+        \\function assignGeneric<T>() {
+        \\  let list: List<T>;
+        \\  let owner!: OwnerList<T>;
+        \\  list = owner;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
 }
