@@ -110180,6 +110180,7 @@ pub const Checker = struct {
         if (try self.checkUnionTypeArgSatisfiesConstraint(arg_node, constraint)) return;
         if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (self.containsFreeTypeParameter(arg_t)) return;
+        if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
         // Deferred indexed-access argument over a generic parameter
         // (`Foo<Source[Key], ÃÂ¢ÃÂÃÂ¦>` inside the body of a generic alias
         // `Foo<Source extends object, ÃÂ¢ÃÂÃÂ¦>`). When the type argument is
@@ -122855,6 +122856,7 @@ pub const Checker = struct {
                     continue;
                 }
                 if (try self.literalSatisfiesRecursiveTemplatePathConstraint(raw_constraint, candidate_t, subs)) continue;
+                if (self.functionObjectTargetAcceptsArgument(candidate_t, constraint, 0)) continue;
                 if (self.engine.isAssignableTo(candidate_t, constraint) catch true) continue;
                 const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                     try self.formatArgumentNotAssignable(arg_t, constraint, i);
@@ -122867,6 +122869,7 @@ pub const Checker = struct {
                 continue;
             }
             if (arg_t == types.Primitive.any or arg_t == types.Primitive.unknown or arg_t == types.Primitive.never) continue;
+            if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) continue;
             if (self.engine.isAssignableTo(arg_t, constraint) catch true) continue;
             const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                 try self.formatArgumentNotAssignable(arg_t, constraint, i);
@@ -127372,6 +127375,7 @@ pub const Checker = struct {
         if (self.noInferInnerType(param_t)) |inner| return self.isArgumentAssignableToParam(arg_node, arg_t, inner);
         if (self.sameTypeParameterName(arg_t, param_t)) return true;
         if (try self.sameEnclosingTypeParameterDisplay(arg_node, arg_t, param_t)) return true;
+        if (self.functionObjectTargetAcceptsArgument(arg_t, param_t, 0)) return true;
         if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
@@ -127463,6 +127467,43 @@ pub const Checker = struct {
         if (try self.deferredConditionalSourceAssignableToTarget(arg_t, param_t)) |ok| return ok;
         if (try self.checkerAssignableTo(arg_t, param_t)) return true;
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn functionObjectTargetAcceptsArgument(self: *Checker, source_t: TypeId, target_t: TypeId, depth: u8) bool {
+        if (target_t >= self.interner.pool.typeCount() or depth >= 16) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(target_t) orelse return false;
+            if (constraint == target_t) return false;
+            return self.functionObjectTargetAcceptsArgument(source_t, constraint, depth + 1);
+        }
+        if (!self.typeIsBuiltinFunctionObject(target_t)) return false;
+        return self.typeIsCallableOrConstructable(source_t, depth + 1);
+    }
+
+    fn typeIsCallableOrConstructable(self: *Checker, t: TypeId, depth: u8) bool {
+        if (t >= self.interner.pool.typeCount() or depth >= 16) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature or self.objectHasCallOrConstructSignature(t)) return true;
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.typeIsCallableOrConstructable(constraint, depth + 1);
+        }
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.typeIsCallableOrConstructable(member, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeIsCallableOrConstructable(member, depth + 1)) return true;
+            }
+        }
+        return false;
     }
 
     fn iterableArgumentRelation(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!?bool {
@@ -144027,6 +144068,32 @@ test "checker: generic function expression type parameter is in scope for its ow
             }
         }
     }
+}
+
+test "checker: Function constraints accept callable and constructable arguments" {
+    const b = try newBoundSetup(
+        \\function accept<T extends Function>(value: T): T { return value; }
+        \\interface Callable { (): string; }
+        \\declare const callable: Callable;
+        \\declare const constructable: { new (): string };
+        \\class C { value = ""; }
+        \\accept(callable);
+        \\accept(constructable);
+        \\accept(C);
+        \\accept<Callable>(callable);
+        \\accept<{ new (): string }>(constructable);
+        \\function forward<T extends { (): void }, U extends T>(x: T, y: U) {
+        \\    accept(x);
+        \\    accept(y);
+        \\}
+        \\accept(1);
+        \\accept({});
+        \\function narrow<T extends (x: string) => string>(value: T): T { return value; }
+        \\narrow(constructable);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
 }
 
 test "checker: nested function declaration is in scope in wrapped/recursive constraints" {
