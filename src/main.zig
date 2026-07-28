@@ -3818,7 +3818,8 @@ fn isJsLikeCorpusFile(path: []const u8) bool {
 }
 
 fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
-    return std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts");
+    return std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/jsc-stress/jsc-stress.test.ts");
 }
 
 fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
@@ -3944,7 +3945,9 @@ test "bun corpus target parser skips subset flag values" {
 
 test "bun:jsc corpus matrix requires the full native VM" {
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc/bun-jsc.test.ts"));
+    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc-stress/jsc-stress.test.ts"));
     try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc/heapStats-mimalloc.test.ts"));
+    try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc-stress/fixtures/simd-baseline.test.ts"));
 }
 
 test "bun corpus target parser resolves roots, directories, and descendant files" {
