@@ -136479,9 +136479,6 @@ pub const Checker = struct {
             (try self.allocSimpleTypeName(target)) orelse
             (try self.allocObjectTypeShapeWithUndefined(target)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
-        if (std.mem.eql(u8, source_name, "Object")) {
-            return try self.reportObjectAssignableToFewTypes(node, null, source, target);
-        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Type '{s}' is not assignable to type '{s}'.",
@@ -136960,30 +136957,18 @@ pub const Checker = struct {
         return self.buildAssignabilityElaborationChainDepth(source, target, 0, true);
     }
 
-    fn objectAssignableToFewTypesChain(self: *Checker) CheckError![]const DiagnosticChainEntry {
+    fn objectAssignableToFewTypesChain(
+        self: *Checker,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError![]const DiagnosticChainEntry {
         const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
         slice[0] = .{
             .code = TsCodes.object_assignable_to_few_types,
             .message = "The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?",
+            .children = self.buildAssignabilityElaborationChainDepth(source, target, 0, false) catch &.{},
         };
         return slice;
-    }
-
-    fn reportObjectAssignableToFewTypes(
-        self: *Checker,
-        node: NodeId,
-        pos: ?u32,
-        source: TypeId,
-        target: TypeId,
-    ) CheckError!void {
-        const chain = self.buildAssignabilityElaborationChainDepth(source, target, 0, false) catch &.{};
-        try self.diagnostics.append(self.gpa, .{
-            .node = node,
-            .pos = pos,
-            .code = TsCodes.object_assignable_to_few_types,
-            .message = "The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?",
-            .chain = chain,
-        });
     }
 
     fn typeIsGlobalObjectBuiltin(self: *Checker, t: TypeId) bool {
@@ -137330,7 +137315,7 @@ pub const Checker = struct {
             return slice;
         }
         if (include_object_hint and (self.typeIsGlobalObjectBuiltin(source) or try self.typeIsUpperObject(source))) {
-            return try self.objectAssignableToFewTypesChain();
+            return try self.objectAssignableToFewTypesChain(source, target);
         }
         if (source >= self.interner.pool.typeCount() or
             target >= self.interner.pool.typeCount())
@@ -139640,9 +139625,6 @@ pub const Checker = struct {
             try self.compactOverloadedSignatureDiagnosticName(target_name_raw)
         else
             target_name_raw;
-        if (std.mem.eql(u8, source_name, "Object")) {
-            return try self.reportObjectAssignableToFewTypes(node, anchor_pos, source, target);
-        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Type '{s}' is not assignable to type '{s}'.",
@@ -155734,7 +155716,7 @@ test "checker: overloaded function value type renders anonymous call signatures 
     try T.expect(saw_overload_target);
 }
 
-test "checker: Object assignment mismatch uses primary TS2696 diagnostics" {
+test "checker: Object assignment mismatch nests TS2696 under TS2322" {
     const s = try newSetup(
         \\interface I { (): void; }
         \\declare var i: I;
@@ -155748,7 +155730,8 @@ test "checker: Object assignment mismatch uses primary TS2696 diagnostics" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_assignable_to_few_types));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountChainCode(s, TsCodes.object_assignable_to_few_types));
 }
 
 test "checker: for-in destructuring checks string key shape and scopes bindings" {
@@ -204038,8 +204021,8 @@ test "checker: TS2696 elaborates Object assigned to primitive" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_assignable_to_few_types));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.object_assignable_to_few_types));
 }
 
 test "checker: TS2692 elaborates wrapper objects assigned to primitives" {
@@ -208203,7 +208186,7 @@ test "checker: uppercase Object assignments compare inherited toString signature
     try b.base.checker.checkSourceFile(b.base.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.object_assignable_to_few_types));
+    try T.expectEqual(@as(usize, 2), checkerCountChainCode(b.base, TsCodes.object_assignable_to_few_types));
 }
 
 test "checker: uppercase Object accepts inherited non-nullish values and constraints" {
