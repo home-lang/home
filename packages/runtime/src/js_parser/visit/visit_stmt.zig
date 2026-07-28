@@ -461,8 +461,15 @@ pub fn VisitStmt(
                                 data.default_name = createDefaultName(p, stmt.loc) catch unreachable;
                             }
 
-                            // We only inject a name into classes when there is a decorator
-                            if (class.class.has_decorators) {
+                            // Inject a name into the class when decorator lowering
+                            // needs one: legacy TS decorators (`has_decorators`) OR
+                            // standard decorator lowering, which also covers a class
+                            // with only auto-accessor fields and no decorators (its
+                            // `accessor` lowering unwraps `class_name`). Without the
+                            // second clause, `export default class { accessor x = 1 }`
+                            // panics on `class.class_name.?.ref.?`.
+                            // Ports oven-sh/bun 24e94adb96 (#31331).
+                            if (class.class.has_decorators or class.class.should_lower_standard_decorators) {
                                 if (class.class.class_name == null or
                                     class.class.class_name.?.ref == null)
                                 {
