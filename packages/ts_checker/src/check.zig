@@ -85361,6 +85361,8 @@ pub const Checker = struct {
                             false
                         else if (try self.recursiveTupleAliasAssignmentResult(a.value, a.target)) |recursive_tuple_ok|
                             recursive_tuple_ok
+                        else if (try self.recursiveGenericReturnAliasAssignmentResult(a.value, a.target)) |recursive_return_ok|
+                            recursive_return_ok
                         else if (try self.tupleSpreadIdentifierAssignmentResult(a.value, a.target)) |tuple_spread_ok|
                             tuple_spread_ok
                         else if (self.tupleSourceCannotSatisfyVariadicTarget(tuple_relation_source_t, target_t))
@@ -112004,6 +112006,103 @@ pub const Checker = struct {
         return try self.variadicTupleTypeParameterAssignableTo(source_t, target_t);
     }
 
+    const RecursiveGenericReturnAlias = struct {
+        body: NodeId,
+        name: hir_mod.StringId,
+        params: []const NodeId,
+        args: []TypeId,
+    };
+
+    fn recursiveGenericReturnAliasAssignmentResult(
+        self: *Checker,
+        source_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!?bool {
+        if (source_node == hir_mod.none_node_id or target_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(source_node) != .identifier or self.hir.kindOf(target_node) != .identifier) return null;
+        const source = (try self.recursiveGenericReturnAliasForIdentifier(source_node)) orelse return null;
+        defer self.gpa.free(source.args);
+        const target = (try self.recursiveGenericReturnAliasForIdentifier(target_node)) orelse return null;
+        defer self.gpa.free(target.args);
+        if (source.params.len != target.params.len or source.args.len != target.args.len) return false;
+        return try self.recursiveGenericAliasTypeNodesAssignable(
+            source.body,
+            target.body,
+            source.name,
+            target.name,
+            source.params,
+            target.params,
+            source.args,
+            target.args,
+            0,
+        );
+    }
+
+    fn recursiveGenericReturnAliasForIdentifier(
+        self: *Checker,
+        identifier: NodeId,
+    ) CheckError!?RecursiveGenericReturnAlias {
+        const variable_decl = self.visibleVariableDeclForIdentifier(identifier) orelse return null;
+        const variable = hir_mod.varDeclOf(self.hir, variable_decl);
+        if (variable.init == hir_mod.none_node_id or self.hir.kindOf(variable.init) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, variable.init);
+        if (self.hir.kindOf(call.callee) != .identifier) return null;
+        const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+        const function_decl = self.findFunctionDeclForNameNearNode(call.callee, callee_name) orelse return null;
+        const function = hir_mod.fnDeclOf(self.hir, function_decl);
+        if (self.hir.kindOf(function.body) != .block_stmt) return null;
+
+        var return_value = hir_mod.none_node_id;
+        for (hir_mod.blockStmts(self.hir, function.body)) |statement| {
+            if (self.hir.kindOf(statement) != .return_stmt) continue;
+            const candidate = hir_mod.returnOf(self.hir, statement).value;
+            if (candidate == hir_mod.none_node_id or self.hir.kindOf(candidate) != .identifier) return null;
+            if (return_value != hir_mod.none_node_id) return null;
+            return_value = candidate;
+        }
+        if (return_value == hir_mod.none_node_id) return null;
+
+        const return_decl = self.visibleVariableDeclForIdentifier(return_value) orelse return null;
+        const return_variable = hir_mod.varDeclOf(self.hir, return_decl);
+        const alias_ref_node = return_variable.type_annotation;
+        if (alias_ref_node == hir_mod.none_node_id or self.hir.kindOf(alias_ref_node) != .type_ref) return null;
+        const alias_ref = hir_mod.typeRefOf(self.hir, alias_ref_node);
+        if (alias_ref.qualifier_len != 0 or alias_ref.args_len == 0) return null;
+        const alias_decl = self.findTypeAliasDeclInScope(alias_ref_node, alias_ref.name) orelse return null;
+        const alias = hir_mod.typeAliasOf(self.hir, alias_decl);
+        const alias_params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+        const alias_arg_nodes = hir_mod.typeRefArgs(self.hir, alias_ref_node);
+        if (alias_params.len == 0 or alias_params.len != alias_arg_nodes.len) return null;
+        if (!self.typeNodeContainsAliasReferenceDeep(alias.aliased, alias_ref.name, 0)) return null;
+
+        const function_params = hir_mod.fnTypeParams(self.hir, function_decl);
+        const call_arg_nodes = hir_mod.callTypeArgs(self.hir, variable.init);
+        if (function_params.len == 0 or function_params.len != call_arg_nodes.len) return null;
+        var function_args: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer function_args.deinit(self.gpa);
+        for (call_arg_nodes) |call_arg| {
+            try function_args.append(self.gpa, try self.lowererLowerWithTypeParams(call_arg));
+        }
+
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        for (function_params, function_args.items) |param_node, arg_t| {
+            if (self.hir.kindOf(param_node) != .type_parameter) return null;
+            try self.recordNarrow(hir_mod.typeParameterOf(self.hir, param_node).name, arg_t);
+        }
+        var alias_args: std.ArrayListUnmanaged(TypeId) = .empty;
+        errdefer alias_args.deinit(self.gpa);
+        for (alias_arg_nodes) |alias_arg| {
+            try alias_args.append(self.gpa, try self.lowererLowerWithTypeParams(alias_arg));
+        }
+        return .{
+            .body = alias.aliased,
+            .name = alias_ref.name,
+            .params = alias_params,
+            .args = alias_args.toOwnedSlice(self.gpa) catch return error.OutOfMemory,
+        };
+    }
+
     fn recursiveTupleAliasAssignmentResult(
         self: *Checker,
         source_node: NodeId,
@@ -138551,6 +138650,7 @@ pub const Checker = struct {
         if (!sf.is_union or !tf.is_union) return false;
         const source_name = (try self.allocSimpleTypeName(source)) orelse return false;
         const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
+        if (try self.recursiveGenericAliasBodiesAssignable(source, target, source_name, target_name)) return true;
         if (!std.mem.eql(u8, source_name, target_name)) return false;
         const source_info = try self.recursiveGenericUnionAliasInfo(source, source_name);
         const target_info = try self.recursiveGenericUnionAliasInfo(target, target_name);
@@ -138562,6 +138662,291 @@ pub const Checker = struct {
         }
         return std.mem.indexOfScalar(u8, source_name, '<') == null and
             (source_info.unresolved_recursive_indexer or target_info.unresolved_recursive_indexer);
+    }
+
+    fn recursiveGenericAliasBodiesAssignable(
+        self: *Checker,
+        source: TypeId,
+        target: TypeId,
+        source_display: []const u8,
+        target_display: []const u8,
+    ) CheckError!bool {
+        const source_base = genericAliasBaseName(source_display);
+        const target_base = genericAliasBaseName(target_display);
+        if (std.mem.eql(u8, source_base, target_base)) return false;
+
+        const source_name = self.string_interner.intern(source_base) catch return error.OutOfMemory;
+        const target_name = self.string_interner.intern(target_base) catch return error.OutOfMemory;
+        const source_info = self.generic_aliases.get(source_name) orelse return false;
+        const target_info = self.generic_aliases.get(target_name) orelse return false;
+        if (source_info.body_node == hir_mod.none_node_id or target_info.body_node == hir_mod.none_node_id) return false;
+        if (!self.typeNodeContainsAliasReferenceDeep(source_info.body_node, source_name, 0) or
+            !self.typeNodeContainsAliasReferenceDeep(target_info.body_node, target_name, 0))
+        {
+            return false;
+        }
+
+        const source_args = self.alias_type_args.get(source) orelse return false;
+        const target_args = self.alias_type_args.get(target) orelse return false;
+        if (source_args.len != source_info.params.len or target_args.len != target_info.params.len or
+            source_args.len != target_args.len)
+        {
+            return false;
+        }
+
+        const source_decl = self.findTypeAliasDeclInScope(source_info.body_node, source_name) orelse return false;
+        const target_decl = self.findTypeAliasDeclInScope(target_info.body_node, target_name) orelse return false;
+        const source_alias = hir_mod.typeAliasOf(self.hir, source_decl);
+        const target_alias = hir_mod.typeAliasOf(self.hir, target_decl);
+        const source_params = self.hir.childSlice(source_alias.type_params_start, source_alias.type_params_len);
+        const target_params = self.hir.childSlice(target_alias.type_params_start, target_alias.type_params_len);
+        if (source_params.len != source_args.len or target_params.len != target_args.len) return false;
+
+        return self.recursiveGenericAliasTypeNodesAssignable(
+            source_info.body_node,
+            target_info.body_node,
+            source_name,
+            target_name,
+            source_params,
+            target_params,
+            source_args,
+            target_args,
+            0,
+        );
+    }
+
+    fn recursiveGenericAliasTypeNodesAssignable(
+        self: *Checker,
+        source_node: NodeId,
+        target_node: NodeId,
+        source_alias_name: hir_mod.StringId,
+        target_alias_name: hir_mod.StringId,
+        source_params: []const NodeId,
+        target_params: []const NodeId,
+        source_args: []const TypeId,
+        target_args: []const TypeId,
+        depth: u8,
+    ) CheckError!bool {
+        if (source_node == hir_mod.none_node_id or target_node == hir_mod.none_node_id or depth > 64) return false;
+        const source_kind = self.hir.kindOf(source_node);
+        const target_kind = self.hir.kindOf(target_node);
+
+        if (source_kind == .type_ref and target_kind == .type_ref) {
+            const source_ref = hir_mod.typeRefOf(self.hir, source_node);
+            const target_ref = hir_mod.typeRefOf(self.hir, target_node);
+            const source_ref_args = hir_mod.typeRefArgs(self.hir, source_node);
+            const target_ref_args = hir_mod.typeRefArgs(self.hir, target_node);
+            if (source_ref.qualifier_len == 0 and target_ref.qualifier_len == 0 and
+                source_ref.name == source_alias_name and target_ref.name == target_alias_name)
+            {
+                if (source_ref_args.len != target_ref_args.len) return false;
+                for (source_ref_args, target_ref_args) |source_arg, target_arg| {
+                    if (!try self.recursiveGenericAliasTypeNodesAssignable(
+                        source_arg,
+                        target_arg,
+                        source_alias_name,
+                        target_alias_name,
+                        source_params,
+                        target_params,
+                        source_args,
+                        target_args,
+                        depth + 1,
+                    )) return false;
+                }
+                return true;
+            }
+
+            const source_param_index = self.recursiveAliasTypeParamIndex(source_ref.name, source_params);
+            const target_param_index = self.recursiveAliasTypeParamIndex(target_ref.name, target_params);
+            if (source_param_index != null or target_param_index != null) {
+                if (source_param_index == null or target_param_index == null or
+                    source_param_index.? != target_param_index.?)
+                {
+                    return false;
+                }
+                const index = source_param_index.?;
+                return self.engine.isAssignableTo(source_args[index], target_args[index]) catch return error.OutOfMemory;
+            }
+
+            if (source_ref.name != target_ref.name or
+                source_ref.qualifier_len != target_ref.qualifier_len or
+                source_ref_args.len != target_ref_args.len)
+            {
+                return false;
+            }
+            for (source_ref_args, target_ref_args) |source_arg, target_arg| {
+                if (!try self.recursiveGenericAliasTypeNodesAssignable(
+                    source_arg,
+                    target_arg,
+                    source_alias_name,
+                    target_alias_name,
+                    source_params,
+                    target_params,
+                    source_args,
+                    target_args,
+                    depth + 1,
+                )) return false;
+            }
+            return true;
+        }
+
+        if (source_kind != target_kind) return false;
+        switch (source_kind) {
+            .union_type => {
+                const source_members = hir_mod.unionTypeMembers(self.hir, source_node);
+                const target_members = hir_mod.unionTypeMembers(self.hir, target_node);
+                if (source_members.len != target_members.len) return false;
+                for (source_members, target_members) |source_member, target_member| {
+                    if (!try self.recursiveGenericAliasTypeNodesAssignable(
+                        source_member,
+                        target_member,
+                        source_alias_name,
+                        target_alias_name,
+                        source_params,
+                        target_params,
+                        source_args,
+                        target_args,
+                        depth + 1,
+                    )) return false;
+                }
+                return true;
+            },
+            .intersection_type => {
+                const source_members = hir_mod.intersectionTypeMembers(self.hir, source_node);
+                const target_members = hir_mod.intersectionTypeMembers(self.hir, target_node);
+                if (source_members.len != target_members.len) return false;
+                for (source_members, target_members) |source_member, target_member| {
+                    if (!try self.recursiveGenericAliasTypeNodesAssignable(
+                        source_member,
+                        target_member,
+                        source_alias_name,
+                        target_alias_name,
+                        source_params,
+                        target_params,
+                        source_args,
+                        target_args,
+                        depth + 1,
+                    )) return false;
+                }
+                return true;
+            },
+            .object_type => {
+                const source_members = hir_mod.objectTypeMembers(self.hir, source_node);
+                const target_members = hir_mod.objectTypeMembers(self.hir, target_node);
+                if (source_members.len != target_members.len) return false;
+                for (source_members) |source_member| {
+                    if (self.hir.kindOf(source_member) != .interface_member) return false;
+                    const source_property = hir_mod.interfaceMemberOf(self.hir, source_member);
+                    var matched = false;
+                    for (target_members) |target_member| {
+                        if (self.hir.kindOf(target_member) != .interface_member) continue;
+                        const target_property = hir_mod.interfaceMemberOf(self.hir, target_member);
+                        if (source_property.name != target_property.name) continue;
+                        if (source_property.is_optional != target_property.is_optional or
+                            source_property.is_readonly != target_property.is_readonly or
+                            source_property.is_method != target_property.is_method)
+                        {
+                            return false;
+                        }
+                        if (!try self.recursiveGenericAliasTypeNodesAssignable(
+                            source_property.type_node,
+                            target_property.type_node,
+                            source_alias_name,
+                            target_alias_name,
+                            source_params,
+                            target_params,
+                            source_args,
+                            target_args,
+                            depth + 1,
+                        )) return false;
+                        matched = true;
+                        break;
+                    }
+                    if (!matched) return false;
+                }
+                return true;
+            },
+            .tuple_type => {
+                const source_elements = hir_mod.tupleTypeElements(self.hir, source_node);
+                const target_elements = hir_mod.tupleTypeElements(self.hir, target_node);
+                if (source_elements.len != target_elements.len) return false;
+                for (source_elements, target_elements) |source_element, target_element| {
+                    if (!try self.recursiveGenericAliasTypeNodesAssignable(
+                        source_element,
+                        target_element,
+                        source_alias_name,
+                        target_alias_name,
+                        source_params,
+                        target_params,
+                        source_args,
+                        target_args,
+                        depth + 1,
+                    )) return false;
+                }
+                return true;
+            },
+            .array_type => return self.recursiveGenericAliasTypeNodesAssignable(
+                hir_mod.arrayTypeOf(self.hir, source_node).element,
+                hir_mod.arrayTypeOf(self.hir, target_node).element,
+                source_alias_name,
+                target_alias_name,
+                source_params,
+                target_params,
+                source_args,
+                target_args,
+                depth + 1,
+            ),
+            .readonly_type => return self.recursiveGenericAliasTypeNodesAssignable(
+                hir_mod.readonlyTypeOf(self.hir, source_node).operand,
+                hir_mod.readonlyTypeOf(self.hir, target_node).operand,
+                source_alias_name,
+                target_alias_name,
+                source_params,
+                target_params,
+                source_args,
+                target_args,
+                depth + 1,
+            ),
+            .optional_type => return self.recursiveGenericAliasTypeNodesAssignable(
+                hir_mod.optionalTypeOf(self.hir, source_node).operand,
+                hir_mod.optionalTypeOf(self.hir, target_node).operand,
+                source_alias_name,
+                target_alias_name,
+                source_params,
+                target_params,
+                source_args,
+                target_args,
+                depth + 1,
+            ),
+            .rest_type => return self.recursiveGenericAliasTypeNodesAssignable(
+                hir_mod.restTypeOf(self.hir, source_node).operand,
+                hir_mod.restTypeOf(self.hir, target_node).operand,
+                source_alias_name,
+                target_alias_name,
+                source_params,
+                target_params,
+                source_args,
+                target_args,
+                depth + 1,
+            ),
+            else => {
+                const source_t = try self.lowererLowerWithTypeParams(source_node);
+                const target_t = try self.lowererLowerWithTypeParams(target_node);
+                return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+            },
+        }
+    }
+
+    fn recursiveAliasTypeParamIndex(
+        self: *Checker,
+        name: hir_mod.StringId,
+        params: []const NodeId,
+    ) ?usize {
+        for (params, 0..) |param, index| {
+            if (self.hir.kindOf(param) != .type_parameter) continue;
+            if (hir_mod.typeParameterOf(self.hir, param).name == name) return index;
+        }
+        return null;
     }
 
     fn recursiveHomomorphicAliasIndexerAssignable(
@@ -170864,6 +171249,34 @@ test "checker: recursive array inference prioritizes nested candidates" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: structurally matching recursive aliases flow through generic returns" {
+    const s = try newSetup(
+        \\type Foo<T> = T | { x: Foo<T> };
+        \\type Bar<U> = U | { x: Bar<U> };
+        \\var x: Foo<string>;
+        \\var y: Bar<string>;
+        \\x = y;
+        \\y = x;
+        \\function f<A>() {
+        \\  type Foo<T> = T | { x: Foo<T> };
+        \\  var value: Foo<A[]>;
+        \\  return value;
+        \\}
+        \\function g<B>() {
+        \\  type Bar<U> = U | { x: Bar<U> };
+        \\  var value: Bar<B[]>;
+        \\  return value;
+        \\}
+        \\var a = f<string>();
+        \\var b = g<string>();
+        \\a = b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.used_before_assignment));
 }
 
 test "checker: variance inference tolerates recursive generic methods" {
