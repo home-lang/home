@@ -26599,13 +26599,18 @@ const harness_prelude =
     \\  if (b && b.__home_expect_any) return __home_expect_any_matches(a, b.ctor);
     \\  if (b && b.__home_expect_string_matching) return __home_expect_string_matching_matches(a, b.pattern) !== !!b.inverse;
     \\  if (b && b.__home_expect_string_containing) return String(a).includes(String(b.sample)) !== !!b.inverse;
-    \\  if (b && typeof b.asymmetricMatch === "function") return !!b.asymmetricMatch(a);
+    \\  if (b && !b.__home_expect_object_containing && typeof b.asymmetricMatch === "function") return !!b.asymmetricMatch(a);
     \\  if (b && b.__home_expect_object_containing) {
-    \\    if (a === null || typeof a !== "object") return false;
-    \\    for (const key of Object.keys(b.sample)) {
-    \\      if (!__home_deep_equal(a[key], b.sample[key], strict, seen)) return false;
+    \\    let pass = a !== null && typeof a === "object";
+    \\    if (pass) {
+    \\      for (const key of Object.keys(b.sample)) {
+    \\        if (!Object.prototype.hasOwnProperty.call(Object(a), key) || !__home_deep_equal(a[key], b.sample[key], strict, seen)) {
+    \\          pass = false;
+    \\          break;
+    \\        }
+    \\      }
     \\    }
-    \\    return true;
+    \\    return pass !== !!b.inverse;
     \\  }
     \\  if (a === null || b === null) return false;
     \\  if (typeof a !== "object" || typeof b !== "object") return false;
@@ -27224,26 +27229,77 @@ const harness_prelude =
     \\  if (globalThis.__home_current_test_concurrent) __home_fail("Cannot call onTestFinished() here. It cannot be called inside a concurrent test. Use test.serial or remove test.concurrent.");
     \\  globalThis.__home_current_finished_callbacks.push(fn);
     \\}
+    \\const __home_mock_function_prototype = Object.create(Function.prototype);
+    \\Object.defineProperty(__home_mock_function_prototype, "_isMockFunction", {
+    \\  configurable: false,
+    \\  enumerable: false,
+    \\  value: true,
+    \\  writable: false,
+    \\});
+    \\let __home_mock_invocation_order = 0;
+    \\function __home_mock_state() {
+    \\  const state = {
+    \\    calls: [],
+    \\    contexts: [],
+    \\    instances: [],
+    \\    invocationCallOrder: [],
+    \\    results: [],
+    \\  };
+    \\  Object.defineProperty(state, "lastCall", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() {
+    \\      return state.calls.length === 0 ? undefined : state.calls[state.calls.length - 1];
+    \\    },
+    \\  });
+    \\  return state;
+    \\}
     \\function mock(implementation) {
-    \\  let currentImplementation = typeof implementation === "function" ? implementation : function() {};
+    \\  const hasInitialImplementation = arguments.length > 0;
+    \\  let currentImplementation = typeof implementation === "function"
+    \\    ? implementation
+    \\    : hasInitialImplementation ? function() { return implementation; } : function() {};
     \\  const onceImplementations = [];
     \\  const wrapped = function() {
-    \\    wrapped.mock.calls.push(Array.prototype.slice.call(arguments));
+    \\    const state = wrapped.mock;
+    \\    const callThis = this === globalThis ? undefined : this;
+    \\    state.calls.push(Array.prototype.slice.call(arguments));
+    \\    state.contexts.push(callThis);
+    \\    state.instances.push(new.target ? callThis : undefined);
+    \\    state.invocationCallOrder.push(++__home_mock_invocation_order);
     \\    const fn = onceImplementations.length > 0 ? onceImplementations.shift() : currentImplementation;
+    \\    const resultIndex = state.results.length;
+    \\    state.results.push({ type: "incomplete", value: undefined });
     \\    try {
     \\      const result = fn.apply(this, arguments);
-    \\      wrapped.mock.results.push({ type: "return", value: result });
+    \\      state.results[resultIndex] = { type: "return", value: result };
     \\      return result;
     \\    } catch (error) {
-    \\      wrapped.mock.results.push({ type: "throw", value: error });
+    \\      state.results[resultIndex] = { type: "throw", value: error };
     \\      throw error;
     \\    }
     \\  };
+    \\  Object.setPrototypeOf(wrapped, __home_mock_function_prototype);
+    \\  let wrappedName = "mockConstructor";
+    \\  let wrappedLength = 0;
+    \\  if (typeof implementation === "function") {
+    \\    try {
+    \\      if (typeof implementation.name === "string" && implementation.name !== "") wrappedName = implementation.name;
+    \\    } catch (error) {}
+    \\    try {
+    \\      if (Number.isInteger(implementation.length) && implementation.length >= 0) wrappedLength = implementation.length;
+    \\    } catch (error) {}
+    \\  }
+    \\  Object.defineProperty(wrapped, "name", { configurable: true, value: wrappedName });
+    \\  Object.defineProperty(wrapped, "length", { configurable: true, value: wrappedLength });
     \\  wrapped.__home_is_mock = true;
-    \\  wrapped.mock = { calls: [], results: [] };
-    \\  let mockName = "jest.fn()";
+    \\  wrapped.mock = __home_mock_state();
+    \\  let mockName = wrappedName;
     \\  wrapped.mockName = function(name) {
-    \\    if (name !== undefined && name !== null && String(name) !== "") mockName = String(name);
+    \\    if (name !== undefined && name !== null && String(name) !== "") {
+    \\      mockName = String(name);
+    \\      Object.defineProperty(wrapped, "name", { configurable: true, value: mockName });
+    \\    }
     \\    return wrapped;
     \\  };
     \\  wrapped.getMockName = function() {
@@ -27287,9 +27343,35 @@ const harness_prelude =
     \\    onceImplementations.push(function() { return Promise.reject(value); });
     \\    return wrapped;
     \\  };
+    \\  wrapped.withImplementation = function(temporaryImplementation, callback) {
+    \\    if (typeof temporaryImplementation !== "function") throw new TypeError("withImplementation() requires a function");
+    \\    if (typeof callback !== "function") throw new TypeError("withImplementation() requires a callback");
+    \\    const previousImplementation = currentImplementation;
+    \\    currentImplementation = temporaryImplementation;
+    \\    let result;
+    \\    try {
+    \\      result = callback();
+    \\    } catch (error) {
+    \\      currentImplementation = previousImplementation;
+    \\      throw error;
+    \\    }
+    \\    if (__home_is_thenable(result)) {
+    \\      return Promise.resolve(result).then(
+    \\        value => {
+    \\          currentImplementation = previousImplementation;
+    \\          return value;
+    \\        },
+    \\        error => {
+    \\          currentImplementation = previousImplementation;
+    \\          throw error;
+    \\        },
+    \\      );
+    \\    }
+    \\    currentImplementation = previousImplementation;
+    \\    return result;
+    \\  };
     \\  wrapped.mockClear = function() {
-    \\    wrapped.mock.calls = [];
-    \\    wrapped.mock.results = [];
+    \\    wrapped.mock = __home_mock_state();
     \\    return wrapped;
     \\  };
     \\  wrapped.mockReset = function() {
@@ -27320,18 +27402,21 @@ const harness_prelude =
     \\  const key = String(property);
     \\  const descriptor = Object.getOwnPropertyDescriptor(target, key);
     \\  const original = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : target[key];
-    \\  if (typeof original !== "function") throw new TypeError("spyOn() property must be a function");
-    \\  let currentImplementation = original;
+    \\  if (original && original.__home_is_mock === true) return original;
+    \\  const functionProperty = typeof original === "function";
+    \\  let currentImplementation = functionProperty ? original : function() { return original; };
     \\  const calls = [];
     \\  const holder = {
     \\    [key]: function() {
     \\      calls.push(Array.prototype.slice.call(arguments));
+    \\      const resultIndex = wrapped.mock.results.length;
+    \\      wrapped.mock.results.push({ type: "incomplete", value: undefined });
     \\      try {
     \\        const result = currentImplementation.apply(this, arguments);
-    \\        wrapped.mock.results.push({ type: "return", value: result });
+    \\        wrapped.mock.results[resultIndex] = { type: "return", value: result };
     \\        return result;
     \\      } catch (error) {
-    \\        wrapped.mock.results.push({ type: "throw", value: error });
+    \\        wrapped.mock.results[resultIndex] = { type: "throw", value: error };
     \\        if (error && typeof error.stack === "string" && !error.stack.includes("at " + key + " ")) {
     \\          const normalized = error.stack.split("\n").map(function(line) {
     \\            const at = line.indexOf("@");
@@ -27350,9 +27435,23 @@ const harness_prelude =
     \\    },
     \\  };
     \\  const wrapped = holder[key];
+    \\  Object.setPrototypeOf(wrapped, __home_mock_function_prototype);
+    \\  let mockName = key;
+    \\  Object.defineProperty(wrapped, "name", { configurable: true, value: mockName });
     \\  wrapped.__home_is_mock = true;
     \\  wrapped.mock = { calls, results: [] };
+    \\  wrapped.mockName = function(name) {
+    \\    if (name !== undefined && name !== null && String(name) !== "") {
+    \\      mockName = String(name);
+    \\      Object.defineProperty(wrapped, "name", { configurable: true, value: mockName });
+    \\    }
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.getMockName = function() {
+    \\    return mockName;
+    \\  };
     \\  wrapped.mockRestore = function() {
+    \\    if (typeof wrapped.mockClear === "function") wrapped.mockClear();
     \\    if (descriptor) Object.defineProperty(target, key, descriptor);
     \\    else delete target[key];
     \\    return wrapped;
@@ -27383,12 +27482,25 @@ const harness_prelude =
     \\  wrapped[Symbol.dispose] = function() {
     \\    wrapped.mockRestore();
     \\  };
-    \\  Object.defineProperty(target, key, {
-    \\    configurable: true,
-    \\    enumerable: descriptor ? descriptor.enumerable : true,
-    \\    writable: true,
-    \\    value: wrapped,
-    \\  });
+    \\  if (functionProperty) {
+    \\    Object.defineProperty(target, key, {
+    \\      configurable: true,
+    \\      enumerable: descriptor ? descriptor.enumerable : true,
+    \\      writable: true,
+    \\      value: wrapped,
+    \\    });
+    \\  } else {
+    \\    Object.defineProperty(target, key, {
+    \\      configurable: true,
+    \\      enumerable: descriptor ? descriptor.enumerable : true,
+    \\      get() {
+    \\        return wrapped.call(this);
+    \\      },
+    \\      set(value) {
+    \\        currentImplementation = function() { return value; };
+    \\      },
+    \\    });
+    \\  }
     \\  globalThis.__home_mocks.push(wrapped);
     \\  return wrapped;
     \\}
@@ -27680,6 +27792,7 @@ const harness_prelude =
     \\      __home_assert(value.mock.calls.length === expected, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called " + String(expected) + " times");
     \\    },
     \\    toHaveBeenCalled() {
+    \\      if (arguments.length !== 0) __home_fail("toHaveBeenCalled() does not accept arguments");
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalled() value must be a mock function");
     \\      __home_assert(value.mock.calls.length > 0, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called");
     \\    },
@@ -27702,14 +27815,14 @@ const harness_prelude =
     \\      if (!Number.isInteger(nth) || nth < 1) __home_fail("toHaveBeenNthCalledWith() requires a positive call number");
     \\      const expected = Array.prototype.slice.call(arguments, 1);
     \\      const received = value.mock.calls[nth - 1] || [];
-    \\      const pass = __home_deep_equal(received, expected, false, new Map());
+    \\      const pass = nth <= value.mock.calls.length && __home_deep_equal(received, expected, false, new Map());
     \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
     \\    },
     \\    toHaveBeenLastCalledWith() {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenLastCalledWith() value must be a mock function");
     \\      const expected = Array.prototype.slice.call(arguments);
     \\      const received = value.mock.calls.length > 0 ? value.mock.calls[value.mock.calls.length - 1] : [];
-    \\      const pass = __home_deep_equal(received, expected, false, new Map());
+    \\      const pass = value.mock.calls.length > 0 && __home_deep_equal(received, expected, false, new Map());
     \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
     \\    },
     \\    toHaveReturnedWith(expected) {
@@ -27724,6 +27837,7 @@ const harness_prelude =
     \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " to have returned with " + __home_format(expected));
     \\    },
     \\    toHaveReturned() {
+    \\      if (arguments.length !== 0) __home_fail("toHaveReturned() does not accept arguments");
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
     \\      const count = value.mock.results.filter(result => result && result.type === "return").length;
     \\      const message = "expect(received).toHaveReturned(expected)\n\nExpected number of succesful returns: >= 1\nReceived number of succesful returns:    " + String(count) + "\nReceived number of calls:                " + String(value.mock.calls.length) + "\n";
@@ -27738,14 +27852,12 @@ const harness_prelude =
     \\    toHaveNthReturnedWith(nth, expected) {
     \\      if (!Number.isInteger(nth) || nth < 1) __home_fail("toHaveNthReturnedWith() requires a positive call number");
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
-    \\      if (nth > value.mock.results.length) __home_fail("Expected mock to have returned on call " + String(nth));
     \\      const result = value.mock.results[nth - 1];
     \\      const pass = result && result.type === "return" && __home_deep_equal(result.value, expected, false, new Map());
     \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " return " + String(nth) + " to be " + __home_format(expected));
     \\    },
     \\    toHaveLastReturnedWith(expected) {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
-    \\      if (value.mock.results.length === 0) __home_fail("Expected mock to have returned");
     \\      const result = value.mock.results[value.mock.results.length - 1];
     \\      const pass = result && result.type === "return" && __home_deep_equal(result.value, expected, false, new Map());
     \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " last return to be " + __home_format(expected));
@@ -29658,6 +29770,11 @@ const harness_prelude =
     \\globalThis.__home_modules["./test-interop.js"] = {
     \\  default() {
     \\    return Object.assign({ isBun: true, bunTest: globalThis.__home_bun_test }, globalThis.__home_bun_test);
+    \\  },
+    \\};
+    \\globalThis.__home_modules["immutable"] = {
+    \\  Map(entries) {
+    \\    return new globalThis.Map(entries || []);
     \\  },
     \\};
     \\const __home_no_jest_globals_module = {
@@ -50308,14 +50425,21 @@ const harness_prelude =
     \\    return __home_expect_string_matching(pattern, true);
     \\  },
     \\});
-    \\expect.objectContaining = function(sample) {
+    \\function __home_expect_object_containing(sample, inverse) {
     \\  return {
     \\    __home_expect_object_containing: true,
     \\    sample: sample || {},
+    \\    inverse: !!inverse,
     \\    asymmetricMatch(received) {
-    \\      return __home_make_expectation(received, false).toMatchObject(this.sample) === undefined;
+    \\      return __home_deep_equal(received, this, false, new Map());
     \\    },
     \\  };
+    \\}
+    \\expect.objectContaining = function(sample) {
+    \\  return __home_expect_object_containing(sample, false);
+    \\};
+    \\expect.not.objectContaining = function(sample) {
+    \\  return __home_expect_object_containing(sample, true);
     \\};
     \\if (!globalThis.__home_native_proxy) {
     \\  globalThis.__home_native_proxy = globalThis.Proxy;
@@ -55368,6 +55492,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const test_interop = globalThis.__home_import(\"./test-interop.js\").default;",
         },
         .{
+            .needle = "import { describe, expect, jest, expect as jestExpect, test } from \"bun:test\";",
+            .replacement = "const { describe, expect, jest, test } = globalThis.__home_import(\"bun:test\"); const jestExpect = expect;",
+        },
+        .{
+            .needle = "import * as Immutable from \"immutable\";",
+            .replacement = "const Immutable = globalThis.__home_import(\"immutable\");",
+        },
+        .{
+            .needle = "import type { FunctionLike } from \"jest-mock\";",
+            .replacement = "",
+        },
+        .{
             .needle = "var { isBun, expect, describe, test, it } = await test_interop();",
             .replacement = "var { isBun, expect, describe, test, it } = test_interop();",
         },
@@ -57935,7 +58071,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-extended.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock-fn.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "cross-runner mock function compatibility matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/A.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "mock.module require.resolve sibling TypeScript module integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/B.test.ts"))
@@ -57965,7 +58101,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts"))
         try rewriteSnapshotTestCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/spyMatchers.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Jest spy matcher compatibility matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun stack trace formatting and subprocess diagnostics")
     else
@@ -75354,6 +75490,61 @@ test "bootstrap runner mirrors expect.extend matcher matrix" {
     try std.testing.expectEqual(@as(usize, 28), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors cross-runner mock function matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_mock_function_prototype") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_mock_state") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.withImplementation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (original && original.__home_is_mock === true) return original") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/mock-fn.test.js");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 54 or summary.todo != 0) {
+        std.debug.print(
+            "cross-runner mock function matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 54), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 54), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Jest spy matcher matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "type: \"incomplete\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.not.objectContaining") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveReturned() does not accept arguments") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/spyMatchers.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 145 or summary.todo != 5) {
+        std.debug.print(
+            "Jest spy matcher matrix mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 145), summary.failed, summary.todo, @as(usize, 5), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 145), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 5), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
