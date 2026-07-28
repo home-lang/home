@@ -50349,6 +50349,24 @@ pub const Checker = struct {
         return null;
     }
 
+    fn ambientModuleExportTypeByPathForSpec(
+        self: *Checker,
+        spec: []const u8,
+        namespace_path: []const hir_mod.StringId,
+        leaf_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (namespace_path.len == 0) return null;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .namespace_decl) continue;
+            if (!self.namespaceDeclIsAmbient(node) and !self.namespaceDeclWasPrefixedWithDeclare(node)) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (!self.namespaceNameMatchesSpecifier(ns.name, spec)) continue;
+            if (try self.namespaceExportTypeByPath(node, namespace_path, leaf_name)) |t| return t;
+        }
+        return null;
+    }
+
     fn programAmbientModuleInterfaceExportType(self: *Checker, spec: []const u8, name: hir_mod.StringId) CheckError!?TypeId {
         if (self.program_ambient_module_interface_exports.len == 0) return null;
         const name_text = self.string_interner.get(name);
@@ -61439,6 +61457,17 @@ pub const Checker = struct {
                         return types.Primitive.any;
                     }
                     if (try self.virtualCommonJsImportTypeMember(type_node, .type)) |t| return t;
+                    if (r.qualifier_len == 0 and
+                        self.importTypeIsBareModuleType(type_node) and
+                        self.importTypeModuleHasExportAssignment(type_node, import_spec))
+                    {
+                        // The parser uses a synthetic `unknown` root for
+                        // bare generic import types. Once the module's
+                        // `export =` has established the type meaning,
+                        // do not resolve that synthetic root as a user
+                        // identifier and emit TS2304.
+                        return types.Primitive.any;
+                    }
                 }
                 if (r.qualifier_len > 0) {
                     if (try self.qualifiedEnumMemberTypeRef(type_node)) |t| return t;
@@ -63060,6 +63089,9 @@ pub const Checker = struct {
         for (qualifiers) |q| {
             if (self.hir.kindOf(q) != .identifier) return null;
             try path.append(self.gpa, hir_mod.identifierOf(self.hir, q).name);
+        }
+        if (self.importTypeModuleSpecifier(type_node)) |spec| {
+            if (try self.ambientModuleExportTypeByPathForSpec(spec, path.items, r.name)) |t| return t;
         }
         if (try self.resolveQualifiedImportNamespaceTypeRef(type_node, path.items, r.name)) |t| return t;
         if (try self.umdGlobalNamespaceExportType(type_node, path.items[0], path.items[1..], r.name)) |t| return t;
@@ -108206,6 +108238,7 @@ pub const Checker = struct {
     }
 
     fn reportTypeOnlyUsedAsValueOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        if (self.identifierIsExportEqualsTarget(node)) return;
         for (self.diagnostics.items) |d| {
             if (d.node == node and d.code == TsCodes.type_only_used_as_value) return;
         }
@@ -163418,6 +163451,7 @@ test "checker: paths mapping still reports TS2307 for a genuinely missing module
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.cannot_find_module) found = true;
+        try T.expect(d.code != TsCodes.type_only_used_as_value);
     }
     try T.expect(found);
 }
@@ -163619,6 +163653,50 @@ test "checker: TS1340 suppressed when module uses export assignment" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.module_does_not_refer_to_type);
+    }
+}
+
+test "checker: ambient export assignment accepts a type-only target" {
+    const s = try newSetup(
+        \\declare module "foo" {
+        \\  interface Point { x: number; }
+        \\  export = Point;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_only_used_as_value);
+    }
+}
+
+test "checker: generic bare import type with export assignment ignores synthetic root" {
+    const s = try newSetup(
+        \\// @filename: /foo.ts
+        \\interface Point<T> { data: T; }
+        \\export = Point;
+        \\// @filename: /usage.ts
+        \\const x: import("./foo")<{ x: number }> = { data: { x: 1 } };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: ambient module class merges with sibling namespace types" {
+    const s = try newSetup(
+        \\declare module "foo2" {
+        \\  namespace Bar { interface I { value: string; } }
+        \\  class Bar { item: Bar.I; }
+        \\}
+        \\let value: import("foo2").Bar.I = { value: "ok" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_namespace);
     }
 }
 
