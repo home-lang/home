@@ -123779,7 +123779,8 @@ pub const Checker = struct {
             else
                 (try self.literalDiagnosticName(arg_t)) orelse
                     ((try self.simpleDiagnosticTypeName(arg_t)) orelse null);
-            const param_text = (try self.literalUnionDiagnosticName(literal_param_t)) orelse
+            const param_text = (try self.literalDiagnosticName(literal_param_t)) orelse
+                (try self.literalUnionDiagnosticName(literal_param_t)) orelse
                 ((try self.simpleDiagnosticTypeName(literal_param_t)) orelse null);
             if (arg_text != null and param_text != null) {
                 return try std.fmt.allocPrint(
@@ -137665,6 +137666,7 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_literal) return null;
+        if (flags.is_union or flags.is_intersection) return null;
         const payload_idx = self.interner.pool.payloadOf(t);
         if (payload_idx >= self.interner.pool.literal_payloads.items.len) return null;
         const literal = self.interner.pool.literal_payloads.items[payload_idx];
@@ -165295,6 +165297,22 @@ test "checker: explicit string literal type arguments keep literal argument chec
     ));
 }
 
+test "checker: literal union argument diagnostics render every target member" {
+    const s = try newSetup(
+        \\type Digits = 0 | 1;
+        \\declare function takeDigit(value: Digits): void;
+        \\takeDigit(2);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '2' is not assignable to parameter of type '0 | 1'.",
+    ));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
 test "checker: unconstrained string literal generic calls widen return to string" {
     const s = try newSetup(
         \\// @target: es2015
@@ -166954,6 +166972,27 @@ test "checker: mapped type `as` clause drops keys whose remap is never" {
     const dropped = try s.sint.intern("private");
     try T.expectEqual(want_a, members[0].name);
     try T.expect(members[0].name != dropped);
+}
+
+test "checker: generic conditional mapped remap materializes surviving keys" {
+    const b = try newBoundSetup(
+        \\type KeysExtendedBy<T, U> =
+        \\  keyof { [K in keyof T as U extends T[K] ? K : never]: T[K] };
+        \\interface M {
+        \\  a: boolean;
+        \\  b: number;
+        \\}
+        \\declare function f(x: KeysExtendedBy<M, number>): void;
+        \\f("a");
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '\"a\"' is not assignable to parameter of type '\"b\"'.",
+    ));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
 }
 
 test "checker: plain homomorphic mapped target accepts its source type parameter" {
