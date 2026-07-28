@@ -83717,7 +83717,19 @@ pub const Checker = struct {
                     _ = try self.reportCheckJsPrototypeThisMissingMemberAssignment(a.target);
                 }
                 const value_diag_start = self.diagnostics.items.len;
-                var value_t = try self.checkExpression(a.value);
+                var contextual_element_value_t: TypeId = types.Primitive.none;
+                if (a.op == null and
+                    target_kind == .element_access and
+                    self.isContextualFunctionExpressionLike(a.value))
+                {
+                    if (self.contextualElementAssignmentSignature(target_t)) |target_sig| {
+                        try self.checkFunctionWithContextualSignatureMode(a.value, target_sig, false, &contextual_element_value_t);
+                    }
+                }
+                var value_t = if (contextual_element_value_t != types.Primitive.none)
+                    contextual_element_value_t
+                else
+                    try self.checkExpression(a.value);
                 var assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
                     if (try self.jsDocTypeForPreviousIdentifierDecl(a.value)) |declared_t| break :blk_assign_value declared_t;
                     const value_id = hir_mod.identifierOf(self.hir, a.value);
@@ -91499,6 +91511,37 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn contextualElementAssignmentSignature(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_union and !flags.is_intersection) {
+            if (self.callableSignatureCount(t) != 1) return null;
+            return self.firstSignatureType(t);
+        }
+        var selected: TypeId = types.Primitive.none;
+        const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+        for (members) |member| {
+            const signature = self.firstSignatureType(member) orelse return null;
+            if (selected == types.Primitive.none) {
+                selected = signature;
+                continue;
+            }
+            const selected_params = self.interner.signatureParams(selected);
+            const candidate_params = self.interner.signatureParams(signature);
+            if (selected_params.len != candidate_params.len) return null;
+            if (self.rest_signatures.contains(selected) != self.rest_signatures.contains(signature)) return null;
+            if ((self.signature_min_args.get(selected) orelse selected_params.len) !=
+                (self.signature_min_args.get(signature) orelse candidate_params.len))
+            {
+                return null;
+            }
+            for (selected_params, candidate_params) |selected_param, candidate_param| {
+                if (!(self.engine.isIdenticalTo(selected_param, candidate_param) catch false)) return null;
+            }
+        }
+        return if (selected != types.Primitive.none) selected else null;
     }
 
     fn callableSignatureCount(self: *Checker, t: TypeId) usize {
@@ -106364,6 +106407,11 @@ pub const Checker = struct {
         const number_t = types.Primitive.number_t;
         const string_t = types.Primitive.string_t;
         const sig_any = try self.seedAnySigVariadic(any_t);
+        const sig_resize = self.interner.internSignature(
+            &[_]TypeId{ number_t, number_t },
+            types.Primitive.void_t,
+            false,
+        ) catch return error.OutOfMemory;
         const screen_members = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("width") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
             .{ .name = self.string_interner.intern("height") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
@@ -106381,6 +106429,8 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("console") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("setTimeout") catch return error.OutOfMemory, .type = sig_any, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("clearTimeout") catch return error.OutOfMemory, .type = sig_any, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("resizeBy") catch return error.OutOfMemory, .type = sig_resize, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("resizeTo") catch return error.OutOfMemory, .type = sig_resize, .is_optional = false, .is_readonly = false, .is_method = true },
         };
         const window_t = self.interner.internObjectType(&window_members) catch return error.OutOfMemory;
         const global_members = [_]types.ObjectMember{
@@ -171013,6 +171063,19 @@ test "checker: string mapping builtins fold concrete template literal type inter
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: callable union element assignments contextually type arrow parameters" {
+    const s = try newSetup(
+        \\const actions = ["resizeTo", "resizeBy"] as const;
+        \\for (const action of actions) {
+        \\  window[action] = (x, y) => window[action](x, y);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: object binding defaults are not checked against existing literal member type" {
