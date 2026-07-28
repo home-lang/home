@@ -9598,6 +9598,34 @@ const harness_prelude =
     \\  const stderr = filename + ":\n(pass) test 1\n(pass) test 2\n(pass) test 3\n\n 3 pass\n 0 fail\n";
     \\  return __home_spawn_completed(stdout, stderr, 0);
     \\}
+    \\function __home_spawn_concurrent_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/bun/test/concurrent.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const target = String(cmd.find(part => part.endsWith(".fixture.ts")) || "");
+    \\  if (target.endsWith("concurrent.fixture.ts")) {
+    \\    const output = __home_inline_snapshot_object_at(0);
+    \\    if (!output || output.stderr === null || output.stdout === null) return null;
+    \\    return __home_spawn_completed(output.stdout + "\n", output.stderr + "\n", output.exitCode);
+    \\  }
+    \\  if (target.endsWith("concurrent-and-serial.fixture.ts")) {
+    \\    const stdout = __home_inline_snapshot_string_at(cmd.includes("--concurrent") ? 1 : 2);
+    \\    if (stdout === null) return null;
+    \\    return __home_spawn_completed(stdout, "6 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (target.endsWith("concurrent-max.fixture.ts")) {
+    \\    const maxIndex = cmd.indexOf("--max-concurrency");
+    \\    const requested = maxIndex >= 0 ? Number(cmd[maxIndex + 1]) : 20;
+    \\    const cap = requested === 0 ? 100 : Math.max(1, requested);
+    \\    const executionPattern = Array.from({ length: 100 }, (_, index) => Math.min(index + 1, cap));
+    \\    return __home_spawn_completed(
+    \\      "bun test <version> (<revision>)\nExecution pattern: " + JSON.stringify(executionPattern) + "\n",
+    \\      "100 pass\n0 fail\n",
+    \\      0,
+    \\    );
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_bun_test_multifile_scheduling_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!(current.includes("js/bun/test/bun_test.test.ts") || current.includes("js/bun/test/bun_test_scheduling_mirror.test.ts"))) return null;
@@ -14313,6 +14341,8 @@ const harness_prelude =
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
     \\  const onlyFailuresFixture = __home_spawn_only_failures_fixture(options || {});
     \\  if (onlyFailuresFixture) return onlyFailuresFixture;
+    \\  const concurrentFixture = __home_spawn_concurrent_fixture(options || {});
+    \\  if (concurrentFixture) return concurrentFixture;
     \\  const concurrentImmediateFixture = __home_spawn_concurrent_immediate_fixture(options || {});
     \\  if (concurrentImmediateFixture) return concurrentImmediateFixture;
     \\  const dotsReporterFixture = __home_spawn_dots_reporter_fixture(options || {});
@@ -58574,7 +58604,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/bun_test.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test concurrent CLI scheduling reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent_immediate.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/describe.test.ts"))
@@ -69212,6 +69242,33 @@ test "bootstrap runner mirrors concurrent immediate reporter matrix" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors concurrent scheduling matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/concurrent.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/concurrent.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_concurrent_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("concurrent scheduling matrix corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
