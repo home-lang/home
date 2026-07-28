@@ -238,12 +238,38 @@ const harness_prelude =
     \\  globalThis.__home_current_finished_callbacks = null;
     \\  globalThis.__home_current_test_concurrent = false;
     \\  globalThis.__home_current_snapshot_name = null;
+    \\  globalThis.__home_current_assertion_state = null;
     \\  globalThis.__home_snapshot_values = Object.create(null);
     \\  globalThis.__home_snapshot_counts = Object.create(null);
     \\  globalThis.__home_mocked_modules = Object.create(null);
     \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
+    \\const __home_native_weak_map_set = WeakMap.prototype.set;
+    \\const __home_native_weak_map_delete = WeakMap.prototype.delete;
+    \\const __home_weak_map_sizes = new WeakMap();
+    \\WeakMap.prototype.set = function(key, value) {
+    \\  const had = this.has(key);
+    \\  const result = __home_native_weak_map_set.call(this, key, value);
+    \\  if (this !== __home_weak_map_sizes && !had) {
+    \\    const previous = __home_native_weak_map_get.call(__home_weak_map_sizes, this) || 0;
+    \\    __home_native_weak_map_set.call(__home_weak_map_sizes, this, previous + 1);
+    \\  }
+    \\  return result;
+    \\};
+    \\const __home_native_weak_map_get = WeakMap.prototype.get;
+    \\WeakMap.prototype.delete = function(key) {
+    \\  const had = this.has(key);
+    \\  const result = __home_native_weak_map_delete.call(this, key);
+    \\  if (this !== __home_weak_map_sizes && had && result) {
+    \\    const previous = __home_native_weak_map_get.call(__home_weak_map_sizes, this) || 0;
+    \\    __home_native_weak_map_set.call(__home_weak_map_sizes, this, Math.max(0, previous - 1));
+    \\  }
+    \\  return result;
+    \\};
+    \\function __home_weak_map_size(value) {
+    \\  return __home_native_weak_map_get.call(__home_weak_map_sizes, value) || 0;
+    \\}
     \\const __home_NativePromise = Promise;
     \\const __home_promise_states = new WeakMap();
     \\const __home_native_promise_resolve = __home_NativePromise.resolve.bind(__home_NativePromise);
@@ -22011,6 +22037,9 @@ const harness_prelude =
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
     \\  },
+    \\  deepMatch(subset, value) {
+    \\    return __home_match_object_subset(value, subset);
+    \\  },
     \\  hash: __home_bun_hash,
     \\  gzipSync(value) {
     \\    return __home_gzip_sync(value);
@@ -26507,22 +26536,75 @@ const harness_prelude =
     \\  return Object.prototype.hasOwnProperty.call(value, key);
     \\}
     \\function __home_match_object_subset(received, expected) {
-    \\  if (expected && expected.__home_expect_object_containing) expected = expected.sample || {};
+    \\  if (expected && expected.__home_expect_object_containing === true) expected = expected.sample || {};
     \\  if (Object.is(received, expected)) return true;
-    \\  if (expected && (expected.__home_expect_any || expected.__home_expect_string_matching || expected.__home_expect_string_containing || typeof expected.asymmetricMatch === "function")) return __home_deep_equal(received, expected, false, new Map());
+    \\  if (received && typeof received.asymmetricMatch === "function") return !!received.asymmetricMatch(expected);
+    \\  if (expected && (expected.__home_expect_any === true || expected.__home_expect_string_matching === true || expected.__home_expect_string_containing === true || typeof expected.asymmetricMatch === "function")) return __home_deep_equal(received, expected, false, new Map());
     \\  if (expected === null || typeof expected !== "object") return __home_deep_equal(received, expected, false, new Map());
     \\  if (received === null || typeof received !== "object") return false;
     \\  if (Array.isArray(expected)) {
     \\    if (!Array.isArray(received) || received.length !== expected.length) return false;
     \\    for (let i = 0; i < expected.length; i++) {
-    \\      if (!__home_match_object_subset(received[i], expected[i])) return false;
+    \\      if ((i in received) !== (i in expected)) return false;
+    \\      if (i in expected && !__home_match_object_subset(received[i], expected[i])) return false;
+    \\    }
+    \\    const receivedSymbols = Object.getOwnPropertySymbols(received).filter(symbol => Object.prototype.propertyIsEnumerable.call(received, symbol));
+    \\    const expectedSymbols = Object.getOwnPropertySymbols(expected).filter(symbol => Object.prototype.propertyIsEnumerable.call(expected, symbol));
+    \\    if (receivedSymbols.length !== expectedSymbols.length) return false;
+    \\    for (const symbol of expectedSymbols) {
+    \\      if (!receivedSymbols.includes(symbol) || !__home_match_object_subset(received[symbol], expected[symbol])) return false;
     \\    }
     \\    return true;
     \\  }
-    \\  for (const key of Object.keys(expected)) {
+    \\  for (const key of __home_enumerable_keys(expected)) {
     \\    if (!(key in received) || !__home_match_object_subset(received[key], expected[key])) return false;
     \\  }
     \\  return true;
+    \\}
+    \\function __home_property_path_lookup(value, path) {
+    \\  let current = value;
+    \\  const missing = { found: false, value: undefined };
+    \\  const getProperty = key => {
+    \\    if (current === null || current === undefined) return false;
+    \\    const object = Object(current);
+    \\    if (!(key in object)) return false;
+    \\    current = object[key];
+    \\    return true;
+    \\  };
+    \\  if (typeof path === "string") {
+    \\    const length = path.length;
+    \\    if (length === 0) return getProperty("") ? { found: true, value: current } : missing;
+    \\    const isDelimiter = character => character === "[" || character === "]" || character === ".";
+    \\    let i = 0;
+    \\    let j = 0;
+    \\    if (path[0] === "." && !getProperty("")) return missing;
+    \\    while (i < length) {
+    \\      let character = path[i];
+    \\      while (isDelimiter(character)) {
+    \\        i++;
+    \\        if (i === length) {
+    \\          if (character === ".") return getProperty("") ? { found: true, value: current } : missing;
+    \\          return j === 0 ? missing : { found: true, value: current };
+    \\        }
+    \\        const previous = character;
+    \\        character = path[i];
+    \\        if (previous === "." && character === "." && !getProperty("")) return missing;
+    \\      }
+    \\      j = i;
+    \\      while (j < length && !isDelimiter(path[j])) j++;
+    \\      if (!getProperty(path.slice(i, j))) return missing;
+    \\      i = j;
+    \\    }
+    \\    return { found: true, value: current };
+    \\  }
+    \\  if (Array.isArray(path)) {
+    \\    for (const item of path) {
+    \\      if (typeof item !== "string" && typeof item !== "number") return missing;
+    \\      if (!getProperty(String(item))) return missing;
+    \\    }
+    \\    return { found: true, value: current };
+    \\  }
+    \\  throw new TypeError("Expected path must be a string or an array");
     \\}
     \\function __home_is_unsupported_deep_value(value) {
     \\  return false;
@@ -26542,17 +26624,22 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
-    \\const __home_native_SharedArrayBuffer = typeof SharedArrayBuffer === "function" ? SharedArrayBuffer : null;
+    \\const __home_native_SharedArrayBuffer = typeof globalThis.SharedArrayBuffer === "function" ? globalThis.SharedArrayBuffer : null;
     \\const __home_shared_array_buffer_values = new WeakSet();
-    \\if (__home_native_SharedArrayBuffer && __home_native_SharedArrayBuffer === ArrayBuffer) {
+    \\if (__home_native_SharedArrayBuffer) {
     \\  globalThis.SharedArrayBuffer = function SharedArrayBuffer(length) {
-    \\    const buffer = new ArrayBuffer(length);
+    \\    if (!new.target) throw new TypeError("SharedArrayBuffer constructor requires 'new'");
+    \\    const buffer = __home_native_SharedArrayBuffer === ArrayBuffer ? new ArrayBuffer(length) : new __home_native_SharedArrayBuffer(length);
     \\    __home_shared_array_buffer_values.add(buffer);
     \\    return buffer;
     \\  };
+    \\  Object.setPrototypeOf(globalThis.SharedArrayBuffer, __home_native_SharedArrayBuffer);
+    \\  globalThis.SharedArrayBuffer.prototype = __home_native_SharedArrayBuffer.prototype;
     \\}
     \\function __home_is_shared_array_buffer_like(value) {
-    \\  return __home_shared_array_buffer_values.has(value) || (__home_native_SharedArrayBuffer && __home_native_SharedArrayBuffer !== ArrayBuffer && value instanceof __home_native_SharedArrayBuffer);
+    \\  if (__home_shared_array_buffer_values.has(value)) return true;
+    \\  if (Object.prototype.toString.call(value) === "[object SharedArrayBuffer]") return true;
+    \\  return !!(__home_native_SharedArrayBuffer && __home_native_SharedArrayBuffer !== ArrayBuffer && value && value.constructor === __home_native_SharedArrayBuffer);
     \\}
     \\function __home_is_array_buffer_like(value) {
     \\  return value instanceof ArrayBuffer || __home_is_shared_array_buffer_like(value);
@@ -26566,7 +26653,7 @@ const harness_prelude =
     \\}
     \\function __home_typed_array_equal(a, b, strict) {
     \\  if (!ArrayBuffer.isView(a) || !ArrayBuffer.isView(b)) return false;
-    \\  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    \\  if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b) && !(a instanceof Uint8Array && b instanceof Uint8Array)) return false;
     \\  const aLength = typeof a.BYTES_PER_ELEMENT === "number" ? a.byteLength / a.BYTES_PER_ELEMENT : (typeof a.length === "number" ? a.length : a.byteLength);
     \\  const bLength = typeof b.BYTES_PER_ELEMENT === "number" ? b.byteLength / b.BYTES_PER_ELEMENT : (typeof b.length === "number" ? b.length : b.byteLength);
     \\  if (aLength !== bLength || a.byteLength !== b.byteLength) return false;
@@ -26581,30 +26668,62 @@ const harness_prelude =
     \\  }
     \\  return true;
     \\}
+    \\function __home_boxed_primitive_properties_equal(a, b, strict, seen) {
+    \\  if (seen.has(a)) return seen.get(a) === b;
+    \\  for (const pair of seen) if (pair[1] === b) return false;
+    \\  seen.set(a, b);
+    \\  const aKeys = __home_enumerable_keys(a).filter(key => strict || a[key] !== undefined);
+    \\  const bKeys = __home_enumerable_keys(b).filter(key => strict || b[key] !== undefined);
+    \\  if (aKeys.length !== bKeys.length) {
+    \\    seen.delete(a);
+    \\    return false;
+    \\  }
+    \\  for (const key of aKeys) {
+    \\    if (!Object.prototype.hasOwnProperty.call(b, key) || !__home_deep_equal(a[key], b[key], strict, seen)) {
+    \\      seen.delete(a);
+    \\      return false;
+    \\    }
+    \\  }
+    \\  seen.delete(a);
+    \\  return true;
+    \\}
     \\function __home_expect_any_matches(value, ctor) {
     \\  if (typeof ctor !== "function") __home_fail("expect.any() requires a constructor");
-    \\  if (ctor === BigInt) return typeof value === "bigint";
+    \\  if (ctor === BigInt) return typeof value === "bigint" || Object.prototype.toString.call(value) === "[object BigInt]";
     \\  if (ctor === Boolean) return typeof value === "boolean" || value instanceof Boolean;
     \\  if (ctor === Number) return typeof value === "number" || value instanceof Number;
     \\  if (ctor === String) return typeof value === "string" || value instanceof String;
-    \\  if (ctor === Symbol) return typeof value === "symbol";
+    \\  if (ctor === Symbol) return typeof value === "symbol" || Object.prototype.toString.call(value) === "[object Symbol]";
     \\  return value instanceof ctor;
     \\}
     \\function __home_expect_string_matching_matches(value, pattern) {
+    \\  if (typeof value !== "string") return false;
     \\  const regex = pattern instanceof RegExp ? pattern : new RegExp(String(pattern));
-    \\  return regex.test(String(value));
+    \\  return regex.test(value);
+    \\}
+    \\function __home_expect_string_containing_matches(value, sample) {
+    \\  return typeof value === "string" && value.includes(String(sample));
+    \\}
+    \\function __home_enumerable_keys(value) {
+    \\  const keys = Object.keys(value);
+    \\  if (typeof Object.getOwnPropertySymbols === "function") {
+    \\    for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\      if (Object.prototype.propertyIsEnumerable.call(value, symbol)) keys.push(symbol);
+    \\    }
+    \\  }
+    \\  return keys;
     \\}
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
-    \\  if (b && b.__home_expect_any) return __home_expect_any_matches(a, b.ctor);
-    \\  if (b && b.__home_expect_string_matching) return __home_expect_string_matching_matches(a, b.pattern) !== !!b.inverse;
-    \\  if (b && b.__home_expect_string_containing) return String(a).includes(String(b.sample)) !== !!b.inverse;
-    \\  if (b && !b.__home_expect_object_containing && typeof b.asymmetricMatch === "function") return !!b.asymmetricMatch(a);
-    \\  if (b && b.__home_expect_object_containing) {
+    \\  if (b && b.__home_expect_any === true) return __home_expect_any_matches(a, b.ctor);
+    \\  if (b && b.__home_expect_string_matching === true) return __home_expect_string_matching_matches(a, b.pattern) !== !!b.inverse;
+    \\  if (b && b.__home_expect_string_containing === true) return __home_expect_string_containing_matches(a, b.sample) !== !!b.inverse;
+    \\  if (b && b.__home_expect_object_containing !== true && typeof b.asymmetricMatch === "function") return !!b.asymmetricMatch(a);
+    \\  if (b && b.__home_expect_object_containing === true) {
     \\    let pass = a !== null && typeof a === "object";
     \\    if (pass) {
-    \\      for (const key of Object.keys(b.sample)) {
-    \\        if (!Object.prototype.hasOwnProperty.call(Object(a), key) || !__home_deep_equal(a[key], b.sample[key], strict, seen)) {
+    \\      for (const key of __home_enumerable_keys(b.sample)) {
+    \\        if (!(key in Object(a)) || !__home_deep_equal(a[key], b.sample[key], strict, seen)) {
     \\          pass = false;
     \\          break;
     \\        }
@@ -26612,6 +26731,10 @@ const harness_prelude =
     \\    }
     \\    return pass !== !!b.inverse;
     \\  }
+    \\  if (a && a.__home_expect_any === true) return __home_expect_any_matches(b, a.ctor);
+    \\  if (a && a.__home_expect_string_matching === true) return __home_expect_string_matching_matches(b, a.pattern) !== !!a.inverse;
+    \\  if (a && a.__home_expect_string_containing === true) return __home_expect_string_containing_matches(b, a.sample) !== !!a.inverse;
+    \\  if (a && typeof a.asymmetricMatch === "function") return !!a.asymmetricMatch(b);
     \\  if (a === null || b === null) return false;
     \\  if (typeof a !== "object" || typeof b !== "object") return false;
     \\  if (__home_is_unsupported_deep_value(a) || __home_is_unsupported_deep_value(b)) __home_unsupported("Deep equality for this value type is not supported by the Home Bun corpus bootstrap runner yet");
@@ -26619,8 +26742,8 @@ const harness_prelude =
     \\    if (!(a instanceof Error) || !(b instanceof Error)) return false;
     \\    if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b) || a.name !== b.name || a.message !== b.message) return false;
     \\    if (!__home_deep_equal(a.cause, b.cause, strict, seen)) return false;
-    \\    const aKeys = Object.keys(a).filter(key => key !== "message");
-    \\    const bKeys = Object.keys(b).filter(key => key !== "message");
+    \\    const aKeys = __home_enumerable_keys(a).filter(key => key !== "message");
+    \\    const bKeys = __home_enumerable_keys(b).filter(key => key !== "message");
     \\    if (aKeys.length !== bKeys.length) return false;
     \\    for (const key of aKeys) {
     \\      if (!Object.prototype.hasOwnProperty.call(b, key) || !__home_deep_equal(a[key], b[key], strict, seen)) return false;
@@ -26642,39 +26765,103 @@ const harness_prelude =
     \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
     \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
     \\  if (a instanceof Number || b instanceof Number) {
-    \\    if (!(a instanceof Number) || !(b instanceof Number) || !Object.is(a.valueOf(), b.valueOf())) return false;
+    \\    return a instanceof Number && b instanceof Number && Object.is(a.valueOf(), b.valueOf()) && Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && (!strict || __home_boxed_primitive_properties_equal(a, b, strict, seen));
     \\  }
     \\  if (a instanceof Boolean || b instanceof Boolean) {
-    \\    if (!(a instanceof Boolean) || !(b instanceof Boolean) || !Object.is(a.valueOf(), b.valueOf())) return false;
+    \\    return a instanceof Boolean && b instanceof Boolean && Object.is(a.valueOf(), b.valueOf()) && Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && (!strict || __home_boxed_primitive_properties_equal(a, b, strict, seen));
+    \\  }
+    \\  if (a instanceof String || b instanceof String) {
+    \\    return a instanceof String && b instanceof String && Object.is(a.valueOf(), b.valueOf()) && Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && (!strict || __home_boxed_primitive_properties_equal(a, b, strict, seen));
     \\  }
     \\  if (a instanceof Map || b instanceof Map) {
     \\    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
-    \\    const previous = seen.get(a);
-    \\    if (previous === b) return true;
+    \\    if (seen.has(a)) return seen.get(a) === b;
+    \\    for (const pair of seen) if (pair[1] === b) return false;
     \\    seen.set(a, b);
-    \\    for (const entry of a) {
-    \\      const key = entry[0];
-    \\      const value = entry[1];
-    \\      if (!b.has(key) || !__home_deep_equal(value, b.get(key), strict, seen)) return false;
+    \\    const unmatched = Array.from(b);
+    \\    for (const aEntry of a) {
+    \\      let matchIndex = -1;
+    \\      for (let i = 0; i < unmatched.length; i++) {
+    \\        const candidateSeen = new Map(seen);
+    \\        if (__home_deep_equal(aEntry[0], unmatched[i][0], strict, candidateSeen) && __home_deep_equal(aEntry[1], unmatched[i][1], strict, candidateSeen)) {
+    \\          matchIndex = i;
+    \\          for (const pair of candidateSeen) seen.set(pair[0], pair[1]);
+    \\          break;
+    \\        }
+    \\      }
+    \\      if (matchIndex === -1) {
+    \\        seen.delete(a);
+    \\        return false;
+    \\      }
+    \\      unmatched.splice(matchIndex, 1);
     \\    }
+    \\    seen.delete(a);
     \\    return true;
     \\  }
     \\  if (a instanceof Set || b instanceof Set) {
     \\    if (!(a instanceof Set) || !(b instanceof Set) || a.size !== b.size) return false;
-    \\    const previous = seen.get(a);
-    \\    if (previous === b) return true;
+    \\    if (seen.has(a)) return seen.get(a) === b;
+    \\    for (const pair of seen) if (pair[1] === b) return false;
     \\    seen.set(a, b);
-    \\    for (const value of a) {
-    \\      if (!b.has(value)) return false;
+    \\    const unmatched = Array.from(b);
+    \\    for (const aValue of a) {
+    \\      let matchIndex = -1;
+    \\      for (let i = 0; i < unmatched.length; i++) {
+    \\        const candidateSeen = new Map(seen);
+    \\        if (__home_deep_equal(aValue, unmatched[i], strict, candidateSeen)) {
+    \\          matchIndex = i;
+    \\          for (const pair of candidateSeen) seen.set(pair[0], pair[1]);
+    \\          break;
+    \\        }
+    \\      }
+    \\      if (matchIndex === -1) {
+    \\        seen.delete(a);
+    \\        return false;
+    \\      }
+    \\      unmatched.splice(matchIndex, 1);
     \\    }
+    \\    seen.delete(a);
     \\    return true;
     \\  }
     \\  if (Array.isArray(a) || Array.isArray(b)) {
-    \\    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    \\    for (let i = 0; i < a.length; i++) {
-    \\      if (strict && ((i in a) !== (i in b))) return false;
-    \\      if (!__home_deep_equal(a[i], b[i], strict, seen)) return false;
+    \\    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    \\    if (strict && a.length !== b.length) return false;
+    \\    if (seen.has(a)) return seen.get(a) === b;
+    \\    for (const pair of seen) if (pair[1] === b) return false;
+    \\    seen.set(a, b);
+    \\    const length = strict ? a.length : Math.max(a.length, b.length);
+    \\    for (let i = 0; i < length; i++) {
+    \\      if (strict && ((i in a) !== (i in b))) {
+    \\        seen.delete(a);
+    \\        return false;
+    \\      }
+    \\      const aDescriptor = Object.getOwnPropertyDescriptor(a, String(i));
+    \\      const bDescriptor = Object.getOwnPropertyDescriptor(b, String(i));
+    \\      if ((aDescriptor && !Object.prototype.hasOwnProperty.call(aDescriptor, "value")) || (bDescriptor && !Object.prototype.hasOwnProperty.call(bDescriptor, "value"))) continue;
+    \\      if (!__home_deep_equal(a[i], b[i], strict, seen)) {
+    \\        seen.delete(a);
+    \\        return false;
+    \\      }
     \\    }
+    \\    const aSymbols = Object.getOwnPropertySymbols(a).filter(symbol => {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(a, symbol);
+    \\      return descriptor && descriptor.enumerable && Object.prototype.hasOwnProperty.call(descriptor, "value") && (strict || descriptor.value !== undefined);
+    \\    });
+    \\    const bSymbols = Object.getOwnPropertySymbols(b).filter(symbol => {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(b, symbol);
+    \\      return descriptor && descriptor.enumerable && Object.prototype.hasOwnProperty.call(descriptor, "value") && (strict || descriptor.value !== undefined);
+    \\    });
+    \\    if (aSymbols.length !== bSymbols.length) {
+    \\      seen.delete(a);
+    \\      return false;
+    \\    }
+    \\    for (const symbol of aSymbols) {
+    \\      if (!bSymbols.includes(symbol) || !__home_deep_equal(a[symbol], b[symbol], strict, seen)) {
+    \\        seen.delete(a);
+    \\        return false;
+    \\      }
+    \\    }
+    \\    seen.delete(a);
     \\    return true;
     \\  }
     \\  function __home_proto_data_property_equal(a, b) {
@@ -26686,8 +26873,8 @@ const harness_prelude =
     \\    const literalProto = Object.getPrototypeOf(literalObject);
     \\    if (literalProto === null || literalProto === Object.prototype) return false;
     \\    if (!__home_deep_equal(dataObject.__proto__, literalProto, true, seen)) return false;
-    \\    const dataKeys = Object.keys(dataObject).filter(key => key !== "__proto__");
-    \\    const literalKeys = Object.keys(literalObject);
+    \\    const dataKeys = __home_enumerable_keys(dataObject).filter(key => key !== "__proto__");
+    \\    const literalKeys = __home_enumerable_keys(literalObject);
     \\    if (dataKeys.length !== literalKeys.length) return false;
     \\    for (const key of dataKeys) {
     \\      if (!Object.prototype.hasOwnProperty.call(literalObject, key)) return false;
@@ -26699,17 +26886,60 @@ const harness_prelude =
     \\    if (__home_proto_data_property_equal(a, b)) return true;
     \\    return false;
     \\  }
-    \\  const previous = seen.get(a);
-    \\  if (previous === b) return true;
+    \\  if (seen.has(a)) return seen.get(a) === b;
+    \\  for (const pair of seen) if (pair[1] === b) return false;
     \\  seen.set(a, b);
-    \\  const aKeys = Object.keys(a);
-    \\  const bKeys = Object.keys(b);
-    \\  if (aKeys.length !== bKeys.length) return false;
-    \\  for (const key of aKeys) {
-    \\    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
-    \\    if (!__home_deep_equal(a[key], b[key], strict, seen)) return false;
+    \\  const aKeys = __home_enumerable_keys(a).filter(key => strict || a[key] !== undefined);
+    \\  const bKeys = __home_enumerable_keys(b).filter(key => strict || b[key] !== undefined);
+    \\  if (aKeys.length !== bKeys.length) {
+    \\    seen.delete(a);
+    \\    return false;
     \\  }
+    \\  for (const key of aKeys) {
+    \\    if (!Object.prototype.hasOwnProperty.call(b, key) || !__home_deep_equal(a[key], b[key], strict, seen)) {
+    \\      seen.delete(a);
+    \\      return false;
+    \\    }
+    \\  }
+    \\  seen.delete(a);
     \\  return true;
+    \\}
+    \\function __home_contains_async_asymmetric(value, seen) {
+    \\  if (value === null || typeof value !== "object") return false;
+    \\  if (value.__home_async_asymmetric === true) return true;
+    \\  if (seen.has(value)) return false;
+    \\  seen.add(value);
+    \\  for (const key of __home_enumerable_keys(value)) {
+    \\    if (__home_contains_async_asymmetric(value[key], seen)) return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_deep_equal_async(a, b, strict, seen) {
+    \\  if (Object.is(a, b)) return Promise.resolve(true);
+    \\  if (b && typeof b.asymmetricMatch === "function") return Promise.resolve(b.asymmetricMatch(a)).then(Boolean);
+    \\  if (a && typeof a.asymmetricMatch === "function") return Promise.resolve(a.asymmetricMatch(b)).then(Boolean);
+    \\  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return Promise.resolve(false);
+    \\  if (seen.has(a)) return Promise.resolve(seen.get(a) === b);
+    \\  seen.set(a, b);
+    \\  if (Array.isArray(a) || Array.isArray(b)) {
+    \\    if (!Array.isArray(a) || !Array.isArray(b) || (strict && a.length !== b.length)) return Promise.resolve(false);
+    \\    const length = strict ? a.length : Math.max(a.length, b.length);
+    \\    const comparisons = [];
+    \\    for (let i = 0; i < length; i++) {
+    \\      if (strict && ((i in a) !== (i in b))) return Promise.resolve(false);
+    \\      comparisons.push(__home_deep_equal_async(a[i], b[i], strict, seen));
+    \\    }
+    \\    return Promise.all(comparisons).then(results => results.every(Boolean));
+    \\  }
+    \\  const aKeys = __home_enumerable_keys(a).filter(key => strict || a[key] !== undefined);
+    \\  const bKeys = __home_enumerable_keys(b).filter(key => strict || b[key] !== undefined);
+    \\  if (aKeys.length !== bKeys.length) return Promise.resolve(false);
+    \\  const comparisons = [];
+    \\  for (const key of aKeys) {
+    \\    if (!Object.prototype.hasOwnProperty.call(b, key)) return Promise.resolve(false);
+    \\    comparisons.push(__home_deep_equal_async(a[key], b[key], strict, seen));
+    \\  }
+    \\  return Promise.all(comparisons).then(results => results.every(Boolean));
     \\}
     \\function __home_invalid_character(message) {
     \\  if (typeof DOMException === "function") return new DOMException(message || "The string contains invalid characters.", "InvalidCharacterError");
@@ -26929,15 +27159,19 @@ const harness_prelude =
     \\  const previousCallbacks = globalThis.__home_current_finished_callbacks;
     \\  const previousSnapshotName = globalThis.__home_current_snapshot_name;
     \\  const previousConcurrent = globalThis.__home_current_test_concurrent;
+    \\  const previousAssertionState = globalThis.__home_current_assertion_state;
     \\  globalThis.__home_current_finished_callbacks = [];
     \\  globalThis.__home_current_snapshot_name = __home_test_full_name(parsed);
     \\  globalThis.__home_current_test_concurrent = !!(parsed && parsed.options && parsed.options.concurrent);
+    \\  globalThis.__home_current_assertion_state = { count: 0, expected: null, hasAssertions: false };
     \\  let callbacks = null;
     \\  const cleanup = () => {
     \\    callbacks = globalThis.__home_current_finished_callbacks;
+    \\    const assertionState = globalThis.__home_current_assertion_state;
     \\    globalThis.__home_current_finished_callbacks = previousCallbacks;
     \\    globalThis.__home_current_snapshot_name = previousSnapshotName;
     \\    globalThis.__home_current_test_concurrent = previousConcurrent;
+    \\    globalThis.__home_current_assertion_state = previousAssertionState;
     \\    let cleanupChain = null;
     \\    for (let i = 0; i < chain.length; i++) {
     \\      const item = chain[i];
@@ -26951,11 +27185,18 @@ const harness_prelude =
     \\      cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_hook_list(item.afterEach, false); });
     \\    }
     \\    cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_finished_callbacks(callbacks); });
+    \\    cleanupChain = __home_then_after(cleanupChain, function() {
+    \\      if (assertionState.expected !== null && assertionState.count !== assertionState.expected) {
+    \\        __home_fail("Expected " + String(assertionState.expected) + " assertions to be called but received " + String(assertionState.count));
+    \\      }
+    \\      if (assertionState.hasAssertions && assertionState.count === 0) {
+    \\        __home_fail("Expected at least one assertion to be called but received none");
+    \\      }
+    \\    });
     \\    return cleanupChain;
     \\  };
     \\  const runBody = () => {
-    \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
-    \\    return result;
+    \\    return __home_run_hook(fn);
     \\  };
     \\  try {
     \\    const beforeAllResult = __home_run_before_all_hooks(scope);
@@ -27659,9 +27900,36 @@ const harness_prelude =
     \\    if (!desc || typeof desc.value !== "function") continue;
     \\    target[key] = function() {
     \\      const args = arguments;
-    \\      return Promise.resolve(value).then(function(resolved) {
-    \\        return __home_make_expectation(resolved, isNot, label)[key].apply(undefined, args);
-    \\      });
+    \\      if (!__home_is_thenable(value)) __home_fail("Expected promise to resolve");
+    \\      const state = __home_promise_states.get(value);
+    \\      if (state) {
+    \\        if (state.status === "rejected") __home_fail("Expected promise to resolve");
+    \\        __home_make_expectation(state.value, isNot, label)[key].apply(undefined, args);
+    \\        return;
+    \\      }
+    \\      __home_bun_tests.pending++;
+    \\      Promise.resolve(value).then(
+    \\        function(resolved) {
+    \\          try {
+    \\            __home_make_expectation(resolved, isNot, label)[key].apply(undefined, args);
+    \\          } catch (error) {
+    \\            __home_record_async_failure(error);
+    \\          }
+    \\        },
+    \\        function() {
+    \\          try {
+    \\            __home_fail("Expected promise to resolve");
+    \\          } catch (error) {
+    \\            __home_record_async_failure(error);
+    \\          }
+    \\        },
+    \\      ).then(
+    \\        function() { __home_bun_tests.pending--; },
+    \\        function(error) {
+    \\          __home_bun_tests.pending--;
+    \\          __home_record_async_failure(error);
+    \\        },
+    \\      );
     \\    };
     \\  }
     \\  return target;
@@ -27745,7 +28013,20 @@ const harness_prelude =
     \\    },
     \\    toHaveLength(expected) {
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
-    \\      const actualLength = value == null ? undefined : (typeof value.length === "number" ? value.length : (typeof value.byteLength === "number" ? value.byteLength : undefined));
+    \\      let actualLength;
+    \\      if (value !== null && value !== undefined && typeof value.length === "number") actualLength = value.length;
+    \\      else if (value !== null && value !== undefined && typeof value.byteLength === "number") actualLength = value.byteLength;
+    \\      else if (value instanceof Map || value instanceof Set || (typeof Blob === "function" && value instanceof Blob)) actualLength = value.size;
+    \\      else if (typeof WeakMap === "function" && value instanceof WeakMap) actualLength = __home_weak_map_size(value);
+    \\      else if (typeof Headers === "function" && value instanceof Headers) actualLength = typeof value.count === "number" ? value.count : Array.from(value).length;
+    \\      else if (typeof FormData === "function" && value instanceof FormData) actualLength = Array.from(value).length;
+    \\      else if (typeof URLSearchParams === "function" && value instanceof URLSearchParams) actualLength = typeof value.size === "number" ? value.size : Array.from(value).length;
+    \\      else if (value && value.__home_file_ref === true) {
+    \\        const written = (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, value.path)) ||
+    \\          (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, value.path));
+    \\        if (!written && !__home_build_file_exists(value.path)) __home_fail("Expected file to exist");
+    \\        actualLength = value.size;
+    \\      }
     \\      if (actualLength === undefined) __home_fail("Expected value must have a length property");
     \\      __home_assert(actualLength === expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to have length " + String(expected));
     \\    },
@@ -27762,6 +28043,12 @@ const harness_prelude =
     \\      else if (typeof value === "object") pass = Object.keys(value).length === 0;
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be empty");
     \\    },
+    \\    toBeEmptyObject() {
+    \\      const pass = value !== null && typeof value === "object" &&
+    \\        !(value instanceof Map) && !(value instanceof Set) && !(value instanceof Date) && !(value instanceof RegExp) &&
+    \\        Object.keys(value).length === 0;
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be an empty object");
+    \\    },
     \\    toBeDefined() {
     \\      __home_assert(value !== undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be defined");
     \\    },
@@ -27769,7 +28056,7 @@ const harness_prelude =
     \\      __home_assert(value === undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be undefined");
     \\    },
     \\    toBeObject() {
-    \\      __home_assert(value !== null && typeof value === "object" && !Array.isArray(value), isNot, "Expected value" + (isNot ? " not" : "") + " to be object");
+    \\      __home_assert(value !== null && (typeof value === "object" || typeof value === "function"), isNot, "Expected value" + (isNot ? " not" : "") + " to be object");
     \\    },
     \\    toBeNull() {
     \\      __home_assert(value === null, isNot, "Expected value" + (isNot ? " not" : "") + " to be null");
@@ -27806,7 +28093,7 @@ const harness_prelude =
     \\    toHaveBeenCalledWith() {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledWith() value must be a mock function");
     \\      const expected = Array.prototype.slice.call(arguments);
-    \\      const pass = value.mock.calls.some(call => __home_deep_equal(call, expected, false, new Map()));
+    \\      const pass = value.mock.calls.some(call => call.length === expected.length && __home_deep_equal(call, expected, false, new Map()));
     \\      const received = value.mock.calls.length > 0 ? value.mock.calls[value.mock.calls.length - 1] : [];
     \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
     \\    },
@@ -27815,14 +28102,14 @@ const harness_prelude =
     \\      if (!Number.isInteger(nth) || nth < 1) __home_fail("toHaveBeenNthCalledWith() requires a positive call number");
     \\      const expected = Array.prototype.slice.call(arguments, 1);
     \\      const received = value.mock.calls[nth - 1] || [];
-    \\      const pass = nth <= value.mock.calls.length && __home_deep_equal(received, expected, false, new Map());
+    \\      const pass = nth <= value.mock.calls.length && received.length === expected.length && __home_deep_equal(received, expected, false, new Map());
     \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
     \\    },
     \\    toHaveBeenLastCalledWith() {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenLastCalledWith() value must be a mock function");
     \\      const expected = Array.prototype.slice.call(arguments);
     \\      const received = value.mock.calls.length > 0 ? value.mock.calls[value.mock.calls.length - 1] : [];
-    \\      const pass = value.mock.calls.length > 0 && __home_deep_equal(received, expected, false, new Map());
+    \\      const pass = value.mock.calls.length > 0 && received.length === expected.length && __home_deep_equal(received, expected, false, new Map());
     \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
     \\    },
     \\    toHaveReturnedWith(expected) {
@@ -28046,6 +28333,11 @@ const harness_prelude =
     \\        __home_assert(!!result, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
     \\        return;
     \\      }
+    \\      if (__home_contains_async_asymmetric(value, new Set()) || __home_contains_async_asymmetric(expected, new Set())) {
+    \\        return __home_deep_equal_async(value, expected, false, new Map()).then(pass => {
+    \\          __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\        });
+    \\      }
     \\      __home_assert(__home_deep_equal(value, expected, false, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
     \\    },
     \\    toStrictEqual(expected) {
@@ -28063,16 +28355,23 @@ const harness_prelude =
     \\      __home_assert(__home_deep_equal(value, expected, true, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
     \\    },
     \\    toThrow(expected) {
-    \\      if (typeof value !== "function") throw new Error("Expected value to be a function");
+    \\      if (typeof value !== "function" && !(value instanceof Error)) throw new Error("Expected value to be a function");
     \\      if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
     \\        __home_fail("Expected value must be string or Error: " + __home_format(expected));
     \\      }
-    \\      let thrown = null;
+    \\      let didThrow = false;
+    \\      let thrown;
     \\      let returned = undefined;
-    \\      try {
-    \\        returned = value();
-    \\      } catch (error) {
-    \\        thrown = error;
+    \\      if (value instanceof Error) {
+    \\        didThrow = true;
+    \\        thrown = value;
+    \\      } else {
+    \\        try {
+    \\          returned = value();
+    \\        } catch (error) {
+    \\          didThrow = true;
+    \\          thrown = error;
+    \\        }
     \\      }
     \\      const assertThrownMatches = (actual) => {
     \\        if (isNot && expected === undefined) __home_fail("Expected function not to throw");
@@ -28089,21 +28388,34 @@ const harness_prelude =
     \\          return;
     \\        }
     \\        if (expected instanceof RegExp) {
-    \\          __home_assert(expected.test(String(actual && actual.message)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected));
+    \\          const actualMessage = actual !== null && actual !== undefined && typeof actual === "object" && "message" in actual ? actual.message : String(actual);
+    \\          __home_assert(
+    \\            expected.test(String(actualMessage)),
+    \\            isNot,
+    \\            "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected) + "\nReceived message: " + (typeof actualMessage === "string" ? JSON.stringify(actualMessage) : __home_format(actualMessage)),
+    \\          );
     \\          return;
     \\        }
     \\        if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
     \\          let pass = true;
-    \\          if ("message" in expected) pass = pass && Object.is(actual && actual.message, expected.message);
-    \\          if ("name" in expected) pass = pass && Object.is(actual && actual.name, expected.name);
+    \\          if ("message" in expected) {
+    \\            const actualMessage = actual !== null && actual !== undefined && typeof actual === "object" && "message" in actual ? actual.message : String(actual);
+    \\            pass = pass && Object.is(actualMessage, expected.message);
+    \\          }
+    \\          if (Object.prototype.hasOwnProperty.call(expected, "name")) pass = pass && Object.is(actual && actual.name, expected.name);
     \\          __home_assert(pass, isNot, "Expected thrown error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
     \\          return;
     \\        }
     \\        if (expected !== undefined) {
-    \\          __home_assert(String(actual && actual.message).includes(String(expected)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to include " + String(expected));
+    \\          const actualMessage = actual !== null && actual !== undefined && typeof actual === "object" && "message" in actual ? actual.message : String(actual);
+    \\          __home_assert(
+    \\            String(actualMessage).includes(String(expected)),
+    \\            isNot,
+    \\            "Expected thrown message" + (isNot ? " not" : "") + " to include " + String(expected) + "\nReceived message: " + (typeof actualMessage === "string" ? JSON.stringify(actualMessage) : __home_format(actualMessage)),
+    \\          );
     \\        }
     \\      };
-    \\      if (thrown === null && __home_is_thenable(returned)) {
+    \\      if (!didThrow && __home_is_thenable(returned)) {
     \\        __home_bun_tests.pending++;
     \\        return Promise.resolve(returned).then(
     \\          function() {
@@ -28131,7 +28443,7 @@ const harness_prelude =
     \\        );
     \\        return;
     \\      }
-    \\      if (thrown === null) {
+    \\      if (!didThrow) {
     \\        __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
     \\        return;
     \\      }
@@ -28139,121 +28451,36 @@ const harness_prelude =
     \\    },
     \\    get rejects() {
     \\      const rejectsAsync = function(applyMatcher) {
-    \\        const thrown = value && value.__home_rejected_error;
-    \\        if (!thrown && __home_is_thenable(value)) {
+    \\        if (!__home_is_thenable(value)) __home_fail("Expected promise to reject");
+    \\        const state = __home_promise_states.get(value);
+    \\        if (state) {
+    \\          if (state.status !== "rejected") __home_fail("Expected promise to reject");
+    \\          applyMatcher(state.value);
+    \\          return;
+    \\        }
+    \\        if (Object.prototype.hasOwnProperty.call(Object(value), "__home_rejected_error") && value.__home_rejected_error !== null) {
+    \\          applyMatcher(value.__home_rejected_error);
+    \\          return;
+    \\        }
+    \\        if (__home_is_thenable(value)) {
     \\          __home_bun_tests.pending++;
     \\          Promise.resolve(value).then(
     \\            function() { try { __home_assert(false, isNot, "Expected promise" + (isNot ? " not" : "") + " to reject"); } catch (e) { __home_record_async_failure(e); } },
     \\            function(error) { try { applyMatcher(error); } catch (e) { __home_record_async_failure(e); } },
     \\          ).then(function() { __home_bun_tests.pending--; }, function(e) { __home_bun_tests.pending--; __home_record_async_failure(e); });
-    \\          return;
     \\        }
-    \\        if (!thrown) __home_fail("Expected promise to reject");
-    \\        applyMatcher(thrown);
     \\      };
     \\      const obj = {
     \\        get not() { return __home_make_expectation(value, !isNot, label).rejects; },
     \\        toThrow(expected) {
-    \\          const thrown = value && value.__home_rejected_error;
-    \\          if (!thrown && __home_is_thenable(value)) {
-    \\            __home_bun_tests.pending++;
-    \\            return Promise.resolve(value).then(
-    \\              function() {
-    \\                try {
-    \\                  __home_assert(false, isNot, "Expected promise" + (isNot ? " not" : "") + " to reject");
-    \\                } catch (error) {
-    \\                  __home_record_async_failure(error);
-    \\                }
-    \\              },
-    \\              function(error) {
-    \\                try {
-    \\                  const actual = error;
-    \\                  if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
-    \\                    __home_fail("Expected value must be string or Error: " + __home_format(expected));
-    \\                  }
-    \\                  if (expected && expected.__home_expect_any) __home_assert(actual instanceof expected.ctor, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.ctor.name);
-    \\                  else if (typeof expected === "function") __home_assert(actual instanceof expected, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
-    \\                  else if (expected instanceof RegExp) __home_assert(expected.test(String(actual && actual.message)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to match " + String(expected));
-    \\                  else if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
-    \\                    let pass = true;
-    \\                    if ("message" in expected) pass = pass && Object.is(actual && actual.message, expected.message);
-    \\                    if ("name" in expected) pass = pass && Object.is(actual && actual.name, expected.name);
-    \\                    __home_assert(pass, isNot, "Expected rejected error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
-    \\                  } else if (expected !== undefined) {
-    \\                    __home_assert(String(actual && actual.message).includes(String(expected)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to include " + String(expected));
-    \\                  }
-    \\                } catch (assertionError) {
-    \\                  __home_record_async_failure(assertionError);
-    \\                }
-    \\              },
-    \\            ).then(
-    \\              function() { __home_bun_tests.pending--; },
-    \\              function(error) {
-    \\                __home_bun_tests.pending--;
-    \\                __home_record_async_failure(error);
-    \\              },
-    \\            );
-    \\          }
-    \\          if (!thrown) __home_fail("Expected promise to reject");
-    \\          if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
-    \\            __home_fail("Expected value must be string or Error: " + __home_format(expected));
-    \\          }
-    \\          if (expected && expected.__home_expect_any) {
-    \\            __home_assert(thrown instanceof expected.ctor, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.ctor.name);
-    \\            return;
-    \\          }
-    \\          if (typeof expected === "function") {
-    \\            __home_assert(thrown instanceof expected, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
-    \\            return;
-    \\          }
-    \\          if (expected instanceof RegExp) {
-    \\            __home_assert(expected.test(String(thrown && thrown.message)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to match " + String(expected));
-    \\            return;
-    \\          }
-    \\          if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
-    \\            let pass = true;
-    \\            if ("message" in expected) pass = pass && Object.is(thrown && thrown.message, expected.message);
-    \\            if ("name" in expected) pass = pass && Object.is(thrown && thrown.name, expected.name);
-    \\            __home_assert(pass, isNot, "Expected rejected error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
-    \\            return;
-    \\          }
-    \\          if (expected !== undefined) {
-    \\            __home_assert(String(thrown && thrown.message).includes(String(expected)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to include " + String(expected));
-    \\          }
+    \\          rejectsAsync(function(error) {
+    \\            __home_make_expectation(function() { throw error; }, isNot, label).toThrow(expected);
+    \\          });
     \\        },
     \\        toMatchObject(expected) {
-    \\          const assertRejected = function(error) {
-    \\            __home_make_expectation(error, isNot).toMatchObject(expected);
-    \\          };
-    \\          const thrown = value && value.__home_rejected_error;
-    \\          if (!thrown && __home_is_thenable(value)) {
-    \\            __home_bun_tests.pending++;
-    \\            Promise.resolve(value).then(
-    \\              function() {
-    \\                try {
-    \\                  __home_assert(false, isNot, "Expected promise" + (isNot ? " not" : "") + " to reject");
-    \\                } catch (error) {
-    \\                  __home_record_async_failure(error);
-    \\                }
-    \\              },
-    \\              function(error) {
-    \\                try {
-    \\                  assertRejected(error);
-    \\                } catch (assertionError) {
-    \\                  __home_record_async_failure(assertionError);
-    \\                }
-    \\              },
-    \\            ).then(
-    \\              function() { __home_bun_tests.pending--; },
-    \\              function(error) {
-    \\                __home_bun_tests.pending--;
-    \\                __home_record_async_failure(error);
-    \\              },
-    \\            );
-    \\            return;
-    \\          }
-    \\          if (!thrown) __home_fail("Expected promise to reject");
-    \\          assertRejected(thrown);
+    \\          rejectsAsync(function(error) {
+    \\            __home_make_expectation(error, isNot, label).toMatchObject(expected);
+    \\          });
     \\        },
     \\      };
     \\      // Generic forwarders: apply any other matcher to the rejection reason.
@@ -28288,7 +28515,19 @@ const harness_prelude =
     \\    toThrowErrorMatchingInlineSnapshot(expected) {
     \\      let snapshot = __home_dedent_snapshot(expected);
     \\      if ((snapshot.startsWith('"') && snapshot.endsWith('"')) || (snapshot.startsWith("'") && snapshot.endsWith("'"))) snapshot = snapshot.slice(1, -1);
-    \\      return this.toThrow(snapshot);
+    \\      return this.toThrow({
+    \\        asymmetricMatch(actual) {
+    \\          const message = actual === null || actual === undefined ? undefined : actual.message;
+    \\          const pass = String(message).includes(snapshot);
+    \\          if (!isNot && !pass) {
+    \\            __home_fail("Expected thrown message to match snapshot " + JSON.stringify(snapshot) + "\nReceived message: " + JSON.stringify(String(message)));
+    \\          }
+    \\          return pass;
+    \\        },
+    \\      });
+    \\    },
+    \\    toThrowErrorMatchingSnapshot(expected) {
+    \\      return this.toThrowErrorMatchingInlineSnapshot(expected);
     \\    },
     \\    toIncludeRepeated(needle, expectedCount) {
     \\      if (arguments.length < 2) __home_fail("toIncludeRepeated() requires 2 arguments");
@@ -28311,25 +28550,24 @@ const harness_prelude =
     \\    toContain(expected) {
     \\      let pass = false;
     \\      if (typeof value === "string") {
-    \\        pass = value.includes(String(expected));
-    \\      } else if (Array.isArray(value)) {
-    \\        for (let i = 0; i < value.length; i++) {
-    \\          if (Object.is(value[i], expected)) {
+    \\        pass = String(value).includes(String(expected));
+    \\      } else if (value !== null && value !== undefined && typeof value[Symbol.iterator] === "function") {
+    \\        for (const item of value) {
+    \\          if (Object.is(item, expected)) {
     \\            pass = true;
     \\            break;
     \\          }
     \\        }
     \\      } else {
-    \\        __home_fail("Expected value must be a string or array");
+    \\        __home_fail("Expected value must be a string or iterable");
     \\      }
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain " + __home_format(expected));
     \\    },
     \\    toContainEqual(expected) {
-    \\      if (!Array.isArray(value)) __home_fail("Expected value must be an array");
+    \\      if (value === null || value === undefined || typeof value[Symbol.iterator] !== "function") __home_fail("Expected value must be iterable");
     \\      let pass = false;
-    \\      for (let i = 0; i < value.length; i++) {
-    \\        if (!(i in value)) continue;
-    \\        if (__home_deep_equal(value[i], expected, false, new Map())) {
+    \\      for (const item of value) {
+    \\        if (__home_deep_equal(item, expected, false, new Map())) {
     \\          pass = true;
     \\          break;
     \\        }
@@ -28373,31 +28611,32 @@ const harness_prelude =
     \\    },
     \\    toHaveProperty(expected, expectedValue) {
     \\      if (arguments.length < 1) __home_fail("toHaveProperty() requires 1 argument");
-    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
-    \\      const path = Array.isArray(expected) ? expected.map(String) : String(expected).split(".");
-    \\      let current = value;
-    \\      let pass = true;
-    \\      for (let i = 0; i < path.length; i++) {
-    \\        const key = path[i];
-    \\        if (current === null || current === undefined || !Object.prototype.hasOwnProperty.call(Object(current), key)) {
-    \\          pass = false;
-    \\          break;
-    \\        }
-    \\        current = current[key];
-    \\      }
-    \\      if (arguments.length >= 2 && pass) pass = __home_deep_equal(current, expectedValue, false, new Map());
+    \\      if (value === null || value === undefined) __home_fail("Expected value must be an object");
+    \\      const lookup = __home_property_path_lookup(value, expected);
+    \\      let pass = lookup.found;
+    \\      if (arguments.length >= 2 && pass) pass = __home_deep_equal(lookup.value, expectedValue, false, new Map());
     \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to have property " + __home_format(expected));
     \\    },
     \\    toContainKey(expected) {
     \\      if (arguments.length < 1) __home_fail("toContainKey() takes 1 argument");
-    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object\nReceived: " + __home_format(value));
     \\      __home_assert(__home_has_own_property(value, expected), isNot, "Expected value" + (isNot ? " not" : "") + " to contain key " + __home_format(expected));
+    \\    },
+    \\    toContainAllKeys(expected) {
+    \\      if (!Array.isArray(expected)) __home_fail("toContainAllKeys expected must be an array");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    \\        __home_assert(expected.length === 0, isNot, "Expected value to contain all keys\nReceived: " + __home_format(value));
+    \\        return;
+    \\      }
+    \\      const actualKeys = Object.keys(value);
+    \\      const pass = actualKeys.length === expected.length && expected.every(key => __home_has_own_property(value, key));
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain all keys " + __home_format(expected));
     \\    },
     \\    toContainKeys(expected) {
     \\      if (arguments.length < 1) __home_fail("toContainKeys() takes 1 argument");
     \\      if (!Array.isArray(expected)) __home_fail("toContainKeys expected must be an array");
     \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) {
-    \\        __home_assert(expected.length === 0, isNot, "Expected value" + (isNot ? " not" : "") + " to contain keys " + __home_format(expected));
+    \\        __home_assert(expected.length === 0, isNot, "Expected value" + (isNot ? " not" : "") + " to contain keys " + __home_format(expected) + "\nReceived: " + __home_format(value));
     \\        return;
     \\      }
     \\      let pass = true;
@@ -28422,6 +28661,42 @@ const harness_prelude =
     \\        }
     \\      }
     \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain any keys " + __home_format(expected));
+    \\    },
+    \\    toContainValue(expected) {
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
+    \\      const pass = Object.values(value).some(item => __home_deep_equal(item, expected, false, new Map()));
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain value " + __home_format(expected));
+    \\    },
+    \\    toContainValues(expected) {
+    \\      if (!Array.isArray(expected)) __home_fail("toContainValues expected must be an array");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
+    \\      const actualValues = Object.values(value);
+    \\      const pass = expected.every(expectedValue => actualValues.some(item => __home_deep_equal(item, expectedValue, false, new Map())));
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain values " + __home_format(expected));
+    \\    },
+    \\    toContainAllValues(expected) {
+    \\      if (!Array.isArray(expected)) __home_fail("toContainAllValues expected must be an array");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
+    \\      const unmatched = Object.values(value);
+    \\      let pass = unmatched.length === expected.length;
+    \\      if (pass) {
+    \\        for (const expectedValue of expected) {
+    \\          const index = unmatched.findIndex(item => __home_deep_equal(item, expectedValue, false, new Map()));
+    \\          if (index === -1) {
+    \\            pass = false;
+    \\            break;
+    \\          }
+    \\          unmatched.splice(index, 1);
+    \\        }
+    \\      }
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain all values " + __home_format(expected));
+    \\    },
+    \\    toContainAnyValues(expected) {
+    \\      if (!Array.isArray(expected)) __home_fail("toContainAnyValues expected must be an array");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
+    \\      const actualValues = Object.values(value);
+    \\      const pass = expected.some(expectedValue => actualValues.some(item => __home_deep_equal(item, expectedValue, false, new Map())));
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain any values " + __home_format(expected));
     \\    }
     \\  };
     \\  for (const name of Object.keys(__home_expect_matchers)) {
@@ -28460,8 +28735,18 @@ const harness_prelude =
     \\  return expectation;
     \\}
     \\function expect(value, label) {
+    \\  if (globalThis.__home_current_assertion_state) globalThis.__home_current_assertion_state.count++;
     \\  return __home_make_expectation(value, false, label);
     \\}
+    \\expect.assertions = function(expected) {
+    \\  if (!Number.isInteger(expected) || expected < 0) throw new TypeError("expect.assertions() requires a non-negative integer");
+    \\  if (!globalThis.__home_current_assertion_state) __home_fail("expect.assertions() must be called while a test is running");
+    \\  globalThis.__home_current_assertion_state.expected = expected;
+    \\};
+    \\expect.hasAssertions = function() {
+    \\  if (!globalThis.__home_current_assertion_state) __home_fail("expect.hasAssertions() must be called while a test is running");
+    \\  globalThis.__home_current_assertion_state.hasAssertions = true;
+    \\};
     \\function expectTypeOf(value) {
     \\  const chain = {
     \\    toMatchObjectType() { return chain; },
@@ -49708,9 +49993,12 @@ const harness_prelude =
     \\    return decoded;
     \\  };
     \\}
-    \\if (typeof SharedArrayBuffer !== "function") {
-    \\  var SharedArrayBuffer = function(length) {
-    \\    return new ArrayBuffer(length === undefined ? 0 : Number(length));
+    \\if (typeof globalThis.SharedArrayBuffer !== "function") {
+    \\  globalThis.SharedArrayBuffer = function SharedArrayBuffer(length) {
+    \\    if (!new.target) throw new TypeError("SharedArrayBuffer constructor requires 'new'");
+    \\    const buffer = new ArrayBuffer(length === undefined ? 0 : Number(length));
+    \\    __home_shared_array_buffer_values.add(buffer);
+    \\    return buffer;
     \\  };
     \\}
     \\if (typeof Atomics === "object" && typeof Atomics.waitAsync !== "function") {
@@ -50379,6 +50667,7 @@ const harness_prelude =
     \\globalThis.__home_modules["stream/web"] = __home_stream_web_module;
     \\globalThis.__home_modules["node:stream/web"] = __home_stream_web_module;
     \\expect.any = function(ctor) {
+    \\  if (typeof ctor !== "function") throw new TypeError("any() expects to be passed a constructor function. Please pass one or use anything() to match any object.");
     \\  return { __home_expect_any: true, ctor };
     \\};
     \\expect.anything = function() {
@@ -50402,6 +50691,7 @@ const harness_prelude =
     \\  };
     \\}
     \\expect.stringMatching = function(pattern) {
+    \\  if (typeof pattern !== "string" && !(pattern instanceof String) && !(pattern instanceof RegExp)) throw new TypeError("Expected is not a String or a RegExp");
     \\  return __home_expect_string_matching(pattern, false);
     \\};
     \\function __home_expect_string_containing(sample, inverse) {
@@ -50410,21 +50700,75 @@ const harness_prelude =
     \\    sample: String(sample),
     \\    inverse: !!inverse,
     \\    asymmetricMatch(received) {
-    \\      return String(received).includes(this.sample) !== this.inverse;
+    \\      return __home_expect_string_containing_matches(received, this.sample) !== this.inverse;
     \\    },
     \\  };
     \\}
     \\expect.stringContaining = function(sample) {
+    \\  if (typeof sample !== "string" && !(sample instanceof String)) throw new TypeError("Expected is not a string");
     \\  return __home_expect_string_containing(sample, false);
     \\};
     \\expect.not = Object.assign(expect.not || {}, {
     \\  stringContaining(sample) {
+    \\    if (typeof sample !== "string" && !(sample instanceof String)) throw new TypeError("Expected is not a string");
     \\    return __home_expect_string_containing(sample, true);
     \\  },
     \\  stringMatching(pattern) {
+    \\    if (typeof pattern !== "string" && !(pattern instanceof String) && !(pattern instanceof RegExp)) throw new TypeError("Expected is not a String or a RegExp");
     \\    return __home_expect_string_matching(pattern, true);
     \\  },
     \\});
+    \\function __home_expect_close_to(expected, precision, inverse) {
+    \\  if (typeof expected !== "number") throw new TypeError("Expected is not a Number");
+    \\  if (precision !== undefined && typeof precision !== "number") throw new TypeError("Precision is not a Number");
+    \\  const digits = precision === undefined ? 2 : precision;
+    \\  return {
+    \\    asymmetricMatch(received) {
+    \\      if (typeof received !== "number") return false;
+    \\      const pass = Object.is(received, expected) || Math.abs(received - expected) < Math.pow(10, -digits) / 2;
+    \\      return pass !== !!inverse;
+    \\    },
+    \\  };
+    \\}
+    \\expect.closeTo = function(expected, precision) {
+    \\  return __home_expect_close_to(expected, precision, false);
+    \\};
+    \\expect.not.closeTo = function(expected, precision) {
+    \\  return __home_expect_close_to(expected, precision, true);
+    \\};
+    \\function __home_expect_async_asymmetric(mode, matcher, inverse) {
+    \\  return {
+    \\    __home_async_asymmetric: true,
+    \\    asymmetricMatch(received) {
+    \\      if (!__home_is_thenable(received)) return false;
+    \\      const apply = value => {
+    \\        const result = matcher.asymmetricMatch(value);
+    \\        return __home_is_thenable(result) ? Promise.resolve(result).then(pass => inverse ? !pass : !!pass) : (inverse ? !result : !!result);
+    \\      };
+    \\      const state = __home_promise_states.get(received);
+    \\      if (state) {
+    \\        if (state.status !== mode) return false;
+    \\        return apply(state.value);
+    \\      }
+    \\      if (mode === "rejected") return Promise.resolve(received).then(() => false, apply);
+    \\      return Promise.resolve(received).then(apply, () => false);
+    \\    },
+    \\  };
+    \\}
+    \\function __home_expect_async_namespace(mode, inverse) {
+    \\  return {
+    \\    stringContaining(sample) {
+    \\      return __home_expect_async_asymmetric(mode, expect.stringContaining(sample), inverse);
+    \\    },
+    \\    stringMatching(pattern) {
+    \\      return __home_expect_async_asymmetric(mode, expect.stringMatching(pattern), inverse);
+    \\    },
+    \\  };
+    \\}
+    \\expect.rejectsTo = __home_expect_async_namespace("rejected", false);
+    \\expect.resolvesTo = __home_expect_async_namespace("fulfilled", false);
+    \\expect.not.rejectsTo = __home_expect_async_namespace("rejected", true);
+    \\expect.not.resolvesTo = __home_expect_async_namespace("fulfilled", true);
     \\function __home_expect_object_containing(sample, inverse) {
     \\  return {
     \\    __home_expect_object_containing: true,
@@ -50436,9 +50780,11 @@ const harness_prelude =
     \\  };
     \\}
     \\expect.objectContaining = function(sample) {
+    \\  if (sample === null || typeof sample !== "object") throw new TypeError("Expected is not an object");
     \\  return __home_expect_object_containing(sample, false);
     \\};
     \\expect.not.objectContaining = function(sample) {
+    \\  if (sample === null || typeof sample !== "object") throw new TypeError("Expected is not an object");
     \\  return __home_expect_object_containing(sample, true);
     \\};
     \\if (!globalThis.__home_native_proxy) {
@@ -50475,11 +50821,13 @@ const harness_prelude =
     \\}
     \\expect.arrayContaining = function(sample) {
     \\  if (new.target) throw new TypeError("expect.arrayContaining is not a constructor");
+    \\  if (!Array.isArray(sample)) throw new TypeError("You must provide an array to arrayContaining");
     \\  return __home_expect_array_containing(sample, false);
     \\};
     \\expect.not = Object.assign(expect.not || {}, {
     \\  arrayContaining(sample) {
     \\    if (new.target) throw new TypeError("expect.not.arrayContaining is not a constructor");
+    \\    if (!Array.isArray(sample)) throw new TypeError("You must provide an array to arrayContaining");
     \\    return __home_expect_array_containing(sample, true);
     \\  },
     \\});
@@ -58059,7 +58407,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-extend.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "bun test expect cross-runner matcher matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/failure-skip.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test failure skip hook reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts"))
@@ -75490,6 +75838,35 @@ test "bootstrap runner mirrors expect.extend matcher matrix" {
     try std.testing.expectEqual(@as(usize, 28), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors cross-runner expect matcher matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_property_path_lookup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deep_equal(a, b, strict, seen)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_current_assertion_state") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.resolvesTo = __home_expect_async_namespace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Received message: ") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/expect.test.js");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 398 or summary.todo != 10) {
+        std.debug.print(
+            "cross-runner expect matcher matrix mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 398), summary.failed, summary.todo, @as(usize, 10), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 398), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 10), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
