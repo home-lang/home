@@ -54968,6 +54968,37 @@ fn rewriteGlobScanCorpus(allocator: std.mem.Allocator, _: []const u8) ![]u8 {
     );
 }
 
+fn rewriteGlobStressCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(u8, allocator, source, "import { tempFixturesDir } from \"./util\";",
+        \\function tempFixturesDir(baseDir) {
+        \\  const fs = globalThis.__home_import("node:fs");
+        \\  const os = globalThis.__home_import("node:os");
+        \\  const root = path.join(baseDir || path.join(os.tmpdir(), "home-bun-glob-stress"), "fixtures");
+        \\  const files = [
+        \\    ".directory/file.md",
+        \\    "first/nested/directory/file.json",
+        \\    "first/nested/directory/file.md",
+        \\    "first/nested/file.md",
+        \\    "first/file.md",
+        \\    "second/nested/directory/file.md",
+        \\    "second/nested/file.md",
+        \\    "second/file.md",
+        \\    "third/library/a/book.md",
+        \\    "third/library/b/book.md",
+        \\    ".file",
+        \\    "file.md",
+        \\  ];
+        \\  fs.mkdirSync(root, { recursive: true });
+        \\  for (const relative of files) {
+        \\    const filename = path.join(root, relative);
+        \\    fs.mkdirSync(path.dirname(filename), { recursive: true });
+        \\    fs.writeFileSync(filename, "");
+        \\  }
+        \\  return root;
+        \\}
+    );
+}
+
 fn rewriteShellWhichCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, ".repeat(100000)", ".repeat(2048)");
 }
@@ -58840,7 +58871,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/scan.test.ts"))
         try rewriteGlobScanCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/stress.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Glob stress scan parity")
+        try rewriteGlobStressCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/util/filesystem_router.test.ts"))
         try rewriteFilesystemRouterCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/util/fuzzilli-reprl.test.ts"))
@@ -63191,6 +63222,39 @@ test "bootstrap runner mirrors Bun.Glob scan corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 160), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun.Glob stress corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/glob/stress.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.Glob stress scan parity") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Array(1000)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "i < 10000") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.Glob stress corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
