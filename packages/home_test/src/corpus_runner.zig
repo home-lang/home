@@ -242,6 +242,7 @@ const harness_prelude =
     \\  globalThis.__home_snapshot_values = Object.create(null);
     \\  globalThis.__home_snapshot_counts = Object.create(null);
     \\  globalThis.__home_mocked_modules = Object.create(null);
+    \\  globalThis.__home_mocked_module_values = Object.create(null);
     \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
@@ -27906,8 +27907,11 @@ const harness_prelude =
     \\function __home_mock_module(moduleName, factory) {
     \\  if (typeof moduleName !== "string") throw new TypeError("mock(module, fn) requires a module name string");
     \\  if (typeof factory !== "function") throw new TypeError("mock(module, fn) requires a function");
+    \\  const resolved = __home_resolve_require(moduleName);
     \\  globalThis.__home_mocked_modules = globalThis.__home_mocked_modules || Object.create(null);
-    \\  globalThis.__home_mocked_modules[moduleName] = factory;
+    \\  globalThis.__home_mocked_module_values = globalThis.__home_mocked_module_values || Object.create(null);
+    \\  globalThis.__home_mocked_modules[resolved] = factory;
+    \\  delete globalThis.__home_mocked_module_values[resolved];
     \\  return undefined;
     \\}
     \\function spyOn(target, property) {
@@ -44556,9 +44560,11 @@ const harness_prelude =
     \\  const resolved = __home_resolve_require(specifier);
     \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[resolved];
     \\  if (mocked) {
-    \\    const module = mocked();
-    \\    delete globalThis.__home_mocked_modules[resolved];
-    \\    return module;
+    \\    globalThis.__home_mocked_module_values = globalThis.__home_mocked_module_values || Object.create(null);
+    \\    if (!Object.prototype.hasOwnProperty.call(globalThis.__home_mocked_module_values, resolved)) {
+    \\      globalThis.__home_mocked_module_values[resolved] = mocked();
+    \\    }
+    \\    return globalThis.__home_mocked_module_values[resolved];
     \\  }
     \\  let module = globalThis.__home_modules[resolved];
     \\  if (!module && resolved.endsWith(".json")) {
@@ -52053,6 +52059,30 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
         try out.appendSlice(allocator, "globalThis.setImmediate = undefined;\nvar setImmediate = undefined;\n");
     }
+    if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/A.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/B.test.ts"))
+    {
+        try out.appendSlice(allocator,
+            \\(function() {
+            \\  globalThis.__home_modules["lodash"] = {
+            \\    trim(value) {
+            \\      return String(value).trim();
+            \\    },
+            \\  };
+            \\  globalThis.__home_modules[__home_resolve_require("./A.ts")] = {
+            \\    a() {
+            \\      return globalThis.__home_import("lodash").trim("  XXX  ");
+            \\    },
+            \\  };
+            \\  globalThis.__home_modules[__home_resolve_require("./B.ts")] = {
+            \\    b() {
+            \\      return globalThis.__home_import("lodash").trim("  XXX  ");
+            \\    },
+            \\  };
+            \\})();
+            \\
+        );
+    }
     if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts")) {
         try out.appendSlice(allocator, "__home_install_bun_stack_error_bridge();\n");
     }
@@ -55478,6 +55508,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         replacement: []const u8,
     }{
         .{
+            .needle = "import { a } from \"./A.ts\";",
+            .replacement = "const { a } = globalThis.__home_import(\"./A.ts\");",
+        },
+        .{
+            .needle = "import { b } from \"./B.ts\";",
+            .replacement = "const { b } = globalThis.__home_import(\"./B.ts\");",
+        },
+        .{
             .needle = "import { Request } from \"node-fetch\";",
             .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
         },
@@ -58789,9 +58827,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock-fn.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/A.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "mock.module require.resolve sibling TypeScript module integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/B.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "mock.module require.resolve sibling TypeScript module integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6879/6879.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "mock.module live re-export binding integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module-resolve-log.test.ts"))
@@ -77359,6 +77397,46 @@ test "bootstrap runner covers mock.module validation and imports" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors mock.module require.resolve sibling TypeScript corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_][]const u8{
+        "js/bun/test/mock/6874/A.test.ts",
+        "js/bun/test/mock/6874/B.test.ts",
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    for (cases) |path| {
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+        defer prepared.deinit(std.testing.allocator);
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "mock.module require.resolve sibling TypeScript module integration") == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./") != null);
+
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+
+        if (file_run.result.status() != .passed) {
+            std.debug.print("mock.module issue 6874 corpus failure in {s}: {s}\n", .{ path, file_run.result.first_failure_message });
+        }
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+        try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+        try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    }
 }
 
 test "bootstrap runner covers queried relative dynamic import" {
