@@ -83345,7 +83345,40 @@ pub const Checker = struct {
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         try self.inferCallSubstitutions(constructor_sig, args, arg_types, &subs);
+        try self.normalizeGenericClassInferenceSubstitutions(info, &subs);
         return try self.instantiateGenericClassWithSubstitutions(class_name, info, &subs);
+    }
+
+    fn instantiateGenericClassConstructorSignatureFromArgs(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        constructor_sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!TypeId {
+        const info = self.generic_aliases.get(class_name) orelse return constructor_sig;
+        if (info.params.len == 0) return constructor_sig;
+
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferCallSubstitutions(constructor_sig, args, arg_types, &subs);
+        try self.normalizeGenericClassInferenceSubstitutions(info, &subs);
+        if (subs.count() == 0) return constructor_sig;
+        return self.substituteType(constructor_sig, &subs) catch constructor_sig;
+    }
+
+    fn normalizeGenericClassInferenceSubstitutions(
+        self: *Checker,
+        info: GenericAliasInfo,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        for (info.params) |param| {
+            const candidate = subs.get(param) orelse continue;
+            const raw_constraint = self.typeParameterConstraint(param) orelse continue;
+            const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+            if (self.engine.isAssignableTo(candidate, constraint) catch false) continue;
+            try subs.put(self.gpa, param, constraint);
+        }
     }
 
     fn instantiateGenericClassWithSubstitutions(
@@ -95141,10 +95174,19 @@ pub const Checker = struct {
                 var used_explicit_type_args = false;
                 effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(node, sig, type_arg_nodes, &used_explicit_type_args);
                 if (sig_is_generic) saw_generic_record = true;
-            } else if (sig_is_generic) {
-                // Infer only parameters declared by this construct signature;
-                // enclosing type parameters are fixed at the call site.
-                effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
+            } else {
+                if (sig_is_generic) {
+                    effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
+                }
+                if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
+                    const class_name = hir_mod.identifierOf(self.hir, callee_node).name;
+                    effective_sig = try self.instantiateGenericClassConstructorSignatureFromArgs(
+                        class_name,
+                        effective_sig,
+                        args,
+                        arg_types,
+                    );
+                }
             }
 
             if (try self.signatureAccepts(node, effective_sig, args, arg_types)) {
@@ -169123,11 +169165,21 @@ test "checker: returned generic function enforces substituted scalar constraint"
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.argument_type_mismatch) found = true;
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: generic class constructor inference falls back to a violated constraint" {
+    const s = try newSetup(
+        \\class C<T extends string> {
+        \\  constructor(x: T) {}
+        \\}
+        \\new C(1);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: overloaded function-typed parameter checks all call signatures" {
