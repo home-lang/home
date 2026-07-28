@@ -122,7 +122,9 @@ comptime {
     }
 
     for ([_][]const u8{
-        "ConcurrentCppTask__createAndRun",
+        // ConcurrentCppTask__createAndRun now has its real export in
+        // jsc/CppTask.zig. The old no-op silently discarded WebCrypto work
+        // queue jobs, leaving promises such as subtle.sign(HMAC, ...) pending.
         // toUTF16AllocSentinel now has its real export in
         // jsc/js2native_workarounds.zig — the noop returned garbage.
         "JS2Zig___src_bun_zig__getUseSystemCA",

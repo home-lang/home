@@ -1,11 +1,11 @@
 // Copied from bun/src/jsc/CppTask.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// The original `bun.cpp.Bun__performTask`, `jsc.markBinding`, `jsc.WorkPool`,
-// `jsc.VirtualMachine`, `bun.TrivialNew`, and `bun.destroy` are all not yet
-// ported. We declare local opaque/struct stubs + minimal helpers so the public
-// surface of `CppTask` / `ConcurrentCppTask` compiles. The real bridge
-// re-attaches in Phase 12.2 alongside the JSC engine bring-up.
+// Home keeps the small allocation/markBinding helpers local, while the task
+// execution, VM lifetime accounting, and work-pool scheduling paths are wired
+// to the real runtime. Concurrent C++ jobs must never be represented by no-op
+// placeholders: WebCrypto and other native APIs rely on them to settle their
+// promises.
 
 const std = @import("std");
 const bun_rt = @import("bun");
@@ -15,28 +15,9 @@ const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 // JSC bridge JSError stubbed — re-attaches in Phase 12.2.
 const JSError = error{JSError};
 
-// JSC bridge VirtualMachine + event_loop stubbed — re-attaches in Phase 12.2.
-const VirtualMachine = struct {
-    event_loop: EventLoop = .{},
-
-    const EventLoop = struct {
-        pub fn refConcurrently(_: *EventLoop) void {}
-        pub fn unrefConcurrently(_: *EventLoop) void {}
-    };
-};
-
-// JSC bridge WorkPoolTask stubbed — re-attaches in Phase 12.2.
-const WorkPoolTask = struct {
-    callback: *const fn (*WorkPoolTask) void,
-};
-
-// JSC bridge WorkPool stubbed — re-attaches in Phase 12.2.
-const WorkPool = struct {
-    pub fn schedule(task: *WorkPoolTask) void {
-        // No-op stub; the real implementation submits to a thread pool.
-        _ = task;
-    }
-};
+const VirtualMachine = @import("./VirtualMachine.zig");
+const WorkPoolTask = @import("../threading/work_pool.zig").Task;
+const WorkPool = @import("../threading/work_pool.zig").WorkPool;
 
 // JSC bridge markBinding stubbed — re-attaches in Phase 12.2.
 fn markBinding(_: std.builtin.SourceLocation) void {}
@@ -110,7 +91,7 @@ pub const ConcurrentCppTask = struct {
         }
     }
 
-    pub fn ConcurrentCppTask__createAndRun(cpp_task: *EventLoopTaskNoContext) callconv(.c) void {
+    pub export fn ConcurrentCppTask__createAndRun(cpp_task: *EventLoopTaskNoContext) void {
         markBinding(@src());
         if (cpp_task.getVM()) |vm| {
             vm.event_loop.refConcurrently();
@@ -120,16 +101,17 @@ pub const ConcurrentCppTask = struct {
     }
 };
 
+comptime {
+    _ = ConcurrentCppTask.ConcurrentCppTask__createAndRun;
+}
+
 test "CppTask is an opaque pointer-only type" {
     try std.testing.expect(@sizeOf(*CppTask) == @sizeOf(usize));
 }
 
-test "ConcurrentCppTask exposes the expected pub decls" {
-    // Pure comptime existence check — does NOT take the address of any function
-    // (taking `&runFromWorkpool` would force-compile the C++ extern symbols
-    // `Bun__EventLoopTaskNoContext__performTask` et al., which only land in
-    // Phase 12.2). `@hasDecl` is enough to assert API surface.
+test "ConcurrentCppTask exposes the real work-pool bridge" {
     try std.testing.expect(@hasDecl(ConcurrentCppTask, "new"));
     try std.testing.expect(@hasDecl(ConcurrentCppTask, "runFromWorkpool"));
     try std.testing.expect(@hasDecl(ConcurrentCppTask, "ConcurrentCppTask__createAndRun"));
+    try std.testing.expect(WorkPoolTask == @import("../threading/work_pool.zig").Task);
 }
