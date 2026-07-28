@@ -130,7 +130,7 @@ pub fn Bun__randomUUIDv7_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallF
     };
 
     const timestamp: u64 = brk: {
-        const timestamp_value: jsc.JSValue = if (!encoding_value.isUndefined() and arguments.len > 1)
+        const timestamp_value: jsc.JSValue = if (arguments.len > 1)
             arguments[1]
         else if (arguments.len == 1 and encoding_value.isUndefined())
             arguments[0]
@@ -138,11 +138,21 @@ pub fn Bun__randomUUIDv7_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallF
             .js_undefined;
 
         if (!timestamp_value.isUndefined()) {
+            // UUIDv7's unix_ts_ms field is 48 bits (RFC 9562 §5.7); a wider value
+            // silently truncates, so reject out-of-range / non-finite timestamps
+            // instead of clamping. Ports oven-sh/bun 55a9f31d4e (#34021).
+            const MAX_TIMESTAMP = (1 << 48) - 1;
             if (timestamp_value.isDate()) {
                 const date = timestamp_value.getUnixTimestamp();
-                break :brk @intFromFloat(@max(0, date));
+                if (!std.math.isFinite(date) or date < 0.0 or date > @as(f64, MAX_TIMESTAMP)) {
+                    return globalThis.throwRangeError(date, .{ .field_name = "timestamp", .min = 0, .max = MAX_TIMESTAMP });
+                }
+                break :brk @intFromFloat(date);
             }
-            break :brk @intCast(try globalThis.validateIntegerRange(timestamp_value, i64, 0, .{ .min = 0, .field_name = "timestamp" }));
+            if (timestamp_value.isNumber() and std.math.isNan(timestamp_value.asNumber())) {
+                return globalThis.throwRangeError(std.math.nan(f64), .{ .field_name = "timestamp", .min = 0, .max = MAX_TIMESTAMP });
+            }
+            break :brk @intCast(try globalThis.validateIntegerRange(timestamp_value, i64, 0, .{ .min = 0, .max = MAX_TIMESTAMP, .field_name = "timestamp" }));
         }
 
         break :brk @intCast(@max(0, bun.milliTimestamp()));
