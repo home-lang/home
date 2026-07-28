@@ -71144,7 +71144,9 @@ pub const Checker = struct {
             }
             if (nk == .object_pattern and v.init != hir_mod.none_node_id and !object_rest_nullish_union_binding_diag_fired) {
                 try self.checkObjectBindingPatternAgainstType(v.name, final_type, declared_type != types.Primitive.none);
-                if (self.hir.kindOf(v.init) == .object_literal) {
+                if (self.hir.kindOf(v.init) == .object_literal and
+                    !self.objectBindingPatternHasRest(v.name))
+                {
                     const expected_t = try self.objectBindingPatternExpectedType(v.name, false, true);
                     if (expected_t != types.Primitive.none) try self.checkExcessProperties(v.init, expected_t);
                 }
@@ -135364,12 +135366,15 @@ pub const Checker = struct {
         // Multi-property elaboration (TS2739/TS2740) is only safe to emit
         // from this surface heuristic for an object-LITERAL source — the
         // classic `{…}` not-assignable-to-`{a;b;c}` case. For other
-        // sources (a variable, an object-rest target, etc.) upstream emits
+        // sources (a variable, etc.) upstream emits
         // the missing-property error deep in the relate algorithm under
         // conditions this heuristic can't see, and the correct surface
-        // code is often the generic TS2322 — so defer those to the
+        // code is often the generic TS2322, so defer those to the
         // existing TS2322 path rather than over-firing TS2739/2740. The
         // single-property TS2741 case keeps its original broader gating.
+        // Object-rest assignment targets are the exception: their residual
+        // object type is itself the assigned value, so upstream reports its
+        // complete missing-property list.
         const source_has_index_signature = source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_object_type and
             (self.interner.objectStringIndex(source) != types.Primitive.none or
@@ -135379,7 +135384,8 @@ pub const Checker = struct {
             !(value_node != hir_mod.none_node_id and self.hir.kindOf(value_node) == .object_literal) and
             !class_shape_mismatch and
             !source_is_primitive_object_intersection and
-            !source_has_index_signature)
+            !source_has_index_signature and
+            !self.nodeIsObjectRestAssignmentTarget(diag_node))
         {
             return false;
         }
@@ -135470,6 +135476,31 @@ pub const Checker = struct {
             try self.report(diag_node, TsCodes.type_missing_properties, msg);
         }
         return true;
+    }
+
+    fn nodeIsObjectRestAssignmentTarget(self: *Checker, node: NodeId) bool {
+        var cur = node;
+        var inside_rest = false;
+        var depth: u8 = 0;
+        while (cur != hir_mod.none_node_id and depth < 64) : (depth += 1) {
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id) return false;
+            switch (self.hir.kindOf(parent)) {
+                .spread => {
+                    if (hir_mod.spreadOf(self.hir, parent).expression == cur) inside_rest = true;
+                },
+                .assignment => {
+                    const assignment = hir_mod.assignmentOf(self.hir, parent);
+                    return inside_rest and
+                        assignment.target != hir_mod.none_node_id and
+                        self.nodeIsAncestorOf(assignment.target, node);
+                },
+                .var_decl, .let_decl, .const_decl, .fn_decl, .fn_expr, .arrow_fn, .source_file => return false,
+                else => {},
+            }
+            cur = parent;
+        }
+        return false;
     }
 
     /// Formats a property name for use in a diagnostic message that
@@ -149187,10 +149218,19 @@ test "checker: object rest assignment checks the residual source type" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCodeAndMessage(
-        &b.base,
+        b.base,
         TsCodes.type_not_assignable,
         "Type '{ a: number; }' is not assignable to type '{ a: string; }'.",
     ));
+}
+
+test "checker: object rest binding accepts extra fresh source properties" {
+    const b = try newBoundSetup(
+        \\var { x, ...fresh } = { x: 1, y: 2 };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.object_literal_excess_property));
 }
 
 test "checker: overload not compatible (TS2394) carries TS2750 'implementation signature declared here'" {
@@ -177854,15 +177894,23 @@ test "checker: object rest with dynamic computed keys checks index signatures an
     try s.checker.checkSourceFile(s.root);
     var index_count: usize = 0;
     var var_mismatch = false;
-    var assignment_mismatch = false;
+    var assignment_missing = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.no_matching_index_signature) index_count += 1;
         if (d.code == TsCodes.subsequent_var_type_mismatch) var_mismatch = true;
-        if (d.code == TsCodes.type_not_assignable) assignment_mismatch = true;
+        if (d.code == TsCodes.type_missing_properties and
+            std.mem.eql(
+                u8,
+                d.message,
+                "Type '{}' is missing the following properties from type '{ a: number; b: string; }': a, b",
+            ))
+        {
+            assignment_missing = true;
+        }
     }
     try T.expect(index_count >= 2);
     try T.expect(var_mismatch);
-    try T.expect(assignment_mismatch);
+    try T.expect(assignment_missing);
 }
 
 test "checker: object rest drops readonly from residual members" {
