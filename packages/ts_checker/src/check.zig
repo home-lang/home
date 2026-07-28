@@ -42975,6 +42975,7 @@ pub const Checker = struct {
 
     fn heritageAssignableDepth(self: *Checker, source: TypeId, target: TypeId, depth: u8) anyerror!bool {
         if (source == target) return true;
+        if (self.mappedSourceAssignableToOpenAnyIndexTarget(source, target)) return true;
         if (self.numberLikeAssignableToNumericEnum(source, target)) return true;
         if (depth >= 16) return self.engine.isAssignableTo(source, target);
         if (target < self.interner.pool.typeCount() and
@@ -72686,6 +72687,7 @@ pub const Checker = struct {
         if (try self.genericSignatureRelationMismatch(source_t, target_t)) return false;
         if (try self.nonNullableIntersectionSourceAssignableToTarget(source_t, target_t)) return true;
         if (self.typeParameterSourceAssignableToMappedTarget(source_t, target_t)) return true;
+        if (self.mappedSourceAssignableToOpenAnyIndexTarget(source_t, target_t)) return true;
         if (self.filteredMappedKeySourceAssignableToKeyofTarget(source_t, target_t)) return true;
         if (try self.patternIndexSignaturesAssignable(source_t, target_t)) |ok| return ok;
         if (try self.genericIndexSignatureRelationMismatch(source_t, target_t)) return false;
@@ -72722,6 +72724,14 @@ pub const Checker = struct {
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn mappedSourceAssignableToOpenAnyIndexTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_mapped) return false;
+        if (!self.interner.pool.flagsOf(target_t).is_object_type) return false;
+        if (self.interner.objectMembers(target_t).len != 0) return false;
+        return self.typeIsAnyLike(self.interner.objectStringIndex(target_t));
     }
 
     fn nestedSignatureKindMismatch(
@@ -167545,6 +167555,26 @@ test "checker: plain homomorphic mapped target accepts its source type parameter
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type 'T' is not assignable to type '{ [P in keyof T & string as `p_${P}`]: T[P]; }'."));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+}
+
+test "checker: homomorphic mapped sources satisfy open any index targets" {
+    const b = try newBoundSetup(
+        \\function f<T>(partial: Partial<T>, readonlyValue: Readonly<T>) {
+        \\  let indexed: { [key: string]: any };
+        \\  indexed = partial;
+        \\  indexed = readonlyValue;
+        \\}
+        \\interface Base {
+        \\  value: { [key: string]: any };
+        \\}
+        \\interface Derived<T> extends Base {
+        \\  value: Partial<T>;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.interface_incorrectly_extends));
 }
 
 test "checker: remapped mapped target rejects generic source when keys change" {
