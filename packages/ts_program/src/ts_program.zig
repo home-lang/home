@@ -3118,6 +3118,80 @@ pub const ModuleExportFacts = struct {
     type_only_pos: ?u32 = null,
 };
 
+/// Resolve direct and export-star-projected facts for `name` from an already
+/// resolved module. Explicit relative subpaths are followed recursively;
+/// directory/index back-references are not, because a `typesVersions` package
+/// entry such as `export * from "../"` resolves back through the package map
+/// and does not expose the original entry point.
+pub fn moduleExportFactsFromResolvedModule(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_path: []const u8,
+    name: []const u8,
+) ModuleExportFacts {
+    return moduleExportFactsFromResolvedModuleDepth(gpa, resolver, module_path, name, 0) catch .{};
+}
+
+fn moduleExportFactsFromResolvedModuleDepth(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_path: []const u8,
+    name: []const u8,
+    depth: u8,
+) !ModuleExportFacts {
+    if (depth >= 8) return .{};
+    const src = try resolver.fs.readFile(gpa, module_path);
+    defer gpa.free(src);
+    const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or std.mem.endsWith(u8, module_path, ".jsx");
+    var facts: ModuleExportFacts = .{
+        .exported_type = moduleExportsTypeSpaceName(gpa, src, name, is_tsx) or
+            moduleExportsTypeOnlyNamespaceName(gpa, src, name, is_tsx),
+        .exported_value = moduleExportsValueSpaceName(gpa, src, name, is_tsx),
+        .ambient_const_enum = moduleExportsAmbientConstEnumName(gpa, src, module_path, name, is_tsx),
+    };
+
+    var compilation = try ts_driver.compileSource(gpa, src, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    });
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return facts;
+    for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+        if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+        if (!ex.is_namespace or compilation.interner.get(ex.namespace_alias).len != 0) continue;
+        const specifier = compilation.interner.get(ex.module);
+        if (!std.mem.startsWith(u8, specifier, ".") or exportStarTargetPrefersIndex(specifier)) continue;
+        const target = resolver.resolve(specifier, module_path) catch continue;
+        if (std.mem.eql(u8, target.path, module_path)) continue;
+        const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, name, depth + 1);
+        if (ex.is_type_only) {
+            if (nested.exported_type) {
+                facts.exported_type = true;
+                if (facts.type_only_pos == null) facts.type_only_pos = compilation.hir.spanOf(stmt).start;
+            }
+            continue;
+        }
+        facts.exported_type = facts.exported_type or nested.exported_type;
+        facts.exported_value = facts.exported_value or nested.exported_value;
+        facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
+    }
+    return facts;
+}
+
+fn exportStarTargetPrefersIndex(specifier: []const u8) bool {
+    return std.mem.eql(u8, specifier, ".") or
+        std.mem.eql(u8, specifier, "./") or
+        std.mem.eql(u8, specifier, "..") or
+        std.mem.eql(u8, specifier, "../") or
+        std.mem.endsWith(u8, specifier, "/.") or
+        std.mem.endsWith(u8, specifier, "/..");
+}
+
 pub fn ambientModuleExportFacts(
     gpa: std.mem.Allocator,
     module_source: []const u8,
@@ -5064,6 +5138,34 @@ test "ambientModuleExportFacts distinguishes a missing wildcard export" {
     ;
     const exported_type = ambientModuleExportFacts(T.allocator, type_source, "b.foo", "OhNo", false).?;
     try T.expect(exported_type.exported_type);
+}
+
+test "module export facts follow explicit typesVersions back-references" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/ext/index.d.ts", "export function fa(): void;");
+    try vfs.addFile("/node_modules/ext/other.d.ts", "export function fb(): void;");
+    try vfs.addFile("/node_modules/ext/ts3.1/index.d.ts", "export * from \"../\";");
+    try vfs.addFile("/node_modules/ext/ts3.1/other.d.ts", "export * from \"../other\";");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const subpath = moduleExportFactsFromResolvedModule(
+        T.allocator,
+        &resolver,
+        "/node_modules/ext/ts3.1/other.d.ts",
+        "fb",
+    );
+    try T.expect(subpath.exported_value);
+
+    const entry = moduleExportFactsFromResolvedModule(
+        T.allocator,
+        &resolver,
+        "/node_modules/ext/ts3.1/index.d.ts",
+        "fa",
+    );
+    try T.expect(!entry.exported_type);
+    try T.expect(!entry.exported_value);
 }
 
 test "moduleExportsTypeSpaceName: exported interface is a type-space export" {

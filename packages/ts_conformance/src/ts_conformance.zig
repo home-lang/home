@@ -161,10 +161,18 @@ const CheckerResolverAdapter = struct {
         const src = self.resolver.fs.readFile(self.resolver.gpa, module_path) catch return null;
         defer self.resolver.gpa.free(src);
         const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or std.mem.endsWith(u8, module_path, ".jsx");
-        const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx) or
-            ts_program.moduleExportsTypeOnlyNamespaceName(self.resolver.gpa, src, name, is_tsx);
-        const exported_value = ts_program.moduleExportsValueSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const ambient_const_enum = ts_program.moduleExportsAmbientConstEnumName(self.resolver.gpa, src, module_path, name, is_tsx);
+        const resolved_facts = if (resolved != null)
+            ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, module_path, name)
+        else
+            ts_program.ModuleExportFacts{
+                .exported_type = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx) or
+                    ts_program.moduleExportsTypeOnlyNamespaceName(self.resolver.gpa, src, name, is_tsx),
+                .exported_value = ts_program.moduleExportsValueSpaceName(self.resolver.gpa, src, name, is_tsx),
+                .ambient_const_enum = ts_program.moduleExportsAmbientConstEnumName(self.resolver.gpa, src, module_path, name, is_tsx),
+            };
+        const exported = resolved_facts.exported_type;
+        const exported_value = resolved_facts.exported_value;
+        const ambient_const_enum = resolved_facts.ambient_const_enum;
         // `cannot be named`: not a direct top-level export, but reachable
         // only as a nested member of an exported namespace (no importable
         // alias). Only queried when it is not a top-level export.

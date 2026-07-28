@@ -50101,6 +50101,21 @@ pub const Checker = struct {
                 continue;
             }
             if (self.hir.kindOf(raw) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, raw);
+            if (ex.is_namespace and
+                ex.namespace_alias == string_interner.empty_string_id and
+                ex.module != string_interner.empty_string_id)
+            {
+                const star_spec = self.string_interner.get(ex.module);
+                if (std.mem.startsWith(u8, star_spec, ".") and
+                    !virtualRelativeSpecifierPrefersIndex(star_spec))
+                {
+                    switch (try self.virtualRelativeModuleNamedExportRuntimeStatus(raw, star_spec, name)) {
+                        .missing, .unknown => {},
+                        else => return true,
+                    }
+                }
+            }
             const decl = self.unwrapExportDecl(raw);
             const decl_name = self.declarationName(decl) orelse continue;
             if (decl_name == name) return true;
@@ -149656,6 +149671,32 @@ test "checker: virtual package imports prefer typesVersions declarations" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: typesVersions explicit back-reference re-exports named members" {
+    const b = try newBoundSetup(
+        \\// @filename: node_modules/ext/index.d.ts
+        \\export function fa(): void;
+        \\// @filename: node_modules/ext/other.d.ts
+        \\export function fb(): void;
+        \\// @filename: node_modules/ext/ts3.1/index.d.ts
+        \\export * from "../";
+        \\// @filename: node_modules/ext/ts3.1/other.d.ts
+        \\export * from "../other";
+        \\// @filename: main.ts
+        \\import { fa } from "ext";
+        \\import { fb } from "ext/other";
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    var missing_fa = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.no_exported_member) continue;
+        if (std.mem.indexOf(u8, d.message, "'fa'") != null) missing_fa = true;
+        try T.expect(std.mem.indexOf(u8, d.message, "'fb'") == null);
+    }
+    try T.expect(missing_fa);
 }
 
 test "checker: ambient augmentation of untyped virtual module reports TS2665" {

@@ -2088,7 +2088,8 @@ const CheckerResolverAdapter = struct {
         const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
         defer self.resolver.gpa.free(src);
         const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
-        const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
+        const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, r.path, name);
+        const exported = facts.exported_type;
         const cannot_be_named = !exported and
             ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
         const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
@@ -2097,6 +2098,8 @@ const CheckerResolverAdapter = struct {
         return .{
             .module_name = module_name,
             .exported_type = exported,
+            .exported_value = facts.exported_value,
+            .ambient_const_enum = facts.ambient_const_enum,
             .cannot_be_named = cannot_be_named,
             .type_only_export = type_only_pos != null,
             .export_path = export_path,
