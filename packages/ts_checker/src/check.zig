@@ -21537,7 +21537,31 @@ pub const Checker = struct {
             const key_name = (try self.objectBindingElementKeyName(elem, p.name)) orelse continue;
             try omitted.put(self.gpa, key_name, {});
         }
+        return try self.objectRestTypeExcluding(source_t, &omitted);
+    }
 
+    fn objectRestAssignmentType(self: *Checker, pattern_node: NodeId, source_t: TypeId, rest_index: usize) CheckError!TypeId {
+        if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return types.Primitive.any;
+        if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_object_type) {
+            return types.Primitive.any;
+        }
+        var omitted: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer omitted.deinit(self.gpa);
+        const props = hir_mod.objectLiteralProps(self.hir, pattern_node);
+        for (props[0..@min(rest_index, props.len)]) |prop_node| {
+            if (self.hir.kindOf(prop_node) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, prop_node);
+            const key_name = (try self.classMemberNameFromPropertyKey(prop.key, prop.is_computed)) orelse continue;
+            try omitted.put(self.gpa, key_name, {});
+        }
+        return try self.objectRestTypeExcluding(source_t, &omitted);
+    }
+
+    fn objectRestTypeExcluding(
+        self: *Checker,
+        source_t: TypeId,
+        omitted: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!TypeId {
         const source_is_class_instance = self.class_name_by_instance.contains(source_t);
         const source_is_class_static = self.class_name_by_static.contains(source_t);
         const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
@@ -24340,11 +24364,19 @@ pub const Checker = struct {
                     const v = hir_mod.varDeclOf(self.hir, cur);
                     if (v.init != prev) return false;
                     if (v.type_annotation != hir_mod.none_node_id) {
+                        const target_t = self.hir.typeOf(cur);
                         if ((self.contextualArrayLiteralFunctionElementTarget(fn_node, v.init) catch null)) |element_target_t| {
                             return self.contextualParameterTypeForFunctionParam(fn_node, param_node, element_target_t) != null;
                         }
-                        const target_t = self.hir.typeOf(cur);
                         if (contextual_member_name) |member_name| {
+                            if (self.hir.kindOf(prev) == .array_literal) {
+                                const element_t = self.contextualArrayElementType(target_t) catch return false;
+                                if (element_t != types.Primitive.none) {
+                                    if ((self.contextualObjectLiteralMemberTarget(element_t, member_name) catch null)) |member_t| {
+                                        return self.contextualParameterTypeForFunctionParam(fn_node, param_node, member_t) != null;
+                                    }
+                                }
+                            }
                             if ((self.contextualObjectLiteralMemberTarget(target_t, member_name) catch null)) |member_t| {
                                 return self.contextualParameterTypeForFunctionParam(fn_node, param_node, member_t) != null;
                             }
@@ -68692,6 +68724,7 @@ pub const Checker = struct {
             }
         }
         var has_dynamic_computed_key = false;
+        var has_non_final_rest = false;
         const target_props_oddl = hir_mod.objectLiteralProps(self.hir, target_node);
         for (target_props_oddl, 0..) |prop_node, prop_i| {
             if (self.hir.kindOf(prop_node) != .object_property) {
@@ -68701,6 +68734,7 @@ pub const Checker = struct {
                 // The parser already covers binding-pattern cases.
                 if (self.hir.kindOf(prop_node) == .spread and prop_i + 1 < target_props_oddl.len) {
                     try self.report(prop_node, TsCodes.rest_element_must_be_last, "A rest element must be last in a destructuring pattern.");
+                    has_non_final_rest = true;
                 }
                 // `({...obj?.a} = ÃÂ¢ÃÂÃÂ¦)` ÃÂ¢ÃÂÃÂ tsc fires TS2778 on the
                 // optional-chain inner. Distinct from the TS2779
@@ -68756,16 +68790,24 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (has_dynamic_computed_key) {
-                    const rest_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
-                    // Unwrap the `.spread` node so the destructuring
-                    // target check sees the underlying identifier /
-                    // member access / pattern.
-                    const target_for_rest = if (self.hir.kindOf(prop_node) == .spread)
-                        hir_mod.spreadOf(self.hir, prop_node).expression
-                    else
-                        prop_node;
-                    try self.checkDestructuringAssignmentTarget(target_for_rest, rest_t);
+                if (self.hir.kindOf(prop_node) == .spread and
+                    prop_i + 1 == target_props_oddl.len and
+                    !has_non_final_rest)
+                {
+                    const target_for_rest = hir_mod.spreadOf(self.hir, prop_node).expression;
+                    const target_kind = self.hir.kindOf(target_for_rest);
+                    if (!self.expressionIsOptionalChain(target_for_rest) and
+                        (target_kind == .identifier or target_kind == .member_access or target_kind == .element_access))
+                    {
+                        const rest_t = if (has_dynamic_computed_key)
+                            self.interner.internObjectType(&.{}) catch return error.OutOfMemory
+                        else
+                            try self.objectRestAssignmentType(target_node, source_t, prop_i);
+                        // Object-rest assignments write the residual
+                        // source shape into the rest target. Check that
+                        // shape even without a dynamic computed key.
+                        try self.checkDestructuringAssignmentTarget(target_for_rest, rest_t);
+                    }
                 }
                 continue;
             }
@@ -89764,11 +89806,13 @@ pub const Checker = struct {
         }
         const widened = self.widenForInference(fallback);
         if (self.propertyKeyLiteralUnionPart(prop_t) == null) return widened;
-        // Quoted JSX initializers are normalized as mutable strings
-        // (`x="Hi"` -> `string`). Expressions inside braces keep their
-        // fresh literal for elaboration (`x={3}` -> `3`), as does the
-        // shorthand form handled above.
-        if (self.hir.kindOf(value) != .jsx_expression) return widened;
+        // A quoted JSX initializer is contextually literal-preserving
+        // when the prop is a literal union (`x="f"` against `"a" | "b"`
+        // reports `"f"`, not `string`). Braced expressions follow the
+        // same rule through their inner expression.
+        if (self.hir.kindOf(value) != .jsx_expression) {
+            return try self.expressionLiteralType(value, widened);
+        }
         const ex = hir_mod.jsxExpressionOf(self.hir, value);
         if (ex.expression == hir_mod.none_node_id) return widened;
         return try self.expressionLiteralType(ex.expression, widened);
@@ -148930,6 +148974,22 @@ test "checker: object rest assignment with identifier target stays clean (no TS2
     }
 }
 
+test "checker: object rest assignment checks the residual source type" {
+    const b = try newBoundSetup(
+        \\let source = { a: 1, b: "x" };
+        \\let b: string;
+        \\let rest: { a: string };
+        \\({b, ...rest} = source);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeAndMessage(
+        &b.base,
+        TsCodes.type_not_assignable,
+        "Type '{ a: number; }' is not assignable to type '{ a: string; }'.",
+    ));
+}
+
 test "checker: overload not compatible (TS2394) carries TS2750 'implementation signature declared here'" {
     const b = try newBoundSetup(
         \\function f(a: number): number;
@@ -151187,12 +151247,12 @@ test "checker: JSX parity declared data attributes are type checked" {
     try T.expect(found_bag_diagnostic);
 }
 
-test "checker: JSX parity literal mismatch diagnostics preserve expression and shorthand literals" {
+test "checker: JSX parity literal mismatch diagnostics preserve contextual literals" {
     const s = try newTsxSetup(
         \\declare namespace JSX { interface Element {} }
-        \\interface Props { x: 2; y: false; z: 2; }
+        \\interface Props { x: 2; y: false; z: 2; w: "A" | "B"; }
         \\function Component(props: Props) { return null as any; }
-        \\<Component x={3} y z="Hi" />;
+        \\<Component x={3} y z="Hi" w="f" />;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -151200,15 +151260,18 @@ test "checker: JSX parity literal mismatch diagnostics preserve expression and s
     var number_literal = false;
     var shorthand_literal = false;
     var quoted_string = false;
+    var contextual_string_literal = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.type_not_assignable) continue;
         if (std.mem.eql(u8, d.message, "Type '3' is not assignable to type '2'.")) number_literal = true;
         if (std.mem.eql(u8, d.message, "Type 'true' is not assignable to type 'false'.")) shorthand_literal = true;
         if (std.mem.eql(u8, d.message, "Type 'string' is not assignable to type '2'.")) quoted_string = true;
+        if (std.mem.eql(u8, d.message, "Type '\"f\"' is not assignable to type '\"A\" | \"B\"'.")) contextual_string_literal = true;
     }
     try T.expect(number_literal);
     try T.expect(shorthand_literal);
     try T.expect(quoted_string);
+    try T.expect(contextual_string_literal);
 }
 
 test "checker: JSX parity later literal spread and any spread suppress explicit mismatches" {
@@ -185399,6 +185462,23 @@ test "checker: compact object literal callback keeps contextual parameter" {
         \\function f() {
         \\    const _ = compact([makeFooer(), { foo: (v) => v }]);
         \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.parameter_implicitly_any);
+    }
+}
+
+test "checker: annotated array element object keeps union member callback context" {
+    const s = try newSetup(
+        \\interface I1 { methodOnlyInI1(a: string): string; }
+        \\interface I2 { methodOnlyInI2(a: string): string; }
+        \\const values: Array<I1 | I2> = [{
+        \\  methodOnlyInI1: a => a,
+        \\  methodOnlyInI2: a => a,
+        \\}];
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
