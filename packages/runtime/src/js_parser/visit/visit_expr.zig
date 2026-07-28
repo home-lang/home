@@ -382,7 +382,21 @@ pub fn VisitExpr(
                 const e_ = expr.data.e_template;
                 if (e_.tag) |tag| {
                     e_.tag = p.visitExpr(tag);
+                }
 
+                // Visit the interpolation values before the macro dispatch below:
+                // its early-return paths (dead code, macros disabled, node_modules,
+                // macro failure) replace the whole expression without visiting the
+                // parts, which would leave the scopes recorded during the parse pass
+                // for any arrows/functions/classes inside them unconsumed and trip
+                // "Scope mismatch while visiting" on the next scope push. Mirrors
+                // e_call, which visits its arguments before macro handling.
+                // Ports oven-sh/bun 64ae83c2fc (#31693).
+                for (e_.parts) |*part| {
+                    part.value = p.visitExpr(part.value);
+                }
+
+                if (e_.tag != null) {
                     if (comptime allow_macros) {
                         const ref = switch (e_.tag.?.data) {
                             .e_import_identifier => |ident| ident.ref,
@@ -399,7 +413,7 @@ pub fn VisitExpr(
 
                                 // this ordering incase someone wants to use a macro in a node_module conditionally
                                 if (p.options.features.no_macros) {
-                                    p.log.addError(p.source, tag.loc, "Macros are disabled") catch unreachable;
+                                    p.log.addError(p.source, e_.tag.?.loc, "Macros are disabled") catch unreachable;
                                     return p.newExpr(E.Undefined{}, e_.tag.?.loc);
                                 }
 
@@ -428,10 +442,6 @@ pub fn VisitExpr(
                             }
                         }
                     }
-                }
-
-                for (e_.parts) |*part| {
-                    part.value = p.visitExpr(part.value);
                 }
 
                 // When mangling, inline string values into the template literal. Note that

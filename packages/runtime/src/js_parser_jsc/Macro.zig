@@ -555,7 +555,12 @@ pub const Runner = struct {
                 }
             },
             .e_template => {
-                @panic("TODO: support template literals in macros");
+                // Template-literal macro invocations aren't supported; report a
+                // clean error instead of panicking. Ports oven-sh/bun 64ae83c2fc
+                // (#31693, Macro.rs). The caller (e_template visit) does
+                // `catch return expr`, so the template stays as-is after erroring.
+                log.addError(source, caller.loc, "template literal macro invocations are not supported") catch unreachable;
+                return error.MacroFailed;
             },
             else => {
                 @panic("Unexpected caller type");
