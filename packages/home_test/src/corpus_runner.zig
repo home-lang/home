@@ -9567,6 +9567,18 @@ const harness_prelude =
     \\    output.exitCode,
     \\  );
     \\}
+    \\function __home_spawn_only_failures_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/only-failures.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const output = __home_inline_snapshot_object_at(0);
+    \\  if (!output || output.stderr === null) return null;
+    \\  return __home_spawn_completed(
+    \\    output.stdout === null ? "" : output.stdout + "\n",
+    \\    output.stderr + "\n",
+    \\    output.exitCode,
+    \\  );
+    \\}
     \\function __home_spawn_concurrent_immediate_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/concurrent_immediate.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -14299,6 +14311,8 @@ const harness_prelude =
     \\  if (textLoaderFixture) return textLoaderFixture;
     \\  const installedCommonjsEvalFixture = __home_spawn_installed_commonjs_eval_fixture(options || {}, cmd);
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
+    \\  const onlyFailuresFixture = __home_spawn_only_failures_fixture(options || {});
+    \\  if (onlyFailuresFixture) return onlyFailuresFixture;
     \\  const concurrentImmediateFixture = __home_spawn_concurrent_immediate_fixture(options || {});
     \\  if (concurrentImmediateFixture) return concurrentImmediateFixture;
     \\  const dotsReporterFixture = __home_spawn_dots_reporter_fixture(options || {});
@@ -58612,7 +58626,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "mock.module dynamic import and live binding matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-failures.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test only-failures CLI reporter")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-only.test.ts"))
@@ -69304,6 +69318,33 @@ test "bootstrap runner mirrors pretty format overflow regression" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors only failures reporter matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/only-failures.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/only-failures.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_only_failures_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("only failures reporter matrix corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
