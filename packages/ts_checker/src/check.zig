@@ -81175,6 +81175,366 @@ pub const Checker = struct {
         return try self.unionOrAny(returns.items);
     }
 
+    fn collectSignaturesOfKind(
+        self: *Checker,
+        t: TypeId,
+        is_construct: bool,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (is_construct) {
+            try self.collectConstructSignatures(t, out);
+        } else {
+            try self.collectCallSignatures(t, out);
+        }
+    }
+
+    fn nonGenericUnionSignatureMatch(
+        self: *Checker,
+        candidate: TypeId,
+        branch_signature: TypeId,
+        is_construct: bool,
+    ) bool {
+        if (!self.signatureMatchesKind(candidate, is_construct) or
+            !self.signatureMatchesKind(branch_signature, is_construct))
+        {
+            return false;
+        }
+        if (self.unionSignatureHasFreeGenericParameters(candidate) or
+            self.unionSignatureHasFreeGenericParameters(branch_signature))
+        {
+            return false;
+        }
+        if (!is_construct and !self.unionSignatureThisCompatible(candidate, branch_signature)) return false;
+        return self.unionCallSignatureAbsorbs(
+            candidate,
+            branch_signature,
+            self.interner.signatureParams(candidate).len,
+        );
+    }
+
+    fn unionSignatureHasFreeGenericParameters(self: *Checker, signature: TypeId) bool {
+        return self.generic_signature_params.contains(signature) and
+            self.containsFreeTypeParameter(signature);
+    }
+
+    fn resolvedUnionSignaturesContain(
+        self: *Checker,
+        signatures: []const TypeId,
+        candidate: TypeId,
+        is_construct: bool,
+    ) bool {
+        for (signatures) |existing| {
+            if (self.nonGenericUnionSignatureMatch(existing, candidate, is_construct) and
+                self.nonGenericUnionSignatureMatch(candidate, existing, is_construct))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn internMatchedUnionSignature(
+        self: *Checker,
+        representative: TypeId,
+        matched: []const TypeId,
+        is_construct: bool,
+    ) CheckError!TypeId {
+        var returns: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer returns.deinit(self.gpa);
+        var this_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer this_types.deinit(self.gpa);
+        var is_abstract_construct = false;
+        var effective_representative = representative;
+        for (matched) |signature| {
+            try returns.append(
+                self.gpa,
+                self.interner.signatureReturn(signature) orelse types.Primitive.any,
+            );
+            if (self.interner.signatureParams(signature).len >
+                self.interner.signatureParams(effective_representative).len)
+            {
+                effective_representative = signature;
+            }
+            if (self.signatureThisParam(signature)) |this_t| {
+                try this_types.append(self.gpa, this_t);
+            }
+            is_abstract_construct = is_abstract_construct or self.signatureIsAbstractConstruct(signature);
+        }
+        const return_t = try self.unionOrAny(returns.items);
+        try self.registerDiagnosticUnionDisplayName(return_t, returns.items);
+        const params = self.interner.signatureParams(effective_representative);
+        const result = self.interner.internSignatureWithAbstract(
+            params,
+            return_t,
+            is_construct,
+            is_construct and is_abstract_construct,
+        ) catch return error.OutOfMemory;
+        try self.copySignatureParamNames(result, effective_representative);
+        try self.signature_min_args.put(
+            self.gpa,
+            result,
+            self.signatureMinRequiredArgs(effective_representative, params),
+        );
+        if (self.rest_signatures.contains(effective_representative)) {
+            try self.rest_signatures.put(self.gpa, result, {});
+        }
+        if (this_types.items.len > 0) {
+            const this_t = if (this_types.items.len == 1)
+                this_types.items[0]
+            else
+                self.interner.internIntersection(this_types.items) catch return error.OutOfMemory;
+            try self.signature_this_params.put(self.gpa, result, this_t);
+        }
+        return result;
+    }
+
+    fn unionSignatureTypeAtPosition(self: *Checker, signature: TypeId, position: usize) ?TypeId {
+        const params = self.interner.signatureParams(signature);
+        const has_rest = self.rest_signatures.contains(signature) and params.len > 0;
+        const fixed_count: usize = if (has_rest) params.len - 1 else params.len;
+        if (position < fixed_count) return params[position];
+        if (!has_rest) return null;
+        const rest_t = params[params.len - 1];
+        const element_t = self.interner.objectNumberIndex(rest_t);
+        return if (element_t != types.Primitive.none) element_t else rest_t;
+    }
+
+    fn intersectUnionSignatureParameterTypes(
+        self: *Checker,
+        left: ?TypeId,
+        right: ?TypeId,
+    ) CheckError!TypeId {
+        const left_t = left orelse return right orelse types.Primitive.unknown;
+        const right_t = right orelse return left_t;
+        if (left_t == right_t) return left_t;
+        if (left_t == types.Primitive.unknown) return right_t;
+        if (right_t == types.Primitive.unknown) return left_t;
+        if (left_t == types.Primitive.any or right_t == types.Primitive.any) return types.Primitive.any;
+        return self.interner.internIntersection(&.{ left_t, right_t }) catch return error.OutOfMemory;
+    }
+
+    fn combineUnionSignaturePair(
+        self: *Checker,
+        left: TypeId,
+        right: TypeId,
+        is_construct: bool,
+    ) CheckError!TypeId {
+        const left_params = self.interner.signatureParams(left);
+        const right_params = self.interner.signatureParams(right);
+        const left_rest = self.rest_signatures.contains(left) and left_params.len > 0;
+        const right_rest = self.rest_signatures.contains(right) and right_params.len > 0;
+        const left_is_longest = left_params.len >= right_params.len;
+        const longest_count = @max(left_params.len, right_params.len);
+        const longest_has_rest = if (left_is_longest) left_rest else right_rest;
+        const either_has_rest = left_rest or right_rest;
+        const needs_extra_rest = either_has_rest and !longest_has_rest;
+        const result_count = longest_count + @intFromBool(needs_extra_rest);
+
+        var params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer params.deinit(self.gpa);
+        var position: usize = 0;
+        while (position < result_count) : (position += 1) {
+            var parameter_t = try self.intersectUnionSignatureParameterTypes(
+                self.unionSignatureTypeAtPosition(left, position),
+                self.unionSignatureTypeAtPosition(right, position),
+            );
+            const is_rest = either_has_rest and
+                ((needs_extra_rest and position == result_count - 1) or
+                    (!needs_extra_rest and position == longest_count - 1));
+            if (is_rest) {
+                parameter_t = self.interner.internArrayType(
+                    self.string_interner,
+                    parameter_t,
+                ) catch return error.OutOfMemory;
+            }
+            try params.append(self.gpa, parameter_t);
+        }
+
+        const left_return = self.interner.signatureReturn(left) orelse types.Primitive.any;
+        const right_return = self.interner.signatureReturn(right) orelse types.Primitive.any;
+        const return_t = try self.unionOrAny(&.{ left_return, right_return });
+        try self.registerDiagnosticUnionDisplayName(return_t, &.{ left_return, right_return });
+        const is_abstract_construct = self.signatureIsAbstractConstruct(left) or
+            self.signatureIsAbstractConstruct(right);
+        const result = self.interner.internSignatureWithAbstract(
+            params.items,
+            return_t,
+            is_construct,
+            is_construct and is_abstract_construct,
+        ) catch return error.OutOfMemory;
+        try self.copySignatureParamNames(result, if (left_is_longest) left else right);
+        try self.signature_min_args.put(
+            self.gpa,
+            result,
+            @max(
+                self.signatureMinRequiredArgs(left, left_params),
+                self.signatureMinRequiredArgs(right, right_params),
+            ),
+        );
+        if (either_has_rest) try self.rest_signatures.put(self.gpa, result, {});
+        const left_this = self.signatureThisParam(left);
+        const right_this = self.signatureThisParam(right);
+        if (left_this != null or right_this != null) {
+            const this_t = if (left_this == null)
+                right_this.?
+            else if (right_this == null or left_this.? == right_this.?)
+                left_this.?
+            else
+                self.interner.internIntersection(&.{ left_this.?, right_this.? }) catch return error.OutOfMemory;
+            try self.signature_this_params.put(self.gpa, result, this_t);
+        }
+        return result;
+    }
+
+    fn collectResolvedUnionSignatures(
+        self: *Checker,
+        t: TypeId,
+        is_construct: bool,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        const members = self.interner.unionMembers(t);
+        if (members.len != 2) return false;
+
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        var starts: std.ArrayListUnmanaged(usize) = .empty;
+        defer starts.deinit(self.gpa);
+        var lengths: std.ArrayListUnmanaged(usize) = .empty;
+        defer lengths.deinit(self.gpa);
+        var overloaded_branch_count: usize = 0;
+        var overloaded_branch_index: usize = 0;
+        for (members, 0..) |member, member_index| {
+            const start = signatures.items.len;
+            try self.collectSignaturesOfKind(member, is_construct, &signatures);
+            const len = signatures.items.len - start;
+            if (len == 0) return true;
+            for (signatures.items[start .. start + len]) |signature| {
+                if (self.unionSignatureHasFreeGenericParameters(signature) or
+                    (!is_construct and
+                        self.interner.signatureParams(signature).len == 0 and
+                        self.signatureThisParam(signature) != null))
+                {
+                    return false;
+                }
+            }
+            if (len > 1) {
+                overloaded_branch_count += 1;
+                overloaded_branch_index = member_index;
+            }
+            try starts.append(self.gpa, start);
+            try lengths.append(self.gpa, len);
+        }
+
+        var matched: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer matched.deinit(self.gpa);
+        for (signatures.items) |candidate| {
+            if (self.generic_signature_params.contains(candidate)) continue;
+            if (self.resolvedUnionSignaturesContain(out.items, candidate, is_construct)) continue;
+            matched.clearRetainingCapacity();
+            var matches_every_branch = true;
+            for (starts.items, lengths.items) |start, len| {
+                var branch_match: TypeId = types.Primitive.none;
+                for (signatures.items[start .. start + len]) |branch_signature| {
+                    if (self.nonGenericUnionSignatureMatch(candidate, branch_signature, is_construct)) {
+                        branch_match = branch_signature;
+                        break;
+                    }
+                }
+                if (branch_match == types.Primitive.none) {
+                    matches_every_branch = false;
+                    break;
+                }
+                try matched.append(self.gpa, branch_match);
+            }
+            if (!matches_every_branch) continue;
+            try out.append(
+                self.gpa,
+                try self.internMatchedUnionSignature(candidate, matched.items, is_construct),
+            );
+        }
+        if (out.items.len > 0 or overloaded_branch_count > 1) return true;
+
+        const master_index = if (overloaded_branch_count == 1) overloaded_branch_index else 0;
+        const master_start = starts.items[master_index];
+        const master_len = lengths.items[master_index];
+        try out.appendSlice(self.gpa, signatures.items[master_start .. master_start + master_len]);
+        for (starts.items, lengths.items, 0..) |start, len, branch_index| {
+            if (branch_index == master_index) continue;
+            if (len != 1) {
+                out.clearRetainingCapacity();
+                return true;
+            }
+            const branch_signature = signatures.items[start];
+            for (out.items) |*result| {
+                result.* = try self.combineUnionSignaturePair(result.*, branch_signature, is_construct);
+            }
+        }
+        return true;
+    }
+
+    fn resolveUnionSignatureInvocation(
+        self: *Checker,
+        call_node: NodeId,
+        callee_t: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        is_construct: bool,
+    ) CheckError!?TypeId {
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        if (!try self.collectResolvedUnionSignatures(callee_t, is_construct, &signatures)) return null;
+        if (signatures.items.len == 0) return null;
+
+        var selected: TypeId = types.Primitive.none;
+        for (signatures.items) |signature| {
+            if (!try self.signatureAccepts(call_node, signature, args, arg_types)) continue;
+            selected = signature;
+            break;
+        }
+        if (selected == types.Primitive.none) {
+            if (signatures.items.len == 1) {
+                selected = signatures.items[0];
+                try self.checkArgsAgainstSignatureWithMode(
+                    call_node,
+                    args,
+                    arg_types,
+                    selected,
+                    true,
+                );
+            } else {
+                const reported_arity = try self.reportOverloadSetBoundaryArity(
+                    call_node,
+                    args,
+                    arg_types,
+                    signatures.items,
+                );
+                if (!reported_arity) {
+                    const report_node = if (args.len > 0) args[0] else call_node;
+                    try self.report(report_node, TsCodes.no_overload_matches, "No overload matches this call.");
+                }
+                selected = signatures.items[0];
+            }
+        } else {
+            try self.checkArgsAgainstSignatureWithMode(
+                call_node,
+                args,
+                arg_types,
+                selected,
+                true,
+            );
+        }
+
+        if (is_construct and self.signatureIsAbstractConstruct(selected)) {
+            try self.report(
+                call_node,
+                TsCodes.abstract_class_instantiation,
+                "Cannot create an instance of an abstract class.",
+            );
+        }
+        return self.interner.signatureReturn(selected) orelse types.Primitive.any;
+    }
+
     fn unionContainsAny(self: *Checker, t: TypeId) bool {
         if (self.typeIsAny(t)) return true;
         if (t >= self.interner.pool.typeCount()) return false;
@@ -84799,6 +85159,15 @@ pub const Checker = struct {
                     try self.reportNotConstructableWithNoConstructSignatures(c.callee, callee_t);
                     break :blk types.Primitive.any;
                 }
+                if (try self.resolveUnionSignatureInvocation(
+                    node,
+                    callee_t,
+                    args,
+                    arg_types.items,
+                    true,
+                )) |ret| {
+                    break :blk ret;
+                }
                 if (try self.unionHasIncompatibleConstructSignatures(callee_t)) {
                     try self.reportNotConstructableWithNoConstructSignatures(c.callee, callee_t);
                     break :blk types.Primitive.any;
@@ -85590,6 +85959,15 @@ pub const Checker = struct {
                     }
                 }
                 try self.checkAssertionCallTarget(node, c.callee, callee_t, effective_callee_t);
+                if (try self.resolveUnionSignatureInvocation(
+                    node,
+                    callee_t,
+                    args,
+                    arg_types.items,
+                    false,
+                )) |ret| {
+                    break :blk try self.optionalChainResult(ret, call_is_optional_chain);
+                }
                 if (try self.unionHasIncompatibleCallSignatures(callee_t)) {
                     try self.reportNotCallableWithPossibleMissingSemicolon(node, c.callee, callee_t);
                     if (self.hir.kindOf(c.callee) == .member_access and self.diagnostics.items.len > 0) {
@@ -122526,6 +122904,23 @@ pub const Checker = struct {
         arg_types: []const TypeId,
         sig: TypeId,
     ) CheckError!void {
+        return self.checkArgsAgainstSignatureWithMode(
+            call_node,
+            args,
+            arg_types,
+            sig,
+            false,
+        );
+    }
+
+    fn checkArgsAgainstSignatureWithMode(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        sig: TypeId,
+        union_composite: bool,
+    ) CheckError!void {
         const param_ts = self.interner.signatureParams(sig);
         const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
         // For rest signatures, the trailing slot accepts any number of
@@ -122914,7 +123309,9 @@ pub const Checker = struct {
                 self.diagnostics.shrinkRetainingCapacity(arg_diag_start);
             }
             if (ok) {
-                const display_param_t = if (fixed_pos >= fixed_min_required and self.typeIncludesUndefined(param_t)) blk: {
+                const display_param_t = if ((union_composite or fixed_pos >= fixed_min_required) and
+                    self.typeIncludesUndefined(param_t))
+                blk: {
                     const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
                     break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
                         param_t
@@ -123064,15 +123461,23 @@ pub const Checker = struct {
                     stop_after_arg_mismatch = true;
                 }
                 if (!emitted) {
-                    const raw_display_param_t = if (fixed_pos >= fixed_min_required and self.typeIncludesUndefined(param_t)) blk: {
+                    const raw_display_param_t = if ((union_composite or fixed_pos >= fixed_min_required) and
+                        self.typeIncludesUndefined(param_t))
+                    blk: {
                         const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
                         break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
                             param_t
                         else
                             without_undefined;
                     } else param_t;
-                    const generic_display_param_t = try self.genericCallDiagnosticDisplayType(call_node, raw_display_param_t);
-                    const completed_display_param_t = try self.genericCallUnboundDiagnosticType(sig, generic_display_param_t);
+                    const generic_display_param_t = if (union_composite)
+                        raw_display_param_t
+                    else
+                        try self.genericCallDiagnosticDisplayType(call_node, raw_display_param_t);
+                    const completed_display_param_t = if (union_composite)
+                        generic_display_param_t
+                    else
+                        try self.genericCallUnboundDiagnosticType(sig, generic_display_param_t);
                     const reduced_display_param_t = try self.reduceNeverIntersectionsForAssignability(completed_display_param_t);
                     const contextual_display_param_t = try self.contextualFunctionExpressionDiagnosticTargetSignature(args[i], reduced_display_param_t);
                     const display_param_t = self.identifierFunctionReferenceDiagnosticTarget(
@@ -123108,7 +123513,10 @@ pub const Checker = struct {
                         m
                     else if (exact_optional_msg) |m|
                         m
-                    else if (try self.formatNullishLiteralArgumentNotAssignable(args[i], param_t)) |literal_msg|
+                    else if (try self.formatNullishLiteralArgumentNotAssignable(
+                        args[i],
+                        if (union_composite) display_param_t else param_t,
+                    )) |literal_msg|
                         literal_msg
                     else
                         try self.formatArgumentNotAssignable(
@@ -155998,6 +156406,43 @@ test "checker: union of call signatures arity error emits TS2554 (unionTypeCallS
     try T.expectEqual(@as(usize, 2), arity_errors);
     try T.expect(saw_got_1);
     try T.expect(saw_got_3);
+}
+
+test "checker: union call and construct signatures combine parameters and returns" {
+    const s = try newSetup(
+        \\declare let f: { (x: number): number } | { (x: number): string };
+        \\let fResult: number | string = f(1);
+        \\f("bad");
+        \\declare let fd: { (x: number): number } | { (x: number): Date };
+        \\let fdResult: number | Date = fd(1);
+        \\let fdWrong: string | boolean = fd(1);
+        \\declare let g: { (x: number): number } | { (x: string): string };
+        \\g(1);
+        \\g("ok");
+        \\g();
+        \\declare let h: { (x: number): number; (x: string): string } | { (x: number): Date; (x: string): boolean };
+        \\h(true);
+        \\h();
+        \\declare let C: { new (x: number): number } | { new (x: number): string };
+        \\let cResult: number | string = new C(1);
+        \\new C("bad");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    var saw_date_return_union = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, diagnostic.message, "number | Date") != null)
+        {
+            saw_date_return_union = true;
+        }
+    }
+    try T.expect(saw_date_return_union);
 }
 
 test "checker: valid union-callable calls stay clean (no spurious TS2554)" {
