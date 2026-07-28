@@ -42994,8 +42994,7 @@ pub const Checker = struct {
         }
         if (source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_type_parameter and
-            !self.isThisTypeParameter(source) and
-            self.containsFreeTypeParameter(target))
+            !self.isThisTypeParameter(source))
         {
             const constraint = self.typeParameterConstraint(source) orelse return false;
             if (constraint == source) return false;
@@ -78229,6 +78228,15 @@ pub const Checker = struct {
                 }
                 if ((self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) and
                     try self.repeatedVarAssertedInferredTypesCompatible(prior, final_type)) break :blk true;
+                if (!prior_explicit and
+                    !has_annotation and
+                    v.init != hir_mod.none_node_id and
+                    self.hir.kindOf(v.init) == .conditional and
+                    (self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) and
+                    self.repeatedVarConditionalThisTypesCompatible(prior, final_type))
+                {
+                    break :blk true;
+                }
                 if (self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) break :blk false;
                 if (self.repeatedVarThisArrayNullishMismatch(prior, final_type)) break :blk false;
                 if (self.repeatedVarUnknownArrayElementMismatch(prior, final_type)) break :blk false;
@@ -78395,6 +78403,13 @@ pub const Checker = struct {
         const prior_text = (try self.allocSimpleTypeName(prior)) orelse return false;
         const current_text = (try self.allocSimpleTypeName(current)) orelse return false;
         return std.mem.eql(u8, prior_text, current_text);
+    }
+
+    fn repeatedVarConditionalThisTypesCompatible(self: *Checker, prior: TypeId, current: TypeId) bool {
+        if (self.isThisTypeParameter(prior) and self.isThisTypeParameter(current)) return true;
+        const other = if (self.isThisTypeParameter(prior)) current else prior;
+        return other < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(other).is_type_parameter;
     }
 
     fn repeatedVarConditionalsCompatible(self: *Checker, prior: TypeId, current: TypeId) CheckError!?bool {
@@ -144230,6 +144245,46 @@ test "checker: Function constraint failures keep upstream call diagnostics" {
         defer T.allocator.free(message);
         try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.argument_type_mismatch, message));
     }
+}
+
+test "checker: swapped conditional inference with this types keeps repeated vars compatible" {
+    const b = try newBoundSetup(
+        \\function f<T>(x: T) {
+        \\    var r4 = true ? new Date() : x;
+        \\    var r4 = true ? x : new Date();
+        \\    var r5 = true ? /a/ : x;
+        \\    var r5 = true ? x : /a/;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: heritage follows type parameter chains to concrete constraints" {
+    const good = try newBoundSetup(
+        \\class Base<T> { value: T; }
+        \\class Good<T extends U, U extends V, V extends Date> extends Base<Date> {
+        \\    [x: string]: Date;
+        \\    value: T;
+        \\}
+    );
+    defer destroyBoundSetup(good);
+    try good.base.checker.checkSourceFile(good.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(good.base, TsCodes.property_not_assignable_to_index_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(good.base, TsCodes.property_not_assignable_to_base));
+
+    const bad = try newBoundSetup(
+        \\class Base<T> { value: T; }
+        \\class Bad<T extends U, U extends V, V extends Date> extends Base<T> {
+        \\    [x: string]: T;
+        \\    value: Date;
+        \\}
+    );
+    defer destroyBoundSetup(bad);
+    try bad.base.checker.checkSourceFile(bad.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(bad.base, TsCodes.property_not_assignable_to_index_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(bad.base, TsCodes.property_not_assignable_to_base));
 }
 
 test "checker: nested function declaration is in scope in wrapped/recursive constraints" {
