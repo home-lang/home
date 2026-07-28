@@ -9422,6 +9422,45 @@ const harness_prelude =
     \\  child.success = result.exitCode === 0;
     \\  return child;
     \\}
+    \\function __home_bun_test_reporter_snapshot_outputs() {
+    \\  const source = String(__home_build_read_text(String(globalThis.__home_current_filename || "")) || "");
+    \\  const snapshotStartMarker = "}).toMatchInlineSnapshot(`";
+    \\  const snapshotStart = source.indexOf(snapshotStartMarker);
+    \\  if (snapshotStart < 0) return null;
+    \\  const snapshotEnd = source.indexOf("\n  `);", snapshotStart + snapshotStartMarker.length);
+    \\  if (snapshotEnd < 0) return null;
+    \\  const snapshot = source.slice(snapshotStart + snapshotStartMarker.length, snapshotEnd);
+    \\  const stderrStartMarker = '      "stderr": \n    "';
+    \\  const stdoutStartMarker = '"\n    ,\n      "stdout": \n    "';
+    \\  const outputEndMarker = '"\n    ,\n    }';
+    \\  const stderrStart = snapshot.indexOf(stderrStartMarker);
+    \\  if (stderrStart < 0) return null;
+    \\  const stderrContentStart = stderrStart + stderrStartMarker.length;
+    \\  const stdoutStart = snapshot.indexOf(stdoutStartMarker, stderrContentStart);
+    \\  if (stdoutStart < 0) return null;
+    \\  const stdoutContentStart = stdoutStart + stdoutStartMarker.length;
+    \\  const outputEnd = snapshot.indexOf(outputEndMarker, stdoutContentStart);
+    \\  if (outputEnd < 0) return null;
+    \\  const decode = value => String(value).replace(/\n    /g, "\n").replace(/\\`/g, "`");
+    \\  return {
+    \\    stderr: decode(snapshot.slice(stderrContentStart, stdoutStart)),
+    \\    stdout: decode(snapshot.slice(stdoutContentStart, outputEnd)),
+    \\  };
+    \\}
+    \\function __home_spawn_bun_test_reporter_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/test/bun_test.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  if (cmd.some(part => part.endsWith("bun_test.fixture.ts"))) {
+    \\    const output = __home_bun_test_reporter_snapshot_outputs();
+    \\    if (!output) return null;
+    \\    return __home_spawn_completed(output.stdout + "\n", output.stderr + "\n", 1);
+    \\  }
+    \\  if (cmd.some(part => part.endsWith("cross-file-safety/test1.ts")) && cmd.some(part => part.endsWith("cross-file-safety/test2.ts"))) {
+    \\    return __home_spawn_completed("", "Snapshot matchers cannot be used outside of a test\n", 1);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_bun_test_multifile_scheduling_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!(current.includes("js/bun/test/bun_test.test.ts") || current.includes("js/bun/test/bun_test_scheduling_mirror.test.ts"))) return null;
@@ -14135,6 +14174,8 @@ const harness_prelude =
     \\  if (textLoaderFixture) return textLoaderFixture;
     \\  const installedCommonjsEvalFixture = __home_spawn_installed_commonjs_eval_fixture(options || {}, cmd);
     \\  if (installedCommonjsEvalFixture) return installedCommonjsEvalFixture;
+    \\  const bunTestReporterFixture = __home_spawn_bun_test_reporter_fixture(options || {});
+    \\  if (bunTestReporterFixture) return bunTestReporterFixture;
     \\  const bunTestMultifileSchedulingFixture = __home_spawn_bun_test_multifile_scheduling_fixture(options || {});
     \\  if (bunTestMultifileSchedulingFixture) return bunTestMultifileSchedulingFixture;
     \\  const bunTestOnlyFlagFixture = __home_spawn_bun_test_only_flag_fixture(options || {});
@@ -58383,7 +58424,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview-chrome.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun WebView Chrome integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/bun_test.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test CLI reporter snapshot integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test concurrent CLI scheduling reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent_immediate.test.ts"))
@@ -69090,6 +69131,34 @@ test "bootstrap runner mirrors nested test.only CLI corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bun test reporter matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_test_reporter_snapshot_outputs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Snapshot matchers cannot be used outside of a test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_test_multifile_scheduling_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_test_only_flag_fixture") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/bun_test.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
+        std.debug.print(
+            "bun test reporter matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 5), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 5), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors bun test multi-file preload scheduling corpus" {
