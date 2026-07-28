@@ -441,12 +441,15 @@ pub const Stdio = union(enum) {
     }
 
     pub fn extractBlob(stdio: *Stdio, globalThis: *jsc.JSGlobalObject, blob: jsc.WebCore.Blob.Any, i: i32) bun.JSError!void {
-        const fd = bun.FD.Stdio.fromInt(i).?.fd();
+        // stdio 0/1/2 map to std_in/out/err; index >= 3 has no standard fd, so
+        // keep `fd` optional instead of unwrapping (`.?` panicked on a Blob/file
+        // at stdio[>=3]). Ports oven-sh/bun 78f0fff164 (#32363).
+        const fd: ?bun.FD = if (bun.FD.Stdio.fromInt(i)) |s| s.fd() else null;
 
         if (blob.needsToReadFile()) {
             if (blob.store()) |store| {
                 if (store.data.file.pathlike == .fd) {
-                    if (store.data.file.pathlike.fd == fd) {
+                    if (fd != null and store.data.file.pathlike.fd == fd.?) {
                         stdio.* = .inherit;
                     } else {
                         // TODO: is this supposed to be `store.data.file.pathlike.fd`?
@@ -475,6 +478,13 @@ pub const Stdio = union(enum) {
 
         if (i == 1 or i == 2) {
             return globalThis.throwInvalidArguments("Blobs are immutable, and cannot be used for stdout/stderr", .{});
+        }
+
+        // The parent-side writer that pumps Blob bytes into the child pipe is
+        // only wired up for stdin; reject in-memory Blobs at any other index
+        // instead of producing a broken `.blob` stdio. Ports oven-sh/bun 78f0fff164.
+        if (i != 0) {
+            return globalThis.throwInvalidArguments("Blob cannot be used for stdio[{d}] yet", .{i});
         }
 
         // Instead of writing an empty blob, lets just make it /dev/null
