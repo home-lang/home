@@ -73816,8 +73816,7 @@ pub const Checker = struct {
         if (try self.genericSignatureRelationMismatch(source_t, target_t)) return false;
         if (self.interner.isSignature(source_t) and
             self.interner.isSignature(target_t) and
-            self.rest_signatures.contains(target_t) and
-            !self.rest_signatures.contains(source_t))
+            (self.rest_signatures.contains(source_t) or self.rest_signatures.contains(target_t)))
         {
             return try self.contextualFunctionSignatureAssignable(source_t, target_t);
         }
@@ -122186,6 +122185,103 @@ pub const Checker = struct {
         return tuple_t;
     }
 
+    fn mutableFiniteTupleCopy(self: *Checker, tuple_t: TypeId) CheckError!?TypeId {
+        if (tuple_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(tuple_t);
+        if (flags.is_union) {
+            var branches: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer branches.deinit(self.gpa);
+            for (self.interner.unionMembers(tuple_t)) |member| {
+                const copied = (try self.mutableFiniteTupleCopy(member)) orelse return null;
+                try branches.append(self.gpa, copied);
+            }
+            if (branches.items.len == 0) return null;
+            if (branches.items.len == 1) return branches.items[0];
+            return self.interner.internUnion(branches.items) catch return error.OutOfMemory;
+        }
+        const len = self.fixedTupleLength(tuple_t) orelse return null;
+        var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elements.deinit(self.gpa);
+        for (0..@as(usize, @intCast(len))) |index| {
+            const element_t = self.tupleElementType(tuple_t, index);
+            if (element_t == types.Primitive.none) return null;
+            try elements.append(self.gpa, element_t);
+        }
+        return try self.internTupleFromTypesWithMinRequired(
+            elements.items,
+            self.tupleRestMinRequiredCount(tuple_t),
+            false,
+        );
+    }
+
+    fn appendFiniteRestTupleBranch(
+        self: *Checker,
+        fixed: []const TypeId,
+        fixed_min: usize,
+        rest_t: TypeId,
+        branches: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!bool {
+        const rest_len = self.restTupleMaxCount(rest_t) orelse return false;
+        var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elements.deinit(self.gpa);
+        try elements.appendSlice(self.gpa, fixed);
+        for (0..rest_len) |index| {
+            const element_t = self.tupleElementType(rest_t, index);
+            if (element_t == types.Primitive.none) return false;
+            try elements.append(self.gpa, element_t);
+        }
+        const min_required = fixed_min + self.tupleRestMinRequiredCount(rest_t);
+        try branches.append(
+            self.gpa,
+            try self.internTupleFromTypesWithMinRequired(elements.items, min_required, false),
+        );
+        return true;
+    }
+
+    /// Normalize a callable's finite parameter list to the tuple (or union
+    /// of tuples) accepted at its call boundary. This is the same shape
+    /// TypeScript relates contravariantly for fixed parameters and tuple
+    /// rests, and avoids collapsing a rest union to its number index.
+    fn finiteSignatureArgsType(self: *Checker, sig: TypeId) CheckError!?TypeId {
+        if (!self.interner.isSignature(sig)) return null;
+        const params = self.interner.signatureParams(sig);
+        if (!self.rest_signatures.contains(sig)) {
+            return try self.internTupleFromTypesWithMinRequired(
+                params,
+                self.signatureMinRequiredArgs(sig, params),
+                false,
+            );
+        }
+        if (params.len == 0) return null;
+        const fixed_count = params.len - 1;
+        const fixed_min = @min(self.signatureMinRequiredArgs(sig, params), fixed_count);
+        const rest_t = params[params.len - 1];
+        if (rest_t >= self.interner.pool.typeCount()) return null;
+
+        var branches: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer branches.deinit(self.gpa);
+        if (self.interner.pool.flagsOf(rest_t).is_union) {
+            for (self.interner.unionMembers(rest_t)) |member| {
+                if (!try self.appendFiniteRestTupleBranch(
+                    params[0..fixed_count],
+                    fixed_min,
+                    member,
+                    &branches,
+                )) return null;
+            }
+        } else if (!try self.appendFiniteRestTupleBranch(
+            params[0..fixed_count],
+            fixed_min,
+            rest_t,
+            &branches,
+        )) {
+            return null;
+        }
+        if (branches.items.len == 0) return null;
+        if (branches.items.len == 1) return branches.items[0];
+        return self.interner.internUnion(branches.items) catch return error.OutOfMemory;
+    }
+
     fn internReadonlyArrayType(self: *Checker, element: TypeId) CheckError!TypeId {
         const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
         const members = [_]types.ObjectMember{.{
@@ -124483,6 +124579,18 @@ pub const Checker = struct {
             effective_count > param_ts.len;
         const suppress_too_many_for_array_spread = too_many and self.firstExcessArgIsNonTupleSpread(args, arg_types, if (is_variadic) (rest_max_count orelse param_ts.len) else param_ts.len);
         const suppress_too_few_for_array_spread = too_few and self.callHasNonTupleSpread(args, arg_types);
+        const whole_rest_relation = if (is_variadic)
+            try self.checkWholeRestArgumentList(
+                call_node,
+                args,
+                arg_types,
+                sig,
+                param_ts,
+                fixed_count,
+            )
+        else
+            RestCallRelation.not_applicable;
+        if (whole_rest_relation == .reported) return;
         if ((too_few and !suppress_too_few_for_array_spread) or (too_many and !suppress_too_many_for_array_spread)) {
             const fixed_variadic_count = is_variadic and rest_max_count != null;
             // tsc renders the "Expected at least N arguments" form
@@ -124611,7 +124719,7 @@ pub const Checker = struct {
                 });
             }
         }
-        if (is_variadic and !too_few and !too_many) {
+        if (is_variadic and whole_rest_relation != .satisfied and !too_few and !too_many) {
             if (try self.tryReportRestTupleAnnotationCallWidthMismatch(call_node, args, arg_types, sig, fixed_count)) return;
             if (try self.tryReportConstrainedRestTupleAnnotationCallMismatch(args, arg_types, sig, fixed_count)) return;
             if (try self.restTupleAnnotationCallSatisfied(args, arg_types, sig, fixed_count)) return;
@@ -125053,6 +125161,12 @@ pub const Checker = struct {
                         if (union_composite) display_param_t else param_t,
                     )) |literal_msg|
                         literal_msg
+                    else if (try self.formatExplicitCallRestSignatureArgumentNotAssignable(
+                        args[i],
+                        diagnostic_arg_t,
+                        display_param_t,
+                    )) |rest_signature_msg|
+                        rest_signature_msg
                     else
                         try self.formatArgumentNotAssignable(
                             diagnostic_arg_t,
@@ -125091,7 +125205,7 @@ pub const Checker = struct {
             }
         }
         if (stop_after_arg_mismatch) return;
-        if (is_variadic) {
+        if (is_variadic and whole_rest_relation != .satisfied) {
             if (emitted_spread_shape_mismatch) return;
             // Trailing args bind to the rest slot. The rest's declared
             // type is an array (`number[]`); each individual call-site
@@ -125158,6 +125272,401 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    const RestCallRelation = enum {
+        not_applicable,
+        satisfied,
+        reported,
+    };
+
+    fn restRelationTarget(self: *Checker, rest_t: TypeId, depth: u8) TypeId {
+        if (rest_t >= self.interner.pool.typeCount() or depth >= 16) return rest_t;
+        if (!self.interner.pool.flagsOf(rest_t).is_type_parameter) return rest_t;
+        const constraint = self.typeParameterConstraint(rest_t) orelse return rest_t;
+        if (constraint == rest_t or constraint == types.Primitive.none) return rest_t;
+        return self.restRelationTarget(constraint, depth + 1);
+    }
+
+    fn restTargetHasRequiredNamedProperty(self: *Checker, target_t: TypeId) bool {
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(target_t).is_object_type) return false;
+        const length_id = self.string_interner.intern("length") catch return false;
+        for (self.interner.objectMembers(target_t)) |member| {
+            if (member.is_optional or member.is_method or member.name == length_id) continue;
+            const name = self.string_interner.get(member.name);
+            if (name.len > 0 and isAllDigits(name)) continue;
+            return true;
+        }
+        return false;
+    }
+
+    fn fixedCallArgsAssignable(
+        self: *Checker,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        params: []const TypeId,
+        fixed_count: usize,
+    ) CheckError!bool {
+        if (args.len < fixed_count) return false;
+        for (0..fixed_count) |index| {
+            if (!(self.isArgumentAssignableToParam(
+                args[index],
+                arg_types[index],
+                params[index],
+            ) catch false)) return false;
+        }
+        return true;
+    }
+
+    fn synthesizedRestArgumentListType(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        fixed_count: usize,
+        preserve_literals: bool,
+    ) CheckError!?TypeId {
+        if (fixed_count > args.len) return null;
+        const rest_args = args[fixed_count..];
+        const rest_types = arg_types[fixed_count..];
+        var spread_count: usize = 0;
+        var spread_index: usize = 0;
+        for (rest_args, 0..) |arg, index| {
+            if (self.hir.kindOf(arg) != .spread) continue;
+            spread_count += 1;
+            spread_index = index;
+        }
+        if (spread_count == 0) {
+            var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer elements.deinit(self.gpa);
+            for (rest_types, 0..) |element_t, index| {
+                try elements.append(
+                    self.gpa,
+                    if (preserve_literals)
+                        try self.expressionLiteralType(rest_args[index], element_t)
+                    else
+                        self.widenLiteralType(element_t),
+                );
+            }
+            return try self.internTupleFromTypes(elements.items, false);
+        }
+        if (spread_count != 1 or rest_args.len != 1 or spread_index != 0) return null;
+
+        const spread_t = rest_types[0];
+        if (self.isTupleShapedTarget(spread_t) or self.isTupleLikeUnionType(spread_t)) {
+            return try self.mutableFiniteTupleCopy(spread_t);
+        }
+        const element_t = try self.iterableElementType(spread_t);
+        _ = call_node;
+        const array_t = self.interner.internArrayType(self.string_interner, element_t) catch return error.OutOfMemory;
+        try self.array_origin_types.put(self.gpa, array_t, {});
+        return array_t;
+    }
+
+    fn concreteFiniteTupleAssignable(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!?bool {
+        if (!self.isTupleShapedTarget(source_t) or !self.isTupleShapedTarget(target_t)) return null;
+        const source_max = self.restTupleMaxCount(source_t) orelse return null;
+        const target_max = self.restTupleMaxCount(target_t) orelse return null;
+        const source_min = self.tupleRestMinRequiredCount(source_t);
+        const target_min = self.tupleRestMinRequiredCount(target_t);
+        if (source_min < target_min or source_max > target_max) return false;
+        for (0..source_max) |index| {
+            const source_element = self.tupleElementType(source_t, index);
+            const target_element = self.tupleElementType(target_t, index);
+            if (source_element == types.Primitive.none or target_element == types.Primitive.none) {
+                return false;
+            }
+            if (!(self.engine.isAssignableTo(source_element, target_element) catch false)) return false;
+        }
+        return true;
+    }
+
+    fn concreteTupleAssignableToTarget(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) {
+            return false;
+        }
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        if (source_flags.is_union) {
+            for (self.interner.unionMembers(source_t)) |member| {
+                if (!try self.concreteTupleAssignableToTarget(member, target_t)) return false;
+            }
+            return true;
+        }
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.concreteTupleAssignableToTarget(source_t, member)) return true;
+            }
+            return false;
+        }
+        if (try self.concreteFiniteTupleAssignable(source_t, target_t)) |tuple_ok| return tuple_ok;
+        if (try self.checkerAssignableTo(source_t, target_t)) return true;
+        return self.engine.isAssignableTo(source_t, target_t) catch false;
+    }
+
+    fn bestRestTupleUnionDiagnosticBranch(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) TypeId {
+        if (target_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(target_t).is_union)
+        {
+            return target_t;
+        }
+        const source_len = self.fixedTupleLength(source_t);
+        var fallback = target_t;
+        for (self.interner.unionMembers(target_t)) |member| {
+            fallback = member;
+            if (source_len != null and self.fixedTupleLength(member) == source_len) return member;
+        }
+        return fallback;
+    }
+
+    fn restParameterConstraintAnnotationNode(self: *Checker, sig: TypeId, name: hir_mod.StringId) ?NodeId {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return null;
+        if (param_nodes.len == 0) return null;
+        var cur = self.hir.parentOf(param_nodes[param_nodes.len - 1]);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const type_params: []const NodeId = switch (self.hir.kindOf(cur)) {
+                .fn_decl, .fn_expr, .arrow_fn => blk: {
+                    const f = hir_mod.fnDeclOf(self.hir, cur);
+                    break :blk self.hir.childSlice(f.type_params_start, f.type_params_len);
+                },
+                .fn_type => blk: {
+                    const f = hir_mod.fnTypeOf(self.hir, cur);
+                    break :blk self.hir.childSlice(f.type_params_start, f.type_params_len);
+                },
+                .block_stmt, .source_file => return null,
+                else => continue,
+            };
+            for (type_params) |type_param_node| {
+                if (self.hir.kindOf(type_param_node) != .type_parameter) continue;
+                const type_param = hir_mod.typeParameterOf(self.hir, type_param_node);
+                if (type_param.name == name and type_param.constraint != hir_mod.none_node_id) {
+                    return type_param.constraint;
+                }
+            }
+            return null;
+        }
+        return null;
+    }
+
+    fn restTupleCallTargetDiagnosticName(
+        self: *Checker,
+        sig: TypeId,
+        target_t: TypeId,
+    ) CheckError!?[]const u8 {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse
+            return try self.allocSimpleTypeName(target_t);
+        if (param_nodes.len == 0) return try self.allocSimpleTypeName(target_t);
+        const param_node = param_nodes[param_nodes.len - 1];
+        if (self.hir.kindOf(param_node) != .parameter) return try self.allocSimpleTypeName(target_t);
+        const annotation = hir_mod.parameterOf(self.hir, param_node).type_annotation;
+        if (annotation == hir_mod.none_node_id) return try self.allocSimpleTypeName(target_t);
+        if (self.bareTypeRefName(annotation)) |name| {
+            if (self.restParameterConstraintAnnotationNode(sig, name)) |constraint_node| {
+                return try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(constraint_node));
+            }
+        }
+        return try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(annotation));
+    }
+
+    fn restMissingPropertyTargetDiagnosticName(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        sig: TypeId,
+        target_t: TypeId,
+        fixed_count: usize,
+    ) CheckError!?[]const u8 {
+        if (hir_mod.callTypeArgs(self.hir, call_node).len > 0) {
+            return try self.missingPropertyTypeName(target_t);
+        }
+        const param_nodes = self.signature_param_nodes.get(sig) orelse
+            return try self.missingPropertyTypeName(target_t);
+        if (param_nodes.len == 0) return try self.missingPropertyTypeName(target_t);
+        const param_node = param_nodes[param_nodes.len - 1];
+        if (self.hir.kindOf(param_node) != .parameter) return try self.missingPropertyTypeName(target_t);
+        const annotation = hir_mod.parameterOf(self.hir, param_node).type_annotation;
+        if (annotation == hir_mod.none_node_id or self.hir.kindOf(annotation) != .type_ref) {
+            return try self.missingPropertyTypeName(target_t);
+        }
+        const annotation_args = hir_mod.typeRefArgs(self.hir, annotation);
+        if (annotation_args.len != 1 or self.bareTypeRefName(annotation_args[0]) == null) {
+            return try self.missingPropertyTypeName(target_t);
+        }
+        var has_spread = false;
+        for (args[fixed_count..]) |arg| {
+            if (self.hir.kindOf(arg) == .spread) {
+                has_spread = true;
+                break;
+            }
+        }
+        if (has_spread) return try self.missingPropertyTypeName(target_t);
+        const ref = hir_mod.typeRefOf(self.hir, annotation);
+        const base_name = self.string_interner.get(ref.name);
+        const inferred_name: []const u8 = if (args.len == fixed_count) "never" else "unknown";
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s}<{s}>",
+            .{ base_name, inferred_name },
+        );
+    }
+
+    fn reportRestCallMissingProperty(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        sig: TypeId,
+        fixed_count: usize,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_object_type or
+            !self.interner.pool.flagsOf(target_t).is_object_type)
+        {
+            return false;
+        }
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        var missing_name: ?hir_mod.StringId = null;
+        for (self.interner.objectMembers(target_t)) |member| {
+            if (member.is_optional or member.is_method or member.name == length_id) continue;
+            const raw_name = self.string_interner.get(member.name);
+            if (raw_name.len > 0 and isAllDigits(raw_name)) continue;
+            if (self.interner.objectMember(source_t, member.name) != null) continue;
+            if (missing_name != null) return false;
+            missing_name = member.name;
+        }
+        if (missing_name == null) return false;
+        const source_name = if (self.array_origin_types.contains(source_t))
+            (try self.allocSimpleTypeName(source_t)) orelse return false
+        else
+            (try self.missingPropertyTypeName(source_t)) orelse return false;
+        const target_name = (try self.restMissingPropertyTargetDiagnosticName(
+            call_node,
+            args,
+            sig,
+            target_t,
+            fixed_count,
+        )) orelse return false;
+        const anchor = if (fixed_count < args.len) args[fixed_count] else call_node;
+        try self.report(
+            anchor,
+            TsCodes.argument_type_mismatch,
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                .{ source_name, target_name },
+            ),
+        );
+        return true;
+    }
+
+    fn reportRestTupleUnionCallMismatch(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        fixed_count: usize,
+        source_t: TypeId,
+        target_t: TypeId,
+        target_name: []const u8,
+    ) CheckError!void {
+        const source_name = (try self.allocSimpleTypeName(source_t)) orelse return;
+        const branch = self.bestRestTupleUnionDiagnosticBranch(source_t, target_t);
+        const branch_name = (try self.allocSimpleTypeName(branch)) orelse return;
+        var children = try self.tupleWidthElaborationChain(source_t, branch);
+        if (children.len == 0) children = try self.tuplePositionElaborationChain(source_t, branch);
+        if (children.len == 0) children = try self.tupleConstraintPositionChain(source_t, branch);
+        const chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+        chain[0] = .{
+            .code = TsCodes.type_not_assignable,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, branch_name },
+            ),
+            .children = children,
+        };
+        const anchor = if (fixed_count < args.len) args[fixed_count] else call_node;
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .code = TsCodes.argument_type_mismatch,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                .{ source_name, target_name },
+            ),
+            .chain = chain,
+        });
+    }
+
+    fn checkWholeRestArgumentList(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        sig: TypeId,
+        params: []const TypeId,
+        fixed_count: usize,
+    ) CheckError!RestCallRelation {
+        if (params.len == 0 or fixed_count >= params.len) return .not_applicable;
+        if (!try self.fixedCallArgsAssignable(args, arg_types, params, fixed_count)) {
+            return .not_applicable;
+        }
+        const target_t = self.restRelationTarget(params[params.len - 1], 0);
+        const tuple_union_target = self.isTupleLikeUnionType(target_t);
+        const named_property_target = self.restTargetHasRequiredNamedProperty(target_t);
+        if (!tuple_union_target and !named_property_target) return .not_applicable;
+        const tuple_target_name = if (tuple_union_target)
+            (try self.restTupleCallTargetDiagnosticName(sig, target_t)) orelse return .not_applicable
+        else
+            "";
+
+        const preserve_literals = tuple_union_target or hir_mod.callTypeArgs(self.hir, call_node).len > 0;
+        const source_t = (try self.synthesizedRestArgumentListType(
+            call_node,
+            args,
+            arg_types,
+            fixed_count,
+            preserve_literals,
+        )) orelse return .not_applicable;
+        if (try self.concreteTupleAssignableToTarget(source_t, target_t)) return .satisfied;
+
+        if (named_property_target and
+            try self.reportRestCallMissingProperty(
+                call_node,
+                args,
+                sig,
+                fixed_count,
+                source_t,
+                target_t,
+            ))
+        {
+            return .reported;
+        }
+        if (tuple_union_target) {
+            try self.reportRestTupleUnionCallMismatch(
+                call_node,
+                args,
+                fixed_count,
+                source_t,
+                target_t,
+                tuple_target_name,
+            );
+            return .reported;
+        }
+        return .not_applicable;
     }
 
     fn tryReportRecursiveArrayInferenceMismatch(
@@ -126662,6 +127171,68 @@ pub const Checker = struct {
         );
     }
 
+    fn explicitCallRestSignatureDiagnosticName(
+        self: *Checker,
+        arg_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!?[]const u8 {
+        if (!self.interner.isSignature(target_t) or !self.rest_signatures.contains(target_t)) return null;
+        const params = self.interner.signatureParams(target_t);
+        if (params.len != 1) return null;
+        const parent = self.hir.parentOf(arg_node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .call_expr) return null;
+        const call_args = hir_mod.callArgs(self.hir, parent);
+        var is_argument = false;
+        for (call_args) |candidate| {
+            if (candidate == arg_node) {
+                is_argument = true;
+                break;
+            }
+        }
+        if (!is_argument) return null;
+        const type_args = hir_mod.callTypeArgs(self.hir, parent);
+        if (type_args.len != 1) return null;
+        var type_arg_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(type_args[0]));
+        var open_angles: usize = 0;
+        var close_angles: usize = 0;
+        for (type_arg_name) |byte| {
+            if (byte == '<') open_angles += 1;
+            if (byte == '>') close_angles += 1;
+        }
+        while (close_angles > open_angles and std.mem.endsWith(u8, type_arg_name, ">")) {
+            type_arg_name = type_arg_name[0 .. type_arg_name.len - 1];
+            close_angles -= 1;
+        }
+        const param_name = if (self.signature_param_names.get(target_t)) |names|
+            if (names.len > 0) self.string_interner.get(names[0]) else "args"
+        else
+            "args";
+        const return_t = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+        const return_name = (try self.allocSignatureConstituentDisplayName(return_t)) orelse "void";
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "(...{s}: {s}) => {s}",
+            .{ param_name, type_arg_name, return_name },
+        );
+    }
+
+    fn formatExplicitCallRestSignatureArgumentNotAssignable(
+        self: *Checker,
+        arg_node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!?[]const u8 {
+        const target_name = (try self.explicitCallRestSignatureDiagnosticName(arg_node, target_t)) orelse return null;
+        const source_name = (try self.allocAssignmentDiagnosticTypeName(source_t)) orelse
+            (try self.allocSimpleTypeName(source_t)) orelse
+            return null;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+            .{ source_name, target_name },
+        );
+    }
+
     fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
         const reduced_param_t = try self.reduceNeverIntersectionsForAssignability(param_t);
         if (reduced_param_t != param_t) {
@@ -126744,6 +127315,15 @@ pub const Checker = struct {
                     "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
                     .{ arg_text, param_text },
                 );
+            }
+            if (self.interner.isSignature(param_t)) {
+                if (try self.allocCallableSignatureName(param_t)) |param_text| {
+                    return try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                        .{ arg_text, param_text },
+                    );
+                }
             }
             if (try self.allocUnwrapThisIndexedConditionalName(param_t)) |param_text| {
                 return try std.fmt.allocPrint(
@@ -130580,6 +131160,7 @@ pub const Checker = struct {
         if (try self.sameEnclosingTypeParameterDisplay(arg_node, arg_t, param_t)) return true;
         if (self.functionObjectTargetAcceptsArgument(arg_t, param_t, 0)) return true;
         if (self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, param_t)) return false;
+        if (self.callableArgumentCannotSatisfyCustomRestTuple(arg_t, param_t)) return false;
         if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
@@ -130671,6 +131252,26 @@ pub const Checker = struct {
         if (try self.deferredConditionalSourceAssignableToTarget(arg_t, param_t)) |ok| return ok;
         if (try self.checkerAssignableTo(arg_t, param_t)) return true;
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn callableArgumentCannotSatisfyCustomRestTuple(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return false;
+        if (!self.rest_signatures.contains(target_t)) return false;
+        const target_params = self.interner.signatureParams(target_t);
+        if (target_params.len == 0) return false;
+        const target_rest = target_params[target_params.len - 1];
+        if (!self.restTargetHasRequiredNamedProperty(target_rest)) return false;
+        const source_params = self.interner.signatureParams(source_t);
+        const source_required = self.signatureMinRequiredArgs(source_t, source_params);
+        const target_fixed = target_params.len - 1;
+        if (source_required <= target_fixed) return false;
+        for (target_fixed..source_required) |index| {
+            var nbuf: [12]u8 = undefined;
+            const name_text = std.fmt.bufPrint(&nbuf, "{d}", .{index - target_fixed}) catch return true;
+            const name = self.string_interner.intern(name_text) catch return true;
+            if (self.tupleElementMember(target_rest, name) == null) return true;
+        }
+        return false;
     }
 
     fn functionObjectTargetAcceptsArgument(self: *Checker, source_t: TypeId, target_t: TypeId, depth: u8) bool {
@@ -132198,6 +132799,27 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(source_t).is_signature or !self.interner.pool.flagsOf(target_t).is_signature) return false;
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
+        if (self.rest_signatures.contains(source_t) or self.rest_signatures.contains(target_t)) {
+            if (try self.restSignatureSyntaxShapesEquivalent(source_t, target_t)) {
+                const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+                const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+                return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+            }
+            if (try self.expandedRestSignatureShapesAssignable(source_t, target_t)) |expanded_ok| {
+                if (!expanded_ok) return false;
+                const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+                const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+                return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+            }
+            const source_args = try self.finiteSignatureArgsType(source_t);
+            const target_args = try self.finiteSignatureArgsType(target_t);
+            if (source_args != null and target_args != null) {
+                if (!try self.concreteTupleAssignableToTarget(target_args.?, source_args.?)) return false;
+                const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+                const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+                return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+            }
+        }
         if (self.rest_signatures.contains(target_t) and target_params.len > 0) {
             if (self.rest_signatures.contains(source_t) and source_params.len > 0) {
                 const source_fixed = source_params.len - 1;
@@ -132228,6 +132850,156 @@ pub const Checker = struct {
         const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
         const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
         return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+    }
+
+    fn appendRestSignatureSyntaxShape(
+        self: *Checker,
+        sig: TypeId,
+        fixed: *std.ArrayListUnmanaged([]const u8),
+        tail: *?[]const u8,
+    ) CheckError!bool {
+        if (!self.rest_signatures.contains(sig)) return false;
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return false;
+        for (param_nodes) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            if (self.isThisParameter(param_node) or param.type_annotation == hir_mod.none_node_id) continue;
+            if (!param.flags.is_rest) {
+                try fixed.append(
+                    self.gpa,
+                    try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(param.type_annotation)),
+                );
+                continue;
+            }
+            if (self.hir.kindOf(param.type_annotation) != .tuple_type) {
+                tail.* = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(param.type_annotation));
+                continue;
+            }
+            const elements = hir_mod.tupleTypeElements(self.hir, param.type_annotation);
+            for (elements, 0..) |raw_element, index| {
+                var element = raw_element;
+                if (self.hir.kindOf(element) == .optional_type) {
+                    element = hir_mod.optionalTypeOf(self.hir, element).operand;
+                }
+                if (self.hir.kindOf(element) == .rest_type) {
+                    if (index + 1 != elements.len) return false;
+                    tail.* = try self.normalizedTypeAnnotationText(
+                        self.nodeSourceTextOrEmpty(hir_mod.restTypeOf(self.hir, element).operand),
+                    );
+                    continue;
+                }
+                try fixed.append(
+                    self.gpa,
+                    try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(element)),
+                );
+            }
+        }
+        return tail.* != null;
+    }
+
+    fn restSignatureSyntaxShapesEquivalent(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (!self.rest_signatures.contains(source_t) or !self.rest_signatures.contains(target_t)) return false;
+        var source_fixed: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer source_fixed.deinit(self.gpa);
+        var target_fixed: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer target_fixed.deinit(self.gpa);
+        var source_tail: ?[]const u8 = null;
+        var target_tail: ?[]const u8 = null;
+        if (!try self.appendRestSignatureSyntaxShape(source_t, &source_fixed, &source_tail) or
+            !try self.appendRestSignatureSyntaxShape(target_t, &target_fixed, &target_tail))
+        {
+            return false;
+        }
+        if (source_fixed.items.len != target_fixed.items.len) return false;
+        for (source_fixed.items, target_fixed.items) |source_param, target_param| {
+            if (!std.mem.eql(u8, source_param, target_param)) return false;
+        }
+        return std.mem.eql(u8, source_tail.?, target_tail.?);
+    }
+
+    fn appendExpandedRestSignatureShape(
+        self: *Checker,
+        sig: TypeId,
+        fixed: *std.ArrayListUnmanaged(TypeId),
+        tail: *TypeId,
+    ) CheckError!bool {
+        if (!self.rest_signatures.contains(sig)) return false;
+        const params = self.interner.signatureParams(sig);
+        if (params.len == 0) return false;
+        try fixed.appendSlice(self.gpa, params[0 .. params.len - 1]);
+        const rest_t = params[params.len - 1];
+        if (self.signature_param_nodes.get(sig)) |param_nodes| {
+            if (param_nodes.len > 0) {
+                const rest_param_node = param_nodes[param_nodes.len - 1];
+                if (self.hir.kindOf(rest_param_node) == .parameter) {
+                    const annotation = hir_mod.parameterOf(self.hir, rest_param_node).type_annotation;
+                    if (annotation != hir_mod.none_node_id and self.hir.kindOf(annotation) == .tuple_type) {
+                        const elements = hir_mod.tupleTypeElements(self.hir, annotation);
+                        for (elements, 0..) |raw_element, index| {
+                            var element = raw_element;
+                            if (self.hir.kindOf(element) == .optional_type) {
+                                element = hir_mod.optionalTypeOf(self.hir, element).operand;
+                            }
+                            if (self.hir.kindOf(element) == .rest_type) {
+                                if (index + 1 != elements.len) return false;
+                                tail.* = self.tuple_trailing_variadic_types.get(rest_t) orelse
+                                    self.tuple_trailing_rest_types.get(rest_t) orelse
+                                    self.tupleRestTailElementType(rest_t);
+                                if (tail.* == types.Primitive.none) return false;
+                                return true;
+                            }
+                            try fixed.append(self.gpa, try self.lowererLowerWithTypeParams(element));
+                        }
+                    }
+                }
+            }
+        }
+        if (self.tuple_trailing_variadic_types.get(rest_t)) |variadic_t| {
+            const prefix_count = self.tupleFixedPrefixCount(rest_t);
+            for (0..prefix_count) |index| {
+                const element_t = self.tupleElementType(rest_t, index);
+                if (element_t == types.Primitive.none) return false;
+                try fixed.append(self.gpa, element_t);
+            }
+            tail.* = variadic_t;
+            return true;
+        }
+        tail.* = rest_t;
+        return true;
+    }
+
+    fn expandedRestSignatureShapesAssignable(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!?bool {
+        if (!self.rest_signatures.contains(source_t) or !self.rest_signatures.contains(target_t)) return null;
+        var source_fixed: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer source_fixed.deinit(self.gpa);
+        var target_fixed: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer target_fixed.deinit(self.gpa);
+        var source_tail = types.Primitive.none;
+        var target_tail = types.Primitive.none;
+        if (!try self.appendExpandedRestSignatureShape(source_t, &source_fixed, &source_tail) or
+            !try self.appendExpandedRestSignatureShape(target_t, &target_fixed, &target_tail))
+        {
+            return null;
+        }
+        if (source_fixed.items.len != target_fixed.items.len) return null;
+        for (source_fixed.items, target_fixed.items) |source_param, target_param| {
+            if (!try self.contextualTargetParamAssignableToSource(target_param, source_param)) return false;
+        }
+        if (source_tail == target_tail) return true;
+        const source_element = self.interner.objectNumberIndex(source_tail);
+        const target_element = self.interner.objectNumberIndex(target_tail);
+        if (source_element != types.Primitive.none and target_element != types.Primitive.none) {
+            return try self.contextualTargetParamAssignableToSource(target_element, source_element);
+        }
+        return try self.contextualTargetParamAssignableToSource(target_tail, source_tail);
     }
 
     fn contextualFunctionReturnAssignable(self: *Checker, source_ret: TypeId, target_ret: TypeId) CheckError!bool {
@@ -132363,6 +133135,14 @@ pub const Checker = struct {
     ) CheckError!bool {
         const fixed_count = target_params.len - 1;
         const rest_t = target_params[target_params.len - 1];
+        if (self.restTargetHasRequiredNamedProperty(rest_t) and source_params.len > fixed_count) {
+            for (fixed_count..source_params.len) |index| {
+                var nbuf: [12]u8 = undefined;
+                const name_text = std.fmt.bufPrint(&nbuf, "{d}", .{index - fixed_count}) catch return false;
+                const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+                if (self.tupleElementMember(rest_t, name) == null) return false;
+            }
+        }
         if (self.fixedTupleLength(rest_t)) |rest_len| {
             if (source_params.len > fixed_count + @as(usize, @intCast(rest_len))) return false;
         }
@@ -207442,10 +208222,7 @@ test "checker: union-tuple rest parameter accepts the shorter branch arity" {
     }
 }
 
-test "checker: union-tuple rest parameter still flags too-few args with a range" {
-    // Below the smallest branch length the call is genuinely too few;
-    // the message renders the N-M range (here 2-3), not just the upper
-    // bound.
+test "checker: union-tuple rest reports a whole-tuple mismatch below every branch" {
     const s = try newSetup(
         \\declare let f1: (x: string, ...args: [string] | [number, boolean]) => void;
         \\f1("foo");
@@ -207453,15 +208230,12 @@ test "checker: union-tuple rest parameter still flags too-few args with a range"
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    var saw = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.expected_n_arguments and
-            std.mem.indexOf(u8, d.message, "Expected 2-3 arguments") != null)
-        {
-            saw = true;
-        }
-    }
-    try T.expect(saw);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '[]' is not assignable to parameter of type '[string] | [number, boolean]'.",
+    ));
 }
 
 test "checker: union-tuple rest (no fixed prefix) folds the arity range" {
@@ -207477,6 +208251,99 @@ test "checker: union-tuple rest (no fixed prefix) folds the arity range" {
         try T.expect(d.code != TsCodes.expected_n_arguments);
         try T.expect(d.code != TsCodes.expected_at_least_n_arguments);
     }
+}
+
+test "checker: tuple-union rests relate complete call and signature argument lists" {
+    const s = try newSetup(
+        \\declare let f1: (x: string, ...args: [string] | [number, boolean]) => void;
+        \\declare let f2: (x: string, y: string) => void;
+        \\declare let f3: (x: string, y: number, z: boolean) => void;
+        \\declare let f4: (...args: [string, string] | [string, number, boolean]) => void;
+        \\declare const spread: readonly [string] | readonly [number, boolean];
+        \\f1("ok", "value");
+        \\f1("ok", 1, true);
+        \\f1("ok", ...spread);
+        \\f1("bad", 1);
+        \\f1("bad");
+        \\f2 = f1;
+        \\f3 = f1;
+        \\f4 = f1;
+        \\f1 = f2;
+        \\f1 = f3;
+        \\f1 = f4;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '[1]' is not assignable to parameter of type '[string] | [number, boolean]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '[]' is not assignable to parameter of type '[string] | [number, boolean]'.",
+    ));
+}
+
+test "checker: custom array rests check the synthesized argument-list type" {
+    const s = try newSetup(
+        \\interface CoolArray<E> extends Array<E> { hello: number; }
+        \\declare function consume<T>(...args: CoolArray<T>): void;
+        \\declare const values: CoolArray<number>;
+        \\consume();
+        \\consume(1);
+        \\consume(1, 2);
+        \\consume(...values);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '[]' is not assignable to parameter of type 'CoolArray<never>'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '[number, number]' is not assignable to parameter of type 'CoolArray<unknown>'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'number[]' is not assignable to parameter of type 'CoolArray<number>'.",
+    ));
+}
+
+test "checker: nested and split variadic rest signatures are equivalent" {
+    const s = try newSetup(
+        \\declare let f1: (...rest: [string, string] | [string, number]) => void;
+        \\declare let f2: (x: string, ...rest: [string] | [number]) => void;
+        \\f1 = f2;
+        \\f2 = f1;
+        \\function compare<A extends unknown[]>(
+        \\  nested: (...args: [x: string, ...rest: A | [number]]) => void,
+        \\  split: (x: string, ...rest: A | [number]) => void,
+        \\) {
+        \\  nested = split;
+        \\  split = nested;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: truthiness narrowing strips null from a CALL-RESULT const union" {
