@@ -161,7 +161,7 @@ pub const FilePoll = struct {
     const ShellStaticPipeWriter = bun.shell.subproc.ShellSubprocess.StaticPipeWriter.Poll;
     const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll;
     const FileSink = jsc.WebCore.FileSink.Poll;
-    // const TerminalPoll = bun.api.Terminal.Poll; // terminal not for corpus
+    const TerminalPoll = bun.api.Terminal.Poll; // Bun.Terminal PTY writer poll
     const DNSResolver = bun.api.dns.Resolver;
     const GetAddrInfoRequest = bun.api.dns.GetAddrInfoRequest;
     const Request = bun.api.dns.internal.Request;
@@ -193,7 +193,7 @@ pub const FilePoll = struct {
         // LifecycleScriptSubprocessOutputReader,
         Process,
         ShellBufferedWriter, // i do not know why, but this has to be here otherwise compiler will complain about dependency loop
-        // TerminalPoll,
+        TerminalPoll,
         ParentDeathWatchdog,
     });
 
