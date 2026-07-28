@@ -1003,6 +1003,10 @@ pub const FileSystemFlags = enum(c_int) {
 
     _,
 
+    // Node's stringToFlags is a case-SENSITIVE, strict-equality switch over
+    // exactly these 22 primitive strings (any other string throws
+    // ERR_INVALID_ARG_VALUE). Uppercase spellings ("W", "A+", ...) must NOT be
+    // accepted. Ports oven-sh/bun 459c33fa9f (#32966).
     const map = bun.ComptimeStringMap(i32, .{
         .{ "r", O.RDONLY },
         .{ "rs", O.RDONLY | O.SYNC },
@@ -1011,28 +1015,13 @@ pub const FileSystemFlags = enum(c_int) {
         .{ "rs+", O.RDWR | O.SYNC },
         .{ "sr+", O.RDWR | O.SYNC },
 
-        .{ "R", O.RDONLY },
-        .{ "RS", O.RDONLY | O.SYNC },
-        .{ "SR", O.RDONLY | O.SYNC },
-        .{ "R+", O.RDWR },
-        .{ "RS+", O.RDWR | O.SYNC },
-        .{ "SR+", O.RDWR | O.SYNC },
-
         .{ "w", O.TRUNC | O.CREAT | O.WRONLY },
         .{ "wx", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
         .{ "xw", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
 
-        .{ "W", O.TRUNC | O.CREAT | O.WRONLY },
-        .{ "WX", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
-        .{ "XW", O.TRUNC | O.CREAT | O.WRONLY | O.EXCL },
-
         .{ "w+", O.TRUNC | O.CREAT | O.RDWR },
         .{ "wx+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
         .{ "xw+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
-
-        .{ "W+", O.TRUNC | O.CREAT | O.RDWR },
-        .{ "WX+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
-        .{ "XW+", O.TRUNC | O.CREAT | O.RDWR | O.EXCL },
 
         .{ "a", O.APPEND | O.CREAT | O.WRONLY },
         .{ "ax", O.APPEND | O.CREAT | O.WRONLY | O.EXCL },
@@ -1040,23 +1029,11 @@ pub const FileSystemFlags = enum(c_int) {
         .{ "as", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
         .{ "sa", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
 
-        .{ "A", O.APPEND | O.CREAT | O.WRONLY },
-        .{ "AX", O.APPEND | O.CREAT | O.WRONLY | O.EXCL },
-        .{ "XA", O.APPEND | O.CREAT | O.WRONLY | O.EXCL },
-        .{ "AS", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
-        .{ "SA", O.APPEND | O.CREAT | O.WRONLY | O.SYNC },
-
         .{ "a+", O.APPEND | O.CREAT | O.RDWR },
         .{ "ax+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
         .{ "xa+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
         .{ "as+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
         .{ "sa+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
-
-        .{ "A+", O.APPEND | O.CREAT | O.RDWR },
-        .{ "AX+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
-        .{ "XA+", O.APPEND | O.CREAT | O.RDWR | O.EXCL },
-        .{ "AS+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
-        .{ "SA+", O.APPEND | O.CREAT | O.RDWR | O.SYNC },
     });
 
     pub fn fromJS(ctx: *jsc.JSGlobalObject, val: jsc.JSValue) bun.JSError!?FileSystemFlags {
@@ -1076,45 +1053,30 @@ pub const FileSystemFlags = enum(c_int) {
             return @as(FileSystemFlags, @enumFromInt(flags));
         }
 
-        const jsType = val.jsType();
-        if (jsType.isStringLike()) {
-            const str = try val.getZigString(ctx);
-            if (str.isEmpty()) {
-                return ctx.throwInvalidArguments("Expected flags to be a non-empty string. Learn more at https://nodejs.org/api/fs.html#fs_file_system_flags", .{});
-            }
-            // it's definitely wrong when the string is super long
-            else if (str.len > 12) {
-                return ctx.throwInvalidArguments("Invalid flag '{f}'. Learn more at https://nodejs.org/api/fs.html#fs_file_system_flags", .{str});
-            }
-
-            const flags: i32 = brk: {
-                switch (str.is16Bit()) {
-                    inline else => |is_16bit| {
-                        const chars = if (is_16bit) str.utf16SliceAligned() else str.slice();
-
-                        if (std.ascii.isDigit(@as(u8, @truncate(chars[0])))) {
-                            // node allows "0o644" as a string :(
-                            if (is_16bit) {
-                                const slice = str.toSlice(bun.default_allocator);
-                                defer slice.deinit();
-
-                                break :brk @as(i32, @intCast(std.fmt.parseInt(Mode, slice.slice(), 10) catch break :brk null));
-                            } else {
-                                break :brk @as(i32, @intCast(std.fmt.parseInt(Mode, chars, 10) catch break :brk null));
-                            }
-                        }
-                    },
-                }
-
-                break :brk map.getWithEql(str, jsc.ZigString.eqlComptime) orelse break :brk null;
-            } orelse {
-                return ctx.throwInvalidArguments("Invalid flag '{f}'. Learn more at https://nodejs.org/api/fs.html#fs_file_system_flags", .{str});
-            };
-
-            return @enumFromInt(flags);
+        if (val.isUndefinedOrNull()) {
+            return null;
         }
 
-        return null;
+        // Node switches on the value with strict equality, so only primitive
+        // strings can match; every other value (including a `new String("w")`
+        // wrapper, if it reaches here) throws ERR_INVALID_ARG_VALUE (not
+        // ERR_INVALID_ARG_TYPE), and a leading digit is NOT parsed as a raw
+        // open(2) flag. Ports oven-sh/bun 459c33fa9f (#32966). NB: with the pinned
+        // internal `fs.ts`, a String-wrapper flag is coerced/defaulted in JS
+        // before reaching native, so that specific case surfaces as ENOENT until
+        // Home bumps Bun; all primitive-string cases are validated here.
+        if (val.isStringLiteral()) {
+            const str = try val.getZigString(ctx);
+            // The longest valid flag string is 3 bytes ("as+", "wx+", ...).
+            if (str.len >= 1 and str.len <= 3) {
+                if (map.getWithEql(str, jsc.ZigString.eqlComptime)) |flags| {
+                    return @enumFromInt(flags);
+                }
+            }
+        }
+
+        var formatter = jsc.ConsoleObject.Formatter{ .globalThis = ctx };
+        return ctx.ERR(.INVALID_ARG_VALUE, "The argument 'flags' is invalid. Received {f}", .{val.toFmt(&formatter)}).throw();
     }
 
     /// Equivalent of GetValidFileMode, which is used to implement fs.access and copyFile
