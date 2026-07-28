@@ -645,10 +645,123 @@ pub const Engine = struct {
         return result;
     }
 
-    fn homomorphicMappedOperandsMatch(self: *Engine, source: TypeId, target: TypeId) bool {
-        const source_operand = self.homomorphicMappedOperand(source) orelse return false;
-        const target_operand = self.homomorphicMappedOperand(target) orelse return false;
-        return source_operand == target_operand;
+    fn mappedConstraintOperand(self: *Engine, mapped_t: TypeId) ?TypeId {
+        if (mapped_t >= self.pool().typeCount() or !self.pool().flagsOf(mapped_t).is_mapped) return null;
+        const mapped = self.interner.mappedPayload(mapped_t);
+        if (mapped.constraint >= self.pool().typeCount() or !self.pool().flagsOf(mapped.constraint).is_keyof) return null;
+        return self.pool().keyof_payloads.items[self.pool().payloadOf(mapped.constraint)].operand;
+    }
+
+    fn mappedOptionality(t: types.ModifierState) i8 {
+        return switch (t) {
+            .remove => -1,
+            .none => 0,
+            .add => 1,
+        };
+    }
+
+    fn combinedMappedOptionality(self: *Engine, t: TypeId, depth: u8) i8 {
+        if (depth >= 16 or t >= self.pool().typeCount()) return 0;
+        const flags = self.pool().flagsOf(t);
+        if (flags.is_mapped) {
+            const own = mappedOptionality(self.interner.mappedPayload(t).optional);
+            if (own != 0) return own;
+            const operand = self.mappedConstraintOperand(t) orelse return 0;
+            return self.combinedMappedOptionality(operand, depth + 1);
+        }
+        if (flags.is_intersection) {
+            const members = self.interner.intersectionMembers(t);
+            if (members.len == 0) return 0;
+            const first = self.combinedMappedOptionality(members[0], depth + 1);
+            for (members[1..]) |member| {
+                if (self.combinedMappedOptionality(member, depth + 1) != first) return 0;
+            }
+            return first;
+        }
+        return 0;
+    }
+
+    fn mappedTemplateKeyParameter(self: *Engine, t: TypeId, depth: u8) ?TypeId {
+        if (depth >= 16 or t >= self.pool().typeCount()) return null;
+        const flags = self.pool().flagsOf(t);
+        if (flags.is_indexed_access) {
+            const indexed = self.pool().indexed_access_payloads.items[self.pool().payloadOf(t)];
+            if (indexed.index < self.pool().typeCount() and self.pool().flagsOf(indexed.index).is_type_parameter) {
+                return indexed.index;
+            }
+            return self.mappedTemplateKeyParameter(indexed.object, depth + 1) orelse
+                self.mappedTemplateKeyParameter(indexed.index, depth + 1);
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.mappedTemplateKeyParameter(member, depth + 1)) |key| return key;
+            }
+        } else if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.mappedTemplateKeyParameter(member, depth + 1)) |key| return key;
+            }
+        } else if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            return self.mappedTemplateKeyParameter(conditional.check_type, depth + 1) orelse
+                self.mappedTemplateKeyParameter(conditional.extends_type, depth + 1) orelse
+                self.mappedTemplateKeyParameter(conditional.true_branch, depth + 1) orelse
+                self.mappedTemplateKeyParameter(conditional.false_branch, depth + 1);
+        }
+        return null;
+    }
+
+    fn mappedTemplateNonNullableBase(self: *Engine, t: TypeId) ?TypeId {
+        if (t >= self.pool().typeCount() or !self.pool().flagsOf(t).is_intersection) return null;
+        var base = Primitive.none;
+        var saw_empty_object = false;
+        for (self.interner.intersectionMembers(t)) |member| {
+            if (member < self.pool().typeCount() and self.pool().flagsOf(member).is_object_type and
+                self.interner.objectMembers(member).len == 0 and
+                self.interner.objectStringIndex(member) == Primitive.none and
+                self.interner.objectNumberIndex(member) == Primitive.none and
+                self.interner.objectSymbolIndex(member) == Primitive.none)
+            {
+                saw_empty_object = true;
+            } else if (base == Primitive.none) {
+                base = member;
+            } else {
+                return null;
+            }
+        }
+        return if (saw_empty_object and base != Primitive.none) base else null;
+    }
+
+    fn mappedTypesAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        if (source >= self.pool().typeCount() or target >= self.pool().typeCount()) return false;
+        if (!self.pool().flagsOf(source).is_mapped or !self.pool().flagsOf(target).is_mapped) return false;
+        const source_mapped = self.interner.mappedPayload(source);
+        const target_mapped = self.interner.mappedPayload(target);
+        if (self.combinedMappedOptionality(source, 0) > self.combinedMappedOptionality(target, 0)) return false;
+        if (!try self.isAssignableTo(target_mapped.constraint, source_mapped.constraint)) return false;
+
+        var source_template = source_mapped.template;
+        const source_key = self.mappedTemplateKeyParameter(source_template, 0);
+        const target_key = self.mappedTemplateKeyParameter(target_mapped.template, 0);
+        if (source_key != null and target_key != null and source_key.? != target_key.?) {
+            source_template = try self.substituteTpDeep(source_template, &.{.{
+                .from = source_key.?,
+                .to = target_key.?,
+            }});
+        }
+        if (self.mappedTemplateNonNullableBase(target_mapped.template)) |target_base| {
+            if (source_template == target_base and self.mappedTemplateNonNullableBase(source_template) == null) {
+                return false;
+            }
+        }
+        return try self.isAssignableTo(source_template, target_mapped.template);
+    }
+
+    fn isEmptyObjectType(self: *Engine, t: TypeId) bool {
+        if (t >= self.pool().typeCount() or !self.pool().flagsOf(t).is_object_type) return false;
+        return self.interner.objectMembers(t).len == 0 and
+            self.interner.objectStringIndex(t) == Primitive.none and
+            self.interner.objectNumberIndex(t) == Primitive.none and
+            self.interner.objectSymbolIndex(t) == Primitive.none;
     }
 
     fn typeParameterAssignableToPlainHomomorphicMappedTarget(self: *Engine, source: TypeId, target: TypeId) bool {
@@ -656,7 +769,7 @@ pub const Engine = struct {
         if (!self.pool().flagsOf(source).is_type_parameter) return false;
         if (!self.pool().flagsOf(target).is_mapped) return false;
         const mapped = self.interner.mappedPayload(target);
-        if (mapped.readonly != .none or mapped.optional != .none) return false;
+        if (mapped.optional == .remove) return false;
         if (mapped.constraint >= self.pool().typeCount()) return false;
         if (!self.pool().flagsOf(mapped.constraint).is_keyof) return false;
         const keyof_payload = self.pool().keyof_payloads.items[self.pool().payloadOf(mapped.constraint)];
@@ -667,20 +780,6 @@ pub const Engine = struct {
         if (indexed.object != source) return false;
         if (indexed.index >= self.pool().typeCount()) return false;
         return self.pool().flagsOf(indexed.index).is_type_parameter;
-    }
-
-    fn homomorphicMappedOperand(self: *Engine, mapped_t: TypeId) ?TypeId {
-        if (mapped_t >= self.pool().typeCount()) return null;
-        if (!self.pool().flagsOf(mapped_t).is_mapped) return null;
-        const mapped = self.interner.mappedPayload(mapped_t);
-        if (mapped.constraint >= self.pool().typeCount()) return null;
-        if (!self.pool().flagsOf(mapped.constraint).is_keyof) return null;
-        const keyof_payload = self.pool().keyof_payloads.items[self.pool().payloadOf(mapped.constraint)];
-        if (mapped.template >= self.pool().typeCount()) return null;
-        if (!self.pool().flagsOf(mapped.template).is_indexed_access) return null;
-        const indexed = self.pool().indexed_access_payloads.items[self.pool().payloadOf(mapped.template)];
-        if (indexed.object != keyof_payload.operand) return null;
-        return keyof_payload.operand;
     }
 
     fn isDeeplyNestedPair(self: *Engine, source: TypeId, target: TypeId) bool {
@@ -909,11 +1008,11 @@ pub const Engine = struct {
 
         if (self.typeParameterAssignableToPlainHomomorphicMappedTarget(source, target)) return true;
 
-        if (sf.is_mapped and tf.is_mapped and self.homomorphicMappedOperandsMatch(source, target)) {
-            const source_m = self.interner.mappedPayload(source);
-            const target_m = self.interner.mappedPayload(target);
-            if (source_m.optional == .add and target_m.optional != .add) return false;
-            return true;
+        if (sf.is_mapped and tf.is_mapped) {
+            return try self.mappedTypesAssignable(source, target);
+        }
+        if (tf.is_mapped and self.isEmptyObjectType(source)) {
+            return self.interner.mappedPayload(target).optional == .add;
         }
 
         // `null` and `undefined` assign to themselves only under
@@ -1435,6 +1534,50 @@ pub const Engine = struct {
             }
             if (!changed) return t;
             return self.interner.internTemplateLiteral(texts, parts.items) catch t;
+        }
+        if (flags.is_keyof) {
+            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return t;
+            const operand = self.interner.pool.keyof_payloads.items[payload_idx].operand;
+            const subbed = self.validOrUnknown(try self.substituteTpDeepLimit(operand, map, depth + 1));
+            if (subbed == operand) return t;
+            return self.interner.internKeyof(subbed) catch t;
+        }
+        if (flags.is_indexed_access) {
+            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return t;
+            const indexed = self.interner.pool.indexed_access_payloads.items[payload_idx];
+            const object = self.validOrUnknown(try self.substituteTpDeepLimit(indexed.object, map, depth + 1));
+            const index = self.validOrUnknown(try self.substituteTpDeepLimit(indexed.index, map, depth + 1));
+            if (object == indexed.object and index == indexed.index) return t;
+            return self.interner.internIndexedAccess(object, index) catch t;
+        }
+        if (flags.is_conditional) {
+            if (payload_idx >= self.interner.pool.conditional_payloads.items.len) return t;
+            const conditional = self.interner.pool.conditional_payloads.items[payload_idx];
+            const check = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.check_type, map, depth + 1));
+            const extends_t = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.extends_type, map, depth + 1));
+            const true_branch = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.true_branch, map, depth + 1));
+            const false_branch = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.false_branch, map, depth + 1));
+            if (check == conditional.check_type and
+                extends_t == conditional.extends_type and
+                true_branch == conditional.true_branch and
+                false_branch == conditional.false_branch)
+            {
+                return t;
+            }
+            return self.interner.internConditionalWithDistribution(
+                check,
+                extends_t,
+                true_branch,
+                false_branch,
+                conditional.is_distributive,
+            ) catch t;
+        }
+        if (flags.is_mapped) {
+            const mapped = self.interner.mappedPayload(t);
+            const constraint = self.validOrUnknown(try self.substituteTpDeepLimit(mapped.constraint, map, depth + 1));
+            const template = self.validOrUnknown(try self.substituteTpDeepLimit(mapped.template, map, depth + 1));
+            if (constraint == mapped.constraint and template == mapped.template) return t;
+            return self.interner.internMapped(constraint, template, mapped.readonly, mapped.optional) catch t;
         }
         if (flags.is_object_type) {
             if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;

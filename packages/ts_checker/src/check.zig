@@ -72789,6 +72789,7 @@ pub const Checker = struct {
         if (try self.genericSignatureRelationMismatch(source_t, target_t)) return false;
         if (try self.nonNullableIntersectionSourceAssignableToTarget(source_t, target_t)) return true;
         if (self.typeParameterSourceAssignableToMappedTarget(source_t, target_t)) return true;
+        if (self.mappedSourceAssignableToTypeParameterTarget(source_t, target_t)) return true;
         if (self.mappedSourceAssignableToOpenAnyIndexTarget(source_t, target_t)) return true;
         if (self.filteredMappedKeySourceAssignableToKeyofTarget(source_t, target_t)) return true;
         if (try self.patternIndexSignaturesAssignable(source_t, target_t)) |ok| return ok;
@@ -73414,10 +73415,23 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(source_t).is_type_parameter) return false;
         if (!self.interner.pool.flagsOf(target_t).is_mapped) return false;
         const mapped = self.interner.mappedPayload(target_t);
+        if (mapped.optional == .remove) return false;
         if (mapped.template >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(mapped.template).is_indexed_access) return false;
         const ia = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(mapped.template)];
         return ia.object == source_t;
+    }
+
+    fn mappedSourceAssignableToTypeParameterTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_mapped or
+            !self.interner.pool.flagsOf(target_t).is_type_parameter)
+        {
+            return false;
+        }
+        const mapped = self.interner.mappedPayload(source_t);
+        if (mapped.optional == .add) return false;
+        return self.directKeyofOperand(mapped.constraint) == target_t;
     }
 
     fn filteredMappedKeySourceAssignableToKeyofTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
@@ -76374,6 +76388,7 @@ pub const Checker = struct {
             number_idx,
             symbol_idx,
         ) catch return error.OutOfMemory;
+        if (!wants_keys) try self.registerAliasDisplayName(result, r.name, &.{source_t});
         return result;
     }
 
@@ -110686,6 +110701,7 @@ pub const Checker = struct {
         if (!tf.is_type_parameter) return false;
         if (tf.is_union) return false;
         if (self.nonNullableIntersectionSourceAssignableToTarget(source, target) catch false) return false;
+        if (self.mappedSourceAssignableToTypeParameterTarget(source, target)) return false;
         if (self.intersectionSourceContainsTypeParameter(source, target)) return false;
         if (self.tupleSpreadSourceAssignableToTypeParameter(source, target)) return false;
         if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_type_parameter) {
@@ -131662,6 +131678,7 @@ pub const Checker = struct {
     fn objectLiteralAssignableToMappedTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) anyerror!bool {
         if (arg_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(arg_t).is_object_type) return false;
         const props = hir_mod.objectLiteralProps(self.hir, arg_node);
+        if (props.len == 0 and self.interner.mappedPayload(target_t).optional != .add) return false;
         for (props) |prop| {
             if (self.hir.kindOf(prop) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, prop);
@@ -167986,6 +168003,78 @@ test "checker: mapped target removing optionality rejects generic source" {
         if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: homomorphic mapped relations order optionality and compare templates" {
+    const s = try newSetup(
+        \\type Required<T> = { [P in keyof T]-?: T[P] };
+        \\type Partial<T> = { [P in keyof T]?: T[P] };
+        \\type Denullified<T> = { [P in keyof T]-?: NonNullable<T[P]> };
+        \\type Readonly<T> = { readonly [P in keyof T]: T[P] };
+        \\type Readwrite<T> = { -readonly [P in keyof T]: T[P] };
+        \\function optionality<T>(x: Required<T>, y: T, z: Partial<T>) {
+        \\  x = y;
+        \\  x = z;
+        \\  y = x;
+        \\  y = z;
+        \\  z = x;
+        \\  z = y;
+        \\}
+        \\function templates<T>(w: Denullified<T>, x: Required<T>, y: T, z: Partial<T>) {
+        \\  w = x;
+        \\  w = y;
+        \\  w = z;
+        \\  x = w;
+        \\  x = y;
+        \\  x = z;
+        \\  y = w;
+        \\  y = x;
+        \\  y = z;
+        \\  z = w;
+        \\  z = x;
+        \\  z = y;
+        \\}
+        \\function empty<T>(w: Denullified<T>, x: Required<T>, z: Partial<T>) {
+        \\  w = {};
+        \\  x = {};
+        \\  z = {};
+        \\}
+        \\function readonlyness<T>(x: Readonly<T>, y: T, z: Readwrite<T>) {
+        \\  x = y;
+        \\  x = z;
+        \\  y = x;
+        \\  y = z;
+        \\  z = x;
+        \\  z = y;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 11), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: synthesized mapped utility keeps alias display after materialization" {
+    const s = try newSetup(
+        \\type Foo = { a: number; b: number; c?: number };
+        \\declare let required: Required<Foo>;
+        \\required = { a: 1 };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_missing_properties));
+    var saw_alias = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.type_missing_properties and
+            std.mem.indexOf(u8, diag.message, "missing the following properties from type 'Required<Foo>': b, c") != null)
+        {
+            saw_alias = true;
+        }
+    }
+    try T.expect(saw_alias);
 }
 
 test "checker: indexed access rejects type-parameter keys outside object members" {
