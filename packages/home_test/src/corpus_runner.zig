@@ -58951,7 +58951,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/transpiler-tsconfig-uaf.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/typescript/type-export.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun TypeScript type-only export module graph and CLI diagnostics")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/udp/dgram.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "node:dgram UDP native socket integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/udp/udp_socket.test.ts"))

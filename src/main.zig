@@ -2418,6 +2418,190 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: [
     std.debug.print("\n{s}Success:{s} Program completed\n", .{ Color.Green.code(), Color.Reset.code() });
 }
 
+const BuildCliOptions = struct {
+    entrypoint: []const u8,
+    output_path: ?[]const u8 = null,
+    format: []const u8 = "esm",
+    kernel_mode: bool = false,
+    compile: bool = false,
+    bytecode: bool = false,
+};
+
+const BuildCliParseError = struct {
+    kind: enum {
+        missing_entrypoint,
+        missing_value,
+        empty_value,
+        unknown_option,
+        duplicate_entrypoint,
+        unsupported_format,
+        bytecode_requires_compile,
+    },
+    argument: ?[]const u8 = null,
+};
+
+const BuildCliParseResult = union(enum) {
+    ok: BuildCliOptions,
+    err: BuildCliParseError,
+};
+
+fn parseBuildCliOptions(args: []const [:0]const u8) BuildCliParseResult {
+    var entrypoint: ?[]const u8 = null;
+    var output_path: ?[]const u8 = null;
+    var format: []const u8 = "esm";
+    var kernel_mode = false;
+    var compile = false;
+    var bytecode = false;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--kernel")) {
+            kernel_mode = true;
+        } else if (std.mem.eql(u8, arg, "--compile")) {
+            compile = true;
+        } else if (std.mem.eql(u8, arg, "--bytecode")) {
+            bytecode = true;
+        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--outfile")) {
+            if (i + 1 >= args.len) {
+                return .{ .err = .{ .kind = .missing_value, .argument = arg } };
+            }
+            i += 1;
+            if (args[i].len == 0) {
+                return .{ .err = .{ .kind = .empty_value, .argument = arg } };
+            }
+            output_path = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--outfile=")) {
+            const value = arg["--outfile=".len..];
+            if (value.len == 0) {
+                return .{ .err = .{ .kind = .empty_value, .argument = "--outfile" } };
+            }
+            output_path = value;
+        } else if (std.mem.startsWith(u8, arg, "-o") and arg.len > 2) {
+            output_path = arg[2..];
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            if (i + 1 >= args.len) {
+                return .{ .err = .{ .kind = .missing_value, .argument = arg } };
+            }
+            i += 1;
+            if (args[i].len == 0) {
+                return .{ .err = .{ .kind = .empty_value, .argument = arg } };
+            }
+            format = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--format=")) {
+            format = arg["--format=".len..];
+            if (format.len == 0) {
+                return .{ .err = .{ .kind = .empty_value, .argument = "--format" } };
+            }
+        } else if (arg.len > 0 and arg[0] == '-') {
+            return .{ .err = .{ .kind = .unknown_option, .argument = arg } };
+        } else if (entrypoint != null) {
+            return .{ .err = .{ .kind = .duplicate_entrypoint, .argument = arg } };
+        } else {
+            entrypoint = arg;
+        }
+    }
+
+    if (entrypoint == null) return .{ .err = .{ .kind = .missing_entrypoint } };
+    if (!std.mem.eql(u8, format, "esm") and
+        !std.mem.eql(u8, format, "cjs") and
+        !std.mem.eql(u8, format, "iife"))
+    {
+        return .{ .err = .{ .kind = .unsupported_format, .argument = format } };
+    }
+    if (bytecode and !compile) {
+        return .{ .err = .{ .kind = .bytecode_requires_compile, .argument = "--bytecode" } };
+    }
+
+    return .{ .ok = .{
+        .entrypoint = entrypoint.?,
+        .output_path = output_path,
+        .format = format,
+        .kernel_mode = kernel_mode,
+        .compile = compile,
+        .bytecode = bytecode,
+    } };
+}
+
+fn failBuildCliParse(parse_error: BuildCliParseError) noreturn {
+    switch (parse_error.kind) {
+        .missing_entrypoint => std.debug.print("error: 'build' requires an entrypoint\n", .{}),
+        .missing_value => std.debug.print("error: option '{s}' requires a value\n", .{parse_error.argument.?}),
+        .empty_value => std.debug.print("error: option '{s}' cannot be empty\n", .{parse_error.argument.?}),
+        .unknown_option => std.debug.print("error: unknown build option '{s}'\n", .{parse_error.argument.?}),
+        .duplicate_entrypoint => std.debug.print("error: build accepts one entrypoint; unexpected '{s}'\n", .{parse_error.argument.?}),
+        .unsupported_format => std.debug.print(
+            "error: unsupported build format '{s}' (expected esm, cjs, or iife)\n",
+            .{parse_error.argument.?},
+        ),
+        .bytecode_requires_compile => std.debug.print("error: '--bytecode' requires '--compile'\n", .{}),
+    }
+    std.process.exit(1);
+}
+
+test "build CLI accepts Bun compile flags before and after the entrypoint" {
+    const args = [_][:0]const u8{
+        "--compile",
+        "--bytecode",
+        "--format=esm",
+        "/tmp/project/c.ts",
+        "--outfile",
+        "/tmp/project/compiled",
+    };
+    const options = switch (parseBuildCliOptions(&args)) {
+        .ok => |value| value,
+        .err => return error.ExpectedBuildOptions,
+    };
+
+    try std.testing.expectEqualStrings("/tmp/project/c.ts", options.entrypoint);
+    try std.testing.expectEqualStrings("/tmp/project/compiled", options.output_path.?);
+    try std.testing.expectEqualStrings("esm", options.format);
+    try std.testing.expect(options.compile);
+    try std.testing.expect(options.bytecode);
+    try std.testing.expect(!options.kernel_mode);
+}
+
+test "build CLI supports compact output and separate format options" {
+    const args = [_][:0]const u8{ "entry.ts", "-odist/app", "--format", "cjs", "--compile" };
+    const options = switch (parseBuildCliOptions(&args)) {
+        .ok => |value| value,
+        .err => return error.ExpectedBuildOptions,
+    };
+
+    try std.testing.expectEqualStrings("entry.ts", options.entrypoint);
+    try std.testing.expectEqualStrings("dist/app", options.output_path.?);
+    try std.testing.expectEqualStrings("cjs", options.format);
+}
+
+test "build CLI reports malformed options without dispatching a build" {
+    const missing_value = [_][:0]const u8{ "entry.ts", "--outfile" };
+    switch (parseBuildCliOptions(&missing_value)) {
+        .err => |parse_error| try std.testing.expectEqual(.missing_value, parse_error.kind),
+        .ok => return error.ExpectedBuildParseError,
+    }
+
+    const unknown = [_][:0]const u8{ "--wat", "entry.ts" };
+    switch (parseBuildCliOptions(&unknown)) {
+        .err => |parse_error| {
+            try std.testing.expectEqual(.unknown_option, parse_error.kind);
+            try std.testing.expectEqualStrings("--wat", parse_error.argument.?);
+        },
+        .ok => return error.ExpectedBuildParseError,
+    }
+
+    const duplicate = [_][:0]const u8{ "one.ts", "two.ts" };
+    switch (parseBuildCliOptions(&duplicate)) {
+        .err => |parse_error| try std.testing.expectEqual(.duplicate_entrypoint, parse_error.kind),
+        .ok => return error.ExpectedBuildParseError,
+    }
+
+    const bytecode_without_compile = [_][:0]const u8{ "--bytecode", "entry.ts" };
+    switch (parseBuildCliOptions(&bytecode_without_compile)) {
+        .err => |parse_error| try std.testing.expectEqual(.bytecode_requires_compile, parse_error.kind),
+        .ok => return error.ExpectedBuildParseError,
+    }
+}
+
 fn runNativeBuildTool(argv: []const []const u8, tool_name: []const u8) !void {
     var child = std.process.spawn(g_io, .{
         .argv = argv,
@@ -2458,7 +2642,83 @@ fn runNativeBuildTool(argv: []const []const u8, tool_name: []const u8) !void {
     }
 }
 
-fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8) !void {
+const standalone_bundle_script =
+    \\const [entrypoint, outfile, format] = process.argv.slice(1);
+    \\const result = await Bun.build({ entrypoints: [entrypoint], target: "bun", format, throw: false });
+    \\if (!result.success) {
+    \\  for (const log of result.logs) console.error(log);
+    \\  process.exit(1);
+    \\}
+    \\if (result.outputs.length === 0) {
+    \\  console.error("error: standalone bundler produced no output");
+    \\  process.exit(1);
+    \\}
+    \\await Bun.write(outfile, result.outputs[0]);
+;
+
+fn bundleJsLikeEntrypoint(
+    executable_path: []const u8,
+    source_path: []const u8,
+    bundle_path: []const u8,
+    format: []const u8,
+) !void {
+    var child = std.process.spawn(g_io, .{
+        .argv = &.{ executable_path, "-e", standalone_bundle_script, source_path, bundle_path, format },
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| {
+        std.debug.print("error: failed to start the standalone bundler: {s}\n", .{@errorName(err)});
+        return err;
+    };
+
+    const term = try child.wait(g_io);
+    switch (term) {
+        .exited => |code| if (code != 0) return error.StandaloneBundleFailed,
+        else => {
+            std.debug.print("error: standalone bundler terminated unexpectedly\n", .{});
+            return error.StandaloneBundleFailed;
+        },
+    }
+}
+
+fn ensureDirectoryPath(path: []const u8) !void {
+    if (path.len == 0) return;
+
+    const opened = if (std.fs.path.isAbsolute(path))
+        Io.Dir.openDirAbsolute(g_io, path, .{})
+    else
+        Io.Dir.cwd().openDir(g_io, path, .{});
+    if (opened) |dir| {
+        dir.close(g_io);
+        return;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    const parent = std.fs.path.dirname(path) orelse return error.FileNotFound;
+    if (parent.len == 0 or std.mem.eql(u8, parent, path)) return error.FileNotFound;
+    try ensureDirectoryPath(parent);
+
+    const create_result = if (std.fs.path.isAbsolute(path))
+        Io.Dir.createDirAbsolute(g_io, path, .default_dir)
+    else
+        Io.Dir.cwd().createDir(g_io, path, .default_dir);
+    create_result catch |err| switch (err) {
+        // Another process may have created the directory after our open.
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+}
+
+fn buildJsLikeCommand(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    output_path: ?[]const u8,
+    compile: bool,
+    format: []const u8,
+) !void {
     if (!build_options.enable_jsc) {
         std.debug.print(
             "{s}Error:{s} JS/TS binaries require a Home compiler built with JavaScriptCore (-Denable_jsc=true)\n",
@@ -2477,8 +2737,11 @@ fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, outpu
         return error.UnsupportedHost;
     }
 
-    const source_path = try Io.Dir.cwd().realPathFileAlloc(g_io, file_path, allocator);
-    defer allocator.free(source_path);
+    const entry_source_path = Io.Dir.cwd().realPathFileAlloc(g_io, file_path, allocator) catch |err| {
+        std.debug.print("error: failed to read entrypoint '{s}': {s}\n", .{ file_path, @errorName(err) });
+        return error.BuildInputReadFailed;
+    };
+    defer allocator.free(entry_source_path);
 
     var executable_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const executable_path_len = try std.process.executablePath(g_io, &executable_path_buffer);
@@ -2492,7 +2755,14 @@ fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, outpu
     };
 
     if (std.fs.path.dirname(out_path)) |parent| {
-        if (parent.len > 0) try Io.Dir.cwd().createDirPath(g_io, parent);
+        // `std.Io.Dir.createDirPath` rejects existing symlink components. That
+        // is especially surprising on macOS where `/tmp` is a symlink and used
+        // to surface `error.NotDir` plus a Zig stack trace. Open existing
+        // parents first, then create only genuinely missing path components.
+        if (parent.len > 0) ensureDirectoryPath(parent) catch |err| {
+            std.debug.print("error: failed to create output directory '{s}': {s}\n", .{ parent, @errorName(err) });
+            return error.BuildOutputDirectoryFailed;
+        };
     }
 
     const build_dir = try std.fmt.allocPrint(allocator, ".home-cache/llvm-js-{x}", .{getMonotonicNs()});
@@ -2510,12 +2780,19 @@ fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, outpu
     const payload_object_path = try std.fmt.allocPrint(allocator, "{s}/payload.o", .{build_dir});
     defer allocator.free(payload_object_path);
 
-    const llvm_ir = try JSEntrypointLLVM.generateLauncherIR(allocator, file_path);
+    const bundled_source_path = try std.fmt.allocPrint(allocator, "{s}/standalone.js", .{build_dir});
+    defer allocator.free(bundled_source_path);
+    if (compile) {
+        try bundleJsLikeEntrypoint(executable_path, entry_source_path, bundled_source_path, format);
+    }
+    const embedded_source_path = if (compile) bundled_source_path else entry_source_path;
+
+    const llvm_ir = try JSEntrypointLLVM.generateLauncherIR(allocator, embedded_source_path);
     defer allocator.free(llvm_ir);
     const payload_assembly = try JSEntrypointLLVM.generatePayloadAssembly(
         allocator,
         executable_path,
-        source_path,
+        embedded_source_path,
         builtin.os.tag,
     );
     defer allocator.free(payload_assembly);
@@ -2523,12 +2800,14 @@ fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, outpu
     try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = ir_path, .data = llvm_ir });
     try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = payload_assembly_path, .data = payload_assembly });
 
-    std.debug.print("{s}Building LLVM JS/TS executable:{s} {s}\n", .{
-        Color.Blue.code(),
-        Color.Reset.code(),
-        file_path,
-    });
-    std.debug.print("{s}Generating LLVM launcher...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    if (!compile) {
+        std.debug.print("{s}Building LLVM JS/TS executable:{s} {s}\n", .{
+            Color.Blue.code(),
+            Color.Reset.code(),
+            file_path,
+        });
+        std.debug.print("{s}Generating LLVM launcher...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    }
 
     try runNativeBuildTool(
         &.{ "clang", "-O2", "-Wno-override-module", "-c", "-x", "ir", ir_path, "-o", launcher_object_path },
@@ -2536,7 +2815,9 @@ fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, outpu
     );
     try runNativeBuildTool(&.{ "clang", "-c", payload_assembly_path, "-o", payload_object_path }, "Clang assembler");
 
-    std.debug.print("{s}Linking embedded Home runtime and entrypoint...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    if (!compile) {
+        std.debug.print("{s}Linking embedded Home runtime and entrypoint...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    }
     runNativeBuildTool(&.{ "clang", launcher_object_path, payload_object_path, "-o", out_path }, "LLVM linker") catch |err| {
         Io.Dir.cwd().deleteFile(g_io, out_path) catch {};
         return err;
@@ -2552,34 +2833,37 @@ fn buildJsLikeCommand(allocator: std.mem.Allocator, file_path: []const u8, outpu
         return err;
     };
 
-    std.debug.print("\n{s}Success:{s} Built LLVM executable {s}\n", .{
-        Color.Green.code(),
-        Color.Reset.code(),
-        out_path,
-    });
-    std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
+    if (!compile) {
+        std.debug.print("\n{s}Success:{s} Built LLVM executable {s}\n", .{
+            Color.Green.code(),
+            Color.Reset.code(),
+            out_path,
+        });
+        std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
+    }
 }
 
-fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8, kernel_mode: bool) !void {
+fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
+    const file_path = options.entrypoint;
     if (JSEntrypointLLVM.isSupportedEntrypoint(file_path)) {
-        if (kernel_mode) {
+        if (options.kernel_mode) {
             std.debug.print("{s}Error:{s} --kernel is only supported for Home source files\n", .{
                 Color.Red.code(),
                 Color.Reset.code(),
             });
             return error.UnsupportedKernelEntrypoint;
         }
-        return buildJsLikeCommand(allocator, file_path, output_path);
+        return buildJsLikeCommand(allocator, file_path, options.output_path, options.compile, options.format);
     }
 
     // Read the file
     const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
-        return err;
+        return error.BuildInputReadFailed;
     };
     defer allocator.free(source);
 
-    if (kernel_mode) {
+    if (options.kernel_mode) {
         std.debug.print("{s}Building kernel:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
     } else {
         std.debug.print("{s}Building:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -2589,7 +2873,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     var inc_compiler: ?IncrementalCompiler = null;
     var cache: ?IRCache = null;
 
-    if (build_options.enable_ir_cache and !kernel_mode) {
+    if (build_options.enable_ir_cache and !options.kernel_mode) {
         // Use new incremental compiler
         inc_compiler = try IncrementalCompiler.init(allocator, ".home-cache", true, g_io);
         std.debug.print("{s}Incremental compilation:{s} enabled\n", .{ Color.Cyan.code(), Color.Reset.code() });
@@ -2664,7 +2948,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     try enhanced_reporter.registerSource(file_path, source);
 
     // Compile-time evaluation pass (unless disabled or kernel mode)
-    if (!kernel_mode) {
+    if (!options.kernel_mode) {
         std.debug.print("{s}Evaluating comptime blocks...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
         var comptime_executor = try ComptimeExecutor.init(allocator);
@@ -2678,7 +2962,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     }
 
     // Type check (unless disabled or kernel mode)
-    if (!kernel_mode) {
+    if (!options.kernel_mode) {
         std.debug.print("{s}Type checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
         var type_checker = TypeChecker.initWithComptime(allocator, program, &comptime_store);
@@ -2734,12 +3018,12 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         // pass_manager.printStats();
     }
 
-    if (kernel_mode) {
+    if (options.kernel_mode) {
         // Kernel mode: generate assembly
         var out_path_owned: ?[]const u8 = null;
         defer if (out_path_owned) |p| allocator.free(p);
 
-        const out_path = if (output_path) |p|
+        const out_path = if (options.output_path) |p|
             p
         else if (std.mem.endsWith(u8, file_path, ".home")) blk: {
             out_path_owned = try std.fmt.allocPrint(allocator, "{s}.s", .{file_path[0 .. file_path.len - 5]});
@@ -2767,7 +3051,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         std.debug.print("{s}Info:{s} Assemble with: as -o {s}.o {s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path[0 .. out_path.len - 2], out_path });
     } else {
         // Normal mode: generate executable
-        const out_path = output_path orelse blk: {
+        const out_path = options.output_path orelse blk: {
             if (std.mem.endsWith(u8, file_path, ".home")) {
                 break :blk file_path[0 .. file_path.len - 5];
             } else if (std.mem.endsWith(u8, file_path, ".hm")) {
@@ -3826,7 +4110,8 @@ fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
     return std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/jsc-stress/jsc-stress.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts");
+        std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/typescript/type-export.test.ts");
 }
 
 fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
@@ -3955,6 +4240,7 @@ test "ported Bun corpus matrices requiring runtime services use the full native 
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc-stress/jsc-stress.test.ts"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc-stress/fixtures/simd-baseline.test.ts"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/import-attributes/import-attributes.test.ts"));
+    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/typescript/type-export.test.ts"));
     try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc/heapStats-mimalloc.test.ts"));
 }
 
@@ -4844,27 +5130,25 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, command, "build")) {
-        if (args.len < 3) {
-            std.debug.print("{s}Error:{s} 'build' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
-            printUsage();
-            std.process.exit(1);
-        }
-
-        var output_path: ?[]const u8 = null;
-        var kernel_mode = false;
-
-        // Parse optional flags: --kernel, -o <output>
-        var i: usize = 3;
-        while (i < args.len) : (i += 1) {
-            if (std.mem.eql(u8, args[i], "--kernel")) {
-                kernel_mode = true;
-            } else if (std.mem.eql(u8, args[i], "-o") and i + 1 < args.len) {
-                output_path = args[i + 1];
-                i += 1;
+        const build_options_cli = switch (parseBuildCliOptions(args[2..])) {
+            .ok => |options| options,
+            .err => |parse_error| failBuildCliParse(parse_error),
+        };
+        buildCommand(allocator, build_options_cli) catch |err| {
+            const diagnostic_already_reported =
+                err == error.StandaloneBundleFailed or
+                err == error.NativeBuildToolFailed or
+                err == error.BuildInputReadFailed or
+                err == error.BuildOutputDirectoryFailed or
+                err == error.JavaScriptCoreDisabled or
+                err == error.UnsupportedHost or
+                err == error.UnsupportedKernelEntrypoint or
+                err == error.CodesignFailed;
+            if (!diagnostic_already_reported) {
+                std.debug.print("error: build failed: {s}\n", .{@errorName(err)});
             }
-        }
-
-        try buildCommand(allocator, args[2], output_path, kernel_mode);
+            std.process.exit(1);
+        };
         return;
     }
 
