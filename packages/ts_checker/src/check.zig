@@ -18813,7 +18813,20 @@ pub const Checker = struct {
             if (!self.functionExpressionHasContextSensitiveParameters(args[i])) continue;
             const callback_t = param_ts[i];
             if (!self.interner.isSignature(callback_t)) continue;
-            if ((self.interner.signatureReturn(callback_t) orelse continue) == param_t) return true;
+            if ((self.interner.signatureReturn(callback_t) orelse continue) != param_t) continue;
+            // Preserve the scalar literal only for a purely covariant
+            // callback result. If the same type parameter also appears
+            // in a callback parameter (`(acc: U) => U`), the concrete
+            // scalar argument is an ordinary mutable inference
+            // candidate and must widen (`0` -> `number`).
+            var appears_in_callback_parameter = false;
+            for (self.interner.signatureParams(callback_t)) |callback_param| {
+                if (self.typeContainsSpecificTypeParameter(callback_param, param_t, 0)) {
+                    appears_in_callback_parameter = true;
+                    break;
+                }
+            }
+            if (!appears_in_callback_parameter) return true;
         }
         return false;
     }
@@ -90433,17 +90446,43 @@ pub const Checker = struct {
                 self.widenForInference(types.Primitive.true_lit);
         }
         const widened = self.widenForInference(fallback);
-        if (self.propertyKeyLiteralUnionPart(prop_t) == null) return widened;
         // A quoted JSX initializer is contextually literal-preserving
         // when the prop is a literal union (`x="f"` against `"a" | "b"`
         // reports `"f"`, not `string`). Braced expressions follow the
         // same rule through their inner expression.
-        if (self.hir.kindOf(value) != .jsx_expression) {
-            return try self.expressionLiteralType(value, widened);
+        const literal_source = if (self.hir.kindOf(value) != .jsx_expression)
+            try self.expressionLiteralType(value, widened)
+        else blk: {
+            const ex = hir_mod.jsxExpressionOf(self.hir, value);
+            if (ex.expression == hir_mod.none_node_id) break :blk widened;
+            break :blk try self.expressionLiteralType(ex.expression, widened);
+        };
+        return if (self.typeHasMatchingLiteralFamily(prop_t, literal_source))
+            literal_source
+        else
+            widened;
+    }
+
+    fn typeHasMatchingLiteralFamily(self: *Checker, target: TypeId, source: TypeId) bool {
+        if (target >= self.interner.pool.typeCount() or source >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source);
+        if (!source_flags.is_literal) return false;
+        const target_flags = self.interner.pool.flagsOf(target);
+        if (target_flags.is_union or target_flags.is_intersection) {
+            const members = if (target_flags.is_union)
+                self.interner.unionMembers(target)
+            else
+                self.interner.intersectionMembers(target);
+            for (members) |member| {
+                if (self.typeHasMatchingLiteralFamily(member, source)) return true;
+            }
+            return false;
         }
-        const ex = hir_mod.jsxExpressionOf(self.hir, value);
-        if (ex.expression == hir_mod.none_node_id) return widened;
-        return try self.expressionLiteralType(ex.expression, widened);
+        return target_flags.is_literal and
+            ((source_flags.is_string and target_flags.is_string) or
+                (source_flags.is_number and target_flags.is_number) or
+                (source_flags.is_boolean and target_flags.is_boolean) or
+                (source_flags.is_bigint and target_flags.is_bigint));
     }
 
     fn typeHasLiteralConstituent(self: *Checker, t: TypeId) bool {
@@ -136422,8 +136461,8 @@ pub const Checker = struct {
         return text[0..end];
     }
 
-    fn appendObjectShapeMember(self: *Checker, buf: *std.ArrayListUnmanaged(u8), arena: std.mem.Allocator, member: types.ObjectMember) !void {
-        const name = self.string_interner.get(member.name);
+    fn appendObjectShapeMember(self: *Checker, buf: *std.ArrayListUnmanaged(u8), arena: std.mem.Allocator, member: types.ObjectMember) !bool {
+        const name = self.string_interner.getOptional(member.name) orelse return false;
         if (self.objectMemberDeclaredNameText(member)) |declared| {
             if (declared.len >= 2 and (declared[0] == '\'' or declared[0] == '"')) {
                 // tsc preserves the declaration's quote style: a
@@ -136434,10 +136473,11 @@ pub const Checker = struct {
                 try buf.append(arena, declared[0]);
                 try buf.appendSlice(arena, name);
                 try buf.append(arena, declared[0]);
-                return;
+                return true;
             }
         }
         try appendObjectShapeMemberName(buf, arena, name);
+        return true;
     }
 
     fn allocObjectShapeMemberTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
@@ -136659,7 +136699,7 @@ pub const Checker = struct {
                 if (try self.allocCallSignatureFnTypeName(m.type, null)) |sig_text| {
                     const arrow = std.mem.indexOf(u8, sig_text, ") => ");
                     if (arrow) |a| {
-                        try self.appendObjectShapeMember(&buf, arena, m);
+                        if (!try self.appendObjectShapeMember(&buf, arena, m)) return null;
                         if (m.is_optional) try buf.append(arena, '?');
                         try buf.appendSlice(arena, sig_text[0 .. a + 1]);
                         try buf.appendSlice(arena, ": ");
@@ -136669,7 +136709,7 @@ pub const Checker = struct {
                     }
                 }
             }
-            try self.appendObjectShapeMember(&buf, arena, m);
+            if (!try self.appendObjectShapeMember(&buf, arena, m)) return null;
             if (m.is_optional) try buf.append(arena, '?');
             // Method-shorthand members render as `name(params): ret`
             // rather than the property-with-arrow form
@@ -139339,7 +139379,7 @@ pub const Checker = struct {
                 continue;
             }
             if (m.is_readonly) try buf.appendSlice(arena, "readonly ");
-            try self.appendObjectShapeMember(&buf, arena, m);
+            if (!try self.appendObjectShapeMember(&buf, arena, m)) return null;
             if (m.is_optional) try buf.append(arena, '?');
             if (m.is_method and self.interner.isSignature(m.type)) {
                 const sig_payload_idx = self.interner.pool.payloadOf(m.type);
