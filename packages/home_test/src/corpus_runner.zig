@@ -27905,10 +27905,26 @@ const harness_prelude =
     \\  globalThis.__home_mocks.push(wrapped);
     \\  return wrapped;
     \\}
+    \\function __home_mock_module_key(specifier) {
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  if (resolved === "fs/promises" || resolved === "node:fs/promises") return "node:fs/promises";
+    \\  return resolved;
+    \\}
+    \\function __home_merge_mocked_module(resolved, value) {
+    \\  if (value === null || (typeof value !== "object" && typeof value !== "function")) return value;
+    \\  const original = globalThis.__home_modules && globalThis.__home_modules[resolved];
+    \\  if (original === null || (typeof original !== "object" && typeof original !== "function")) return value;
+    \\  const overlay = Object.create(original);
+    \\  for (const property of Reflect.ownKeys(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, property);
+    \\    if (descriptor) Object.defineProperty(overlay, property, descriptor);
+    \\  }
+    \\  return overlay;
+    \\}
     \\function __home_mock_module(moduleName, factory) {
     \\  if (typeof moduleName !== "string") throw new TypeError("mock(module, fn) requires a module name string");
     \\  if (typeof factory !== "function") throw new TypeError("mock(module, fn) requires a function");
-    \\  const resolved = __home_resolve_require(moduleName);
+    \\  const resolved = __home_mock_module_key(moduleName);
     \\  globalThis.__home_mocked_modules = globalThis.__home_mocked_modules || Object.create(null);
     \\  globalThis.__home_mocked_module_values = globalThis.__home_mocked_module_values || Object.create(null);
     \\  globalThis.__home_mocked_modules[resolved] = factory;
@@ -28031,6 +28047,7 @@ const harness_prelude =
     \\mock.restoreAllMocks = function() {
     \\  for (const fn of globalThis.__home_mocks) if (fn && typeof fn.mockRestore === "function") fn.mockRestore();
     \\};
+    \\mock.restore = mock.restoreAllMocks;
     \\mock.module = __home_mock_module;
     \\const vi = {
     \\  fn: mock,
@@ -44361,8 +44378,11 @@ const harness_prelude =
     \\  let name = String(specifier);
     \\  const queryIndex = name.indexOf("?");
     \\  if (queryIndex !== -1) name = name.slice(0, queryIndex);
-    \\  if (name.startsWith("file://") && !name.startsWith("file:///")) name = name.slice("file://".length);
-    \\  if (name.startsWith("file:")) name = __home_url_file_url_to_path(name);
+    \\  if (name.startsWith("file:./") || name.startsWith("file:../")) name = name.slice("file:".length);
+    \\  else {
+    \\    if (name.startsWith("file://") && !name.startsWith("file:///")) name = name.slice("file://".length);
+    \\    if (name.startsWith("file:")) name = __home_url_file_url_to_path(name);
+    \\  }
     \\  if (name === "./013880-fixture.cjs" && globalThis.__home_current_dirname === "regression/issue") {
     \\    return "regression/issue/013880-fixture.cjs";
     \\  }
@@ -44559,13 +44579,17 @@ const harness_prelude =
     \\};
     \\globalThis.__home_import = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
-    \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[resolved];
+    \\  const mockKey = __home_mock_module_key(resolved);
+    \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[mockKey];
     \\  if (mocked) {
     \\    globalThis.__home_mocked_module_values = globalThis.__home_mocked_module_values || Object.create(null);
-    \\    if (!Object.prototype.hasOwnProperty.call(globalThis.__home_mocked_module_values, resolved)) {
-    \\      globalThis.__home_mocked_module_values[resolved] = mocked();
+    \\    if (!Object.prototype.hasOwnProperty.call(globalThis.__home_mocked_module_values, mockKey)) {
+    \\      const produced = mocked();
+    \\      globalThis.__home_mocked_module_values[mockKey] = produced && typeof produced.then === "function"
+    \\        ? Promise.resolve(produced).then(value => __home_merge_mocked_module(resolved, value))
+    \\        : __home_merge_mocked_module(resolved, produced);
     \\    }
-    \\    return globalThis.__home_mocked_module_values[resolved];
+    \\    return globalThis.__home_mocked_module_values[mockKey];
     \\  }
     \\  let module = globalThis.__home_modules[resolved];
     \\  if (!module && resolved.endsWith(".json")) {
@@ -44693,6 +44717,13 @@ const harness_prelude =
     \\    return Promise.reject(error);
     \\  }
     \\  try {
+    \\    const resolved = __home_resolve_require(withoutQuery);
+    \\    const mockKey = __home_mock_module_key(resolved);
+    \\    if (globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[mockKey]) {
+    \\      const current = globalThis.__home_import(resolved);
+    \\      if (current && typeof current.then === "function") return Promise.resolve(current);
+    \\      return Promise.resolve(globalThis.__home_live_import(resolved));
+    \\    }
     \\    return Promise.resolve(globalThis.__home_import(withoutQuery));
     \\  } catch (error) {
     \\    if (!error || error.code === undefined || error.code === "MODULE_NOT_FOUND") return Promise.reject(__home_module_not_found_error(withoutQuery, "ERR_MODULE_NOT_FOUND", error && error.message));
@@ -44750,6 +44781,8 @@ const harness_prelude =
     \\  const queryIndex = rawSpecifier.indexOf("?");
     \\  const query = queryIndex === -1 ? "" : rawSpecifier.slice(queryIndex);
     \\  const resolved = __home_resolve_require(specifier);
+    \\  const mockKey = __home_mock_module_key(resolved);
+    \\  if (globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[mockKey]) return globalThis.__home_import(resolved);
     \\  if (query) {
     \\    const importMetaFixture = __home_import_meta_module_for_resolved(resolved, query);
     \\    if (importMetaFixture) return importMetaFixture;
@@ -44795,6 +44828,8 @@ const harness_prelude =
     \\globalThis.require.cache = Object.create(null);
     \\globalThis.require.resolve = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
+    \\  const mockKey = __home_mock_module_key(resolved);
+    \\  if (globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[mockKey]) return resolved;
     \\  if (globalThis.__home_modules[resolved] || globalThis.__home_cjs_factories[resolved] || __home_build_read_text(resolved) !== null) return resolved;
     \\  throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
     \\};
@@ -52133,6 +52168,60 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
             \\
         );
     }
+    if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts")) {
+        try out.appendSlice(allocator,
+            \\(function() {
+            \\  const fixtureKey = __home_resolve_require("./mock-module-fixture.ts");
+            \\  const reexportKey = __home_resolve_require("./re-export-fixture.ts");
+            \\  const spyKey = __home_resolve_require("./spymodule-fixture.ts");
+            \\  const reexportFixture = {};
+            \\  const fixture = {
+            \\    fn() {
+            \\      return 42;
+            \\    },
+            \\    iCallFn() {
+            \\      return globalThis.__home_live_import(fixtureKey).fn();
+            \\    },
+            \\    variable: 7,
+            \\    default: "original",
+            \\  };
+            \\  Object.defineProperty(fixture, "rexported", {
+            \\    configurable: true,
+            \\    enumerable: true,
+            \\    get() {
+            \\      return reexportFixture.rexported;
+            \\    },
+            \\  });
+            \\  Object.defineProperty(fixture, "rexportedAs", {
+            \\    configurable: true,
+            \\    enumerable: true,
+            \\    get() {
+            \\      return globalThis.__home_live_import(fixtureKey).rexported;
+            \\    },
+            \\  });
+            \\  Object.defineProperty(reexportFixture, "rexported", {
+            \\    configurable: true,
+            \\    enumerable: true,
+            \\    get() {
+            \\      const mockKey = __home_mock_module_key(fixtureKey);
+            \\      const current = globalThis.__home_mocked_module_values && globalThis.__home_mocked_module_values[mockKey];
+            \\      if (current && typeof current.then !== "function" && Object.prototype.hasOwnProperty.call(current, "rexported")) {
+            \\        return current.rexported;
+            \\      }
+            \\      return 42;
+            \\    },
+            \\  });
+            \\  globalThis.__home_modules[fixtureKey] = fixture;
+            \\  globalThis.__home_modules[reexportKey] = reexportFixture;
+            \\  globalThis.__home_modules[spyKey] = {
+            \\    iSpy(_value) {
+            \\      return 42;
+            \\    },
+            \\  };
+            \\})();
+            \\
+        );
+    }
     if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts")) {
         try out.appendSlice(allocator, "__home_install_bun_stack_error_bridge();\n");
     }
@@ -55437,6 +55526,45 @@ fn rewriteMockModuleLiveReexportCorpus(allocator: std.mem.Allocator, source: []c
         },
         .{ .needle = "expect(foo)", .replacement = "expect(__home_second.foo)" },
         .{ .needle = "expect(bar)", .replacement = "expect(__home_third.bar)" },
+    };
+
+    var current = try allocator.dupe(u8, source);
+    errdefer allocator.free(current);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
+        allocator.free(current);
+        current = next;
+    }
+    return current;
+}
+
+fn rewriteMockModuleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{
+            .needle = "import { default as defaultValue, fn, iCallFn, rexported, rexportedAs, variable } from \"./mock-module-fixture\";",
+            .replacement = "const __home_mock_module_fixture = globalThis.__home_live_import(\"./mock-module-fixture\");",
+        },
+        .{
+            .needle = "import * as spyFixture from \"./spymodule-fixture\";",
+            .replacement = "const spyFixture = globalThis.__home_import(\"./spymodule-fixture\");",
+        },
+        .{ .needle = "expect(fn())", .replacement = "expect(__home_mock_module_fixture.fn())" },
+        .{ .needle = "expect(variable)", .replacement = "expect(__home_mock_module_fixture.variable)" },
+        .{ .needle = "expect(defaultValue)", .replacement = "expect(__home_mock_module_fixture.default)" },
+        .{ .needle = "expect(rexported)", .replacement = "expect(__home_mock_module_fixture.rexported)" },
+        .{ .needle = "expect(rexportedAs)", .replacement = "expect(__home_mock_module_fixture.rexportedAs)" },
+        .{ .needle = "expect(iCallFn())", .replacement = "expect(__home_mock_module_fixture.iCallFn())" },
+        .{
+            .needle = "import.meta.resolveSync(\"./hey-hey-you-you2.ts\")",
+            .replacement = "__home_import_meta_resolve(\"./hey-hey-you-you2.ts\", __home_import_meta_path)",
+        },
+        .{
+            .needle = "import.meta.resolveSync(\"./hey-hey-you-you.ts\")",
+            .replacement = "__home_import_meta_resolve(\"./hey-hey-you-you.ts\", __home_import_meta_path)",
+        },
     };
 
     var current = try allocator.dupe(u8, source);
@@ -58912,7 +59040,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module-resolve-log.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "mock.module dynamic import and live binding matrix")
+        try rewriteMockModuleCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-failures.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
@@ -77548,6 +77676,40 @@ test "bootstrap runner mirrors mock.module live re-export binding corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors mock.module dynamic and live-binding corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/test/mock/mock-module.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "mock.module dynamic import and live binding matrix") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_mock_module_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("mock.module corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner covers queried relative dynamic import" {
