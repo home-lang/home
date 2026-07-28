@@ -32621,8 +32621,9 @@ pub const Checker = struct {
         // instance type registered in `class_instance_types` BEFORE
         // their bodies are typed so `this` resolves.
         const parent_instance_t: ?TypeId = if (c.extends != hir_mod.none_node_id) blk: {
+            const bare_base_type_param = self.bareTypeNodeIsTypeParam(c.extends, type_params);
             const base_type_param_ref = self.baseClassExpressionTypeParamReferenceNode(c.extends, type_params);
-            if (base_type_param_ref != hir_mod.none_node_id) {
+            if (base_type_param_ref != hir_mod.none_node_id and !bare_base_type_param) {
                 try self.report(base_type_param_ref, TsCodes.base_class_expression_type_parameter, "Base class expressions cannot reference class type parameters.");
             }
             if (self.expressionContainsThis(c.extends)) {
@@ -32637,7 +32638,7 @@ pub const Checker = struct {
             // "Type '<sig>' is not a constructor function type." Mirrors
             // upstream `classExtendsValidConstructorFunction` and
             // `classExtendsShadowedConstructorFunction`.
-            if (parent_t == null) {
+            if (parent_t == null and !bare_base_type_param) {
                 if (self.hir.kindOf(c.extends) == .identifier) {
                     try self.reportNonConstructorClassExtends(c.extends);
                 } else {
@@ -34825,7 +34826,9 @@ pub const Checker = struct {
         // name conflict (TS prototype-chain semantics).
         if (c.extends != hir_mod.none_node_id) {
             if (self.bareTypeNodeIsTypeParam(c.extends, type_params)) {
-                try self.report(c.extends, TsCodes.cannot_find_name, "Cannot find name.");
+                const type_param_name = self.classExtendsName(c.extends) orelse
+                    hir_mod.identifierOf(self.hir, c.extends).name;
+                try self.reportCannotFindNamePlainOnce(c.extends, type_param_name);
             }
             try self.mergeExtendedMembers(node, c.extends, &instance_members, string_idx, number_idx, symbol_idx);
             if (try self.classExtendsInstanceType(c.extends)) |parent_t| {
@@ -52709,12 +52712,6 @@ pub const Checker = struct {
         // `interface B extends A { ... }` ÃÂ¢ÃÂÃÂ merge each parent's
         // members into the child. Child decls win on name conflict.
         if (extends.len > 0) {
-            for (extends) |extends_node| {
-                if (self.interfaceExtendsPrimitiveName(extends_node) != null) continue;
-                if (self.bareTypeNodeIsTypeParam(extends_node, type_params)) {
-                    try self.report(extends_node, TsCodes.interface_incorrectly_extends, "An interface can only extend an object type or intersection of object types with statically known members.");
-                }
-            }
             try self.checkInterfaceExtendsCompatibility(node, extends, iface_members.items, string_idx, number_idx, symbol_idx);
             try self.checkMergedInterfaceExtendsCompatibility(node, extends);
             const iface_name_for_extends: ?hir_mod.StringId = if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier)
@@ -176338,7 +176335,7 @@ test "checker: generic inherited private members alone do not emit TS2415" {
     }
 }
 
-test "checker: TS2562 base class expression cannot reference class type parameter" {
+test "checker: TS2562 excludes bare class type parameter heritage" {
     const s = try newSetup(
         \\declare function mixin<T>(base: any): any;
         \\class Base {}
@@ -176347,12 +176344,27 @@ test "checker: TS2562 base class expression cannot reference class type paramete
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.base_class_expression_type_parameter));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.base_class_expression_type_parameter));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.base_class_expression_type_parameter) {
             try T.expectEqualStrings("Base class expressions cannot reference class type parameters.", d.message);
         }
+        if (d.code == TsCodes.cannot_find_name) {
+            try T.expectEqualStrings("Cannot find name 'T'.", d.message);
+        }
     }
+}
+
+test "checker: bare interface type parameter heritage emits only TS2312" {
+    const s = try newSetup(
+        \\interface I<T> extends T {}
+        \\interface I2<T, U> extends U {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.interface_extends_non_object));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
 }
 
 test "checker: TS2562 permits generic base type arguments in heritage type" {
@@ -208185,7 +208197,7 @@ test "checker: uppercase Object assignments compare inherited toString signature
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
 
-    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(b.base, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 2), checkerCountChainCode(b.base, TsCodes.object_assignable_to_few_types));
 }
 
