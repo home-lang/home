@@ -63690,6 +63690,7 @@ pub const Checker = struct {
         if (self.hir.kindOf(node) != .call_expr) return false;
         if (hir_mod.callArgs(self.hir, node).len != 0) return false;
         if (hir_mod.callTypeArgs(self.hir, node).len == 0) return false;
+        if (self.isDynamicImportCallee(hir_mod.callOf(self.hir, node).callee)) return false;
         const src = self.source orelse return false;
         const sp = self.hir.spanOf(node);
         if (sp.end <= sp.start or sp.end > src.len) return false;
@@ -86600,6 +86601,12 @@ pub const Checker = struct {
             },
             .call_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
+                const invalid_import_type_arguments =
+                    self.isDynamicImportCallee(c.callee) and
+                    self.dynamicImportCallHasTypeArgumentSyntax(node, c.callee);
+                if (invalid_import_type_arguments) {
+                    try self.report(node, TsCodes.invalid_import_call, "This use of 'import' is invalid. 'import()' calls can be written, but they must have parentheses and cannot have type arguments.");
+                }
                 if (self.isDeferredDynamicImportCall(node) and !self.moduleKindIsEsnextOrPreserve()) {
                     try self.report(node, TsCodes.deferred_import_module_kind, "Deferred imports are only supported when the '--module' flag is set to 'esnext' or 'preserve'.");
                 }
@@ -86812,9 +86819,6 @@ pub const Checker = struct {
                     try self.checkBareCallThisCompatibility(node, callee_t, args, arg_types.items);
                 }
                 if (self.isDynamicImportCallee(c.callee)) {
-                    if (self.dynamicImportCallHasTypeArgumentSyntax(node, c.callee)) {
-                        try self.report(node, TsCodes.invalid_import_call, "This use of 'import' is invalid. 'import()' calls can be written, but they must have parentheses and cannot have type arguments.");
-                    }
                     if (self.dynamicImportModuleKindDisallowsImportCall()) {
                         try self.report(node, TsCodes.dynamic_import_bad_module, "Dynamic imports are only supported when the '--module' flag is set to 'es2020', 'es2022', 'esnext', 'commonjs', 'amd', 'system', 'umd', 'node16', 'node18', 'node20', or 'nodenext'.");
                     }
@@ -190554,6 +190558,20 @@ test "checker: dynamic import rejects type argument syntax" {
         \\export function foo() { return "foo"; }
         \\var p1 = import<Promise<any>>("./0");
         \\var p2 = import<>("./0");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.invalid_import_call) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: bare import type arguments are invalid" {
+    const s = try newSetup(
+        \\import<T>
+        \\const a = import<string, number>
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

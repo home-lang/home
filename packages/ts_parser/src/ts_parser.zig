@@ -2622,7 +2622,9 @@ pub const Parser = struct {
                 // expression-statement position; only bare/import-clause
                 // forms are declarations.
                 const next = self.peekAt(1).kind;
-                if (next == .dot or next == .open_paren) break :blk try self.parseExpressionStatement();
+                if (next == .dot or next == .open_paren or next == .less_than) {
+                    break :blk try self.parseExpressionStatement();
+                }
                 if (next == .comma) {
                     const import_tok = self.advance();
                     try self.reportCodeAt(import_tok.span.start, import_tok.line, 1128, "Declaration or statement expected.");
@@ -17875,6 +17877,22 @@ pub const Parser = struct {
                 _ = self.advance();
                 const import_id = self.interner.intern("import") catch return error.OutOfMemory;
                 const callee = try self.builder.addIdentifier(tokenSpan(t), import_id);
+                if (self.peek().kind == .less_than) {
+                    if (self.findMatchingTypeArgsEnd(self.cursor)) |after_gt| {
+                        if (self.tokens[after_gt].kind != .open_paren) {
+                            const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                            defer self.gpa.free(type_args);
+                            try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
+                            const end_pos = self.tokens[self.cursor - 1].span.end;
+                            return try self.builder.addCallWithTypeArgs(
+                                .{ .start = t.span.start, .end = end_pos },
+                                callee,
+                                &.{},
+                                type_args,
+                            );
+                        }
+                    }
+                }
                 if (self.peek().kind != .open_paren) {
                     if (self.peek().kind == .dot and (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword())) {
                         const prop = self.peekAt(1);
@@ -23636,6 +23654,17 @@ test "parser: TS1232 not reported for top-level or namespace imports" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1232);
     }
+}
+
+test "parser: import with type arguments stays on expression recovery path" {
+    var s = try newTestSetup(
+        \\import<T>
+        \\const a = import<string, number>
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: TS1233 export declaration not at top level of namespace or module" {
