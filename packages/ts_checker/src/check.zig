@@ -130925,13 +130925,79 @@ pub const Checker = struct {
                 const conditional = hir_mod.conditionalTypeOf(self.hir, current);
                 if (child != conditional.true_branch) return false;
                 if ((self.bareTypeNodeName(conditional.check) orelse return false) != index_name) return false;
-                if (self.hir.kindOf(conditional.extends) != .keyof_type) return false;
-                const operand = hir_mod.keyofTypeOf(self.hir, conditional.extends).operand;
-                return self.typeNodesReferenceSameBareName(object_node, operand);
+                const key_base = self.typeNodeKeyofBaseName(conditional.extends, 0) orelse return false;
+                return (self.bareTypeNodeName(object_node) orelse return false) == key_base;
             }
             child = current;
         }
         return false;
+    }
+
+    fn typeNodeKeyofBaseName(self: *Checker, node: NodeId, depth: u8) ?hir_mod.StringId {
+        if (node == hir_mod.none_node_id or depth >= 16) return null;
+        return switch (self.hir.kindOf(node)) {
+            .keyof_type => self.bareTypeNodeName(hir_mod.keyofTypeOf(self.hir, node).operand),
+            .intersection_type => blk: {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeKeyofBaseName(member, depth + 1)) |base| break :blk base;
+                }
+                break :blk null;
+            },
+            .indexed_access_type => blk: {
+                const indexed = hir_mod.indexedAccessTypeOf(self.hir, node);
+                if (self.hir.kindOf(indexed.object) != .mapped_type) break :blk null;
+                const mapped = hir_mod.mappedTypeOf(self.hir, indexed.object);
+                if (mapped.type_param == hir_mod.none_node_id or
+                    self.hir.kindOf(mapped.type_param) != .type_parameter)
+                {
+                    break :blk null;
+                }
+                const key_name = hir_mod.typeParameterOf(self.hir, mapped.type_param).name;
+                if (!self.typeNodeYieldsMappedKeyOrNever(mapped.value, key_name, depth + 1)) break :blk null;
+                const constraint_base = self.typeNodeKeyofBaseName(mapped.constraint, depth + 1) orelse break :blk null;
+                const index_base = self.typeNodeKeyofBaseName(indexed.index, depth + 1) orelse break :blk null;
+                break :blk if (constraint_base == index_base) constraint_base else null;
+            },
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, node);
+                if (ref.qualifier_len != 0) break :blk null;
+                const args = hir_mod.typeRefArgs(self.hir, node);
+                const alias_decl = self.typeAliasDeclForNameAt(ref.name, node);
+                if (alias_decl == null and
+                    std.mem.eql(u8, self.string_interner.get(ref.name), "Extract") and
+                    args.len == 2)
+                {
+                    break :blk self.typeNodeKeyofBaseName(args[0], depth + 1);
+                }
+                const decl = alias_decl orelse break :blk null;
+                const alias = hir_mod.typeAliasOf(self.hir, decl);
+                const base = self.typeNodeKeyofBaseName(alias.aliased, depth + 1) orelse break :blk null;
+                const params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+                if (params.len == 0) break :blk base;
+                if (params.len != 1 or args.len != 1 or self.hir.kindOf(params[0]) != .type_parameter) {
+                    break :blk null;
+                }
+                const parameter_name = hir_mod.typeParameterOf(self.hir, params[0]).name;
+                if (base != parameter_name) break :blk base;
+                break :blk self.bareTypeNodeName(args[0]);
+            },
+            else => null,
+        };
+    }
+
+    fn typeNodeYieldsMappedKeyOrNever(
+        self: *Checker,
+        node: NodeId,
+        key_name: hir_mod.StringId,
+        depth: u8,
+    ) bool {
+        if (node == hir_mod.none_node_id or depth >= 16) return false;
+        if (self.typeNodeIsNever(node)) return true;
+        if (self.bareTypeNodeName(node)) |name| return name == key_name;
+        if (self.hir.kindOf(node) != .conditional_type) return false;
+        const conditional = hir_mod.conditionalTypeOf(self.hir, node);
+        return self.typeNodeYieldsMappedKeyOrNever(conditional.true_branch, key_name, depth + 1) and
+            self.typeNodeYieldsMappedKeyOrNever(conditional.false_branch, key_name, depth + 1);
     }
 
     fn reportInvalidTypeLevelIndexTypes(
@@ -131168,6 +131234,9 @@ pub const Checker = struct {
             }
             const type_param = hir_mod.typeParameterOf(self.hir, mapped.type_param);
             if (type_param.name != index_name or mapped.constraint == hir_mod.none_node_id) return false;
+            if (self.typeNodeKeyofBaseName(mapped.constraint, 0)) |key_base| {
+                if ((self.bareTypeNodeName(object_node) orelse return false) == key_base) return true;
+            }
             if (self.hir.kindOf(mapped.constraint) == .keyof_type) {
                 const keyof = hir_mod.keyofTypeOf(self.hir, mapped.constraint);
                 if (self.typeNodesReferenceSameBareName(object_node, keyof.operand)) return true;
@@ -173453,6 +173522,24 @@ test "checker: conditional true branch proves indexed key" {
         \\type Merge<T, U> = {
         \\  [P in keyof T | keyof U]: P extends keyof T ? T[P] : U[P & keyof U]
         \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+}
+
+test "checker: mapped key selectors preserve keyof provenance" {
+    const s = try newSetup(
+        \\type EMap = { event: {} };
+        \\type Keys = keyof EMap;
+        \\type Conditional<C> = C extends Keys ? EMap[C] : never;
+        \\type Direct<T> = { [P in keyof T & string]: T[P] };
+        \\type Extracted<T> = { [P in Extract<keyof T, string>]: T[P] };
+        \\type Selected<T> = { [K in keyof T]: T[K] extends Function ? never : K }[keyof T];
+        \\type Projected<T> = { [P in Selected<T>]: T[P] };
+        \\type Inline<T> = { [Q in { [P in keyof T]: P }[keyof T]]: T[Q] };
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
