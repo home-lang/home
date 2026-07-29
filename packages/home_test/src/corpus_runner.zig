@@ -58889,11 +58889,11 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/io/fetch/fetch-abort-slow-connect.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch slow connect abort integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "JSC SIMD baseline native stress")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/jsc-stress.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "JSC JIT and Wasm stress suite")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun:jsc native VM introspection")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/domjit.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/heapStats-mimalloc.test.ts"))

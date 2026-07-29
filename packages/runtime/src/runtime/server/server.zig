@@ -1824,6 +1824,9 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
         }
 
         noinline fn onListenFailed(this: *ThisServer) void {
+            // errno belongs to the failed listen call and may be overwritten by
+            // logging or by draining the TLS error queue below.
+            const listen_errno = normalizeListenErrno(Sys.getErrno(@as(i32, -1)));
             httplog("onListenFailed", .{});
 
             const globalThis = this.globalThis;
@@ -1887,41 +1890,15 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
             if (error_instance == .zero) {
                 switch (this.config.address) {
                     .tcp => |tcp| {
-                        error_set: {
-                            if (comptime Environment.isLinux) {
-                                const rc: i32 = -1;
-                                const code = Sys.getErrno(rc);
-                                if (code == bun.sys.E.ACCES) {
-                                    error_instance = (jsc.SystemError{
-                                        .message = bun.String.init(std.fmt.bufPrint(&output_buf, "permission denied {s}:{d}", .{ tcp.hostname orelse "0.0.0.0", tcp.port }) catch "Failed to start server"),
-                                        .code = bun.String.static("EACCES"),
-                                        .syscall = bun.String.static("listen"),
-                                    }).toErrorInstance(globalThis);
-                                    break :error_set;
-                                }
-                            }
-                            error_instance = (jsc.SystemError{
-                                .message = bun.String.init(std.fmt.bufPrint(&output_buf, "Failed to start server. Is port {d} in use?", .{tcp.port}) catch "Failed to start server"),
-                                .code = bun.String.static("EADDRINUSE"),
-                                .syscall = bun.String.static("listen"),
-                            }).toErrorInstance(globalThis);
-                        }
+                        const hostname = tcp.hostname orelse "0.0.0.0";
+                        error_instance = bun.sys.Error.fromCode(listen_errno, .listen).toJS(globalThis) catch return;
+                        error_instance.put(globalThis, ZigString.static("address"), ZigString.init(bun.span(hostname)).toJS(globalThis));
+                        error_instance.put(globalThis, ZigString.static("port"), .jsNumber(tcp.port));
                     },
                     .unix => |unix| {
-                        switch (bun.sys.getErrno(@as(i32, -1))) {
-                            .SUCCESS => {
-                                error_instance = (jsc.SystemError{
-                                    .message = bun.String.init(std.fmt.bufPrint(&output_buf, "Failed to listen on unix socket {f}", .{bun.fmt.QuotedFormatter{ .text = unix }}) catch "Failed to start server"),
-                                    .code = bun.String.static("EADDRINUSE"),
-                                    .syscall = bun.String.static("listen"),
-                                }).toErrorInstance(globalThis);
-                            },
-                            else => |e| {
-                                var sys_err = bun.sys.Error.fromCode(e, .listen);
-                                sys_err.path = unix;
-                                error_instance = sys_err.toJS(globalThis) catch return;
-                            },
-                        }
+                        var sys_err = bun.sys.Error.fromCode(listen_errno, .listen);
+                        sys_err.path = unix;
+                        error_instance = sys_err.toJS(globalThis) catch return;
                     },
                 }
             }
@@ -3785,6 +3762,15 @@ fn throwSSLErrorIfNecessary(globalThis: *jsc.JSGlobalObject) bool {
 
 extern fn NodeHTTP_assignOnNodeJSCompat(bool, *anyopaque) void;
 extern fn NodeHTTP_setUsingCustomExpectHandler(bool, *anyopaque, bool) void;
+
+fn normalizeListenErrno(errno: Sys.E) Sys.E {
+    return if (errno == .SUCCESS) .ADDRINUSE else errno;
+}
+
+test "listen errors preserve concrete OS failures" {
+    try std.testing.expectEqual(Sys.E.ACCES, normalizeListenErrno(.ACCES));
+    try std.testing.expectEqual(Sys.E.ADDRINUSE, normalizeListenErrno(.SUCCESS));
+}
 
 const string = []const u8;
 
