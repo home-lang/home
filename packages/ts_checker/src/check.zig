@@ -74546,6 +74546,11 @@ pub const Checker = struct {
         return if (saw_empty and base_t != types.Primitive.none) base_t else null;
     }
 
+    fn nonNullableIntersectionConstraint(self: *Checker, t: TypeId) CheckError!?TypeId {
+        const base_t = self.nonNullableIntersectionBase(t) orelse return null;
+        return try self.nonNullableBaseConstraint(base_t);
+    }
+
     fn typeParameterSourceAssignableToMappedTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
         if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(source_t).is_type_parameter) return false;
@@ -131289,7 +131294,9 @@ pub const Checker = struct {
     }
 
     fn resolveObjectIndexedAccessType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?TypeId {
-        const obj = self.typeParameterConstraint(object_t) orelse object_t;
+        const obj = (try self.nonNullableIntersectionConstraint(object_t)) orelse
+            self.typeParameterConstraint(object_t) orelse
+            object_t;
         if (obj >= self.interner.pool.typeCount()) return null;
         const obj_flags = self.interner.pool.flagsOf(obj);
         if (try self.unionTupleLiteralIndexAccess(obj, index_t)) |access| {
@@ -131349,6 +131356,9 @@ pub const Checker = struct {
 
     fn effectiveStringIndexType(self: *Checker, object_t: TypeId) CheckError!?TypeId {
         if (object_t >= self.interner.pool.typeCount()) return null;
+        if (try self.nonNullableIntersectionConstraint(object_t)) |constraint| {
+            if (constraint != object_t) return try self.effectiveStringIndexType(constraint);
+        }
         if (try self.reduceDisplayedAliasInstance(object_t)) |reduced| {
             if (reduced != object_t) return try self.effectiveStringIndexType(reduced);
         }
@@ -173333,6 +173343,19 @@ test "checker: mapped Pick and Record enforce property key constraints" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.circular_constraint));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+}
+
+test "checker: NonNullable generic constraint preserves string index" {
+    const s = try newSetup(
+        \\type Foo = { [key: string]: unknown };
+        \\type NullableFoo = Foo | undefined;
+        \\type Bar<T extends NullableFoo> = NonNullable<T>[string];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_matching_index_signature));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
 }
 
 test "checker: indexed access accepts constrained keys inside object members" {
