@@ -130878,6 +130878,7 @@ pub const Checker = struct {
         object_t: TypeId,
         index_t: TypeId,
     ) !void {
+        if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
         if (try self.reportPrivateOrProtectedIndexedAccessOnTypeParameter(index_node, object_t, index_t)) return;
         if (try self.reportUnionPrivateOrProtectedIndexedAccessOnTypeParameter(index_node, object_t, index_t)) return;
@@ -130890,6 +130891,29 @@ pub const Checker = struct {
         if (invalid_index_reported or missing_index_reported or missing_property_reported) return;
         if (!self.indexTypeHasKeysMissingFromObject(object_t, index_t)) return;
         try self.reportTypeCannotIndexType(access_node, index_node, object_node, index_t, object_t);
+    }
+
+    fn conditionalTrueBranchProvesIndexedKey(
+        self: *Checker,
+        access_node: NodeId,
+        object_node: NodeId,
+        index_node: NodeId,
+    ) bool {
+        const index_name = self.bareTypeNodeName(index_node) orelse return false;
+        var child = access_node;
+        var current = self.hir.parentOf(access_node);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            if (self.hir.kindOf(current) == .conditional_type) {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, current);
+                if (child != conditional.true_branch) return false;
+                if ((self.bareTypeNodeName(conditional.check) orelse return false) != index_name) return false;
+                if (self.hir.kindOf(conditional.extends) != .keyof_type) return false;
+                const operand = hir_mod.keyofTypeOf(self.hir, conditional.extends).operand;
+                return self.typeNodesReferenceSameBareName(object_node, operand);
+            }
+            child = current;
+        }
+        return false;
     }
 
     fn reportInvalidTypeLevelIndexTypes(
@@ -173396,6 +173420,19 @@ test "checker: NonNullable generic constraint preserves string index" {
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_matching_index_signature));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+}
+
+test "checker: conditional true branch proves indexed key" {
+    const s = try newSetup(
+        \\type Merge<T, U> = {
+        \\  [P in keyof T | keyof U]: P extends keyof T ? T[P] : U[P & keyof U]
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
 }
 
 test "checker: nullish inference checks call and constructor constraints" {
