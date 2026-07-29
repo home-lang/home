@@ -37685,6 +37685,7 @@ pub const Checker = struct {
         other: NodeId,
     ) CheckError!void {
         const raw_name = self.string_interner.get(name);
+        const display_name = if (raw_name.len == 0) "(Missing)" else raw_name;
         // tsc renders well-known-symbol member names with bracket
         // wrappers in TS2300 prose ÃÂ¢ÃÂÃÂ `[Symbol.hasInstance]`, not the
         // internal `Symbol.hasInstance` storage form. Mirrors fixture
@@ -37693,7 +37694,7 @@ pub const Checker = struct {
         const name_str = if (wrap_symbol)
             try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{raw_name})
         else
-            raw_name;
+            display_name;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Duplicate identifier '{s}'.",
@@ -58226,6 +58227,20 @@ pub const Checker = struct {
         // under their narrow binding, then store the (params, body)
         // for later instantiation.
         try self.checkTypeParameterDeclList(type_params);
+        if (ta.name != hir_mod.none_node_id and
+            self.hir.kindOf(ta.name) == .identifier and
+            self.hir.kindOf(ta.aliased) == .type_ref)
+        {
+            const id = hir_mod.identifierOf(self.hir, ta.name);
+            const body_ref = hir_mod.typeRefOf(self.hir, ta.aliased);
+            if (body_ref.qualifier_len == 0 and
+                hir_mod.typeRefArgs(self.hir, ta.aliased).len == 0 and
+                body_ref.name == id.name and
+                !self.typeParamNameMatches(body_ref.name, type_params))
+            {
+                try self.reportTypeAliasCircularOnce(ta.name, id.name);
+            }
+        }
         try self.checkUnusedTypeParameters(node, type_params, false);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
@@ -59703,6 +59718,19 @@ pub const Checker = struct {
         return min < info.params.len and (supplied < min or supplied > info.params.len);
     }
 
+    fn genericAliasReferenceIsDirectCircularBody(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .type_alias_decl) return false;
+        const alias = hir_mod.typeAliasOf(self.hir, parent);
+        if (alias.aliased != node or alias.name == hir_mod.none_node_id or
+            self.hir.kindOf(alias.name) != .identifier)
+        {
+            return false;
+        }
+        if (hir_mod.identifierOf(self.hir, alias.name).name != name) return false;
+        return self.diagnosticExists(alias.name, TsCodes.type_alias_circular);
+    }
+
     fn reportGenericTypeRequiresArgs(self: *Checker, node: NodeId, name: hir_mod.StringId, info: GenericAliasInfo) CheckError!void {
         const raw = self.string_interner.get(name);
         // Match upstream TS's diagnostic shape: include the
@@ -59750,6 +59778,9 @@ pub const Checker = struct {
         // A same-named enclosing type parameter shadows this generic alias, so a
         // bare reference is the parameter and needs no type args (`class T<T>`).
         if (self.nameHasEnclosingTypeParameter(name, node)) return false;
+        // A direct self-reference in a generic alias body is diagnosed as
+        // TS2456. TypeScript does not add TS2314 for the same bare node.
+        if (supplied == 0 and self.genericAliasReferenceIsDirectCircularBody(node, name)) return false;
         if (self.genericAliasHasInvalidRangeTypeArgCount(info, supplied)) {
             try self.reportGenericTypeRequiresBetweenArgs(node, name, info);
             return true;
@@ -174641,6 +174672,19 @@ test "checker: deferred variance validation follows circular alias references" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variance_annotation_type_not_assignable));
+}
+
+test "checker: malformed variance parameters retain generic self-alias diagnostics" {
+    const s = try newSetup(
+        \\type T1<in in> = T1;
+        \\type T2<out out> = T2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_alias_circular));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.variance_annotation_unsupported_alias_body));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.generic_type_requires_args));
 }
 
 test "checker: polymorphic this satisfies named generic class expression return" {

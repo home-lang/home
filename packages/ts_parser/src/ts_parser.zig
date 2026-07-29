@@ -13210,6 +13210,41 @@ pub const Parser = struct {
         }
         while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
             const tp_start = self.peek();
+            // `in` is reserved and cannot serve as a parameter name. For
+            // `<in in>`, TypeScript recovers two missing-name parameters:
+            // the first carries the leading variance modifier, while the
+            // second also reports TS1359 at the reserved token. Keeping both
+            // nodes lets the checker issue the duplicate `(Missing)`
+            // diagnostic and validate variance on each recovered parameter.
+            if (self.peek().kind == .kw_in and
+                self.peekAt(1).kind == .kw_in and
+                self.peekAt(2).kind == .greater_than)
+            {
+                const first_in = self.advance();
+                const missing_name = self.interner.intern("") catch return error.OutOfMemory;
+                const first_tp = try self.builder.addTypeParameter(
+                    tokenSpan(first_in),
+                    missing_name,
+                    hir_mod.none_node_id,
+                    hir_mod.none_node_id,
+                    1,
+                    false,
+                );
+                try tps.append(self.gpa, first_tp);
+
+                const second_in = self.advance();
+                try self.reportReservedWordCannotBeUsedHere(second_in);
+                const second_tp = try self.builder.addTypeParameter(
+                    .{ .start = first_in.span.end, .end = second_in.span.end },
+                    missing_name,
+                    hir_mod.none_node_id,
+                    hir_mod.none_node_id,
+                    1,
+                    false,
+                );
+                try tps.append(self.gpa, second_tp);
+                break;
+            }
             var is_const: bool = false;
             var variance: u8 = 0;
             while (self.typeParameterModifierHasNameAfter()) {
@@ -13256,7 +13291,7 @@ pub const Parser = struct {
             // upstream (e.g. `dontShowCompilerGeneratedMembers.ts(3,6)`).
             const name_tok = blk_name: {
                 if (isPredefinedTypeKeyword(self.peek().kind)) break :blk_name self.advance();
-                if (self.peek().kind == .identifier) break :blk_name self.advance();
+                if (self.peek().kind == .identifier or self.peek().kind == .kw_out) break :blk_name self.advance();
                 const at = self.peek();
                 try self.reportCodeAt(
                     at.span.start,
@@ -13300,11 +13335,15 @@ pub const Parser = struct {
             const kind = self.peekAt(offset).kind;
             if (kind != .kw_const and !kind.isModifierKeyword()) break;
         }
-        return offset > 0 and typeParameterNameCanStart(self.peekAt(offset).kind);
+        if (offset > 0 and typeParameterNameCanStart(self.peekAt(offset).kind)) return true;
+        // `out` is contextual and may itself be the final parameter name.
+        // Leave the last token in an otherwise modifier-only run for the
+        // name parser (`<out out>` => modifier `out`, name `out`).
+        return offset >= 2 and self.peekAt(offset - 1).kind == .kw_out;
     }
 
     fn typeParameterNameCanStart(kind: TokenKind) bool {
-        return kind == .identifier or isPredefinedTypeKeyword(kind);
+        return kind == .identifier or kind == .kw_out or isPredefinedTypeKeyword(kind);
     }
 
     fn reportInvalidTypeParameterModifierDiagnostic(self: *Parser, mod: Token) ParseError!void {
@@ -26847,6 +26886,23 @@ test "parser: duplicate and reordered variance modifiers recover a type paramete
     try T.expectEqual(@as(usize, 3), stmts.len);
     try T.expectEqual(@as(u32, 2), countDiag(s, 1030));
     try T.expectEqual(@as(u32, 1), countDiag(s, 1029));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1139));
+}
+
+test "parser: malformed repeated variance keywords preserve recoverable parameters" {
+    var s = try newTestSetup(
+        \\type T1<in in> = T1;
+        \\type T2<out out> = T2;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    const t1 = hir_mod.typeAliasOf(&s.hir, stmts[0]);
+    const t2 = hir_mod.typeAliasOf(&s.hir, stmts[1]);
+    try T.expectEqual(@as(usize, 2), s.hir.childSlice(t1.type_params_start, t1.type_params_len).len);
+    try T.expectEqual(@as(usize, 1), s.hir.childSlice(t2.type_params_start, t2.type_params_len).len);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1359));
     try T.expectEqual(@as(u32, 0), countDiag(s, 1139));
 }
 
