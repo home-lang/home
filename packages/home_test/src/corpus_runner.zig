@@ -59165,7 +59165,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "Bun SQLite native database integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/stream/direct-readable-stream.test.tsx"))
         try rewriteNativeTodoCorpus(allocator, "Bun direct ReadableStream and serve integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/symbols.test.ts"))
