@@ -133579,9 +133579,17 @@ pub const Checker = struct {
                     if (!try self.contextualTargetParamAssignableToSource(target_params[i], source_params[i])) return false;
                 }
                 if (source_fixed > target_fixed) return false;
+                const source_rest_t = source_params[source_params.len - 1];
+                const source_rest_element = blk: {
+                    const element = self.interner.objectNumberIndex(source_rest_t);
+                    break :blk if (element != types.Primitive.none) element else source_rest_t;
+                };
+                for (shared_fixed..target_fixed) |i| {
+                    if (!try self.contextualTargetParamAssignableToSource(target_params[i], source_rest_element)) return false;
+                }
                 if (!try self.contextualTargetParamAssignableToSource(
                     target_params[target_params.len - 1],
-                    source_params[source_params.len - 1],
+                    source_rest_t,
                 )) return false;
                 const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
                 const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
@@ -207026,6 +207034,19 @@ test "checker: rest signature assignment reports element mismatch end-to-end" {
         "Types of parameters 'args' and 'args' are incompatible.",
         entry.message,
     );
+}
+
+test "checker: source rest element checks target-only fixed parameters" {
+    const s = try newSetup(
+        \\let target: (x: number, y?: string, ...z: number[]) => number;
+        \\target = (x: number, ...z: number[]) => 1;
+        \\let compatible: (x: number, y?: number, ...z: number[]) => number;
+        \\compatible = (x: number, ...z: number[]) => 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2328 fires end-to-end under an interface extends method clash" {
