@@ -63125,6 +63125,9 @@ pub const Checker = struct {
                     try self.reportUnresolvedSimpleTypeofTypeArguments(tt.operand);
                     return value_t;
                 }
+                if (self.hir.kindOf(tt.operand) == .call_expr and self.isInstantiationExpressionCall(tt.operand)) {
+                    return try self.checkExpression(tt.operand);
+                }
                 _ = try self.lowererLowerWithTypeParams(tt.operand);
                 return types.Primitive.unknown;
             },
@@ -63689,12 +63692,13 @@ pub const Checker = struct {
     fn isInstantiationExpressionCall(self: *Checker, node: NodeId) bool {
         if (self.hir.kindOf(node) != .call_expr) return false;
         if (hir_mod.callArgs(self.hir, node).len != 0) return false;
-        if (hir_mod.callTypeArgs(self.hir, node).len == 0) return false;
         if (self.isDynamicImportCallee(hir_mod.callOf(self.hir, node).callee)) return false;
         const src = self.source orelse return false;
         const sp = self.hir.spanOf(node);
         if (sp.end <= sp.start or sp.end > src.len) return false;
-        return src[sp.end - 1] == '>';
+        if (src[sp.end - 1] != '>') return false;
+        if (hir_mod.callTypeArgs(self.hir, node).len > 0) return true;
+        return std.mem.indexOfScalar(u8, src[sp.start..sp.end], '<') != null;
     }
 
     fn reportUnresolvedSimpleTypeofTypeArguments(self: *Checker, operand: NodeId) CheckError!void {
@@ -97927,19 +97931,83 @@ pub const Checker = struct {
     ) CheckError!void {
         if (type_arg_nodes.len == 0) return;
 
+        const callee = hir_mod.callOf(self.hir, node).callee;
+        if (self.hir.kindOf(callee) == .identifier) {
+            const name = self.string_interner.get(hir_mod.identifierOf(self.hir, callee).name);
+            if (std.mem.eql(u8, name, "Array")) {
+                if (type_arg_nodes.len == 1) return;
+                try self.reportInstantiationExpressionNoApplicable(node, type_arg_nodes, "ArrayConstructor");
+                return;
+            }
+        }
+
         var sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer sigs.deinit(self.gpa);
         try self.collectCallSignatures(callee_t, &sigs);
         try self.collectConstructSignatures(callee_t, &sigs);
-        if (sigs.items.len == 0) return;
 
+        var has_applicable = false;
         for (sigs.items) |sig| {
-            if (self.signatureTypeArgCountMatches(sig, type_arg_nodes.len)) return;
+            if (!self.signatureTypeArgCountMatches(sig, type_arg_nodes.len)) continue;
+            has_applicable = true;
+            var used_explicit_type_args = false;
+            _ = try self.instantiateSignatureWithExplicitTypeArgs(
+                node,
+                sig,
+                type_arg_nodes,
+                &used_explicit_type_args,
+            );
         }
 
-        const type_text = (try self.simpleDiagnosticTypeName(callee_t)) orelse
-            (if (self.interner.isSignature(callee_t)) try self.allocCallableSignatureName(callee_t) else null) orelse
+        var diagnostic_t = callee_t;
+        var diagnostic_sigs = sigs.items;
+        if (has_applicable and
+            callee_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(callee_t).is_union)
+        {
+            var found_non_applicable = false;
+            for (self.interner.unionMembers(callee_t)) |member| {
+                var member_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer member_sigs.deinit(self.gpa);
+                try self.collectCallSignatures(member, &member_sigs);
+                try self.collectConstructSignatures(member, &member_sigs);
+                if (member_sigs.items.len == 0) continue;
+                var member_applicable = false;
+                for (member_sigs.items) |sig| {
+                    if (self.signatureTypeArgCountMatches(sig, type_arg_nodes.len)) {
+                        member_applicable = true;
+                        break;
+                    }
+                }
+                if (member_applicable) continue;
+                diagnostic_t = member;
+                diagnostic_sigs = try self.diag_arena.allocator().dupe(TypeId, member_sigs.items);
+                found_non_applicable = true;
+                break;
+            }
+            if (!found_non_applicable) return;
+        } else if (has_applicable) {
+            return;
+        }
+
+        if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) return;
+        const annotated_type_text: ?[]const u8 = if (!has_applicable and self.hir.kindOf(callee) == .identifier) blk: {
+            const annotation = self.visibleAnnotatedIdentifierTypeNode(callee) orelse break :blk null;
+            if (self.hir.kindOf(annotation) != .union_type) break :blk null;
+            break :blk try self.allocTypeAnnotationDiagnosticName(annotation, false);
+        } else null;
+        const type_text = annotated_type_text orelse
+            (try self.instantiationExpressionDiagnosticTypeName(diagnostic_t, diagnostic_sigs)) orelse
             "unknown";
+        try self.reportInstantiationExpressionNoApplicable(node, type_arg_nodes, type_text);
+    }
+
+    fn reportInstantiationExpressionNoApplicable(
+        self: *Checker,
+        node: NodeId,
+        type_arg_nodes: []const NodeId,
+        type_text: []const u8,
+    ) CheckError!void {
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Type '{s}' has no signatures for which the type argument list is applicable.",
@@ -97947,9 +98015,35 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = if (type_arg_nodes.len > 0) self.hir.spanOf(type_arg_nodes[0]).start else null,
             .code = TsCodes.no_signatures_for_type_arg_list,
             .message = msg,
         });
+    }
+
+    fn instantiationExpressionDiagnosticTypeName(
+        self: *Checker,
+        t: TypeId,
+        sigs: []const TypeId,
+    ) CheckError!?[]const u8 {
+        if (sigs.len > 1) {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            const arena = self.diag_arena.allocator();
+            try buf.appendSlice(arena, "{ ");
+            for (sigs) |sig| {
+                const fn_text = (try self.allocCallableSignatureName(sig)) orelse return null;
+                const arrow = std.mem.lastIndexOf(u8, fn_text, " => ") orelse return null;
+                try buf.appendSlice(arena, fn_text[0..arrow]);
+                try buf.appendSlice(arena, ": ");
+                try buf.appendSlice(arena, fn_text[arrow + " => ".len ..]);
+                try buf.appendSlice(arena, "; ");
+            }
+            try buf.append(arena, '}');
+            return buf.items;
+        }
+        return (try self.allocSimpleTypeName(t)) orelse
+            (try self.allocObjectTypeShape(t)) orelse
+            (try self.simpleDiagnosticTypeName(t));
     }
 
     fn resolveOverloadedObjectCall(
@@ -170778,6 +170872,28 @@ test "checker: instantiation expression with matching generic arity stays clean"
         try T.expect(d.code != TsCodes.no_signatures_for_type_arg_list);
         try T.expect(d.code != TsCodes.expected_n_type_arguments);
     }
+}
+
+test "checker: instantiation expressions filter union signatures and check constraints" {
+    const s = try newSetup(
+        \\declare function one<T>(x: T): T;
+        \\const badArity = one<string, number>;
+        \\function objectUnion(f: { x: string } | { y: string }) {
+        \\  return f<string>;
+        \\}
+        \\function partialUnion(f: (<T>(x: T) => T) | ((x: string) => string)) {
+        \\  return f<string>;
+        \\}
+        \\declare const mixed: {
+        \\  <T extends string>(x: T): T;
+        \\  new <T extends number>(x: T): T;
+        \\};
+        \\type BadConstraint<U extends string> = typeof mixed<U>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.no_signatures_for_type_arg_list));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: conditional type with concrete check evaluates true branch" {

@@ -10729,17 +10729,28 @@ pub const Parser = struct {
                     const dot = self.advance();
                     try self.reportCodeAt(dot.span.end, dot.line, 1003, "Identifier expected.");
                 }
-                var ref_end = ref_name_end;
                 const recover_function_tail = ref_start.kind == .kw_function;
+                var type_args: []NodeId = &.{};
+                var has_type_args = false;
                 if (self.peek().kind == .less_than) {
-                    const args = try self.parseTypeArgumentList();
-                    self.gpa.free(args);
-                    ref_end = self.tokens[self.cursor - 1].span.end;
+                    type_args = try self.parseTypeArgumentList();
+                    has_type_args = true;
                 }
+                defer if (has_type_args) self.gpa.free(type_args);
                 const ref_id = self.interner.intern(self.source[ref_start.span.start..ref_name_end]) catch return error.OutOfMemory;
-                const ref = try self.builder.addIdentifier(.{ .start = ref_start.span.start, .end = ref_end }, ref_id);
+                const ref = try self.builder.addIdentifier(.{ .start = ref_start.span.start, .end = ref_name_end }, ref_id);
+                const operand = if (has_type_args) blk: {
+                    const end_pos = self.tokens[self.cursor - 1].span.end;
+                    break :blk try self.builder.addCallWithTypeArgs(
+                        .{ .start = ref_start.span.start, .end = end_pos },
+                        ref,
+                        &.{},
+                        type_args,
+                    );
+                } else ref;
+                const ref_end = self.hir.spanOf(operand).end;
                 const sp: Span = .{ .start = t.span.start, .end = ref_end };
-                const typeof_t = try self.builder.addTypeofType(sp, ref);
+                const typeof_t = try self.builder.addTypeofType(sp, operand);
                 if (recover_function_tail) try self.recoverInvalidTypeofFunctionTail();
                 return try self.parseArrayTypePostfix(typeof_t);
             },
@@ -13301,9 +13312,12 @@ pub const Parser = struct {
     /// Parse `<A, B<C>>` in type-argument position. Returns owned
     /// slice of parsed type nodes.
     fn parseTypeArgumentList(self: *Parser) ParseError![]NodeId {
-        _ = try self.expect(.less_than, "'<' to open type arguments");
+        const open = try self.expect(.less_than, "'<' to open type arguments");
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer args.deinit(self.gpa);
+        if (self.peek().kind == .greater_than) {
+            try self.reportCodeAt(open.span.start, open.line, 1099, "Type argument list cannot be empty.");
+        }
         while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
             if (self.peek().kind == .invalid) {
                 const bad = self.advance();
@@ -17183,6 +17197,9 @@ pub const Parser = struct {
                         }
                     } else if (self.findInstantiationTypeArgsEnd(self.cursor)) |after_gt| {
                         const less = self.peek();
+                        if (self.peekAt(1).kind == .greater_than) {
+                            try self.reportCodeAt(less.span.start, less.line, 1099, "Type argument list cannot be empty.");
+                        }
                         const type_args = try self.parseExplicitCallTypeArgs(after_gt);
                         defer self.gpa.free(type_args);
                         try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
@@ -20183,6 +20200,23 @@ test "parser: instanceof RHS instantiation expression reports TS2848" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2848), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("The right-hand side of an 'instanceof' expression must not be an instantiation expression.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: empty instantiation type arguments report TS1099" {
+    var s = try newTestSetup(
+        \\declare function f<T>(): T;
+        \\const value = f<>;
+        \\type Query = typeof f<>;
+        \\const imported = import<>("./module");
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1099) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "parser: identifier expression" {
