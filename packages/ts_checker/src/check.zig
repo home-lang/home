@@ -122734,6 +122734,19 @@ pub const Checker = struct {
                         return;
                     }
                 }
+                if (self.strict_flags.strict_null_checks and
+                    self.typeParameterConstraint(param_t) == null and
+                    arg_node != hir_mod.none_node_id and
+                    self.hir.kindOf(arg_node) == .array_literal and
+                    hir_mod.arrayLiteralElements(self.hir, arg_node).len == 0)
+                {
+                    const never_array = self.interner.internArrayType(
+                        self.string_interner,
+                        types.Primitive.never,
+                    ) catch return error.OutOfMemory;
+                    try subs.put(self.gpa, param_t, never_array);
+                    return;
+                }
             }
         }
         if (param_t >= types.Primitive.first_dynamic and
@@ -126601,6 +126614,11 @@ pub const Checker = struct {
                 if (self.functionObjectTargetAcceptsArgument(candidate_t, constraint, 0)) continue;
                 if (!self.builtinFunctionSourceCannotSatisfyCallTarget(candidate_t, constraint) and
                     (self.engine.isAssignableTo(candidate_t, constraint) catch true))
+                {
+                    continue;
+                }
+                if (self.hir.kindOf(args[i]) == .object_literal and
+                    try self.tryReportObjectLiteralPropertyMismatch(args[i], constraint))
                 {
                     continue;
                 }
@@ -133574,6 +133592,14 @@ pub const Checker = struct {
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
         if (self.rest_signatures.contains(source_t) or self.rest_signatures.contains(target_t)) {
+            const source_is_empty_tuple_rest = self.rest_signatures.contains(source_t) and
+                source_params.len == 1 and
+                (self.restTupleMaxCount(source_params[0]) orelse 1) == 0;
+            if (source_is_empty_tuple_rest) {
+                const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+                const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+                return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+            }
             if (try self.restSignatureSyntaxShapesEquivalent(source_t, target_t)) {
                 const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
                 const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
@@ -173459,6 +173485,25 @@ test "checker: nullish inference checks call and constructor constraints" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
+test "checker: dependent object constraints elaborate members and preserve never arrays" {
+    const s = try newSetup(
+        \\function f<T, U extends { length: T }>(x: T, y: U) {}
+        \\f(1, { length: "" });
+        \\f([], [""]);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'string[]' is not assignable to parameter of type '{ length: never[]; }'.",
+    ));
+}
+
 test "checker: indexed access accepts constrained keys inside object members" {
     const s = try newSetup(
         \\type T3 = { a: true };
@@ -207079,6 +207124,18 @@ test "checker: source rest element checks target-only fixed parameters" {
         \\target = (x: number, ...z: number[]) => 1;
         \\let compatible: (x: number, y?: number, ...z: number[]) => number;
         \\compatible = (x: number, ...z: number[]) => 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: empty tuple rest source ignores target variadic arguments" {
+    const s = try newSetup(
+        \\let target: (...args: any[]) => void;
+        \\target = (...args: []) => {};
+        \\target = (arg: never) => {};
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
