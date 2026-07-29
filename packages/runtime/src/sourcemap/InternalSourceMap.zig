@@ -858,7 +858,9 @@ pub fn fromVLQ(
 
         const gc = VLQ.decode(remain, 0);
         if (gc.start == 0) return error.InvalidSourceMap;
-        generated_column += gc.value;
+        generated_column = std.math.add(i32, generated_column, gc.value) catch
+            return error.InvalidSourceMap;
+        if (generated_column < 0) return error.InvalidSourceMap;
         remain = remain[gc.start..];
 
         if (remain.len == 0 or remain[0] == ',' or remain[0] == ';') {
@@ -868,17 +870,23 @@ pub fn fromVLQ(
 
         const si = VLQ.decode(remain, 0);
         if (si.start == 0) return error.InvalidSourceMap;
-        source_index += si.value;
+        source_index = std.math.add(i32, source_index, si.value) catch
+            return error.InvalidSourceMap;
+        if (source_index < 0) return error.InvalidSourceMap;
         remain = remain[si.start..];
 
         const ol = VLQ.decode(remain, 0);
         if (ol.start == 0) return error.InvalidSourceMap;
-        original_line += ol.value;
+        original_line = std.math.add(i32, original_line, ol.value) catch
+            return error.InvalidSourceMap;
+        if (original_line < 0) return error.InvalidSourceMap;
         remain = remain[ol.start..];
 
         const oc = VLQ.decode(remain, 0);
         if (oc.start == 0) return error.InvalidSourceMap;
-        original_column += oc.value;
+        original_column = std.math.add(i32, original_column, oc.value) catch
+            return error.InvalidSourceMap;
+        if (original_column < 0) return error.InvalidSourceMap;
         remain = remain[oc.start..];
 
         if (remain.len > 0 and remain[0] != ',' and remain[0] != ';') {
@@ -925,3 +933,44 @@ const VLQ = SourceMap.VLQ;
 
 const bun = @import("bun");
 const MutableString = bun.MutableString;
+
+test "fromVLQ rejects negative absolute positions and checked-add overflow" {
+    const invalid = [_][]const u8{
+        "D",
+        "ADAA",
+        "AADA",
+        "AAAD",
+        "+/////D,+/////D",
+        "A+/////DA,A+/////DA",
+        "AA+/////DA,AA+/////DA",
+        "AAA+/////D,AAA+/////D",
+    };
+    for (invalid) |mappings| {
+        try std.testing.expectError(error.InvalidSourceMap, fromVLQ(std.testing.allocator, mappings, 0));
+    }
+}
+
+test "fromVLQ accepts negative deltas while absolutes remain non-negative" {
+    var mappings = MutableString.initEmpty(std.testing.allocator);
+    defer mappings.deinit();
+
+    const deltas = [_]i32{ 5, 0, 4, 7, -3, 0, -3, -7 };
+    for (deltas, 0..) |delta, i| {
+        if (i == 4) try mappings.appendChar(',');
+        const encoded = VLQ.encode(delta);
+        try mappings.appendSlice(encoded.slice());
+    }
+
+    const blob = try fromVLQ(std.testing.allocator, mappings.list.items, 0);
+    defer std.testing.allocator.free(blob);
+    const map = InternalSourceMap{ .data = blob.ptr };
+    try std.testing.expectEqual(@as(usize, 2), map.mappingCount());
+
+    const first = map.find(.fromZeroBased(0), .fromZeroBased(5)).?;
+    try std.testing.expectEqual(@as(i32, 4), first.original.lines.zeroBased());
+    try std.testing.expectEqual(@as(i32, 7), first.original.columns.zeroBased());
+
+    const second = map.find(.fromZeroBased(0), .fromZeroBased(2)).?;
+    try std.testing.expectEqual(@as(i32, 1), second.original.lines.zeroBased());
+    try std.testing.expectEqual(@as(i32, 0), second.original.columns.zeroBased());
+}

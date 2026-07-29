@@ -2421,7 +2421,9 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: [
 const BuildCliOptions = struct {
     entrypoint: []const u8,
     output_path: ?[]const u8 = null,
+    outdir: ?[]const u8 = null,
     format: []const u8 = "esm",
+    sourcemap: ?[]const u8 = null,
     kernel_mode: bool = false,
     compile: bool = false,
     bytecode: bool = false,
@@ -2435,6 +2437,8 @@ const BuildCliParseError = struct {
         unknown_option,
         duplicate_entrypoint,
         unsupported_format,
+        unsupported_sourcemap,
+        output_path_conflicts_with_outdir,
         bytecode_requires_compile,
     },
     argument: ?[]const u8 = null,
@@ -2448,7 +2452,9 @@ const BuildCliParseResult = union(enum) {
 fn parseBuildCliOptions(args: []const [:0]const u8) BuildCliParseResult {
     var entrypoint: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
+    var outdir: ?[]const u8 = null;
     var format: []const u8 = "esm";
+    var sourcemap: ?[]const u8 = null;
     var kernel_mode = false;
     var compile = false;
     var bytecode = false;
@@ -2479,6 +2485,21 @@ fn parseBuildCliOptions(args: []const [:0]const u8) BuildCliParseResult {
             output_path = value;
         } else if (std.mem.startsWith(u8, arg, "-o") and arg.len > 2) {
             output_path = arg[2..];
+        } else if (std.mem.eql(u8, arg, "--outdir")) {
+            if (i + 1 >= args.len) {
+                return .{ .err = .{ .kind = .missing_value, .argument = arg } };
+            }
+            i += 1;
+            if (args[i].len == 0) {
+                return .{ .err = .{ .kind = .empty_value, .argument = arg } };
+            }
+            outdir = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--outdir=")) {
+            const value = arg["--outdir=".len..];
+            if (value.len == 0) {
+                return .{ .err = .{ .kind = .empty_value, .argument = "--outdir" } };
+            }
+            outdir = value;
         } else if (std.mem.eql(u8, arg, "--format")) {
             if (i + 1 >= args.len) {
                 return .{ .err = .{ .kind = .missing_value, .argument = arg } };
@@ -2493,6 +2514,14 @@ fn parseBuildCliOptions(args: []const [:0]const u8) BuildCliParseResult {
             if (format.len == 0) {
                 return .{ .err = .{ .kind = .empty_value, .argument = "--format" } };
             }
+        } else if (std.mem.eql(u8, arg, "--sourcemap")) {
+            sourcemap = "external";
+        } else if (std.mem.startsWith(u8, arg, "--sourcemap=")) {
+            const value = arg["--sourcemap=".len..];
+            if (value.len == 0) {
+                return .{ .err = .{ .kind = .empty_value, .argument = "--sourcemap" } };
+            }
+            sourcemap = value;
         } else if (arg.len > 0 and arg[0] == '-') {
             return .{ .err = .{ .kind = .unknown_option, .argument = arg } };
         } else if (entrypoint != null) {
@@ -2509,6 +2538,18 @@ fn parseBuildCliOptions(args: []const [:0]const u8) BuildCliParseResult {
     {
         return .{ .err = .{ .kind = .unsupported_format, .argument = format } };
     }
+    if (sourcemap) |value| {
+        if (!std.mem.eql(u8, value, "external") and
+            !std.mem.eql(u8, value, "inline") and
+            !std.mem.eql(u8, value, "linked") and
+            !std.mem.eql(u8, value, "none"))
+        {
+            return .{ .err = .{ .kind = .unsupported_sourcemap, .argument = value } };
+        }
+    }
+    if (output_path != null and outdir != null) {
+        return .{ .err = .{ .kind = .output_path_conflicts_with_outdir } };
+    }
     if (bytecode and !compile) {
         return .{ .err = .{ .kind = .bytecode_requires_compile, .argument = "--bytecode" } };
     }
@@ -2516,7 +2557,9 @@ fn parseBuildCliOptions(args: []const [:0]const u8) BuildCliParseResult {
     return .{ .ok = .{
         .entrypoint = entrypoint.?,
         .output_path = output_path,
+        .outdir = outdir,
         .format = format,
+        .sourcemap = sourcemap,
         .kernel_mode = kernel_mode,
         .compile = compile,
         .bytecode = bytecode,
@@ -2533,6 +2576,14 @@ fn failBuildCliParse(parse_error: BuildCliParseError) noreturn {
         .unsupported_format => std.debug.print(
             "error: unsupported build format '{s}' (expected esm, cjs, or iife)\n",
             .{parse_error.argument.?},
+        ),
+        .unsupported_sourcemap => std.debug.print(
+            "error: unsupported sourcemap mode '{s}' (expected external, inline, linked, or none)\n",
+            .{parse_error.argument.?},
+        ),
+        .output_path_conflicts_with_outdir => std.debug.print(
+            "error: '--outfile' and '--outdir' cannot be used together\n",
+            .{},
         ),
         .bytecode_requires_compile => std.debug.print("error: '--bytecode' requires '--compile'\n", .{}),
     }
@@ -2573,6 +2624,19 @@ test "build CLI supports compact output and separate format options" {
     try std.testing.expectEqualStrings("cjs", options.format);
 }
 
+test "build CLI accepts Bun external sourcemap and outdir options" {
+    const args = [_][:0]const u8{ "./index.ts", "--sourcemap=external", "--outdir=./out" };
+    const options = switch (parseBuildCliOptions(&args)) {
+        .ok => |value| value,
+        .err => return error.ExpectedBuildOptions,
+    };
+
+    try std.testing.expectEqualStrings("./index.ts", options.entrypoint);
+    try std.testing.expectEqualStrings("./out", options.outdir.?);
+    try std.testing.expectEqualStrings("external", options.sourcemap.?);
+    try std.testing.expect(!options.compile);
+}
+
 test "build CLI reports malformed options without dispatching a build" {
     const missing_value = [_][:0]const u8{ "entry.ts", "--outfile" };
     switch (parseBuildCliOptions(&missing_value)) {
@@ -2598,6 +2662,18 @@ test "build CLI reports malformed options without dispatching a build" {
     const bytecode_without_compile = [_][:0]const u8{ "--bytecode", "entry.ts" };
     switch (parseBuildCliOptions(&bytecode_without_compile)) {
         .err => |parse_error| try std.testing.expectEqual(.bytecode_requires_compile, parse_error.kind),
+        .ok => return error.ExpectedBuildParseError,
+    }
+
+    const bad_sourcemap = [_][:0]const u8{ "entry.ts", "--sourcemap=wat" };
+    switch (parseBuildCliOptions(&bad_sourcemap)) {
+        .err => |parse_error| try std.testing.expectEqual(.unsupported_sourcemap, parse_error.kind),
+        .ok => return error.ExpectedBuildParseError,
+    }
+
+    const conflicting_outputs = [_][:0]const u8{ "entry.ts", "--outfile=app", "--outdir=dist" };
+    switch (parseBuildCliOptions(&conflicting_outputs)) {
+        .err => |parse_error| try std.testing.expectEqual(.output_path_conflicts_with_outdir, parse_error.kind),
         .ok => return error.ExpectedBuildParseError,
     }
 }
@@ -2656,6 +2732,17 @@ const standalone_bundle_script =
     \\await Bun.write(outfile, result.outputs[0]);
 ;
 
+const cli_bundle_script =
+    \\const [entrypoint, outdir, format, sourcemap] = process.argv.slice(1);
+    \\const options = { entrypoints: [entrypoint], outdir, target: "bun", format, throw: false };
+    \\if (sourcemap) options.sourcemap = sourcemap;
+    \\const result = await Bun.build(options);
+    \\if (!result.success) {
+    \\  for (const log of result.logs) console.error(log);
+    \\  process.exit(1);
+    \\}
+;
+
 fn bundleJsLikeEntrypoint(
     executable_path: []const u8,
     source_path: []const u8,
@@ -2710,6 +2797,44 @@ fn ensureDirectoryPath(path: []const u8) !void {
         error.PathAlreadyExists => {},
         else => return err,
     };
+}
+
+fn buildJsBundleCommand(
+    executable_path: []const u8,
+    file_path: []const u8,
+    outdir: []const u8,
+    format: []const u8,
+    sourcemap: ?[]const u8,
+) !void {
+    var child = std.process.spawn(g_io, .{
+        .argv = &.{
+            executable_path,
+            "-e",
+            cli_bundle_script,
+            file_path,
+            outdir,
+            format,
+            sourcemap orelse "",
+        },
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| {
+        std.debug.print("error: failed to start the JavaScript bundler: {s}\n", .{@errorName(err)});
+        return error.BuildBundleFailed;
+    };
+
+    const term = child.wait(g_io) catch |err| {
+        std.debug.print("error: failed while waiting for the JavaScript bundler: {s}\n", .{@errorName(err)});
+        return error.BuildBundleFailed;
+    };
+    switch (term) {
+        .exited => |code| if (code != 0) return error.BuildBundleFailed,
+        else => {
+            std.debug.print("error: JavaScript bundler terminated unexpectedly\n", .{});
+            return error.BuildBundleFailed;
+        },
+    }
 }
 
 fn buildJsLikeCommand(
@@ -2852,6 +2977,24 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
                 Color.Reset.code(),
             });
             return error.UnsupportedKernelEntrypoint;
+        }
+        if (!options.compile and (options.outdir != null or options.sourcemap != null)) {
+            if (options.outdir == null) {
+                std.debug.print("error: '--sourcemap' requires '--outdir' in the Home bundler\n", .{});
+                return error.BuildBundleFailed;
+            }
+            var executable_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+            const executable_path_len = std.process.executablePath(g_io, &executable_path_buffer) catch |err| {
+                std.debug.print("error: failed to locate the Home executable: {s}\n", .{@errorName(err)});
+                return error.BuildBundleFailed;
+            };
+            return buildJsBundleCommand(
+                executable_path_buffer[0..executable_path_len],
+                file_path,
+                options.outdir.?,
+                options.format,
+                options.sourcemap,
+            );
         }
         return buildJsLikeCommand(allocator, file_path, options.output_path, options.compile, options.format);
     }
@@ -4114,7 +4257,8 @@ fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "js/bun/typescript/type-export.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/sqlite/column-types.test.js") or
         std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js") or
-        std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js");
+        std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js") or
+        std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts");
 }
 
 fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
@@ -4247,6 +4391,7 @@ test "ported Bun corpus matrices requiring runtime services use the full native 
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/column-types.test.js"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sql-timezone.test.js"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sqlite.test.js"));
+    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts"));
     try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc/heapStats-mimalloc.test.ts"));
 }
 
@@ -5143,6 +5288,7 @@ pub fn main(init: std.process.Init) !void {
         buildCommand(allocator, build_options_cli) catch |err| {
             const diagnostic_already_reported =
                 err == error.StandaloneBundleFailed or
+                err == error.BuildBundleFailed or
                 err == error.NativeBuildToolFailed or
                 err == error.BuildInputReadFailed or
                 err == error.BuildOutputDirectoryFailed or

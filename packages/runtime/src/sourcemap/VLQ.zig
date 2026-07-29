@@ -62,10 +62,13 @@ fn encodeSlowPath(value: i32) VLQ {
     var len: u8 = 0;
     var bytes: [vlq_max_in_bytes]u8 = undefined;
 
-    var vlq: u32 = if (value >= 0)
-        @as(u32, @bitCast(value << 1))
-    else
-        @as(u32, @bitCast((-value << 1) | 1));
+    // Compute the sign/magnitude form in unsigned space. Negating i32::MIN in
+    // signed space traps in debug builds, even though source-map VLQ encoding
+    // intentionally wraps that unrepresentable magnitude to the canonical
+    // "-0" bit pattern (1, encoded as "B").
+    const value_bits: u32 = @bitCast(value);
+    const magnitude = if (value < 0) 0 -% value_bits else value_bits;
+    var vlq: u32 = (magnitude << 1) | @intFromBool(value < 0);
 
     // source mappings are limited to i32
     inline for (0..vlq_max_in_bytes) |_| {
@@ -195,6 +198,11 @@ test "VLQ.encode matches source-map zero encoding and re-encodes deterministical
     const a = VLQ.encode(42);
     const b = VLQ.encode(42);
     try std.testing.expectEqualSlices(u8, a.slice(), b.slice());
+}
+
+test "VLQ.encode handles i32 min without signed negation overflow" {
+    const encoded = VLQ.encode(std.math.minInt(i32));
+    try std.testing.expectEqualStrings("B", encoded.slice());
 }
 
 test "VLQ.decode advances `start` past the consumed bytes" {
