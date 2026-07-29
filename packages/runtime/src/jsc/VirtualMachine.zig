@@ -1964,13 +1964,45 @@ pub fn resolveMaybeNeedsTrailingSlash(
     }
     jsc_vm._resolve(&result, specifier_utf8.slice(), normalizeSource(source_utf8.slice()), is_esm, is_a_file_path) catch |err_| {
         var err = err_;
+        if (err == error.ModuleNotFound and Resolver.isPackagePath(specifier_utf8.slice())) {
+            // A missing bare package is where Bun initializes auto-install.
+            // Preserve an unreadable process cwd as the primary resolver error
+            // instead of hiding it behind a generic package-not-found message.
+            // This also keeps the failure catchable at the JS boundary.
+            if (bun.getcwdAlloc(jsc_vm.allocator) catch null) |process_cwd| {
+                defer jsc_vm.allocator.free(process_cwd);
+                if (jsc_vm.transpiler.fs.fs.readDirectory(
+                    process_cwd,
+                    null,
+                    jsc_vm.transpiler.resolver.generation,
+                    false,
+                ) catch null) |cwd_entry| {
+                    if (cwd_entry.* == .err) {
+                        log.addErrorFmt(
+                            null,
+                            logger.Loc.Empty,
+                            jsc_vm.allocator,
+                            "Cannot read directory \"{s}\": {s}",
+                            .{
+                                process_cwd,
+                                @errorName(cwd_entry.err.original_err),
+                            },
+                        ) catch {};
+                    }
+                }
+            }
+        }
         const msg: logger.Msg = brk: {
             const msgs: []logger.Msg = log.msgs.items;
+            var resolver_detail: ?logger.Msg = null;
 
             for (msgs) |m| {
                 if (m.metadata == .resolve) {
                     err = m.metadata.resolve.err;
                     break :brk m;
+                }
+                if (resolver_detail == null and m.kind == .err) {
+                    resolver_detail = m;
                 }
             }
 
@@ -1981,13 +2013,20 @@ pub fn resolveMaybeNeedsTrailingSlash(
             else
                 .require;
 
-            const printed = try bun.api.ResolveMessage.fmt(
-                jsc_vm.allocator,
-                specifier_utf8.slice(),
-                source_utf8.slice(),
-                err,
-                import_kind,
-            );
+            const printed = if (resolver_detail) |detail|
+                try std.fmt.allocPrint(
+                    jsc_vm.allocator,
+                    "{s} while resolving \"{s}\"",
+                    .{ detail.data.text, specifier_utf8.slice() },
+                )
+            else
+                try bun.api.ResolveMessage.fmt(
+                    jsc_vm.allocator,
+                    specifier_utf8.slice(),
+                    source_utf8.slice(),
+                    err,
+                    import_kind,
+                );
             break :brk logger.Msg{
                 .data = logger.rangeData(
                     null,

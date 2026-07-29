@@ -1427,6 +1427,11 @@ pub const TestCommand = struct {
             loader.* = DotEnv.Loader.init(map, ctx.allocator);
             break :brk loader;
         };
+        // The test VM receives this loader directly, so populate it before VM
+        // construction. Otherwise inherited variables such as NODE_PATH are
+        // absent from both module resolution and process.env until some later
+        // code happens to trigger .env loading.
+        try env_loader.loadProcess();
         bun.jsc.initialize(false);
         HTTPThread.init(&.{});
 
@@ -1510,6 +1515,7 @@ pub const TestCommand = struct {
                 .is_main_thread = true,
             },
         );
+        vm.transpiler.resolver.env_loader = vm.transpiler.env;
         vm.argv = ctx.passthrough;
         vm.preload = ctx.preloads;
         vm.transpiler.options.rewrite_jest_for_tests = true;

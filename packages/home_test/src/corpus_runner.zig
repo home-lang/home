@@ -58995,7 +58995,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-ts.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "file URL and package imports resolver integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/toml/toml.test.js"))
         try rewriteTomlResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/yaml/yaml.test.js"))

@@ -835,9 +835,19 @@ pub export fn Bun__resolveAndFetchBuiltinModule(
     var log = logger.Log.init(jsc_vm.transpiler.allocator);
     defer log.deinit();
 
-    _ = specifier;
-    _ = ret;
-    return false;
+    const specifier_slice = specifier.toUTF8(bun.default_allocator);
+    defer specifier_slice.deinit();
+    const alias = HardcodedModule.Alias.bun_aliases.get(specifier_slice.slice()) orelse
+        return false;
+    const hardcoded = HardcodedModule.map.get(alias.path) orelse {
+        bun.debugAssert(false);
+        return false;
+    };
+    ret.* = .ok(
+        getHardcodedModule(jsc_vm, specifier.*, hardcoded) orelse
+            return false,
+    );
+    return true;
 }
 
 pub export fn Bun__fetchBuiltinModule(

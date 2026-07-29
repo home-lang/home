@@ -16,8 +16,15 @@ fn noopPtr() callconv(.c) ?*anyopaque {
 fn noopBool() callconv(.c) bool {
     return false;
 }
-fn noopEncoded() callconv(.c) usize {
-    return 0;
+/// JSC reserves zero as the empty JSValue sentinel. Returning it across a host
+/// callback boundary corrupts ordinary JavaScript operations such as `typeof`
+/// and property enumeration. Unsupported callbacks must return a valid value.
+fn unsupportedEncoded() callconv(.c) usize {
+    return 0xa; // JSValue.js_undefined
+}
+
+test "unsupported encoded callbacks return JavaScript undefined, never the empty sentinel" {
+    try @import("std").testing.expectEqual(@as(usize, 0xa), unsupportedEncoded());
 }
 fn noopDetached(_: ?*anyopaque, _: usize) callconv(.c) void {}
 fn noopDispatch(_: ?*anyopaque, _: ?*const u8, _: c_int) callconv(.c) void {}
@@ -59,7 +66,6 @@ comptime {
     }
 
     for ([_][]const u8{
-        "BunObject_lazyPropCb_isStandaloneExecutable",
         "H2FrameParserPrototype__pushPromise",
         "JS2Zig___src_collections_linear_fifo_zig__TestingAPIs_orderedRemoveProbe",
         "JS2Zig___src_sys_sys_zig__TestingAPIs_translateNtStatusToE",
@@ -75,7 +81,7 @@ comptime {
         "TLSSocketPrototype__setKeyCert",
         "TLSSocketPrototype__setTypeOfService",
     }) |name| {
-        @export(&noopEncoded, .{ .name = name });
+        @export(&unsupportedEncoded, .{ .name = name });
     }
 
     for ([_][]const u8{

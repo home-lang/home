@@ -75,6 +75,7 @@ pub const BunObject = struct {
     pub const cwd = toJSLazyPropertyCallback(Bun.getCWD);
     pub const embeddedFiles = toJSLazyPropertyCallback(Bun.getEmbeddedFiles);
     pub const enableANSIColors = toJSLazyPropertyCallback(Bun.enableANSIColors);
+    pub const isStandaloneExecutable = toJSLazyPropertyCallback(Bun.getIsStandaloneExecutable);
     pub const hash = toJSLazyPropertyCallback(Bun.getHashObject);
     pub const inspect = toJSLazyPropertyCallback(Bun.getInspect);
     pub const origin = toJSLazyPropertyCallback(Bun.getOrigin);
@@ -146,6 +147,7 @@ pub const BunObject = struct {
         @export(&BunObject.cron, .{ .name = lazyPropertyCallbackName("cron") });
         @export(&BunObject.cwd, .{ .name = lazyPropertyCallbackName("cwd") });
         @export(&BunObject.enableANSIColors, .{ .name = lazyPropertyCallbackName("enableANSIColors") });
+        @export(&BunObject.isStandaloneExecutable, .{ .name = lazyPropertyCallbackName("isStandaloneExecutable") });
         @export(&BunObject.hash, .{ .name = lazyPropertyCallbackName("hash") });
         @export(&BunObject.inspect, .{ .name = lazyPropertyCallbackName("inspect") });
         @export(&BunObject.origin, .{ .name = lazyPropertyCallbackName("origin") });
@@ -1371,6 +1373,10 @@ pub fn getTerminalConstructor(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject)
 
 pub fn getEmbeddedFiles(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) bun.JSError!jsc.JSValue {
     return try jsc.JSValue.createEmptyArray(globalThis, 0);
+}
+
+pub fn getIsStandaloneExecutable(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
+    return jsc.JSValue.jsBoolean(globalThis.bunVM().standalone_module_graph != null);
 }
 
 pub fn getSemver(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
