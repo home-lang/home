@@ -4258,7 +4258,8 @@ fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "js/bun/sqlite/column-types.test.js") or
         std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js") or
         std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js") or
-        std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts");
+        std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap.test.ts");
 }
 
 fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
@@ -4392,6 +4393,7 @@ test "ported Bun corpus matrices requiring runtime services use the full native 
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sql-timezone.test.js"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sqlite.test.js"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts"));
+    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sourcemap/internal-sourcemap.test.ts"));
     try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc/heapStats-mimalloc.test.ts"));
 }
 

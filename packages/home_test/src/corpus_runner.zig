@@ -59113,7 +59113,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun internal source map stack trace integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/bun-ipc-inherit.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun spawn IPC inheritance through package scripts")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/job-object-bug.test.ts"))
