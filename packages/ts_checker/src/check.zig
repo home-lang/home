@@ -62120,6 +62120,7 @@ pub const Checker = struct {
                     try self.reportOnce(type_node, TsCodes.expression_union_too_complex, "Expression produces a union type that is too complex to represent.");
                     return types.Primitive.any;
                 }
+                if (try self.reduceIntersectionBySharedUnitDiscriminant(ms.items)) |reduced| return reduced;
                 return self.interner.internIntersection(ms.items) catch return error.OutOfMemory;
             },
             .type_literal => {
@@ -100818,6 +100819,19 @@ pub const Checker = struct {
                 const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
                 // RHS == null
                 if (self.hir.kindOf(b.rhs) == .literal_null) {
+                    const obj_static = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
+                    if (obj_static < self.interner.pool.typeCount()) {
+                        const obj_flags = self.interner.pool.flagsOf(obj_static);
+                        if (obj_flags.is_union or obj_flags.is_intersection) {
+                            try self.applyDiscriminatedNarrowByType(
+                                obj_id.name,
+                                obj_static,
+                                m.name,
+                                types.Primitive.null_t,
+                                positive,
+                            );
+                        }
+                    }
                     if (positive) {
                         try self.recordMemberNarrow(key, types.Primitive.null_t);
                     } else {
@@ -101219,9 +101233,49 @@ pub const Checker = struct {
             },
             else => return,
         };
-        if ((try self.lookupObjectMember(target.t, m.name)) == types.Primitive.boolean_t) return;
-        const true_lit = self.interner.internBooleanLiteral(true);
-        try self.applyDiscriminatedNarrowByType(target.name, target.t, m.name, true_lit, when_true);
+        const narrowed = (try self.narrowUnionByPropertyTruthiness(target.t, m.name, when_true)) orelse return;
+        if (narrowed != target.t) try self.recordNarrow(target.name, narrowed);
+    }
+
+    fn narrowUnionByPropertyTruthiness(
+        self: *Checker,
+        union_t: TypeId,
+        prop_name: hir_mod.StringId,
+        when_true: bool,
+    ) CheckError!?TypeId {
+        if (union_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(union_t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(union_t) orelse return null;
+            if (constraint == union_t) return null;
+            return try self.narrowUnionByPropertyTruthiness(constraint, prop_name, when_true);
+        }
+        if (!flags.is_union) return null;
+
+        const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(union_t));
+        defer self.gpa.free(members);
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        for (members) |variant| {
+            var prop_t: TypeId = types.Primitive.unknown;
+            if (variant < self.interner.pool.typeCount()) {
+                if (self.interner.objectMemberInfo(variant, prop_name)) |info| {
+                    prop_t = info.type;
+                    if (info.is_optional) prop_t = self.unionWithUndefined(prop_t) catch prop_t;
+                } else if (self.namedPropertyIndexType(variant, prop_name)) |index_t| {
+                    prop_t = index_t;
+                }
+            }
+            const possible = if (when_true)
+                self.logicalTypeCanBeTruthy(prop_t)
+            else
+                self.logicalTypeCanBeFalsy(prop_t);
+            if (possible) try kept.append(self.gpa, variant);
+        }
+        if (kept.items.len == members.len) return union_t;
+        if (kept.items.len == 0) return types.Primitive.never;
+        if (kept.items.len == 1) return kept.items[0];
+        return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
     }
 
     fn applyTruthyMemberValueGuard(self: *Checker, member_node: NodeId, when_true: bool) CheckError!void {
@@ -101372,6 +101426,133 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn isUnitDiscriminantType(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.null_t or
+            t == types.Primitive.undefined_t or
+            t == types.Primitive.true_lit or
+            t == types.Primitive.false_lit)
+        {
+            return true;
+        }
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        return flags.is_literal and !flags.is_union and !flags.is_intersection;
+    }
+
+    fn sharedRequiredUnitDiscriminant(
+        self: *Checker,
+        members: []const TypeId,
+    ) CheckError!?hir_mod.StringId {
+        var first_union: TypeId = types.Primitive.none;
+        for (members) |member| {
+            if (member < self.interner.pool.typeCount() and self.interner.pool.flagsOf(member).is_union) {
+                first_union = member;
+                break;
+            }
+        }
+        if (first_union == types.Primitive.none) return null;
+        const first_variants = try self.gpa.dupe(TypeId, self.interner.unionMembers(first_union));
+        defer self.gpa.free(first_variants);
+        if (first_variants.len == 0) return null;
+        const first_variant = first_variants[0];
+        if (first_variant >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(first_variant).is_object_type)
+        {
+            return null;
+        }
+        const first_properties = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(first_variant));
+        defer self.gpa.free(first_properties);
+        candidate: for (first_properties) |property| {
+            if (property.is_optional or !self.isUnitDiscriminantType(property.type)) continue;
+            var union_count: usize = 0;
+            for (members) |member| {
+                if (member >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(member).is_union)
+                {
+                    continue;
+                }
+                union_count += 1;
+                const variants = try self.gpa.dupe(TypeId, self.interner.unionMembers(member));
+                defer self.gpa.free(variants);
+                for (variants) |variant| {
+                    if (variant >= self.interner.pool.typeCount() or
+                        !self.interner.pool.flagsOf(variant).is_object_type)
+                    {
+                        continue :candidate;
+                    }
+                    const info = self.interner.objectMemberInfo(variant, property.name) orelse continue :candidate;
+                    if (info.is_optional or !self.isUnitDiscriminantType(info.type)) continue :candidate;
+                }
+            }
+            if (union_count >= 2) return property.name;
+        }
+        return null;
+    }
+
+    fn reduceIntersectionBySharedUnitDiscriminant(
+        self: *Checker,
+        members: []const TypeId,
+    ) CheckError!?TypeId {
+        const prop_name = (try self.sharedRequiredUnitDiscriminant(members)) orelse return null;
+        var first_union_index: ?usize = null;
+        for (members, 0..) |member, index| {
+            if (member < self.interner.pool.typeCount() and self.interner.pool.flagsOf(member).is_union) {
+                first_union_index = index;
+                break;
+            }
+        }
+        const base_index = first_union_index orelse return null;
+        const base_variants = try self.gpa.dupe(TypeId, self.interner.unionMembers(members[base_index]));
+        defer self.gpa.free(base_variants);
+        var reduced_members: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer reduced_members.deinit(self.gpa);
+
+        for (base_variants) |base_variant| {
+            const base_info = self.interner.objectMemberInfo(base_variant, prop_name) orelse continue;
+            var parts: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer parts.deinit(self.gpa);
+            try parts.append(self.gpa, base_variant);
+            var compatible = true;
+            for (members, 0..) |member, index| {
+                if (index == base_index) continue;
+                if (member >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(member).is_union)
+                {
+                    try parts.append(self.gpa, member);
+                    continue;
+                }
+                const variants = try self.gpa.dupe(TypeId, self.interner.unionMembers(member));
+                defer self.gpa.free(variants);
+                var matches: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer matches.deinit(self.gpa);
+                for (variants) |variant| {
+                    const info = self.interner.objectMemberInfo(variant, prop_name) orelse continue;
+                    if (try self.discriminantTypeMatchesLiteral(info.type, base_info.type)) {
+                        try matches.append(self.gpa, variant);
+                    }
+                }
+                if (matches.items.len == 0) {
+                    compatible = false;
+                    break;
+                }
+                const selected = if (matches.items.len == 1)
+                    matches.items[0]
+                else
+                    self.interner.internUnion(matches.items) catch return error.OutOfMemory;
+                try parts.append(self.gpa, selected);
+            }
+            if (!compatible) continue;
+            const reduced = if (parts.items.len == 1)
+                parts.items[0]
+            else
+                self.interner.internIntersection(parts.items) catch return error.OutOfMemory;
+            try reduced_members.append(self.gpa, reduced);
+        }
+        if (reduced_members.items.len == 0) return types.Primitive.never;
+        if (reduced_members.items.len == 1) return reduced_members.items[0];
+        return self.interner.internUnion(reduced_members.items) catch return error.OutOfMemory;
     }
 
     fn recordNarrow(self: *Checker, name: hir_mod.StringId, t: TypeId) !void {
@@ -118271,6 +118452,12 @@ pub const Checker = struct {
                 "typeof {s}",
                 .{self.string_interner.get(class_name)},
             );
+        }
+        if (target_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target_t).is_union and
+            !self.alias_display_names.contains(target_t))
+        {
+            try self.registerDiagnosticUnionDisplayName(target_t, self.interner.unionMembers(target_t));
         }
         if (try self.allocSimpleTypeName(target_t)) |name| return name;
         if (self.alias_display_names.get(target_t)) |name| return name;
@@ -148523,8 +148710,11 @@ pub const Checker = struct {
             else
                 (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
             const member_prop_t = self.interner.objectMember(member_t, prop_name) orelse continue;
-            if (!self.isLiteralType(member_prop_t)) continue;
-            const value_lit_t = (try self.expressionNarrowLiteralType(op.value)) orelse continue;
+            if (!self.isUnitDiscriminantType(member_prop_t)) continue;
+            const value_lit_t = if (self.hir.kindOf(op.value) == .literal_null)
+                types.Primitive.null_t
+            else
+                (try self.expressionNarrowLiteralType(op.value)) orelse continue;
             if (!try self.discriminantTypeMatchesLiteral(member_prop_t, value_lit_t)) return null;
             matches += 1;
         }
@@ -182041,6 +182231,52 @@ test "checker: numeric enum reverse-mapped lookup `E[1]` types as string" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: discriminated unions retain generic, nullish, truthy, and intersected variants" {
+    const s = try newSetup(
+        \\function excess(x: { a: null; b: string } | { a: string; c: number }) {
+        \\  x = { a: null, b: "foo", c: 4 };
+        \\}
+        \\function generic<T>(x: { a: 0; b: string } | { a: T; c: number }) {
+        \\  if (x.a === 0) x.b;
+        \\}
+        \\type Result<T> = { error?: undefined; value: T } | { error: Error };
+        \\function result(x: Result<number>) {
+        \\  if (!x.error) x.value;
+        \\  else x.error.message;
+        \\}
+        \\interface WithError { error: Error; data: null }
+        \\interface WithoutError<Data> { error: null; data: Data }
+        \\type DataCarrier<Data> = WithError | WithoutError<Data>;
+        \\function carrier<Data>(x: DataCarrier<Data>) {
+        \\  if (x.error === null) {
+        \\    const data: Data = x.data;
+        \\  } else {
+        \\    const data: null = x.data;
+        \\  }
+        \\}
+        \\type A = { type: "a"; data: string };
+        \\type B = { type: "b"; name: string };
+        \\type C = { type: "c"; other: string };
+        \\type ABC = A | B | C;
+        \\function intersected(problem: ABC & (B | C)) {
+        \\  if (problem.type === "b") problem.name;
+        \\  else problem.other;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_literal_excess_property));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'b' does not exist on type '{ a: 0; b: string; } | { a: T; c: number; }'.",
+    ));
 }
 
 test "checker: if x.kind === literal narrows non-discriminant field access" {
