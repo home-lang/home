@@ -6522,6 +6522,9 @@ pub const Parser = struct {
                             return mods;
                         }
                     },
+                    .kw_in, .kw_out => {
+                        try self.reportTypeParameterVarianceModifierDiagnostic(self.peek());
+                    },
                     else => {},
                 }
                 _ = self.advance();
@@ -13222,7 +13225,19 @@ pub const Parser = struct {
                         if (!typeParameterContextAllowsVariance(context)) {
                             try self.reportTypeParameterVarianceModifierDiagnostic(mod);
                         }
-                        variance |= if (mod.kind == .kw_in) @as(u8, 1) else @as(u8, 2);
+                        if (mod.kind == .kw_in) {
+                            if (variance & 1 != 0) {
+                                try self.reportCodeAt(mod.span.start, mod.line, 1030, "'in' modifier already seen.");
+                            } else if (variance & 2 != 0) {
+                                try self.reportCodeAt(mod.span.start, mod.line, 1029, "'in' modifier must precede 'out' modifier.");
+                            }
+                            variance |= 1;
+                        } else {
+                            if (variance & 2 != 0) {
+                                try self.reportCodeAt(mod.span.start, mod.line, 1030, "'out' modifier already seen.");
+                            }
+                            variance |= 2;
+                        }
                     },
                     else => try self.reportInvalidTypeParameterModifierDiagnostic(mod),
                 }
@@ -13280,11 +13295,12 @@ pub const Parser = struct {
     }
 
     fn typeParameterModifierHasNameAfter(self: *Parser) bool {
-        const k = self.peek().kind;
-        if (!(k == .kw_const or k.isModifierKeyword())) return false;
-        const next = self.peekAt(1);
-        if (typeParameterNameCanStart(next.kind)) return true;
-        return k == .kw_in and next.kind == .kw_out and typeParameterNameCanStart(self.peekAt(2).kind);
+        var offset: u32 = 0;
+        while (true) : (offset += 1) {
+            const kind = self.peekAt(offset).kind;
+            if (kind != .kw_const and !kind.isModifierKeyword()) break;
+        }
+        return offset > 0 and typeParameterNameCanStart(self.peekAt(offset).kind);
     }
 
     fn typeParameterNameCanStart(kind: TokenKind) bool {
@@ -26817,6 +26833,21 @@ test "parser: variance modifier `in out T` records variance=3" {
     const tps = hir_mod.fnTypeParams(&s.hir, top);
     try T.expectEqual(@as(usize, 1), tps.len);
     try T.expectEqual(@as(u8, 3), hir_mod.typeParameterOf(&s.hir, tps[0]).variance);
+}
+
+test "parser: duplicate and reordered variance modifiers recover a type parameter" {
+    var s = try newTestSetup(
+        \\type T21<in out in T> = T;
+        \\type T22<in out out T> = T;
+        \\type T23<out in T> = T;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1030));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1029));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1139));
 }
 
 test "parser: no variance modifier records variance=0" {
