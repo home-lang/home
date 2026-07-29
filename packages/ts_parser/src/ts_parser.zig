@@ -14458,18 +14458,7 @@ pub const Parser = struct {
                         depth -= 1;
                         if (depth == 0) {
                             const next = i + 1;
-                            if (next >= self.tokens.len) return null;
-                            switch (self.tokens[next].kind) {
-                                .dot,
-                                .semicolon,
-                                .comma,
-                                .close_paren,
-                                .close_bracket,
-                                .close_brace,
-                                .eof,
-                                => return next,
-                                else => return null,
-                            }
+                            return if (self.canFollowInstantiationTypeArguments(next)) next else null;
                         }
                     }
                 },
@@ -14489,6 +14478,19 @@ pub const Parser = struct {
             }
         }
         return null;
+    }
+
+    fn canFollowInstantiationTypeArguments(self: *const Parser, next: u32) bool {
+        if (next >= self.tokens.len) return false;
+        const token = self.tokens[next];
+        switch (token.kind) {
+            .open_paren, .no_substitution_template, .template_head => return true,
+            .less_than, .greater_than, .plus, .minus => return false,
+            else => {},
+        }
+        return token.flags.preceded_by_newline or
+            prec_mod.binaryPrec(token.kind) != null or
+            !token.kind.canStartExpression();
     }
 
     /// Parse the comma-separated type arguments of an explicit
@@ -17141,6 +17143,31 @@ pub const Parser = struct {
                     } else if (self.peek().kind == .open_bracket) {
                         const ob = self.advance();
                         node = try self.finishElementAccess(node, true, ob.span.start);
+                    } else if (self.peek().kind == .less_than) {
+                        if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
+                            const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                            defer self.gpa.free(type_args);
+                            try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
+                            const args = try self.parseArgumentList();
+                            defer self.gpa.free(args);
+                            const close_pos = self.tokens[self.cursor - 1].span.end;
+                            const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
+                            node = try self.builder.addOptionalCallWithTypeArgs(sp, node, args, type_args);
+                        } else if (self.findMatchingTypeArgsEnd(self.cursor)) |after_gt| {
+                            const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                            defer self.gpa.free(type_args);
+                            try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
+                            const at = self.peek();
+                            try self.reportCodeAt(at.span.start, at.line, 1005, "'(' expected.");
+                            const end_pos = self.tokens[self.cursor - 1].span.end;
+                            const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = end_pos };
+                            node = try self.builder.addOptionalCallWithTypeArgs(sp, node, &.{}, type_args);
+                        } else {
+                            const name_tok = try self.expectIdentifierLike();
+                            const name_id = try self.internToken(name_tok);
+                            const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end };
+                            node = try self.builder.addMemberAccess(sp, node, name_id, true);
+                        }
                     } else if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
                         try self.reportCodeAt(self.peek().span.start, self.peek().line, 1358, "Tagged template expressions are not permitted in an optional chain.");
                         node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
@@ -17709,7 +17736,11 @@ pub const Parser = struct {
                 const type_node = try self.parseTypeAnnotation();
                 try self.reportErasableSyntaxOnlyTypeAssertionIfNeeded(t);
                 const consumed_gt = try self.consumeTypeAssertionGreater();
-                const expr = if (!consumed_gt and self.peek().kind == .eof)
+                const expr = if (consumed_gt and self.peekIsUnaryOperandStopToken()) blk: {
+                    const at = self.peek();
+                    try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
+                    break :blk try self.syntheticTypeAssertionOperandAt(at);
+                } else if (!consumed_gt and self.peek().kind == .eof)
                     try self.syntheticTypeAssertionOperandAt(self.peek())
                 else
                     try self.parseUnaryExpression();
@@ -20905,6 +20936,116 @@ test "parser: optional chaining" {
     const m = hir_mod.memberOf(&s.hir, top);
     try T.expect(m.optional);
     try T.expectEqualStrings("b", s.interner.get(m.name));
+}
+
+test "parser: optional calls preserve explicit type arguments" {
+    var s = try newTestSetup(
+        \\declare let f: { <T>(): T };
+        \\const missing = f?.<number>;
+        \\const called = f?.<number>();
+        \\const reinstantiated = f<number>?.<string>();
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    var count_1005: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1005) count_1005 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1005);
+
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const called = hir_mod.varDeclOf(&s.hir, stmts[2]).init;
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(called));
+    try T.expect(hir_mod.callOf(&s.hir, called).optional);
+    try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, called).len);
+    const reinstantiated = hir_mod.varDeclOf(&s.hir, stmts[3]).init;
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(reinstantiated));
+    try T.expect(hir_mod.callOf(&s.hir, reinstantiated).optional);
+    try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, reinstantiated).len);
+}
+
+test "parser: instantiation expression ambiguities preserve TypeScript shapes" {
+    var s = try newTestSetup(
+        \\declare let f: { <T>(): T, g<U>(): U };
+        \\const indexed = f<number>['g'];
+        \\const chained = f<number><number>;
+        \\const parenthesized = (f<number>)<number>;
+        \\const multilineCall = f<true>
+        \\(true);
+        \\const relational = f < true > +1;
+        \\const negative = f < true > -1;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+
+    const indexed = hir_mod.varDeclOf(&s.hir, stmts[1]).init;
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(indexed));
+    const indexed_gt = hir_mod.binopOf(&s.hir, indexed);
+    try T.expectEqual(hir_mod.BinOp.gt, indexed_gt.op);
+    try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, indexed_gt.lhs).op);
+    try T.expectEqual(hir_mod.NodeKind.array_literal, s.hir.kindOf(indexed_gt.rhs));
+
+    const chained = hir_mod.varDeclOf(&s.hir, stmts[2]).init;
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(chained));
+    const chained_gt = hir_mod.binopOf(&s.hir, chained);
+    try T.expectEqual(hir_mod.BinOp.gt, chained_gt.op);
+    try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, chained_gt.lhs).op);
+
+    const parenthesized = hir_mod.varDeclOf(&s.hir, stmts[3]).init;
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(parenthesized));
+    try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, parenthesized).len);
+    const inner_instantiation = hir_mod.callOf(&s.hir, parenthesized).callee;
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(inner_instantiation));
+    try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, inner_instantiation).len);
+
+    const multiline_call = hir_mod.varDeclOf(&s.hir, stmts[4]).init;
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(multiline_call));
+    try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, multiline_call).len);
+    try T.expectEqual(@as(usize, 1), hir_mod.callArgs(&s.hir, multiline_call).len);
+
+    const relational = hir_mod.varDeclOf(&s.hir, stmts[5]).init;
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(relational));
+    const relational_gt = hir_mod.binopOf(&s.hir, relational);
+    try T.expectEqual(hir_mod.BinOp.gt, relational_gt.op);
+    try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, relational_gt.lhs).op);
+
+    const negative = hir_mod.varDeclOf(&s.hir, stmts[6]).init;
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(negative));
+    const negative_gt = hir_mod.binopOf(&s.hir, negative);
+    try T.expectEqual(hir_mod.BinOp.gt, negative_gt.op);
+    try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, negative_gt.lhs).op);
+}
+
+test "parser: instantiation expression follow tokens mirror TypeScript" {
+    var s = try newTestSetup(
+        \\declare let f: { <T>(): T };
+        \\declare let g: (<T>(x: T) => T) | undefined;
+        \\const c1 = g<string> || ((x: string) => x);
+        \\const c2 = g<string> ?? ((x: string) => x);
+        \\const c3 = g<string> && ((x: string) => x);
+        \\const beforeIf = f<true>
+        \\if (true) {}
+        \\const beforeLet = f<true>
+        \\let next = 0;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+
+    for (stmts[2..5]) |stmt| {
+        const init = hir_mod.varDeclOf(&s.hir, stmt).init;
+        try T.expectEqual(hir_mod.NodeKind.logical_op, s.hir.kindOf(init));
+        const instantiation = hir_mod.logicalOf(&s.hir, init).lhs;
+        try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(instantiation));
+        try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, instantiation).len);
+    }
+    for ([_]usize{ 5, 7 }) |index| {
+        const init = hir_mod.varDeclOf(&s.hir, stmts[index]).init;
+        try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(init));
+        try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, init).len);
+    }
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: optional chain rejects private identifiers" {

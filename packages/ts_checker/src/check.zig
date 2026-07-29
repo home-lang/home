@@ -13071,6 +13071,21 @@ pub const Checker = struct {
         return false;
     }
 
+    fn rootHasFunctionDeclarationNamed(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(node);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(stmt) != section) continue;
+            const decl = self.unwrapExportDecl(stmt);
+            if (self.hir.kindOf(decl) != .fn_decl) continue;
+            const f = hir_mod.fnDeclOf(self.hir, decl);
+            if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, f.name).name == name) return true;
+        }
+        return false;
+    }
+
     /// True when `name` has a top-level declaration or import binding in
     /// the SAME virtual `@filename:` section as `export_node`.
     ///
@@ -86632,7 +86647,9 @@ pub const Checker = struct {
                     }
                 }
                 var reported_possibly_undefined_call = false;
-                if (!call_is_optional_chain and
+                const call_is_instantiation_expression = self.isInstantiationExpressionCall(node);
+                if (!call_is_instantiation_expression and
+                    !call_is_optional_chain and
                     self.strict_flags.strict_null_checks and
                     !self.typeIsAnyLike(raw_callee_t) and
                     self.typeIsPossiblyNullishStrict(raw_callee_t))
@@ -86780,9 +86797,8 @@ pub const Checker = struct {
                         null;
                     try self.reportUnresolvedSimpleTypeofTypeArgumentsBounded(node, arg_region_start);
                 }
-                if (self.isInstantiationExpressionCall(node)) {
-                    try self.checkInstantiationExpressionTypeArguments(node, callee_t, type_arg_nodes);
-                    break :blk callee_t;
+                if (call_is_instantiation_expression) {
+                    break :blk try self.checkInstantiationExpressionTypeArguments(node, callee_t, type_arg_nodes);
                 }
                 if (try self.builtinObjectAssignCallType(c.callee, args, arg_types.items)) |assign_t| {
                     break :blk try self.optionalChainResult(assign_t, call_is_optional_chain);
@@ -88031,6 +88047,7 @@ pub const Checker = struct {
                         break :blk types.Primitive.any;
                     }
                     if (self.memberAccessObjectIsGlobalThisThis(m.object)) {
+                        if (self.globalThisHasProperty(node, m.name)) break :blk types.Primitive.any;
                         try self.reportGlobalThisNoIndexSignature(node);
                         break :blk types.Primitive.any;
                     }
@@ -97928,16 +97945,16 @@ pub const Checker = struct {
         node: NodeId,
         callee_t: TypeId,
         type_arg_nodes: []const NodeId,
-    ) CheckError!void {
-        if (type_arg_nodes.len == 0) return;
+    ) CheckError!TypeId {
+        if (type_arg_nodes.len == 0) return callee_t;
 
         const callee = hir_mod.callOf(self.hir, node).callee;
         if (self.hir.kindOf(callee) == .identifier) {
             const name = self.string_interner.get(hir_mod.identifierOf(self.hir, callee).name);
             if (std.mem.eql(u8, name, "Array")) {
-                if (type_arg_nodes.len == 1) return;
+                if (type_arg_nodes.len == 1) return callee_t;
                 try self.reportInstantiationExpressionNoApplicable(node, type_arg_nodes, "ArrayConstructor");
-                return;
+                return callee_t;
             }
         }
 
@@ -97985,12 +98002,14 @@ pub const Checker = struct {
                 found_non_applicable = true;
                 break;
             }
-            if (!found_non_applicable) return;
+            if (!found_non_applicable) {
+                return try self.filteredInstantiationExpressionType(node, callee_t, type_arg_nodes);
+            }
         } else if (has_applicable) {
-            return;
+            return try self.filteredInstantiationExpressionType(node, callee_t, type_arg_nodes);
         }
 
-        if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) return;
+        if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) return callee_t;
         const annotated_type_text: ?[]const u8 = if (!has_applicable and self.hir.kindOf(callee) == .identifier) blk: {
             const annotation = self.visibleAnnotatedIdentifierTypeNode(callee) orelse break :blk null;
             if (self.hir.kindOf(annotation) != .union_type) break :blk null;
@@ -98000,6 +98019,98 @@ pub const Checker = struct {
             (try self.instantiationExpressionDiagnosticTypeName(diagnostic_t, diagnostic_sigs)) orelse
             "unknown";
         try self.reportInstantiationExpressionNoApplicable(node, type_arg_nodes, type_text);
+        return try self.filteredInstantiationExpressionType(node, callee_t, type_arg_nodes);
+    }
+
+    fn filteredInstantiationExpressionType(
+        self: *Checker,
+        node: NodeId,
+        t: TypeId,
+        type_arg_nodes: []const NodeId,
+    ) CheckError!TypeId {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union or flags.is_intersection) {
+            const source_members = if (flags.is_union)
+                self.interner.unionMembers(t)
+            else
+                self.interner.intersectionMembers(t);
+            const snapshot = try self.gpa.dupe(TypeId, source_members);
+            defer self.gpa.free(snapshot);
+            var members: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer members.deinit(self.gpa);
+            for (snapshot) |member| {
+                try members.append(
+                    self.gpa,
+                    try self.filteredInstantiationExpressionType(node, member, type_arg_nodes),
+                );
+            }
+            return if (flags.is_union)
+                self.interner.internUnion(members.items) catch t
+            else
+                self.interner.internIntersection(members.items) catch t;
+        }
+        if (self.interner.isSignature(t)) {
+            if (!self.signatureTypeArgCountMatches(t, type_arg_nodes.len)) {
+                return self.interner.internObjectType(&.{}) catch t;
+            }
+            var used_explicit_type_args = false;
+            return try self.instantiateSignatureWithExplicitTypeArgsUnchecked(
+                node,
+                t,
+                type_arg_nodes,
+                &used_explicit_type_args,
+            );
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return t;
+            if (constraint == t) return t;
+            return try self.filteredInstantiationExpressionType(node, constraint, type_arg_nodes);
+        }
+        if (!flags.is_object_type) return t;
+
+        const call_name = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        const source_members = self.interner.objectMembers(t);
+        const snapshot = try self.gpa.dupe(types.ObjectMember, source_members);
+        defer self.gpa.free(snapshot);
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var changed = false;
+        for (snapshot) |member| {
+            if ((member.name == call_name or member.name == construct_name) and
+                self.interner.isSignature(member.type))
+            {
+                changed = true;
+                if (!self.signatureTypeArgCountMatches(member.type, type_arg_nodes.len)) continue;
+                var instantiated = member;
+                var used_explicit_type_args = false;
+                instantiated.type = try self.instantiateSignatureWithExplicitTypeArgsUnchecked(
+                    node,
+                    member.type,
+                    type_arg_nodes,
+                    &used_explicit_type_args,
+                );
+                try members.append(self.gpa, instantiated);
+                continue;
+            }
+            try members.append(self.gpa, member);
+        }
+        if (!changed) return t;
+        const string_index = self.interner.objectStringIndex(t);
+        const number_index = self.interner.objectNumberIndex(t);
+        const symbol_index = self.interner.objectSymbolIndex(t);
+        return if (string_index == types.Primitive.none and
+            number_index == types.Primitive.none and
+            symbol_index == types.Primitive.none)
+            self.interner.internObjectType(members.items) catch t
+        else
+            self.interner.internObjectTypeWithIndexAndSymbol(
+                members.items,
+                string_index,
+                number_index,
+                symbol_index,
+            ) catch t;
     }
 
     fn reportInstantiationExpressionNoApplicable(
@@ -98664,6 +98775,39 @@ pub const Checker = struct {
         type_arg_nodes: []const NodeId,
         used_explicit_type_args: *bool,
     ) CheckError!TypeId {
+        return try self.instantiateSignatureWithExplicitTypeArgsInner(
+            call_node,
+            sig,
+            type_arg_nodes,
+            used_explicit_type_args,
+            true,
+        );
+    }
+
+    fn instantiateSignatureWithExplicitTypeArgsUnchecked(
+        self: *Checker,
+        call_node: NodeId,
+        sig: TypeId,
+        type_arg_nodes: []const NodeId,
+        used_explicit_type_args: *bool,
+    ) CheckError!TypeId {
+        return try self.instantiateSignatureWithExplicitTypeArgsInner(
+            call_node,
+            sig,
+            type_arg_nodes,
+            used_explicit_type_args,
+            false,
+        );
+    }
+
+    fn instantiateSignatureWithExplicitTypeArgsInner(
+        self: *Checker,
+        call_node: NodeId,
+        sig: TypeId,
+        type_arg_nodes: []const NodeId,
+        used_explicit_type_args: *bool,
+        check_constraints: bool,
+    ) CheckError!TypeId {
         _ = call_node;
         used_explicit_type_args.* = false;
         if (type_arg_nodes.len == 0) return sig;
@@ -98695,7 +98839,9 @@ pub const Checker = struct {
             // `nonPrimitiveInGeneric.ts(25,8)` where
             // `bound2<number>()` violates `T extends object`.
             try subs.put(self.gpa, type_params[i], explicit_t);
-            try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+            if (check_constraints) {
+                try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+            }
             try explicit_types.append(self.gpa, explicit_t);
         }
         if (explicit_types.items.len > 0) {
@@ -115250,7 +115396,10 @@ pub const Checker = struct {
         {
             return true;
         }
-        return self.rootHasVarDeclarationNamed(anchor, name) or self.sourceHasVarKeywordDeclaration(name);
+        return self.rootHasVarDeclarationNamed(anchor, name) or
+            self.rootHasFunctionDeclarationNamed(anchor, name) or
+            self.sourceHasVarKeywordDeclaration(name) or
+            self.sourceHasFunctionKeywordDeclaration(name);
     }
 
     fn sourceHasVarKeywordDeclaration(self: *Checker, name: hir_mod.StringId) bool {
@@ -115259,6 +115408,23 @@ pub const Checker = struct {
         var needle_buf: [128]u8 = undefined;
         const needle = std.fmt.bufPrint(&needle_buf, "var {s}", .{raw}) catch return false;
         return std.mem.indexOf(u8, src, needle) != null;
+    }
+
+    fn sourceHasFunctionKeywordDeclaration(self: *Checker, name: hir_mod.StringId) bool {
+        const src = self.source orelse return false;
+        const raw_name = self.string_interner.get(name);
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "function")) |function_pos| {
+            search_start = function_pos + "function".len;
+            if (function_pos > 0 and isJsDocIdentChar(src[function_pos - 1])) continue;
+            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
+            var p = search_start;
+            while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\r' or src[p] == '\n')) : (p += 1) {}
+            if (!std.mem.startsWith(u8, src[p..], raw_name)) continue;
+            if (p + raw_name.len < src.len and isJsDocIdentChar(src[p + raw_name.len])) continue;
+            return true;
+        }
+        return false;
     }
 
     fn reportGlobalThisMissingProperty(self: *Checker, node: NodeId, name: hir_mod.StringId, target: []const u8) CheckError!void {
@@ -119077,6 +119243,11 @@ pub const Checker = struct {
         }
         if ((self.relationalTypeHasObjectLike(lhs) and self.relationalTypeHasNumberLike(rhs)) or
             (self.relationalTypeHasObjectLike(rhs) and self.relationalTypeHasNumberLike(lhs)))
+        {
+            return true;
+        }
+        if ((self.relationalTypeHasObjectLike(lhs) and self.relationalPrimitiveKind(rhs) == .boolean_only) or
+            (self.relationalTypeHasObjectLike(rhs) and self.relationalPrimitiveKind(lhs) == .boolean_only))
         {
             return true;
         }
@@ -170894,6 +171065,51 @@ test "checker: instantiation expressions filter union signatures and check const
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.no_signatures_for_type_arg_list));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+}
+
+test "checker: instantiated callables preserve TypeScript error recovery" {
+    const s = try newSetup(
+        \\declare let f: { <T>(): T, g<U>(): U };
+        \\declare let maybe: (<T>(x: T) => T) | undefined;
+        \\const indexed = f<number>['g'];
+        \\const chained = f<number><number>;
+        \\const parenthesized = (f<number>)<number>;
+        \\const optional = f<number>?.<number>();
+        \\const fallback = maybe<string> || ((x: string) => x);
+        \\const multilineCall = f<true>
+        \\(true);
+        \\const r1 = f < true > true;
+        \\const r2 = f < true > +1;
+        \\const r3 = f < true > -1;
+        \\this.bar();
+        \\function bar() {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    const expected = [_]struct { code: u32, count: usize }{
+        .{ .code = TsCodes.type_only_used_as_value, .count = 2 },
+        .{ .code = TsCodes.operator_cannot_be_applied, .count = 7 },
+        .{ .code = TsCodes.no_signatures_for_type_arg_list, .count = 1 },
+        .{ .code = TsCodes.expected_n_type_arguments, .count = 1 },
+        .{ .code = TsCodes.expected_n_arguments, .count = 1 },
+        .{ .code = TsCodes.cannot_invoke_possibly_undefined, .count = 0 },
+        .{ .code = TsCodes.global_this_no_index_signature, .count = 0 },
+    };
+    var matches = true;
+    for (expected) |item| {
+        if (checkerCountCode(s, item.code) != item.count) matches = false;
+    }
+    if (!matches) {
+        std.debug.print("instantiation recovery diagnostics:\n", .{});
+        for (s.checker.diagnostics.items) |d| {
+            std.debug.print("  TS{d} at {?d}: {s}\n", .{ d.code, d.pos, d.message });
+        }
+    }
+    for (expected) |item| {
+        try T.expectEqual(item.count, checkerCountCode(s, item.code));
+    }
 }
 
 test "checker: conditional type with concrete check evaluates true branch" {

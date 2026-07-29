@@ -1657,6 +1657,10 @@ pub const Builder = struct {
         return self.addCallWithTypeArgsAndOptional(span, callee, args, &.{}, true);
     }
 
+    pub fn addOptionalCallWithTypeArgs(self: *Builder, span: Span, callee: NodeId, args: []const NodeId, type_args: []const NodeId) !NodeId {
+        return self.addCallWithTypeArgsAndOptional(span, callee, args, type_args, true);
+    }
+
     /// `callee<T1, T2>(args)` — explicit type arguments threaded through
     /// to the checker so they override call-site inference.
     pub fn addCallWithTypeArgs(self: *Builder, span: Span, callee: NodeId, args: []const NodeId, type_args: []const NodeId) !NodeId {
