@@ -97349,6 +97349,14 @@ pub const Checker = struct {
             // TS2511 in that case. See `classAbstractInstantiations1`.
             try self.checkArgsAgainstSignature(node, args, arg_types, selected_sig);
         }
+        if (type_arg_nodes.len == 0) {
+            try self.checkInferredGenericClassConstructorConstraints(
+                callee_node,
+                selected_decl_sig,
+                args,
+                arg_types,
+            );
+        }
 
         var cns_ret = self.interner.signatureReturn(selected_sig) orelse types.Primitive.any;
         if (type_arg_nodes.len == 0 and
@@ -97395,6 +97403,29 @@ pub const Checker = struct {
             }
         }
         return cns_ret;
+    }
+
+    fn checkInferredGenericClassConstructorConstraints(
+        self: *Checker,
+        callee_node: NodeId,
+        constructor_sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!void {
+        if (callee_node == hir_mod.none_node_id or self.hir.kindOf(callee_node) != .identifier) return;
+        const class_name = hir_mod.identifierOf(self.hir, callee_node).name;
+        const info = self.generic_aliases.get(class_name) orelse return;
+        if (info.params.len == 0 or !self.interner.isSignature(constructor_sig)) return;
+
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferCallSubstitutions(constructor_sig, args, arg_types, &subs);
+        try self.checkGenericSignatureArgumentConstraints(
+            args,
+            arg_types,
+            self.interner.signatureParams(constructor_sig),
+            &subs,
+        );
     }
 
     fn checkSuperConstructSignature(
@@ -126531,6 +126562,7 @@ pub const Checker = struct {
         const n = @min(args.len, @min(arg_types.len, param_ts.len));
         var i: usize = 0;
         while (i < n) : (i += 1) {
+            if (self.diagnosticExists(args[i], TsCodes.argument_type_mismatch)) continue;
             const param_t = param_ts[i];
             if (param_t >= self.interner.pool.typeCount()) continue;
             if (!self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
@@ -126542,7 +126574,7 @@ pub const Checker = struct {
                 continue;
             }
             const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
-            if (self.containsFreeTypeParameter(constraint)) continue;
+            if (self.containsFreeTypeParameter(constraint) and !self.interner.isSignature(constraint)) continue;
             var arg_t = arg_types[i];
             if (self.hir.kindOf(args[i]) == .spread) {
                 arg_t = try self.iterableElementType(arg_t);
@@ -173356,6 +173388,30 @@ test "checker: NonNullable generic constraint preserves string index" {
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_matching_index_signature));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+}
+
+test "checker: nullish inference checks call and constructor constraints" {
+    const s = try newSetup(
+        \\function call<T extends <U>(x: U) => void>(x: T) {}
+        \\var a;
+        \\call(a);
+        \\call<any>(1);
+        \\class C<T extends String> { constructor(public x: T) {} }
+        \\class C2<T extends { x: number }> { constructor(public x: T) {} }
+        \\class C3<T extends <U>(x: U) => U> { constructor(public x: T) {} }
+        \\new C(a);
+        \\new C2(a);
+        \\new C3(a);
+        \\new C<any>(1);
+        \\new C2<any>(1);
+        \\new C3<any>(1);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: indexed access accepts constrained keys inside object members" {
