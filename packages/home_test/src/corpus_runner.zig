@@ -58883,7 +58883,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/image/image.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.Image codec pipeline integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "import attributes build/run loader integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/io/bun-write.test.js"))
         try rewriteBunWriteCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/io/fetch/fetch-abort-slow-connect.test.ts"))
