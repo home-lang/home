@@ -5034,6 +5034,7 @@ pub const Checker = struct {
             defer self.popNarrowScope();
             for (stmts) |s| try self.checkStatement(s);
         }
+        try self.recheckDeferredVarianceAnnotations(stmts);
         try self.checkUniqueSymbolPositionsGlobal();
         try self.checkNoLibRequiredGlobalTypes(root, stmts);
         try self.checkVerbatimCommonJsExportModifier(stmts);
@@ -28050,7 +28051,7 @@ pub const Checker = struct {
     fn inferVariance(self: *Checker, body_t: TypeId, param_id: TypeId) types.Variance {
         var saw_co = false;
         var saw_ct = false;
-        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        var visited: std.AutoHashMapUnmanaged(VarianceVisit, void) = .empty;
         defer visited.deinit(self.gpa);
         self.scanVariance(body_t, param_id, .covariant, &saw_co, &saw_ct, &visited);
         if (saw_co and saw_ct) return .invariant;
@@ -28071,7 +28072,7 @@ pub const Checker = struct {
         position: types.Variance,
         saw_co: *bool,
         saw_ct: *bool,
-        visited: *std.AutoHashMapUnmanaged(TypeId, void),
+        visited: *std.AutoHashMapUnmanaged(VarianceVisit, void),
     ) void {
         if (t == param_id) {
             switch (position) {
@@ -28087,8 +28088,9 @@ pub const Checker = struct {
         }
         if (t < types.Primitive.first_dynamic) return;
         if (t >= self.interner.pool.typeCount()) return;
-        if (visited.contains(t)) return;
-        visited.put(self.gpa, t, {}) catch return;
+        const visit = VarianceVisit{ .type_id = t, .position = position };
+        if (visited.contains(visit)) return;
+        visited.put(self.gpa, visit, {}) catch return;
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
 
@@ -28198,7 +28200,7 @@ pub const Checker = struct {
         position: types.Variance,
         saw_co: *bool,
         saw_ct: *bool,
-        visited: *std.AutoHashMapUnmanaged(TypeId, void),
+        visited: *std.AutoHashMapUnmanaged(VarianceVisit, void),
     ) void {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) {
             self.scanVariance(t, param_id, position, saw_co, saw_ct, visited);
@@ -28252,8 +28254,119 @@ pub const Checker = struct {
             else
                 try std.fmt.allocPrint(self.gpa, "Type '{s}<super-T>' is not assignable to type '{s}<sub-T>' as implied by variance annotation.", .{ name, name });
             defer self.gpa.free(message);
-            try self.report(tp_node, TsCodes.variance_annotation_type_not_assignable, message);
+            try self.reportOnce(tp_node, TsCodes.variance_annotation_type_not_assignable, message);
         }
+    }
+
+    fn recheckDeferredVarianceAnnotations(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var has_deferred_work = false;
+        for (stmts) |stmt| {
+            const decl = if (self.hir.kindOf(stmt) == .export_decl)
+                hir_mod.exportOf(self.hir, stmt).decl
+            else
+                stmt;
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
+            const ta = hir_mod.typeAliasOf(self.hir, decl);
+            for (self.hir.childSlice(ta.type_params_start, ta.type_params_len)) |tp_node| {
+                if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+                const variance = hir_mod.typeParameterOf(self.hir, tp_node).variance;
+                if (variance == 1 or variance == 2) {
+                    has_deferred_work = true;
+                    break;
+                }
+            }
+            if (has_deferred_work) break;
+        }
+        if (!has_deferred_work) return;
+
+        // Forward aliases are initially lowered against placeholders. Refresh
+        // the small declaration graph to a fixed point before measuring an
+        // annotated alias, so a cycle such as Foo -> Fn -> Bar -> Foo carries
+        // the root parameter back through the opposite polarity.
+        const refresh_passes = @min(stmts.len, @as(usize, 4));
+        for (0..refresh_passes) |_| {
+            for (stmts) |stmt| {
+                const decl = if (self.hir.kindOf(stmt) == .export_decl)
+                    hir_mod.exportOf(self.hir, stmt).decl
+                else
+                    stmt;
+                if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
+                try self.refreshGenericAliasBodyForVariance(decl);
+            }
+        }
+
+        for (stmts) |stmt| {
+            const decl = if (self.hir.kindOf(stmt) == .export_decl)
+                hir_mod.exportOf(self.hir, stmt).decl
+            else
+                stmt;
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
+            try self.recheckDeferredVarianceAlias(decl);
+        }
+    }
+
+    fn refreshGenericAliasBodyForVariance(self: *Checker, node: NodeId) CheckError!void {
+        const ta = hir_mod.typeAliasOf(self.hir, node);
+        if (ta.name == hir_mod.none_node_id or self.hir.kindOf(ta.name) != .identifier) return;
+        const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        if (type_params.len == 0) return;
+        const id = hir_mod.identifierOf(self.hir, ta.name);
+        const info = self.generic_aliases.get(id.name) orelse return;
+        if (info.params.len == 0) return;
+
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        var param_index: usize = 0;
+        for (type_params) |tp_node| {
+            if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+            if (param_index >= info.params.len) return;
+            try self.recordNarrow(hir_mod.typeParameterOf(self.hir, tp_node).name, info.params[param_index]);
+            param_index += 1;
+        }
+        if (param_index != info.params.len) return;
+        const diagnostic_count = self.diagnostics.items.len;
+        const refreshed_body = self.lowererLowerWithTypeParams(ta.aliased) catch {
+            self.diagnostics.shrinkRetainingCapacity(diagnostic_count);
+            return;
+        };
+        self.diagnostics.shrinkRetainingCapacity(diagnostic_count);
+        if (self.generic_aliases.getPtr(id.name)) |current| current.body = refreshed_body;
+    }
+
+    fn recheckDeferredVarianceAlias(self: *Checker, node: NodeId) CheckError!void {
+        const ta = hir_mod.typeAliasOf(self.hir, node);
+        if (ta.name == hir_mod.none_node_id or self.hir.kindOf(ta.name) != .identifier) return;
+        if (!self.typeAliasBodyAllowsVarianceAnnotation(ta.aliased)) return;
+        const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        if (type_params.len == 0) return;
+
+        var has_directional_annotation = false;
+        for (type_params) |tp_node| {
+            if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+            const variance = hir_mod.typeParameterOf(self.hir, tp_node).variance;
+            if (variance == 1 or variance == 2) {
+                has_directional_annotation = true;
+                break;
+            }
+        }
+        if (!has_directional_annotation) return;
+
+        const id = hir_mod.identifierOf(self.hir, ta.name);
+        const info = self.generic_aliases.get(id.name) orelse return;
+        if (info.params.len == 0) return;
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        var param_index: usize = 0;
+        for (type_params) |tp_node| {
+            if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+            if (param_index >= info.params.len) return;
+            const tp = hir_mod.typeParameterOf(self.hir, tp_node);
+            try self.recordNarrow(tp.name, info.params[param_index]);
+            param_index += 1;
+        }
+        if (param_index != info.params.len) return;
+        const refreshed_body = try self.lowererLowerWithTypeParams(ta.aliased);
+        try self.checkVarianceAnnotationCompatibility(id.name, type_params, info.params, refreshed_body);
     }
 
     /// Validate a `arg is T` / `asserts arg is T` type predicate
@@ -53118,8 +53231,17 @@ pub const Checker = struct {
                     // Keep the first declaration's type parameters — the
                     // unified merge above rewrote this declaration's
                     // members onto them, so body and params agree. Only
-                    // the merged body needs refreshing.
+                    // the merged body needs refreshing. Variance, however,
+                    // accumulates across every merged declaration: `out T`
+                    // plus `in T` makes the shared parameter invariant.
                     const existing = self.generic_aliases.get(id.name).?;
+                    for (existing.params, param_ids.items) |first_param, current_param| {
+                        const merged_variance = mergeVariance(
+                            self.typeParameterVariance(first_param),
+                            self.typeParameterVariance(current_param),
+                        );
+                        try self.inferred_variance.put(self.gpa, first_param, merged_variance);
+                    }
                     try self.generic_aliases.put(self.gpa, id.name, .{
                         .params = existing.params,
                         .body = final_t,
@@ -74715,6 +74837,63 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    fn nestedGenericInstantiationVarianceMismatch(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+        depth: u8,
+    ) CheckError!bool {
+        if (depth >= 8) return false;
+        const source_args = self.alias_type_args.get(source_t);
+        const target_args = self.alias_type_args.get(target_t);
+        if (source_args != null and target_args != null and source_args.?.len == target_args.?.len) {
+            const source_name = try self.genericInstanceBaseName(source_t);
+            const target_name = try self.genericInstanceBaseName(target_t);
+            if (source_name != null and target_name != null and source_name.? == target_name.?) {
+                if (self.generic_aliases.get(source_name.?)) |info| {
+                    if (info.params.len == source_args.?.len) {
+                        for (info.params, source_args.?, target_args.?) |param_t, source_arg, target_arg| {
+                            if (self.interner.typeParameterVariance(param_t) != .invariant) continue;
+                            if (!try self.typeArgumentAssignableTo(source_arg, target_arg) or
+                                !try self.typeArgumentAssignableTo(target_arg, source_arg))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (source_flags.is_signature and target_flags.is_signature) {
+            const source_params = self.interner.signatureParams(source_t);
+            const target_params = self.interner.signatureParams(target_t);
+            const shared_len = @min(source_params.len, target_params.len);
+            for (0..shared_len) |i| {
+                if (try self.nestedGenericInstantiationVarianceMismatch(
+                    target_params[i],
+                    source_params[i],
+                    depth + 1,
+                )) return true;
+            }
+            const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+            const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+            return try self.nestedGenericInstantiationVarianceMismatch(source_ret, target_ret, depth + 1);
+        }
+        if (!source_flags.is_object_type or !target_flags.is_object_type) return false;
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            const source_member = self.interner.objectMember(source_t, target_member.name) orelse continue;
+            if (try self.nestedGenericInstantiationVarianceMismatch(
+                source_member,
+                target_member.type,
+                depth + 1,
+            )) return true;
+        }
+        return false;
     }
 
     fn mappedSourceAssignableToMappedTarget(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!?bool {
@@ -125924,7 +126103,8 @@ pub const Checker = struct {
                         raw_display_param_t
                     else
                         try self.genericCallDiagnosticDisplayType(call_node, raw_display_param_t);
-                    const completed_display_param_t = if (union_composite)
+                    const completed_display_param_t = if (union_composite or
+                        hir_mod.callTypeArgs(self.hir, call_node).len > 0)
                         generic_display_param_t
                     else
                         try self.genericCallUnboundDiagnosticType(sig, generic_display_param_t);
@@ -125974,6 +126154,13 @@ pub const Checker = struct {
                         display_param_t,
                     )) |rest_signature_msg|
                         rest_signature_msg
+                    else if (try self.formatExplicitWrappedTypeArgumentMismatch(
+                        call_node,
+                        diagnostic_arg_t,
+                        display_param_t,
+                        i,
+                    )) |explicit_wrapper_msg|
+                        explicit_wrapper_msg
                     else
                         try self.formatArgumentNotAssignable(
                             diagnostic_arg_t,
@@ -128433,6 +128620,28 @@ pub const Checker = struct {
             self.diag_arena.allocator(),
             "Unwrap<{s}>",
             .{check_name},
+        );
+    }
+
+    fn formatExplicitWrappedTypeArgumentMismatch(
+        self: *Checker,
+        call_node: NodeId,
+        arg_t: TypeId,
+        param_t: TypeId,
+        position: usize,
+    ) CheckError!?[]const u8 {
+        if (position != 0) return null;
+        const type_args = hir_mod.callTypeArgs(self.hir, call_node);
+        if (type_args.len != 1) return null;
+        const param_name = (try self.allocSimpleTypeName(param_t)) orelse return null;
+        const lt = std.mem.indexOfScalar(u8, param_name, '<') orelse return null;
+        if (lt == 0) return null;
+        const explicit_name = (try self.allocTypeAnnotationDiagnosticName(type_args[0], false)) orelse return null;
+        const arg_name = (try self.allocSimpleTypeName(arg_t)) orelse return null;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Argument of type '{s}' is not assignable to parameter of type '{s}<{s}>'.",
+            .{ arg_name, param_name[0..lt], explicit_name },
         );
     }
 
@@ -132488,6 +132697,7 @@ pub const Checker = struct {
         if (reduced_arg_t != arg_t) return try self.isArgumentAssignableToParam(arg_node, reduced_arg_t, param_t);
         const reduced_param_t = try self.reduceNeverIntersectionsForAssignability(param_t);
         if (reduced_param_t != param_t) return try self.isArgumentAssignableToParam(arg_node, arg_t, reduced_param_t);
+        if (try self.nestedGenericInstantiationVarianceMismatch(arg_t, param_t, 0)) return false;
         if (try self.iterableIntersectionArgumentRelation(arg_t, param_t)) |ok| return ok;
         if (try self.iterableArgumentRelation(arg_t, param_t)) |ok| return ok;
         if (self.isContextualFunctionExpressionLike(arg_node) and self.firstSignatureType(param_t) != null) {
@@ -134386,6 +134596,7 @@ pub const Checker = struct {
         if (!needs_object_shape) return false;
         if (source_ret == types.Primitive.object_t) return false;
         if (source_ret >= self.interner.pool.typeCount()) return true;
+        if (self.isThisTypeParameter(source_ret)) return false;
         const source_flags = self.interner.pool.flagsOf(source_ret);
         return !source_flags.is_object_type;
     }
@@ -149485,6 +149696,15 @@ fn flipVariance(v: types.Variance) types.Variance {
         .invariant => .invariant,
         .bivariant => .bivariant,
     };
+}
+
+const VarianceVisit = struct {
+    type_id: TypeId,
+    position: types.Variance,
+};
+
+fn mergeVariance(a: types.Variance, b: types.Variance) types.Variance {
+    return @enumFromInt(@intFromEnum(a) | @intFromEnum(b));
 }
 
 /// Recognise expressions that produce control-flow narrowing when
@@ -174371,6 +174591,69 @@ test "checker: conditional interface variance controls generic assignment direct
     try T.expect(saw_covariant_reverse);
     try T.expect(saw_contravariant_reverse);
     try T.expectEqual(@as(usize, 2), saw_invariant);
+}
+
+test "checker: merged interface declarations combine variance annotations" {
+    const s = try newSetup(
+        \\interface Baz<out T> {}
+        \\interface Baz<in T> {}
+        \\declare let wider: Baz<unknown>;
+        \\declare let narrower: Baz<string>;
+        \\wider = narrower;
+        \\narrower = wider;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: nested invariant generic arguments reject callback assignment" {
+    const s = try newSetup(
+        \\declare class StateNode<in out TEvent extends { type: string }> {
+        \\  stored: TEvent;
+        \\}
+        \\interface ActionObject<TEvent extends { type: string }> {
+        \\  exec: (meta: StateNode<TEvent>) => void;
+        \\}
+        \\declare function createMachine<TEvent extends { type: string }>(action: ActionObject<TEvent>): void;
+        \\declare const action: ActionObject<{ type: "PLAY"; value: number }>;
+        \\createMachine<{ type: "PLAY"; value: number } | { type: "RESET" }>(action);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    const message = checkerFirstMessageForCode(s, TsCodes.argument_type_mismatch) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Argument of type 'ActionObject<{ type: \"PLAY\"; value: number; }>' is not assignable to parameter of type 'ActionObject<{ type: \"PLAY\"; value: number; } | { type: \"RESET\"; }>'.",
+        message,
+    );
+}
+
+test "checker: deferred variance validation follows circular alias references" {
+    const s = try newSetup(
+        \\type Foo<out T> = {
+        \\  value: T;
+        \\  callback: FooFn<T>;
+        \\};
+        \\type FooFn<T> = (value: Bar<T[]>) => void;
+        \\type Bar<T> = { value: Foo<T[]> };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variance_annotation_type_not_assignable));
+}
+
+test "checker: polymorphic this satisfies named generic class expression return" {
+    const s = try newSetup(
+        \\let OuterC = class C<out T> {
+        \\  foo(): C<T> {
+        \\    return this;
+        \\  }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2636 reports covariant alias parameter used contravariantly" {
