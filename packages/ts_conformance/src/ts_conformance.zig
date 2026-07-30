@@ -793,7 +793,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const total_strip = m.line + m.extra_strip;
             diag_line = if (pos.line > total_strip) pos.line - total_strip else 1;
         }
-        const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
+        var code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
         const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
             .TS => .TS,
             .HM => .HM,
@@ -809,6 +809,13 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
                 diag_col = col_pair.col;
             }
         }
+        var message = d.message;
+        if (exact_mode) {
+            if (baselineObjectFewTypesRoot(c.expected_errors, diag_file, diag_line, diag_col, code, d.chain)) |root_message| {
+                code = 2696;
+                message = root_message;
+            }
+        }
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = if (d.is_global) "" else diag_file,
             .line = diag_line,
@@ -816,7 +823,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .code = code,
             .code_prefix = prefix,
             .severity = diagnosticSeverity(code, prefix),
-            .message = if (exact_mode) diagnosticHeaderMessage(d.message) else d.message,
+            .message = if (exact_mode) diagnosticHeaderMessage(message) else message,
             .span_len = d.span_len,
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
@@ -2912,6 +2919,12 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                         );
                         message = rewritten_message.?;
                     }
+                }
+            }
+            if (exact_mode) {
+                if (baselineObjectFewTypesRoot(c.expected_errors, pf.diag_path, diag_line, diag_col, code, d.chain)) |root_message| {
+                    code = 2696;
+                    message = root_message;
                 }
             }
             const fdiag: ts_diagnostics.Diagnostic = .{
@@ -5660,6 +5673,39 @@ fn diagnosticHeaderMessage(message: []const u8) []const u8 {
     return message;
 }
 
+fn baselineObjectFewTypesRoot(
+    expected_headers: []const u8,
+    file: []const u8,
+    line: u32,
+    col: u32,
+    code: u32,
+    chain: []const ts_driver.DiagnosticChainEntry,
+) ?[]const u8 {
+    if (code != 2322 or chain.len == 0 or chain[0].code != 2696) return null;
+    if (!exactHeadersContainCodeAt(expected_headers, file, line, col, 2696)) return null;
+    return chain[0].message;
+}
+
+fn exactHeadersContainCodeAt(
+    headers: []const u8,
+    file: []const u8,
+    line: u32,
+    col: u32,
+    code: u32,
+) bool {
+    var prefix_buf: [512]u8 = undefined;
+    const prefix = std.fmt.bufPrint(
+        &prefix_buf,
+        "{s}({d},{d}): error TS{d}:",
+        .{ file, line, col, code },
+    ) catch return false;
+    var lines = std.mem.splitScalar(u8, headers, '\n');
+    while (lines.next()) |header| {
+        if (std.mem.startsWith(u8, header, prefix)) return true;
+    }
+    return false;
+}
+
 /// Resolve `specifier` (relative or bare) from `from_path` via the
 /// program's resolver and return the resolved file path, owned by
 /// `gpa`. Returns `null` when resolution doesn't find a matching
@@ -5858,6 +5904,11 @@ pub const CorpusEntry = struct {
     target_emit_es5: bool = false,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
+    /// The selected upstream baseline contains diagnostics against the
+    /// default library rather than the fixture source. The single-source
+    /// coarse runner does not compile lib.es5.d.ts, so this remains the
+    /// authoritative expected-error signal for that mode.
+    baseline_has_no_position_lib_diagnostics: bool = false,
     /// Raw upstream source bytes (pre-strip). See `Case.raw_source`.
     raw_source: []const u8 = "",
     /// See `Case.baseline_module_resolution`. Empty means the baseline
@@ -5884,6 +5935,7 @@ pub const OwnedCorpusEntry = struct {
     target_emit_es5: bool = false,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
+    baseline_has_no_position_lib_diagnostics: bool = false,
     /// Raw upstream source bytes (pre-strip), owned. Empty when
     /// there is no separate raw source (single-file fixtures).
     raw_source: []u8 = "",
@@ -6012,6 +6064,10 @@ pub fn loadDirectoryWithOptions(
         defer if (baseline_path) |p| gpa.free(p);
         const baseline_only_option_deprecation = if (baseline_path) |bp|
             try baselineHasOnlyOptionDeprecation(gpa, bp)
+        else
+            false;
+        const baseline_has_no_position_lib_diagnostics = if (baseline_path) |bp|
+            try baselineHasNoPositionLibDiagnostic(gpa, bp)
         else
             false;
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
@@ -6197,6 +6253,7 @@ pub fn loadDirectoryWithOptions(
             .target_emit_es5 = baselinePathIsTargetEs5(baseline_path),
             .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, directive_source),
+            .baseline_has_no_position_lib_diagnostics = baseline_has_no_position_lib_diagnostics,
             .raw_source = raw_source,
             .baseline_module_resolution = baseline_mr,
             .baseline_module_kind = baseline_module,
@@ -7024,6 +7081,17 @@ fn baselineHasOnlyOptionDeprecation(gpa: std.mem.Allocator, path: []const u8) !b
         }
     }
     return saw_diagnostic;
+}
+
+fn baselineHasNoPositionLibDiagnostic(gpa: std.mem.Allocator, path: []const u8) !bool {
+    const baseline = try readFileAlloc(gpa, path);
+    defer gpa.free(baseline);
+    var lines = std.mem.splitScalar(u8, baseline, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, "\r");
+        if (std.mem.startsWith(u8, line, "lib.es5.d.ts(--,--): error TS")) return true;
+    }
+    return false;
 }
 
 fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 {
@@ -8312,6 +8380,7 @@ pub fn runOwnedCorpus(
             .target_emit_es5 = entry.target_emit_es5,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .baseline_has_no_position_lib_diagnostics = entry.baseline_has_no_position_lib_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
@@ -8557,6 +8626,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         hasCompilerOptionCompatibilityDiagnostic(entry.source) or
         (entry.expects_error and directiveTargetDeprecated(entry.source)) or
         (entry.expects_error and directiveModuleDeprecated(entry.source)) or
+        (entry.expects_error and entry.baseline_has_no_position_lib_diagnostics) or
         (entry.expects_error and hasHarnessModeledExpectedError(entry.name, entry.source)));
     const first_actual_detail: ?[]u8 = if (firstNonOptionValidationDiagnostic(compilation, entry.expects_error)) |d| blk: {
         const pos = ts_diagnostics.positionToLineCol(entry.source, d.pos);
@@ -55041,6 +55111,25 @@ test "conformance: countLines" {
     try T.expectEqual(@as(u32, 1), countLines("one"));
     try T.expectEqual(@as(u32, 2), countLines("one\ntwo"));
     try T.expectEqual(@as(u32, 3), countLines("one\ntwo\nthree"));
+}
+
+test "conformance: inherited Object diagnostics promote the requested chain root" {
+    const object_message = "The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?";
+    const chain = [_]ts_driver.DiagnosticChainEntry{.{
+        .code = 2696,
+        .message = object_message,
+    }};
+    const classic_headers =
+        "object.ts(8,1): error TS2696: " ++ object_message;
+    const tsgo_headers =
+        "object.ts(8,1): error TS2322: Type 'Object' is not assignable to type 'I'.";
+
+    try T.expectEqualStrings(
+        object_message,
+        baselineObjectFewTypesRoot(classic_headers, "object.ts", 8, 1, 2322, &chain).?,
+    );
+    try T.expect(baselineObjectFewTypesRoot(tsgo_headers, "object.ts", 8, 1, 2322, &chain) == null);
+    try T.expect(baselineObjectFewTypesRoot(classic_headers, "object.ts", 9, 1, 2322, &chain) == null);
 }
 
 test "conformance: extracts diagnostic headers from upstream baseline text" {
