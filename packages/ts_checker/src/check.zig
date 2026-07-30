@@ -4085,6 +4085,11 @@ pub const Checker = struct {
     /// returns a value that is not assignable to the target signature's
     /// return type.
     signature_decl_nodes: std.AutoHashMapUnmanaged(TypeId, NodeId),
+    /// Type-parameter TypeId -> its source declaration node. Some constraints,
+    /// notably `K extends keyof T`, intentionally stay symbolic in TypeScript
+    /// even when their interned base constraint is the broad property-key
+    /// domain. Retaining the syntax lets inference preserve literal candidates.
+    type_parameter_decl_nodes: std.AutoHashMapUnmanaged(TypeId, NodeId),
     /// Signature TypeId -> source-level value parameter nodes in
     /// declaration order. Unlike `signature_param_names`, this keeps
     /// binding-pattern and rest parameters so too-few-argument
@@ -4550,6 +4555,7 @@ pub const Checker = struct {
             .signature_nullish_array_defaults = .empty,
             .signature_param_names = .empty,
             .signature_decl_nodes = .empty,
+            .type_parameter_decl_nodes = .empty,
             .signature_param_nodes = .empty,
             .signature_param_name_occurrences = .empty,
             .enum_member_values = .empty,
@@ -4928,6 +4934,7 @@ pub const Checker = struct {
         while (spn_it.next()) |names| self.gpa.free(names.*);
         self.signature_param_names.deinit(self.gpa);
         self.signature_decl_nodes.deinit(self.gpa);
+        self.type_parameter_decl_nodes.deinit(self.gpa);
         var spnode_it = self.signature_param_nodes.valueIterator();
         while (spnode_it.next()) |nodes| self.gpa.free(nodes.*);
         self.signature_param_nodes.deinit(self.gpa);
@@ -6916,7 +6923,7 @@ pub const Checker = struct {
                         try self.report(fr.source, TsCodes.for_in_right_type, "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter.");
                     }
                 }
-                const loop_target_t = self.forInLoopTargetBindingType(fr.target, types.Primitive.string_t);
+                const loop_target_t = try self.forInLoopTargetBindingType(fr.target, src_t, types.Primitive.string_t);
                 try self.bindForLoopTarget(fr.target, loop_target_t);
                 try self.pushNarrowScope();
                 defer self.popNarrowScope();
@@ -29646,6 +29653,11 @@ pub const Checker = struct {
             const tp_t = self.hir.typeOf(tp);
             if (tp_t == types.Primitive.none) continue;
             try params.append(self.gpa, tp_t);
+            try self.type_parameter_decl_nodes.put(self.gpa, tp_t, tp);
+            const resolved_tp_t = self.resolvedTypeParameterPlaceholder(tp_t);
+            if (resolved_tp_t != tp_t) {
+                try self.type_parameter_decl_nodes.put(self.gpa, resolved_tp_t, tp);
+            }
         }
         if (params.items.len == 0) return false;
         try self.recordGenericSignatureParams(sig, params.items);
@@ -52857,6 +52869,7 @@ pub const Checker = struct {
                 tpp.is_const,
             ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
+            try self.type_parameter_decl_nodes.put(self.gpa, tp_id, tp);
             try self.recordNarrow(tpp.name, tp_id);
             try param_ids.append(self.gpa, tp_id);
         }
@@ -58144,6 +58157,8 @@ pub const Checker = struct {
             {
                 try self.report(ta.aliased, TsCodes.cannot_find_name, "Cannot find name 'intrinsic'.");
             }
+        } else {
+            try self.reportUnresolvedBodylessSignatureTypeRefs(ta.aliased, ta_type_params);
         }
         const type_params = ta_type_params;
         // TS2637 — variance annotations (`in`/`out`) on a type alias's type
@@ -68815,6 +68830,15 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id) return;
         if (constraint_t >= self.interner.pool.typeCount()) return;
         if (self.typeIsAnyLike(constraint_t) or self.typeIsPropertyKeyDomain(constraint_t, 0)) return;
+        if (self.declaredTypeParameterConstraintAt(node)) |declared| {
+            if (declared.constraint != hir_mod.none_node_id and
+                (self.hir.kindOf(declared.constraint) == .keyof_type or
+                    self.typeNodeKeyofBaseName(declared.constraint, 0) != null))
+            {
+                return;
+            }
+        }
+        if (self.typeNodeIsHomomorphicMappedKeyProjection(node)) return;
         if (!self.interner.pool.flagsOf(constraint_t).is_type_parameter) {
             const flags = self.interner.pool.flagsOf(constraint_t);
             if (flags.is_object_type and !flags.is_union and !flags.is_intersection and
@@ -72382,6 +72406,7 @@ pub const Checker = struct {
                 if (self.readonlyArrayLikeAssignmentShouldFail(v.init, init_type, declared_type)) break :blk false;
                 if (try self.varDeclSignaturePredicateAssignmentMismatches(v.init, v.type_annotation, init_type, declared_type)) break :blk false;
                 if (try self.arrayElementAssignmentResult(init_type, declared_type)) |array_ok| break :blk array_ok;
+                if (try self.elementAccessConstraintAssignableToTarget(v.init, init_type, declared_type)) break :blk true;
                 // Flow-narrowed unions and indexed accesses can carry a
                 // synthetic type-parameter flag while their originating
                 // relation still lives on the union members or index
@@ -74138,6 +74163,16 @@ pub const Checker = struct {
         if (reduced_source_t != source_t) return try self.checkerAssignableTo(reduced_source_t, target_t);
         const reduced_target_t = try self.reduceNeverIntersectionsForAssignability(target_t);
         if (reduced_target_t != target_t) return try self.checkerAssignableTo(source_t, reduced_target_t);
+        if (self.typeIsUniversalEmptyObjectNullishUnion(target_t)) return true;
+        if (self.indexedAccessPayloadOrNull(source_t) != null) {
+            if (try self.indexedAccessBaseConstraint(source_t, 0)) |constraint| {
+                if (constraint != source_t and try self.checkerAssignableTo(constraint, target_t)) return true;
+            }
+        }
+        if (self.typeIsEmptyObjectType(target_t) and self.indexedAccessPayloadOrNull(source_t) != null) {
+            const constraint = (try self.indexedAccessBaseConstraint(source_t, 0)) orelse return false;
+            return try self.checkerAssignableTo(constraint, target_t);
+        }
         if (self.genericIndexedAccessRelation(source_t, target_t)) |ok| return ok;
         if (try self.mappedSourceAssignableToMappedTarget(source_t, target_t)) |ok| return ok;
         if (try self.standardMappedUtilityInstantiationRelation(source_t, target_t)) |ok| return ok;
@@ -74213,6 +74248,25 @@ pub const Checker = struct {
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn typeIsUniversalEmptyObjectNullishUnion(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        var has_empty_object = false;
+        var has_null = false;
+        var has_undefined = false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (self.typeIsEmptyObjectType(member)) {
+                has_empty_object = true;
+            } else if (member == types.Primitive.null_t) {
+                has_null = true;
+            } else if (member == types.Primitive.undefined_t) {
+                has_undefined = true;
+            } else {
+                return false;
+            }
+        }
+        return has_empty_object and has_null and has_undefined;
     }
 
     fn objectSourceAssignableToUpperObjectTarget(
@@ -74848,14 +74902,91 @@ pub const Checker = struct {
         const source = self.indexedAccessPayloadOrNull(source_t) orelse return null;
         const target = self.indexedAccessPayloadOrNull(target_t) orelse return null;
         if (!self.isBareTypeParameter(source.object) or
-            !self.isBareTypeParameter(target.object) or
-            !self.isBareTypeParameter(source.index) or
-            !self.isBareTypeParameter(target.index))
+            !self.isBareTypeParameter(target.object))
         {
             return null;
         }
-        return self.typeParameterConstraintChainContains(source.object, target.object) and
-            self.typeParameterConstraintChainContains(source.index, target.index);
+        const keys_relate = self.symbolicIndexTypeAssignable(source.index, target.index);
+        if (keys_relate == null) return null;
+        return self.typeParameterConstraintChainContains(source.object, target.object) and keys_relate.?;
+    }
+
+    fn symbolicIndexTypeAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) ?bool {
+        if (source_t == target_t) return true;
+        if (self.isBareTypeParameter(source_t) and self.isBareTypeParameter(target_t)) {
+            return self.typeParameterConstraintChainContains(source_t, target_t);
+        }
+        if (!self.isBareTypeParameter(source_t)) return null;
+        if (self.typeParameterConstraintSyntaxMatchesAlias(source_t, target_t)) return true;
+        const source_operand = self.keyofOperandWithinKeyDomain(source_t, 0) orelse return null;
+        const target_operand = self.keyofOperandWithinKeyDomain(target_t, 0) orelse return null;
+        if (source_operand != target_operand) return false;
+        return self.keyDomainExcludesSymbol(source_t, 0) and self.keyDomainExcludesSymbol(target_t, 0);
+    }
+
+    fn typeParameterConstraintSyntaxMatchesAlias(
+        self: *Checker,
+        type_param_t: TypeId,
+        target_t: TypeId,
+    ) bool {
+        const target_display = self.alias_display_names.get(target_t) orelse return false;
+        if (self.typeParameterConstraint(type_param_t)) |constraint_t| {
+            if (self.alias_display_names.get(constraint_t)) |constraint_display| {
+                if (typeTextsEqualIgnoringWhitespace(constraint_display, target_display)) return true;
+            }
+        }
+        const decl_node = self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(type_param_t)) orelse return false;
+        if (decl_node == hir_mod.none_node_id or self.hir.kindOf(decl_node) != .type_parameter) return false;
+        const constraint_node = hir_mod.typeParameterOf(self.hir, decl_node).constraint;
+        if (constraint_node == hir_mod.none_node_id) return false;
+        return typeTextsEqualIgnoringWhitespace(self.nodeSourceTextOrEmpty(constraint_node), target_display);
+    }
+
+    fn typeTextsEqualIgnoringWhitespace(a: []const u8, b: []const u8) bool {
+        var ai: usize = 0;
+        var bi: usize = 0;
+        while (true) {
+            while (ai < a.len and std.ascii.isWhitespace(a[ai])) ai += 1;
+            while (bi < b.len and std.ascii.isWhitespace(b[bi])) bi += 1;
+            if (ai == a.len or bi == b.len) return ai == a.len and bi == b.len;
+            if (a[ai] != b[bi]) return false;
+            ai += 1;
+            bi += 1;
+        }
+    }
+
+    fn keyofOperandWithinKeyDomain(self: *Checker, t: TypeId, depth: u8) ?TypeId {
+        if (depth >= 24 or t >= self.interner.pool.typeCount()) return null;
+        if (self.directKeyofOperand(t)) |operand| return operand;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return null;
+            if (constraint == t) return null;
+            return self.keyofOperandWithinKeyDomain(constraint, depth + 1);
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.keyofOperandWithinKeyDomain(member, depth + 1)) |operand| return operand;
+            }
+        }
+        return null;
+    }
+
+    fn keyDomainExcludesSymbol(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth >= 24 or t >= self.interner.pool.typeCount()) return false;
+        if (self.indexTypeExcludesSymbol(t)) return true;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.keyDomainExcludesSymbol(constraint, depth + 1);
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (member == types.Primitive.string_t or member == types.Primitive.number_t) return true;
+            }
+        }
+        return false;
     }
 
     fn isBareTypeParameter(self: *Checker, t: TypeId) bool {
@@ -74912,7 +75043,7 @@ pub const Checker = struct {
             return if (reduced == base_t) null else reduced;
         }
         if (flags.is_indexed_access) {
-            const ia = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(base_t)];
+            const ia = self.indexedAccessPayloadOrNull(base_t) orelse return null;
             const resolved = (try self.resolveObjectIndexedAccessType(ia.object, ia.index)) orelse return null;
             const reduced = try self.subtractNullUndefined(resolved);
             return if (reduced == base_t) null else reduced;
@@ -77975,6 +78106,12 @@ pub const Checker = struct {
 
     fn checkBuiltinPropertyKeyConstraint(self: *Checker, arg_node: NodeId, arg_t: TypeId) CheckError!void {
         if (self.typeIsAnyLike(arg_t) or self.typeIsPropertyKeyDomain(arg_t, 0)) return;
+        if (try self.indexedAccessSyntaxBaseConstraint(arg_node, 0)) |constraint| {
+            if (self.typeIsPropertyKeyDomain(constraint, 0)) return;
+        }
+        if (try self.indexedAccessBaseConstraint(arg_t, 0)) |constraint| {
+            if (self.typeIsPropertyKeyDomain(constraint, 0)) return;
+        }
         const source_name = try self.typeSyntaxOrDiagnosticName(arg_node, arg_t);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -82207,6 +82344,43 @@ pub const Checker = struct {
         return null;
     }
 
+    fn typeParameterSyntaxConstraintMember(
+        self: *Checker,
+        type_param_t: TypeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (!self.isBareTypeParameter(type_param_t)) return null;
+        const decl_node = self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(type_param_t)) orelse return null;
+        if (decl_node == hir_mod.none_node_id or self.hir.kindOf(decl_node) != .type_parameter) return null;
+        return try self.typeNodeConstraintMember(hir_mod.typeParameterOf(self.hir, decl_node).constraint, name);
+    }
+
+    fn typeNodeConstraintMember(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .intersection_type => {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                    if (try self.typeNodeConstraintMember(member, name)) |member_t| return member_t;
+                }
+                return null;
+            },
+            .object_type => {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    if (self.hir.kindOf(member) != .interface_member) continue;
+                    const info = hir_mod.interfaceMemberOf(self.hir, member);
+                    if (info.name != name) continue;
+                    return try self.lowererLowerWithTypeParams(info.type_node);
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
     fn namedPropertyIndexType(self: *Checker, object_t: TypeId, name: hir_mod.StringId) ?TypeId {
         if (object_t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(object_t).is_object_type) return null;
@@ -86313,12 +86487,15 @@ pub const Checker = struct {
                     !assignment_target_diag_fired and
                     !remapped_mapped_assignment_diag_fired and
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
+                const dedicated_generic_indexed_assignment =
+                    self.genericIndexedAssignmentUsesDedicatedRelation(a.target, a.value);
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and !target_is_js_function_prototype_object_assignment and a.op == null and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
                     !remapped_mapped_assignment_diag_fired and
                     !mapped_index_assignment_diag_fired and
+                    !dedicated_generic_indexed_assignment and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
@@ -86369,6 +86546,8 @@ pub const Checker = struct {
                             compound_ok
                         else if (complexity_diag_fired)
                             true
+                        else if (self.genericKeyofTargetRejectsLiteralAssignment(a.target, a.value))
+                            false
                         else if (nullish_function_assignment_diag_fired)
                             true
                         else if (function_expr_assignment_ok) |fn_ok|
@@ -87369,8 +87548,14 @@ pub const Checker = struct {
                                     var used_explicit_type_args = false;
                                     break :blk_eff try self.instantiateSignatureWithExplicitTypeArgs(node, sig, overload_type_arg_nodes, &used_explicit_type_args);
                                 } else try self.instantiateSignatureFromArgs(sig, args, arg_types.items);
+                                const prefers_rest_for_array_spread =
+                                    self.callHasNonTupleSpread(args, arg_types.items) and
+                                    self.rest_signatures.contains(effective_sig) and
+                                    (selected_applicable == types.Primitive.none or
+                                        !self.rest_signatures.contains(selected_applicable));
                                 if (try self.signatureAccepts(node, effective_sig, args, arg_types.items) and
                                     (selected_applicable == types.Primitive.none or
+                                        prefers_rest_for_array_spread or
                                         self.signatureHasMoreExactAnyMatches(effective_sig, selected_applicable, args, arg_types.items)))
                                 {
                                     selected_applicable = effective_sig;
@@ -88279,6 +88464,9 @@ pub const Checker = struct {
                         substituted_t;
                     break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
                 }
+                if (try self.typeParameterSyntaxConstraintMember(obj_t, m.name)) |t| {
+                    break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                }
                 if (try self.typeParameterObjectPrototypeMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
@@ -88709,6 +88897,19 @@ pub const Checker = struct {
                 if (try self.reportGenericKeyCannotIndexElement(node, e.object, e.index, obj_t, idx_t)) {
                     break :blk types.Primitive.any;
                 }
+                if (self.indexTypeExcludesSymbol(idx_t)) {
+                    if (try self.effectiveStringIndexType(obj_t)) |string_index_t| {
+                        break :blk try self.optionalChainResult(
+                            self.maybeWidenWithUndefined(string_index_t),
+                            element_is_optional_chain,
+                        );
+                    }
+                }
+                if (!self.checking_element_write_target) {
+                    if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
+                        break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
+                    }
+                }
                 if (try self.unionTupleLiteralIndexAccess(index_receiver_t, union_tuple_idx_t)) |access| {
                     if (!access.found_any) {
                         try self.reportIndexedPropertyDoesNotExistOnType(e.index, access.key, index_receiver_t);
@@ -88725,7 +88926,7 @@ pub const Checker = struct {
                 }
                 if (self.checking_element_write_target) {
                     if (!self.nodeIsThisReference(e.object)) {
-                        if (try self.symbolicGenericIndexedWriteTarget(obj_t, idx_t)) |symbolic_t| {
+                        if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
                             break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
                         }
                         if (try self.maybeReportGenericIndexedWrite(node, obj_t, idx_t)) {
@@ -112721,6 +112922,7 @@ pub const Checker = struct {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
+        if (t == types.Primitive.never) return true;
         if (f.is_union) {
             for (self.interner.unionMembers(t)) |member| {
                 if (!try self.computedPropertyKeyTypeIsValid(member)) return false;
@@ -112736,12 +112938,60 @@ pub const Checker = struct {
         if (f.is_void) return true;
         if (f.is_string or f.is_number or f.is_symbol) return true;
         if (f.is_keyof) return true;
+        if (f.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            return try self.computedPropertyKeyTypeIsValid(conditional.true_branch) and
+                try self.computedPropertyKeyTypeIsValid(conditional.false_branch);
+        }
+        if (f.is_indexed_access and !f.is_union and !f.is_intersection) {
+            if (try self.indexedAccessBaseConstraint(t, 0)) |constraint| {
+                if (constraint != t) return try self.computedPropertyKeyTypeIsValid(constraint);
+            }
+        }
         if (f.is_type_parameter) {
             const constraint = self.typeParameterConstraint(t) orelse return false;
             if (constraint == t) return false;
             return try self.computedPropertyKeyTypeIsValid(constraint);
         }
         return false;
+    }
+
+    fn indexTypeExcludesSymbol(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const resolved = self.resolvedTypeParameterPlaceholder(t);
+            if (self.type_parameter_decl_nodes.get(resolved)) |decl_node| {
+                if (decl_node != hir_mod.none_node_id and self.hir.kindOf(decl_node) == .type_parameter) {
+                    const decl = hir_mod.typeParameterOf(self.hir, decl_node);
+                    if (self.typeNodeIsExcludeSymbol(decl.constraint)) return true;
+                }
+            }
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.indexTypeExcludesSymbol(constraint);
+        }
+        if (self.alias_display_names.get(t)) |display| {
+            const compact = std.mem.trim(u8, display, " \t\r\n");
+            if (std.mem.startsWith(u8, compact, "Exclude<") and
+                std.mem.endsWith(u8, compact, ", symbol>"))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn typeNodeIsExcludeSymbol(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .type_ref) return false;
+        const ref = hir_mod.typeRefOf(self.hir, node);
+        if (ref.qualifier_len != 0 or
+            !std.mem.eql(u8, self.string_interner.get(ref.name), "Exclude"))
+        {
+            return false;
+        }
+        const args = hir_mod.typeRefArgs(self.hir, node);
+        return args.len == 2 and self.typeNodeIsBareName(args[1], "symbol");
     }
 
     fn resolvedTypeParameterPlaceholder(self: *Checker, t: TypeId) TypeId {
@@ -112890,7 +113140,7 @@ pub const Checker = struct {
         return true;
     }
 
-    fn symbolicGenericIndexedWriteTarget(self: *Checker, obj_t: TypeId, idx_t: TypeId) CheckError!?TypeId {
+    fn symbolicGenericIndexedAccessType(self: *Checker, obj_t: TypeId, idx_t: TypeId) CheckError!?TypeId {
         if (obj_t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(obj_t).is_type_parameter) return null;
         if (!self.indexTypeIsTiedToObjectTypeParameter(idx_t, obj_t, 0)) return null;
@@ -118430,10 +118680,11 @@ pub const Checker = struct {
             return;
         }
 
+        const apparent_target_t = (try self.indexedAccessBaseConstraint(target_t, 0)) orelse target_t;
         const result_t: TypeId = blk: {
             if (self.typeIsAnyLike(target_t) or self.typeIsAnyLike(value_t)) break :blk types.Primitive.any;
-            if (self.typeMaybeStringLike(target_t) or self.typeMaybeStringLike(value_t)) break :blk types.Primitive.string_t;
-            if (self.isArithmeticOperandAllowed(target_t) and self.isArithmeticOperandAllowed(value_t)) break :blk types.Primitive.number_t;
+            if (self.typeMaybeStringLike(apparent_target_t) or self.typeMaybeStringLike(value_t)) break :blk types.Primitive.string_t;
+            if (self.isArithmeticOperandAllowed(apparent_target_t) and self.isArithmeticOperandAllowed(value_t)) break :blk types.Primitive.number_t;
             // Prefer tsc's type-rich form
             // `Operator '+=' cannot be applied to types 'A' and 'B'.`
             // when both endpoints have a simple display name; fall
@@ -119609,7 +119860,9 @@ pub const Checker = struct {
 
     fn reportInOperandRight(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
         const arena = self.diag_arena.allocator();
-        const type_text = (try self.simpleDiagnosticTypeName(t)) orelse "";
+        const type_text = (try self.allocAssignmentDiagnosticTypeName(t)) orelse
+            (try self.simpleDiagnosticTypeName(t)) orelse
+            "";
         const msg = if (type_text.len > 0)
             try std.fmt.allocPrint(arena, "Type '{s}' is not assignable to type 'object'.", .{type_text})
         else
@@ -122873,6 +123126,18 @@ pub const Checker = struct {
         param_t: TypeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!bool {
+        const resolved_param = self.resolvedTypeParameterPlaceholder(param_t);
+        if (self.type_parameter_decl_nodes.get(resolved_param)) |decl_node| {
+            if (decl_node != hir_mod.none_node_id and self.hir.kindOf(decl_node) == .type_parameter) {
+                const decl = hir_mod.typeParameterOf(self.hir, decl_node);
+                if (decl.constraint != hir_mod.none_node_id and
+                    (self.hir.kindOf(decl.constraint) == .keyof_type or
+                        self.typeNodeKeyofBaseName(decl.constraint, 0) != null))
+                {
+                    return true;
+                }
+            }
+        }
         const raw_constraint = self.typeParameterConstraint(param_t) orelse return false;
         const substituted_constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
         var constraint = (try self.reduceDisplayedAliasInstance(substituted_constraint)) orelse substituted_constraint;
@@ -123173,7 +123438,7 @@ pub const Checker = struct {
     fn indexedAccessPayloadOrNull(self: *Checker, t: TypeId) ?types.IndexedAccessPayload {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
-        if (!flags.is_indexed_access) return null;
+        if (!flags.is_indexed_access or flags.is_union or flags.is_intersection) return null;
         const payload_idx = self.interner.pool.payloadOf(t);
         if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return null;
         return self.interner.pool.indexed_access_payloads.items[payload_idx];
@@ -126693,7 +126958,9 @@ pub const Checker = struct {
                             self.identifierFunctionInitializerDiagnosticType(args[i], arg_t)
                         else
                             arg_t;
-                    if (self.propertyKeyLiteralUnionPart(display_param_t) != null) {
+                    if (self.propertyKeyLiteralUnionPart(display_param_t) != null or
+                        self.typeIsKeyofLikeLiteralConstraint(display_param_t))
+                    {
                         diagnostic_arg_t = self.literalizeForAsConst(args[i], diagnostic_arg_t) catch diagnostic_arg_t;
                     }
                     if (display_param_t < self.interner.pool.typeCount() and
@@ -126711,7 +126978,16 @@ pub const Checker = struct {
                         try self.formatPredicateArgumentNotAssignable(args[i], diagnostic_arg_t, display_param_t, target_pred)
                     else
                         null;
-                    const msg = if (predicate_msg) |m|
+                    const generic_keyof_msg = try self.formatGenericKeyofArgumentNotAssignable(
+                        call_node,
+                        sig,
+                        args,
+                        arg_types,
+                        i,
+                    );
+                    const msg = if (generic_keyof_msg) |m|
+                        m
+                    else if (predicate_msg) |m|
                         m
                     else if (generator_msg) |m|
                         m
@@ -127814,7 +128090,14 @@ pub const Checker = struct {
                 arg_t = try self.iterableElementType(arg_t);
             }
             if (self.strictNullishInferenceExcludedByConstraint(arg_t, constraint)) {
-                const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
+                const msg = (try self.formatGenericKeyofConstraintArgumentNotAssignable(
+                    raw_constraint,
+                    args,
+                    arg_types,
+                    args[i],
+                    arg_t,
+                    subs,
+                )) orelse (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                     try self.formatArgumentNotAssignable(arg_t, constraint, i);
                 try self.diagnostics.append(self.gpa, .{
                     .node = args[i],
@@ -127860,7 +128143,14 @@ pub const Checker = struct {
             {
                 continue;
             }
-            const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
+            const msg = (try self.formatGenericKeyofConstraintArgumentNotAssignable(
+                raw_constraint,
+                args,
+                arg_types,
+                args[i],
+                arg_t,
+                subs,
+            )) orelse (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                 try self.formatArgumentNotAssignable(arg_t, constraint, i);
             try self.diagnostics.append(self.gpa, .{
                 .node = args[i],
@@ -127897,6 +128187,76 @@ pub const Checker = struct {
             self.diag_arena.allocator(),
             "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
             .{ arg_text, constraint_text },
+        );
+    }
+
+    fn formatGenericKeyofConstraintArgumentNotAssignable(
+        self: *Checker,
+        raw_constraint: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        arg_node: NodeId,
+        arg_t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?[]const u8 {
+        const operand_t = self.directKeyofOperand(raw_constraint) orelse return null;
+        var object_t = subs.get(operand_t) orelse types.Primitive.none;
+        if (object_t == types.Primitive.none) {
+            const operand_name = self.typeParameterName(operand_t) orelse return null;
+            var it = subs.iterator();
+            while (it.next()) |entry| {
+                if ((self.typeParameterName(entry.key_ptr.*) orelse continue) != operand_name) continue;
+                object_t = entry.value_ptr.*;
+                break;
+            }
+        }
+        if (object_t == types.Primitive.none or self.containsFreeTypeParameter(object_t)) return null;
+        var object_annotation_name: ?[]const u8 = null;
+        for (args, arg_types) |candidate_node, candidate_t| {
+            if (candidate_t != object_t) continue;
+            const annotation = self.visibleAnnotatedIdentifierTypeText(candidate_node) orelse continue;
+            object_annotation_name = try self.normalizedTypeAnnotationText(annotation);
+            break;
+        }
+        const object_name = object_annotation_name orelse
+            self.knownTypeDisplayName(object_t) orelse
+            (try self.allocAssignmentDiagnosticTypeName(object_t)) orelse
+            (try self.allocSimpleTypeName(object_t)) orelse
+            return null;
+        const literal_arg_t = self.literalizeForAsConst(arg_node, arg_t) catch arg_t;
+        const arg_name = (try self.expressionLiteralUnionDiagnosticNameInSourceOrder(arg_node)) orelse
+            (try self.literalDiagnosticName(literal_arg_t)) orelse
+            (try self.literalUnionDiagnosticName(literal_arg_t)) orelse
+            (try self.allocAssignmentDiagnosticTypeName(literal_arg_t)) orelse
+            return null;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Argument of type '{s}' is not assignable to parameter of type 'keyof {s}'.",
+            .{ arg_name, object_name },
+        );
+    }
+
+    fn expressionLiteralUnionDiagnosticNameInSourceOrder(
+        self: *Checker,
+        node: NodeId,
+    ) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .conditional) return null;
+        const conditional = hir_mod.conditionalOf(self.hir, node);
+        const then_t = self.literalizeForAsConst(
+            conditional.then_branch,
+            self.hir.typeOf(conditional.then_branch),
+        ) catch return null;
+        const else_t = self.literalizeForAsConst(
+            conditional.else_branch,
+            self.hir.typeOf(conditional.else_branch),
+        ) catch return null;
+        const then_name = (try self.literalDiagnosticName(then_t)) orelse return null;
+        const else_name = (try self.literalDiagnosticName(else_t)) orelse return null;
+        if (std.mem.eql(u8, then_name, else_name)) return then_name;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s} | {s}",
+            .{ then_name, else_name },
         );
     }
 
@@ -128808,6 +129168,70 @@ pub const Checker = struct {
             self.diag_arena.allocator(),
             "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
             .{ source_name, target_name },
+        );
+    }
+
+    fn formatGenericKeyofArgumentNotAssignable(
+        self: *Checker,
+        call_node: NodeId,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        arg_index: usize,
+    ) CheckError!?[]const u8 {
+        const direct_decl = direct: {
+            if (call_node == hir_mod.none_node_id or self.hir.kindOf(call_node) != .call_expr) break :direct hir_mod.none_node_id;
+            const call = hir_mod.callOf(self.hir, call_node);
+            if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .identifier) break :direct hir_mod.none_node_id;
+            const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+            break :direct self.findFunctionDeclForNameNearNode(call.callee, callee_name) orelse hir_mod.none_node_id;
+        };
+        const param_nodes = if (direct_decl != hir_mod.none_node_id)
+            hir_mod.fnParams(self.hir, direct_decl)
+        else
+            self.signature_param_nodes.get(sig) orelse blk: {
+                const decl = self.signatureDeclNode(sig);
+                if (decl == hir_mod.none_node_id) return null;
+                break :blk switch (self.hir.kindOf(decl)) {
+                    .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnParams(self.hir, decl),
+                    .fn_type, .constructor_type => type_params: {
+                        const fn_type = hir_mod.fnTypeOf(self.hir, decl);
+                        break :type_params self.hir.childSlice(fn_type.params_start, fn_type.params_len);
+                    },
+                    else => return null,
+                };
+            };
+        if (arg_index >= param_nodes.len or arg_index >= args.len or arg_index >= arg_types.len) return null;
+        const parameter = hir_mod.parameterOf(self.hir, param_nodes[arg_index]);
+        const declared = self.declaredTypeParameterConstraintAt(parameter.type_annotation) orelse return null;
+        if (declared.constraint == hir_mod.none_node_id or
+            self.hir.kindOf(declared.constraint) != .keyof_type)
+        {
+            return null;
+        }
+        const operand = hir_mod.keyofTypeOf(self.hir, declared.constraint).operand;
+        const operand_name = self.bareTypeNodeName(operand) orelse return null;
+        var object_t: TypeId = types.Primitive.none;
+        for (param_nodes, 0..) |param_node, param_index| {
+            if (param_index >= arg_types.len) break;
+            const candidate = hir_mod.parameterOf(self.hir, param_node);
+            if ((self.bareTypeNodeName(candidate.type_annotation) orelse continue) != operand_name) continue;
+            object_t = arg_types[param_index];
+            break;
+        }
+        if (object_t == types.Primitive.none) return null;
+        const object_name = (try self.allocAssignmentDiagnosticTypeName(object_t)) orelse
+            (try self.allocSimpleTypeName(object_t)) orelse
+            return null;
+        const literal_arg_t = self.literalizeForAsConst(args[arg_index], arg_types[arg_index]) catch arg_types[arg_index];
+        const arg_name = (try self.literalDiagnosticName(literal_arg_t)) orelse
+            (try self.literalUnionDiagnosticName(literal_arg_t)) orelse
+            (try self.allocAssignmentDiagnosticTypeName(literal_arg_t)) orelse
+            return null;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Argument of type '{s}' is not assignable to parameter of type 'keyof {s}'.",
+            .{ arg_name, object_name },
         );
     }
 
@@ -130762,6 +131186,17 @@ pub const Checker = struct {
         for (type_params, 0..) |tp_node, tp_i| {
             if (self.hir.kindOf(tp_node) != .type_parameter) continue;
             const tp = hir_mod.typeParameterOf(self.hir, tp_node);
+            const tp_t = self.hir.typeOf(tp_node);
+            if (tp_t != types.Primitive.none and
+                tp_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(tp_t).is_type_parameter)
+            {
+                try self.type_parameter_decl_nodes.put(self.gpa, tp_t, tp_node);
+                const resolved_tp_t = self.resolvedTypeParameterPlaceholder(tp_t);
+                if (resolved_tp_t != tp_t) {
+                    try self.type_parameter_decl_nodes.put(self.gpa, resolved_tp_t, tp_node);
+                }
+            }
             try self.reportReservedTypeParameterName(tp_node, tp.name);
             if (seen.contains(tp.name)) {
                 try self.reportDuplicateIdentifier(tp_node, tp.name);
@@ -131540,6 +131975,35 @@ pub const Checker = struct {
             .{ source_name, target_name },
         );
         try self.reportOnce(target, TsCodes.type_not_assignable, msg);
+    }
+
+    fn genericIndexedAssignmentUsesDedicatedRelation(self: *Checker, target: NodeId, value: NodeId) bool {
+        if (!self.strict_flags.strict_null_checks or
+            target == hir_mod.none_node_id or
+            value == hir_mod.none_node_id or
+            self.hir.kindOf(target) != .element_access or
+            self.hir.kindOf(value) != .element_access)
+        {
+            return false;
+        }
+        const target_el = hir_mod.elementOf(self.hir, target);
+        const value_el = hir_mod.elementOf(self.hir, value);
+        if (self.hir.kindOf(target_el.object) != .identifier or
+            self.hir.kindOf(value_el.object) != .identifier or
+            self.hir.kindOf(target_el.index) != .identifier or
+            self.hir.kindOf(value_el.index) != .identifier)
+        {
+            return false;
+        }
+        if (hir_mod.identifierOf(self.hir, target_el.object).name ==
+            hir_mod.identifierOf(self.hir, value_el.object).name or
+            hir_mod.identifierOf(self.hir, target_el.index).name !=
+                hir_mod.identifierOf(self.hir, value_el.index).name)
+        {
+            return false;
+        }
+        return self.containsFreeTypeParameter(self.hir.typeOf(target_el.object)) or
+            self.containsFreeTypeParameter(self.hir.typeOf(value_el.object));
     }
 
     fn genericIndexedExpressionTypeName(self: *Checker, node: NodeId, object_t: TypeId) CheckError!?[]const u8 {
@@ -132331,9 +132795,132 @@ pub const Checker = struct {
         }
         if (!flags.is_indexed_access) return null;
         const indexed = self.indexedAccessPayloadOrNull(t) orelse return null;
+        if (try self.typeParameterMappedConstraintValueType(indexed.object, indexed.index)) |mapped_value| {
+            return mapped_value;
+        }
         const object_constraint = (try self.indexedAccessBaseConstraint(indexed.object, depth + 1)) orelse indexed.object;
+        if (self.indexTypeIsTiedToObjectTypeParameter(indexed.index, indexed.object, 0) and
+            object_constraint < self.interner.pool.typeCount())
+        {
+            if (try self.mappedConstraintTemplateForIndex(object_constraint, indexed.index, 0)) |mapped_value| {
+                return mapped_value;
+            }
+            const constraint_flags = self.interner.pool.flagsOf(object_constraint);
+            if (constraint_flags.is_mapped and !constraint_flags.is_union and !constraint_flags.is_intersection) {
+                const mapped = self.interner.mappedPayload(object_constraint);
+                return if (mapped.optional == .add)
+                    self.unionWithUndefined(mapped.template) catch mapped.template
+                else
+                    mapped.template;
+            }
+            if (try self.effectiveStringIndexType(object_constraint)) |string_index| {
+                return string_index;
+            }
+        }
+        if (try self.resolveObjectIndexedAccessType(object_constraint, indexed.index)) |resolved| {
+            return resolved;
+        }
         const index_constraint = (try self.indexedAccessBaseConstraint(indexed.index, depth + 1)) orelse indexed.index;
         return try self.resolveObjectIndexedAccessType(object_constraint, index_constraint);
+    }
+
+    fn elementAccessConstraintAssignableToTarget(
+        self: *Checker,
+        node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .element_access) return false;
+        const indexed = self.indexedAccessPayloadOrNull(source_t) orelse return false;
+        const object_name = self.typeParameterName(indexed.object) orelse return false;
+        const index_name = self.typeParameterName(indexed.index) orelse return false;
+
+        var current = node;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            for (self.typeParamNodesOfDecl(current)) |type_param_node| {
+                if (self.hir.kindOf(type_param_node) != .type_parameter) continue;
+                const type_param = hir_mod.typeParameterOf(self.hir, type_param_node);
+                if (type_param.name != object_name or type_param.constraint == hir_mod.none_node_id) continue;
+                const value_t = (try self.mappedConstraintValueTypeForKey(type_param.constraint, index_name)) orelse
+                    continue;
+                return try self.checkerAssignableTo(value_t, target_t);
+            }
+        }
+        return false;
+    }
+
+    fn typeParameterMappedConstraintValueType(
+        self: *Checker,
+        object_t: TypeId,
+        index_t: TypeId,
+    ) CheckError!?TypeId {
+        if (!self.isBareTypeParameter(object_t) or !self.isBareTypeParameter(index_t)) return null;
+        const resolved_object_t = self.resolvedTypeParameterPlaceholder(object_t);
+        const object_decl = self.type_parameter_decl_nodes.get(resolved_object_t) orelse return null;
+        const index_name = self.typeParameterName(index_t) orelse return null;
+        const object_param = hir_mod.typeParameterOf(self.hir, object_decl);
+        return try self.mappedConstraintValueTypeForKey(object_param.constraint, index_name);
+    }
+
+    fn mappedConstraintValueTypeForKey(
+        self: *Checker,
+        node: NodeId,
+        key_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .intersection_type => {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                    if (try self.mappedConstraintValueTypeForKey(member, key_name)) |value_t| return value_t;
+                }
+                return null;
+            },
+            .mapped_type => {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                if (!self.typeNodeReferencesBareName(mapped.constraint, key_name)) return null;
+                return try self.lowererLowerWithTypeParams(mapped.value);
+            },
+            .object_type => {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    if (self.hir.kindOf(member) != .index_signature) continue;
+                    const index = hir_mod.indexSignatureOf(self.hir, member);
+                    if (!self.typeNodeIsBareName(index.key_type, "string")) continue;
+                    return try self.lowererLowerWithTypeParams(index.value_type);
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn mappedConstraintTemplateForIndex(
+        self: *Checker,
+        constraint_t: TypeId,
+        index_t: TypeId,
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (depth >= 24 or constraint_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(constraint_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(constraint_t)) |member| {
+                if (try self.mappedConstraintTemplateForIndex(member, index_t, depth + 1)) |value_t| {
+                    return value_t;
+                }
+            }
+            return null;
+        }
+        if (!flags.is_mapped or flags.is_union) return null;
+        const mapped = self.interner.mappedPayload(constraint_t);
+        if (index_t != mapped.constraint and
+            !self.symbolicKeyTypeAssignableTo(index_t, mapped.constraint, 0) and
+            !(self.symbolicIndexTypeAssignable(index_t, mapped.constraint) orelse false))
+        {
+            return null;
+        }
+        return if (mapped.optional == .add)
+            self.unionWithUndefined(mapped.template) catch mapped.template
+        else
+            mapped.template;
     }
 
     fn indexedAccessSyntaxBaseConstraint(self: *Checker, node: NodeId, depth: u8) CheckError!?TypeId {
@@ -132378,10 +132965,17 @@ pub const Checker = struct {
             },
             .indexed_access_type => {
                 const indexed = hir_mod.indexedAccessTypeOf(self.hir, node);
+                if (try self.indexedAccessSyntaxRecordValueConstraint(indexed.object, indexed.index)) |value_t| {
+                    return value_t;
+                }
                 const object_constraint = (try self.indexedAccessSyntaxBaseConstraint(indexed.object, depth + 1)) orelse
                     try self.lowererLowerWithTypeParams(indexed.object);
+                const raw_index = try self.lowererLowerWithTypeParams(indexed.index);
+                if (try self.resolveObjectIndexedAccessType(object_constraint, raw_index)) |resolved| {
+                    return resolved;
+                }
                 const index_constraint = (try self.indexedAccessSyntaxBaseConstraint(indexed.index, depth + 1)) orelse
-                    try self.lowererLowerWithTypeParams(indexed.index);
+                    raw_index;
                 if (try self.resolveObjectIndexedAccessType(object_constraint, index_constraint)) |resolved| {
                     return resolved;
                 }
@@ -132389,6 +132983,28 @@ pub const Checker = struct {
             },
             else => return null,
         }
+    }
+
+    fn indexedAccessSyntaxRecordValueConstraint(
+        self: *Checker,
+        object_node: NodeId,
+        index_node: NodeId,
+    ) CheckError!?TypeId {
+        const declared = self.declaredTypeParameterConstraintAt(object_node) orelse return null;
+        if (declared.constraint == hir_mod.none_node_id or
+            self.hir.kindOf(declared.constraint) != .type_ref)
+        {
+            return null;
+        }
+        const constraint_ref = hir_mod.typeRefOf(self.hir, declared.constraint);
+        if (constraint_ref.qualifier_len != 0 or
+            !std.mem.eql(u8, self.string_interner.get(constraint_ref.name), "Record"))
+        {
+            return null;
+        }
+        const args = hir_mod.typeRefArgs(self.hir, declared.constraint);
+        if (args.len != 2 or !self.typeNodesReferenceSameBareName(args[0], index_node)) return null;
+        return try self.lowererLowerWithTypeParams(args[1]);
     }
 
     const DeclaredTypeParameterConstraint = struct {
@@ -133047,6 +133663,20 @@ pub const Checker = struct {
         switch (self.hir.kindOf(node)) {
             .indexed_access_type => {
                 const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+                if (self.hir.kindOf(ia.object) == .mapped_type and
+                    self.hir.kindOf(ia.index) == .keyof_type)
+                {
+                    const mapped = hir_mod.mappedTypeOf(self.hir, ia.object);
+                    if (mapped.constraint != hir_mod.none_node_id and
+                        self.hir.kindOf(mapped.constraint) == .keyof_type)
+                    {
+                        const mapped_keyof = hir_mod.keyofTypeOf(self.hir, mapped.constraint);
+                        const index_keyof = hir_mod.keyofTypeOf(self.hir, ia.index);
+                        if (self.typeNodesReferenceSameBareName(mapped_keyof.operand, index_keyof.operand)) {
+                            return false;
+                        }
+                    }
+                }
                 const obj_t = self.lowererLowerWithTypeParams(ia.object) catch return false;
                 const idx_t = self.lowererLowerWithTypeParams(ia.index) catch return false;
                 return self.indexTypeHasKeysMissingFromObject(obj_t, idx_t);
@@ -133065,6 +133695,29 @@ pub const Checker = struct {
             },
             else => return false,
         }
+    }
+
+    fn typeNodeIsHomomorphicMappedKeyProjection(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .indexed_access_type) return false;
+        const indexed = hir_mod.indexedAccessTypeOf(self.hir, node);
+        if (self.hir.kindOf(indexed.object) != .mapped_type or
+            self.hir.kindOf(indexed.index) != .keyof_type)
+        {
+            return false;
+        }
+        const mapped = hir_mod.mappedTypeOf(self.hir, indexed.object);
+        if (mapped.type_param == hir_mod.none_node_id or
+            self.hir.kindOf(mapped.type_param) != .type_parameter or
+            mapped.constraint == hir_mod.none_node_id or
+            self.hir.kindOf(mapped.constraint) != .keyof_type)
+        {
+            return false;
+        }
+        const mapped_param = hir_mod.typeParameterOf(self.hir, mapped.type_param);
+        if ((self.bareTypeNodeName(mapped.value) orelse return false) != mapped_param.name) return false;
+        const mapped_keyof = hir_mod.keyofTypeOf(self.hir, mapped.constraint);
+        const index_keyof = hir_mod.keyofTypeOf(self.hir, indexed.index);
+        return self.typeNodesReferenceSameBareName(mapped_keyof.operand, index_keyof.operand);
     }
 
     fn resolveObjectIndexedAccessType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?TypeId {
@@ -133088,6 +133741,22 @@ pub const Checker = struct {
             if (vals.items.len == 0) return null;
             if (vals.items.len == 1) return vals.items[0];
             return self.interner.internUnion(vals.items) catch return error.OutOfMemory;
+        }
+        if (obj_flags.is_mapped and !obj_flags.is_union and !obj_flags.is_intersection) {
+            const mapped = self.interner.mappedPayload(obj);
+            if (index_t == mapped.constraint or
+                self.symbolicKeyTypeAssignableTo(index_t, mapped.constraint, 0) or
+                blk_related: {
+                    const index_operand = self.constrainedKeyofOperand(index_t, 0) orelse break :blk_related false;
+                    const mapped_operand = self.constrainedKeyofOperand(mapped.constraint, 0) orelse break :blk_related false;
+                    break :blk_related index_operand == mapped_operand;
+                })
+            {
+                return if (mapped.optional == .add)
+                    self.unionWithUndefined(mapped.template) catch mapped.template
+                else
+                    mapped.template;
+            }
         }
         if (!obj_flags.is_object_type and !obj_flags.is_intersection) return null;
         if (index_t == types.Primitive.number_t) {
@@ -135783,6 +136452,7 @@ pub const Checker = struct {
         const constraint = self.typeParameterConstraint(arg_t) orelse return false;
         if (constraint == arg_t or constraint == types.Primitive.none or constraint == types.Primitive.unknown) return false;
         if (constraint == param_t) return true;
+        if (self.symbolicIndexTypeAssignable(arg_t, param_t) orelse false) return true;
         if (constraint < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(constraint).is_type_parameter and
             try self.typeParameterConstraintAssignableToParamDepth(constraint, param_t, depth + 1))
@@ -140253,6 +140923,21 @@ pub const Checker = struct {
         const text = self.nodeSourceTextOrEmpty(type_node);
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         return if (trimmed.len == 0) null else trimmed;
+    }
+
+    fn genericKeyofTargetRejectsLiteralAssignment(
+        self: *Checker,
+        target_node: NodeId,
+        value_node: NodeId,
+    ) bool {
+        if (value_node == hir_mod.none_node_id) return false;
+        const value_kind = self.hir.kindOf(value_node);
+        if (value_kind != .literal_string and value_kind != .literal_number) return false;
+        const target_type_node = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return false;
+        if (self.hir.kindOf(target_type_node) != .keyof_type) return false;
+        const operand = hir_mod.keyofTypeOf(self.hir, target_type_node).operand;
+        const operand_name = self.bareTypeNodeName(operand) orelse return false;
+        return self.nameHasEnclosingTypeParameter(operand_name, target_type_node);
     }
 
     fn reportTypeNotAssignable(
@@ -147413,6 +148098,20 @@ pub const Checker = struct {
                 return if (v) types.Primitive.true_lit else types.Primitive.false_lit;
             },
             .template_literal => return try self.templateLiteralConstType(expr, fallback),
+            .conditional => {
+                const conditional = hir_mod.conditionalOf(self.hir, expr);
+                const then_fallback = self.hir.typeOf(conditional.then_branch);
+                const else_fallback = self.hir.typeOf(conditional.else_branch);
+                const then_t = try self.literalizeForAsConst(
+                    conditional.then_branch,
+                    if (then_fallback != types.Primitive.none) then_fallback else fallback,
+                );
+                const else_t = try self.literalizeForAsConst(
+                    conditional.else_branch,
+                    if (else_fallback != types.Primitive.none) else_fallback else fallback,
+                );
+                return self.interner.internUnion(&.{ then_t, else_t }) catch return error.OutOfMemory;
+            },
             .object_literal => {
                 const props = hir_mod.objectLiteralProps(self.hir, expr);
                 var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -147542,7 +148241,12 @@ pub const Checker = struct {
         }
     }
 
-    fn forInLoopTargetBindingType(self: *Checker, target: NodeId, fallback_t: TypeId) TypeId {
+    fn forInLoopTargetBindingType(
+        self: *Checker,
+        target: NodeId,
+        source_t: TypeId,
+        fallback_t: TypeId,
+    ) CheckError!TypeId {
         if (target == hir_mod.none_node_id) return fallback_t;
         const name_node: NodeId = switch (self.hir.kindOf(target)) {
             .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, target).name,
@@ -147550,13 +148254,29 @@ pub const Checker = struct {
             else => return fallback_t,
         };
         if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return fallback_t;
-        const declared_t = self.visibleActiveAnnotatedIdentifierType(name_node) orelse
-            self.visibleAnnotatedIdentifierType(name_node) orelse
+        if (self.visibleActiveAnnotatedIdentifierType(name_node) orelse
+            self.visibleAnnotatedIdentifierType(name_node)) |declared_t|
+        {
+            if (declared_t < self.interner.pool.typeCount()) {
+                const flags = self.interner.pool.flagsOf(declared_t);
+                if (flags.is_type_parameter or flags.is_keyof) return declared_t;
+            }
+        }
+        if (source_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(source_t).is_type_parameter)
+        {
             return fallback_t;
-        if (declared_t >= self.interner.pool.typeCount()) return fallback_t;
-        const flags = self.interner.pool.flagsOf(declared_t);
-        if (flags.is_type_parameter or flags.is_keyof) return declared_t;
-        return fallback_t;
+        }
+        const source_keyof = self.interner.internKeyof(source_t) catch return error.OutOfMemory;
+        const extracted = self.interner.internIntersection(&.{ source_keyof, types.Primitive.string_t }) catch return error.OutOfMemory;
+        const source_name = (try self.allocSimpleTypeName(source_t)) orelse "T";
+        const display = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Extract<keyof {s}, string>",
+            .{source_name},
+        );
+        try self.alias_display_names.put(self.gpa, extracted, display);
+        return extracted;
     }
 
     fn checkForInTarget(self: *Checker, target: NodeId) CheckError!void {
@@ -151231,8 +151951,8 @@ test "checker: branded primitive intersection elaborates missing object target p
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
 
-    try T.expect(checkerHasCodeWithMessage(
-        b,
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
         TsCodes.type_missing_properties,
         "Type 'Number & { __brand: { view: number; styleMedia: string; }; }' is missing the following properties from type 'ViewStyle': view, styleMedia",
     ));
@@ -151249,8 +151969,8 @@ test "checker: weak anonymous optional target omits undefined in TS2559" {
     );
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
-    try T.expect(checkerHasCodeWithMessage(
-        b,
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
         TsCodes.no_properties_in_common,
         "Type 'D' has no properties in common with type '{ opt?: Base; }'.",
     ));
@@ -157217,8 +157937,8 @@ test "checker: unknown equality and switch clauses narrow positive branches" {
     });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
-    try T.expect(checkerHasCodeWithMessage(
-        b,
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
         TsCodes.type_not_assignable,
         "Type '\"maybe\" | \"no\" | \"yes\"' is not assignable to type 'Response'.",
     ));
@@ -175501,6 +176221,127 @@ test "checker: generic indexed access follows constraint direction" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: generic indexed reads remain symbolic for object relations" {
+    const s = try newSetup(
+        \\function read<T, K extends keyof T>(obj: T, key: K) {
+        \\  let required: {};
+        \\  required = obj[key];
+        \\  const present = "value" in obj[key];
+        \\  let universal: {} | null | undefined;
+        \\  universal = obj[key];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'T[K]' is not assignable to type '{}'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'T[K]' is not assignable to type 'object'.",
+    ));
+}
+
+test "checker: keyof syntax preserves literal inference and reports unresolved operands" {
+    const s = try newSetup(
+        \\type Missing = keyof K0;
+        \\interface Shape { name: string; size: number; }
+        \\declare const shape: Shape;
+        \\function get<T, K extends keyof T>(obj: T, key: K): T[K] {
+        \\  return obj[key];
+        \\}
+        \\get(shape, "name");
+        \\get(shape, true ? "name" : "size");
+        \\get(shape, "missing");
+        \\get(shape, true ? "name" : "missing");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '\"missing\"' is not assignable to parameter of type 'keyof Shape'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '\"name\" | \"missing\"' is not assignable to parameter of type 'keyof Shape'.",
+    ));
+}
+
+test "checker: constrained property keys support generic records and string indexing" {
+    const s = try newSetup(
+        \\function update<T extends Record<K, string>, K extends string>(
+        \\  mapping: Partial<Record<T[K], T[K]>>,
+        \\) {}
+        \\function indexed<T, K extends Exclude<keyof T, symbol>>(
+        \\  obj: { [key: string]: boolean },
+        \\  key: K,
+        \\) {
+        \\  obj[key];
+        \\}
+        \\declare function path<T, K extends keyof T>(obj: T, key: K): T[K];
+        \\declare function path(obj: any, ...keys: (string | number)[]): any;
+        \\path({ a: { x: 1 } }, ...["a", "x"]);
+        \\function loop<T, K extends Extract<keyof T, string>>(obj: T, key: K, value: T[K]) {
+        \\  for (let current in obj) {
+        \\    current = key;
+        \\    obj[current] = value;
+        \\  }
+        \\}
+        \\function stringValue<T extends { [key: string]: string }, K extends keyof T>(
+        \\  obj: T,
+        \\  key: K,
+        \\  map: { [key: string]: string },
+        \\) {
+        \\  map[obj[key]];
+        \\}
+        \\type Identity<T> = { [Q in { [P in keyof T]: P }[keyof T]]: T[Q] };
+        \\const constrained = <T extends { [P in K]: string } & { cool: string }, K extends keyof T>(
+        \\  obj: T,
+        \\  key: K,
+        \\) => {
+        \\  const value: string = obj[key];
+        \\  obj.cool;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: constrained indexed compound assignment uses apparent numeric type" {
+    const s = try newSetup(
+        \\class Counter<T extends Record<string, number>> {
+        \\  values: T;
+        \\  update(key: keyof T): number {
+        \\    this.values[key] += 1;
+        \\    return this.values[key];
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.operator_cannot_be_applied));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'number' is not assignable to type 'T[keyof T]'.",
+    ));
 }
 
 test "checker: mapped Pick and Record enforce property key constraints" {
