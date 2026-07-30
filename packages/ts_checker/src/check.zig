@@ -55144,6 +55144,30 @@ pub const Checker = struct {
         return try self.presentObjectMembersAssignable(source, target);
     }
 
+    fn indexMemberAssignableToIndex(
+        self: *Checker,
+        container: NodeId,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!bool {
+        const target_has_no_index = target < self.interner.pool.typeCount() and
+            self.interner.objectStringIndex(target) == types.Primitive.none and
+            self.interner.objectNumberIndex(target) == types.Primitive.none and
+            self.interner.objectSymbolIndex(target) == types.Primitive.none;
+        if (target_has_no_index and !self.nodeIsNamedObjectInterface(container)) {
+            if (try self.objectSourceAssignableToUpperObjectTarget(source, target)) |ok| return ok;
+        }
+        return try self.heritageAssignableDeep(source, target);
+    }
+
+    fn nodeIsNamedObjectInterface(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .interface_decl) return false;
+        const name_node = hir_mod.interfaceOf(self.hir, node).name;
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, name_node).name;
+        return std.mem.eql(u8, self.string_interner.get(name), "Object");
+    }
+
     fn presentObjectMembersAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return true;
         const sf = self.interner.pool.flagsOf(source);
@@ -55833,7 +55857,7 @@ pub const Checker = struct {
                 if (self.syntheticSignatureMemberName(m.name)) continue;
                 if (self.isSymbolNamedMember(m.name)) continue;
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
-                if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
+                if (try self.indexMemberAssignableToIndex(node, m.type, string_idx)) continue;
                 const merged_owner = self.mergedInterfaceMemberOwner(node, m.decl_node);
                 const local_anchor = self.classOrInterfaceMemberNode(node, m.name);
                 const anchor = if (merged_owner != hir_mod.none_node_id) m.decl_node else local_anchor;
@@ -55867,7 +55891,7 @@ pub const Checker = struct {
                 if (self.syntheticSignatureMemberName(m.name)) continue;
                 if (!self.memberNameIsNumeric(m.name)) continue;
                 if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
-                if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
+                if (try self.indexMemberAssignableToIndex(node, m.type, number_idx)) continue;
                 const merged_owner = self.mergedInterfaceMemberOwner(node, m.decl_node);
                 const local_anchor = self.classOrInterfaceMemberNode(node, m.name);
                 const anchor = if (merged_owner != hir_mod.none_node_id) m.decl_node else local_anchor;
@@ -55904,7 +55928,7 @@ pub const Checker = struct {
                 if (self.syntheticSignatureMemberName(m.name)) continue;
                 if (m.type == types.Primitive.any or symbol_idx == types.Primitive.any) continue;
                 if (!self.isSymbolNamedMember(m.name)) continue;
-                if (try self.heritageAssignableDeep(m.type, symbol_idx)) continue;
+                if (try self.indexMemberAssignableToIndex(node, m.type, symbol_idx)) continue;
                 const raw = self.string_interner.get(m.name);
                 // Symbol-named members render with brackets in TS2411
                 // prose (`[Symbol.iterator]`, `[Symbol.toStringTag]`)
@@ -74212,6 +74236,7 @@ pub const Checker = struct {
         {
             return true;
         }
+        if (try self.upperObjectSourceAssignableToAllOptionalTarget(source_t, target_t)) return true;
         if (try self.objectSourceAssignableToUpperObjectTarget(source_t, target_t)) |ok| return ok;
         if (try self.typeParameterConstraintAssignableToParam(source_t, target_t)) return true;
         if (self.sourceHasOptionalMemberForRequiredTarget(source_t, target_t)) return false;
@@ -74277,6 +74302,29 @@ pub const Checker = struct {
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn upperObjectSourceAssignableToAllOptionalTarget(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (!self.typeIsGlobalObjectBuiltin(source_t) and !(try self.typeIsUpperObject(source_t))) return false;
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection or flags.is_signature) return false;
+        if (self.interner.objectStringIndex(target_t) != types.Primitive.none or
+            self.interner.objectNumberIndex(target_t) != types.Primitive.none or
+            self.interner.objectSymbolIndex(target_t) != types.Primitive.none)
+        {
+            return false;
+        }
+        const members = self.interner.objectMembers(target_t);
+        if (members.len == 0) return false;
+        for (members) |member| {
+            if (!member.is_optional) return false;
+        }
+        return true;
     }
 
     fn typeIsUniversalEmptyObjectNullishUnion(self: *Checker, t: TypeId) bool {
@@ -82392,16 +82440,23 @@ pub const Checker = struct {
             }
             return false;
         }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(constraint);
+            if (!try self.mappedConstraintDefinitelyIncludesProperty(conditional.check_type, name)) return false;
+            const key_t = self.interner.internStringLiteral(name) catch return error.OutOfMemory;
+            const branch = if (try self.checkerAssignableTo(key_t, conditional.extends_type))
+                conditional.true_branch
+            else
+                conditional.false_branch;
+            if (branch == conditional.check_type) return true;
+            return try self.mappedConstraintDefinitelyIncludesProperty(branch, name);
+        }
         // A property named explicitly alongside a generic key is guaranteed
         // (`K | "fixed"`); a property merely allowed by K is not, because K
         // may be instantiated with a different key.
         if (flags.is_type_parameter) {
             const bound = self.typeParameterConstraint(constraint) orelse return false;
             if (bound >= self.interner.pool.typeCount()) return false;
-            const bound_flags = self.interner.pool.flagsOf(bound);
-            if (bound_flags.is_union) {
-                return try self.mappedConstraintDefinitelyIncludesProperty(bound, name);
-            }
             return self.stringLiteralValueFromType(bound) == name;
         }
         const key_t = self.interner.internStringLiteral(name) catch return error.OutOfMemory;
@@ -119220,6 +119275,20 @@ pub const Checker = struct {
                 return;
             }
             if (self.nodeIsThisReference(member.object)) {
+                if (self.memberAccessClassFieldStaticness(node)) |is_static| {
+                    const class_node = self.enclosingClassNode(node);
+                    if (try self.classDisplayNameFromNode(class_node)) |class_name| {
+                        defer self.gpa.free(class_name);
+                        const display = if (is_static)
+                            try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof {s}", .{class_name})
+                        else
+                            class_name;
+                        try self.reportPropertyDoesNotExistOnTypeText(node, name, display);
+                        return;
+                    }
+                }
+            }
+            if (self.nodeIsThisReference(member.object)) {
                 const class_node = self.enclosingClassNode(node);
                 if (class_node != hir_mod.none_node_id) {
                     const class_payload = hir_mod.classOf(self.hir, class_node);
@@ -119346,6 +119415,33 @@ pub const Checker = struct {
             return;
         }
         try self.reportPropertyDoesNotExist(node, name);
+    }
+
+    fn memberAccessClassFieldStaticness(self: *Checker, node: NodeId) ?bool {
+        var child = node;
+        var current = self.hir.parentOf(node);
+        while (current != hir_mod.none_node_id) : ({
+            child = current;
+            current = self.hir.parentOf(current);
+        }) {
+            switch (self.hir.kindOf(current)) {
+                .arrow_fn => continue,
+                .fn_decl, .fn_expr => return null,
+                .object_property => {
+                    const property = hir_mod.objectPropertyOf(self.hir, current);
+                    if (property.is_method or property.value == hir_mod.none_node_id or property.value != child) return null;
+                    const parent = self.hir.parentOf(current);
+                    if (parent == hir_mod.none_node_id) return null;
+                    const parent_kind = self.hir.kindOf(parent);
+                    if (parent_kind != .class_decl and parent_kind != .class_expr) return null;
+                    return property.is_static or
+                        self.classMemberSourceHasModifierBeforeKey(current, property.key, "static");
+                },
+                .class_decl, .class_expr => return null,
+                else => {},
+            }
+        }
+        return null;
     }
 
     fn typeNameIsDomLibReceiver(self: *const Checker, target_text: []const u8) bool {
@@ -157809,6 +157905,36 @@ test "checker: class field initializer self access reports TS2729" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_used_before_initialization));
 }
 
+test "checker: missing this member in field initializer names enclosing class" {
+    const s = try newSetup(
+        \\class C {
+        \\  value = this.missing;
+        \\  static value = this.staticMissing;
+        \\}
+        \\class D<T> {
+        \\  value = this.missing;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'missing' does not exist on type 'C'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'staticMissing' does not exist on type 'typeof C'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'missing' does not exist on type 'D<T>'.",
+    ));
+}
+
 test "checker: private-field forward ref reports TS2729 without useDefineForClassFields" {
     // tsc's gate is `useDefineForClassFields || !isPropertyDeclaredInAncestorClass`,
     // so an own (non-inherited) field used before its declaration reports
@@ -174107,6 +174233,22 @@ test "checker: type predicate narrows in then-branch" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
 }
 
+test "checker: Object source satisfies an all-optional predicate parameter" {
+    const s = try newSetup(
+        \\interface Beast { wings?: boolean; legs?: number }
+        \\interface RequiredBeast { legs: number }
+        \\declare function hasLegs(value: Beast): value is Beast & { legs: number };
+        \\declare function needsLegs(value: RequiredBeast): void;
+        \\function inspect(value: Object) {
+        \\  hasLegs(value);
+        \\  needsLegs(value);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
 test "checker: overload resolution picks the matching signature" {
     // Two overloads + one implementation. Calling with a string
     // should resolve to the string overload's return type.
@@ -175282,6 +175424,32 @@ test "checker: generic Pick and Record reject unguaranteed member access" {
         s,
         TsCodes.property_does_not_exist,
         "Property 'foo' does not exist on type 'Record<K, number>'.",
+    ));
+}
+
+test "checker: mapped conditional constraints expose guaranteed keys" {
+    const s = try newSetup(
+        \\function extract<T extends { a: string, b: string }>(obj: Pick<T, Extract<keyof T, "b">>) {
+        \\  obj.b;
+        \\}
+        \\function exclude<T extends { a: string, b: string }>(obj: Pick<T, Exclude<keyof T, "a">>) {
+        \\  obj.b;
+        \\}
+        \\function record<T extends { a: string, b: string }>(obj: Record<Exclude<keyof T, "b"> | "c", string>) {
+        \\  obj.a;
+        \\  obj.c;
+        \\}
+        \\function uncertain<T, K extends "a" | "b">(obj: Record<K, number>) {
+        \\  obj.b;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'b' does not exist on type 'Record<K, number>'.",
     ));
 }
 
@@ -196391,6 +196559,19 @@ test "checker: TS2411 anchors at the property declaration not the container" {
         if (node_kind == .object_property) saw_2411_on_member = true;
     }
     try T.expect(saw_2411_on_member);
+}
+
+test "checker: Object index target accepts object-valued class members" {
+    const s = try newSetup(
+        \\class C {
+        \\  [key: string]: Object;
+        \\  date: Date;
+        \\  empty: {};
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_index_type));
 }
 
 test "checker: TS2411 symbol-named member anchors at the property declaration" {
