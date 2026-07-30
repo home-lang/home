@@ -62636,6 +62636,11 @@ pub const Checker = struct {
                                 try self.registerAliasDisplayName(record_t, r.name, &.{ key_t, value_t });
                                 return record_t;
                             }
+                            if (self.containsFreeTypeParameter(key_t)) {
+                                const record_t = self.interner.internMapped(key_t, value_t, .none, .none) catch return error.OutOfMemory;
+                                try self.registerAliasDisplayName(record_t, r.name, &.{ key_t, value_t });
+                                return record_t;
+                            }
                             var literal_keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
                             defer literal_keys.deinit(self.gpa);
                             if (self.collectStringLiteralKeys(key_t, &literal_keys) and literal_keys.items.len > 0) {
@@ -68803,10 +68808,11 @@ pub const Checker = struct {
             }
             return;
         }
-        if (self.conditional_branch_check_names.items.len == 0) return;
-        if (self.bareTypeNodeName(node)) |constraint_name| {
-            for (self.conditional_branch_check_names.items) |check_name| {
-                if (check_name == constraint_name) return;
+        if (self.conditional_branch_check_names.items.len > 0) {
+            if (self.bareTypeNodeName(node)) |constraint_name| {
+                for (self.conditional_branch_check_names.items) |check_name| {
+                    if (check_name == constraint_name) return;
+                }
             }
         }
 
@@ -77952,7 +77958,6 @@ pub const Checker = struct {
 
     fn checkBuiltinPropertyKeyConstraint(self: *Checker, arg_node: NodeId, arg_t: TypeId) CheckError!void {
         if (self.typeIsAnyLike(arg_t) or self.typeIsPropertyKeyDomain(arg_t, 0)) return;
-        if (self.containsFreeTypeParameter(arg_t)) return;
         const source_name = try self.typeSyntaxOrDiagnosticName(arg_node, arg_t);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -77970,13 +77975,15 @@ pub const Checker = struct {
         source_t: TypeId,
     ) CheckError!void {
         if (self.typeIsAnyLike(key_t) or source_t >= self.interner.pool.typeCount()) return;
-        if (self.containsFreeTypeParameter(key_t)) return;
         if (self.constrainedKeyofOperand(key_t, 0)) |operand| {
             if (operand == source_t) return;
         }
         const allowed = try self.keyofTypeFromOperand(source_t);
-        if (try self.checkerAssignableTo(key_t, allowed)) return;
-        const key_name = try self.typeSyntaxOrDiagnosticName(key_node, key_t);
+        const checked_key_t = self.typeParameterConstraint(key_t) orelse key_t;
+        if (try self.checkerAssignableTo(checked_key_t, allowed)) return;
+        const key_name = (try self.sortedStringLiteralUnionAnnotationText(self.nodeSourceTextOrEmpty(key_node))) orelse
+            (try self.allocTypeAnnotationDiagnosticName(key_node, false)) orelse
+            try self.typeSyntaxOrDiagnosticName(key_node, key_t);
         const source_name = try self.typeSyntaxOrDiagnosticName(source_node, source_t);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -79973,6 +79980,10 @@ pub const Checker = struct {
                         annotation_text_mismatch = texts;
                         break :blk false;
                     }
+                    if (try self.mappedAnnotationModifierMismatch(prior_annotation, v.type_annotation)) |texts| {
+                        annotation_text_mismatch = texts;
+                        break :blk false;
+                    }
                 }
                 // Identical interned types are trivially the same type —
                 // no TS2403 mismatch is possible. This must precede the
@@ -80055,6 +80066,8 @@ pub const Checker = struct {
                         try self.formatThisArrayRepeatedVarType(prior),
                         try self.formatThisArrayRepeatedVarType(final_type),
                     )
+                else if (try self.mappedAnnotationDisplayPair(prior_annotation, v.type_annotation)) |texts|
+                    try self.formatSubsequentVarTypeMismatchWithTexts(name, texts.prior, texts.current)
                 else if (try self.repeatedVarPriorAnnotationDisplay(prior_explicit, prior_annotation, prior)) |prior_text|
                     if (try self.subsequentVarTypeText(final_type)) |current_text|
                         try self.formatSubsequentVarTypeMismatchWithTexts(name, prior_text, current_text)
@@ -80465,6 +80478,57 @@ pub const Checker = struct {
             if (hir_mod.identifierOf(self.hir, a).name != hir_mod.identifierOf(self.hir, b).name) return false;
         }
         return true;
+    }
+
+    fn mappedAnnotationModifierMismatch(
+        self: *Checker,
+        prior_node: NodeId,
+        current_node: NodeId,
+    ) CheckError!?VarAnnotationTextPair {
+        if (prior_node == hir_mod.none_node_id or current_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(prior_node) != .mapped_type or self.hir.kindOf(current_node) != .mapped_type) return null;
+        const prior = hir_mod.mappedTypeOf(self.hir, prior_node);
+        const current = hir_mod.mappedTypeOf(self.hir, current_node);
+        if (prior.readonly == current.readonly and prior.optional == current.optional) return null;
+        return try self.mappedAnnotationDisplayPair(prior_node, current_node);
+    }
+
+    fn mappedAnnotationDisplayPair(
+        self: *Checker,
+        prior_node: NodeId,
+        current_node: NodeId,
+    ) CheckError!?VarAnnotationTextPair {
+        const prior = (try self.mappedAnnotationDiagnosticName(prior_node)) orelse return null;
+        const current = (try self.mappedAnnotationDiagnosticName(current_node)) orelse return null;
+        return .{ .prior = prior, .current = current };
+    }
+
+    fn mappedAnnotationDiagnosticName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .mapped_type) return null;
+        const mapped = hir_mod.mappedTypeOf(self.hir, node);
+        if (mapped.type_param == hir_mod.none_node_id or self.hir.kindOf(mapped.type_param) != .type_parameter) return null;
+        const type_param = hir_mod.typeParameterOf(self.hir, mapped.type_param);
+        const constraint = (try self.allocTypeAnnotationDiagnosticName(mapped.constraint, false)) orelse return null;
+        const value = (try self.allocTypeAnnotationDiagnosticName(mapped.value, false)) orelse return null;
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.appendSlice(arena, "{ ");
+        if (mapped.readonly == 1) try buf.appendSlice(arena, "readonly ");
+        if (mapped.readonly == 2) try buf.appendSlice(arena, "-readonly ");
+        try buf.append(arena, '[');
+        try buf.appendSlice(arena, self.string_interner.get(type_param.name));
+        try buf.appendSlice(arena, " in ");
+        try buf.appendSlice(arena, constraint);
+        try buf.append(arena, ']');
+        if (mapped.optional == 1) try buf.append(arena, '?');
+        if (mapped.optional == 2) try buf.appendSlice(arena, "-?");
+        try buf.appendSlice(arena, ": ");
+        try buf.appendSlice(arena, value);
+        if (mapped.optional == 1 and std.mem.indexOf(u8, value, "undefined") == null) {
+            try buf.appendSlice(arena, " | undefined");
+        }
+        try buf.appendSlice(arena, "; }");
+        return buf.items;
     }
 
     fn sameGenericAliasAnnotationArgMismatch(self: *Checker, prior_node: NodeId, current_node: NodeId) CheckError!?VarAnnotationTextPair {
@@ -88181,6 +88245,28 @@ pub const Checker = struct {
                 }
                 if (self.strict_flags.strict_null_checks and self.unconstrainedTypeParameter(obj_t)) {
                     try self.reportPropertyDoesNotExistOnType(node, m.name, obj_t);
+                    break :blk types.Primitive.any;
+                }
+                if (access_obj_t < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(access_obj_t).is_mapped)
+                {
+                    if (try self.broadObjectPrototypeMember(m.name)) |t| {
+                        break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                    }
+                    const mapped = self.interner.mappedPayload(access_obj_t);
+                    const constraint_is_type_parameter = mapped.constraint < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(mapped.constraint).is_type_parameter;
+                    if (!constraint_is_type_parameter and try self.mappedTypeAcceptsPropertyName(access_obj_t, m.name)) {
+                        var member_t = try self.mappedPropertyTargetType(access_obj_t, m.name);
+                        if (self.strict_flags.strict_null_checks and
+                            !member_is_optional_chain and
+                            mapped.optional == .add)
+                        {
+                            member_t = self.unionWithUndefined(member_t) catch member_t;
+                        }
+                        break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
+                    }
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                     break :blk types.Primitive.any;
                 }
                 // Upstream tsc does NOT emit TS1111 here; it falls
@@ -173777,6 +173863,99 @@ test "checker: mapped type rejects unconstrained conditional key parameter" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: mapped type rejects unconstrained key parameter outside conditional" {
+    const s = try newSetup(
+        \\type Foo<T> = { [P in T]: T[P] };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'T' is not assignable to type 'string | number | symbol'.",
+    ));
+}
+
+test "checker: Pick validates generic key constraints against source keys" {
+    const s = try newSetup(
+        \\interface Shape { name: string; width: number; }
+        \\interface Named { name: string; }
+        \\function bad1<T>() { let x: Pick<Shape, T>; }
+        \\function bad2<T extends string | number>() { let x: Pick<Shape, T>; }
+        \\function good1<T extends keyof Shape>() { let x: Pick<Shape, T>; }
+        \\function good2<T extends keyof Named>() { let x: Pick<Shape, T>; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+}
+
+test "checker: Pick constraint diagnostic canonicalizes literal union order" {
+    const s = try newSetup(
+        \\interface Shape { name: string; width: number; }
+        \\type Bad = Pick<Shape, "name" | "foo">;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type '\"foo\" | \"name\"' does not satisfy the constraint 'keyof Shape'.",
+    ));
+}
+
+test "checker: generic Pick and Record reject unguaranteed member access" {
+    const s = try newSetup(
+        \\function pick<T, K extends keyof T>(obj: Pick<T, K>) {
+        \\  let x = obj.foo;
+        \\}
+        \\function record<T, K extends keyof T>(obj: Record<K, number>) {
+        \\  let x = obj.foo;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'foo' does not exist on type 'Pick<T, K>'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'foo' does not exist on type 'Record<K, number>'.",
+    ));
+}
+
+test "checker: repeated mapped declarations compare modifiers and render syntax" {
+    const s = try newSetup(
+        \\function f<T>() {
+        \\  var x: { [P in keyof T]: T[P] };
+        \\  var x: { [P in keyof T]?: T[P] };
+        \\  var x: { readonly [P in keyof T]: T[P] };
+        \\  var x: { readonly [P in keyof T]?: T[P] };
+        \\}
+        \\function g<T>() {
+        \\  var x: { [P in keyof T]: T[P] };
+        \\  var x: { [P in keyof T]: T[P][] };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'x' must be of type '{ [P in keyof T]: T[P]; }', but here has type '{ readonly [P in keyof T]: T[P]; }'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'x' must be of type '{ [P in keyof T]: T[P]; }', but here has type '{ [P in keyof T]: T[P][]; }'.",
+    ));
 }
 
 test "checker: bracketed [T] extends [U] suppresses distribution" {
