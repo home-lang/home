@@ -4309,6 +4309,11 @@ pub const Checker = struct {
     /// Kept separate from an array rest element (`...T[]`) so mapped tuple
     /// inference can preserve and reverse-map the whole trailing slice.
     tuple_trailing_variadic_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// Type parameters introduced by `infer T` binders. They may share an
+    /// interned TypeId across recursive conditional instantiations, so tuple
+    /// pattern metadata must keep the binder symbolic while true-branch uses
+    /// still substitute to the captured type.
+    infer_type_parameters: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Hard-coded `lib.d.ts` substitute ÃÂ¢ÃÂÃÂ `String.prototype`,
     /// `Array<T>.prototype`, `Object` global. Populated lazily on
     /// first member-access against the corresponding receiver.
@@ -4771,6 +4776,7 @@ pub const Checker = struct {
         self.array_origin_types.deinit(self.gpa);
         self.tuple_trailing_rest_types.deinit(self.gpa);
         self.tuple_trailing_variadic_types.deinit(self.gpa);
+        self.infer_type_parameters.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.merged_class_instance_types.deinit(self.gpa);
         self.class_this_types.deinit(self.gpa);
@@ -62317,12 +62323,16 @@ pub const Checker = struct {
             .optional_type => return try self.lowererLowerWithTypeParams(hir_mod.optionalTypeOf(self.hir, type_node).operand),
             .infer_type => {
                 const ip = hir_mod.inferTypeOf(self.hir, type_node);
-                if (self.lookupNarrow(ip.name)) |t| return t;
+                if (self.lookupNarrow(ip.name)) |t| {
+                    try self.infer_type_parameters.put(self.gpa, t, {});
+                    return t;
+                }
                 const constraint: TypeId = if (ip.constraint != hir_mod.none_node_id)
                     try self.lowererLowerWithTypeParams(ip.constraint)
                 else
                     types.Primitive.unknown;
                 const tp_id = self.interner.internTypeParameter(ip.name, constraint, types.Primitive.none) catch return error.OutOfMemory;
+                try self.infer_type_parameters.put(self.gpa, tp_id, {});
                 try self.recordNarrow(ip.name, tp_id);
                 return tp_id;
             },
@@ -62908,7 +62918,22 @@ pub const Checker = struct {
                             // in `lowererLowerWithTypeParams` /
                             // `substituteType`, which fires solely when
                             // eager expansion genuinely runs away.
-                            .unresolved, .infinite_cycle => {
+                            .unresolved => {
+                                self.instantiation_defer_events +%= 1;
+                                const preserve_reducing_tuple_subs = blk_preserve: {
+                                    if (info.params.len < 2 or info.body >= self.interner.pool.typeCount()) break :blk_preserve false;
+                                    if (!self.interner.pool.flagsOf(info.body).is_conditional) break :blk_preserve false;
+                                    const conditional = self.interner.conditionalPayload(info.body);
+                                    if (conditional.check_type != info.params[1]) break :blk_preserve false;
+                                    const current_tail = subs.get(info.params[1]) orelse break :blk_preserve false;
+                                    break :blk_preserve self.infer_type_parameters.contains(current_tail);
+                                };
+                                if (preserve_reducing_tuple_subs) {
+                                    return self.substituteType(info.body, &subs) catch info.body;
+                                }
+                                return info.body;
+                            },
+                            .infinite_cycle => {
                                 self.instantiation_defer_events +%= 1;
                                 return info.body;
                             },
@@ -66103,6 +66128,17 @@ pub const Checker = struct {
         if (self.interner.objectNumberIndex(ext) == types.Primitive.none) return null;
         if (check == types.Primitive.any or check == types.Primitive.unknown) return null;
         if (check >= self.interner.pool.typeCount()) return false;
+        if (self.actualTupleLength(ext)) |ext_len| {
+            const check_len = self.actualTupleLength(check) orelse return false;
+            if (check_len != ext_len) return false;
+            var index: usize = 0;
+            while (index < ext_len) : (index += 1) {
+                const check_element = self.tupleElementType(check, index);
+                const ext_element = self.tupleElementType(ext, index);
+                if (!(self.engine.isAssignableTo(check_element, ext_element) catch false)) return false;
+            }
+            return true;
+        }
         const flags = self.interner.pool.flagsOf(check);
         if (flags.is_tuple or self.interner.objectNumberIndex(check) != types.Primitive.none) return true;
         if (flags.is_intersection) {
@@ -66184,12 +66220,16 @@ pub const Checker = struct {
         if ((direct_infer_counts.get(ip.name) orelse 0) != 1) {
             return try self.lowererLowerWithTypeParams(arg_node);
         }
-        if (self.lookupNarrow(ip.name)) |t| return t;
+        if (self.lookupNarrow(ip.name)) |t| {
+            try self.infer_type_parameters.put(self.gpa, t, {});
+            return t;
+        }
         const constraint: TypeId = if (ip.constraint != hir_mod.none_node_id)
             try self.lowererLowerWithTypeParams(ip.constraint)
         else
             self.typeParameterConstraint(param_t) orelse types.Primitive.unknown;
         const tp_id = self.interner.internTypeParameter(ip.name, constraint, types.Primitive.none) catch return error.OutOfMemory;
+        try self.infer_type_parameters.put(self.gpa, tp_id, {});
         try self.recordNarrow(ip.name, tp_id);
         return tp_id;
     }
@@ -66208,6 +66248,7 @@ pub const Checker = struct {
         else
             self.typeParameterConstraint(param_t) orelse types.Primitive.unknown;
         const tp_id = self.interner.internTypeParameter(ip.name, constraint, types.Primitive.none) catch return error.OutOfMemory;
+        try self.infer_type_parameters.put(self.gpa, tp_id, {});
         try self.recordNarrow(ip.name, tp_id);
         return true;
     }
@@ -66782,6 +66823,7 @@ pub const Checker = struct {
             else
                 types.Primitive.unknown;
             const tp_id = self.interner.internTypeParameter(ip.name, constraint, types.Primitive.none) catch return;
+            try self.infer_type_parameters.put(self.gpa, tp_id, {});
             try self.recordNarrow(ip.name, tp_id);
             return;
         }
@@ -66930,9 +66972,10 @@ pub const Checker = struct {
             const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
             if (tp.constraint != types.Primitive.none and
                 tp.constraint != types.Primitive.unknown and
-                !(self.engine.isAssignableTo(check, tp.constraint) catch false))
+                !self.containsFreeTypeParameter(tp.constraint))
             {
-                return false;
+                const literal_ok = try self.literalTypeAssignableToLiteralConstraint(check, tp.constraint);
+                if (!literal_ok and !(self.engine.isAssignableTo(check, tp.constraint) catch false)) return false;
             }
             try subs.put(self.gpa, ext, check);
             return true;
@@ -66954,6 +66997,9 @@ pub const Checker = struct {
             const er = self.interner.signatureReturn(ext) orelse return true;
             const cr = self.interner.signatureReturn(check) orelse return true;
             return self.matchInfer(cr, er, subs);
+        }
+        if (ef.is_object_type and cf.is_object_type) {
+            if (try self.matchTupleInfer(check, ext, subs)) |matched| return matched;
         }
         if (ef.is_object_type and cf.is_object_type) {
             // Structural object match: `Box<infer T>` lowers to the
@@ -66978,6 +67024,40 @@ pub const Checker = struct {
         }
         // Default: identity.
         return check == ext;
+    }
+
+    fn matchTupleInfer(
+        self: *Checker,
+        check: TypeId,
+        ext: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?bool {
+        if (!self.isActualTupleType(check) or !self.isActualTupleType(ext)) return null;
+        const check_len: usize = @intCast(self.actualTupleLength(check) orelse return null);
+        const ext_prefix = self.tupleFixedPrefixCount(ext);
+        if (check_len < ext_prefix) return false;
+        var index: usize = 0;
+        while (index < ext_prefix) : (index += 1) {
+            if (!try self.matchInfer(
+                self.tupleElementType(check, index),
+                self.tupleElementType(ext, index),
+                subs,
+            )) return false;
+        }
+        if (self.tuple_trailing_variadic_types.get(ext)) |rest_param| {
+            var tail: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer tail.deinit(self.gpa);
+            while (index < check_len) : (index += 1) {
+                try tail.append(self.gpa, self.tupleElementType(check, index));
+            }
+            const tail_tuple = try self.internTupleFromTypes(
+                tail.items,
+                self.typeIsReadonlyArrayLike(check),
+            );
+            return try self.matchInfer(tail_tuple, rest_param, subs);
+        }
+        const ext_len: usize = @intCast(self.actualTupleLength(ext) orelse return null);
+        return check_len == ext_len;
     }
 
     fn matchTemplateLiteralInfer(
@@ -69055,7 +69135,7 @@ pub const Checker = struct {
                 try self.checkContextualGenericCallFunctionArgs(el, el_t, tgt_t);
                 el_t = contextual_t;
             }
-            const ok = self.engine.isAssignableTo(el_t, tgt_t) catch return error.OutOfMemory;
+            const ok = try self.checkerAssignableExpressionTo(el, el_t, tgt_t);
             if (!ok) {
                 if (emit_element_diagnostic) {
                     if (try self.tryReportTupleElementObjectLiteralMismatch(el, tgt_t)) {
@@ -75614,6 +75694,11 @@ pub const Checker = struct {
         }
         if (self.hir.kindOf(value_node) == .object_literal and
             (self.objectLiteralAssignableToTarget(value_node, source_t, target_t) catch false))
+        {
+            return true;
+        }
+        if (self.hir.kindOf(value_node) == .array_literal and
+            (self.arrayLiteralAssignableToTarget(value_node, target_t) catch false))
         {
             return true;
         }
@@ -123351,7 +123436,14 @@ pub const Checker = struct {
             self.interner.pool.flagsOf(param_t).is_type_parameter)
         {
             if (subs.get(param_t)) |existing| {
-                const literal_arg = self.literalizeForAsConst(arg_node, arg_t) catch arg_t;
+                var literal_arg = self.literalizeForAsConst(arg_node, arg_t) catch arg_t;
+                literal_arg = self.substituteType(literal_arg, subs) catch literal_arg;
+                if (self.interner.typeParameterIsConst(param_t)) {
+                    if (literal_arg == existing) return;
+                    const merged = self.interner.internUnion(&.{ existing, literal_arg }) catch return error.OutOfMemory;
+                    try subs.put(self.gpa, param_t, merged);
+                    return;
+                }
                 if (self.engine.isAssignableTo(literal_arg, existing) catch false) return;
             } else {
                 var prefer_literal = try self.typeParameterConstraintPrefersLiteralInference(param_t, subs);
@@ -123564,14 +123656,23 @@ pub const Checker = struct {
                 const defer_contextual = self.contextualFunctionParametersContainFreeType(value_node, param_member.type);
                 if ((phase == 0) == defer_contextual) continue;
 
-                const substituted_param_t = self.substituteType(param_member.type, subs) catch param_member.type;
+                const collect_const_candidate = param_member.type < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(param_member.type).is_type_parameter and
+                    self.interner.typeParameterIsConst(param_member.type) and
+                    subs.contains(param_member.type);
+                const substituted_param_t = if (collect_const_candidate)
+                    param_member.type
+                else
+                    self.substituteType(param_member.type, subs) catch param_member.type;
                 const has_unfixed = self.typeContainsUnfixedInferenceParameter(param_member.type, subs, 0);
                 const mapped_or_conditional = try self.signatureContainsMappedOrConditionalType(param_member.type);
                 const has_predicate = if (self.firstSignatureType(param_member.type)) |member_sig|
                     self.signature_predicates.contains(member_sig)
                 else
                     false;
-                const relowered_param_t = if (!has_predicate and (!has_unfixed or mapped_or_conditional))
+                const relowered_param_t = if (!collect_const_candidate and
+                    !has_predicate and
+                    (!has_unfixed or mapped_or_conditional))
                     try self.relowerObjectMemberTypeWithInferences(param_member, subs)
                 else
                     null;
@@ -124879,7 +124980,11 @@ pub const Checker = struct {
                 try self.tuple_trailing_rest_types.put(self.gpa, new_obj, try self.substituteType(rest_t, subs));
             }
             if (self.tuple_trailing_variadic_types.get(t)) |variadic_t| {
-                try self.tuple_trailing_variadic_types.put(self.gpa, new_obj, try self.substituteType(variadic_t, subs));
+                const new_variadic_t = if (self.infer_type_parameters.contains(variadic_t))
+                    variadic_t
+                else
+                    try self.substituteType(variadic_t, subs);
+                try self.tuple_trailing_variadic_types.put(self.gpa, new_obj, new_variadic_t);
             }
             if (self.builtin_object_names.get(t)) |builtin_name| {
                 try self.builtin_object_names.put(self.gpa, new_obj, builtin_name);
@@ -146373,36 +146478,7 @@ pub const Checker = struct {
                     const lit_t = try self.literalizeForAsConst(el, inner);
                     try elem_types.append(self.gpa, lit_t);
                 }
-                var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-                defer members.deinit(self.gpa);
-                for (elem_types.items, 0..) |t, i| {
-                    var nbuf: [12]u8 = undefined;
-                    const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch continue;
-                    const name = self.string_interner.intern(name_str) catch continue;
-                    try members.append(self.gpa, .{
-                        .name = name,
-                        .type = t,
-                        .is_optional = false,
-                        .is_readonly = true,
-                        .is_method = false,
-                    });
-                }
-                const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
-                const length_t = self.interner.internNumberLiteral(@floatFromInt(elem_types.items.len)) catch types.Primitive.number_t;
-                try members.append(self.gpa, .{
-                    .name = length_id,
-                    .type = length_t,
-                    .is_optional = false,
-                    .is_readonly = true,
-                    .is_method = false,
-                });
-                const elem_union: TypeId = if (elem_types.items.len == 0)
-                    types.Primitive.never
-                else if (elem_types.items.len == 1)
-                    elem_types.items[0]
-                else
-                    self.interner.internUnion(elem_types.items) catch types.Primitive.any;
-                return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch return error.OutOfMemory;
+                return try self.internTupleFromTypes(elem_types.items, true);
             },
             else => return fallback,
         }
@@ -186433,6 +186509,41 @@ test "checker: const type-parameter inference preserves object-literal numerics 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: const type-parameter calls accept their inferred nested literal shape" {
+    const s = try newSetup(
+        \\declare function identity<const T>(x: T): T;
+        \\identity({ a: 1, nested: ["x", { value: "y" }] });
+        \\declare function pair<const T>(values: [T, T]): T;
+        \\pair([[1, "x"], [2, "y"]]);
+        \\pair([{ a: 1, b: "x" }, { a: 2, b: "y" }]);
+        \\declare function properties<const T>(values: { x: T, y: T }): T;
+        \\properties({ x: [1, "x"], y: [2, "y"] });
+        \\properties({ x: { a: 1, b: "x" }, y: { a: 2, b: "y" } });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+}
+
+test "checker: const tuple paths reduce recursive conditional aliases" {
+    const s = try newSetup(
+        \\type Obj = { a: { b: { c: "123" } } };
+        \\type GetPath<T, P> =
+        \\  P extends readonly [] ? T :
+        \\  P extends readonly [infer A extends keyof T, ...infer Rest] ? GetPath<T[A], Rest> :
+        \\  never;
+        \\function set<T, const P extends readonly string[]>(obj: T, path: P, value: GetPath<T, P>) {}
+        \\declare let obj: Obj;
+        \\declare let value: "123";
+        \\set(obj, ["a", "b", "c"], value);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: async expression-bodied arrows infer structural Promise returns" {
