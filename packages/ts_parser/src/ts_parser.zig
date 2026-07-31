@@ -6132,6 +6132,10 @@ pub const Parser = struct {
                     if (self.peek().kind == .open_paren and !self.peek().flags.preceded_by_newline) {
                         const bad = self.advance();
                         try self.reportCodeAt(bad.span.start, bad.line, 1441, "Cannot start a function call in a type annotation.");
+                        if (self.peek().kind == .close_paren) {
+                            const close = self.advance();
+                            try self.reportCodeAt(close.span.start, close.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
+                        }
                     }
                 }
                 var default_value: NodeId = hir_mod.none_node_id;
@@ -24113,6 +24117,8 @@ test "parser: property type annotation cannot start call TS1441" {
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 1441) orelse return error.TestExpectedEqual;
     try T.expectEqualStrings("Cannot start a function call in a type annotation.", d.message);
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 1068) != null);
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 1005) == null);
 }
 
 test "parser: TS1231 export assignment not at top level of file or module" {

@@ -29458,6 +29458,10 @@ pub const Checker = struct {
                 if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |_| return;
                 if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |_| return;
                 const raw = self.string_interner.get(r.name);
+                if (std.mem.eql(u8, raw, "super")) {
+                    try self.reportCannotFindNamePlainOnce(type_node, r.name);
+                    return;
+                }
                 if (r.args_len != 0 and self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, raw)) return;
                 if (self.lowerBuiltinObjectType(raw) != null) return;
                 if (std.mem.eql(u8, raw, "Null") or std.mem.eql(u8, raw, "Undefined")) {
@@ -44443,6 +44447,11 @@ pub const Checker = struct {
             .type_ref => blk: {
                 if (try self.reactComponentInstanceType(extends_expr)) |t| break :blk t;
                 const r = hir_mod.typeRefOf(self.hir, extends_expr);
+                if (r.qualifier_len == 0 and
+                    self.visibleValueOnlyDeclarationExistsAt(extends_expr, r.name))
+                {
+                    if (try self.instantiatedHeritageValueTypeRefInstance(extends_expr)) |t| break :blk t;
+                }
                 if (r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "Iterator")) {
                     break :blk try self.iteratorInstanceType();
                 }
@@ -44469,6 +44478,31 @@ pub const Checker = struct {
             },
             else => null,
         };
+    }
+
+    fn instantiatedHeritageValueTypeRefInstance(
+        self: *Checker,
+        extends_expr: NodeId,
+    ) CheckError!?TypeId {
+        if (self.hir.kindOf(extends_expr) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, extends_expr);
+        if (r.qualifier_len != 0) return null;
+        const value_t = (try self.heritageValueType(extends_expr, r.name)) orelse return null;
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(value_t, &construct_sigs);
+        const type_args = hir_mod.typeRefArgs(self.hir, extends_expr);
+        for (construct_sigs.items) |sig| {
+            var used_explicit_type_args = false;
+            const effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(
+                extends_expr,
+                sig,
+                type_args,
+                &used_explicit_type_args,
+            );
+            if (self.interner.signatureReturn(effective_sig)) |instance_t| return instance_t;
+        }
+        return null;
     }
 
     fn classExtendsAbstractConstructTypeVariable(self: *Checker, extends_expr: NodeId) CheckError!bool {
@@ -45246,6 +45280,11 @@ pub const Checker = struct {
             .type_ref => blk: {
                 const r = hir_mod.typeRefOf(self.hir, extends_expr);
                 if (r.qualifier_len != 0) break :blk null;
+                if (self.visibleValueOnlyDeclarationExistsAt(extends_expr, r.name)) {
+                    if (try self.heritageValueType(extends_expr, r.name)) |value_t| {
+                        if (try self.constructReturnType(value_t)) |_| break :blk value_t;
+                    }
+                }
                 if (r.args_len > 0) {
                     const name_str = self.string_interner.get(r.name);
                     if (!self.typeRefNameAcceptsTypeArgsAt(extends_expr, r.name, name_str) and self.typeRefNameExists(r.name)) {
@@ -114947,6 +114986,7 @@ pub const Checker = struct {
                 if (r.qualifier_len != 0 or r.args_len != 0) break :blk false;
                 if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) break :blk false;
                 const raw = self.string_interner.get(r.name);
+                if (std.mem.eql(u8, raw, "super")) break :blk true;
                 if (self.lowerBuiltinObjectType(raw) != null) break :blk false;
                 if (std.mem.eql(u8, raw, "any") or
                     std.mem.eql(u8, raw, "unknown") or
@@ -166974,6 +167014,21 @@ test "checker: nested classes do not inherit an outer class super binding" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
+test "checker: super call recovery in property types reports missing name only" {
+    const s = try newSetup(
+        \\class Base {}
+        \\class Derived extends Base {
+        \\  a: super();
+        \\  static b: super();
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_property_initialization = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_initialized));
+}
+
 test "checker: ES5 private base fields preserve super and heritage diagnostics" {
     const s = try newSetup(
         \\// @target: es5, es2015
@@ -178062,6 +178117,23 @@ test "checker: polymorphic this satisfies named generic class expression return"
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: generic class values accept explicit heritage type arguments" {
+    const s = try newSetup(
+        \\class A<T> { genericVar: T = null as any; }
+        \\function make<W>() {
+        \\  return class Inner<TInner> extends A<W> {};
+        \\}
+        \\let genericValue = make<number>();
+        \\class Derived extends genericValue<string> {}
+        \\let value = new Derived();
+        \\value.genericVar = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: TS2636 reports covariant alias parameter used contravariantly" {
