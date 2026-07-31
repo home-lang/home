@@ -22120,6 +22120,7 @@ pub const Checker = struct {
 
     fn reportMissingIndexForComputedBindingKey(self: *Checker, node: NodeId, container_t: TypeId, key_t: TypeId) CheckError!bool {
         if (container_t == types.Primitive.any) return false;
+        if (self.computedBindingKeyIsImmediateClassStaticLiteral(node)) return false;
         if (container_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(container_t).is_union) {
             var reported = false;
             for (self.interner.unionMembers(container_t)) |member| {
@@ -22187,6 +22188,25 @@ pub const Checker = struct {
             .message = msg,
         });
         return true;
+    }
+
+    fn computedBindingKeyIsImmediateClassStaticLiteral(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .member_access) return false;
+        const access = hir_mod.memberOf(self.hir, node);
+        const object_kind = self.hir.kindOf(access.object);
+        if (object_kind != .class_decl and object_kind != .class_expr) return false;
+        for (hir_mod.classMembers(self.hir, access.object)) |member| {
+            if (self.hir.kindOf(member) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, member);
+            if (!property.is_static or property.value == hir_mod.none_node_id) continue;
+            const name = (self.classMemberNameFromPropertyKey(property.key, property.is_computed) catch null) orelse continue;
+            if (name != access.name) continue;
+            return switch (self.hir.kindOf(property.value)) {
+                .literal_string, .literal_number => true,
+                else => false,
+            };
+        }
+        return false;
     }
 
     fn computedBindingKeyErrorPos(self: *Checker, node: NodeId) ?u32 {
@@ -46201,6 +46221,20 @@ pub const Checker = struct {
             });
             return;
         }
+        if (self.hir.kindOf(node) == .import_decl and self.importDeclIsSideEffectOnlySyntax(node)) {
+            const side_effect_msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find module or type declarations for side-effect import of '{s}'.",
+                .{spec},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.moduleSpecifierQuotePos(node, spec),
+                .code = TsCodes.cannot_find_side_effect_import,
+                .message = side_effect_msg,
+            });
+            return;
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot find module '{s}' or its corresponding type declarations.",
@@ -46311,7 +46345,11 @@ pub const Checker = struct {
     }
 
     fn importDeclIsSideEffectOnlySyntax(self: *Checker, node: NodeId) bool {
-        const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(node), " \t\r\n");
+        var text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(node), " \t\r\n");
+        if (std.mem.startsWith(u8, text, "accessor")) {
+            const after_accessor = skipImportDeclTrivia(text, "accessor".len);
+            text = text[after_accessor..];
+        }
         if (!std.mem.startsWith(u8, text, "import")) return false;
         const i = skipImportDeclTrivia(text, "import".len);
         if (i >= text.len) return false;
@@ -154434,6 +154472,18 @@ test "checker: genuinely missing module still emits TS2307 not TS2306" {
     try T.expect(found_2307);
 }
 
+test "checker: missing side-effect import uses TS2882 while bound import uses TS2307" {
+    const s = try newSetup(
+        \\// @filename: main.ts
+        \\import "missing-side-effect";
+        \\import {} from "missing-bound";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_side_effect_import));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_module));
+}
+
 test "checker: circular import alias chain emits TS2303" {
     // `import a = b; import b = a;` forms a cycle of import aliases that
     // resolves back to itself. Upstream tsc surfaces TS2303 at the alias
@@ -188801,6 +188851,17 @@ test "checker: computed binding pattern order preserves tuple property type" {
         if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: immediate class static literals are fixed computed binding keys" {
+    const s = try newSetup(
+        \\class C {}
+        \\(({ [class { static x = 1 }.x]: a = "" }) => {})();
+        \\(({ [class extends C { static x = 1 }.x]: b = "" }) => {})();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_matching_index_signature));
 }
 
 test "checker: object rest with dynamic computed keys checks index signatures and rest target" {

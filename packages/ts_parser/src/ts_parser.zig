@@ -2370,7 +2370,8 @@ pub const Parser = struct {
                     next == .kw_import or
                     next == .kw_export)
                 {
-                    _ = self.advance();
+                    const accessor_tok = self.advance();
+                    try self.reportCodeAt(accessor_tok.span.start, accessor_tok.line, 1275, "'accessor' modifier can only appear on a property declaration.");
                     break :blk try self.parseStatement();
                 }
                 break :blk try self.parseExpressionStatement();
@@ -6412,6 +6413,19 @@ pub const Parser = struct {
                 switch (k) {
                     .kw_private, .kw_protected, .kw_public => {
                         const mod = self.advance();
+                        if (mods.is_accessor) {
+                            const which: []const u8 = switch (k) {
+                                .kw_private => "'private'",
+                                .kw_protected => "'protected'",
+                                else => "'public'",
+                            };
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "{s} modifier must precede 'accessor' modifier.",
+                                .{which},
+                            );
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, msg);
+                        }
                         if (mods.is_override) {
                             const which: []const u8 = switch (k) {
                                 .kw_private => "'private'",
@@ -6443,6 +6457,9 @@ pub const Parser = struct {
                     },
                     .kw_static => {
                         const mod = self.advance();
+                        if (mods.is_accessor) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'static' modifier must precede 'accessor' modifier.");
+                        }
                         if (mods.is_async) {
                             try self.reportCodeAt(mod.span.start, mod.line, 1029, "'static' modifier must precede 'async' modifier.");
                         }
@@ -6462,6 +6479,9 @@ pub const Parser = struct {
                     },
                     .kw_override => {
                         const mod = self.peek();
+                        if (mods.is_accessor) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'override' modifier must precede 'accessor' modifier.");
+                        }
                         if (mods.is_async) {
                             try self.reportCodeAt(mod.span.start, mod.line, 1029, "'override' modifier must precede 'async' modifier.");
                         }
@@ -6478,6 +6498,10 @@ pub const Parser = struct {
                         if (mods.override_token == null) mods.override_token = mod;
                     },
                     .kw_abstract => {
+                        if (mods.is_accessor) {
+                            const mod = self.peek();
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'abstract' modifier must precede 'accessor' modifier.");
+                        }
                         if (mods.is_override) {
                             const mod = self.peek();
                             try self.reportCodeAt(mod.span.start, mod.line, 1029, "'abstract' modifier must precede 'override' modifier.");
@@ -6489,6 +6513,10 @@ pub const Parser = struct {
                         if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = self.peek();
                     },
                     .kw_declare => {
+                        if (mods.is_accessor) {
+                            const mod = self.peek();
+                            try self.reportCodeAt(mod.span.start, mod.line, 1243, "'declare' modifier cannot be used with 'accessor' modifier.");
+                        }
                         if (mods.is_override) {
                             const mod = self.peek();
                             try self.reportCodeAt(mod.span.start, mod.line, 1040, "'override' modifier cannot be used in an ambient context.");
@@ -6496,6 +6524,9 @@ pub const Parser = struct {
                         if (mods.declare_token == null) mods.declare_token = self.peek();
                     },
                     .kw_readonly => {
+                        if (mods.is_accessor) {
+                            try self.reportCodeAt(self.peek().span.start, self.peek().line, 1243, "'readonly' modifier cannot be used with 'accessor' modifier.");
+                        }
                         // TS1030: `'readonly' modifier already seen.`
                         // Emit at the second `readonly` token.
                         if (mods.is_readonly) {
@@ -6514,10 +6545,22 @@ pub const Parser = struct {
                         // field named `accessor`, then `a`).
                         const next_tok = self.peekAt(1);
                         if (!next_tok.flags.preceded_by_newline and
-                            (isClassMemberNameStart(next_tok.kind) or next_tok.kind == .open_bracket))
+                            (isClassMemberNameStart(next_tok.kind) or
+                                next_tok.kind == .open_bracket or
+                                next_tok.kind.isModifierKeyword()))
                         {
+                            const accessor_tok = self.peek();
+                            if (mods.is_accessor) {
+                                try self.reportCodeAt(accessor_tok.span.start, accessor_tok.line, 1030, "'accessor' modifier already seen.");
+                            }
+                            if (mods.is_readonly) {
+                                try self.reportCodeAt(accessor_tok.span.start, accessor_tok.line, 1243, "'accessor' modifier cannot be used with 'readonly' modifier.");
+                            }
+                            if (mods.declare_token != null) {
+                                try self.reportCodeAt(accessor_tok.span.start, accessor_tok.line, 1243, "'accessor' modifier cannot be used with 'declare' modifier.");
+                            }
                             mods.is_accessor = true;
-                            if (mods.accessor_token == null) mods.accessor_token = self.peek();
+                            if (mods.accessor_token == null) mods.accessor_token = accessor_tok;
                         } else {
                             return mods;
                         }
@@ -12137,7 +12180,8 @@ pub const Parser = struct {
             // Matches `parserModifierOnPropertySignature1` and similar
             // baselines.
             if (t.kind == .kw_public or t.kind == .kw_private or
-                t.kind == .kw_protected or t.kind == .kw_abstract)
+                t.kind == .kw_protected or t.kind == .kw_abstract or
+                t.kind == .kw_accessor)
             {
                 const next_tok = self.peekAt(1);
                 const next_kind = next_tok.kind;
@@ -26533,6 +26577,47 @@ test "parser: accessor modifier on method reports TS1275" {
         }
     }
     try T.expectEqual(@as(u32, 3), count);
+}
+
+test "parser: accessor modifier conflicts preserve member and declaration recovery" {
+    var s = try newTestSetup(
+        \\abstract class C {
+        \\  accessor accessor a: any;
+        \\  readonly accessor b: any;
+        \\  declare accessor c: any;
+        \\  accessor public d: any;
+        \\  accessor private e: any;
+        \\  accessor protected f: any;
+        \\  accessor abstract g: any;
+        \\  accessor static h: any;
+        \\  accessor readonly i: any;
+        \\  accessor declare j: any;
+        \\  accessor override k: any;
+        \\}
+        \\interface I { accessor a: number; }
+        \\accessor class D {}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    var duplicate: usize = 0;
+    var conflict: usize = 0;
+    var ordering: usize = 0;
+    var type_member: usize = 0;
+    var declaration: usize = 0;
+    for (s.parser.diagnostics.items) |d| switch (d.code) {
+        1030 => duplicate += 1,
+        1243 => conflict += 1,
+        1029 => ordering += 1,
+        1070 => type_member += 1,
+        1275 => declaration += 1,
+        else => return error.TestUnexpectedResult,
+    };
+    try T.expectEqual(@as(usize, 1), duplicate);
+    try T.expectEqual(@as(usize, 4), conflict);
+    try T.expectEqual(@as(usize, 6), ordering);
+    try T.expectEqual(@as(usize, 1), type_member);
+    try T.expectEqual(@as(usize, 1), declaration);
 }
 
 // ====================================================================
