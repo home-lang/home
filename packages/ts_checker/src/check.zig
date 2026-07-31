@@ -33037,7 +33037,8 @@ pub const Checker = struct {
             // "Type '<sig>' is not a constructor function type." Mirrors
             // upstream `classExtendsValidConstructorFunction` and
             // `classExtendsShadowedConstructorFunction`.
-            if (parent_t == null and !bare_base_type_param) {
+            const invalid_constructor_type_args = try self.classExtendsCallHasInvalidTypeArgCount(c.extends);
+            if (parent_t == null and !bare_base_type_param and !invalid_constructor_type_args) {
                 if (self.hir.kindOf(c.extends) == .identifier) {
                     try self.reportNonConstructorClassExtends(c.extends);
                 } else {
@@ -44500,7 +44501,7 @@ pub const Checker = struct {
                 break :blk null;
             },
             .call_expr => blk: {
-                const static_t = try self.checkExpression(extends_expr);
+                const static_t = try self.classExtendsCallStaticType(extends_expr);
                 if (try self.constructReturnType(static_t)) |instance_t| {
                     break :blk try self.refineHeritageFactoryInstanceTypeFromArgs(extends_expr, instance_t);
                 }
@@ -44742,6 +44743,14 @@ pub const Checker = struct {
         self: *Checker,
         extends_expr: NodeId,
     ) CheckError!void {
+        if (try self.classExtendsCallHasInvalidTypeArgCount(extends_expr)) {
+            try self.report(
+                extends_expr,
+                TsCodes.base_constructor_type_arg_count,
+                "No base constructor has the specified number of type arguments.",
+            );
+            return;
+        }
         const static_t = (try self.classExtendsStaticType(extends_expr)) orelse return;
         var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer construct_sigs.deinit(self.gpa);
@@ -44773,6 +44782,7 @@ pub const Checker = struct {
                 try self.report(extends_expr, TsCodes.base_constructor_return_not_object, msg);
                 return;
             }
+            if (self.generic_signature_params.get(sig) != null) continue;
             if (first_ret == types.Primitive.none) {
                 first_ret = ret;
             } else if (!base_is_intersection and !self.baseConstructorReturnTypesMatch(first_ret, ret)) {
@@ -45333,8 +45343,40 @@ pub const Checker = struct {
                 if (try self.constructReturnType(static_t)) |_| break :blk static_t;
                 break :blk null;
             },
+            .call_expr => blk: {
+                const static_t = try self.classExtendsCallStaticType(extends_expr);
+                if (try self.constructReturnType(static_t)) |_| break :blk static_t;
+                break :blk null;
+            },
             else => null,
         };
+    }
+
+    fn classExtendsCallStaticType(self: *Checker, extends_expr: NodeId) CheckError!TypeId {
+        const type_args = hir_mod.callTypeArgs(self.hir, extends_expr);
+        if (type_args.len == 0) return self.checkExpression(extends_expr);
+        const callee = hir_mod.callOf(self.hir, extends_expr).callee;
+        const uninstantiated_t = try self.checkExpression(callee);
+        return self.filteredInstantiationExpressionType(extends_expr, uninstantiated_t, type_args);
+    }
+
+    fn classExtendsCallHasInvalidTypeArgCount(
+        self: *Checker,
+        extends_expr: NodeId,
+    ) CheckError!bool {
+        if (self.hir.kindOf(extends_expr) != .call_expr) return false;
+        const type_args = hir_mod.callTypeArgs(self.hir, extends_expr);
+        if (type_args.len == 0) return false;
+        const callee = hir_mod.callOf(self.hir, extends_expr).callee;
+        const uninstantiated_t = try self.checkExpression(callee);
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(uninstantiated_t, &construct_sigs);
+        if (construct_sigs.items.len == 0) return false;
+        for (construct_sigs.items) |sig| {
+            if (self.signatureTypeArgCountMatches(sig, type_args.len)) return false;
+        }
+        return true;
     }
 
     fn instantiateClassStaticHeritageType(
@@ -184395,6 +184437,34 @@ test "checker: class heritage constructors with different returns emit TS2510" {
         }
     }
     try T.expect(found_2510);
+}
+
+test "checker: class-like expression heritage validates constructor type args and returns" {
+    const s = try newSetup(
+        \\interface Base<T, U> { x: T; y: U; }
+        \\interface BaseConstructor {
+        \\  new (x: string, y: string): Base<string, string>;
+        \\  new <T>(x: T): Base<T, T>;
+        \\  new <T>(x: T, y: T): Base<T, T>;
+        \\  new <T, U>(x: T, y: U): Base<T, U>;
+        \\}
+        \\declare function getBase(): BaseConstructor;
+        \\class D1 extends getBase() {}
+        \\class D2 extends getBase()<number> {}
+        \\class D3 extends getBase()<string, number> {}
+        \\class D4 extends getBase()<string, string, string> {}
+        \\interface BadBaseConstructor {
+        \\  new (x: string): Base<string, string>;
+        \\  new (x: number): Base<number, number>;
+        \\}
+        \\declare function getBadBase(): BadBaseConstructor;
+        \\class D5 extends getBadBase() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.base_constructor_type_arg_count));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.base_constructor_returns_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_signatures_for_type_arg_list));
 }
 
 test "checker: abstract constructor assigned to non-abstract constructor emits TS2517 chain" {

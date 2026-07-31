@@ -5348,6 +5348,16 @@ pub const Parser = struct {
                     );
                 } else if (self.hir.kindOf(extends) == .member_access) {
                     extends = try self.memberAccessToTypeRef(extends, args);
+                } else if (self.hir.kindOf(extends) == .call_expr) {
+                    extends = try self.builder.addCallWithTypeArgs(
+                        .{
+                            .start = self.hir.spanOf(extends).start,
+                            .end = self.tokens[self.cursor - 1].span.end,
+                        },
+                        extends,
+                        &.{},
+                        args,
+                    );
                 }
             }
             if (self.peek().kind == .comma) {
@@ -23204,6 +23214,19 @@ test "parser: class extends generic instantiation" {
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(cl.extends));
     const ext = hir_mod.typeRefOf(&s.hir, cl.extends);
     try T.expectEqual(@as(u16, 1), ext.args_len);
+}
+
+test "parser: class extends call result generic instantiation" {
+    var s = try newTestSetup("class Bar extends getBase()<string, number> {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const cl = hir_mod.classOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(cl.extends));
+    try T.expectEqual(@as(usize, 2), hir_mod.callTypeArgs(&s.hir, cl.extends).len);
+    const outer = hir_mod.callOf(&s.hir, cl.extends);
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(outer.callee));
+    try T.expectEqual(@as(usize, 0), hir_mod.callTypeArgs(&s.hir, outer.callee).len);
 }
 
 test "parser: new expression accepts explicit type arguments" {
