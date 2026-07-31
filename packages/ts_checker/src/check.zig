@@ -6541,7 +6541,13 @@ pub const Checker = struct {
                         ret_t != types.Primitive.never)
                     {
                         const target_t = self.typeParameterConstraint(instance_t) orelse instance_t;
-                        if (!(try self.checkerAssignableTo(ret_t, target_t))) {
+                        if (try self.reportConstructorObjectLiteralTypeParameterMismatch(r.value, target_t)) {
+                            try self.report(
+                                node,
+                                TsCodes.constructor_return_type_must_be_assignable,
+                                "Return type of constructor signature must be assignable to the instance type of the class.",
+                            );
+                        } else if (!(try self.checkerAssignableTo(ret_t, target_t))) {
                             try self.reportTypeNotAssignable(node, ret_t, target_t, "Type is not assignable to constructor instance type.");
                             try self.report(
                                 node,
@@ -33390,6 +33396,25 @@ pub const Checker = struct {
         // Mirrors `redefinedPararameterProperty.ts(6,14)`.
         var preseeded_param_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer preseeded_param_property_names.deinit(self.gpa);
+        var parameter_property_field_redeclarations: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer parameter_property_field_redeclarations.deinit(self.gpa);
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.is_static or op.is_method or op.key == hir_mod.none_node_id) continue;
+            const op_is_computed = op.is_computed or self.nodeIsBracketedComputedName(op.key) or self.memberSourceLooksComputed(m);
+            const member_name = (try self.classMemberNameFromPropertyKey(op.key, op_is_computed)) orelse continue;
+            try parameter_property_field_redeclarations.put(self.gpa, member_name, {});
+            if (ctor_param_property_merges.contains(member_name)) continue;
+            var modifier_key: u8 = 0;
+            if (op.visibility == .private) modifier_key |= 1;
+            if (op.visibility == .protected) modifier_key |= 2;
+            if (self.classMemberSourceHasLeadingKeyword(m, "readonly")) modifier_key |= 4;
+            try ctor_param_property_merges.put(self.gpa, member_name, .{
+                .first_name_node = op.key,
+                .first_modifier_key = modifier_key,
+            });
+        }
         for (members) |m| {
             const k = self.hir.kindOf(m);
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
@@ -33402,6 +33427,7 @@ pub const Checker = struct {
                 if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
                 const pid = hir_mod.identifierOf(self.hir, pp.name);
                 try parameter_property_names.put(self.gpa, pid.name, {});
+                if (parameter_property_field_redeclarations.contains(pid.name)) continue;
                 try instance_member_names_local.put(self.gpa, pid.name, {});
                 // Seed `instance_members` with the param-property's
                 // declared type so `this.<name>` access type-checks.
@@ -33733,7 +33759,9 @@ pub const Checker = struct {
                                 // by the pre-scan ÃÂ¢ÃÂÃÂ keeps
                                 // `instance_members` from collecting
                                 // duplicate entries.
-                                if (!preseeded_param_property_names.contains(pid.name)) {
+                                if (!preseeded_param_property_names.contains(pid.name) and
+                                    !parameter_property_field_redeclarations.contains(pid.name))
+                                {
                                     try instance_members.append(self.gpa, .{
                                         .name = pid.name,
                                         .type = param_t,
@@ -33747,11 +33775,13 @@ pub const Checker = struct {
                                 try parameter_property_names.put(self.gpa, pid.name, {});
                                 try own_member_names.put(self.gpa, pid.name, {});
                                 try instance_member_names_local.put(self.gpa, pid.name, {});
-                                if (pp.flags.is_private) {
-                                    try private_names.put(self.gpa, pid.name, {});
-                                    try self.recordUnusedPrivateMemberCandidate(&unused_private_member_candidates, pid.name, pp.name);
+                                if (!parameter_property_field_redeclarations.contains(pid.name)) {
+                                    if (pp.flags.is_private) {
+                                        try private_names.put(self.gpa, pid.name, {});
+                                        try self.recordUnusedPrivateMemberCandidate(&unused_private_member_candidates, pid.name, pp.name);
+                                    }
+                                    if (pp.flags.is_protected) try protected_names.put(self.gpa, pid.name, {});
                                 }
-                                if (pp.flags.is_protected) try protected_names.put(self.gpa, pid.name, {});
                                 // Anchor TS2610 at the parameter-property
                                 // name (`p` in `constructor(public p:
                                 // string)`) rather than the leading
@@ -139107,6 +139137,48 @@ pub const Checker = struct {
         return try self.objectLiteralAssignableToTargetInner(arg_node, arg_t, target_t, true);
     }
 
+    fn reportConstructorObjectLiteralTypeParameterMismatch(
+        self: *Checker,
+        value_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (self.hir.kindOf(value_node) != .object_literal) return false;
+        if (!self.containsFreeTypeParameter(target_t)) return false;
+        if (!self.objectTypeMembersUsableForRelation(target_t)) return false;
+        for (self.interner.objectMembers(target_t)) |member| {
+            if (!self.containsFreeTypeParameter(member.type)) continue;
+            const property_node = self.findObjectLiteralPropNode(value_node, member.name) orelse continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            const property_value = property.value;
+            var source_t = self.hir.typeOf(property_value);
+            if (source_t == types.Primitive.none) source_t = try self.checkExpression(property_value);
+            if (source_t == member.type or
+                source_t == types.Primitive.any or
+                source_t == types.Primitive.unknown or
+                source_t == types.Primitive.never)
+            {
+                continue;
+            }
+            const target_is_type_parameter = member.type < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(member.type).is_type_parameter;
+            if (!target_is_type_parameter and
+                (self.engine.isAssignableTo(source_t, member.type) catch false))
+            {
+                continue;
+            }
+            const report_source = self.widenLiteralType(source_t);
+            try self.reportTypeNotAssignable(
+                property.key,
+                report_source,
+                member.type,
+                "Type is not assignable to constructor instance property.",
+            );
+            try self.attachExpectedTypeFromPropertyRelated(target_t, member);
+            return true;
+        }
+        return false;
+    }
+
     fn typeIdUsableForRelation(self: *Checker, t: TypeId) bool {
         return t != types.Primitive.none and (t < types.Primitive.first_dynamic or t < self.interner.pool.typeCount());
     }
@@ -167168,6 +167240,30 @@ test "checker: derived constructor returning null emits TS2322 and TS2409" {
     try T.expect(saw_constructor_return);
 }
 
+test "checker: generic constructor object returns preserve fixed class type parameters" {
+    const s = try newSetup(
+        \\class F<T> {
+        \\  x: T;
+        \\  constructor() { return { x: 1 }; }
+        \\}
+        \\class G<T> {
+        \\  x: T;
+        \\  constructor() { return { x: null as T }; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_return_type_must_be_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    var found_related = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        found_related = diagnostic.related.len == 1 and
+            diagnostic.related[0].code == TsCodes.expected_type_from_property;
+    }
+    try T.expect(found_related);
+}
+
 test "checker: super property access in non-derived class emits TS2335" {
     const s = try newSetup(
         \\class Box {
@@ -182978,6 +183074,34 @@ test "checker: constructor parameter property visibility controls access" {
     }
     try T.expect(private_found);
     try T.expect(protected_found);
+}
+
+test "checker: fields merged with parameter properties keep field visibility" {
+    const s = try newSetup(
+        \\class D {
+        \\  y: number;
+        \\  constructor(public y: number) {}
+        \\}
+        \\class E {
+        \\  y: number;
+        \\  constructor(private y: number) {}
+        \\}
+        \\class F {
+        \\  y: number;
+        \\  constructor(protected y: number) {}
+        \\}
+        \\declare const e: E;
+        \\declare const f: F;
+        \\e.y;
+        \\f.y;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_property_initialization = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.declarations_must_have_identical_modifiers));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.private_member_access));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.protected_member_access));
 }
 
 test "checker: public redeclaration of private parameter property emits TS2415" {
