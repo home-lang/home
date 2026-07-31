@@ -86912,8 +86912,15 @@ pub const Checker = struct {
                 }
                 var value_t = if (contextual_element_value_t != types.Primitive.none)
                     contextual_element_value_t
-                else
-                    try self.checkExpression(a.value);
+                else if (a.op == .logical_and and target_kind == .identifier) logical_rhs: {
+                    const target_id = hir_mod.identifierOf(self.hir, a.target);
+                    const current = self.lookupNarrow(target_id.name) orelse target_t;
+                    const truthy = try self.logicalOrTruthyType(current);
+                    try self.pushNarrowScope();
+                    defer self.popNarrowScope();
+                    if (truthy != types.Primitive.never) try self.recordNarrow(target_id.name, truthy);
+                    break :logical_rhs try self.checkExpression(a.value);
+                } else try self.checkExpression(a.value);
                 var assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
                     if (try self.jsDocTypeForPreviousIdentifierDecl(a.value)) |declared_t| break :blk_assign_value declared_t;
                     const value_id = hir_mod.identifierOf(self.hir, a.value);
@@ -87459,6 +87466,16 @@ pub const Checker = struct {
                 if (a.op == null) try self.checkGenericIndexedAssignment(a.target, a.value);
                 if (a.op == .logical_and) {
                     assignment_result_t = try self.logicalAndAssignmentResultType(a.value, target_t, value_t);
+                } else if (a.op == .logical_or or a.op == .nullish_coalesce) {
+                    const current_target_t = if (target_kind == .identifier)
+                        self.lookupNarrow(hir_mod.identifierOf(self.hir, a.target).name) orelse target_t
+                    else
+                        target_t;
+                    assignment_result_t = try self.logicalOrNullishAssignmentResultType(
+                        a.op.?,
+                        current_target_t,
+                        value_t,
+                    );
                 }
                 break :blk assignment_result_t;
             },
@@ -100522,21 +100539,27 @@ pub const Checker = struct {
         return false;
     }
 
-    /// Post-statement narrowing for logical assignments. Recognizes
-    /// the lowered shape `target = target <op> value` produced by
-    /// the parser for `??=`, `||=`, and `&&=`. After `x ??= "default"`
-    /// narrows `x` to its non-nullish type unioned with the rhs's
-    /// type. For `||=` we use a v0 approximation: subtract `null |
-    /// undefined` from the lhs and union with rhs's type. `&&=` does
-    /// not narrow on its own: when the lhs is nullish/falsy, the
-    /// assignment is skipped and the original value remains possible.
+    /// Post-statement narrowing for native `??=` / `||=` assignments.
+    /// Their assignment-expression type already combines the retained
+    /// LHS branch with the RHS, so it is also the target's flow type
+    /// after the statement. `&&=` keeps the original falsy branch and
+    /// therefore does not narrow on its own.
+    ///
+    /// The older lowered `target = target <op> value` shape remains
+    /// supported for HIR produced by external callers.
     fn applyLogicalAssignmentFlow(self: *Checker, stmt: NodeId) !void {
         if (self.hir.kindOf(stmt) != .assignment) return;
         const a = hir_mod.assignmentOf(self.hir, stmt);
-        if (a.op != null) return; // arithmetic compound assignment
         if (self.hir.kindOf(a.target) != .identifier) return;
-        if (self.hir.kindOf(a.value) != .logical_op) return;
         const target_id = hir_mod.identifierOf(self.hir, a.target);
+        if (a.op == .logical_or or a.op == .nullish_coalesce) {
+            var result_t = self.hir.typeOf(stmt);
+            if (result_t == types.Primitive.none) result_t = try self.checkExpression(stmt);
+            if (result_t != types.Primitive.none) try self.recordNarrow(target_id.name, result_t);
+            return;
+        }
+        if (a.op != null) return;
+        if (self.hir.kindOf(a.value) != .logical_op) return;
         const l = hir_mod.logicalOf(self.hir, a.value);
         // Only act when the operator's lhs is the same identifier as
         // the assignment target ÃÂ¢ÃÂÃÂ that's the lowered `x = x ?? rhs`
@@ -101860,6 +101883,26 @@ pub const Checker = struct {
                         }
                     }
                 }
+            }
+        }
+        if (self.hir.kindOf(cond) == .assignment) {
+            const a = hir_mod.assignmentOf(self.hir, cond);
+            const is_logical_assignment = a.op == .logical_or or
+                a.op == .logical_and or
+                a.op == .nullish_coalesce;
+            if (is_logical_assignment and self.hir.kindOf(a.target) == .identifier) {
+                const target_id = hir_mod.identifierOf(self.hir, a.target);
+                var result_t = self.hir.typeOf(cond);
+                if (result_t == types.Primitive.none) result_t = try self.checkExpression(cond);
+                const narrowed = if (when_true)
+                    self.subtractNullUndefined(result_t) catch result_t
+                else
+                    try self.logicalAndFalsyType(result_t);
+                if (narrowed != types.Primitive.none) try self.recordNarrow(target_id.name, narrowed);
+                if (when_true and a.op == .logical_and) {
+                    try self.applyTypeGuard(a.value, true);
+                }
+                return;
             }
         }
         // Bare-identifier truthiness narrowing: `if (x)` / `!x`.
@@ -149060,6 +149103,28 @@ pub const Checker = struct {
         return self.interner.internUnion(members.items) catch return error.OutOfMemory;
     }
 
+    fn logicalOrNullishAssignmentResultType(
+        self: *Checker,
+        op: hir_mod.BinOp,
+        target_t: TypeId,
+        rhs_t: TypeId,
+    ) CheckError!TypeId {
+        if (target_t == types.Primitive.none or
+            target_t == types.Primitive.any or
+            target_t == types.Primitive.unknown or
+            rhs_t == types.Primitive.none)
+        {
+            return rhs_t;
+        }
+        const retained_lhs = if (op == .logical_or)
+            try self.logicalOrTruthyType(target_t)
+        else
+            self.subtractNullUndefined(target_t) catch target_t;
+        if (retained_lhs == types.Primitive.never) return rhs_t;
+        if (retained_lhs == rhs_t) return rhs_t;
+        return self.interner.internUnion(&.{ retained_lhs, rhs_t }) catch return error.OutOfMemory;
+    }
+
     fn logicalAndAssignmentRhsResultType(self: *Checker, rhs_node: NodeId, fallback: TypeId) CheckError!TypeId {
         if (self.hir.kindOf(rhs_node) == .array_literal and hir_mod.arrayLiteralElements(self.hir, rhs_node).len == 0) {
             return self.interner.internArrayType(self.string_interner, types.Primitive.never) catch return error.OutOfMemory;
@@ -170553,6 +170618,48 @@ test "checker: &&= preserves nullish target possibility" {
         if (d.code == TsCodes.type_not_assignable) saw_assignability = true;
     }
     try T.expect(saw_assignability);
+}
+
+test "checker: native logical assignments narrow statements, RHS, and truthy branches" {
+    const s = try newSetup(
+        \\function arrays(xs: number[] | undefined) {
+        \\  (xs ||= []).push(1);
+        \\  xs ??= [];
+        \\  xs.push(2);
+        \\}
+        \\function callable(f?: () => void) {
+        \\  f ||= () => {};
+        \\  f();
+        \\}
+        \\function maybeCallable(f?: () => void) {
+        \\  f &&= () => {};
+        \\  f();
+        \\}
+        \\interface Thing { name: string; original?: Thing; }
+        \\function andBranch(thing: Thing | undefined, fallback: Thing | undefined) {
+        \\  if (thing &&= fallback) {
+        \\    thing.name;
+        \\    fallback.name;
+        \\  }
+        \\}
+        \\function orBranch(thing: Thing | undefined, fallback: Thing | undefined) {
+        \\  if (thing ||= fallback) {
+        \\    thing.name;
+        \\    fallback.name;
+        \\  }
+        \\}
+        \\function nullishBranch(thing: Thing | undefined, fallback: Thing | undefined) {
+        \\  if (thing ??= fallback) {
+        \\    thing.name;
+        \\    fallback.name;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_invoke_possibly_undefined));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
 
 test "checker: optional chaining widens the result with undefined" {
