@@ -19869,6 +19869,22 @@ pub const Checker = struct {
             std.mem.indexOf(u8, src, "@useDefineForClassFields:true") != null;
     }
 
+    fn sourceHasUseDefineForClassFieldsTrueOnlyDirective(self: *Checker) bool {
+        const src = self.source orelse return false;
+        const directive = "@useDefineForClassFields";
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, directive)) |pos| {
+            search_start = pos + directive.len;
+            const line_end = std.mem.indexOfScalarPos(u8, src, search_start, '\n') orelse src.len;
+            const line_tail = src[search_start..line_end];
+            const colon = std.mem.indexOfScalar(u8, line_tail, ':') orelse continue;
+            const value = std.mem.trim(u8, line_tail[colon + 1 ..], " \t\r");
+            if (!std.mem.startsWith(u8, value, "true")) continue;
+            if (value.len == "true".len or value["true".len] != ',') return true;
+        }
+        return false;
+    }
+
     fn sourceHasReactJsxReference(self: *Checker) bool {
         const src = self.source orelse return false;
         return std.mem.indexOf(u8, src, "/.lib/react") != null;
@@ -29000,10 +29016,14 @@ pub const Checker = struct {
             // Mirrors tsc `reportImplicitAny`'s `errorOrSuggestion`.
             const param_implicit_any_report = self.strict_flags.no_implicit_any or
                 (self.emit_implicit_any_suggestions and !self.strict_flags.no_implicit_any);
+            const constructor_default_infers_this = f.flags.is_constructor and
+                pp.default_value != hir_mod.none_node_id and
+                self.expressionContainsThis(pp.default_value);
             if (!has_anno and !has_jsdoc_param_type and jsdoc_context_param_t == null and
                 !inferred_from_default and param_implicit_any_report and
                 !default_is_await_error_placeholder and
                 !default_is_yield_in_param_initializer and
+                !constructor_default_infers_this and
                 !accessor_has_invalid_this and
                 !self.parameterInEs5ObjectLiteralSetterWithSuper(p) and
                 !(self.functionOrOwnerHasLeadingJsDocParamOrTypeTag(node) and
@@ -33822,6 +33842,13 @@ pub const Checker = struct {
                     try self.reportJsDocAccessibilityOnPrivateIdentifier(m, fn_p.name, member_name);
                     const method_predicate = self.signature_predicates.get(sig);
                     if (fn_p.flags.is_static) {
+                        try self.reportStaticFunctionPropertyConflict(
+                            node,
+                            fn_p.name,
+                            member_name,
+                            fn_name_is_computed,
+                            !fn_p.flags.is_getter and !fn_p.flags.is_setter,
+                        );
                         try static_names.put(self.gpa, member_name, m);
                     }
                     // Skip implicit-override TS4114 in ambient classes
@@ -34451,36 +34478,13 @@ pub const Checker = struct {
                         try static_member_names_local.put(self.gpa, member_name, {});
                         if (field_vis == .private) try static_private_names.put(self.gpa, member_name, {});
                         if (field_vis == .protected) try static_protected_names.put(self.gpa, member_name, {});
-                        // TS2699: `static prototype` shadows the
-                        // implicit `Function.prototype` slot on the
-                        // class constructor. tsc rejects this
-                        // unconditionally regardless of declared
-                        // type. Mirrors fixture
-                        // `propertyNamedPrototype.ts(3,12)`. Anchored
-                        // at the property name (op.key) to match the
-                        // baseline column. Suppress in ambient context
-                        // (declare class / `.d.ts` virtual section) ÃÂ¢ÃÂÃÂ
-                        // ambient declarations describe an external
-                        // construction and tsc omits the conflict there.
-                        if (!op_is_computed and !self.classHasLeadingDeclare(node) and !self.virtualSectionIsDeclarationFile(node)) {
-                            const proto_str = self.string_interner.get(member_name);
-                            if (std.mem.eql(u8, proto_str, "prototype")) {
-                                const class_name_str: []const u8 = if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier)
-                                    self.string_interner.get(hir_mod.identifierOf(self.hir, c.name).name)
-                                else
-                                    "(Anonymous class)";
-                                const msg = try std.fmt.allocPrint(
-                                    self.diag_arena.allocator(),
-                                    "Static property 'prototype' conflicts with built-in property 'Function.prototype' of constructor function '{s}'.",
-                                    .{class_name_str},
-                                );
-                                try self.diagnostics.append(self.gpa, .{
-                                    .node = op.key,
-                                    .code = TsCodes.static_prototype_conflict,
-                                    .message = msg,
-                                });
-                            }
-                        }
+                        try self.reportStaticFunctionPropertyConflict(
+                            node,
+                            op.key,
+                            member_name,
+                            op_is_computed,
+                            op_is_method,
+                        );
                     } else {
                         try instance_member_names_local.put(self.gpa, member_name, {});
                     }
@@ -40735,6 +40739,16 @@ pub const Checker = struct {
                         break :blk try self.enumNumberToStringId(value);
                     }
                     if (self.enum_member_string_values.get(enum_key)) |value| break :blk value;
+                    const key_t = if (self.hir.typeOf(key) != types.Primitive.none)
+                        self.hir.typeOf(key)
+                    else
+                        self.checkExpression(key) catch types.Primitive.any;
+                    if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_literal) {
+                        switch (self.interner.literalOf(key_t)) {
+                            .string_lit => |sid| break :blk sid,
+                            else => {},
+                        }
+                    }
                     const raw = std.mem.trim(u8, self.nodeSourceTextOrEmpty(key), " \t\r\n");
                     if (!self.sourceHasUniqueSymbolDeclaration(raw)) break :blk null;
                     const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{raw});
@@ -40764,6 +40778,77 @@ pub const Checker = struct {
             },
             else => null,
         };
+    }
+
+    fn classConstructorFunctionDiagnosticName(self: *Checker, class_node: NodeId) []const u8 {
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+            return self.string_interner.get(hir_mod.identifierOf(self.hir, c.name).name);
+        }
+        const parent = self.hir.parentOf(class_node);
+        if (parent != hir_mod.none_node_id) {
+            const parent_kind = self.hir.kindOf(parent);
+            if (parent_kind == .var_decl or parent_kind == .let_decl or parent_kind == .const_decl) {
+                const v = hir_mod.varDeclOf(self.hir, parent);
+                if (v.init == class_node and
+                    v.name != hir_mod.none_node_id and
+                    self.hir.kindOf(v.name) == .identifier)
+                {
+                    return self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name);
+                }
+            }
+        }
+        return "(Anonymous class)";
+    }
+
+    fn reportStaticFunctionPropertyConflict(
+        self: *Checker,
+        class_node: NodeId,
+        key: NodeId,
+        member_name: hir_mod.StringId,
+        is_computed: bool,
+        is_method: bool,
+    ) CheckError!void {
+        if (self.classHasLeadingDeclare(class_node) or
+            self.classNodeIsInsideAmbientDeclaredModule(class_node) or
+            self.virtualSectionIsDeclarationFile(class_node))
+        {
+            return;
+        }
+
+        const property_name = self.string_interner.get(member_name);
+        const is_prototype = std.mem.eql(u8, property_name, "prototype");
+        const is_function_builtin = is_prototype or
+            std.mem.eql(u8, property_name, "name") or
+            std.mem.eql(u8, property_name, "length") or
+            std.mem.eql(u8, property_name, "caller") or
+            std.mem.eql(u8, property_name, "arguments");
+        if (!is_function_builtin) return;
+        // Native define semantics may replace writable/configurable Function
+        // properties, but `prototype` is always the class's own built-in slot.
+        if (!is_prototype and self.sourceHasUseDefineForClassFieldsTrueOnlyDirective()) return;
+
+        const pos = if (is_computed) self.computedKeyBracketPos(key) else null;
+        if (is_prototype and is_method) {
+            const duplicate_name = if (is_computed) blk: {
+                const inner = self.computedKeyIdentifierText(key) orelse self.nodeSourceTextOrEmpty(key);
+                break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{inner});
+            } else property_name;
+            const duplicate_msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Duplicate identifier '{s}'.",
+                .{duplicate_name},
+            );
+            try self.reportAt(key, pos, TsCodes.duplicate_identifier, duplicate_msg);
+        }
+
+        const class_name = self.classConstructorFunctionDiagnosticName(class_node);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Static property '{s}' conflicts with built-in property 'Function.{s}' of constructor function '{s}'.",
+            .{ property_name, property_name, class_name },
+        );
+        try self.reportAt(key, pos, TsCodes.static_prototype_conflict, msg);
     }
 
     fn interfaceMemberNameForObjectType(self: *Checker, member: NodeId, im: hir_mod.InterfaceMemberPayload) CheckError!?hir_mod.StringId {
@@ -103449,6 +103534,11 @@ pub const Checker = struct {
         in_type: bool = false,
     };
 
+    const ConstructorLocalKind = enum {
+        plain,
+        parameter_property,
+    };
+
     fn constructorFieldLocalRef(self: *Checker, node: NodeId, name: hir_mod.StringId) ?ConstructorFieldLocalRef {
         if (self.isDeclNameSlot(node)) return null;
         if (self.sourceHasUseDefineForClassFieldsTrueDirective()) return null;
@@ -103458,7 +103548,11 @@ pub const Checker = struct {
             prev = cur;
             cur = self.hir.parentOf(cur);
         }) {
-            if (self.hir.kindOf(cur) != .object_property) continue;
+            const cur_kind = self.hir.kindOf(cur);
+            if (cur_kind == .fn_decl or cur_kind == .fn_expr or cur_kind == .arrow_fn) {
+                if (self.functionLocalsContain(cur, name)) return null;
+            }
+            if (cur_kind != .object_property) continue;
             const class_node = self.hir.parentOf(cur);
             if (class_node == hir_mod.none_node_id) continue;
             const class_kind = self.hir.kindOf(class_node);
@@ -103472,13 +103566,17 @@ pub const Checker = struct {
             const in_type = op.type_annotation != hir_mod.none_node_id and prev == op.type_annotation;
             if (!in_type and op.value == hir_mod.none_node_id) return null;
             const field_name = (self.classMemberNameFromPropertyKey(op.key, op.is_computed) catch null) orelse return null;
-            if (!self.classConstructorLocalsContain(class_node, name)) return null;
+            const local_kind = self.classConstructorLocalKind(class_node, name) orelse return null;
+            // A parameter property is also an instance member. In a value
+            // initializer, `x` is therefore diagnosed through TS2663 with
+            // the `this.x` suggestion; type queries retain TS2844.
+            if (!in_type and local_kind == .parameter_property) return null;
             return .{ .field_name = field_name, .in_type = in_type };
         }
         return null;
     }
 
-    fn classConstructorLocalsContain(self: *Checker, class_node: NodeId, name: hir_mod.StringId) bool {
+    fn classConstructorLocalKind(self: *Checker, class_node: NodeId, name: hir_mod.StringId) ?ConstructorLocalKind {
         var locals: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer locals.deinit(self.gpa);
         for (hir_mod.classMembers(self.hir, class_node)) |member| {
@@ -103489,11 +103587,31 @@ pub const Checker = struct {
             for (hir_mod.fnParams(self.hir, member)) |param| {
                 if (self.hir.kindOf(param) != .parameter) continue;
                 const p = hir_mod.parameterOf(self.hir, param);
-                self.collectBindingNames(p.name, &locals) catch return false;
+                locals.clearRetainingCapacity();
+                self.collectBindingNames(p.name, &locals) catch return null;
+                if (locals.contains(name)) {
+                    return if (p.flags.is_parameter_property) .parameter_property else .plain;
+                }
             }
-            self.collectConstructorLocalNames(f.body, &locals) catch return false;
+            locals.clearRetainingCapacity();
+            self.collectConstructorLocalNames(f.body, &locals) catch return null;
+            if (locals.contains(name)) return .plain;
             break;
         }
+        return null;
+    }
+
+    fn functionLocalsContain(self: *Checker, fn_node: NodeId, name: hir_mod.StringId) bool {
+        var locals: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer locals.deinit(self.gpa);
+        for (hir_mod.fnParams(self.hir, fn_node)) |param| {
+            if (self.hir.kindOf(param) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, param);
+            self.collectBindingNames(p.name, &locals) catch return false;
+        }
+        if (locals.contains(name)) return true;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        self.collectConstructorLocalNames(f.body, &locals) catch return false;
         return locals.contains(name);
     }
 
@@ -103589,6 +103707,14 @@ pub const Checker = struct {
         // path. Mirrors upstream `privateNameInInExpression*`
         // baselines which expect no TS2304 here.
         if (std.mem.startsWith(u8, name_str, "#") and self.privateIdentifierIsInExpressionLhs(node)) {
+            return types.Primitive.any;
+        }
+        // Field initializers are evaluated in the constructor's lexical
+        // environment under legacy class-field semantics. Check this before
+        // narrow/module lookup so an outer binding with the same name cannot
+        // hide the constructor-local TS2301.
+        if (self.constructorFieldLocalRef(node, id.name)) |info| {
+            self.reportFieldInitializerConstructorLocalOnce(node, info, id.name) catch {};
             return types.Primitive.any;
         }
         if (is_this and
@@ -104233,10 +104359,6 @@ pub const Checker = struct {
                     }
                 }
             }
-        }
-        if (self.constructorFieldLocalRef(node, id.name)) |info| {
-            self.reportFieldInitializerConstructorLocalOnce(node, info, id.name) catch {};
-            return types.Primitive.any;
         }
         if (self.identifierIsExportEqualsTarget(node)) {
             if (self.findNamedDeclInVirtualSection(node, id.name)) |decl| {
@@ -153921,6 +154043,39 @@ test "checker: constructor local TS2301 respects static fields and local arrow p
     }
 }
 
+test "checker: constructor locals shadow outer bindings before value lookup" {
+    const b = try newBoundSetup(
+        \\var x = 1;
+        \\class C {
+        \\    field = x;
+        \\    constructor(x: string) {}
+        \\}
+        \\class D {
+        \\    field = y;
+        \\    constructor(public y: number) {}
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.field_initializer_constructor_local));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name_instance_member));
+}
+
+test "checker: constructor this defaults infer parameter types without TS7006" {
+    const b = try newBoundSetup(
+        \\class C {
+        \\    constructor(x = this) {}
+        \\}
+        \\class D extends C {
+        \\    constructor(y = this) { super(); }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.parameter_implicitly_any));
+    try T.expect(checkerCountCode(b.base, TsCodes.this_before_super_call) > 0);
+}
+
 test "checker: class field named 'constructor' emits TS18006" {
     const b = try newBoundSetup(
         \\class X1 {
@@ -183000,6 +183155,49 @@ test "checker: static prototype member emits TS2699 conflict" {
     }
     try T.expectEqual(@as(usize, 1), conflict_count);
     try T.expect(saw_class_name);
+}
+
+test "checker: legacy static Function properties include computed methods and inferred class names" {
+    const s = try newSetup(
+        \\// @useDefineForClassFields: true,false
+        \\const Names = { length: "length", prototype: "prototype" } as const;
+        \\class Named {
+        \\  static name: number;
+        \\  static [Names.length](): void {}
+        \\}
+        \\const Inferred = class {
+        \\  static prototype(): void {}
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.static_prototype_conflict));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.duplicate_identifier));
+    const prototype_message = checkerFirstMessageForCode(s, TsCodes.static_prototype_conflict) orelse return error.MissingDiagnostic;
+    try T.expect(std.mem.indexOf(u8, prototype_message, "Function.") != null);
+    var saw_inferred = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.static_prototype_conflict and
+            std.mem.indexOf(u8, d.message, "constructor function 'Inferred'") != null)
+        {
+            saw_inferred = true;
+        }
+    }
+    try T.expect(saw_inferred);
+}
+
+test "checker: define class fields only retain the static prototype conflict" {
+    const s = try newSetup(
+        \\// @useDefineForClassFields: true
+        \\class C {
+        \\  static name: string;
+        \\  static length(): void {}
+        \\  static prototype: C;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.static_prototype_conflict));
 }
 
 test "checker: instance-level prototype member does NOT emit TS2699" {

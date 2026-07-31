@@ -8747,6 +8747,7 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
+            const default_token = self.tokens[self.cursor - 1];
             if (self.peek().kind == .at) {
                 const dec_start = self.peek();
                 const dec_expr = try self.parseDecoratorExpression();
@@ -8789,7 +8790,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(start.span.start, start.line, 1258, "A default export must be at the top level of a file or module declaration.");
             }
             if (!self.moduleElementContextIsIllegal() and self.namespace_depth > 0 and self.ambient_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an ECMAScript-style module.");
+                try self.reportCodeAt(default_token.span.start, default_token.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
             // `export default` may be followed by a class/function
             // *declaration* (no statement-terminator) — those have
@@ -23785,16 +23786,21 @@ test "parser: export named string-literal module export names" {
 }
 
 test "parser: namespace export assignment forms report diagnostics" {
-    var s = try newTestSetup(
+    const src =
         \\namespace M { export = A; }
         \\namespace N { export default value; }
-    );
+    ;
+    var s = try newTestSetup(src);
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1063), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(
+        @as(u32, @intCast(std.mem.lastIndexOf(u8, src, "default").?)),
+        s.parser.diagnostics.items[1].pos,
+    );
     try T.expectEqualStrings("A default export can only be used in an ECMAScript-style module.", s.parser.diagnostics.items[1].message);
 }
 
