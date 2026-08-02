@@ -33862,7 +33862,9 @@ pub const Checker = struct {
                         }
                         if (fn_name_is_computed and (fn_p.flags.is_getter or fn_p.flags.is_setter)) {
                             const accessor_t: TypeId = if (fn_p.flags.is_getter) blk: {
-                                var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+                                var getter_t = self.pairedSetterContextualReturnType(m) orelse
+                                    self.interner.signatureReturn(sig) orelse
+                                    types.Primitive.any;
                                 if (getter_t == types.Primitive.any and
                                     fn_p.return_type == hir_mod.none_node_id and
                                     !has_binding_pattern_parameter_property)
@@ -34026,7 +34028,9 @@ pub const Checker = struct {
                         }
                         const accessor_t: TypeId = blk: {
                             if (fn_p.flags.is_getter) {
-                                var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+                                var getter_t = self.pairedSetterContextualReturnType(m) orelse
+                                    self.interner.signatureReturn(sig) orelse
+                                    types.Primitive.any;
                                 if (getter_t == types.Primitive.any and
                                     fn_p.return_type == hir_mod.none_node_id and
                                     !has_binding_pattern_parameter_property)
@@ -39690,7 +39694,7 @@ pub const Checker = struct {
         }
     }
 
-    fn classAccessorSetterAssignmentType(self: *Checker, target: NodeId) ?TypeId {
+    fn classAccessorSetterAssignmentType(self: *Checker, target: NodeId) CheckError!?TypeId {
         if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
         const m = hir_mod.memberOf(self.hir, target);
         var obj_t = self.hir.typeOf(m.object);
@@ -39698,6 +39702,7 @@ pub const Checker = struct {
         if (obj_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(obj_t).is_type_parameter) {
             obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
         }
+        if (try self.concretePairedGetterType(obj_t, m.name)) |setter_t| return setter_t;
         if (self.class_name_by_instance.get(obj_t)) |class_name| {
             const setter_t = self.class_accessor_setter_types.get(.{
                 .class_name = class_name,
@@ -44486,6 +44491,9 @@ pub const Checker = struct {
                 if (r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "Iterator")) {
                     break :blk try self.iteratorInstanceType();
                 }
+                if (r.qualifier_len == 0 and r.args_len > 0) {
+                    if (try self.instantiateClassInstanceHeritageType(r.name, extends_expr)) |t| break :blk t;
+                }
                 break :blk try self.lowererLowerWithTypeParams(extends_expr);
             },
             .class_decl, .class_expr => blk: {
@@ -44534,6 +44542,27 @@ pub const Checker = struct {
             if (self.interner.signatureReturn(effective_sig)) |instance_t| return instance_t;
         }
         return null;
+    }
+
+    fn instantiateClassInstanceHeritageType(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        type_ref_node: NodeId,
+    ) CheckError!?TypeId {
+        const info = self.generic_aliases.get(class_name) orelse return null;
+        if (info.params.len == 0) return null;
+        const arg_nodes = hir_mod.typeRefArgs(self.hir, type_ref_node);
+        if (arg_nodes.len != info.params.len) return null;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        const count = @min(info.params.len, arg_nodes.len);
+        for (0..count) |i| {
+            const arg_t = try self.lowererLowerWithTypeParams(arg_nodes[i]);
+            try self.checkTypeArgSatisfiesConstraint(arg_nodes[i], info.params[i], arg_t);
+            try subs.put(self.gpa, info.params[i], arg_t);
+        }
+        if (subs.count() == 0) return null;
+        return try self.substituteTypeNoCycles(info.body, &subs);
     }
 
     fn classExtendsAbstractConstructTypeVariable(self: *Checker, extends_expr: NodeId) CheckError!bool {
@@ -84371,12 +84400,109 @@ pub const Checker = struct {
     }
 
     fn reportGetterNotCallable(self: *Checker, callee: NodeId, callee_t: TypeId) CheckError!void {
-        try self.reportNotCallableWithNoCallSignaturesMessage(
-            callee,
-            callee_t,
-            TsCodes.get_accessor_not_callable,
-            "This expression is not callable because it is a 'get' accessor. Did you mean to use it without '()'?",
-        );
+        const chain = try self.notCallableNoCallSignaturesChain(callee_t);
+        try self.diagnostics.append(self.gpa, .{
+            .node = callee,
+            .pos = self.memberAccessNamePos(callee),
+            .code = TsCodes.get_accessor_not_callable,
+            .message = try self.diag_arena.allocator().dupe(u8, "This expression is not callable because it is a 'get' accessor. Did you mean to use it without '()'?"),
+            .chain = chain,
+        });
+    }
+
+    fn classGetterDeclaringClass(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        is_static: bool,
+    ) ?hir_mod.StringId {
+        var probe: ?hir_mod.StringId = class_name;
+        var depth: u8 = 0;
+        while (probe) |current| : (depth += 1) {
+            if (depth >= 32) return null;
+            const getters = if (is_static)
+                self.class_static_getter_members.getPtr(current)
+            else
+                self.class_getter_members.getPtr(current);
+            if (getters) |set| {
+                if (set.contains(member_name)) return current;
+            }
+            const own_members = if (is_static)
+                self.class_static_member_names.getPtr(current)
+            else
+                self.class_instance_member_names.getPtr(current);
+            if (own_members) |members| {
+                if (members.contains(member_name)) return null;
+            }
+            probe = self.class_parent.get(current);
+        }
+        return null;
+    }
+
+    fn objectTypeMemberIsGetter(
+        self: *Checker,
+        object_t: TypeId,
+        member_name: hir_mod.StringId,
+        is_static: bool,
+    ) bool {
+        if (object_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(object_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(object_t)) |member_t| {
+                if (self.objectTypeMemberIsGetter(member_t, member_name, is_static)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(object_t)) |member| {
+            if (member.name != member_name or member.decl_node == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(member.decl_node);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return false;
+            const declaration = hir_mod.fnDeclOf(self.hir, member.decl_node);
+            return declaration.flags.is_getter and declaration.flags.is_static == is_static;
+        }
+        return false;
+    }
+
+    fn concretePairedGetterType(
+        self: *Checker,
+        receiver_t: TypeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (receiver_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(receiver_t).is_object_type) return null;
+        var getter_decl = hir_mod.none_node_id;
+        for (self.interner.objectMembers(receiver_t)) |member| {
+            if (member.name != member_name or member.decl_node == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(member.decl_node);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
+            if (!hir_mod.fnDeclOf(self.hir, member.decl_node).flags.is_getter) return null;
+            getter_decl = member.decl_node;
+            break;
+        }
+        if (getter_decl == hir_mod.none_node_id) return null;
+        const class_node = self.memberDeclaringClassNode(getter_decl);
+        if (class_node == hir_mod.none_node_id) return null;
+        const class_payload = hir_mod.classOf(self.hir, class_node);
+        if (class_payload.name == hir_mod.none_node_id or self.hir.kindOf(class_payload.name) != .identifier) return null;
+        const declaring_class = hir_mod.identifierOf(self.hir, class_payload.name).name;
+        const setter_t = self.class_accessor_setter_types.get(.{
+            .class_name = declaring_class,
+            .member_name = member_name,
+            .is_static = false,
+        }) orelse return null;
+        const args = self.alias_type_args.get(receiver_t) orelse return setter_t;
+        const receiver_class = self.classNameForInstanceType(receiver_t) orelse
+            (try self.genericInstanceBaseName(receiver_t)) orelse return setter_t;
+        const receiver_info = self.generic_aliases.get(receiver_class) orelse return setter_t;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        for (receiver_info.params, 0..) |param_t, i| {
+            if (i >= args.len) break;
+            try subs.put(self.gpa, param_t, args[i]);
+        }
+        try self.extendSubstitutionsByMatchingTypeParamNames(setter_t, receiver_info.params, &subs);
+        return self.substituteType(setter_t, &subs) catch setter_t;
     }
 
     fn callExprCalleeIsZeroArgGetterAccess(self: *Checker, call_node: NodeId, callee: NodeId) bool {
@@ -84387,31 +84513,15 @@ pub const Checker = struct {
         var obj_t = self.hir.typeOf(member.object);
         if (obj_t == types.Primitive.none) return false;
         obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
-        if (self.class_name_by_instance.get(obj_t)) |class_name| {
-            if (self.class_getter_members.getPtr(class_name)) |getters| {
-                if (getters.contains(member.name) and
-                    !self.class_accessor_setter_types.contains(.{
-                        .class_name = class_name,
-                        .member_name = member.name,
-                        .is_static = false,
-                    }))
-                {
-                    return true;
-                }
-            }
+        if (self.objectTypeMemberIsGetter(obj_t, member.name, false)) return true;
+        if (self.objectTypeMemberIsGetter(obj_t, member.name, true)) return true;
+        const instance_class_name = self.classNameForInstanceType(obj_t) orelse
+            (self.genericInstanceBaseName(obj_t) catch null);
+        if (instance_class_name) |class_name| {
+            if (self.classGetterDeclaringClass(class_name, member.name, false) != null) return true;
         }
         if (self.class_name_by_static.get(obj_t)) |class_name| {
-            if (self.class_static_getter_members.getPtr(class_name)) |getters| {
-                if (getters.contains(member.name) and
-                    !self.class_accessor_setter_types.contains(.{
-                        .class_name = class_name,
-                        .member_name = member.name,
-                        .is_static = true,
-                    }))
-                {
-                    return true;
-                }
-            }
+            if (self.classGetterDeclaringClass(class_name, member.name, true) != null) return true;
         }
         return false;
     }
@@ -84424,25 +84534,23 @@ pub const Checker = struct {
         var obj_t = self.hir.typeOf(member.object);
         if (obj_t == types.Primitive.none) return false;
         obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
-        if (self.class_name_by_instance.get(obj_t)) |class_name| {
-            if (self.class_getter_members.getPtr(class_name)) |getters| {
-                return getters.contains(member.name) and
-                    self.class_accessor_setter_types.contains(.{
-                        .class_name = class_name,
-                        .member_name = member.name,
-                        .is_static = false,
-                    });
-            }
+        const instance_class_name = self.classNameForInstanceType(obj_t) orelse
+            (self.genericInstanceBaseName(obj_t) catch null);
+        if (instance_class_name) |class_name| {
+            const declaring_class = self.classGetterDeclaringClass(class_name, member.name, false) orelse return false;
+            return self.class_accessor_setter_types.contains(.{
+                .class_name = declaring_class,
+                .member_name = member.name,
+                .is_static = false,
+            });
         }
         if (self.class_name_by_static.get(obj_t)) |class_name| {
-            if (self.class_static_getter_members.getPtr(class_name)) |getters| {
-                return getters.contains(member.name) and
-                    self.class_accessor_setter_types.contains(.{
-                        .class_name = class_name,
-                        .member_name = member.name,
-                        .is_static = true,
-                    });
-            }
+            const declaring_class = self.classGetterDeclaringClass(class_name, member.name, true) orelse return false;
+            return self.class_accessor_setter_types.contains(.{
+                .class_name = declaring_class,
+                .member_name = member.name,
+                .is_static = true,
+            });
         }
         return false;
     }
@@ -86566,6 +86674,11 @@ pub const Checker = struct {
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         try self.inferCallSubstitutions(constructor_sig, args, arg_types, &subs);
+        var inferred_params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer inferred_params.deinit(self.gpa);
+        var inferred_it = subs.keyIterator();
+        while (inferred_it.next()) |param| try inferred_params.append(self.gpa, param.*);
+        try self.extendSubstitutionsByMatchingTypeParamNames(info.body, inferred_params.items, &subs);
         try self.normalizeGenericClassInferenceSubstitutions(info, &subs);
         return try self.instantiateGenericClassWithSubstitutions(class_name, info, &subs);
     }
@@ -86596,6 +86709,7 @@ pub const Checker = struct {
         for (info.params) |param| {
             const candidate = subs.get(param) orelse continue;
             const raw_constraint = self.typeParameterConstraint(param) orelse continue;
+            if (raw_constraint == types.Primitive.unknown or raw_constraint == types.Primitive.any) continue;
             const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
             if (self.engine.isAssignableTo(candidate, constraint) catch false) continue;
             try subs.put(self.gpa, param, constraint);
@@ -86795,7 +86909,7 @@ pub const Checker = struct {
                             }
                         }
                     }
-                    if (self.classAccessorSetterAssignmentType(a.target)) |setter_t| {
+                    if (try self.classAccessorSetterAssignmentType(a.target)) |setter_t| {
                         target_t = setter_t;
                     }
                 }
@@ -87946,6 +88060,7 @@ pub const Checker = struct {
                     try self.report(node, TsCodes.deferred_import_module_kind, "Deferred imports are only supported when the '--module' flag is set to 'esnext' or 'preserve'.");
                 }
                 const raw_callee_t = try self.checkExpression(c.callee);
+                const callee_is_zero_arg_getter_access = self.callExprCalleeIsZeroArgGetterAccess(node, c.callee);
                 const call_is_optional_chain = c.optional or self.expressionIsOptionalChain(c.callee);
                 var callee_t = if (call_is_optional_chain or
                     (self.strict_flags.strict_null_checks and
@@ -87966,6 +88081,7 @@ pub const Checker = struct {
                 const call_is_instantiation_expression = self.isInstantiationExpressionCall(node);
                 if (!call_is_instantiation_expression and
                     !call_is_optional_chain and
+                    !callee_is_zero_arg_getter_access and
                     self.strict_flags.strict_null_checks and
                     !self.typeIsAnyLike(raw_callee_t) and
                     self.typeIsPossiblyNullishStrict(raw_callee_t))
@@ -88086,6 +88202,10 @@ pub const Checker = struct {
                     try arg_types.append(self.gpa, t);
                 }
                 if (raw_callee_t == types.Primitive.unknown) {
+                    if (callee_is_zero_arg_getter_access) {
+                        try self.reportGetterNotCallable(c.callee, raw_callee_t);
+                        break :blk types.Primitive.any;
+                    }
                     if (self.shouldReportUnknownOperand(c.callee)) {
                         try self.reportUnknownObjectOperand(c.callee);
                     }
@@ -88815,7 +88935,7 @@ pub const Checker = struct {
                             // Historical non-strict baselines allow
                             // zero-arg calls to get/set accessor
                             // properties whose getter infers `null`.
-                        } else if (self.callExprCalleeIsZeroArgGetterAccess(node, c.callee)) {
+                        } else if (callee_is_zero_arg_getter_access) {
                             try self.reportGetterNotCallable(c.callee, callee_t);
                         } else if (self.callExprIsArrayTemplateTemplateRecovery(node)) {
                             try self.report(c.callee, TsCodes.missing_comma_between_template_expressions, "It is likely that you are missing a comma to separate these two template expressions. They form a tagged template expression which cannot be invoked.");
@@ -89193,7 +89313,11 @@ pub const Checker = struct {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
-                    const substituted_t = try self.substituteThisTypeParametersInReturn(t, obj_t);
+                    const recovered_t = if (t == types.Primitive.unknown or self.containsFreeTypeParameter(t))
+                        (try self.concretePairedGetterType(obj_t, m.name)) orelse t
+                    else
+                        t;
+                    const substituted_t = try self.substituteThisTypeParametersInReturn(recovered_t, obj_t);
                     const member_t = if (self.strict_flags.strict_null_checks and
                         !member_is_optional_chain and
                         self.objectMemberAccessIsOptional(obj_t, m.name))
@@ -148615,8 +148739,22 @@ pub const Checker = struct {
         // affecting prose for ordinary shallow instantiations.
         if (self.instantiation_depth > display_name_depth_limit) return;
         if (self.alias_display_names.contains(t)) {
-            if (override_named_guard and !self.alias_type_args.contains(t)) {
+            var refresh_unknown_args = false;
+            if (override_named_guard) {
+                if (self.alias_type_args.get(t)) |old_args| {
+                    if (old_args.len == args.len) {
+                        for (old_args, args) |old_arg, new_arg| {
+                            if (old_arg == types.Primitive.unknown and new_arg != types.Primitive.unknown) {
+                                refresh_unknown_args = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (override_named_guard and (!self.alias_type_args.contains(t) or refresh_unknown_args)) {
                 _ = self.alias_display_names.remove(t);
+                if (refresh_unknown_args) _ = self.alias_type_args.remove(t);
             } else {
                 if (!self.alias_type_args.contains(t)) {
                     const arena = self.diag_arena.allocator();
@@ -209567,6 +209705,43 @@ test "checker: TS6234 ignores get/set accessor pairs" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.get_accessor_not_callable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+}
+
+test "checker: TS6234 reports inherited getter calls and preserves concrete setter types" {
+    const s = try newSetup(
+        \\class Base {
+        \\  get value(): number { return 1; }
+        \\  set value(v: number) {}
+        \\  static get other(): string { return ""; }
+        \\  static set other(v: string) {}
+        \\}
+        \\class Derived extends Base {}
+        \\class GenericBase<T> {
+        \\  get generic() { return null; }
+        \\  set generic(v: T) {}
+        \\  constructor(value: T) {}
+        \\  returnThis() { return this; }
+        \\}
+        \\class GenericDerived<T> extends GenericBase<T> {}
+        \\const base = new Base();
+        \\const derived = new Derived();
+        \\const generic = new GenericDerived("");
+        \\base.value();
+        \\derived.value();
+        \\Derived.other();
+        \\generic.generic = "";
+        \\const returned = generic.returnThis();
+        \\returned.generic = "";
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.get_accessor_not_callable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_invoke_possibly_null));
+    // The only TS2322 is the getter's intentional `null` return; neither
+    // concrete assignment through the instance nor returned `this` adds one.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS6234 does not replace TS2349 for getter calls with arguments" {
