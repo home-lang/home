@@ -70698,7 +70698,9 @@ pub const Checker = struct {
             if (op.value == hir_mod.none_node_id) continue;
             if (op.is_computed) {
                 const key_t = try self.checkExpression(op.key);
-                if (try self.reportMissingIndexForComputedBindingKey(op.key, source_t, key_t)) {
+                if (key_t != types.Primitive.any and
+                    try self.reportMissingIndexForComputedBindingKey(op.key, source_t, key_t))
+                {
                     has_dynamic_computed_key = true;
                 }
             }
@@ -203802,6 +203804,17 @@ test "checker: any-typed computed binding key over an object container does not 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_cannot_be_used_as_index);
     }
+}
+
+test "checker: any computed key is valid in object destructuring assignment" {
+    const s = try newSetup(
+        \\declare let anyKey: any;
+        \\let value: unknown;
+        \\({ [anyKey]: value = class {} } = {});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
 }
 
 test "checker: computed binding keys require an applicable container index" {
