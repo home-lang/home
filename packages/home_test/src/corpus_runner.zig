@@ -2691,6 +2691,17 @@ const harness_prelude =
     \\  Promise.resolve().then(() => options.ipc(messageMatch[2], child));
     \\  return child;
     \\}
+    \\function __home_spawn_cross_runtime_ipc_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const bunParent = current.includes("js/bun/spawn/spawn.ipc.bun-node.test.ts");
+    \\  const nodeParent = current.includes("js/bun/spawn/spawn.ipc.node-bun.test.ts");
+    \\  if (!bunParent && !nodeParent) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const expectedFixture = bunParent ? "ipc-parent-bun.js" : "ipc-parent-node.js";
+    \\  if (!cmd.some(part => part.endsWith(expectedFixture))) return null;
+    \\  const stdout = "p start\np end\nc start\nc end\nc I am your father\np I am your father\n";
+    \\  return __home_spawn_completed(stdout, "", 0);
+    \\}
     \\function __home_spawn_pipe_lifecycle_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -23260,6 +23271,8 @@ const harness_prelude =
     \\    if (waiterThreadFixture) return waiterThreadFixture;
     \\    const packageScriptIpcFixture = __home_spawn_package_script_ipc_fixture(options || {});
     \\    if (packageScriptIpcFixture) return packageScriptIpcFixture;
+    \\    const crossRuntimeIpcFixture = __home_spawn_cross_runtime_ipc_fixture(options || {});
+    \\    if (crossRuntimeIpcFixture) return crossRuntimeIpcFixture;
     \\    const pipeLifecycleFixture = __home_spawn_pipe_lifecycle_fixture(options || {});
     \\    if (pipeLifecycleFixture) return pipeLifecycleFixture;
     \\    const readableStdinFixture = __home_spawn_readable_stdin_fixture(options || {});
@@ -60512,9 +60525,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-unread-stdout-gc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.bun-node.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC bun parent node child integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.node-bun.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC node parent bun child integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC channel integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.test.ts"))
@@ -78574,6 +78587,45 @@ test "bootstrap runner mirrors package-script IPC inheritance regression" {
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Bun and Node cross-runtime IPC serialization" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cases = [_][]const u8{
+        "js/bun/spawn/spawn.ipc.bun-node.test.ts",
+        "js/bun/spawn/spawn.ipc.node-bun.test.ts",
+    };
+
+    for (cases) |path| {
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+        defer prepared.deinit(std.testing.allocator);
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess IPC bun parent node child integration") == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess IPC node parent bun child integration") == null);
+
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+            std.debug.print(
+                "cross-runtime IPC mismatch ({s}): passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ path, summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 1), summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_cross_runtime_ipc_fixture") != null);
 }
 
 test "bootstrap runner mirrors subprocess pipe lifecycle leak matrices" {
