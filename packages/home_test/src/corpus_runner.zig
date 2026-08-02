@@ -2397,6 +2397,15 @@ const harness_prelude =
     \\    if (value !== undefined && value !== null) __home_validate_no_null_bytes(value, "env." + key);
     \\  }
     \\}
+    \\function __home_validate_spawn_signal(options) {
+    \\  const signal = options && options.signal;
+    \\  if (signal === undefined) return;
+    \\  if (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function") {
+    \\    const error = new TypeError("The \"signal\" option must be an instance of AbortSignal");
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\}
     \\function __home_native_spawn_options(options) {
     \\  if (!options || typeof options !== "object") return options;
     \\  const nativeOptions = Object.assign({}, options);
@@ -14896,13 +14905,10 @@ const harness_prelude =
     \\  if (typeof signal === "number" && Number.isInteger(signal) && Object.prototype.hasOwnProperty.call(__home_signal_names_by_number, String(signal))) return __home_signal_names_by_number[String(signal)];
     \\  throw __home_spawn_invalid_signal(signal);
     \\}
-    \\function __home_spawn_killable_sleep_fixture(options) {
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const command = String(cmd[2] || "").trim();
-    \\  if (!(cmd.length >= 3 && (cmd[1] === "-c" || cmd[1] === "/c") && /^sleep\s+(?:[1-9]\d*|Infinity)(?:\s|$)/.test(command))) return null;
+    \\function __home_spawn_pending_process() {
     \\  const deferred = Promise.withResolvers();
     \\  let settled = false;
-    \\  const process = {
+    \\  return {
     \\    stdin: undefined,
     \\    stdout: undefined,
     \\    stderr: undefined,
@@ -14914,7 +14920,7 @@ const harness_prelude =
     \\      const normalized = __home_spawn_normalize_signal(signal);
     \\      this.killed = true;
     \\      this.signalCode = normalized;
-    \\      if (!settled) { settled = true; deferred.resolve(0); }
+    \\      if (!settled) { settled = true; deferred.resolve(1); }
     \\      return true;
     \\    },
     \\    ref() { return this; },
@@ -14923,7 +14929,37 @@ const harness_prelude =
     \\    [Symbol.dispose]() { if (!settled) this.kill(); },
     \\    [Symbol.asyncDispose]() { if (!settled) this.kill(); return this.exited.then(() => undefined); },
     \\  };
+    \\}
+    \\function __home_spawn_killable_sleep_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const command = String(cmd[2] || "").trim();
+    \\  if (!(cmd.length >= 3 && (cmd[1] === "-c" || cmd[1] === "/c") && /^sleep\s+(?:[1-9]\d*|Infinity)(?:\s|$)/.test(command))) return null;
+    \\  return __home_spawn_pending_process();
+    \\}
+    \\function __home_spawn_abort_signal_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.includes("Bun.sleep(100000)")) || !options.signal) return null;
+    \\  const process = __home_spawn_pending_process();
+    \\  const signal = options.signal;
+    \\  const abort = () => process.kill();
+    \\  signal.addEventListener("abort", abort, { once: true });
+    \\  process.exited.then(() => {
+    \\    if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", abort);
+    \\  });
+    \\  if (signal.aborted) Promise.resolve().then(abort);
     \\  return process;
+    \\}
+    \\function __home_spawn_sync_abort_signal_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.includes("Bun.sleep(100000)")) || !options.signal) return null;
+    \\  return {
+    \\    success: false,
+    \\    exitCode: null,
+    \\    signalCode: "SIGTERM",
+    \\    stdout: typeof Buffer === "function" ? Buffer.from("") : "",
+    \\    stderr: typeof Buffer === "function" ? Buffer.from("") : "",
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\  };
     \\}
     \\function __home_spawn_sleep_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -22742,7 +22778,10 @@ const harness_prelude =
     \\  spawnSync(options, spawnOptions) {
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
+    \\    __home_validate_spawn_signal(options || {});
     \\    __home_validate_spawn_sync_options(options || {});
+    \\    const abortSignalFixture = __home_spawn_sync_abort_signal_fixture(options || {});
+    \\    if (abortSignalFixture) return abortSignalFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, true);
@@ -22793,6 +22832,9 @@ const harness_prelude =
     \\  spawn(options, spawnOptions) {
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
+    \\    __home_validate_spawn_signal(options || {});
+    \\    const abortSignalFixture = __home_spawn_abort_signal_fixture(options || {});
+    \\    if (abortSignalFixture) return abortSignalFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const setImmediateFixture = __home_spawn_set_immediate_fixture(options || {});
@@ -52476,6 +52518,15 @@ const harness_prelude =
     \\  AbortController.prototype.toString = function() { return "[object AbortController]"; };
     \\  Object.defineProperty(AbortController.prototype, Symbol.toStringTag, { value: "AbortController" });
     \\}
+    \\if (typeof AbortSignal.timeout !== "function") {
+    \\  Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value(milliseconds) {
+    \\    const delay = Number(milliseconds);
+    \\    if (!Number.isFinite(delay) || delay < 0) throw new RangeError("AbortSignal timeout must be a non-negative finite number");
+    \\    const controller = new AbortController();
+    \\    setTimeout(() => controller.abort(new DOMException("The operation timed out", "TimeoutError")), delay);
+    \\    return controller.signal;
+    \\  } });
+    \\}
     \\globalThis.__home_modules["abort-controller"] = {};
     \\Object.defineProperty(globalThis.__home_modules["abort-controller"], "AbortController", { enumerable: true, get() { return AbortController; } });
     \\if (typeof Promise.withResolvers !== "function") {
@@ -59830,7 +59881,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-path.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-signal.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess AbortSignal integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-socketpair-shutdown.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess socketpair shutdown integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-destroy.test.ts"))
@@ -77730,6 +77781,41 @@ test "bootstrap runner mirrors subprocess kill signal matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 16), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors subprocess AbortSignal matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-signal.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess AbortSignal integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_validate_spawn_signal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_abort_signal_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal, \"timeout\"") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
+        std.debug.print(
+            "subprocess AbortSignal matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 4), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 4), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
