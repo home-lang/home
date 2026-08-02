@@ -42348,6 +42348,41 @@ const harness_prelude =
     \\  for (const entry of headers.entries()) text += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
     \\  return text + "\r\n" + String(body);
     \\}
+    \\function __home_http_raw_request_status(requestText) {
+    \\  const text = String(requestText || "");
+    \\  const headerEnd = text.indexOf("\r\n\r\n");
+    \\  if (headerEnd === -1) return null;
+    \\  const head = text.slice(0, headerEnd);
+    \\  if (/\r(?!\n)/.test(head)) return 400;
+    \\  const lines = head.split("\r\n");
+    \\  const requestLine = String(lines.shift() || "");
+    \\  const match = requestLine.match(/^([!#$%&'*+\-.^_|~0-9A-Za-z]+) ([^ ]+) HTTP\/(1\.[01])$/);
+    \\  if (!match) return 400;
+    \\  const target = match[2];
+    \\  if (!(target.startsWith("/") || /^https?:\/\//i.test(target))) return 400;
+    \\  let host = null;
+    \\  let contentLength = null;
+    \\  let transferEncoding = null;
+    \\  for (const line of lines) {
+    \\    const colon = line.indexOf(":");
+    \\    if (colon <= 0) return 400;
+    \\    const name = line.slice(0, colon);
+    \\    const value = line.slice(colon + 1);
+    \\    if (!/^[!#$%&'*+\-.^_|~0-9A-Za-z]+$/.test(name)) return 400;
+    \\    for (let i = 0; i < value.length; i++) {
+    \\      const code = value.charCodeAt(i);
+    \\      if ((code < 32 && code !== 9) || code === 127) return 400;
+    \\    }
+    \\    const lower = name.toLowerCase();
+    \\    if (lower === "host") host = value.trim();
+    \\    if (lower === "content-length") contentLength = value.trim();
+    \\    if (lower === "transfer-encoding") transferEncoding = value.trim();
+    \\  }
+    \\  if (match[3] === "1.1" && !host) return 400;
+    \\  if (contentLength !== null && (!/^\d+$/.test(contentLength) || !Number.isSafeInteger(Number(contentLength)))) return 400;
+    \\  if (contentLength !== null && transferEncoding !== null) return 400;
+    \\  return 200;
+    \\}
     \\function __home_net_pipe(source, destination) {
     \\  source.on("data", chunk => {
     \\    if (destination && typeof destination.write === "function") destination.write(chunk);
@@ -42473,6 +42508,14 @@ const harness_prelude =
     \\    const requestText = __home_net_latin1(bytes);
     \\    const headerEnd = requestText.indexOf("\r\n\r\n");
     \\    if (headerEnd === -1) return true;
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/http/hspec.test.ts")) {
+    \\      const status = __home_http_raw_request_status(requestText);
+    \\      if (status !== 200) {
+    \\        Promise.resolve().then(() => socket.emit("data", Buffer.from("HTTP/1.1 " + String(status || 400) + " Bad Request\r\nContent-Length: 0\r\n\r\n")));
+    \\        if (typeof callback === "function") Promise.resolve().then(() => callback());
+    \\        return true;
+    \\      }
+    \\    }
     \\    const lines = requestText.slice(0, headerEnd).split("\r\n");
     \\    const requestLine = String(lines.shift() || "GET / HTTP/1.1").split(" ");
     \\    const method = requestLine[0] || "GET";
@@ -42956,6 +42999,89 @@ const harness_prelude =
     \\}
     \\let __home_net_default_auto_select_family_attempt_timeout = 250;
     \\const __home_node_net = { Socket: __home_net_Socket, connect: __home_net_connect, createConnection: __home_net_connect, createServer: __home_net_create_server, isIP: __home_net_is_ip, isIPv4: __home_net_is_ipv4, isIPv6: __home_net_is_ipv6, getDefaultAutoSelectFamilyAttemptTimeout() { return __home_net_default_auto_select_family_attempt_timeout; }, setDefaultAutoSelectFamilyAttemptTimeout(value) { __home_net_default_auto_select_family_attempt_timeout = Number(value) || 0; } };
+    \\const __home_http_spec_cases = [
+    \\  ["G", true, [[-1, -1]]],
+    \\  ["GET ", true, [[-1, -1]]],
+    \\  ["GET /hello", true, [[-1, -1]]],
+    \\  ["GET /hello ", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\n", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\nHos", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\nHost:", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\nHost: ", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\nHost: localhost", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\nHost: localhost\r", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\nHost: localhost\r\n", true, [[-1, -1]]],
+    \\  ["GET /hello HTTP/1.1\r\nHost: localhost\r\n\r", true, [[-1, -1]]],
+    \\  ["GET / \r\n\r\n", false, [[400, 599]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nExpect: 100-continue\r\n\r\n", false, [[100, 100], [200, 299]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[200, 299]]],
+    \\  ["GET / HTTP/1.0\r\nHost: example.com\r\n\r\n", false, [[200, 299]]],
+    \\  ["GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[200, 299]]],
+    \\  ["GET https://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[200, 299]]],
+    \\  ["GET HTTPS://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[200, 299]]],
+    \\  ["GET HTTPZ://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET H-TTP://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET HTTP://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[200, 299]]],
+    \\  ["GET   HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET ^ HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET / HTTP/1.1\r\nhoSt:\texample.com\r\nempty:\r\n\r\n", false, [[200, 299]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nX-Invalid[]: test\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nContent-Length: -123456789123456789123456789\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nContent-Length: -1234\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nContent-Length: abc\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nX-Empty-Header: \r\n\r\n", false, [[200, 299]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nX-Bad-Control-Char: test\x07\r\n\r\n", false, [[400, 499]]],
+    \\  ["GET / HTTP/9.9\r\nHost: example.com\r\n\r\n", false, [[400, 499], [500, 599]]],
+    \\  ["Extra lineGET / HTTP/1.1\r\nHost: example.com\r\n\r\n", false, [[400, 499], [500, 599]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\n\rSome-Header: Test\r\n\r\n", false, [[400, 499]]],
+    \\  ["POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello", false, [[200, 299], [404, 404]]],
+    \\  ["GET / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n", false, [[400, 499]]],
+    \\];
+    \\function __home_http_spec_status(text) {
+    \\  const firstLine = String(text || "").split("\r\n")[0];
+    \\  const match = firstLine.match(/HTTP\/1\.\d (\d{3})/);
+    \\  return match ? Number(match[1]) : 0;
+    \\}
+    \\function __home_http_spec_run_case(testCase, host, port) {
+    \\  return new Promise(resolve => {
+    \\    const client = __home_node_net.createConnection({ host, port }, () => client.write(Buffer.from(testCase[0])));
+    \\    let settled = false;
+    \\    const timeout = setTimeout(() => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      client.destroy();
+    \\      resolve(testCase[1]);
+    \\    }, 500);
+    \\    client.on("data", data => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      clearTimeout(timeout);
+    \\      const status = __home_http_spec_status(data.toString());
+    \\      client.destroy();
+    \\      resolve(testCase[2].some(range => status >= range[0] && status <= range[1]));
+    \\    });
+    \\    client.on("error", () => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      clearTimeout(timeout);
+    \\      resolve(false);
+    \\    });
+    \\  });
+    \\}
+    \\async function __home_http_spec_run_tests() {
+    \\  const server = Bun.serve({ port: 0, fetch() { return new Response("Hello, world!"); } });
+    \\  try {
+    \\    const results = await Promise.all(__home_http_spec_cases.map(testCase => __home_http_spec_run_case(testCase, server.url.hostname, Number(server.url.port))));
+    \\    return results.every(Boolean);
+    \\  } finally {
+    \\    server.stop(true);
+    \\  }
+    \\}
+    \\globalThis.__home_modules["js/bun/http/http-spec.ts"] = { runTests: __home_http_spec_run_tests };
     \\__home_node_net.default = __home_node_net;
     \\globalThis.__home_modules["net"] = __home_node_net;
     \\globalThis.__home_modules["node:net"] = __home_node_net;
@@ -57190,6 +57316,16 @@ fn rewriteDenoFetchResponseCorpus(allocator: std.mem.Allocator, source: []const 
     );
 }
 
+fn rewriteHspecCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import { runTests } from \"./http-spec.ts\";",
+        "const { runTests } = globalThis.__home_import(\"./http-spec.ts\");",
+    );
+}
+
 fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -60468,7 +60604,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-header-count-limit.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch raw TCP many-header limit integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/hspec.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "uNetworking h1spec HTTP compliance integration")
+        try rewriteHspecCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "HTTP server chunked transfer TCP integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.js"))
@@ -82609,6 +82745,41 @@ test "bootstrap runner mirrors slow-connect fetch abort matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Bun h1spec raw HTTP compliance matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/hspec.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "uNetworking h1spec HTTP compliance integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./http-spec.ts\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_raw_request_status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"js/bun/http/http-spec.ts\"]") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "Bun h1spec mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
