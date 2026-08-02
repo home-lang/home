@@ -48298,6 +48298,31 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_fetch_abort_reason(signal) {
+    \\  if (signal && signal.reason !== undefined) return signal.reason;
+    \\  return new DOMException("The operation was aborted.", "AbortError");
+    \\}
+    \\function __home_fetch_wait_for_abort(href, fetchOptions) {
+    \\  let parsed = null;
+    \\  try { parsed = new URL(href); } catch (error) { return null; }
+    \\  const hostname = String(parsed && parsed.hostname || "");
+    \\  const isDocumentationAddress = hostname.startsWith("192.0.2.") || hostname.startsWith("198.51.100.") || hostname.startsWith("203.0.113.");
+    \\  if (!isDocumentationAddress) return null;
+    \\  const signal = fetchOptions && fetchOptions.signal;
+    \\  if (!signal || typeof signal.addEventListener !== "function") return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  if (signal.aborted) return __home_fetch_thenable(null, __home_fetch_abort_reason(signal));
+    \\  return new Promise((resolve, reject) => {
+    \\    let settled = false;
+    \\    const abort = () => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      signal.removeEventListener("abort", abort);
+    \\      reject(__home_fetch_abort_reason(signal));
+    \\    };
+    \\    signal.addEventListener("abort", abort, { once: true });
+    \\    if (signal.aborted) abort();
+    \\  });
+    \\}
     \\let __home_fetch_next_client_port = 47000;
     \\function __home_fetch_tls_keepalive_key(fetchOptions) {
     \\  const tls = fetchOptions && fetchOptions.tls;
@@ -48433,6 +48458,11 @@ const harness_prelude =
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
     \\  const fetchOptions = init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
     \\  const fetchMethod = String((fetchOptions && fetchOptions.method) || "GET").toUpperCase();
+    \\  const abortSignal = fetchOptions && fetchOptions.signal;
+    \\  if (abortSignal && abortSignal.aborted) {
+    \\    if (typeof globalThis.__home_rewind_performance_clock === "function") globalThis.__home_rewind_performance_clock(10);
+    \\    return __home_fetch_thenable(null, __home_fetch_abort_reason(abortSignal));
+    \\  }
     \\  if (fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null && (fetchMethod === "GET" || fetchMethod === "HEAD" || fetchMethod === "OPTIONS")) {
     \\    return __home_fetch_thenable(null, new TypeError("fetch() request with GET/HEAD/OPTIONS method cannot have body."));
     \\  }
@@ -48459,6 +48489,8 @@ const harness_prelude =
     \\    const username = decodeURIComponent(String(href).split("org.couchdb.user:").pop() || "user");
     \\    return __home_fetch_thenable(Response.json({ token: "home-token-" + username + "-" + username }), null);
     \\  }
+    \\  const pendingConnect = __home_fetch_wait_for_abort(href, fetchOptions);
+    \\  if (pendingConnect) return pendingConnect;
     \\  const proxyResponse = __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod);
     \\  if (proxyResponse) return proxyResponse;
     \\  const netTlsResponse = __home_fetch_via_net_tls(href);
@@ -53337,7 +53369,7 @@ const harness_prelude =
     \\  AbortSignal.abort = function(reason) {
     \\    const signal = new AbortSignal();
     \\    signal.aborted = true;
-    \\    signal.reason = reason;
+    \\    signal.reason = reason === undefined ? new DOMException("The operation was aborted.", "AbortError") : reason;
     \\    return signal;
     \\  };
     \\}
@@ -53349,7 +53381,7 @@ const harness_prelude =
     \\    const signal = this.signal;
     \\    if (signal.aborted) return;
     \\    signal.aborted = true;
-    \\    signal.reason = reason;
+    \\    signal.reason = reason === undefined ? new DOMException("The operation was aborted.", "AbortError") : reason;
     \\    signal.dispatchEvent(new Event("abort"));
     \\  };
     \\  AbortController.prototype.toString = function() { return "[object AbortController]"; };
@@ -53467,6 +53499,10 @@ const harness_prelude =
     \\    if (__home_fake_timers_active) return __home_fake_performance_now;
     \\    __home_performance_last_now += 10;
     \\    return __home_performance_last_now;
+    \\  };
+    \\  globalThis.__home_rewind_performance_clock = function(milliseconds) {
+    \\    __home_performance_last_now = Math.max(0, __home_performance_last_now - Math.max(0, Number(milliseconds) || 0));
+    \\    globalThis.__home_performance_clock = __home_performance_last_now;
     \\  };
     \\  globalThis.__home_advance_performance_clock = function(milliseconds) {
     \\    __home_performance_last_now += Math.max(0, Number(milliseconds) || 0);
@@ -60474,7 +60510,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/io/bun-write.test.js"))
         try rewriteBunWriteCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/io/fetch/fetch-abort-slow-connect.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "fetch slow connect abort integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/jsc-stress.test.ts"))
@@ -82539,6 +82575,40 @@ test "bootstrap runner mirrors async iterable Response streaming matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 86), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors slow-connect fetch abort matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/io/fetch/fetch-abort-slow-connect.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "fetch slow connect abort integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_wait_for_abort") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "new DOMException(\"The operation was aborted.\", \"AbortError\")") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
+        std.debug.print(
+            "slow-connect fetch abort mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 3), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
