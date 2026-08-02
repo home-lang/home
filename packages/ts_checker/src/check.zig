@@ -35547,6 +35547,81 @@ pub const Checker = struct {
                     existing.deinit(self.gpa);
                 }
                 try self.class_constructor_overload_sigs.put(self.gpa, cid.name, converted);
+            } else if (!has_explicit_ctor) {
+                if (parent_class_name) |base_name| {
+                    if (self.class_constructor_overload_sigs.get(base_name)) |base_overloads| {
+                        var heritage_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer heritage_subs.deinit(self.gpa);
+                        if (self.hir.kindOf(c.extends) == .type_ref) {
+                            const base_ref = hir_mod.typeRefOf(self.hir, c.extends);
+                            if (base_ref.name == base_name and base_ref.args_len > 0) {
+                                if (self.generic_aliases.get(base_name)) |base_generic| {
+                                    const arg_nodes = self.hir.childSlice(base_ref.args_start, base_ref.args_len);
+                                    const child_generic = self.generic_aliases.get(cid.name);
+                                    const count = @min(base_generic.params.len, arg_nodes.len);
+                                    for (0..count) |i| {
+                                        var arg_t = types.Primitive.none;
+                                        if (child_generic) |child| {
+                                            if (self.bareTypeNodeName(arg_nodes[i])) |arg_name| {
+                                                for (child.params) |child_param| {
+                                                    if (self.interner.typeParameterName(child_param)) |child_name| {
+                                                        if (child_name == arg_name) {
+                                                            arg_t = child_param;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (arg_t == types.Primitive.none) {
+                                            arg_t = try self.lowererLowerWithTypeParams(arg_nodes[i]);
+                                        }
+                                        try heritage_subs.put(self.gpa, base_generic.params[i], arg_t);
+                                    }
+                                }
+                            }
+                        }
+
+                        var inherited_overloads: std.ArrayListUnmanaged(TypeId) = .empty;
+                        errdefer inherited_overloads.deinit(self.gpa);
+                        for (base_overloads.items) |base_sig| {
+                            var inherited_params: std.ArrayListUnmanaged(TypeId) = .empty;
+                            defer inherited_params.deinit(self.gpa);
+                            for (self.interner.signatureParams(base_sig)) |base_param| {
+                                const inherited_param = if (heritage_subs.count() > 0)
+                                    try self.substituteType(base_param, &heritage_subs)
+                                else
+                                    base_param;
+                                try inherited_params.append(self.gpa, inherited_param);
+                            }
+                            const inherited_sig = self.interner.internSignatureWithAbstract(
+                                inherited_params.items,
+                                instance_t,
+                                true,
+                                c.is_abstract,
+                            ) catch return error.OutOfMemory;
+                            try self.recordConstructorSignatureVisibility(
+                                inherited_sig,
+                                self.constructorSignatureVisibility(base_sig),
+                            );
+                            if (self.rest_signatures.contains(base_sig)) {
+                                try self.rest_signatures.put(self.gpa, inherited_sig, {});
+                            }
+                            if (self.signature_min_args.get(base_sig)) |min_required| {
+                                try self.signature_min_args.put(self.gpa, inherited_sig, min_required);
+                            }
+                            try self.copySignatureParamNames(inherited_sig, base_sig);
+                            if (self.generic_aliases.get(cid.name)) |generic_class| {
+                                try self.recordGenericSignatureParams(inherited_sig, generic_class.params);
+                            }
+                            try inherited_overloads.append(self.gpa, inherited_sig);
+                        }
+                        if (self.class_constructor_overload_sigs.getPtr(cid.name)) |existing| {
+                            existing.deinit(self.gpa);
+                        }
+                        try self.class_constructor_overload_sigs.put(self.gpa, cid.name, inherited_overloads);
+                    }
+                }
             }
             const implements = self.hir.childSlice(c.implements_start, c.implements_len);
             for (implements) |impl_node| {
@@ -45401,6 +45476,7 @@ pub const Checker = struct {
         const type_args = hir_mod.callTypeArgs(self.hir, extends_expr);
         if (type_args.len == 0) return self.checkExpression(extends_expr);
         const callee = hir_mod.callOf(self.hir, extends_expr).callee;
+        if (self.hir.kindOf(callee) == .identifier) return self.checkExpression(extends_expr);
         const uninstantiated_t = try self.checkExpression(callee);
         return self.filteredInstantiationExpressionType(extends_expr, uninstantiated_t, type_args);
     }
@@ -82158,7 +82234,20 @@ pub const Checker = struct {
         if (k != .fn_type and k != .constructor_type) return null;
         const text = self.visibleAnnotatedIdentifierTypeText(node) orelse return null;
         if (text.len == 0) return null;
-        return try self.normalizedTypeAnnotationText(text);
+        const normalized = try self.normalizedTypeAnnotationText(text);
+        if (k != .constructor_type or std.mem.indexOf(u8, normalized, "new(") == null) return normalized;
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        var start: usize = 0;
+        while (std.mem.indexOf(u8, normalized[start..], "new(")) |offset| {
+            const match_start = start + offset;
+            try out.appendSlice(arena, normalized[start .. match_start + "new".len]);
+            try out.append(arena, ' ');
+            start = match_start + "new".len;
+        }
+        try out.appendSlice(arena, normalized[start..]);
+        return out.items;
     }
 
     fn visibleAnnotatedSignatureIdentifierDiagnosticName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
@@ -99071,10 +99160,17 @@ pub const Checker = struct {
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         try self.inferCallSubstitutions(constructor_sig, args, arg_types, &subs);
+        const params = self.interner.signatureParams(constructor_sig);
+        const inherited_overloads = self.class_constructor_overload_sigs.contains(class_name) and
+            !self.class_constructor_sigs.contains(class_name);
+        const constraint_count = if (inherited_overloads)
+            @min(self.signatureMinRequiredArgs(constructor_sig, params), @min(args.len, arg_types.len))
+        else
+            @min(params.len, @min(args.len, arg_types.len));
         try self.checkGenericSignatureArgumentConstraints(
-            args,
-            arg_types,
-            self.interner.signatureParams(constructor_sig),
+            args[0..constraint_count],
+            arg_types[0..constraint_count],
+            params[0..constraint_count],
             &subs,
         );
     }
@@ -184912,7 +185008,7 @@ test "checker: class-like expression heritage validates constructor type args an
 test "checker: abstract constructor assigned to non-abstract constructor emits TS2517 chain" {
     const s = try newSetup(
         \\abstract class A {}
-        \\let C: new () => A = A;
+        \\let C: new() => A = A;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -184921,6 +185017,7 @@ test "checker: abstract constructor assigned to non-abstract constructor emits T
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.type_not_assignable) continue;
         found_header = true;
+        try T.expectEqualStrings("Type 'typeof A' is not assignable to type 'new () => A'.", d.message);
         try T.expectEqual(@as(usize, 1), d.chain.len);
         if (d.chain[0].code == TsCodes.abstract_constructor_to_non_abstract) {
             try T.expectEqualStrings(
@@ -184932,6 +185029,50 @@ test "checker: abstract constructor assigned to non-abstract constructor emits T
     }
     try T.expect(found_header);
     try T.expect(found_2517);
+}
+
+test "checker: implicit derived constructor preserves base overload arities" {
+    const s = try newSetup(
+        \\class Base {
+        \\  constructor(x: number, y?: number, z?: number);
+        \\  constructor(x: number, y?: number);
+        \\  constructor(x: number) {}
+        \\}
+        \\class Derived extends Base {}
+        \\new Derived();
+        \\new Derived(1);
+        \\new Derived(1, 2);
+        \\new Derived(1, 2, 3);
+        \\new Derived(1, 2, 3, 4);
+        \\class GenericBase<T> {
+        \\  constructor(x: T, y?: T, z?: T);
+        \\  constructor(x: T, y?: T);
+        \\  constructor(x: T) {}
+        \\}
+        \\class GenericDerived<T extends Date> extends GenericBase<T> {}
+        \\new GenericDerived(new Date());
+        \\new GenericDerived(new Date(), new Date());
+        \\new GenericDerived(new Date(), new Date(), new Date());
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.expected_n_arguments, "Expected 1-3 arguments, but got 0."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.expected_n_arguments, "Expected 1-3 arguments, but got 4."));
+}
+
+test "checker: generic call expression heritage uses instantiated call result" {
+    const s = try newSetup(
+        \\class A<T> { value!: T }
+        \\function make<U>() { return class extends A<U> {} }
+        \\class K extends make<number>() {}
+        \\const k = new K();
+        \\k.value = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: non-abstract constructor is assignable to abstract constructor target" {
