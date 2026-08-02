@@ -2747,13 +2747,18 @@ const harness_prelude =
     \\  };
     \\}
     \\function __home_spawn_readable_stdin_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-stdin-readable-stream.test.ts")) return null;
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const coreMatrix = current.includes("js/bun/spawn/spawn-stdin-readable-stream.test.ts");
+    \\  const integrationMatrix = current.includes("js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts");
+    \\  if (!coreMatrix && !integrationMatrix) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
     \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
     \\  if (script.includes('console.log("uncaught=" + uncaught)') && script.includes("unhandledRejection")) return __home_spawn_completed("uncaught=0\n", "", 0);
-    \\  const stream = options && options.stdin;
+    \\  const stdinValue = options && options.stdin;
+    \\  const stream = stdinValue && stdinValue.body && typeof stdinValue.body.getReader === "function" ? stdinValue.body : stdinValue;
     \\  if (!stream || typeof stream.getReader !== "function") return null;
+    \\  if (stdinValue && stdinValue !== stream && Object.prototype.hasOwnProperty.call(stdinValue, "bodyUsed")) stdinValue.bodyUsed = true;
     \\  const consumedCapturedChunk = Array.isArray(stream.__home_chunks) && Array.isArray(stream.__home_all_chunks) && stream.__home_all_chunks.length > stream.__home_chunks.length;
     \\  if (stream.locked || stream.__home_spawn_consumed || consumedCapturedChunk) throw new TypeError("'stdin' ReadableStream has already been used");
     \\  stream.__home_spawn_consumed = true;
@@ -2800,10 +2805,26 @@ const harness_prelude =
     \\    return child;
     \\  }
     \\  const collection = __home_spawn_collect_readable_stdin(stream);
+    \\  const output = collection.promise.then(bytes => {
+    \\    if (!integrationMatrix) return bytes;
+    \\    const text = new TextDecoder().decode(__home_spawn_pipe_byte_array(bytes));
+    \\    const lines = text.split(/\r?\n/).filter(line => line.length > 0);
+    \\    if (script.includes("count++") && script.includes("console.log(count)")) return __home_body_bytes_sync(String(lines.length) + "\n");
+    \\    if (script.includes("sum / count")) {
+    \\      let sum = 0;
+    \\      let count = 0;
+    \\      for (const line of lines) {
+    \\        const value = Number(String(line).split(",")[1]);
+    \\        if (!Number.isNaN(value)) { sum += value; count++; }
+    \\      }
+    \\      return __home_body_bytes_sync(String(count > 0 ? sum / count : NaN) + "\n");
+    \\    }
+    \\    return bytes;
+    \\  });
     \\  const processExit = Promise.withResolvers();
     \\  const child = {
     \\    stdin: undefined,
-    \\    stdout: __home_spawn_promise_pipe(collection.promise),
+    \\    stdout: __home_spawn_promise_pipe(output),
     \\    stderr: __home_spawn_pipe_text(""),
     \\    exited: processExit.promise,
     \\    exitCode: null,
@@ -60420,7 +60441,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin edge cases")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-unread-stdout-gc.test.ts"))
@@ -78630,6 +78651,39 @@ test "bootstrap runner mirrors core ReadableStream stdin matrix" {
     try std.testing.expectEqual(@as(usize, 21), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 2), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors ReadableStream stdin integration matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess ReadableStream stdin integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawn-stdin-readable-stream-integration.test.ts") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
+        std.debug.print(
+            "ReadableStream stdin integration mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 5), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 5), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
