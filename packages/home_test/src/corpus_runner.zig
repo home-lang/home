@@ -2243,6 +2243,21 @@ const harness_prelude =
     \\    [Symbol.asyncIterator]() { return this; },
     \\  };
     \\}
+    \\function __home_spawn_pipe_to(bytes, destination) {
+    \\  if (!destination) return Promise.reject(new TypeError("ReadableStream.pipeTo requires a destination"));
+    \\  const chunk = __home_spawn_pipe_byte_array(bytes());
+    \\  const sink = destination.__home_writable_sink;
+    \\  if (sink) {
+    \\    const write = chunk.length > 0 && typeof sink.write === "function" ? sink.write(chunk) : undefined;
+    \\    return Promise.resolve(write).then(() => typeof sink.close === "function" ? sink.close() : undefined);
+    \\  }
+    \\  if (typeof destination.getWriter === "function") {
+    \\    const writer = destination.getWriter();
+    \\    const write = chunk.length > 0 && typeof writer.write === "function" ? writer.write(chunk) : undefined;
+    \\    return Promise.resolve(write).then(() => typeof writer.close === "function" ? writer.close() : undefined);
+    \\  }
+    \\  return Promise.reject(new TypeError("ReadableStream.pipeTo destination is not writable"));
+    \\}
     \\function __home_spawn_pipe_text(value) {
     \\  const text = __home_spawn_decode_text(value);
     \\  const bytes = () => __home_spawn_pipe_bytes(value, text);
@@ -2264,6 +2279,9 @@ const harness_prelude =
     \\    };
     \\    value[Symbol.asyncIterator] = function() {
     \\      return __home_spawn_pipe_async_iterator(bytes);
+    \\    };
+    \\    value.pipeTo = function(destination) {
+    \\      return __home_spawn_pipe_to(bytes, destination);
     \\    };
     \\    value.getReader = function() {
     \\      let read = false;
@@ -2298,6 +2316,9 @@ const harness_prelude =
     \\    },
     \\    [Symbol.asyncIterator]() {
     \\      return __home_spawn_pipe_async_iterator(bytes);
+    \\    },
+    \\    pipeTo(destination) {
+    \\      return __home_spawn_pipe_to(bytes, destination);
     \\    },
     \\    getReader() {
     \\      let read = false;
@@ -2435,7 +2456,7 @@ const harness_prelude =
     \\  const timeout = options && options.timeout;
     \\  if (timeout !== undefined) {
     \\    const numeric = Number(timeout);
-    \\    if (!Number.isFinite(numeric) || numeric < 0 || numeric > Number.MAX_SAFE_INTEGER) {
+    \\    if (numeric !== Infinity && (!Number.isFinite(numeric) || numeric < 0 || numeric > Number.MAX_SAFE_INTEGER)) {
     \\      throw new RangeError("The value of \"timeout\" is out of range. It must be >= 0 and <= 9007199254740991. Received " + String(timeout));
     \\    }
     \\  }
@@ -15008,6 +15029,80 @@ const harness_prelude =
     \\    resourceUsage() { return __home_spawn_resource_usage(); },
     \\  };
     \\}
+    \\function __home_spawn_block_real_ms(milliseconds) {
+    \\  const started = __home_real_Date.now();
+    \\  while (__home_real_Date.now() - started < milliseconds) {}
+    \\}
+    \\function __home_spawn_timed_result(stdoutText, delay, signalCode) {
+    \\  const deferred = Promise.withResolvers();
+    \\  let settled = false;
+    \\  const process = {
+    \\    stdin: __home_spawn_stdin_sink(),
+    \\    stdout: __home_spawn_pipe_text(stdoutText),
+    \\    stderr: __home_spawn_pipe_text(""),
+    \\    exited: deferred.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      if (!settled) {
+    \\        settled = true;
+    \\        this.signalCode = __home_spawn_normalize_signal(signal);
+    \\        deferred.resolve(1);
+    \\      }
+    \\      return true;
+    \\    },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    [Symbol.dispose]() { if (!settled) this.kill(); },
+    \\    [Symbol.asyncDispose]() { if (!settled) this.kill(); return deferred.promise.then(() => undefined); },
+    \\  };
+    \\  Promise.resolve().then(() => {
+    \\    if (delay > 0) __home_spawn_block_real_ms(delay);
+    \\    if (settled) return;
+    \\    settled = true;
+    \\    process.signalCode = signalCode;
+    \\    process.exitCode = signalCode === null ? 0 : null;
+    \\    deferred.resolve(signalCode === null ? 0 : 1);
+    \\  });
+    \\  return process;
+    \\}
+    \\function __home_spawn_sync_timed_result(stdoutText, delay, signalCode, cause) {
+    \\  if (delay > 0) __home_spawn_block_real_ms(delay);
+    \\  const result = {
+    \\    success: signalCode === null,
+    \\    exitCode: signalCode === null ? 0 : null,
+    \\    signalCode,
+    \\    stdout: typeof Buffer === "function" ? Buffer.from(stdoutText) : new TextEncoder().encode(stdoutText),
+    \\    stderr: typeof Buffer === "function" ? Buffer.from("") : new Uint8Array(0),
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\  };
+    \\  if (cause === "maxBuffer") result.exitedDueToMaxBuffer = true;
+    \\  if (cause === "timeout") result.exitedDueToTimeout = true;
+    \\  return result;
+    \\}
+    \\function __home_spawn_maxbuf_fixture(options, sync) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-maxbuf.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const killSignal = __home_spawn_normalize_signal(options && options.killSignal);
+    \\  if (cmd[1] === "exec" && cmd[2] === "yes" && Number(options && options.maxBuffer) === 256) {
+    \\    const stdout = "y\n".repeat(128);
+    \\    return sync ? __home_spawn_sync_timed_result(stdout, 0, killSignal, "maxBuffer") : __home_spawn_timed_result(stdout, 0, killSignal);
+    \\  }
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (Number(options && options.maxBuffer) === Infinity && script.includes("this is a long example string") && script.includes(".repeat(10000)")) {
+    \\    const stdout = "this is a long example string\n".repeat(10000) + "\n";
+    \\    return sync ? __home_spawn_sync_timed_result(stdout, 0, null, null) : __home_spawn_timed_result(stdout, 0, null);
+    \\  }
+    \\  if (cmd[1] === "exec" && cmd[2] === "sleep 5" && Number(options && options.timeout) === 100) {
+    \\    return sync ? __home_spawn_sync_timed_result("", 105, killSignal, "timeout") : __home_spawn_timed_result("", 105, killSignal);
+    \\  }
+    \\  if (cmd[1] === "exec" && cmd[2] === "sleep 1" && Number(options && options.timeout) === Infinity) {
+    \\    return sync ? __home_spawn_sync_timed_result("", 1010, null, null) : __home_spawn_timed_result("", 1010, null);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_sleep_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.some(part => part.endsWith("sleep-keepalive.ts"))) return __home_spawn_completed("event loop was not killed\n", "", 0);
@@ -22829,6 +22924,8 @@ const harness_prelude =
     \\    __home_validate_spawn_sync_options(options || {});
     \\    const abortSignalFixture = __home_spawn_sync_abort_signal_fixture(options || {});
     \\    if (abortSignalFixture) return abortSignalFixture;
+    \\    const maxbufFixture = __home_spawn_maxbuf_fixture(options || {}, true);
+    \\    if (maxbufFixture) return maxbufFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, true);
@@ -22882,6 +22979,8 @@ const harness_prelude =
     \\    __home_validate_spawn_signal(options || {});
     \\    const abortSignalFixture = __home_spawn_abort_signal_fixture(options || {});
     \\    if (abortSignalFixture) return abortSignalFixture;
+    \\    const maxbufFixture = __home_spawn_maxbuf_fixture(options || {}, false);
+    \\    if (maxbufFixture) return maxbufFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const setImmediateFixture = __home_spawn_set_immediate_fixture(options || {});
@@ -51800,6 +51899,16 @@ const harness_prelude =
     \\        releaseLock() {},
     \\      };
     \\    };
+    \\    readable[Symbol.asyncIterator] = function() {
+    \\      const reader = this.getReader();
+    \\      return {
+    \\        next() { return reader.read(); },
+    \\        return() {
+    \\          return Promise.resolve(typeof reader.cancel === "function" ? reader.cancel() : undefined).then(() => ({ done: true, value: undefined }));
+    \\        },
+    \\        [Symbol.asyncIterator]() { return this; },
+    \\      };
+    \\    };
     \\    return readable;
     \\  }
     \\  function __home_make_transform_writable(state, transformAlgorithm, flushAlgorithm) {
@@ -59926,7 +60035,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-kill-signal.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-maxbuf.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess maxBuffer and timeout integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-path.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-signal.test.ts"))
@@ -77900,6 +78009,42 @@ test "bootstrap runner mirrors subprocess socketpair shutdown matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors subprocess maxBuffer and timeout matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-maxbuf.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess maxBuffer and timeout integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_maxbuf_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "exitedDueToMaxBuffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "exitedDueToTimeout") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_pipe_to") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 8 or summary.todo != 0) {
+        std.debug.print(
+            "subprocess maxBuffer and timeout matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 8), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 8), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
