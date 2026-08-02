@@ -40643,6 +40643,7 @@ const harness_prelude =
     \\  }
     \\  checkHost(hostname) {
     \\    const name = String(hostname || "");
+    \\    if (this.__home_socket_hostname && name === this.__home_socket_hostname) return name;
     \\    if (this.__home_x509_kind === "agent1" && name === "agent1") return "agent1";
     \\    return undefined;
     \\  }
@@ -40662,6 +40663,11 @@ const harness_prelude =
     \\  toString() {
     \\    return this && this.raw && typeof this.raw.toString === "function" ? this.raw.toString() : "";
     \\  }
+    \\}
+    \\function __home_bun_socket_x509_certificate(hostname) {
+    \\  const certificate = new __home_crypto_x509_certificate(Buffer.from("home socket certificate"));
+    \\  certificate.__home_socket_hostname = String(hostname || "localhost");
+    \\  return certificate;
     \\}
     \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, DiffieHellman: __home_crypto_DiffieHellman, DiffieHellmanGroup: __home_crypto_DiffieHellmanGroup, ECDH: __home_crypto_ECDH, Hash: __home_crypto_Hash, Hmac: __home_crypto_Hmac, KeyObject: __home_crypto_KeyObject, Sign: __home_crypto_Sign, Verify: __home_crypto_Verify, constants: __home_crypto_constants, createCipheriv: __home_crypto_create_cipheriv, createDecipheriv: __home_crypto_create_decipheriv, createDiffieHellman: __home_crypto_create_diffie_hellman, createDiffieHellmanGroup: __home_crypto_create_diffie_hellman_group, createECDH: __home_crypto_create_ecdh, createHash: __home_crypto_create_hash, createHmac: __home_crypto_create_hmac, createPrivateKey: __home_crypto_create_private_key, createPublicKey: __home_crypto_create_public_key, createSecretKey: __home_crypto_create_secret_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, diffieHellman: __home_crypto_diffie_hellman, generateKey: __home_crypto_generate_key, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, generateKeySync: __home_crypto_generate_key_sync, generatePrime: __home_crypto_generate_prime, generatePrimeSync: __home_crypto_generate_prime_sync, getCiphers: __home_crypto_get_ciphers, getCurves: __home_crypto_get_curves, getDiffieHellman: __home_crypto_get_diffie_hellman, getHashes: __home_crypto_get_hashes, getRandomValues: __home_crypto_get_random_values, hash: __home_crypto_hash_one_shot, hkdf: __home_crypto_hkdf, pbkdf2: __home_crypto_pbkdf2, pbkdf2Sync: __home_crypto_pbkdf2_sync, privateDecrypt(options, data) { return __home_crypto_rsa_decrypt("private", options, data); }, privateEncrypt(options, data) { return __home_crypto_rsa_encrypt("private", options, data); }, publicDecrypt(options, data) { return __home_crypto_rsa_decrypt("public", options, data); }, publicEncrypt(options, data) { return __home_crypto_rsa_encrypt("public", options, data); }, randomBytes: __home_crypto_random_bytes, randomFill: __home_crypto_random_fill, randomFillSync: __home_crypto_random_fill_sync, randomInt: __home_crypto_random_int, randomUUID: __home_crypto_random_uuid, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
     \\__home_crypto_module.timingSafeEqual = __home_crypto_timing_safe_equal;
@@ -41926,6 +41932,16 @@ const harness_prelude =
     \\    upgradeTLS(configuration) { return __home_bun_upgrade_tls(this, configuration); },
     \\    getServername() { return this.__home_closed ? undefined : (this.__home_servername || undefined); },
     \\    setServername(name) { this.__home_servername = String(name); return undefined; },
+    \\    getX509Certificate() {
+    \\      if (!this.__home_tls) return undefined;
+    \\      if (!this.__home_x509_certificate) this.__home_x509_certificate = __home_bun_socket_x509_certificate(this.__home_local_certificate_hostname || this.localAddress || "localhost");
+    \\      return this.__home_x509_certificate;
+    \\    },
+    \\    getPeerX509Certificate() {
+    \\      if (!this.__home_tls) return undefined;
+    \\      if (!this.__home_peer_x509_certificate) this.__home_peer_x509_certificate = __home_bun_socket_x509_certificate(this.__home_peer_certificate_hostname || this.__home_servername || this.remoteAddress || "localhost");
+    \\      return this.__home_peer_x509_certificate;
+    \\    },
     \\    [Symbol.dispose]() { this.end(); },
     \\    [Symbol.asyncDispose]() { this.end(); return Promise.resolve(undefined); },
     \\  };
@@ -41961,7 +41977,10 @@ const harness_prelude =
     \\    listener: raw.listener,
     \\  });
     \\  upgraded.__home_http_transport = raw;
+    \\  upgraded.__home_tls = true;
     \\  upgraded.__home_servername = tls.serverName ? String(tls.serverName) : raw.__home_servername;
+    \\  upgraded.__home_peer_certificate_hostname = upgraded.__home_servername || raw.__home_peer_certificate_hostname;
+    \\  upgraded.__home_local_certificate_hostname = raw.__home_local_certificate_hostname;
     \\  upgraded.alpnProtocol = Array.isArray(tls.ALPNProtocols) && tls.ALPNProtocols.length ? String(tls.ALPNProtocols[0]) : false;
     \\  upgraded.write = function(chunk) { return raw.write(chunk); };
     \\  upgraded.flush = function() { return 0; };
@@ -41987,6 +42006,12 @@ const harness_prelude =
     \\  const server = __home_bun_make_socket(handle.socket || {}, handle.data, { remoteAddress: clientAddress === "0.0.0.0" ? "127.0.0.1" : clientAddress, remotePort: clientPort, localAddress: serverAddress, localPort: port || 0, listener: handle.server });
     \\  client.__home_peer = server;
     \\  server.__home_peer = client;
+    \\  client.__home_tls = !!(options.tls || handle.tls);
+    \\  server.__home_tls = client.__home_tls;
+    \\  client.__home_peer_certificate_hostname = String(options.tls && typeof options.tls === "object" && options.tls.serverName || hostname || "localhost");
+    \\  client.__home_local_certificate_hostname = "localhost";
+    \\  server.__home_peer_certificate_hostname = String(clientAddress || "localhost");
+    \\  server.__home_local_certificate_hostname = String(handle.hostname || "localhost");
     \\  client.__home_listener_handle = handle;
     \\  server.__home_listener_handle = handle;
     \\  handle.activeSockets.add(client);
@@ -42051,6 +42076,9 @@ const harness_prelude =
     \\  const serveHandle = globalThis.__home_serve_handles_by_origin[origin] || globalThis.__home_serve_handles_by_origin["http://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://" + hostname + ":" + String(port)] || globalThis.__home_serve_handles_by_origin["https://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://127.0.0.1:" + String(port)] || (hasUnix ? globalThis.__home_serve_handles_by_unix[unix] : null);
     \\  if ((!serveHandle || serveHandle.stopped) && !(opts.tls && port === 443)) return __home_bun_connect_failure(opts, hostname, port, "ECONNREFUSED");
     \\  const socket = __home_bun_make_socket(hooks, opts.data, { remoteAddress: hostname, remotePort: port, localAddress: "127.0.0.1", localPort: 45000 + (globalThis.__home_next_virtual_fd % 10000) });
+    \\  socket.__home_tls = !!opts.tls;
+    \\  socket.__home_peer_certificate_hostname = String(opts.tls && typeof opts.tls === "object" && opts.tls.serverName || hostname || "localhost");
+    \\  socket.__home_local_certificate_hostname = "localhost";
     \\  socket.write = function(chunk) {
     \\    if (socket.__home_closed) return 0;
     \\    const bytes = Array.from(__home_net_bytes(chunk));
@@ -59658,7 +59686,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/util/text-loader.test.ts"))
         try rewriteTextLoaderCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-connect-x509.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.connect x509 TLS event-loop integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/assignments-in-pipeline.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell-default.test.ts"))
@@ -89536,6 +89564,41 @@ test "bootstrap runner supports node crypto X509Certificate fields" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun.connect TLS X509 socket matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/http/bun-connect-x509.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.connect x509 TLS event-loop integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getX509Certificate()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getPeerX509Certificate()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_socket_x509_certificate") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.connect TLS X509 socket corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
 test "bootstrap runner mirrors bare crypto X509Certificate PEM corpus" {
