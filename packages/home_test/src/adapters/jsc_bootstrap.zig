@@ -106,6 +106,7 @@ pub const Runtime = struct {
 
     pub fn deinit(self: *Runtime) void {
         cleanupTranspilerHandles();
+        cleanupTcpListenShadows();
         cleanupServeHandles();
         cleanupNativeBridge();
         self.engine.deinit();
@@ -191,6 +192,18 @@ pub const Runtime = struct {
             self.engine.currentGlobalObject(),
             "__home_stopServeNative",
             stopServeNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_tcpListenNative",
+            tcpListenNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_tcpStopNative",
+            tcpStopNative,
         );
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
@@ -542,6 +555,8 @@ const BakeHtmlServeShape = struct {
 
 var next_serve_id: usize = 1;
 var serve_handles: std.AutoHashMapUnmanaged(usize, *ServeHandle) = .empty;
+var next_tcp_listen_shadow_id: usize = 1;
+var tcp_listen_shadows: std.AutoHashMapUnmanaged(usize, std.Io.net.Server) = .empty;
 var loaded_native_node_modules: std.ArrayList(std.DynLib) = .empty;
 var native_callbacks: std.AutoHashMapUnmanaged(usize, NativeCallback) = .empty;
 var native_externals: std.AutoHashMapUnmanaged(usize, NativeExternal) = .empty;
@@ -3005,6 +3020,91 @@ fn isIdentifierStart(char: u8) bool {
 
 fn isIdentifierContinue(char: u8) bool {
     return std.ascii.isAlphanumeric(char) or char == '_' or char == '$';
+}
+
+fn tcpListenNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        setException(actual_ctx, exception, "TCP listen bridge requires hostname and port");
+        return null;
+    }
+
+    const host = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "TCP listen bridge hostname failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(host);
+    const port_number = extern_fns.JSValueToNumber(actual_ctx, arguments[1], exception);
+    if (!std.math.isFinite(port_number) or port_number < 0 or port_number > 65535 or @floor(port_number) != port_number) {
+        setException(actual_ctx, exception, "TCP listen bridge received an invalid port");
+        return null;
+    }
+    const port: u16 = @intFromFloat(port_number);
+    const bind_host = if (std.mem.eql(u8, host, "localhost")) "127.0.0.1" else host;
+    const address = std.Io.net.IpAddress.parse(bind_host, port) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "TCP listen bridge address failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var server = address.listen(io, .{ .reuse_address = true }) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "TCP listen bridge listen failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    var server_owned = true;
+    defer if (server_owned) server.deinit(io);
+
+    const id = next_tcp_listen_shadow_id;
+    next_tcp_listen_shadow_id +|= 1;
+    tcp_listen_shadows.put(allocator, id, server) catch {
+        setException(actual_ctx, exception, "TCP listen bridge failed: OutOfMemory");
+        return null;
+    };
+    server_owned = false;
+    return extern_fns.JSValueMakeNumber(actual_ctx, @floatFromInt(id));
+}
+
+fn tcpStopNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = exception;
+    const actual_ctx = ctx.?;
+    const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    if (tcp_listen_shadows.fetchRemove(id)) |removed| {
+        var entry = removed;
+        var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+        defer threaded.deinit();
+        entry.value.deinit(threaded.io());
+    }
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn cleanupTcpListenShadows() void {
+    const allocator = std.heap.smp_allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var iterator = tcp_listen_shadows.valueIterator();
+    while (iterator.next()) |server| server.deinit(io);
+    tcp_listen_shadows.clearAndFree(allocator);
 }
 
 fn serveNative(
