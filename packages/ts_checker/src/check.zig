@@ -30401,6 +30401,14 @@ pub const Checker = struct {
         if (self.hir.kindOf(decorator_node) != .decorator) return;
         const d = hir_mod.decoratorOf(self.hir, decorator_node);
         if (d.expression == hir_mod.none_node_id) return;
+        if (self.stage3InvalidClassMemberDecoratorCode(target)) |code| {
+            const message = if (code == TsCodes.decorator_on_method_overload)
+                "A decorator can only decorate a method implementation, not an overload."
+            else
+                "Decorators are not valid here.";
+            try self.report(decorator_node, code, message);
+            return;
+        }
         // Mirrors upstream `nodeCanBeDecorated`: legacy decorators cannot
         // target any named declaration whose name is a private identifier.
         // Reject the target before checking the decorator expression so the
@@ -30473,6 +30481,58 @@ pub const Checker = struct {
                 );
             }
         }
+    }
+
+    fn stage3InvalidClassMemberDecoratorCode(self: *Checker, target: NodeId) ?u32 {
+        if (self.sourceUsesLegacyDecorators()) return null;
+        switch (self.hir.kindOf(target)) {
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const fn_p = hir_mod.fnDeclOf(self.hir, target);
+                if (fn_p.body != hir_mod.none_node_id) return null;
+                return if (fn_p.flags.is_getter or fn_p.flags.is_setter)
+                    TsCodes.decorators_not_valid_here
+                else
+                    TsCodes.decorator_on_method_overload;
+            },
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, target);
+                if (op.key == hir_mod.none_node_id) return null;
+                var fn_is_bodyless = false;
+                var fn_is_accessor = false;
+                if (op.value != hir_mod.none_node_id) {
+                    const value_kind = self.hir.kindOf(op.value);
+                    if (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) {
+                        const fn_p = hir_mod.fnDeclOf(self.hir, op.value);
+                        fn_is_bodyless = fn_p.body == hir_mod.none_node_id or fn_p.flags.is_abstract;
+                        fn_is_accessor = fn_p.flags.is_getter or fn_p.flags.is_setter;
+                    }
+                }
+                const is_abstract = fn_is_bodyless or
+                    self.classMemberSourceHasModifierBeforeKey(target, op.key, "abstract");
+                const is_ambient = self.classMemberSourceHasModifierBeforeKey(target, op.key, "declare");
+                if (!is_abstract and !is_ambient) return null;
+                const is_method = op.is_method or
+                    (op.value != hir_mod.none_node_id and
+                        (self.hir.kindOf(op.value) == .fn_decl or
+                            self.hir.kindOf(op.value) == .fn_expr or
+                            self.hir.kindOf(op.value) == .arrow_fn) and
+                        self.memberSourceLooksMethod(target));
+                return if (is_method and !op.is_accessor and !fn_is_accessor)
+                    TsCodes.decorator_on_method_overload
+                else
+                    TsCodes.decorators_not_valid_here;
+            },
+            else => return null,
+        }
+    }
+
+    fn classMemberHasLeadingDecorator(self: *Checker, class_node: NodeId, target: NodeId) bool {
+        var saw_decorator = false;
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            if (member == target) return saw_decorator;
+            saw_decorator = self.hir.kindOf(member) == .decorator;
+        }
+        return false;
     }
 
     fn classMemberTargetHasEcmaPrivateName(self: *Checker, target: NodeId) CheckError!bool {
@@ -34773,9 +34833,11 @@ pub const Checker = struct {
                     // Class fields count as concrete implementations
                     // for the purpose of satisfying inherited abstract
                     // members (v0 has no syntax for abstract fields).
-                    const is_abstract_property = self.classMemberSourceHasLeadingKeyword(m, "abstract");
+                    const is_abstract_property = self.classMemberSourceHasModifierBeforeKey(m, op.key, "abstract");
                     const is_auto_accessor = self.classMemberSourceHasLeadingKeyword(m, "accessor");
                     const is_declared_property = self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare");
+                    const has_invalid_stage3_decorator = self.classMemberHasLeadingDecorator(node, m) and
+                        self.stage3InvalidClassMemberDecoratorCode(m) != null;
                     const self_indexed_class_field_type = blk: {
                         if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) break :blk false;
                         if (op.type_annotation == hir_mod.none_node_id) break :blk false;
@@ -35094,6 +35156,7 @@ pub const Checker = struct {
                     // 'y'`) makes the individual field ambient even in a
                     // non-ambient class — `derivedUninitializedPropertyDeclaration.ts`.
                     if (op.value != hir_mod.none_node_id and
+                        !has_invalid_stage3_decorator and
                         (is_declared_property or
                             self.classHasLeadingDeclare(node) or
                             self.classNodeIsInsideAmbientDeclaredModule(node) or
@@ -163843,6 +163906,31 @@ test "checker: decorator cannot target a method overload signature" {
         if (d.code == TsCodes.decorator_on_method_overload) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: stage 3 decorators reject abstract and ambient class members" {
+    const s = try newSetup(
+        \\// @strict: true
+        \\declare let dec: any;
+        \\abstract class C {
+        \\  @dec abstract method(): void;
+        \\  @dec abstract ["computedMethod"](): void;
+        \\  @dec abstract get value(): number;
+        \\  @dec abstract get ["computedValue"](): number;
+        \\  @dec abstract field: number;
+        \\  @dec abstract accessor auto: number;
+        \\}
+        \\class D {
+        \\  @dec declare field: number;
+        \\  @dec static declare initialized = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.decorator_on_method_overload));
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.decorators_not_valid_here));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.ambient_initializer_not_allowed));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_initialized));
 }
 
 test "checker: decorated overload implementation satisfies previous signature" {
