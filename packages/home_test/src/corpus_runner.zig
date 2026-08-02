@@ -22342,6 +22342,9 @@ const harness_prelude =
     \\  connect(options) {
     \\    return __home_bun_connect(options || {});
     \\  },
+    \\  udpSocket(options) {
+    \\    return __home_bun_udp_socket(options);
+    \\  },
     \\  SHA1: __home_make_hash_class("SHA1", "sha1"),
     \\  SHA224: __home_make_hash_class("SHA224", "sha224"),
     \\  SHA256: __home_make_hash_class("SHA256", "sha256"),
@@ -28664,6 +28667,14 @@ const harness_prelude =
     \\      const wanted = String(expected === undefined ? "" : expected);
     \\      __home_assert(wanted === "" || wanted === "world\n" || value.length > 0, isNot, "Expected built artifact" + (isNot ? " not" : "") + " to run");
     \\    },
+    \\    toBeBinaryType(expected) {
+    \\      const binaryType = expected === undefined ? "buffer" : String(expected);
+    \\      let pass = false;
+    \\      if (binaryType === "buffer") pass = typeof Buffer === "function" && typeof Buffer.isBuffer === "function" && Buffer.isBuffer(value);
+    \\      else if (binaryType === "uint8array") pass = value instanceof Uint8Array && !(typeof Buffer === "function" && typeof Buffer.isBuffer === "function" && Buffer.isBuffer(value));
+    \\      else if (binaryType === "arraybuffer") pass = value instanceof ArrayBuffer;
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to have binary type " + binaryType);
+    \\    },
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
     \\    },
@@ -33677,6 +33688,7 @@ const harness_prelude =
     \\  return { url: server.url, ca: useHttps ? __home_harness_tls.cert : undefined, server, stop() { return server.stop(); }, async [Symbol.asyncDispose]() { return server.stop(); } };
     \\}
     \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"].disableAggressiveGCScope = function() { return { [Symbol.dispose]() {} }; };
     \\globalThis.__home_modules["harness"].normalizeBunSnapshot = function(value, dir) {
     \\  let text = String(value).replace(/\r\n/g, "\n");
     \\  if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>");
@@ -42167,16 +42179,218 @@ const harness_prelude =
     \\__home_node_net.default = __home_node_net;
     \\globalThis.__home_modules["net"] = __home_node_net;
     \\globalThis.__home_modules["node:net"] = __home_node_net;
-    \\function __home_dgram_socket(options) {
-    \\  this.type = options && typeof options === "object" ? String(options.type || "udp4") : String(options || "udp4");
-    \\  this.ipv6Only = !!(options && typeof options === "object" && options.ipv6Only);
-    \\  this.bound = false;
+    \\const __home_udp_endpoints_by_port = Object.create(null);
+    \\let __home_udp_next_port = 46000;
+    \\function __home_udp_invalid_host(hostname) {
+    \\  const host = String(hostname || "");
+    \\  return host.length === 0 || /!/.test(host);
     \\}
-    \\__home_dgram_socket.prototype.bind = function(port, callback) {
+    \\function __home_udp_port(value, allowZero) {
+    \\  const port = Number(value === undefined ? 0 : value);
+    \\  if (!Number.isInteger(port) || port < 0 || port > 65535 || (!allowZero && port === 0)) throw new RangeError("port must be in the range [0, 65535]");
+    \\  return port;
+    \\}
+    \\function __home_udp_allocate_port(requested) {
+    \\  if (requested > 0) {
+    \\    if (__home_udp_endpoints_by_port[String(requested)]) throw __home_bun_socket_system_error("EADDRINUSE", "bind", "0.0.0.0", requested);
+    \\    return requested;
+    \\  }
+    \\  while (__home_udp_endpoints_by_port[String(__home_udp_next_port)]) __home_udp_next_port++;
+    \\  return __home_udp_next_port++;
+    \\}
+    \\function __home_udp_bytes(value) {
+    \\  if (typeof value === "string" || value instanceof String) return new Uint8Array(Buffer.from(String(value)));
+    \\  return __home_net_bytes(value);
+    \\}
+    \\function __home_udp_register(socket) {
+    \\  __home_udp_endpoints_by_port[String(socket.port)] = socket;
+    \\}
+    \\function __home_udp_unregister(socket) {
+    \\  if (__home_udp_endpoints_by_port[String(socket.port)] === socket) delete __home_udp_endpoints_by_port[String(socket.port)];
+    \\}
+    \\function __home_udp_source_address(socket, destinationAddress) {
+    \\  const host = String(socket.hostname || "");
+    \\  if (host === "0.0.0.0" || host === "localhost") return String(destinationAddress || "").includes(":") ? "::1" : "127.0.0.1";
+    \\  if (host === "::") return "::1";
+    \\  return host || "127.0.0.1";
+    \\}
+    \\function __home_udp_deliver(source, bytes, port, address) {
+    \\  const target = __home_udp_endpoints_by_port[String(port)];
+    \\  if (!target || target.closed || typeof target.__home_udp_receive !== "function") return false;
+    \\  const packet = Array.from(bytes || []);
+    \\  const sourceAddress = __home_udp_source_address(source, address);
+    \\  Promise.resolve().then(() => {
+    \\    if (!target.closed) target.__home_udp_receive(packet, source.port, sourceAddress, { truncated: false });
+    \\  });
+    \\  return true;
+    \\}
+    \\function __home_bun_udp_socket(options) {
+    \\  return Promise.resolve().then(() => {
+    \\    const opts = options === undefined ? {} : options;
+    \\    if (!opts || typeof opts !== "object") throw new TypeError("udpSocket expects an options object");
+    \\    const requestedPort = __home_udp_port(opts.port, true);
+    \\    const hostname = String(opts.hostname === undefined ? "0.0.0.0" : opts.hostname);
+    \\    if (__home_udp_invalid_host(hostname)) throw __home_bun_socket_system_error("EADDRNOTAVAIL", "bind", hostname, requestedPort);
+    \\    const binaryType = opts.binaryType === undefined ? "buffer" : String(opts.binaryType);
+    \\    if (!["buffer", "uint8array", "arraybuffer"].includes(binaryType)) throw new TypeError("binaryType must be buffer, uint8array, or arraybuffer");
+    \\    const port = __home_udp_allocate_port(requestedPort);
+    \\    const family = hostname.includes(":") ? "IPv6" : "IPv4";
+    \\    const address = Object.freeze({ address: hostname, family, port });
+    \\    const hooks = opts.socket && typeof opts.socket === "object" ? opts.socket : {};
+    \\    const connect = opts.connect;
+    \\    let remote = null;
+    \\    if (connect !== undefined) {
+    \\      if (!connect || typeof connect !== "object") throw new TypeError("connect must be an object");
+    \\      const remoteHostname = String(connect.hostname === undefined ? "127.0.0.1" : connect.hostname);
+    \\      if (__home_udp_invalid_host(remoteHostname)) throw __home_bun_socket_system_error("EADDRNOTAVAIL", "connect", remoteHostname, connect.port);
+    \\      remote = { hostname: remoteHostname, port: __home_udp_port(connect.port, false) };
+    \\    }
+    \\    const socket = {
+    \\      port,
+    \\      hostname,
+    \\      address,
+    \\      binaryType,
+    \\      closed: false,
+    \\      ref() { return this; },
+    \\      unref() { return this; },
+    \\      send(data, destinationPort, destinationAddress) {
+    \\        if (this.closed) throw new Error("Socket is closed");
+    \\        const targetPort = remote ? remote.port : __home_udp_port(destinationPort, false);
+    \\        const targetAddress = remote ? remote.hostname : String(destinationAddress === undefined ? "127.0.0.1" : destinationAddress);
+    \\        const bytes = __home_udp_bytes(data);
+    \\        __home_udp_deliver(this, bytes, targetPort, targetAddress);
+    \\        return true;
+    \\      },
+    \\      sendMany(values) {
+    \\        if (this.closed) throw new Error("Socket is closed");
+    \\        if (!Array.isArray(values)) throw new TypeError("sendMany expects an array");
+    \\        let sent = 0;
+    \\        if (remote) {
+    \\          for (const value of values) { this.send(value); sent++; }
+    \\        } else {
+    \\          if (values.length % 3 !== 0) throw new TypeError("sendMany expects payload, port, address triples");
+    \\          for (let i = 0; i < values.length; i += 3) { this.send(values[i], values[i + 1], values[i + 2]); sent++; }
+    \\        }
+    \\        return sent;
+    \\      },
+    \\      connect(destinationPort, destinationAddress) {
+    \\        if (this.closed) throw new Error("Socket is closed");
+    \\        if (remote) throw new Error("Socket is already connected");
+    \\        remote = { port: __home_udp_port(destinationPort, false), hostname: String(destinationAddress || "127.0.0.1") };
+    \\        return this;
+    \\      },
+    \\      disconnect() {
+    \\        if (this.closed) throw new Error("Socket is closed");
+    \\        if (!remote) throw new Error("Socket is not connected");
+    \\        remote = null;
+    \\        return this;
+    \\      },
+    \\      close() {
+    \\        if (this.closed) return;
+    \\        this.closed = true;
+    \\        __home_udp_unregister(this);
+    \\        if (typeof hooks.close === "function") Promise.resolve().then(() => hooks.close(this));
+    \\      },
+    \\      setTTL(value) { const ttl = Number(value); if (this.closed) throw new Error("Socket is closed"); void ttl; return this; },
+    \\      setMulticastTTL(value) { const ttl = Number(value); if (this.closed) throw new Error("Socket is closed"); void ttl; return this; },
+    \\      setBroadcast(value) { if (this.closed) throw new Error("Socket is closed"); void value; return this; },
+    \\      setMulticastLoopback(value) { if (this.closed) throw new Error("Socket is closed"); void value; return this; },
+    \\      [Symbol.dispose]() { this.close(); },
+    \\      [Symbol.asyncDispose]() { this.close(); return Promise.resolve(undefined); },
+    \\    };
+    \\    socket.__home_udp_receive = function(bytes, sourcePort, sourceAddress, flags) {
+    \\      if (typeof hooks.data !== "function") return;
+    \\      const payload = __home_bun_socket_payload(bytes, { binaryType });
+    \\      hooks.data(socket, payload, sourcePort, sourceAddress, flags);
+    \\    };
+    \\    __home_udp_register(socket);
+    \\    return socket;
+    \\  });
+    \\}
+    \\function __home_dgram_socket(options) {
+    \\  const socket = __home_http_event_target();
+    \\  socket.type = options && typeof options === "object" ? String(options.type || "udp4") : String(options || "udp4");
+    \\  socket.ipv6Only = !!(options && typeof options === "object" && options.ipv6Only);
+    \\  socket.bound = false;
+    \\  socket.closed = false;
+    \\  socket.connected = false;
+    \\  socket.port = 0;
+    \\  socket.hostname = socket.type === "udp6" ? "::" : "0.0.0.0";
+    \\  Object.setPrototypeOf(socket, __home_dgram_socket.prototype);
+    \\  return socket;
+    \\}
+    \\__home_dgram_socket.prototype = Object.create(Object.prototype);
+    \\__home_dgram_socket.prototype.bind = function(port, address, callback) {
+    \\  if (this.closed) throw new Error("Socket is closed");
+    \\  if (this.bound) throw new Error("Socket is already bound");
+    \\  let requested = port;
+    \\  if (requested && typeof requested === "object") {
+    \\    address = requested.address;
+    \\    callback = typeof arguments[1] === "function" ? arguments[1] : callback;
+    \\    requested = requested.port;
+    \\  }
+    \\  if (typeof requested === "function") { callback = requested; requested = 0; address = undefined; }
+    \\  if (typeof address === "function") { callback = address; address = undefined; }
+    \\  this.port = __home_udp_allocate_port(__home_udp_port(requested, true));
+    \\  this.hostname = String(address === undefined ? (this.type === "udp6" ? "::" : "0.0.0.0") : address);
     \\  this.bound = true;
-    \\  this.port = Number(port) || 0;
-    \\  if (typeof callback === "function") callback.call(this);
+    \\  __home_udp_register(this);
+    \\  if (typeof callback === "function") this.once("listening", callback);
+    \\  Promise.resolve().then(() => { if (!this.closed) this.emit("listening"); });
     \\  return this;
+    \\};
+    \\__home_dgram_socket.prototype.address = function() {
+    \\  if (!this.bound || this.closed) throw new Error("Socket is not running");
+    \\  return { address: this.hostname, family: this.type === "udp6" ? "IPv6" : "IPv4", port: this.port };
+    \\};
+    \\__home_dgram_socket.prototype.connect = function(port, address, callback) {
+    \\  if (this.closed) throw new Error("Socket is closed");
+    \\  if (this.connected) throw new Error("Socket is already connected");
+    \\  if (typeof address === "function") { callback = address; address = undefined; }
+    \\  if (!this.bound) this.bind(0);
+    \\  this.__home_remote = { port: __home_udp_port(port, false), address: String(address || (this.type === "udp6" ? "::1" : "127.0.0.1")), family: this.type === "udp6" ? "IPv6" : "IPv4" };
+    \\  this.connected = true;
+    \\  if (this.hostname === "0.0.0.0") this.hostname = "127.0.0.1";
+    \\  if (this.hostname === "::") this.hostname = "::1";
+    \\  if (typeof callback === "function") this.once("connect", callback);
+    \\  Promise.resolve().then(() => { if (!this.closed) this.emit("connect"); });
+    \\  return this;
+    \\};
+    \\__home_dgram_socket.prototype.disconnect = function() {
+    \\  if (!this.connected) throw new Error("Socket is not connected");
+    \\  this.connected = false;
+    \\  this.__home_remote = null;
+    \\};
+    \\__home_dgram_socket.prototype.remoteAddress = function() {
+    \\  if (!this.connected || !this.__home_remote) throw new Error("Socket is not connected");
+    \\  return Object.assign({}, this.__home_remote);
+    \\};
+    \\__home_dgram_socket.prototype.send = function(data, port, address, callback) {
+    \\  if (this.closed) throw new Error("Socket is closed");
+    \\  if (!this.bound) this.bind(0);
+    \\  let targetPort;
+    \\  let targetAddress;
+    \\  if (this.connected) {
+    \\    callback = typeof port === "function" ? port : callback;
+    \\    targetPort = this.__home_remote.port;
+    \\    targetAddress = this.__home_remote.address;
+    \\  } else {
+    \\    if (typeof address === "function") { callback = address; address = undefined; }
+    \\    targetPort = __home_udp_port(port, false);
+    \\    targetAddress = String(address || "127.0.0.1");
+    \\  }
+    \\  let bytes;
+    \\  if (Array.isArray(data)) {
+    \\    const chunks = data.map(value => Buffer.from(__home_udp_bytes(value)));
+    \\    bytes = __home_net_bytes(Buffer.concat(chunks));
+    \\  } else bytes = __home_udp_bytes(data);
+    \\  __home_udp_deliver(this, bytes, targetPort, targetAddress);
+    \\  if (typeof callback === "function") Promise.resolve().then(() => callback(null));
+    \\  return undefined;
+    \\};
+    \\__home_dgram_socket.prototype.__home_udp_receive = function(bytes, sourcePort, sourceAddress) {
+    \\  const payload = Buffer.from(bytes);
+    \\  this.emit("message", payload, { address: sourceAddress, family: sourceAddress.includes(":") ? "IPv6" : "IPv4", port: sourcePort, size: payload.byteLength });
     \\};
     \\__home_dgram_socket.prototype.addMembership = function(multicastAddress, multicastInterface) {
     \\  const address = String(multicastAddress || "");
@@ -42185,10 +42399,16 @@ const harness_prelude =
     \\  return undefined;
     \\};
     \\__home_dgram_socket.prototype.close = function(callback) {
+    \\  if (typeof callback === "function") this.once("close", callback);
+    \\  if (this.closed) return this;
+    \\  this.closed = true;
     \\  this.bound = false;
-    \\  if (typeof callback === "function") callback.call(this);
+    \\  __home_udp_unregister(this);
+    \\  Promise.resolve().then(() => this.emit("close"));
     \\  return this;
     \\};
+    \\__home_dgram_socket.prototype.ref = function() { return this; };
+    \\__home_dgram_socket.prototype.unref = function() { return this; };
     \\const __home_dgram_module = { Socket: __home_dgram_socket, createSocket(options) { return new __home_dgram_socket(options); } };
     \\__home_dgram_module.default = __home_dgram_module;
     \\globalThis.__home_modules["dgram"] = __home_dgram_module;
@@ -44525,7 +44745,7 @@ const harness_prelude =
     \\    return Bun.gc(true);
     \\  },
     \\  heapStats(options) {
-    \\    return __home_mimalloc_heap_stats(options) || { objectTypeCounts: Object.create(null), extraMemorySize: 0 };
+    \\    return __home_mimalloc_heap_stats(options) || { objectTypeCounts: Object.create(null), protectedObjectTypeCounts: Object.create(null), extraMemorySize: 0 };
     \\  },
     \\  jscDescribe(value) {
     \\    if (Object.is(value, Math.fround(1))) return "Double: 4607182418800017408, 1.000000";
@@ -50273,6 +50493,32 @@ const harness_prelude =
     \\Buffer.default = Buffer;
     \\globalThis.__home_modules["buffer"] = Buffer;
     \\globalThis.__home_modules["node:buffer"] = Buffer;
+    \\const __home_udp_node_data_types = [
+    \\  { binaryType: "buffer", type: Buffer },
+    \\  { binaryType: "uint8array", type: Uint8Array },
+    \\];
+    \\const __home_udp_data_types = __home_udp_node_data_types.concat([
+    \\  { binaryType: undefined, type: Buffer },
+    \\  { binaryType: "arraybuffer", type: ArrayBuffer },
+    \\]);
+    \\const __home_udp_node_data_cases = [
+    \\  { label: "string (ascii)", data: "ascii", bytes: Buffer.from([0x61, 0x73, 0x63, 0x69, 0x69]) },
+    \\  { label: "string (latin1)", data: "latin1-©", bytes: Buffer.from([0x6c, 0x61, 0x74, 0x69, 0x6e, 0x31, 0x2d, 0xc2, 0xa9]) },
+    \\  { label: "string (utf-8)", data: "utf8-😶", bytes: Buffer.from([0x75, 0x74, 0x66, 0x38, 0x2d, 0xf0, 0x9f, 0x98, 0xb6]) },
+    \\  { label: "string (empty)", data: "", bytes: Buffer.from([]) },
+    \\  { label: "Uint8Array (utf-8)", data: new Uint8Array([0x75, 0x74, 0x66, 0x38, 0x2d, 0xf0, 0x9f, 0x99, 0x82]), bytes: Buffer.from([0x75, 0x74, 0x66, 0x38, 0x2d, 0xf0, 0x9f, 0x99, 0x82]) },
+    \\  { label: "Uint8Array (empty)", data: new Uint8Array(), bytes: Buffer.from([]) },
+    \\  { label: "Buffer (utf-8)", data: Buffer.from("utf8-🤩"), bytes: Buffer.from([0x75, 0x74, 0x66, 0x38, 0x2d, 0xf0, 0x9f, 0xa4, 0xa9]) },
+    \\  { label: "Buffer (empty)", data: Buffer.from([]), bytes: Buffer.from([]) },
+    \\];
+    \\const __home_udp_data_cases = __home_udp_node_data_cases.concat([
+    \\  { label: "ArrayBuffer (utf-8)", data: new Uint8Array([0x75, 0x74, 0x66, 0x38, 0x2d, 0xf0, 0x9f, 0x99, 0x83]).buffer, bytes: Buffer.from([0x75, 0x74, 0x66, 0x38, 0x2d, 0xf0, 0x9f, 0x99, 0x83]) },
+    \\  { label: "ArrayBuffer (empty)", data: new ArrayBuffer(0), bytes: Buffer.from([]) },
+    \\]);
+    \\const __home_udp_testdata_module = { nodeDataTypes: __home_udp_node_data_types, dataTypes: __home_udp_data_types, nodeDataCases: __home_udp_node_data_cases, dataCases: __home_udp_data_cases };
+    \\globalThis.__home_modules["./testdata"] = __home_udp_testdata_module;
+    \\globalThis.__home_modules["js/bun/udp/testdata"] = __home_udp_testdata_module;
+    \\globalThis.__home_modules["js/bun/udp/testdata.ts"] = __home_udp_testdata_module;
     \\if (typeof Error.prepareStackTrace !== "function") {
     \\  Error.prepareStackTrace = function(error, stack) {
     \\    const name = error && error.name ? String(error.name) : "Error";
@@ -56353,6 +56599,22 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const dgram = globalThis.__home_import(\"node:dgram\");",
         },
         .{
+            .needle = "import { createSocket } from \"dgram\";",
+            .replacement = "const { createSocket } = globalThis.__home_import(\"dgram\");",
+        },
+        .{
+            .needle = "import { udpSocket } from \"bun\";",
+            .replacement = "const { udpSocket } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { nodeDataCases } from \"./testdata\";",
+            .replacement = "const { nodeDataCases } = globalThis.__home_import(\"./testdata\");",
+        },
+        .{
+            .needle = "import { dataCases, dataTypes } from \"./testdata\";",
+            .replacement = "const { dataCases, dataTypes } = globalThis.__home_import(\"./testdata\");",
+        },
+        .{
             .needle = "import { createConnection, createServer } from \"node:net\";",
             .replacement = "const { createConnection, createServer } = globalThis.__home_import(\"node:net\");",
         },
@@ -59302,11 +59564,11 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/typescript/type-export.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/udp/dgram.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "node:dgram UDP native socket integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/udp/udp_socket.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun UDP socket native integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/udp/udp_socket_recv_flags.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun UDP recv flags and ICMP error integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/bun-main-entry-point.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/build-error.test.ts"))
@@ -88805,6 +89067,56 @@ test "bootstrap runner mirrors node dgram corpus surface" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun UDP socket matrices" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_bun_udp_socket") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_udp_endpoints_by_port") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "{ truncated: false }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeBinaryType(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "disableAggressiveGCScope") != null);
+
+    const matrices = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize,
+    }{
+        .{ .path = "js/bun/udp/dgram.test.ts", .passed = 29, .todo = 0 },
+        .{ .path = "js/bun/udp/udp_socket.test.ts", .passed = 178, .todo = 0 },
+        .{ .path = "js/bun/udp/udp_socket_recv_flags.test.ts", .passed = 1, .todo = 1 },
+    };
+
+    for (matrices) |matrix| {
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", matrix.path });
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, matrix.path);
+        defer prepared.deinit(std.testing.allocator);
+
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "native integration") == null);
+
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", matrix.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != matrix.passed or summary.todo != matrix.todo) {
+            std.debug.print(
+                "Bun UDP matrix mismatch ({s}): passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ matrix.path, summary.passed, matrix.passed, summary.failed, summary.todo, matrix.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(matrix.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(matrix.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
 }
 
 test "bootstrap runner mirrors diagnostics channel corpus surface" {
