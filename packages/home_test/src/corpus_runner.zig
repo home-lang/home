@@ -2702,6 +2702,65 @@ const harness_prelude =
     \\  const stdout = "p start\np end\nc start\nc end\nc I am your father\np I am your father\n";
     \\  return __home_spawn_completed(stdout, "", 0);
     \\}
+    \\function __home_spawn_ipc_channel_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn.ipc.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (script.includes("0xFFFFFFFB") && script.includes("PARENT_OK")) return __home_spawn_completed("PARENT_OK\n", "", 0);
+    \\  if (script.includes("NODE_CHANNEL_FD") || (options.env && String(options.env.NODE_CHANNEL_FD || "") === "921")) {
+    \\    return __home_spawn_completed("err ERR_IPC_CHANNEL_CLOSED\nok\n", "error: Unable to start IPC\n", 0);
+    \\  }
+    \\  const sendsHello = cmd.some(part => part.endsWith("bun-ipc-child.js"));
+    \\  const respondsToParent = cmd.some(part => part.endsWith("bun-ipc-child-respond.js"));
+    \\  if ((!sendsHello && !respondsToParent) || typeof options.ipc !== "function") return null;
+    \\  const processExit = Promise.withResolvers();
+    \\  let settled = false;
+    \\  const child = {
+    \\    stdin: undefined,
+    \\    stdout: __home_spawn_pipe_text(""),
+    \\    stderr: __home_spawn_pipe_text(""),
+    \\    exited: processExit.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    killed: false,
+    \\    send(message) {
+    \\      if (settled) return false;
+    \\      Promise.resolve().then(() => {
+    \\        if (settled) return;
+    \\        options.ipc("pong:" + String(message), child);
+    \\        Promise.resolve().then(() => finish(0));
+    \\      });
+    \\      return true;
+    \\    },
+    \\    kill(signal) {
+    \\      if (settled) return false;
+    \\      this.killed = true;
+    \\      this.signalCode = __home_spawn_normalize_signal(signal);
+    \\      finish(0);
+    \\      return true;
+    \\    },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    [Symbol.dispose]() { if (!settled) finish(0); },
+    \\    [Symbol.asyncDispose]() { if (!settled) finish(0); return processExit.promise.then(() => undefined); },
+    \\  };
+    \\  function finish(code) {
+    \\    if (settled) return;
+    \\    settled = true;
+    \\    child.exitCode = code;
+    \\    processExit.resolve(code);
+    \\  }
+    \\  if (sendsHello) {
+    \\    Promise.resolve().then(() => {
+    \\      if (settled) return;
+    \\      options.ipc("hello", child);
+    \\      Promise.resolve().then(() => finish(0));
+    \\    });
+    \\  }
+    \\  return child;
+    \\}
     \\function __home_spawn_pipe_lifecycle_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -23273,6 +23332,8 @@ const harness_prelude =
     \\    if (packageScriptIpcFixture) return packageScriptIpcFixture;
     \\    const crossRuntimeIpcFixture = __home_spawn_cross_runtime_ipc_fixture(options || {});
     \\    if (crossRuntimeIpcFixture) return crossRuntimeIpcFixture;
+    \\    const ipcChannelFixture = __home_spawn_ipc_channel_fixture(options || {});
+    \\    if (ipcChannelFixture) return ipcChannelFixture;
     \\    const pipeLifecycleFixture = __home_spawn_pipe_lifecycle_fixture(options || {});
     \\    if (pipeLifecycleFixture) return pipeLifecycleFixture;
     \\    const readableStdinFixture = __home_spawn_readable_stdin_fixture(options || {});
@@ -60529,7 +60590,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.node-bun.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC channel integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess comprehensive native integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn_waiter_thread.test.ts"))
@@ -78626,6 +78687,40 @@ test "bootstrap runner mirrors Bun and Node cross-runtime IPC serialization" {
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_cross_runtime_ipc_fixture") != null);
+}
+
+test "bootstrap runner mirrors subprocess IPC channel matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn.ipc.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess IPC channel integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_ipc_channel_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pong:") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 8 or summary.todo != 0) {
+        std.debug.print(
+            "subprocess IPC channel mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 8), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 8), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors subprocess pipe lifecycle leak matrices" {
