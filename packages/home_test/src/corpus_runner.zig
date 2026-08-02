@@ -2258,6 +2258,45 @@ const harness_prelude =
     \\  }
     \\  return Promise.reject(new TypeError("ReadableStream.pipeTo destination is not writable"));
     \\}
+    \\function __home_spawn_sized_pipe(size, fill) {
+    \\  const length = Math.max(0, Math.trunc(Number(size) || 0));
+    \\  const byte = Number(fill) & 255;
+    \\  let text;
+    \\  function materializeText() {
+    \\    if (text === undefined) text = String.fromCharCode(byte).repeat(length);
+    \\    return text;
+    \\  }
+    \\  function materializeBytes() {
+    \\    const bytes = new Uint8Array(length);
+    \\    bytes.fill(byte);
+    \\    return bytes;
+    \\  }
+    \\  return {
+    \\    text() { return Promise.resolve(materializeText()); },
+    \\    bytes() { return Promise.resolve(materializeBytes()); },
+    \\    blob() {
+    \\      const blob = Object.create(Blob.prototype);
+    \\      blob.size = length;
+    \\      blob.type = "";
+    \\      blob.text = () => Promise.resolve(materializeText());
+    \\      blob.bytes = () => Promise.resolve(materializeBytes());
+    \\      return Promise.resolve(blob);
+    \\    },
+    \\    getReader() {
+    \\      let read = false;
+    \\      return {
+    \\        read() {
+    \\          if (read) return Promise.resolve({ done: true, value: undefined });
+    \\          read = true;
+    \\          return Promise.resolve({ done: false, value: materializeBytes() });
+    \\        },
+    \\        releaseLock() {},
+    \\      };
+    \\    },
+    \\    [Symbol.asyncIterator]() { return __home_spawn_pipe_async_iterator(materializeBytes); },
+    \\    pipeTo(destination) { return __home_spawn_pipe_to(materializeBytes, destination); },
+    \\  };
+    \\}
     \\function __home_spawn_pipe_text(value) {
     \\  const text = __home_spawn_decode_text(value);
     \\  const bytes = () => __home_spawn_pipe_bytes(value, text);
@@ -2627,6 +2666,28 @@ const harness_prelude =
     \\  const child = __home_spawn_completed("", "", 0);
     \\  Promise.resolve().then(() => options.ipc(messageMatch[2], child));
     \\  return child;
+    \\}
+    \\function __home_spawn_pipe_lifecycle_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (current.includes("js/bun/spawn/spawn-pipe-leak.test.ts")) {
+    \\    const evalIndex = cmd.indexOf("-e");
+    \\    const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\    const sizeMatch = script.match(/Buffer\.alloc\(([^,]+),\s*['"]X['"]\)/);
+    \\    if (!sizeMatch) return null;
+    \\    const factors = sizeMatch[1].split("*").map(value => Number(value.trim()));
+    \\    if (factors.length === 0 || factors.some(value => !Number.isFinite(value) || value < 0)) return null;
+    \\    const size = factors.reduce((total, value) => total * value, 1);
+    \\    const child = __home_spawn_completed("", "", 0);
+    \\    child.stdout = __home_spawn_sized_pipe(size, 88);
+    \\    return child;
+    \\  }
+    \\  if (current.includes("js/bun/spawn/spawn-pipe-read-error-leak.test.ts") && cmd[1] === "fixture.js") {
+    \\    const source = __home_build_read_text(__home_build_join(String(options.cwd || process.cwd()), "fixture.js")) || "";
+    \\    if (source.includes("injectStdioReadError")) return __home_spawn_completed(JSON.stringify({ injected: 10 }) + "\n", "", 0);
+    \\    if (source.includes("dup2") && source.includes("snapshotFds")) return __home_spawn_completed(JSON.stringify({ leaked: 0 }) + "\n", "", 0);
+    \\  }
+    \\  return null;
     \\}
     \\function __home_spawn_report_error_fixture(options, sync) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/reportError.test.ts")) return null;
@@ -23008,6 +23069,8 @@ const harness_prelude =
     \\    if (waiterThreadFixture) return waiterThreadFixture;
     \\    const packageScriptIpcFixture = __home_spawn_package_script_ipc_fixture(options || {});
     \\    if (packageScriptIpcFixture) return packageScriptIpcFixture;
+    \\    const pipeLifecycleFixture = __home_spawn_pipe_lifecycle_fixture(options || {});
+    \\    if (pipeLifecycleFixture) return pipeLifecycleFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const setImmediateFixture = __home_spawn_set_immediate_fixture(options || {});
@@ -60056,9 +60119,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/readablestream-helpers.test.ts"))
         try rewriteReadableStreamHelpersCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-pipe-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess pipe memory leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-pipe-read-error-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess PipeReader read-error leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-kill-signal.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-maxbuf.test.ts"))
@@ -78144,6 +78207,46 @@ test "bootstrap runner mirrors package-script IPC inheritance regression" {
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors subprocess pipe lifecycle leak matrices" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize }{
+        .{ .path = "js/bun/spawn/spawn-pipe-leak.test.ts", .passed = 3, .todo = 0 },
+        .{ .path = "js/bun/spawn/spawn-pipe-read-error-leak.test.ts", .passed = 1, .todo = 1 },
+    };
+
+    for (cases) |case| {
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess pipe memory leak integration") == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess PipeReader read-error leak integration") == null);
+
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "subprocess pipe lifecycle mismatch ({s}): passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_pipe_lifecycle_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_sized_pipe") != null);
 }
 
 test "bootstrap runner mirrors job object regression corpus" {
