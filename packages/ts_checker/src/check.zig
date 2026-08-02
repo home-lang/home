@@ -6419,7 +6419,12 @@ pub const Checker = struct {
         if (self.instantiation_depth == 0) self.instantiation_count = 0;
         try self.checkStaticBlockReservedAwaitBinding(node);
         switch (self.hir.kindOf(node)) {
-            .labeled_stmt => try self.checkStatement(hir_mod.labeledStmtOf(self.hir, node).body),
+            .labeled_stmt => {
+                const labeled = hir_mod.labeledStmtOf(self.hir, node);
+                try self.reportStaticBlockAwaitLabel(labeled.label, false);
+                try self.checkStatement(labeled.body);
+            },
+            .break_stmt, .continue_stmt => try self.reportStaticBlockAwaitLabel(hir_mod.labelOf(self.hir, node).label, true),
             .var_decl, .let_decl, .const_decl => try self.checkVarDecl(node),
             .fn_decl, .fn_expr, .arrow_fn => {
                 try self.checkStrictModeBlockScopedFunctionDeclaration(node);
@@ -6502,20 +6507,14 @@ pub const Checker = struct {
             .return_stmt => {
                 const suppress_recovered_top_level_return = self.topLevelReturnBeforeRecoveredCloseBrace(node);
                 const return_in_static_block = self.nodeIsInClassStaticBlockBeforeFunction(node);
-                if (self.function_body_depth == 0 and
+                if (return_in_static_block) {
+                    try self.report(node, TsCodes.return_in_class_static_block, "A 'return' statement cannot be used inside a class static block.");
+                } else if (self.function_body_depth == 0 and
                     !self.returnInsideUnsupportedWithStatement(node) and
                     !suppress_recovered_top_level_return and
                     !self.virtualSectionIsDeclarationFile(node))
                 {
-                    if (return_in_static_block) {
-                        try self.report(node, TsCodes.return_in_class_static_block, "A 'return' statement cannot be used inside a class static block.");
-                    } else {
-                        // In ambient (.d.ts) contexts the surrounding TS1036
-                        // ("Statements are not allowed in ambient contexts")
-                        // already covers the misuse ÃÂ¢ÃÂÃÂ tsc suppresses TS1108
-                        // there to avoid double-reporting.
-                        try self.report(node, TsCodes.return_outside_function, "A 'return' statement can only be used within a function body.");
-                    }
+                    try self.report(node, TsCodes.return_outside_function, "A 'return' statement can only be used within a function body.");
                 }
                 const r = hir_mod.returnOf(self.hir, node);
                 const raw_ret_t: TypeId = if (suppress_recovered_top_level_return)
@@ -8654,6 +8653,8 @@ pub const Checker = struct {
 
     fn checkStaticBlockReservedAwaitBinding(self: *Checker, node: NodeId) CheckError!void {
         if (!self.nodeIsInClassStaticBlockBeforeFunction(node)) return;
+        if (!self.sourceDirectiveValueMentions("target", "es2022") and
+            !self.sourceDirectiveValueMentions("target", "esnext")) return;
         const await_id = self.string_interner.intern("await") catch return error.OutOfMemory;
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => {
@@ -8676,6 +8677,25 @@ pub const Checker = struct {
                     hir_mod.identifierOf(self.hir, c.name).name == await_id)
                 {
                     try self.report(c.name, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
+                }
+            },
+            .arrow_fn => {
+                for (hir_mod.fnParams(self.hir, node)) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, param);
+                    const id_node = self.findAwaitBindingIdentifier(p.name, await_id) orelse continue;
+                    try self.reportStaticBlockAwaitIdentifier(id_node);
+                    const arrow_pos = self.sourceTokenAfterNode(id_node, "=>") orelse self.hir.spanOf(id_node).end;
+                    if (self.staticBlockAwaitArrowParameterIsParenthesized(id_node)) {
+                        try self.reportAt(id_node, arrow_pos, 1005, "';' expected.");
+                    } else {
+                        for (self.diagnostics.items) |*diagnostic| {
+                            if (diagnostic.node == id_node and diagnostic.code == 1109) {
+                                diagnostic.pos = arrow_pos;
+                                break;
+                            }
+                        }
+                    }
                 }
             },
             else => {},
@@ -8740,6 +8760,80 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn identifierHasClassStaticAwaitContext(self: *Checker, node: NodeId) bool {
+        var child = node;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            const kind = self.hir.kindOf(cur);
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) return false;
+            if (kind == .object_property) {
+                const owner = self.hir.parentOf(cur);
+                if (owner != hir_mod.none_node_id and
+                    (self.hir.kindOf(owner) == .class_decl or self.hir.kindOf(owner) == .class_expr))
+                {
+                    const property = hir_mod.objectPropertyOf(self.hir, cur);
+                    if (child == property.value and child != property.key) return false;
+                }
+            }
+            if (kind != .block_stmt) continue;
+            const owner = self.hir.parentOf(cur);
+            if (owner == hir_mod.none_node_id) continue;
+            const owner_kind = self.hir.kindOf(owner);
+            if (owner_kind != .class_decl and owner_kind != .class_expr) continue;
+            for (hir_mod.classMembers(self.hir, owner)) |member| {
+                if (member == cur) return true;
+            }
+        }
+        return false;
+    }
+
+    fn identifierIsObjectLiteralShorthand(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .object_property) return false;
+        const owner = self.hir.parentOf(parent);
+        if (owner == hir_mod.none_node_id or self.hir.kindOf(owner) != .object_literal) return false;
+        const property = hir_mod.objectPropertyOf(self.hir, parent);
+        return property.key == node and property.value == node;
+    }
+
+    fn reportStaticBlockAwaitIdentifier(self: *Checker, node: NodeId) CheckError!void {
+        if (self.diagnosticExists(node, TsCodes.await_in_class_static_block)) return;
+        try self.report(node, TsCodes.await_in_class_static_block, "'await' expression cannot be used inside a class static block.");
+        try self.reportAt(node, self.hir.spanOf(node).end, 1109, "Expression expected.");
+    }
+
+    fn reportStaticBlockAwaitLabel(self: *Checker, label: NodeId, break_or_continue: bool) CheckError!void {
+        if (label == hir_mod.none_node_id or self.hir.kindOf(label) != .identifier) return;
+        const name = self.string_interner.get(hir_mod.identifierOf(self.hir, label).name);
+        if (!std.mem.eql(u8, name, "await") or !self.identifierHasClassStaticAwaitContext(label)) return;
+        if (break_or_continue) try self.report(label, 1003, "Identifier expected.");
+        try self.reportStaticBlockAwaitIdentifier(label);
+    }
+
+    fn staticBlockAwaitArrowParameterIsParenthesized(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        var pos: usize = self.hir.spanOf(node).start;
+        while (pos > 0) {
+            pos -= 1;
+            switch (src[pos]) {
+                ' ', '\t', '\r', '\n' => continue,
+                '(' => return true,
+                else => return false,
+            }
+        }
+        return false;
+    }
+
+    fn sourceTokenAfterNode(self: *Checker, node: NodeId, token: []const u8) ?u32 {
+        const src = self.source orelse return null;
+        const start: usize = self.hir.spanOf(node).end;
+        const pos = std.mem.indexOfPos(u8, src, start, token) orelse return null;
+        return @intCast(pos);
     }
 
     /// TS2433 ÃÂ¢ÃÂÃÂ `A namespace declaration cannot be in a different
@@ -30315,6 +30409,10 @@ pub const Checker = struct {
             try self.report(decorator_node, TsCodes.decorators_not_valid_here, "Decorators are not valid here.");
             return;
         }
+        if (self.hir.kindOf(target) == .block_stmt) {
+            try self.report(decorator_node, TsCodes.decorators_not_valid_here, "Decorators are not valid here.");
+            return;
+        }
         _ = try self.checkExpression(d.expression);
         const target_kind = self.hir.kindOf(target);
         if (target_kind == .fn_decl or target_kind == .fn_expr or target_kind == .arrow_fn) {
@@ -39068,6 +39166,13 @@ pub const Checker = struct {
             }
             break;
         }
+        if (!declared) {
+            if (self.class_decl_by_instance.get(obj_t)) |receiver_decl| {
+                if (try self.classNodeDeclaresEcmaPrivateMember(receiver_decl, prop_name, false)) {
+                    declared = true;
+                }
+            }
+        }
         if (!declared) return;
         // Walk parents looking for an enclosing `class_decl` whose
         // name matches `class_name`. Found → access is inside the
@@ -43323,6 +43428,12 @@ pub const Checker = struct {
                 try self.reportStaticFutureFieldReads(c.then_branch, class_name, declared_static_fields, initialized_static_fields);
                 try self.reportStaticFutureFieldReads(c.else_branch, class_name, declared_static_fields, initialized_static_fields);
             },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(i.cond, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(i.then_branch, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(i.else_branch, class_name, declared_static_fields, initialized_static_fields);
+            },
             .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |elem| {
                 try self.reportStaticFutureFieldReads(elem, class_name, declared_static_fields, initialized_static_fields);
             },
@@ -43535,7 +43646,12 @@ pub const Checker = struct {
                 .code = TsCodes.block_scoped_used_before_decl,
                 .message = decl_msg,
             });
-            try self.reportUsedBeforeAssignmentSimple(ref.node, ref.name);
+            const parent = self.hir.parentOf(ref.node);
+            const is_plain_assignment_target = parent != hir_mod.none_node_id and
+                self.hir.kindOf(parent) == .assignment and
+                hir_mod.assignmentOf(self.hir, parent).target == ref.node and
+                hir_mod.assignmentOf(self.hir, parent).op == null;
+            if (!is_plain_assignment_target) try self.reportUsedBeforeAssignmentSimple(ref.node, ref.name);
             try reported.put(self.gpa, ref.name, {});
         }
     }
@@ -91401,6 +91517,7 @@ pub const Checker = struct {
             // type. checkFnDecl walks the body too, so all interior
             // typing happens here.
             .fn_decl, .arrow_fn, .fn_expr => blk: {
+                if (self.hir.kindOf(node) == .arrow_fn) try self.checkStaticBlockReservedAwaitBinding(node);
                 try self.checkFnDeclWithFlowBoundary(node);
                 break :blk self.hir.typeOf(node);
             },
@@ -91447,7 +91564,7 @@ pub const Checker = struct {
                 var crossed_class_body = false;
                 var prev: hir_mod.NodeId = node;
                 var cur: hir_mod.NodeId = self.hir.parentOf(node);
-                while (!self.has_parse_diagnostics and cur != hir_mod.none_node_id) : ({
+                while (!await_has_context_error and !self.has_parse_diagnostics and cur != hir_mod.none_node_id) : ({
                     prev = cur;
                     cur = self.hir.parentOf(cur);
                 }) {
@@ -91548,7 +91665,7 @@ pub const Checker = struct {
                         break;
                     }
                 }
-                if (!self.has_parse_diagnostics and
+                if (!await_has_context_error and !self.has_parse_diagnostics and
                     !self.nodeIsInsideFunctionLike(node) and
                     self.sourceFileIsModule() and
                     self.sourceModuleIsNodeFormatFamily() and
@@ -91579,7 +91696,7 @@ pub const Checker = struct {
                             .related = try self.esmConversionRelatedInfo(node),
                         });
                     }
-                } else if (!self.has_parse_diagnostics and
+                } else if (!await_has_context_error and !self.has_parse_diagnostics and
                     !self.nodeIsInsideFunctionLike(node) and
                     self.sourceTargetDisallowsTopLevelAwait())
                 {
@@ -91603,7 +91720,7 @@ pub const Checker = struct {
                     if (!already_reported) {
                         try self.report(node, TsCodes.top_level_await_target_module, "Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.");
                     }
-                } else if (!self.has_parse_diagnostics and
+                } else if (!await_has_context_error and !self.has_parse_diagnostics and
                     !self.nodeIsInsideFunctionLike(node) and
                     !self.sourceFileIsModule())
                 {
@@ -104225,6 +104342,14 @@ pub const Checker = struct {
         const name_str = self.string_interner.get(id.name);
         const is_this = std.mem.eql(u8, name_str, "this");
         const this_rebound_plain_function = is_this and self.thisInsideNonArrowPlainFunction(node);
+        if (std.mem.eql(u8, name_str, "await") and self.identifierHasClassStaticAwaitContext(node)) {
+            if (self.identifierIsObjectLiteralShorthand(node)) {
+                self.reportAt(node, self.hir.spanOf(node).end + 1, 1005, "':' expected.") catch {};
+            } else {
+                self.reportStaticBlockAwaitIdentifier(node) catch {};
+            }
+            return types.Primitive.any;
+        }
         // ECMAScript private-name LHS of `in` operator
         // (`#field in obj`) is a dedicated syntactic form (ES2022
         // brand check). The identifier is not a regular value
@@ -104436,13 +104561,29 @@ pub const Checker = struct {
                     return types.Primitive.any;
                 },
                 .static_block => {
-                    for (self.diagnostics.items) |d| {
-                        if (d.code == TsCodes.invalid_use_in_class_static_block and d.node == node) return types.Primitive.any;
+                    if (self.staticBlockClassDeclaresArguments(node)) |class_node| {
+                        const class_name = self.classDisplayNameFromNode(class_node) catch null;
+                        defer if (class_name) |name| self.gpa.free(name);
+                        const display = class_name orelse "C";
+                        const msg = std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Cannot find name 'arguments'. Did you mean the static member '{s}.arguments'?",
+                            .{display},
+                        ) catch return types.Primitive.any;
+                        self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.cannot_find_name_static_member,
+                            .message = msg,
+                        }) catch return types.Primitive.any;
+                        return types.Primitive.any;
                     }
-                    const msg = self.diag_arena.allocator().dupe(u8, "Invalid use of 'arguments'. It cannot be used inside a class static block.") catch return types.Primitive.any;
+                    for (self.diagnostics.items) |d| {
+                        if (d.code == TsCodes.arguments_in_class_field_or_static_block and d.node == node) return types.Primitive.any;
+                    }
+                    const msg = self.diag_arena.allocator().dupe(u8, "'arguments' cannot be referenced in property initializers or class static initialization blocks.") catch return types.Primitive.any;
                     self.diagnostics.append(self.gpa, .{
                         .node = node,
-                        .code = TsCodes.invalid_use_in_class_static_block,
+                        .code = TsCodes.arguments_in_class_field_or_static_block,
                         .message = msg,
                     }) catch return types.Primitive.any;
                     return types.Primitive.any;
@@ -106731,6 +106872,27 @@ pub const Checker = struct {
 
     fn argumentsInClassPropertyInitializerOrStaticBlock(self: *Checker, node: NodeId) bool {
         return self.argumentsClassContext(node) != .none;
+    }
+
+    fn staticBlockClassDeclaresArguments(self: *Checker, node: NodeId) ?NodeId {
+        const arguments_name = self.string_interner.intern("arguments") catch return null;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            for (hir_mod.classMembers(self.hir, cur)) |member| {
+                if (self.hir.kindOf(member) != .block_stmt) continue;
+                for (hir_mod.blockStmts(self.hir, member)) |stmt| {
+                    const stmt_kind = self.hir.kindOf(stmt);
+                    if (stmt_kind != .var_decl and stmt_kind != .let_decl and stmt_kind != .const_decl) continue;
+                    const declaration = hir_mod.varDeclOf(self.hir, stmt);
+                    if (declaration.name == hir_mod.none_node_id or self.hir.kindOf(declaration.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, declaration.name).name == arguments_name) return cur;
+                }
+            }
+            return null;
+        }
+        return null;
     }
 
     fn hasNonArrowFunctionAncestor(self: *Checker, node: NodeId) bool {
@@ -196958,6 +197120,85 @@ test "checker: return in class static block reports TS18041" {
     try T.expectEqual(@as(usize, 1), count);
 }
 
+test "checker: class static block context preempts generic await diagnostics" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\class C { static { await 1; } }
+        \\async function outer() { class D { static { await 1; } } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.await_in_class_static_block));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.await_only_in_async));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.top_level_await_target_module));
+}
+
+test "checker: nested class static blocks reject return" {
+    const s = try newSetup(
+        \\function outer() {
+        \\  class C { static { return 1; } }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.return_in_class_static_block));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.return_outside_function));
+}
+
+test "checker: decorators cannot target class static blocks" {
+    const s = try newSetup(
+        \\class C {
+        \\  @decorator
+        \\  static {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.decorators_not_valid_here));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: static initialization order descends into branches" {
+    const s = try newSetup(
+        \\class C {
+        \\  static { this.b; if (true) { this.b; } }
+        \\  static b = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_used_before_initialization));
+}
+
+test "checker: static block assignment before declaration omits used before assignment" {
+    const s = try newSetup(
+        \\class C { static { later = 1; } }
+        \\let later: number;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.block_scoped_used_before_decl));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
+test "checker: static block await binding follows target grammar" {
+    const es2015 = try newSetup(
+        \\// @target: es2015
+        \\class C { static { let await = 1; } }
+    );
+    defer destroySetup(es2015);
+    try es2015.checker.checkSourceFile(es2015.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(es2015, TsCodes.reserved_word_cannot_be_used_here));
+
+    const es2022 = try newSetup(
+        \\// @target: es2022
+        \\class C { static { let await = 1; } }
+    );
+    defer destroySetup(es2022);
+    try es2022.checker.checkSourceFile(es2022.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es2022, TsCodes.reserved_word_cannot_be_used_here));
+}
+
 test "checker: structural Promise exposes finally" {
     const s = try newSetup(
         \\let p = new Promise(function(resolve, reject) {});
@@ -201415,13 +201656,7 @@ test "checker: TS2522 reports arguments in ES5 async non-arrow functions" {
     try T.expectEqualStrings("The 'arguments' object cannot be referenced in an async function or method in ES5. Consider using a standard function or method.", message);
 }
 
-test "checker: TS2815/TS18039 split for arguments in class field initializers vs static blocks" {
-    // Property initializers (including arrows inside them) keep
-    // TS2815 with the long "property initializers or class static
-    // initialization blocks" wording. Class static blocks (and arrows
-    // nested inside them) get the dedicated TS18039 with the
-    // "Invalid use of 'arguments'. It cannot be used inside a class
-    // static block." wording.
+test "checker: TS2815 covers arguments in class field initializers and static blocks" {
     const source =
         \\class C {
         \\  field = arguments;
@@ -201435,25 +201670,14 @@ test "checker: TS2815/TS18039 split for arguments in class field initializers vs
     try s.checker.checkSourceFile(s.root);
 
     var ts2815: usize = 0;
-    var ts18039: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.arguments_in_class_field_or_static_block) {
             ts2815 += 1;
             try T.expectEqualStrings("'arguments' cannot be referenced in property initializers or class static initialization blocks.", d.message);
         }
-        if (d.code == TsCodes.invalid_use_in_class_static_block) {
-            ts18039 += 1;
-            try T.expectEqualStrings("Invalid use of 'arguments'. It cannot be used inside a class static block.", d.message);
-        }
     }
-    // `field = arguments` and `static arrow = () => arguments` =>
-    // both property-initializer position => TS2815 x 2.
-    try T.expectEqual(@as(usize, 2), ts2815);
-    // `static { arguments; }` and `static { (() => arguments)(); }`
-    // => static-block position => TS18039 x 2. The nested function
-    // `function ok() { return arguments; }` rebinds `arguments`
-    // locally, so it does NOT fire either code.
-    try T.expectEqual(@as(usize, 2), ts18039);
+    try T.expectEqual(@as(usize, 4), ts2815);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.invalid_use_in_class_static_block));
 }
 
 test "checker: TS2815/TS18039 ignore local arguments bindings and ordinary function bodies" {
@@ -217546,6 +217770,24 @@ test "checker: forward class static private access reports TS18013" {
         TsCodes.ecma_private_not_accessible_outside_class,
         "Property '#value' is not accessible outside class 'Derived' because it has a private identifier.",
     ));
+}
+
+test "checker: contextual arrows enforce forward instance private brands" {
+    const s = try newSetup(
+        \\let getX: (value: C) => number;
+        \\class C {
+        \\  #x = 1;
+        \\  static { getY = (value: D) => value.#y; }
+        \\}
+        \\let getY: (value: D) => number;
+        \\class D {
+        \\  #y = 1;
+        \\  static { getX = (value: C) => value.#x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.ecma_private_not_accessible_outside_class));
 }
 
 test "checker: derived constructors do not inherit static private members" {
