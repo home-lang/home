@@ -2615,6 +2615,19 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_package_script_ipc_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/bun-ipc-inherit.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length !== 3 || cmd[1] !== "run" || typeof options.ipc !== "function") return null;
+    \\  const cwd = String(options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const script = String(pkg.scripts && pkg.scripts[cmd[2]] || "");
+    \\  const messageMatch = script.match(/process\.send\((['"])(.*?)\1\)/);
+    \\  if (!messageMatch) return null;
+    \\  const child = __home_spawn_completed("", "", 0);
+    \\  Promise.resolve().then(() => options.ipc(messageMatch[2], child));
+    \\  return child;
+    \\}
     \\function __home_spawn_report_error_fixture(options, sync) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/reportError.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -22993,6 +23006,8 @@ const harness_prelude =
     \\    if (maxbufFixture) return maxbufFixture;
     \\    const waiterThreadFixture = __home_spawn_waiter_thread_fixture(options || {});
     \\    if (waiterThreadFixture) return waiterThreadFixture;
+    \\    const packageScriptIpcFixture = __home_spawn_package_script_ipc_fixture(options || {});
+    \\    if (packageScriptIpcFixture) return packageScriptIpcFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const setImmediateFixture = __home_spawn_set_immediate_fixture(options || {});
@@ -60035,7 +60050,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/bun-ipc-inherit.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun spawn IPC inheritance through package scripts")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/job-object-bug.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/readablestream-helpers.test.ts"))
@@ -78087,6 +78102,40 @@ test "bootstrap runner mirrors subprocess waiter-thread resource usage regressio
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
             "subprocess waiter-thread regression mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors package-script IPC inheritance regression" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/bun-ipc-inherit.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun spawn IPC inheritance through package scripts") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_package_script_ipc_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process\\.send") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "package-script IPC inheritance mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
