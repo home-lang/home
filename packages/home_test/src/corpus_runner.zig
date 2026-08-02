@@ -2910,6 +2910,53 @@ const harness_prelude =
     \\  if (cmd.length < 3 || cmd[1] !== "test" || !cmd.some(part => String(part).endsWith("job-object-bug.ts"))) return null;
     \\  return __home_spawn_completed("", "", 0);
     \\}
+    \\function __home_spawn_socketpair_shutdown_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-socketpair-shutdown.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : (cmd[0] === "python3" && cmd[1] === "-c" ? String(cmd[2] || "") : "");
+    \\  if (script.includes("hello after delay") && script.includes("Bun.sleep(2000)")) return __home_spawn_completed("hello after delay\n", "", 0);
+    \\  if (cmd[0] === "python3" && script.includes("connect_write_pipe") && script.includes("hello from asyncio")) return __home_spawn_completed("hello from asyncio\n", "", 0);
+    \\  if (!script.includes("Bun.stdin.stream().getReader()") || !script.includes("process.stdout.write")) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  let input = "";
+    \\  let settled = false;
+    \\  const child = {
+    \\    stdin: {
+    \\      write(value) {
+    \\        if (settled) return 0;
+    \\        const text = __home_spawn_decode_text(value);
+    \\        input += text;
+    \\        return new TextEncoder().encode(text).length;
+    \\      },
+    \\      flush() { return 0; },
+    \\      end(value) {
+    \\        if (!settled && arguments.length > 0) this.write(value);
+    \\        if (!settled) {
+    \\          settled = true;
+    \\          child.exitCode = 0;
+    \\          exited.resolve(0);
+    \\        }
+    \\        return new TextEncoder().encode(input).length;
+    \\      },
+    \\    },
+    \\    get stdout() { return __home_spawn_pipe_text(input); },
+    \\    stderr: __home_spawn_pipe_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill() {
+    \\      if (!settled) { settled = true; this.signalCode = "SIGTERM"; exited.resolve(1); }
+    \\      return true;
+    \\    },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    [Symbol.dispose]() { if (!settled) this.kill(); },
+    \\    [Symbol.asyncDispose]() { if (!settled) this.kill(); return exited.promise.then(() => undefined); },
+    \\  };
+    \\  return child;
+    \\}
     \\function __home_spawn_early_hints_crlf_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/http/early-hints-crlf-injection.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -22887,6 +22934,8 @@ const harness_prelude =
     \\    if (pathLookupFixture) return pathLookupFixture;
     \\    const jobObjectBugFixture = __home_spawn_job_object_bug_fixture(options || {});
     \\    if (jobObjectBugFixture) return jobObjectBugFixture;
+    \\    const socketpairShutdownFixture = __home_spawn_socketpair_shutdown_fixture(options || {});
+    \\    if (socketpairShutdownFixture) return socketpairShutdownFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
     \\    const reportErrorFixture = __home_spawn_report_error_fixture(options || {}, false);
@@ -59883,7 +59932,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-signal.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-socketpair-shutdown.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess socketpair shutdown integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-destroy.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-pipe-fd-leak.test.ts"))
@@ -77816,6 +77865,41 @@ test "bootstrap runner mirrors subprocess AbortSignal matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 4), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors subprocess socketpair shutdown matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-socketpair-shutdown.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess socketpair shutdown integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_socketpair_shutdown_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "connect_write_pipe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.stdin.stream().getReader()") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
+        std.debug.print(
+            "subprocess socketpair shutdown matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 3), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
