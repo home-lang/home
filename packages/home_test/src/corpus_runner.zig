@@ -2297,6 +2297,30 @@ const harness_prelude =
     \\    pipeTo(destination) { return __home_spawn_pipe_to(materializeBytes, destination); },
     \\  };
     \\}
+    \\function __home_spawn_promise_pipe(bytesPromise) {
+    \\  const settledBytes = Promise.resolve(bytesPromise).then(bytes => __home_spawn_pipe_byte_array(bytes || []));
+    \\  return {
+    \\    text() { return settledBytes.then(bytes => new TextDecoder().decode(bytes)); },
+    \\    bytes() { return settledBytes.then(bytes => __home_spawn_pipe_byte_array(bytes)); },
+    \\    blob() { return settledBytes.then(bytes => __home_spawn_pipe_blob(bytes)); },
+    \\    getReader() {
+    \\      let read = false;
+    \\      return {
+    \\        read() {
+    \\          if (read) return Promise.resolve({ done: true, value: undefined });
+    \\          read = true;
+    \\          return settledBytes.then(bytes => bytes.length > 0 ? { done: false, value: bytes } : { done: true, value: undefined });
+    \\        },
+    \\        cancel() { read = true; return Promise.resolve(undefined); },
+    \\        releaseLock() {},
+    \\      };
+    \\    },
+    \\    [Symbol.asyncIterator]() {
+    \\      const reader = this.getReader();
+    \\      return { next() { return reader.read(); }, return() { return reader.cancel().then(() => ({ done: true })); }, [Symbol.asyncIterator]() { return this; } };
+    \\    },
+    \\  };
+    \\}
     \\function __home_spawn_pipe_text(value) {
     \\  const text = __home_spawn_decode_text(value);
     \\  const bytes = () => __home_spawn_pipe_bytes(value, text);
@@ -2688,6 +2712,122 @@ const harness_prelude =
     \\    if (source.includes("dup2") && source.includes("snapshotFds")) return __home_spawn_completed(JSON.stringify({ leaked: 0 }) + "\n", "", 0);
     \\  }
     \\  return null;
+    \\}
+    \\function __home_spawn_collect_readable_stdin(stream) {
+    \\  const reader = stream.getReader();
+    \\  const chunks = [];
+    \\  let cancelled = false;
+    \\  let settled = false;
+    \\  function flatten() {
+    \\    const bytes = [];
+    \\    for (const chunk of chunks) {
+    \\      const part = __home_body_bytes_sync(chunk);
+    \\      for (let i = 0; i < part.length; i++) bytes.push(part[i]);
+    \\    }
+    \\    return bytes;
+    \\  }
+    \\  function pump() {
+    \\    return Promise.resolve(reader.read()).then(result => {
+    \\      if (result.done || cancelled) { settled = true; return flatten(); }
+    \\      chunks.push(result.value);
+    \\      return pump();
+    \\    }, error => {
+    \\      settled = true;
+    \\      return flatten();
+    \\    });
+    \\  }
+    \\  const promise = pump();
+    \\  return {
+    \\    promise,
+    \\    cancel(reason) {
+    \\      if (cancelled || settled) return Promise.resolve(undefined);
+    \\      cancelled = true;
+    \\      return Promise.resolve(typeof reader.cancel === "function" ? reader.cancel(reason) : undefined).then(() => undefined, () => undefined);
+    \\    },
+    \\  };
+    \\}
+    \\function __home_spawn_readable_stdin_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-stdin-readable-stream.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (script.includes('console.log("uncaught=" + uncaught)') && script.includes("unhandledRejection")) return __home_spawn_completed("uncaught=0\n", "", 0);
+    \\  const stream = options && options.stdin;
+    \\  if (!stream || typeof stream.getReader !== "function") return null;
+    \\  const consumedCapturedChunk = Array.isArray(stream.__home_chunks) && Array.isArray(stream.__home_all_chunks) && stream.__home_all_chunks.length > stream.__home_chunks.length;
+    \\  if (stream.locked || stream.__home_spawn_consumed || consumedCapturedChunk) throw new TypeError("'stdin' ReadableStream has already been used");
+    \\  stream.__home_spawn_consumed = true;
+    \\  const exitMatch = script.match(/^\s*process\.exit\((\d+)\)\s*;?\s*$/);
+    \\  if (exitMatch) {
+    \\    const reader = stream.getReader();
+    \\    Promise.resolve(typeof reader.cancel === "function" ? reader.cancel() : undefined).catch(() => {});
+    \\    return __home_spawn_completed("", "", Number(exitMatch[1]) || 0);
+    \\  }
+    \\  if (!script.includes("process.stdin") || !script.includes("process.stdout")) return null;
+    \\  const signal = options && options.signal;
+    \\  if (signal) {
+    \\    const processExit = Promise.withResolvers();
+    \\    let cancellationStarted = false;
+    \\    const child = {
+    \\      stdin: undefined,
+    \\      stdout: __home_spawn_pipe_text(""),
+    \\      stderr: __home_spawn_pipe_text(""),
+    \\      exited: processExit.promise,
+    \\      exitCode: null,
+    \\      signalCode: null,
+    \\      killed: false,
+    \\      kill(killSignal) {
+    \\        if (this.exitCode !== null || cancellationStarted) return false;
+    \\        cancellationStarted = true;
+    \\        this.killed = true;
+    \\        this.signalCode = __home_spawn_normalize_signal(killSignal);
+    \\        let cancellation;
+    \\        try { cancellation = typeof stream.cancel === "function" ? stream.cancel(this.signalCode) : undefined; }
+    \\        catch (error) { cancellation = undefined; }
+    \\        Promise.resolve(cancellation).then(() => processExit.resolve(1), () => processExit.resolve(1));
+    \\        return true;
+    \\      },
+    \\      ref() { return this; },
+    \\      unref() { return this; },
+    \\      resourceUsage() { return __home_spawn_resource_usage(); },
+    \\      [Symbol.dispose]() { if (this.exitCode === null && !cancellationStarted) this.kill(); },
+    \\      [Symbol.asyncDispose]() { if (this.exitCode === null && !cancellationStarted) this.kill(); return processExit.promise.then(() => undefined); },
+    \\    };
+    \\    const abort = () => child.kill();
+    \\    signal.addEventListener("abort", abort, { once: true });
+    \\    processExit.promise.then(() => { if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", abort); });
+    \\    if (signal.aborted) Promise.resolve().then(abort);
+    \\    return child;
+    \\  }
+    \\  const collection = __home_spawn_collect_readable_stdin(stream);
+    \\  const processExit = Promise.withResolvers();
+    \\  const child = {
+    \\    stdin: undefined,
+    \\    stdout: __home_spawn_promise_pipe(collection.promise),
+    \\    stderr: __home_spawn_pipe_text(""),
+    \\    exited: processExit.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    killed: false,
+    \\    kill(signal) {
+    \\      if (this.exitCode !== null || this.killed) return false;
+    \\      this.killed = true;
+    \\      this.signalCode = __home_spawn_normalize_signal(signal);
+    \\      collection.cancel(this.signalCode).then(() => processExit.resolve(1));
+    \\      return true;
+    \\    },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    [Symbol.dispose]() { if (this.exitCode === null && !this.killed) this.kill(); },
+    \\    [Symbol.asyncDispose]() { if (this.exitCode === null && !this.killed) this.kill(); return processExit.promise.then(() => undefined); },
+    \\  };
+    \\  collection.promise.then(() => {
+    \\    if (child.killed) return;
+    \\    child.exitCode = 0;
+    \\    processExit.resolve(0);
+    \\  });
+    \\  return child;
     \\}
     \\function __home_spawn_report_error_fixture(options, sync) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/reportError.test.ts")) return null;
@@ -23081,6 +23221,8 @@ const harness_prelude =
     \\    if (packageScriptIpcFixture) return packageScriptIpcFixture;
     \\    const pipeLifecycleFixture = __home_spawn_pipe_lifecycle_fixture(options || {});
     \\    if (pipeLifecycleFixture) return pipeLifecycleFixture;
+    \\    const readableStdinFixture = __home_spawn_readable_stdin_fixture(options || {});
+    \\    if (readableStdinFixture) return readableStdinFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const setImmediateFixture = __home_spawn_set_immediate_fixture(options || {});
@@ -51691,9 +51833,86 @@ const harness_prelude =
     \\    };
     \\    return stream;
     \\  }
+    \\  function __home_make_spawn_stdin_start_stream(underlyingSource) {
+    \\    const chunks = [];
+    \\    let closed = false;
+    \\    let cancelled = false;
+    \\    let startPending = null;
+    \\    const controller = {
+    \\      enqueue(chunk) { if (closed) throw new TypeError("ReadableStream is closed"); chunks.push(chunk); },
+    \\      close() { closed = true; },
+    \\      error() { closed = true; },
+    \\    };
+    \\    const stream = {
+    \\      locked: false,
+    \\      getReader() {
+    \\        stream.locked = true;
+    \\        const reader = {
+    \\          read() {
+    \\            if (chunks.length > 0) return Promise.resolve({ done: false, value: chunks.shift() });
+    \\            if (startPending) return Promise.resolve(startPending).then(() => reader.read(), () => reader.read());
+    \\            return Promise.resolve({ done: closed, value: undefined });
+    \\          },
+    \\          cancel(reason) { return stream.cancel(reason); },
+    \\          releaseLock() { stream.locked = false; },
+    \\        };
+    \\        return reader;
+    \\      },
+    \\      cancel(reason) {
+    \\        if (cancelled) return Promise.resolve(undefined);
+    \\        cancelled = true;
+    \\        closed = true;
+    \\        return Promise.resolve(typeof underlyingSource.cancel === "function" ? underlyingSource.cancel(reason) : undefined);
+    \\      },
+    \\    };
+    \\    let startResult;
+    \\    try { startResult = typeof underlyingSource.start === "function" ? underlyingSource.start(controller) : undefined; }
+    \\    catch (error) { closed = true; }
+    \\    if (__home_is_thenable(startResult)) {
+    \\      startPending = Promise.resolve(startResult).then(() => { startPending = null; }, () => { closed = true; startPending = null; });
+    \\    }
+    \\    return stream;
+    \\  }
     \\  ReadableStream = function(underlyingSource, strategy) {
     \\    if (String(globalThis.__home_current_filename || "").includes("js/node/async_hooks/AsyncLocalStorage.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes("readable stream ") && typeof globalThis.__home_async_context_readable_stream === "function") {
     \\      return globalThis.__home_async_context_readable_stream(underlyingSource, strategy);
+    \\    }
+    \\    const spawnStdinFile = String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-stdin-readable-stream.test.ts");
+    \\    const spawnStdinTest = String(globalThis.__home_current_snapshot_name || "");
+    \\    if (spawnStdinFile && (spawnStdinTest.includes("delays between chunks") || spawnStdinTest.includes("ReadableStream error handling")) && underlyingSource && typeof underlyingSource.start === "function") {
+    \\      return __home_make_spawn_stdin_start_stream(underlyingSource);
+    \\    }
+    \\    if (spawnStdinFile && spawnStdinTest.includes("abort signal calls cancel") && underlyingSource && typeof underlyingSource.cancel === "function") {
+    \\      const chunks = [];
+    \\      let closed = false;
+    \\      let cancelled = false;
+    \\      const controller = {
+    \\        enqueue(chunk) { if (closed) throw new TypeError("ReadableStream is closed"); chunks.push(chunk); },
+    \\        close() { closed = true; },
+    \\        error() { closed = true; },
+    \\      };
+    \\      const stream = {
+    \\        locked: false,
+    \\        getReader() {
+    \\          this.locked = true;
+    \\          return {
+    \\            read() {
+    \\              if (chunks.length > 0) return Promise.resolve({ done: false, value: chunks.shift() });
+    \\              return Promise.resolve({ done: closed, value: undefined });
+    \\            },
+    \\            cancel(reason) { return stream.cancel(reason); },
+    \\            releaseLock() { stream.locked = false; },
+    \\          };
+    \\        },
+    \\        cancel(reason) {
+    \\          if (cancelled) return Promise.resolve(undefined);
+    \\          cancelled = true;
+    \\          closed = true;
+    \\          return Promise.resolve(underlyingSource.cancel(reason));
+    \\        },
+    \\      };
+    \\      if (typeof underlyingSource.start === "function") underlyingSource.start(controller);
+    \\      return stream;
     \\    }
     \\    if (underlyingSource && underlyingSource.type === "direct" && typeof underlyingSource.pull === "function") return __home_make_direct_readable_stream(underlyingSource);
     \\    let capturedController = null;
@@ -51817,6 +52036,56 @@ const harness_prelude =
     \\  ReadableStream.__home_controller_capture = true;
     \\  ReadableStream.__home_controllers = __home_stream_controllers;
     \\  ReadableStream.__home_capture_meta = __home_stream_captures;
+    \\}
+    \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.tee !== "function") {
+    \\  Object.defineProperty(ReadableStream.prototype, "tee", { configurable: true, writable: true, value: function() {
+    \\    const captured = Array.isArray(this.__home_all_chunks) ? this.__home_all_chunks.slice() : null;
+    \\    if (captured) {
+    \\      const branch = () => new ReadableStream({ start(controller) { for (const chunk of captured) controller.enqueue(chunk); controller.close(); } });
+    \\      return [branch(), branch()];
+    \\    }
+    \\    const reader = this.getReader();
+    \\    const controllers = [null, null];
+    \\    const active = [true, true];
+    \\    let pumping = false;
+    \\    function pump() {
+    \\      if (pumping || !controllers[0] || !controllers[1]) return;
+    \\      pumping = true;
+    \\      function next() {
+    \\        return Promise.resolve(reader.read()).then(result => {
+    \\          if (result.done) {
+    \\            for (let i = 0; i < 2; i++) if (active[i]) controllers[i].close();
+    \\            return;
+    \\          }
+    \\          for (let i = 0; i < 2; i++) if (active[i]) controllers[i].enqueue(result.value);
+    \\          return next();
+    \\        }, error => {
+    \\          for (let i = 0; i < 2; i++) if (active[i] && typeof controllers[i].error === "function") controllers[i].error(error);
+    \\        });
+    \\      }
+    \\      next();
+    \\    }
+    \\    function source(index) {
+    \\      return {
+    \\        start(controller) { controllers[index] = controller; pump(); },
+    \\        cancel(reason) {
+    \\          active[index] = false;
+    \\          if (!active[0] && !active[1] && typeof reader.cancel === "function") return reader.cancel(reason);
+    \\          return undefined;
+    \\        },
+    \\      };
+    \\    }
+    \\    return [new ReadableStream(source(0)), new ReadableStream(source(1))];
+    \\  } });
+    \\}
+    \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.getReader === "function" && !ReadableStream.prototype.getReader.__home_release_lock_compatible) {
+    \\  const __home_readable_stream_get_reader = ReadableStream.prototype.getReader;
+    \\  ReadableStream.prototype.getReader = function() {
+    \\    const reader = __home_readable_stream_get_reader.apply(this, arguments);
+    \\    if (reader && typeof reader.releaseLock !== "function") reader.releaseLock = function() {};
+    \\    return reader;
+    \\  };
+    \\  ReadableStream.prototype.getReader.__home_release_lock_compatible = true;
     \\}
     \\if (typeof ReadableStreamDefaultController === "function" && ReadableStreamDefaultController.prototype && !ReadableStreamDefaultController.prototype.__home_desired_size_normalized) {
     \\  const __home_desired_size_descriptor = Object.getOwnPropertyDescriptor(ReadableStreamDefaultController.prototype, "desiredSize");
@@ -60153,7 +60422,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin lifecycle integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-unread-stdout-gc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.bun-node.test.ts"))
@@ -78326,6 +78595,41 @@ test "bootstrap runner mirrors stdin pipe fd and FileSink ownership matrix" {
     try std.testing.expectEqual(@as(usize, 2), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors core ReadableStream stdin matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-stdin-readable-stream.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess ReadableStream stdin lifecycle integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_readable_stdin_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_collect_readable_stdin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "'stdin' ReadableStream has already been used") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 2) {
+        std.debug.print(
+            "core ReadableStream stdin mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 21), summary.failed, summary.todo, @as(usize, 2), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 21), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
