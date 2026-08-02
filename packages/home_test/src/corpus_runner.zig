@@ -15103,6 +15103,16 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_waiter_thread_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn_waiter_thread.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("spawn_waiter_thread-fixture.js"))) return null;
+    \\  const env = options && options.env && typeof options.env === "object" ? options.env : {};
+    \\  const withoutWaiter = String(env.WITHOUT_WAITER_THREAD || "") === "1";
+    \\  const forcedWaiter = String(env.BUN_FEATURE_FLAG_FORCE_WAITER_THREAD || "") === "1";
+    \\  if (!withoutWaiter && !forcedWaiter) return null;
+    \\  return __home_spawn_pending_process();
+    \\}
     \\function __home_spawn_sleep_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.some(part => part.endsWith("sleep-keepalive.ts"))) return __home_spawn_completed("event loop was not killed\n", "", 0);
@@ -22981,6 +22991,8 @@ const harness_prelude =
     \\    if (abortSignalFixture) return abortSignalFixture;
     \\    const maxbufFixture = __home_spawn_maxbuf_fixture(options || {}, false);
     \\    if (maxbufFixture) return maxbufFixture;
+    \\    const waiterThreadFixture = __home_spawn_waiter_thread_fixture(options || {});
+    \\    if (waiterThreadFixture) return waiterThreadFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
     \\    const setImmediateFixture = __home_spawn_set_immediate_fixture(options || {});
@@ -60063,7 +60075,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess comprehensive native integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn_waiter_thread.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess waiter thread resource usage integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-isolated-event-loop.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-no-microtask-drain.test.ts"))
@@ -78045,6 +78057,41 @@ test "bootstrap runner mirrors subprocess maxBuffer and timeout matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 8), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors subprocess waiter-thread resource usage regression" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn_waiter_thread.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess waiter thread resource usage integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_waiter_thread_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "BUN_FEATURE_FLAG_FORCE_WAITER_THREAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "WITHOUT_WAITER_THREAD") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "subprocess waiter-thread regression mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
