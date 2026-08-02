@@ -14872,6 +14872,59 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "yarn.lock"), lockfile);
     \\  return __home_spawn_completed("", "", 0);
     \\}
+    \\const __home_signal_numbers_by_name = Object.freeze({
+    \\  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6,
+    \\  SIGFPE: 8, SIGKILL: 9, SIGBUS: 10, SIGSEGV: 11, SIGSYS: 12, SIGPIPE: 13,
+    \\  SIGALRM: 14, SIGTERM: 15, SIGURG: 16, SIGSTOP: 17, SIGTSTP: 18, SIGCONT: 19,
+    \\  SIGCHLD: 20, SIGTTIN: 21, SIGTTOU: 22, SIGIO: 23, SIGXCPU: 24, SIGXFSZ: 25,
+    \\  SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGINFO: 29, SIGUSR1: 30, SIGUSR2: 31,
+    \\});
+    \\const __home_signal_names_by_number = Object.freeze(Object.fromEntries(Object.entries(__home_signal_numbers_by_name).map(entry => [String(entry[1]), entry[0]])));
+    \\function __home_spawn_invalid_signal(signal) {
+    \\  const valid = Object.keys(__home_signal_numbers_by_name).filter(name => name !== "SIGSYS");
+    \\  valid.push("SIGSYS");
+    \\  const error = new TypeError("The signal must be one of " + valid.slice(0, -1).map(name => "'" + name + "'").join(", ") + ", or '" + valid[valid.length - 1] + "'. Received " + String(signal));
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  return error;
+    \\}
+    \\function __home_spawn_normalize_signal(signal) {
+    \\  if (signal === undefined || signal === null || signal === "" || (typeof signal === "number" && Number.isNaN(signal))) return "SIGTERM";
+    \\  if (typeof signal === "string") {
+    \\    if (Object.prototype.hasOwnProperty.call(__home_signal_numbers_by_name, signal)) return signal;
+    \\    throw __home_spawn_invalid_signal(signal);
+    \\  }
+    \\  if (typeof signal === "number" && Number.isInteger(signal) && Object.prototype.hasOwnProperty.call(__home_signal_names_by_number, String(signal))) return __home_signal_names_by_number[String(signal)];
+    \\  throw __home_spawn_invalid_signal(signal);
+    \\}
+    \\function __home_spawn_killable_sleep_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const command = String(cmd[2] || "").trim();
+    \\  if (!(cmd.length >= 3 && (cmd[1] === "-c" || cmd[1] === "/c") && /^sleep\s+(?:[1-9]\d*|Infinity)(?:\s|$)/.test(command))) return null;
+    \\  const deferred = Promise.withResolvers();
+    \\  let settled = false;
+    \\  const process = {
+    \\    stdin: undefined,
+    \\    stdout: undefined,
+    \\    stderr: undefined,
+    \\    exited: deferred.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    killed: false,
+    \\    kill(signal) {
+    \\      const normalized = __home_spawn_normalize_signal(signal);
+    \\      this.killed = true;
+    \\      this.signalCode = normalized;
+    \\      if (!settled) { settled = true; deferred.resolve(0); }
+    \\      return true;
+    \\    },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    [Symbol.dispose]() { if (!settled) this.kill(); },
+    \\    [Symbol.asyncDispose]() { if (!settled) this.kill(); return this.exited.then(() => undefined); },
+    \\  };
+    \\  return process;
+    \\}
     \\function __home_spawn_sleep_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.some(part => part.endsWith("sleep-keepalive.ts"))) return __home_spawn_completed("event loop was not killed\n", "", 0);
@@ -22812,6 +22865,8 @@ const harness_prelude =
     \\    if (issue3192Fixture) return issue3192Fixture;
     \\    const sleepFixture = __home_spawn_sleep_fixture(options || {});
     \\    if (sleepFixture) return sleepFixture;
+    \\    const killableSleepFixture = __home_spawn_killable_sleep_fixture(options || {});
+    \\    if (killableSleepFixture) return killableSleepFixture;
     \\    const autoinstallRunFixture = __home_spawn_autoinstall_run_fixture(options || {});
     \\    if (autoinstallRunFixture) return autoinstallRunFixture;
     \\    const installLifecycleFixture = __home_spawn_install_lifecycle_fixture(options || {});
@@ -43841,6 +43896,7 @@ const harness_prelude =
     \\  loadSync(file, options) { return { __home_proto_file: String(file), options: options || {} }; },
     \\};
     \\const __home_node_os = {
+    \\  constants: { signals: __home_signal_numbers_by_name },
     \\  tmpdir() {
     \\    return process.env.TMPDIR || "/tmp";
     \\  },
@@ -56591,6 +56647,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const os = globalThis.__home_import(\"os\");",
         },
         .{
+            .needle = "import { constants } from \"os\";",
+            .replacement = "const { constants } = globalThis.__home_import(\"os\");",
+        },
+        .{
             .needle = "import net from \"net\";",
             .replacement = "const net = globalThis.__home_import(\"net\");",
         },
@@ -59764,7 +59824,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-pipe-read-error-leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess PipeReader read-error leak integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-kill-signal.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess kill signal integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-maxbuf.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess maxBuffer and timeout integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-path.test.ts"))
@@ -77635,6 +77695,41 @@ test "bootstrap runner mirrors spawn PATH lookup corpus" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors subprocess kill signal matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-kill-signal.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess kill signal integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_killable_sleep_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_normalize_signal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_ARG_TYPE") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 16 or summary.todo != 0) {
+        std.debug.print(
+            "subprocess kill signal matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 16), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 16), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
