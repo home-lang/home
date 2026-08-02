@@ -2612,9 +2612,10 @@ pub const Program = struct {
 
         var search_from: usize = 0;
         while (findStage3DecoratedClassExpression(f.source, search_from)) |decorated| {
-            const helpers = [_][]const u8{ "__esDecorate", "__runInitializers", "__setFunctionName" };
+            const helpers = [_][]const u8{ "__esDecorate", "__propKey", "__runInitializers", "__setFunctionName" };
             for (helpers) |helper| {
                 if (std.mem.eql(u8, helper, "__setFunctionName") and decorated.has_class_name) continue;
+                if (std.mem.eql(u8, helper, "__propKey") and !decorated.requires_prop_key) continue;
                 if (std.mem.indexOf(u8, tslib.source, helper) != null) continue;
                 const msg = try std.fmt.allocPrint(
                     self.gpa,
@@ -2780,6 +2781,7 @@ pub const Program = struct {
         at_pos: usize,
         span_len: usize,
         has_class_name: bool,
+        requires_prop_key: bool,
     };
 
     fn findStage3DecoratedClassExpression(source: []const u8, start: usize) ?DecoratedClass {
@@ -2799,9 +2801,17 @@ pub const Program = struct {
                 .at_pos = at,
                 .span_len = class_pos + "class".len - at,
                 .has_class_name = has_name,
+                .requires_prop_key = decoratedClassHasComputedNameContext(source, at),
             };
         }
         return null;
+    }
+
+    fn decoratedClassHasComputedNameContext(source: []const u8, at: usize) bool {
+        const open_brace = std.mem.lastIndexOfScalar(u8, source[0..at], '{') orelse 0;
+        const semicolon = std.mem.lastIndexOfScalar(u8, source[0..at], ';') orelse 0;
+        const start = @max(open_brace, semicolon);
+        return std.mem.indexOfScalar(u8, source[start..at], '[') != null;
     }
 
     fn findKeywordNearby(source: []const u8, start: usize, keyword: []const u8) ?usize {

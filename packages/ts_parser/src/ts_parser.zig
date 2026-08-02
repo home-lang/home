@@ -9255,20 +9255,26 @@ pub const Parser = struct {
         if (self.parenthesizedNodeStart(expr) != null) return;
         const invalid_span = self.invalidDecoratorSyntaxSpan(expr) orelse return;
         const expr_span = self.hir.spanOf(expr);
-        try self.reportCodeAtWithSpan(
-            expr_span.start,
-            self.sourceLineAtPos(expr_span.start),
-            expr_span.end - expr_span.start,
-            1497,
+        const primary_message = try self.diag_arena.allocator().dupe(
+            u8,
             "Expression must be enclosed in parentheses to be used as a decorator.",
         );
-        try self.reportCodeAtWithSpan(
-            invalid_span.start,
-            self.sourceLineAtPos(invalid_span.start),
-            invalid_span.end - invalid_span.start,
-            1498,
-            "Invalid syntax in decorator.",
-        );
+        const related_message = try self.diag_arena.allocator().dupe(u8, "Invalid syntax in decorator.");
+        const related = try self.diag_arena.allocator().alloc(RelatedInfo, 1);
+        related[0] = .{
+            .pos = invalid_span.start,
+            .span_len = invalid_span.end - invalid_span.start,
+            .code = 1498,
+            .message = related_message,
+        };
+        try self.diagnostics.append(self.gpa, .{
+            .pos = expr_span.start,
+            .line = self.sourceLineAtPos(expr_span.start),
+            .span_len = expr_span.end - expr_span.start,
+            .code = 1497,
+            .message = primary_message,
+            .related = related,
+        });
     }
 
     fn invalidDecoratorSyntaxSpan(self: *Parser, expr: NodeId) ?Span {
@@ -20110,6 +20116,7 @@ fn arrayLiteralElementCanStart(kind: TokenKind) bool {
         .open_paren,
         .open_bracket,
         .open_brace,
+        .at,
         .less_than,
         .kw_class,
         .kw_abstract,
@@ -26299,28 +26306,31 @@ test "parser: decorator accepts unparenthesized valid expression forms" {
     }
 }
 
-test "parser: decorator optional chain reports TS1497 and TS1498" {
+test "parser: decorator optional chain attaches TS1498 to TS1497" {
     var s = try newTestSetup("@foo?.bar class Foo {}");
     defer destroyTestSetup(s);
     _ = try s.parser.parseSourceFile();
 
     var found_1497 = false;
-    var found_1498 = false;
+    var found_related_1498 = false;
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 1497) {
             found_1497 = true;
             try T.expectEqualStrings("Expression must be enclosed in parentheses to be used as a decorator.", d.message);
+            for (d.related) |related| {
+                if (related.code == 1498) {
+                    found_related_1498 = true;
+                    try T.expectEqualStrings("Invalid syntax in decorator.", related.message);
+                }
+            }
         }
-        if (d.code == 1498) {
-            found_1498 = true;
-            try T.expectEqualStrings("Invalid syntax in decorator.", d.message);
-        }
+        try T.expect(d.code != 1498);
     }
     try T.expect(found_1497);
-    try T.expect(found_1498);
+    try T.expect(found_related_1498);
 }
 
-test "parser: decorator reports TS1497 and TS1498 for invalid unparenthesized expressions" {
+test "parser: invalid unparenthesized decorators attach TS1498 to TS1497" {
     const cases = [_][]const u8{
         "@new Dec() class C {}",
         "@tag`x` class C {}",
@@ -26336,19 +26346,22 @@ test "parser: decorator reports TS1497 and TS1498 for invalid unparenthesized ex
         _ = s.parser.parseSourceFile() catch {};
 
         var found_1497 = false;
-        var found_1498 = false;
+        var found_related_1498 = false;
         for (s.parser.diagnostics.items) |d| {
             if (d.code == 1497) {
                 found_1497 = true;
                 try T.expectEqualStrings("Expression must be enclosed in parentheses to be used as a decorator.", d.message);
+                for (d.related) |related| {
+                    if (related.code == 1498) {
+                        found_related_1498 = true;
+                        try T.expectEqualStrings("Invalid syntax in decorator.", related.message);
+                    }
+                }
             }
-            if (d.code == 1498) {
-                found_1498 = true;
-                try T.expectEqualStrings("Invalid syntax in decorator.", d.message);
-            }
+            try T.expect(d.code != 1498);
         }
         try T.expect(found_1497);
-        try T.expect(found_1498);
+        try T.expect(found_related_1498);
     }
 }
 
@@ -26367,6 +26380,16 @@ test "parser: parenthesized decorator expression suppresses TS1497 and TS1498" {
             try T.expect(d.code != 1497);
             try T.expect(d.code != 1498);
         }
+    }
+}
+
+test "parser: decorated class expression is valid as a computed object property value" {
+    var s = try newTestSetup("declare let dec: any; declare let x: any; ({ [x]: @dec class {} });");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1005);
+        try T.expect(d.code != 1109);
     }
 }
 
