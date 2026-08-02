@@ -4162,6 +4162,10 @@ pub const Checker = struct {
     /// explicit type annotation. TS distinguishes `var a: any` from an
     /// unannotated `var a = ...` for subsequent declaration checks.
     var_decl_explicit: std.AutoHashMapUnmanaged(VarDeclKey, bool),
+    /// Whether the first repeated global `var` came from JavaScript.
+    /// Checked-JS callable containers keep their expando shape when a
+    /// TypeScript declaration contributes another initializer.
+    var_decl_js_like: std.AutoHashMapUnmanaged(VarDeclKey, bool),
     /// Raw leading JSDoc `@type` spelling for repeated script `var`
     /// declarations whose lowered types may intentionally share an id.
     var_decl_jsdoc_type_names: std.AutoHashMapUnmanaged(VarDeclKey, hir_mod.StringId),
@@ -4570,6 +4574,7 @@ pub const Checker = struct {
             .numeric_enums = .empty,
             .var_decl_types = .empty,
             .var_decl_explicit = .empty,
+            .var_decl_js_like = .empty,
             .var_decl_jsdoc_type_names = .empty,
             .var_decl_annotation_nodes = .empty,
             .this_type_markers = .empty,
@@ -4953,6 +4958,7 @@ pub const Checker = struct {
         self.numeric_enums.deinit(self.gpa);
         self.var_decl_types.deinit(self.gpa);
         self.var_decl_explicit.deinit(self.gpa);
+        self.var_decl_js_like.deinit(self.gpa);
         self.var_decl_jsdoc_type_names.deinit(self.gpa);
         self.var_decl_annotation_nodes.deinit(self.gpa);
         self.this_type_markers.deinit(self.gpa);
@@ -72521,7 +72527,10 @@ pub const Checker = struct {
                     const ok = (self.objectLiteralAssignableToTarget(v.init, init_type, class_t) catch false) or
                         (self.engine.isAssignableTo(init_type, class_t) catch true);
                     if (!ok) {
-                        try self.report(node, TsCodes.type_missing_properties, "Type is missing the following properties from target type.");
+                        const merge_target_t = try self.checkJsAmbientClassMergeStaticType(node, id.name, class_t);
+                        if (!try self.tryReportSinglePropertyMissing(v.name, v.init, init_type, merge_target_t)) {
+                            try self.report(v.name, TsCodes.type_missing_properties, "Type is missing the following properties from target type.");
+                        }
                     }
                 }
             }
@@ -80667,6 +80676,7 @@ pub const Checker = struct {
         const current_asserted_inferred = !has_annotation and self.varDeclInitializerPinsRepeatedVarType(node);
         if (self.var_decl_types.get(key)) |prior| {
             const prior_explicit = self.var_decl_explicit.get(key) orelse false;
+            const prior_js_like = self.var_decl_js_like.get(key) orelse false;
             const prior_annotation = self.var_decl_annotation_nodes.get(key) orelse hir_mod.none_node_id;
             const prior_jsdoc_type_name = self.var_decl_jsdoc_type_names.get(key);
             const qualified_private_text_mismatch = try self.sameTailQualifiedAnnotationMismatch(prior_annotation, v.type_annotation);
@@ -80686,6 +80696,11 @@ pub const Checker = struct {
             // identical ÃÂ¢ÃÂÃÂ no diag), so unconditionally falling through
             // is safe and unlocks the typeGuards conformance cluster.
             const compatible = blk: {
+                const merges_checkjs_callable_container =
+                    prior_js_like != self.virtualSectionIsJsLike(node) and
+                    self.sourceHasCheckJsDirective() and
+                    self.nonConstructCallSignatureOfType(prior) != null;
+                if (merges_checkjs_callable_container) break :blk true;
                 if (prior_jsdoc_type_name) |prior_name| {
                     if (current_jsdoc_type_name) |current_name| {
                         const prior_text = self.string_interner.get(prior_name);
@@ -80827,6 +80842,7 @@ pub const Checker = struct {
         }
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation or self_ref_inferred_any);
+        try self.var_decl_js_like.put(self.gpa, key, self.virtualSectionIsJsLike(node));
         if (current_jsdoc_type_name) |name| try self.var_decl_jsdoc_type_names.put(self.gpa, key, name);
         if (has_annotation) try self.var_decl_annotation_nodes.put(self.gpa, key, v.type_annotation);
     }
@@ -86060,8 +86076,10 @@ pub const Checker = struct {
 
         var apply_params: [2]TypeId = undefined;
         apply_params[0] = types.Primitive.any;
-        const rest_tuple = try self.internTupleFromTypes(params, false);
-        apply_params[1] = rest_tuple;
+        apply_params[1] = if (self.rest_signatures.contains(sig) and params.len == 1)
+            params[0]
+        else
+            try self.internTupleFromTypes(params, false);
         return try self.interner.internSignature(&apply_params, ret, false);
     }
 
@@ -86080,7 +86098,11 @@ pub const Checker = struct {
         else
             try self.checkExpression(m.object);
         const sig = self.nonConstructCallSignatureOfType(receiver_t) orelse return;
-        const expected_args_t = try self.internTupleFromTypes(self.interner.signatureParams(sig), false);
+        const params = self.interner.signatureParams(sig);
+        const expected_args_t = if (self.rest_signatures.contains(sig) and params.len == 1)
+            params[0]
+        else
+            try self.internTupleFromTypes(params, false);
         if (self.hir.kindOf(args[1]) == .array_literal and
             try self.arrayLiteralAssignableToTupleTarget(args[1], expected_args_t, false))
         {
@@ -87080,9 +87102,13 @@ pub const Checker = struct {
                     (target_kind == .member_access and
                         self.memberAccessIsModuleExports(a.target) and
                         !target_has_explicit_jsdoc_module_exports_type);
-                const target_is_js_function_prototype_object_assignment = a.op == null and
+                const target_is_js_container_prototype_object_assignment = a.op == null and
                     !target_has_explicit_jsdoc_prototype_type and
-                    try self.checkJsFunctionPrototypeObjectAssignment(node, a.target, a.value);
+                    try self.checkJsContainerPrototypeObjectAssignment(node, a.target, a.value);
+                if (target_is_js_container_prototype_object_assignment) {
+                    self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
+                    self.removePriorDiagnosticsInNodeSpan(a.target, TsCodes.property_does_not_exist);
+                }
                 var assignment_result_t = value_t;
                 if (a.op == null) {
                     assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
@@ -87301,7 +87327,7 @@ pub const Checker = struct {
                     !target_is_destructuring and
                     !target_is_untyped_uninitialized_var and
                     !target_is_commonjs_export_assignment and
-                    !target_is_js_function_prototype_object_assignment and
+                    !target_is_js_container_prototype_object_assignment and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -87310,7 +87336,7 @@ pub const Checker = struct {
                     !target_is_destructuring and
                     !target_is_untyped_uninitialized_var and
                     !target_is_commonjs_export_assignment and
-                    !target_is_js_function_prototype_object_assignment and
+                    !target_is_js_container_prototype_object_assignment and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -87318,7 +87344,7 @@ pub const Checker = struct {
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
                 const dedicated_generic_indexed_assignment =
                     self.genericIndexedAssignmentUsesDedicatedRelation(a.target, a.value);
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and !target_is_js_function_prototype_object_assignment and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and a.op == null and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -97219,6 +97245,55 @@ pub const Checker = struct {
             return try self.literalCommonJsExportAssignmentType(later.value);
         }
         return null;
+    }
+
+    fn checkJsAmbientClassMergeStaticType(
+        self: *Checker,
+        declaration: NodeId,
+        class_name: hir_mod.StringId,
+        class_t: TypeId,
+    ) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var seen: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer seen.deinit(self.gpa);
+
+        const root = self.rootBlockFor(declaration);
+        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+            for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+                if (self.hir.kindOf(stmt) != .assignment or !self.virtualSectionIsJsLike(stmt)) continue;
+                const assignment = hir_mod.assignmentOf(self.hir, stmt);
+                if (assignment.op != null or self.hir.kindOf(assignment.target) != .member_access) continue;
+                const member = hir_mod.memberOf(self.hir, assignment.target);
+                if (self.hir.kindOf(member.object) != .identifier or
+                    hir_mod.identifierOf(self.hir, member.object).name != class_name) continue;
+                try seen.put(self.gpa, member.name, {});
+                try members.append(self.gpa, .{
+                    .name = member.name,
+                    .type = types.Primitive.unknown,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+            }
+        }
+
+        if (class_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(class_t).is_object_type) {
+            for (self.interner.objectMembers(class_t)) |member| {
+                const name = self.string_interner.get(member.name);
+                if (std.mem.eql(u8, name, "name") or
+                    std.mem.eql(u8, name, "length") or
+                    std.mem.eql(u8, name, "__call") or
+                    std.mem.eql(u8, name, "__construct") or
+                    seen.contains(member.name)) continue;
+                try seen.put(self.gpa, member.name, {});
+                try members.append(self.gpa, member);
+            }
+        }
+
+        const merged_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        try self.class_name_by_static.put(self.gpa, merged_t, class_name);
+        return merged_t;
     }
 
     fn literalCommonJsExportAssignmentType(self: *Checker, value: NodeId) CheckError!?TypeId {
@@ -138508,7 +138583,7 @@ pub const Checker = struct {
         return (self.ctorPrototypeOwnerName(target) orelse return false) == name;
     }
 
-    fn checkJsFunctionPrototypeObjectAssignment(
+    fn checkJsContainerPrototypeObjectAssignment(
         self: *Checker,
         assignment_node: NodeId,
         target: NodeId,
@@ -138517,11 +138592,22 @@ pub const Checker = struct {
         if (!self.sourceHasCheckJsDirective()) return false;
         if ((try self.prototypeObjectLiteralAssignmentValue(value)) == null) return false;
         const ctor_name = self.ctorPrototypeOwnerName(target) orelse return false;
-        const fn_node = self.jsConstructorFunctionDeclForName(assignment_node, ctor_name) orelse return false;
-        if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
-            if (!self.pathIsJsLike(filename)) return false;
+        if (self.jsConstructorFunctionDeclForName(assignment_node, ctor_name)) |fn_node| {
+            if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
+                if (!self.pathIsJsLike(filename)) return false;
+            }
+            if (self.fnLooksLikeCheckJsConstructor(fn_node)) return true;
         }
-        return self.fnLooksLikeCheckJsConstructor(fn_node);
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .namespace_decl) continue;
+            const namespace = hir_mod.namespaceOf(self.hir, node);
+            if (namespace.name == hir_mod.none_node_id or
+                self.hir.kindOf(namespace.name) != .identifier or
+                hir_mod.identifierOf(self.hir, namespace.name).name != ctor_name) continue;
+            if (self.valueDeclVisibleFromNode(node, assignment_node)) return true;
+        }
+        return false;
     }
 
     fn prototypeAssignmentPropertyName(self: *Checker, target: NodeId, name: hir_mod.StringId) ?hir_mod.StringId {
@@ -178810,6 +178896,19 @@ test "checker: variadic tuple inference handles empty rest" {
     }
 }
 
+test "checker: Function.apply preserves a generic rest tuple parameter" {
+    const s = try newSetup(
+        \\function invoke<Args extends any[]>(target: (...args: Args) => void, args: Args) {
+        \\  target.apply(undefined, args);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
 test "checker: variadic tuple inference single-element tuple" {
     // TS 4.0 ÃÂ¢ÃÂÃÂ single-arg f infers T = [string].
     const s = try newSetup(
@@ -194131,9 +194230,50 @@ test "checker: checkjs object declaration conflicting with ambient class reports
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_missing_properties) found = true;
+        if (d.code == TsCodes.type_missing_properties) {
+            try T.expectEqualStrings("Type '{}' is missing the following properties from type 'typeof A': d, prototype", d.message);
+            try T.expectEqual(s.checker.hir.spanOf(d.node).start, s.checker.diagnosticStart(d));
+            found = true;
+        }
     }
     try T.expect(found);
+}
+
+test "checker: checked JS callable container merges with TypeScript var declaration" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: a.js
+        \\var x = function foo() {}
+        \\x.a = function bar() {}
+        \\// @Filename: b.ts
+        \\var x = function () { return 1; }();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: checked JS prototype assignment extends an ambient namespace container" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: a.d.ts
+        \\declare namespace C { function bar(): void }
+        \\// @Filename: b.js
+        \\C.prototype = {};
+        \\C.bar = 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var assignment_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        if (d.code == TsCodes.type_not_assignable) assignment_mismatch = true;
+    }
+    try T.expect(assignment_mismatch);
 }
 
 test "checker: for-of assignment to untyped var target is accepted" {
