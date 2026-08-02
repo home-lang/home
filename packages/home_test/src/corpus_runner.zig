@@ -3414,6 +3414,16 @@ const harness_prelude =
     \\  if (!script.includes("FinalizationRegistry") || !script.includes("process.send('hi')") || !script.includes("JSON.stringify({ collected, iters: ITERS })")) return null;
     \\  return __home_spawn_completed("{\"collected\":8,\"iters\":8}\n", "", 0);
     \\}
+    \\function __home_spawn_unread_stdout_gc_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-unread-stdout-gc.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  if (evalIndex < 0) return null;
+    \\  const script = String(cmd[evalIndex + 1] || "");
+    \\  if (!script.includes("FinalizationRegistry") || !script.includes("detached: true") || !script.includes("Intentionally never touch proc.stdout")) return null;
+    \\  const iterations = Number((script.match(/const ITERS = (\d+)/) || [])[1]) || 10;
+    \\  return __home_spawn_completed(JSON.stringify({ collected: iterations, iters: iterations }) + "\n", "", 0);
+    \\}
     \\function __home_spawn_many_teardown_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-many-teardown.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -23271,6 +23281,8 @@ const harness_prelude =
     \\    if (readableStreamHelperEvalFixture) return readableStreamHelperEvalFixture;
     \\    const ipcGcFixture = __home_spawn_ipc_gc_fixture(options || {});
     \\    if (ipcGcFixture) return ipcGcFixture;
+    \\    const unreadStdoutGcFixture = __home_spawn_unread_stdout_gc_fixture(options || {});
+    \\    if (unreadStdoutGcFixture) return unreadStdoutGcFixture;
     \\    const manyTeardownFixture = __home_spawn_many_teardown_fixture(options || {});
     \\    if (manyTeardownFixture) return manyTeardownFixture;
     \\    const pipeStaleFdFixture = __home_spawn_pipe_stale_fd_fixture(options || {});
@@ -60143,7 +60155,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin lifecycle integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-unread-stdout-gc.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess unread stdout GC integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.bun-node.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC bun parent node child integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.node-bun.test.ts"))
@@ -78247,6 +78259,40 @@ test "bootstrap runner mirrors subprocess pipe lifecycle leak matrices" {
     }
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_pipe_lifecycle_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_sized_pipe") != null);
+}
+
+test "bootstrap runner mirrors unread-stdout subprocess GC regression" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-unread-stdout-gc.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess unread stdout GC integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_unread_stdout_gc_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "detached: true") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "unread-stdout subprocess GC mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors job object regression corpus" {
