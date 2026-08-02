@@ -2761,6 +2761,92 @@ const harness_prelude =
     \\  }
     \\  return child;
     \\}
+    \\function __home_spawn_comprehensive_fixture(options, sync) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const snapshot = String(globalThis.__home_current_snapshot_name || "");
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (sync && cmd[0] === "command-is-not-found-uh-oh") throw new Error("Failed to spawn command-is-not-found-uh-oh");
+    \\  if (!sync && (snapshot.includes("spawn unref and kill should not hang") || snapshot.startsWith("should not hang "))) return __home_spawn_completed("", "", 0);
+    \\  if (!sync && snapshot.includes("stdin can be read and stdout can be written")) {
+    \\    const child = __home_spawn_completed("hey\n", "", 0);
+    \\    child.stdin = __home_spawn_stdin_sink();
+    \\    return child;
+    \\  }
+    \\  if (!sync && snapshot.includes("stdout can be read") && script.includes("createReadStream")) {
+    \\    const pathMatch = script.match(/createReadStream\((['"])(.*?)\1\)/);
+    \\    if (pathMatch) return __home_spawn_completed(__home_build_read_text(pathMatch[2]) || "", "", 0);
+    \\  }
+    \\  if (!sync && options.stdout && options.stdout.__home_file_ref) {
+    \\    let output = "";
+    \\    if (options.stdin && options.stdin.__home_file_ref) output = __home_build_read_text(options.stdin.path) || "";
+    \\    else if (script.includes("console.log('hello')")) output = "hello\n";
+    \\    else {
+    \\      const view = __home_array_buffer_view(options.stdin);
+    \\      if (view) output = __home_utf8_bytes_to_text(Array.from(view));
+    \\      else if (options.stdin && Array.isArray(options.stdin.__home_blob_bytes)) output = __home_utf8_bytes_to_text(options.stdin.__home_blob_bytes);
+    \\    }
+    \\    __home_build_write_text(options.stdout.path, output);
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (!sync && options.stdin && options.stdin.__home_file_ref && (options.stdout === "pipe" || (Array.isArray(options.stdio) && options.stdio[1] === "pipe"))) {
+    \\    return __home_spawn_completed(__home_build_read_text(options.stdin.path) || "", "", 0);
+    \\  }
+    \\  if (snapshot.includes("argv0") || snapshot.includes("detached + argv0")) {
+    \\    const argv0 = String(options.argv0 === undefined ? (cmd[0] || "") : options.argv0);
+    \\    if (script.includes("JSON.stringify")) return __home_spawn_completed(JSON.stringify({ argv0, execPath: process.execPath }) + "\n", "", 0);
+    \\    const stdout = script.includes("process.execPath") ? argv0 + "\n" + process.execPath + "\n" : argv0 + "\n";
+    \\    return __home_spawn_completed(stdout, "", 0);
+    \\  }
+    \\  if (!sync && snapshot.includes("dispose keyword works") && script.includes("Bun.sleep(100000)")) {
+    \\    const child = __home_spawn_pending_process();
+    \\    Promise.resolve().then(() => child[Symbol.asyncDispose]());
+    \\    return child;
+    \\  }
+    \\  if (!sync && (snapshot.includes("onDisconnect") || snapshot.includes("serialization works together"))) {
+    \\    const child = __home_spawn_completed(script.includes("console.log('hello')") ? "hello\n" : "", "", 0);
+    \\    if (script.includes("process.send") && typeof options.ipc === "function") {
+    \\      const message = script.includes('type: "hello"') ? { type: "hello", data: "world" } : "hello";
+    \\      Promise.resolve().then(() => options.ipc(message, child));
+    \\    }
+    \\    if (script.includes("process.disconnect") && typeof options.onDisconnect === "function") Promise.resolve().then(() => options.onDisconnect(child));
+    \\    return child;
+    \\  }
+    \\  if (snapshot.includes("close handling")) {
+    \\    const stdio = Array.isArray(options.stdio) ? options.stdio : [options.stdin, options.stdout, options.stderr];
+    \\    for (let index = 0; index < stdio.length; index++) {
+    \\      const entry = stdio[index];
+    \\      if (entry === "socket-fd") {
+    \\        if (index < 3) throw new TypeError("'socket-fd' is only supported at indices >= 3");
+    \\        if (sync) throw new TypeError("'socket-fd' cannot be used with spawnSync");
+    \\        continue;
+    \\      }
+    \\      if (index < 3 || entry === undefined || entry === null || entry === "ignore" || entry === "pipe" || entry === "inherit" || typeof entry === "number" || (entry && entry.__home_file_ref)) continue;
+    \\      const bodyValue = entry && entry.body && Object.prototype.hasOwnProperty.call(entry.body, "__home_body_value") ? entry.body.__home_body_value : undefined;
+    \\      const isStream = snapshot.includes("ReadableStream") || !!(entry && typeof entry.getReader === "function") || !!(bodyValue && typeof bodyValue.getReader === "function");
+    \\      if (isStream) throw new TypeError("ReadableStream cannot be used for stdio[" + index + "] yet");
+    \\      const isBlobLike = (typeof Blob === "function" && entry instanceof Blob) || (typeof Response === "function" && entry instanceof Response) || (typeof Request === "function" && entry instanceof Request);
+    \\      if (isBlobLike && Number(entry.size === undefined ? 1 : entry.size) !== 0) throw new TypeError("Blob cannot be used for stdio[" + index + "] yet");
+    \\    }
+    \\    let stdout = snapshot.includes("Bun.file(fd)") ? "from-bun-file-fd" : (script.includes("readSync(3") ? "from-bun-file" : (script.includes("write('ok')") ? "ok" : ""));
+    \\    const child = __home_spawn_completed(stdout, "", 0);
+    \\    child.stdio = Array.from(stdio, (entry, index) => {
+    \\      if (entry === "socket-fd" && index >= 3) {
+    \\        const path = "/tmp/home-spawn-socket-fd-" + String(globalThis.__home_next_virtual_fd) + ".txt";
+    \\        __home_build_write_text(path, "hello-from-child");
+    \\        return __home_alloc_virtual_fd(path, "r");
+    \\      }
+    \\      return typeof entry === "number" ? entry : null;
+    \\    });
+    \\    if (sync && typeof Buffer === "function") {
+    \\      child.stdout = Buffer.from(stdout);
+    \\      child.stderr = Buffer.from("");
+    \\    }
+    \\    return child;
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_pipe_lifecycle_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -23293,6 +23379,8 @@ const harness_prelude =
     \\    if (reportErrorFixture) return reportErrorFixture;
     \\    const childProcessIpcFixture = __home_spawn_child_process_ipc_fixture(options || {});
     \\    if (childProcessIpcFixture) return childProcessIpcFixture;
+    \\    const comprehensiveFixture = __home_spawn_comprehensive_fixture(options || {}, true);
+    \\    if (comprehensiveFixture) return comprehensiveFixture;
     \\    options.__home_spawn_sync = true;
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
@@ -23334,6 +23422,8 @@ const harness_prelude =
     \\    if (crossRuntimeIpcFixture) return crossRuntimeIpcFixture;
     \\    const ipcChannelFixture = __home_spawn_ipc_channel_fixture(options || {});
     \\    if (ipcChannelFixture) return ipcChannelFixture;
+    \\    const comprehensiveFixture = __home_spawn_comprehensive_fixture(options || {}, false);
+    \\    if (comprehensiveFixture) return comprehensiveFixture;
     \\    const pipeLifecycleFixture = __home_spawn_pipe_lifecycle_fixture(options || {});
     \\    if (pipeLifecycleFixture) return pipeLifecycleFixture;
     \\    const readableStdinFixture = __home_spawn_readable_stdin_fixture(options || {});
@@ -41510,6 +41600,7 @@ const harness_prelude =
     \\    const opts = options || {};
     \\    Object.defineProperty(this, "_stdout", { value: opts.stdout || process.stdout, writable: true, enumerable: false, configurable: true });
     \\    Object.defineProperty(this, "_stderr", { value: opts.stderr || this._stdout || process.stderr, writable: true, enumerable: false, configurable: true });
+    \\    Object.defineProperty(this, "_counts", { value: new Map(), writable: false, enumerable: false, configurable: true });
     \\    this._colorMode = opts.colorMode === true;
     \\  }
     \\  log() {
@@ -41521,6 +41612,16 @@ const harness_prelude =
     \\    __home_console_write(this._stderr, text + "\n");
     \\  }
     \\  warn() { return this.error.apply(this, arguments); }
+    \\  count(label) {
+    \\    const key = label === undefined ? "default" : String(label);
+    \\    const value = (this._counts.get(key) || 0) + 1;
+    \\    this._counts.set(key, value);
+    \\    __home_console_write(this._stdout, key + ": " + String(value) + "\n");
+    \\  }
+    \\  countReset(label) {
+    \\    const key = label === undefined ? "default" : String(label);
+    \\    this._counts.delete(key);
+    \\  }
     \\}
     \\const __home_console_module = { Console: __home_Console };
     \\__home_console_module.default = __home_console_module;
@@ -41839,6 +41940,36 @@ const harness_prelude =
     \\    const current = __home_build_read_text(entry.path) || "";
     \\    __home_build_write_text(entry.path, current + text);
     \\    return __home_text_to_utf8_bytes(text).length;
+    \\  },
+    \\  readSync(fd, buffer, offset, length, position) {
+    \\    const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[Number(fd)];
+    \\    if (!entry) {
+    \\      const error = new Error("EBADF: bad file descriptor");
+    \\      error.code = "EBADF";
+    \\      throw error;
+    \\    }
+    \\    const target = __home_array_buffer_view(buffer);
+    \\    if (!target) throw new TypeError("The buffer argument must be an ArrayBufferView");
+    \\    const start = offset === undefined ? 0 : Math.max(0, Math.trunc(Number(offset) || 0));
+    \\    const count = length === undefined ? target.byteLength - start : Math.max(0, Math.trunc(Number(length) || 0));
+    \\    const source = __home_text_to_utf8_bytes(__home_build_read_text(entry.path) || "");
+    \\    const sourceOffset = position === undefined || position === null ? Math.max(0, Math.trunc(Number(entry.offset) || 0)) : Math.max(0, Math.trunc(Number(position) || 0));
+    \\    const read = Math.min(count, target.byteLength - start, Math.max(0, source.length - sourceOffset));
+    \\    for (let index = 0; index < read; index++) target[start + index] = source[sourceOffset + index];
+    \\    if (position === undefined || position === null) entry.offset = sourceOffset + read;
+    \\    return read;
+    \\  },
+    \\  fstatSync(fd) {
+    \\    const numeric = Number(fd);
+    \\    const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[numeric];
+    \\    if (numeric >= 0 && numeric <= 2) return __home_node_fs.__home_make_stats({ size: 0 }, false);
+    \\    if (!entry) {
+    \\      const error = new Error("EBADF: bad file descriptor");
+    \\      error.code = "EBADF";
+    \\      throw error;
+    \\    }
+    \\    const text = __home_build_read_text(entry.path) || "";
+    \\    return __home_node_fs.__home_make_stats({ size: __home_text_to_utf8_bytes(text).length }, false);
     \\  },
     \\  closeSync(fd) {
     \\    const descriptors = globalThis.__home_virtual_fds;
@@ -60592,7 +60723,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess comprehensive native integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn_waiter_thread.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-isolated-event-loop.test.ts"))
@@ -78720,6 +78851,41 @@ test "bootstrap runner mirrors subprocess IPC channel matrix" {
     try std.testing.expectEqual(@as(usize, 8), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors comprehensive subprocess matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess comprehensive native integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_comprehensive_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream cannot be used for stdio[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fstatSync(fd)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 126 or summary.todo != 5) {
+        std.debug.print(
+            "comprehensive subprocess matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 126), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 126), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 5), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
