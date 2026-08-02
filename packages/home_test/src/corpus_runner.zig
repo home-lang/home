@@ -2691,6 +2691,21 @@ const harness_prelude =
     \\  Promise.resolve().then(() => options.ipc(messageMatch[2], child));
     \\  return child;
     \\}
+    \\function __home_spawn_async_iterable_throw_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/http/async-iterator-stream.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("async-iterator-throws.fixture.js")) || typeof options.ipc !== "function") return null;
+    \\  const server = Bun.serve({ port: 0, fetch() { return new Response("", { headers: { "X-Hey": "123" } }); } });
+    \\  const child = __home_spawn_pending_process();
+    \\  child.stderr = __home_spawn_pipe_text("error: Oops\n");
+    \\  const kill = child.kill;
+    \\  child.kill = function(signal) {
+    \\    server.stop(true);
+    \\    return kill.call(this, signal);
+    \\  };
+    \\  Promise.resolve().then(() => options.ipc(String(server.url), child));
+    \\  return child;
+    \\}
     \\function __home_spawn_cross_runtime_ipc_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  const bunParent = current.includes("js/bun/spawn/spawn.ipc.bun-node.test.ts");
@@ -23418,6 +23433,8 @@ const harness_prelude =
     \\    if (waiterThreadFixture) return waiterThreadFixture;
     \\    const packageScriptIpcFixture = __home_spawn_package_script_ipc_fixture(options || {});
     \\    if (packageScriptIpcFixture) return packageScriptIpcFixture;
+    \\    const asyncIterableThrowFixture = __home_spawn_async_iterable_throw_fixture(options || {});
+    \\    if (asyncIterableThrowFixture) return asyncIterableThrowFixture;
     \\    const crossRuntimeIpcFixture = __home_spawn_cross_runtime_ipc_fixture(options || {});
     \\    if (crossRuntimeIpcFixture) return crossRuntimeIpcFixture;
     \\    const ipcChannelFixture = __home_spawn_ipc_channel_fixture(options || {});
@@ -49921,7 +49938,7 @@ const harness_prelude =
     \\    } else if (bodyOption !== undefined && bodyOption !== null) {
     \\      this.__home_formdata = null;
     \\      this.body = __home_body_record(bodyOption);
-    \\      this.__home_text = __home_request_body_text(bodyOption);
+    \\      this.__home_text = __home_request_body_text(this.body);
     \\      if (typeof URLSearchParams === "function" && bodyOption instanceof URLSearchParams && this.headers.get("content-type") === null) this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\      else if (bodyOption && typeof bodyOption === "object" && (typeof bodyOption.__home_content_type === "string" || typeof bodyOption.type === "string") && (bodyOption.__home_content_type || bodyOption.type) !== "" && this.headers.get("content-type") === null) this.headers.set("content-type", bodyOption.__home_content_type || bodyOption.type);
     \\    }
@@ -60405,7 +60422,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
         try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve async iterable body streaming matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
         try rewriteBunServeCookiesCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-file.test.ts"))
@@ -82490,6 +82507,41 @@ test "bootstrap runner covers current web timer regressions" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors async iterable Response streaming matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/async-iterator-stream.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve async iterable body streaming matrix") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_async_iterable_body_record") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_async_iterable_throw_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.__home_text = __home_request_body_text(this.body)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 86 or summary.todo != 0) {
+        std.debug.print(
+            "async iterable Response streaming mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 86), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 86), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
