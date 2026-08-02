@@ -87498,6 +87498,12 @@ pub const Checker = struct {
                 var constructor_accessibility_failed = false;
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
+                    const constructor_class_display_owned = if (self.findVisibleNamedClassDecl(c.callee, id.name)) |class_decl|
+                        try self.classDisplayNameFromNode(class_decl)
+                    else
+                        null;
+                    defer if (constructor_class_display_owned) |display| self.gpa.free(display);
+                    const constructor_class_display = constructor_class_display_owned orelse self.string_interner.get(id.name);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Symbol")) {
                         try self.report(node, TsCodes.new_expression_not_void, "Only a void function can be called with the 'new' keyword.");
                     }
@@ -87517,7 +87523,7 @@ pub const Checker = struct {
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Constructor of class '{s}' is private and only accessible within the class declaration.",
-                            .{self.string_interner.get(id.name)},
+                            .{constructor_class_display},
                         );
                         try self.report(node, TsCodes.constructor_is_private, msg);
                         constructor_accessibility_failed = true;
@@ -87528,7 +87534,7 @@ pub const Checker = struct {
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Constructor of class '{s}' is protected and only accessible within the class declaration.",
-                            .{self.string_interner.get(id.name)},
+                            .{constructor_class_display},
                         );
                         try self.report(node, TsCodes.constructor_is_protected, msg);
                         constructor_accessibility_failed = true;
@@ -119952,7 +119958,10 @@ pub const Checker = struct {
                 if (self.class_static_member_names.getPtr(class_name)) |statics| {
                     if (statics.contains(name)) {
                         if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
-                            const class_str = self.string_interner.get(class_name);
+                            const class_str = if (std.mem.indexOfScalar(u8, target_text, '<') != null)
+                                target_text
+                            else
+                                self.string_interner.get(class_name);
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?",
@@ -120116,6 +120125,11 @@ pub const Checker = struct {
     }
 
     fn allocPropertyMissingTargetTypeName(self: *Checker, target_t: TypeId) !?[]const u8 {
+        if (self.isThisTypeParameter(target_t)) {
+            if (self.typeParameterConstraint(target_t)) |constraint| {
+                if (constraint != target_t) return self.allocPropertyMissingTargetTypeName(constraint);
+            }
+        }
         if (self.class_name_by_static.get(target_t)) |class_name| {
             return try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -148555,7 +148569,8 @@ pub const Checker = struct {
     /// argument fails to render. First-write wins so the earliest
     /// instantiation observed for a given collapsed body keeps its
     /// name; later collisions stay silent rather than thrashing the
-    /// table.
+    /// table. A concrete generic class may replace a namespace-only
+    /// class display because the latter carries no type-argument identity.
     fn registerAliasDisplayName(
         self: *Checker,
         t: TypeId,
@@ -148600,13 +148615,17 @@ pub const Checker = struct {
         // affecting prose for ordinary shallow instantiations.
         if (self.instantiation_depth > display_name_depth_limit) return;
         if (self.alias_display_names.contains(t)) {
-            if (!self.alias_type_args.contains(t)) {
-                const arena = self.diag_arena.allocator();
-                if (arena.dupe(TypeId, args)) |args_copy| {
-                    self.alias_type_args.put(self.gpa, t, args_copy) catch {};
-                } else |_| {}
+            if (override_named_guard and !self.alias_type_args.contains(t)) {
+                _ = self.alias_display_names.remove(t);
+            } else {
+                if (!self.alias_type_args.contains(t)) {
+                    const arena = self.diag_arena.allocator();
+                    if (arena.dupe(TypeId, args)) |args_copy| {
+                        self.alias_type_args.put(self.gpa, t, args_copy) catch {};
+                    } else |_| {}
+                }
+                return;
             }
-            return;
         }
         // Skip if the result already has a more direct display name
         // via `type_names` (so we don't shadow class/interface
