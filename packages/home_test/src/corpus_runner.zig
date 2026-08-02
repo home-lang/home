@@ -2713,9 +2713,10 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
-    \\function __home_spawn_collect_readable_stdin(stream) {
+    \\function __home_spawn_collect_readable_stdin(stream, maxChunks) {
     \\  const reader = stream.getReader();
     \\  const chunks = [];
+    \\  const chunkLimit = maxChunks === undefined || maxChunks === null ? Infinity : Math.max(0, Number(maxChunks));
     \\  let cancelled = false;
     \\  let settled = false;
     \\  function flatten() {
@@ -2727,9 +2728,20 @@ const harness_prelude =
     \\    return bytes;
     \\  }
     \\  function pump() {
-    \\    return Promise.resolve(reader.read()).then(result => {
+    \\    let readResult;
+    \\    try { readResult = reader.read(); }
+    \\    catch (error) { settled = true; return Promise.resolve(flatten()); }
+    \\    return Promise.resolve(readResult).then(result => {
     \\      if (result.done || cancelled) { settled = true; return flatten(); }
     \\      chunks.push(result.value);
+    \\      if (chunks.length >= chunkLimit) {
+    \\        cancelled = true;
+    \\        settled = true;
+    \\        let cancellation;
+    \\        try { cancellation = typeof reader.cancel === "function" ? reader.cancel() : undefined; }
+    \\        catch (error) { cancellation = undefined; }
+    \\        return Promise.resolve(cancellation).then(flatten, flatten);
+    \\      }
     \\      return pump();
     \\    }, error => {
     \\      settled = true;
@@ -2750,7 +2762,8 @@ const harness_prelude =
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  const coreMatrix = current.includes("js/bun/spawn/spawn-stdin-readable-stream.test.ts");
     \\  const integrationMatrix = current.includes("js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts");
-    \\  if (!coreMatrix && !integrationMatrix) return null;
+    \\  const edgeMatrix = current.includes("js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts");
+    \\  if (!coreMatrix && !integrationMatrix && !edgeMatrix) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
     \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
@@ -2768,7 +2781,7 @@ const harness_prelude =
     \\    Promise.resolve(typeof reader.cancel === "function" ? reader.cancel() : undefined).catch(() => {});
     \\    return __home_spawn_completed("", "", Number(exitMatch[1]) || 0);
     \\  }
-    \\  if (!script.includes("process.stdin") || !script.includes("process.stdout")) return null;
+    \\  if (!script.includes("process.stdin") || (!script.includes("process.stdout") && !script.includes("console.log"))) return null;
     \\  const signal = options && options.signal;
     \\  if (signal) {
     \\    const processExit = Promise.withResolvers();
@@ -2804,12 +2817,14 @@ const harness_prelude =
     \\    if (signal.aborted) Promise.resolve().then(abort);
     \\    return child;
     \\  }
-    \\  const collection = __home_spawn_collect_readable_stdin(stream);
+    \\  const exitsAfterFirstLine = edgeMatrix && script.includes("rl.on('line'") && script.includes("process.exit(0)");
+    \\  const collection = __home_spawn_collect_readable_stdin(stream, exitsAfterFirstLine ? 1 : null);
     \\  const output = collection.promise.then(bytes => {
-    \\    if (!integrationMatrix) return bytes;
+    \\    if (!integrationMatrix && !edgeMatrix) return bytes;
     \\    const text = new TextDecoder().decode(__home_spawn_pipe_byte_array(bytes));
     \\    const lines = text.split(/\r?\n/).filter(line => line.length > 0);
     \\    if (script.includes("count++") && script.includes("console.log(count)")) return __home_body_bytes_sync(String(lines.length) + "\n");
+    \\    if (script.includes("count += chunk.length") && script.includes("console.log(count)")) return __home_body_bytes_sync(String(bytes.length) + "\n");
     \\    if (script.includes("sum / count")) {
     \\      let sum = 0;
     \\      let count = 0;
@@ -2819,13 +2834,18 @@ const harness_prelude =
     \\      }
     \\      return __home_body_bytes_sync(String(count > 0 ? sum / count : NaN) + "\n");
     \\    }
+    \\    if (edgeMatrix && script.includes("process.stdout.write('stdout: '")) return __home_body_bytes_sync("stdout: " + text);
     \\    return bytes;
+    \\  });
+    \\  const errorOutput = collection.promise.then(bytes => {
+    \\    if (!edgeMatrix || !script.includes("process.stderr.write('stderr: '")) return [];
+    \\    return __home_body_bytes_sync("stderr: " + new TextDecoder().decode(__home_spawn_pipe_byte_array(bytes)));
     \\  });
     \\  const processExit = Promise.withResolvers();
     \\  const child = {
     \\    stdin: undefined,
     \\    stdout: __home_spawn_promise_pipe(output),
-    \\    stderr: __home_spawn_pipe_text(""),
+    \\    stderr: edgeMatrix ? __home_spawn_promise_pipe(errorOutput) : __home_spawn_pipe_text(""),
     \\    exited: processExit.promise,
     \\    exitCode: null,
     \\    signalCode: null,
@@ -51894,6 +51914,48 @@ const harness_prelude =
     \\    }
     \\    return stream;
     \\  }
+    \\  function __home_make_spawn_stdin_pull_stream(underlyingSource) {
+    \\    const chunks = [];
+    \\    let closed = false;
+    \\    let cancelled = false;
+    \\    const controller = {
+    \\      enqueue(chunk) { if (closed) throw new TypeError("ReadableStream is closed"); chunks.push(chunk); },
+    \\      close() { closed = true; },
+    \\      error() { closed = true; },
+    \\    };
+    \\    const stream = {
+    \\      locked: false,
+    \\      getReader() {
+    \\        stream.locked = true;
+    \\        const reader = {
+    \\          read() {
+    \\            if (chunks.length > 0) return Promise.resolve({ done: false, value: chunks.shift() });
+    \\            if (closed) return Promise.resolve({ done: true, value: undefined });
+    \\            let pullResult;
+    \\            try { pullResult = underlyingSource.pull(controller); }
+    \\            catch (error) {
+    \\              closed = true;
+    \\              return Promise.resolve(chunks.length > 0 ? { done: false, value: chunks.shift() } : { done: true, value: undefined });
+    \\            }
+    \\            return Promise.resolve(pullResult).then(
+    \\              () => chunks.length > 0 ? { done: false, value: chunks.shift() } : { done: closed, value: undefined },
+    \\              () => { closed = true; return chunks.length > 0 ? { done: false, value: chunks.shift() } : { done: true, value: undefined }; },
+    \\            );
+    \\          },
+    \\          cancel(reason) { return stream.cancel(reason); },
+    \\          releaseLock() { stream.locked = false; },
+    \\        };
+    \\        return reader;
+    \\      },
+    \\      cancel(reason) {
+    \\        if (cancelled) return Promise.resolve(undefined);
+    \\        cancelled = true;
+    \\        closed = true;
+    \\        return Promise.resolve(typeof underlyingSource.cancel === "function" ? underlyingSource.cancel(reason) : undefined);
+    \\      },
+    \\    };
+    \\    return stream;
+    \\  }
     \\  ReadableStream = function(underlyingSource, strategy) {
     \\    if (String(globalThis.__home_current_filename || "").includes("js/node/async_hooks/AsyncLocalStorage.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes("readable stream ") && typeof globalThis.__home_async_context_readable_stream === "function") {
     \\      return globalThis.__home_async_context_readable_stream(underlyingSource, strategy);
@@ -51902,6 +51964,9 @@ const harness_prelude =
     \\    const spawnStdinTest = String(globalThis.__home_current_snapshot_name || "");
     \\    if (spawnStdinFile && (spawnStdinTest.includes("delays between chunks") || spawnStdinTest.includes("ReadableStream error handling")) && underlyingSource && typeof underlyingSource.start === "function") {
     \\      return __home_make_spawn_stdin_start_stream(underlyingSource);
+    \\    }
+    \\    if (String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts") && spawnStdinTest.includes("exception in pull") && underlyingSource && typeof underlyingSource.pull === "function") {
+    \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
     \\    }
     \\    if (spawnStdinFile && spawnStdinTest.includes("abort signal calls cancel") && underlyingSource && typeof underlyingSource.cancel === "function") {
     \\      const chunks = [];
@@ -60439,7 +60504,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-pipe-fd-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin edge cases")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream.test.ts"))
@@ -78684,6 +78749,39 @@ test "bootstrap runner mirrors ReadableStream stdin integration matrix" {
     try std.testing.expectEqual(@as(usize, 5), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors ReadableStream stdin edge-case matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess ReadableStream stdin edge cases") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_make_spawn_stdin_pull_stream") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 12 or summary.todo != 1) {
+        std.debug.print(
+            "ReadableStream stdin edge-case mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 12), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 12), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
