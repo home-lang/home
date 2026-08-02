@@ -60147,7 +60147,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-destroy.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-pipe-fd-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun subprocess stdin pipe fd leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin edge cases")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts"))
@@ -78292,6 +78292,40 @@ test "bootstrap runner mirrors unread-stdout subprocess GC regression" {
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors stdin pipe fd and FileSink ownership matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-stdin-pipe-fd-leak.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess stdin pipe fd leak integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_stdin_sink()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "liveCount() { return 0; }") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 1) {
+        std.debug.print(
+            "stdin pipe ownership mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 2), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
