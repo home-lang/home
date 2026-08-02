@@ -33509,8 +33509,12 @@ pub const Checker = struct {
         if (parent_static_t) |pt| {
             if (pt < self.interner.pool.typeCount() and self.interner.pool.flagsOf(pt).is_object_type) {
                 const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+                const name_name = self.string_interner.intern("name") catch return error.OutOfMemory;
+                const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
                 for (self.interner.objectMembers(pt)) |inherited| {
-                    if (inherited.name == construct_name) continue;
+                    if (inherited.name == construct_name or
+                        inherited.name == name_name or
+                        inherited.name == prototype_name) continue;
                     if (preseeded_static_member_indices.contains(inherited.name)) continue;
                     try preseeded_static_member_indices.put(self.gpa, inherited.name, static_members.items.len);
                     try static_members.append(self.gpa, inherited);
@@ -42314,6 +42318,8 @@ pub const Checker = struct {
         child_members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        const name_name = self.string_interner.intern("name") catch return error.OutOfMemory;
+        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
         var child_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, types.ObjectMember) = .empty;
         defer child_by_name.deinit(self.gpa);
         for (child_members.items) |m| try child_by_name.put(self.gpa, m.name, m);
@@ -42321,7 +42327,11 @@ pub const Checker = struct {
         var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer inherited.deinit(self.gpa);
         for (self.interner.objectMembers(parent_static_t)) |pm| {
-            if (pm.name == construct_name) continue;
+            // Every derived constructor has its own Function.name and
+            // prototype. Home materializes both properties after inheritance,
+            // so carrying the parent's synthetic copies forward would make a
+            // derived static index signature constrain them as user members.
+            if (pm.name == construct_name or pm.name == name_name or pm.name == prototype_name) continue;
             if (self.string_interner.getOptional(pm.name)) |member_name| {
                 if (std.mem.startsWith(u8, member_name, "#")) continue;
             }
@@ -56029,7 +56039,7 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = anchor,
-            .pos = self.indexSignatureBracketPos(anchor),
+            .pos = self.indexSignatureDeclarationPos(anchor),
             .code = TsCodes.number_index_not_assignable_to_string_index,
             .message = msg,
         });
@@ -56058,7 +56068,7 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = anchor,
-            .pos = self.indexSignatureBracketPos(anchor),
+            .pos = self.indexSignatureDeclarationPos(anchor),
             .code = TsCodes.number_index_not_assignable_to_string_index,
             .message = msg,
         });
@@ -56113,6 +56123,18 @@ pub const Checker = struct {
         while (line_start > 0 and src[line_start - 1] != '\n') : (line_start -= 1) {}
         const open = std.mem.indexOfScalarPos(u8, src[0 .. anchor + 1], line_start, '[') orelse return null;
         return @intCast(open);
+    }
+
+    fn indexSignatureDeclarationPos(self: *Checker, node: NodeId) ?u32 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .index_signature) return null;
+        const src = self.source orelse return null;
+        const bracket = self.indexSignatureBracketPos(node) orelse return null;
+        var line_start: usize = bracket;
+        while (line_start > 0 and src[line_start - 1] != '\n') : (line_start -= 1) {}
+        var declaration_start = line_start;
+        while (declaration_start < bracket and
+            (src[declaration_start] == ' ' or src[declaration_start] == '\t')) : (declaration_start += 1) {}
+        return @intCast(declaration_start);
     }
 
     fn typeIsUpperObject(self: *Checker, t: TypeId) CheckError!bool {
@@ -56204,9 +56226,19 @@ pub const Checker = struct {
             !(try self.indexValueAssignableToStringIndex(number_idx, string_idx)))
         {
             const anchor = self.mergedInterfaceIndexSignatureNode(node, "number");
-            const final_anchor = if (anchor != hir_mod.none_node_id) anchor else node;
-            if (!self.diagnosticExists(final_anchor, TsCodes.number_index_not_assignable_to_string_index)) {
-                try self.reportNumberStringIndexMismatch(final_anchor, number_idx, string_idx);
+            const container_kind = self.hir.kindOf(node);
+            const inherited_class_number_index =
+                (container_kind == .class_decl or container_kind == .class_expr) and
+                anchor == hir_mod.none_node_id;
+            // Class index constraints are reported only when the number index
+            // declaration belongs to the class being checked. An inherited
+            // number index remains available for lookup but is not rechecked
+            // against a newly declared string index.
+            if (!inherited_class_number_index) {
+                const final_anchor = if (anchor != hir_mod.none_node_id) anchor else node;
+                if (!self.diagnosticExists(final_anchor, TsCodes.number_index_not_assignable_to_string_index)) {
+                    try self.reportNumberStringIndexMismatch(final_anchor, number_idx, string_idx);
+                }
             }
         }
         if (symbol_idx != types.Primitive.none) {
@@ -183198,6 +183230,53 @@ test "checker: static index signatures see empty method returns as void" {
         TsCodes.property_not_assignable_to_index_type,
         "Property 'foo' of type '() => void' is not assignable to 'string' index type 'string'.",
     ));
+}
+
+test "checker: derived static index signatures ignore intrinsic constructor members" {
+    const s = try newSetup(
+        \\class Base {}
+        \\class Derived extends Base {
+        \\  static [key: string]: number;
+        \\  static value = "no";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_index_type));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_not_assignable_to_index_type,
+        "Property 'value' of type 'string' is not assignable to 'string' index type 'number'.",
+    ));
+}
+
+test "checker: derived class only checks locally declared number index constraint" {
+    const source =
+        \\class B {
+        \\  static readonly [s: string]: number;
+        \\  static readonly [s: number]: 42 | 233;
+        \\}
+        \\class D extends B {
+        \\  static readonly [s: string]: number;
+        \\}
+        \\class ED extends D {
+        \\  static readonly [s: string]: boolean;
+        \\  static readonly [s: number]: 1;
+        \\}
+        \\class DD extends D {
+        \\  static readonly [s: string]: 421;
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_index_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.number_index_not_assignable_to_string_index));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.number_index_not_assignable_to_string_index) continue;
+        const expected_start = std.mem.indexOf(u8, source, "static readonly [s: number]: 1").?;
+        try T.expectEqual(@as(?u32, @intCast(expected_start)), d.pos);
+    }
 }
 
 test "checker: class expression static fields are visible on constructor side" {

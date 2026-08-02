@@ -2085,7 +2085,7 @@ pub fn compileSource(
         // them when `include_suggestions` set the corresponding flag.
         const is_suggestion = d.category == .suggestion;
         if (is_suggestion and !options.include_suggestions) continue;
-        const diag_span_len = diagnosticSpanLen(&c.hir, d.node, diag_pos);
+        const diag_span_len = diagnosticSpanLen(&c.hir, d.node, diag_pos, d.code);
 
         // TS2300 (parser) vs TS2451 (checker) coalesce: tsc emits ONLY
         // TS2451 for `let`/`const` destructuring duplicate-binding
@@ -2181,8 +2181,15 @@ pub fn compileSource(
     return c;
 }
 
-fn diagnosticSpanLen(hir: *const Hir, node: NodeId, pos: u32) u32 {
+fn diagnosticSpanLen(hir: *const Hir, node: NodeId, pos: u32, code: u32) u32 {
     if (node == hir_mod.none_node_id) return 0;
+    if (code == ts_checker.check.TsCodes.type_not_assignable and hir.kindOf(node) == .assignment) {
+        const target = hir_mod.assignmentOf(hir, node).target;
+        const target_span = hir.spanOf(target);
+        if (pos == target_span.start and target_span.end > target_span.start) {
+            return target_span.end - target_span.start;
+        }
+    }
     const span = hir.spanOf(node);
     if (span.end <= span.start) return 0;
     if (pos < span.start or pos >= span.end) return 0;
@@ -3472,6 +3479,36 @@ test "driver: empty source produces empty JS" {
     }
     try T.expectEqualStrings("", c.js);
     try T.expect(!c.has_errors);
+}
+
+test "driver: assignment mismatch uses target span before readonly index diagnostic" {
+    const source =
+        \\class C {
+        \\  static readonly [s: number]: 42;
+        \\}
+        \\C[2] = 2;
+    ;
+    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    const assignment_pos: u32 = @intCast(std.mem.indexOf(u8, source, "C[2] = 2").?);
+    var colocated: [2]Diagnostic = undefined;
+    var count: usize = 0;
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.pos != assignment_pos) continue;
+        if (diagnostic.code != ts_checker.check.TsCodes.type_not_assignable and
+            diagnostic.code != ts_checker.check.TsCodes.readonly_index_signature) continue;
+        colocated[count] = diagnostic;
+        count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expectEqual(ts_checker.check.TsCodes.type_not_assignable, colocated[0].code);
+    try T.expectEqual(ts_checker.check.TsCodes.readonly_index_signature, colocated[1].code);
+    try T.expectEqual(@as(u32, 4), colocated[0].span_len);
+    try T.expectEqual(@as(u32, 4), colocated[1].span_len);
 }
 
 test "driver: simple let binding round-trips" {
