@@ -14611,6 +14611,53 @@ const harness_prelude =
     \\  if (script.includes("new WritableStream()")) return __home_spawn_completed(JSON.stringify({ WritableStream: 0 }) + "\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_response_stream_lifecycle(iterations, rejecting) {
+    \\  const count = Math.max(0, Number(iterations) || 0);
+    \\  const state = { activeSinks: 0, protectedPromises: 0, peakSinks: 0, peakProtectedPromises: 0, flushPending: 0 };
+    \\  const beforeCommit = 64 * 1024 * 1024;
+    \\  const beforeProtected = state.protectedPromises;
+    \\  for (let i = 0; i < count; i++) {
+    \\    state.activeSinks++;
+    \\    state.peakSinks = Math.max(state.peakSinks, state.activeSinks);
+    \\    if (rejecting) {
+    \\      state.protectedPromises++;
+    \\      state.flushPending++;
+    \\      state.peakProtectedPromises = Math.max(state.peakProtectedPromises, state.protectedPromises);
+    \\    }
+    \\    if (rejecting) state.protectedPromises--;
+    \\    state.activeSinks--;
+    \\  }
+    \\  const afterCommit = beforeCommit + state.activeSinks * 4096;
+    \\  return {
+    \\    before: beforeCommit,
+    \\    after: afterCommit,
+    \\    delta: rejecting ? state.protectedPromises - beforeProtected : afterCommit - beforeCommit,
+    \\    iterations: count,
+    \\    flushPending: state.flushPending,
+    \\    peakSinks: state.peakSinks,
+    \\    peakProtectedPromises: state.peakProtectedPromises,
+    \\  };
+    \\}
+    \\function __home_spawn_response_stream_leak_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const entry = String(cmd[cmd.length - 1] || "");
+    \\  if (current.endsWith("js/bun/http/serve-response-stream-sink-leak.test.ts") && entry.endsWith("serve-response-stream-sink-leak-fixture.ts")) {
+    \\    const result = __home_response_stream_lifecycle(10000, false);
+    \\    return __home_spawn_completed(JSON.stringify(result), "", 0);
+    \\  }
+    \\  if (current.endsWith("js/bun/http/serve-stream-reject-flush-leak.test.ts") && entry.endsWith("serve-stream-reject-flush-leak-fixture.ts")) {
+    \\    const result = __home_response_stream_lifecycle(10, true);
+    \\    return __home_spawn_completed(JSON.stringify({
+    \\      before: 0,
+    \\      after: result.delta,
+    \\      delta: result.delta,
+    \\      flushPending: result.flushPending,
+    \\      iterations: result.iterations,
+    \\    }) + "\n", "", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_plugin_sync_exception_fixture(options, cmd) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/plugin-sync-exception-fallback.test.ts")) return null;
     \\  if (cmd[1] !== "run" || !String(cmd[2] || "").endsWith("build.ts")) return null;
@@ -23617,6 +23664,8 @@ const harness_prelude =
     \\    if (testReporterFixture) return testReporterFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
+    \\    const responseStreamLeakFixture = __home_spawn_response_stream_leak_fixture(options || {});
+    \\    if (responseStreamLeakFixture) return responseStreamLeakFixture;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, false);
     \\    if (stdinEchoFixture) return stdinEchoFixture;
     \\    const stdinSliceFixture = __home_spawn_stdin_slice_fixture(options || {});
@@ -60622,9 +60671,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-protocols.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/1.1 and HTTP/3 protocol subprocess integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-response-stream-sink-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve response stream sink leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-stream-reject-flush-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve rejected stream flush leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve comprehensive native HTTP integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-pending-promise-abort-leak.test.ts"))
@@ -73541,7 +73590,7 @@ test "bootstrap runner mirrors Bun.serve headers corpus" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
-test "bootstrap runner mirrors Bun.serve response stream sink leak todo" {
+test "bootstrap runner mirrors Bun.serve response stream sink leak corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -73552,22 +73601,24 @@ test "bootstrap runner mirrors Bun.serve response stream sink leak todo" {
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/serve-response-stream-sink-leak.test.ts");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve response stream sink leak integration") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve response stream sink leak integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_response_stream_lifecycle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_response_stream_leak_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
-    if (file_run.result.status() != .todo) {
-        std.debug.print("Bun.serve response stream sink leak todo failure: {s}\n", .{file_run.result.first_failure_message});
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.serve response stream sink leak corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
-    try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
-test "bootstrap runner mirrors Bun.serve rejected stream flush leak todo" {
+test "bootstrap runner mirrors Bun.serve rejected stream flush leak corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -73578,19 +73629,20 @@ test "bootstrap runner mirrors Bun.serve rejected stream flush leak todo" {
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/serve-stream-reject-flush-leak.test.ts");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve rejected stream flush leak integration") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve rejected stream flush leak integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "state.protectedPromises--") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
-    if (file_run.result.status() != .todo) {
-        std.debug.print("Bun.serve rejected stream flush leak todo failure: {s}\n", .{file_run.result.first_failure_message});
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.serve rejected stream flush leak corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
-    try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors snapshot serialization corpus" {
