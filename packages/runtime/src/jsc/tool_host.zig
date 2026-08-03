@@ -180,6 +180,24 @@ fn fileExistsNative(
     return extern_fns.JSValueMakeBoolean(c, true);
 }
 
+fn cpuCountNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+    const c = ctx orelse return null;
+    const count = std.Thread.getCpuCount() catch 1;
+    return extern_fns.JSValueMakeNumber(c, @floatFromInt(@max(1, count)));
+}
+
 fn spawnSyncNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -313,6 +331,7 @@ const install_glue =
     \\  var readHex = globalThis.__home_tool_read_file_hex;
     \\  var writeHex = globalThis.__home_tool_write_file_hex;
     \\  var exists = globalThis.__home_tool_file_exists;
+    \\  var cpuCount = globalThis.__home_tool_cpu_count;
     \\  var spawn = globalThis.__home_tool_spawn_sync;
     \\  globalThis.Home = {
     \\    readTextFile: function(path) { var out = read(String(path)); if (out === null) throw new Error("cannot read " + path); return out; },
@@ -320,6 +339,7 @@ const install_glue =
     \\    readFileHex: function(path) { var out = readHex(String(path)); if (out === null) throw new Error("cannot read " + path); return out; },
     \\    writeFileHex: function(path, hex) { if (!writeHex(String(path), String(hex))) throw new Error("cannot write " + path); },
     \\    fileExists: function(path) { return exists(String(path)); },
+    \\    cpuCount: function() { return cpuCount(); },
     \\    spawnSync: function(argv, options) {
     \\      options = options || {};
     \\      var env = options.env || {};
@@ -338,6 +358,7 @@ const install_glue =
     \\  delete globalThis.__home_tool_read_file_hex;
     \\  delete globalThis.__home_tool_write_file_hex;
     \\  delete globalThis.__home_tool_file_exists;
+    \\  delete globalThis.__home_tool_cpu_count;
     \\  delete globalThis.__home_tool_spawn_sync;
     \\})();
 ;
@@ -348,6 +369,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_tool_read_file_hex", readFileHexNative);
     callback.registerCallback(ctx, global, "__home_tool_write_file_hex", writeFileHexNative);
     callback.registerCallback(ctx, global, "__home_tool_file_exists", fileExistsNative);
+    callback.registerCallback(ctx, global, "__home_tool_cpu_count", cpuCountNative);
     callback.registerCallback(ctx, global, "__home_tool_spawn_sync", spawnSyncNative);
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:tool-host-install", 1) catch return;
     result.deinit(allocator);

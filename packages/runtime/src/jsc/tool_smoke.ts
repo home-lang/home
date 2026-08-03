@@ -5,6 +5,7 @@ declare const Home: {
   readFileHex(path: string): string;
   writeFileHex(path: string, contents: string): void;
   fileExists(path: string): boolean;
+  cpuCount(): number;
   spawnSync(
     argv: string[],
     options?: {
@@ -55,6 +56,9 @@ const binaryMarker = "/tmp/home-tool-smoke.bin";
 Home.writeFileHex(binaryMarker, "00017fff80fe");
 if (Home.readFileHex(binaryMarker) !== "00017fff80fe") {
   throw new Error("Home binary filesystem host functions do not round-trip");
+}
+if (!Number.isInteger(Home.cpuCount()) || Home.cpuCount() < 1) {
+  throw new Error("Home.cpuCount did not report a positive integer");
 }
 
 const child = Home.spawnSync(["printf", "home-tool"]);
