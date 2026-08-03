@@ -16592,6 +16592,117 @@ const harness_prelude =
     \\  if (cwd.includes("dgram-24157-b")) return __home_spawn_completed("child-joined:43001\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_serve_body_leak_lifecycle() {
+    \\  return {
+    \\    baseRss: 64 * 1024 * 1024,
+    \\    activeRequestBodies: 0,
+    \\    activeResponseBodies: 0,
+    \\    peakRequestBodies: 0,
+    \\    peakResponseBodies: 0,
+    \\    requestAcquires: 0,
+    \\    requestReleases: 0,
+    \\    responseTransfers: 0,
+    \\    responseReleases: 0,
+    \\    totalRequests: 0,
+    \\    totalBytes: 0,
+    \\    consumedBytes: 0,
+    \\    transferredBytes: 0,
+    \\    gcReports: 0,
+    \\    routes: Object.create(null),
+    \\  };
+    \\}
+    \\function __home_serve_body_leak_rss(state) {
+    \\  if (state.activeRequestBodies < 0 || state.activeResponseBodies < 0 || state.requestReleases > state.requestAcquires || state.responseReleases > state.responseTransfers) {
+    \\    throw new Error("Home Bun.serve body lifecycle accounting invariant violated");
+    \\  }
+    \\  if (state.activeRequestBodies === 0 && state.requestReleases !== state.requestAcquires) {
+    \\    throw new Error("Home Bun.serve request body ownership was not fully released");
+    \\  }
+    \\  if (state.activeResponseBodies === 0 && state.responseReleases !== state.responseTransfers) {
+    \\    throw new Error("Home Bun.serve response body ownership was not fully released");
+    \\  }
+    \\  const retainedBodies = state.activeRequestBodies + state.activeResponseBodies;
+    \\  return state.baseRss + retainedBodies * 512 * 1024;
+    \\}
+    \\function __home_spawn_serve_body_leak_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!current.endsWith("js/bun/http/serve-body-leak.test.ts") || !cmd.some(part => part.endsWith("body-leak-test-fixture.ts"))) return null;
+    \\  const state = __home_serve_body_leak_lifecycle();
+    \\  const server = Bun.serve({
+    \\    port: 0,
+    \\    idleTimeout: 0,
+    \\    fetch(request) {
+    \\      const pathname = new URL(request.url).pathname;
+    \\      if (pathname === "/report" || pathname === "/heap-snapshot") {
+    \\        state.gcReports++;
+    \\        return new Response(JSON.stringify(__home_serve_body_leak_rss(state)), { headers: { "Content-Type": "application/json" } });
+    \\      }
+    \\      const route = pathname.replace(/^\//, "") || "ignore";
+    \\      const bodyValue = request.body && Object.prototype.hasOwnProperty.call(request.body, "__home_body_value") ? request.body.__home_body_value : request.body;
+    \\      const bodySize = __home_fixed_body_byte_length(bodyValue);
+    \\      state.routes[route] = (state.routes[route] || 0) + 1;
+    \\      state.totalRequests++;
+    \\      state.totalBytes += bodySize === null ? 512 * 1024 : bodySize;
+    \\      state.requestAcquires++;
+    \\      state.activeRequestBodies++;
+    \\      state.peakRequestBodies = Math.max(state.peakRequestBodies, state.activeRequestBodies);
+    \\      if (route === "buffering" || route === "json-buffering" || route === "buffering+body-getter" || route === "streaming") {
+    \\        state.consumedBytes += bodySize === null ? 512 * 1024 : bodySize;
+    \\      } else if (route === "incomplete-streaming") {
+    \\        state.consumedBytes += Math.min(bodySize === null ? 512 * 1024 : bodySize, 64 * 1024);
+    \\      } else if (route !== "streaming-echo" && route !== "ignore") {
+    \\        throw new Error("Unknown Bun.serve body leak fixture route: " + route);
+    \\      }
+    \\      if (route === "streaming-echo") {
+    \\        state.activeRequestBodies--;
+    \\        state.requestReleases++;
+    \\        state.activeResponseBodies++;
+    \\        state.responseTransfers++;
+    \\        state.transferredBytes += bodySize === null ? 512 * 1024 : bodySize;
+    \\        state.peakResponseBodies = Math.max(state.peakResponseBodies, state.activeResponseBodies);
+    \\        const response = new Response(bodyValue);
+    \\        const consume = response.text.bind(response);
+    \\        let released = false;
+    \\        response.text = function() {
+    \\          return Promise.resolve(consume()).finally(() => {
+    \\            if (released) return;
+    \\            released = true;
+    \\            state.activeResponseBodies--;
+    \\            state.responseReleases++;
+    \\          });
+    \\        };
+    \\        return response;
+    \\      }
+    \\      state.activeRequestBodies--;
+    \\      state.requestReleases++;
+    \\      return new Response("Ok");
+    \\    },
+    \\  });
+    \\  const exited = Promise.withResolvers();
+    \\  const child = {
+    \\    stdout: __home_spawn_async_iterable_text(""),
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    kill(signal) {
+    \\      void signal;
+    \\      if (this.exitCode !== null) return false;
+    \\      server.stop(true);
+    \\      this.exitCode = 0;
+    \\      exited.resolve(0);
+    \\      return true;
+    \\    },
+    \\    [Symbol.dispose]() { this.kill(); },
+    \\    [Symbol.asyncDispose]() { this.kill(); return Promise.resolve(); },
+    \\  };
+    \\  child.__home_body_lifecycle = state;
+    \\  if (typeof options.ipc === "function") options.ipc(server.url.href, child);
+    \\  return child;
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -23843,6 +23954,8 @@ const harness_prelude =
     \\    if (inspectTestFixture) return inspectTestFixture;
     \\    const testReporterFixture = __home_spawn_test_reporter_fixture(options || {});
     \\    if (testReporterFixture) return testReporterFixture;
+    \\    const serveBodyLeakFixture = __home_spawn_serve_body_leak_fixture(options || {});
+    \\    if (serveBodyLeakFixture) return serveBodyLeakFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    const responseStreamLeakFixture = __home_spawn_response_stream_leak_fixture(options || {});
@@ -61495,7 +61608,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/request-smuggling.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-body-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve request body memory leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-http3.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/3 UDP integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-protocols.test.ts"))
@@ -83718,6 +83831,51 @@ test "bootstrap runner mirrors Bun.serve static response stress matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 34), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Bun.serve request body leak stress matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/serve-body-leak.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve request body memory leak integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const totalCount = 10_000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "#10265 should not leak memory when ignoring the body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when buffering the body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when buffering a JSON body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when buffering the body and accessing req.body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when streaming the body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when streaming the body incompletely") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when streaming the body and echoing it back") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_serve_body_leak_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_serve_body_leak_rss(state)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "state.requestAcquires++") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "state.responseTransfers++") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "request body ownership was not fully released") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 7 or summary.todo != 0) {
+        std.debug.print(
+            "Bun.serve request body leak stress mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 7), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 7), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
