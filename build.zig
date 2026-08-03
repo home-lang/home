@@ -198,6 +198,18 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     }
 }
 
+fn linkZigJs(b: *std.Build, m: *std.Build.Module, root: []const u8) void {
+    const archive = b.pathJoin(&.{ root, "zig-out", "lib", "libzig-js.a" });
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.cwd().access(io, archive, .{}) catch {
+        std.debug.panic(
+            "zig-js engine selected but {s} is missing; run `zig build` in {s} or pass -Dzig-js-root=/path/to/zig-js",
+            .{ archive, root },
+        );
+    };
+    m.addObjectFile(.{ .cwd_relative = archive });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -256,10 +268,36 @@ pub fn build(b: *std.Build) void {
     const enable_sanitize_undefined = b.option(bool, "sanitize-undefined", "Enable UndefinedBehaviorSanitizer") orelse false;
     const enable_sanitize_thread = b.option(bool, "sanitize-thread", "Enable ThreadSanitizer for data race detection") orelse false;
 
-    // Link JavaScriptCore-backed runtime and bootstrap tests whenever the
-    // target platform has a native framework we can faithfully exercise.
-    // Keep the option override for constrained hosts and cross targets.
-    const enable_jsc = b.option(bool, "enable_jsc", "Link JavaScriptCore into home_rt/home_test tests (default true on macOS)") orelse (target.result.os.tag == .macos);
+    // The production Bun-compatible runtime keeps its existing JSC switch.
+    // Repository tooling uses the separate public-C runner selected below so a
+    // zig-js build never drags in Home's private/generated WebKit surface.
+    const legacy_enable_jsc = b.option(bool, "enable_jsc", "Enable a native JavaScript engine (legacy compatibility option)") orelse (target.result.os.tag == .macos);
+    const configured_zig_js_root = b.option([]const u8, "zig-js-root", "Path to the zig-js checkout (defaults to HOME_ZIG_JS_ROOT or $HOME/Code/Libraries/zig-js)") orelse
+        b.graph.environ_map.get("HOME_ZIG_JS_ROOT") orelse blk: {
+        const home_dir = b.graph.environ_map.get("HOME") orelse break :blk "";
+        break :blk b.pathJoin(&.{ home_dir, "Code", "Libraries", "zig-js" });
+    };
+    const default_zig_js_archive = if (configured_zig_js_root.len == 0)
+        ""
+    else
+        b.pathJoin(&.{ configured_zig_js_root, "zig-out", "lib", "libzig-js.a" });
+    const engine_io = std.Io.Threaded.global_single_threaded.io();
+    const have_zig_js = default_zig_js_archive.len != 0 and
+        blk: {
+            std.Io.Dir.cwd().access(engine_io, default_zig_js_archive, .{}) catch break :blk false;
+            break :blk true;
+        };
+    const tool_js_engine = b.option([]const u8, "tool-js-engine", "Repository-tool JavaScript engine: zig-js or jsc") orelse
+        if (have_zig_js) "zig-js" else "jsc";
+    const tool_use_zig_js = std.mem.eql(u8, tool_js_engine, "zig-js");
+    const tool_use_jsc = std.mem.eql(u8, tool_js_engine, "jsc");
+    if (!tool_use_zig_js and !tool_use_jsc) {
+        std.debug.panic("unknown tool-js-engine '{s}'; expected zig-js or jsc", .{tool_js_engine});
+    }
+    if (tool_use_zig_js and configured_zig_js_root.len == 0) {
+        std.debug.panic("zig-js engine selected but no checkout root is configured; pass -Dzig-js-root=/path/to/zig-js", .{});
+    }
+    const enable_jsc = legacy_enable_jsc;
 
     // Faithful macro support. Defaults to the upstream-faithful `true`.
     // Setting `-Denable_macros=false` gates `FeatureFlags.is_macro_enabled`
@@ -438,6 +476,47 @@ pub fn build(b: *std.Build) void {
     ts_driver_pkg.addImport("ts_emit", ts_emit_pkg);
     ts_driver_pkg.addImport("tsconfig", tsconfig_pkg);
     ts_driver_pkg.addImport("ts_checker", ts_checker_pkg);
+
+    // Narrow JS/TS repository-tool runtime. It deliberately imports only
+    // Home's public-C engine leaves, never the Bun/WebCore runtime aggregator.
+    const tool_build_options = b.addOptions();
+    tool_build_options.addOption(bool, "enable_jsc", true);
+    tool_build_options.addOption(bool, "use_zig_js", tool_use_zig_js);
+    tool_build_options.addOption([]const u8, "js_engine", tool_js_engine);
+    const tool_build_options_module = tool_build_options.createModule();
+    const tool_compat_pkg = createPackage(b, "packages/runtime/src/jsc/tool_compat.zig", target, optimize, zig_test_framework);
+    const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
+    tool_runtime_pkg.addImport("bun", tool_compat_pkg);
+    tool_runtime_pkg.addImport("build_options", tool_build_options_module);
+    tool_runtime_pkg.link_libc = true;
+    if (tool_use_zig_js) {
+        linkZigJs(b, tool_runtime_pkg, configured_zig_js_root);
+    } else if (target.result.os.tag == .macos) {
+        tool_runtime_pkg.linkFramework("JavaScriptCore", .{});
+    } else {
+        std.debug.panic("the jsc tool backend currently requires macOS", .{});
+    }
+
+    const home_tool_exe = b.addExecutable(.{
+        .name = "home-tool",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/runtime/src/jsc/tool_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    home_tool_exe.root_module.addImport("tool_runtime", tool_runtime_pkg);
+    home_tool_exe.root_module.addImport("ts_driver", ts_driver_pkg);
+    home_tool_exe.root_module.addImport("build_options", tool_build_options_module);
+    b.installArtifact(home_tool_exe);
+    const home_tool_step = b.step("home-tool", "Build Home's native JS/TS repository-tool runner");
+    home_tool_step.dependOn(&b.addInstallArtifact(home_tool_exe, .{}).step);
+    const run_home_tool_smoke = b.addRunArtifact(home_tool_exe);
+    run_home_tool_smoke.setCwd(b.path(""));
+    run_home_tool_smoke.addArgs(&.{ "run", "packages/runtime/src/jsc/tool_smoke.ts" });
+    const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
+    home_tool_smoke_step.dependOn(&run_home_tool_smoke.step);
 
     // TS-parity Phase 1.E follow-up — module resolver.
     const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
@@ -782,6 +861,8 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_sanitize_undefined", enable_sanitize_undefined);
     build_options.addOption(bool, "enable_sanitize_thread", enable_sanitize_thread);
     build_options.addOption(bool, "enable_jsc", enable_jsc);
+    build_options.addOption(bool, "use_zig_js", false);
+    build_options.addOption([]const u8, "js_engine", if (enable_jsc) "jsc" else "none");
     build_options.addOption(bool, "enable_macros", enable_macros);
     build_options.addOption(bool, "override_no_export_cpp_apis", false);
     build_options.addOption(bool, "zig_self_hosted_backend", false);
