@@ -211,6 +211,23 @@ fn spawnSyncNative(
             return extern_fns.JSValueMakeNull(c);
         argv[initialized] = valueToOwnedUtf8(c, value, allocator) orelse return extern_fns.JSValueMakeNull(c);
     }
+    var cwd: ?[]u8 = null;
+    defer if (cwd) |path| allocator.free(path);
+    if (argument_count > 1 and arguments[1] != null and
+        !extern_fns.JSValueIsNull(c, arguments[1]) and !extern_fns.JSValueIsUndefined(c, arguments[1]))
+    {
+        cwd = valueToOwnedUtf8(c, arguments[1].?, allocator) orelse return extern_fns.JSValueMakeNull(c);
+    }
+    var timeout: std.Io.Timeout = .none;
+    if (argument_count > 2 and arguments[2] != null and extern_fns.JSValueIsNumber(c, arguments[2])) {
+        const timeout_ms = extern_fns.JSValueToNumber(c, arguments[2], null);
+        if (!std.math.isFinite(timeout_ms) or timeout_ms <= 0 or timeout_ms > @as(f64, @floatFromInt(std.math.maxInt(i32))))
+            return extern_fns.JSValueMakeNull(c);
+        timeout = .{ .duration = .{
+            .raw = .fromMilliseconds(@intFromFloat(timeout_ms)),
+            .clock = .awake,
+        } };
+    }
     if (std.mem.indexOfScalar(u8, argv[0], '/') == null) {
         const path_value = if (std.c.getenv("PATH")) |raw| std.mem.span(raw) else "";
         var paths = std.mem.splitScalar(u8, path_value, ':');
@@ -229,10 +246,49 @@ fn spawnSyncNative(
     // argv/environment arena and the two pipe readers for this synchronous run.
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    var inherited = std.process.Environ.createMap(.{ .block = .{ .slice = std.mem.span(std.c.environ) } }, allocator) catch
-        return extern_fns.JSValueMakeNull(c);
+    const inherit_environment = argument_count <= 5 or arguments[5] == null or extern_fns.JSValueToBoolean(c, arguments[5]);
+    var inherited = if (inherit_environment)
+        std.process.Environ.createMap(.{ .block = .{ .slice = std.mem.span(std.c.environ) } }, allocator) catch
+            return extern_fns.JSValueMakeNull(c)
+    else
+        std.process.Environ.Map.init(allocator);
     defer inherited.deinit();
-    const result = std.process.run(allocator, threaded.io(), .{ .argv = argv, .environ_map = &inherited }) catch |err| {
+    if (argument_count > 4 and arguments[3] != null and arguments[4] != null and
+        extern_fns.JSValueIsArray(c, arguments[3]) and extern_fns.JSValueIsArray(c, arguments[4]))
+    {
+        const keys = extern_fns.JSValueToObject(c, arguments[3], null) orelse return extern_fns.JSValueMakeNull(c);
+        const values = extern_fns.JSValueToObject(c, arguments[4], null) orelse return extern_fns.JSValueMakeNull(c);
+        const env_length_name = extern_fns.JSStringCreateWithUTF8CString("length") orelse return extern_fns.JSValueMakeNull(c);
+        defer extern_fns.JSStringRelease(env_length_name);
+        const env_length_value = extern_fns.JSObjectGetProperty(c, keys, env_length_name, null) orelse return extern_fns.JSValueMakeNull(c);
+        const env_length_number = extern_fns.JSValueToNumber(c, env_length_value, null);
+        if (!std.math.isFinite(env_length_number) or env_length_number < 0 or env_length_number > 4096)
+            return extern_fns.JSValueMakeNull(c);
+        const env_length: usize = @intFromFloat(env_length_number);
+        for (0..env_length) |index| {
+            const key_value = extern_fns.JSObjectGetPropertyAtIndex(c, keys, @intCast(index), null) orelse return extern_fns.JSValueMakeNull(c);
+            const env_value = extern_fns.JSObjectGetPropertyAtIndex(c, values, @intCast(index), null) orelse return extern_fns.JSValueMakeNull(c);
+            const key = valueToOwnedUtf8(c, key_value, allocator) orelse return extern_fns.JSValueMakeNull(c);
+            defer allocator.free(key);
+            const value = valueToOwnedUtf8(c, env_value, allocator) orelse return extern_fns.JSValueMakeNull(c);
+            defer allocator.free(value);
+            inherited.put(key, value) catch return extern_fns.JSValueMakeNull(c);
+        }
+    }
+    const result = std.process.run(allocator, threaded.io(), .{
+        .argv = argv,
+        .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+        .environ_map = &inherited,
+        .timeout = timeout,
+    }) catch |err| {
+        if (err == error.Timeout) {
+            const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+            setProperty(c, object, "exitCode", extern_fns.JSValueMakeNull(c));
+            setProperty(c, object, "stdout", stringValue(c, ""));
+            setProperty(c, object, "stderr", stringValue(c, ""));
+            setProperty(c, object, "timedOut", extern_fns.JSValueMakeBoolean(c, true));
+            return @ptrCast(object);
+        }
         std.debug.print("home-tool: cannot spawn {s}: {t}\n", .{ argv[0], err });
         return extern_fns.JSValueMakeNull(c);
     };
@@ -246,6 +302,7 @@ fn spawnSyncNative(
     setProperty(c, object, "exitCode", if (exit_code) |code| extern_fns.JSValueMakeNumber(c, @floatFromInt(code)) else extern_fns.JSValueMakeNull(c));
     setProperty(c, object, "stdout", stringValue(c, result.stdout));
     setProperty(c, object, "stderr", stringValue(c, result.stderr));
+    setProperty(c, object, "timedOut", extern_fns.JSValueMakeBoolean(c, false));
     return @ptrCast(object);
 }
 
@@ -263,7 +320,15 @@ const install_glue =
     \\    readFileHex: function(path) { var out = readHex(String(path)); if (out === null) throw new Error("cannot read " + path); return out; },
     \\    writeFileHex: function(path, hex) { if (!writeHex(String(path), String(hex))) throw new Error("cannot write " + path); },
     \\    fileExists: function(path) { return exists(String(path)); },
-    \\    spawnSync: function(argv) { var out = spawn(argv); if (out === null) throw new Error("cannot spawn process"); return out; },
+    \\    spawnSync: function(argv, options) {
+    \\      options = options || {};
+    \\      var env = options.env || {};
+    \\      var keys = Object.keys(env);
+    \\      var values = keys.map(function(key) { return String(env[key]); });
+    \\      var out = spawn(argv, options.cwd == null ? null : String(options.cwd), options.timeoutMs == null ? null : Number(options.timeoutMs), keys, values, options.inheritEnv !== false);
+    \\      if (out === null) throw new Error("cannot spawn process");
+    \\      return out;
+    \\    },
     \\    engine: "
 ++ build_options.js_engine ++
     \\"
