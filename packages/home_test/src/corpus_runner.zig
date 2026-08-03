@@ -28713,6 +28713,9 @@ const harness_prelude =
     \\it.skip = it.todo;
     \\it.concurrent = __home_test_concurrent;
     \\it.serial = __home_test_serial;
+    \\it.concurrentIf = function(condition) {
+    \\  return condition ? it.concurrent : it.skip;
+    \\};
     \\it.skipIf = function(condition) {
     \\  return condition ? it.skip : it;
     \\};
@@ -28744,6 +28747,9 @@ const harness_prelude =
     \\};
     \\test.concurrent = __home_test_concurrent;
     \\test.serial = __home_test_serial;
+    \\test.concurrentIf = function(condition) {
+    \\  return condition ? test.concurrent : test.skip;
+    \\};
     \\const xit = it.skip;
     \\const xtest = test.skip;
     \\function __home_each_for(runner) {
@@ -43143,12 +43149,7 @@ const harness_prelude =
     \\    return __home_bun_connect_listener(listener, opts, hostname, port);
     \\  }
     \\  let pending = [];
-    \\  let headerText = "";
-    \\  let headerParsed = false;
-    \\  let expectedBodyLength = 0;
-    \\  let method = "GET";
-    \\  let path = "/";
-    \\  let headers = new Headers();
+    \\  let responsePending = false;
     \\  const hooks = opts.socket || {};
     \\  const origin = "http://" + hostname + ":" + String(port);
     \\  const serveHandle = globalThis.__home_serve_handles_by_origin[origin] || globalThis.__home_serve_handles_by_origin["http://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://" + hostname + ":" + String(port)] || globalThis.__home_serve_handles_by_origin["https://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://127.0.0.1:" + String(port)] || (hasUnix ? globalThis.__home_serve_handles_by_unix[unix] : null);
@@ -43157,44 +43158,110 @@ const harness_prelude =
     \\  socket.__home_tls = !!opts.tls;
     \\  socket.__home_peer_certificate_hostname = String(opts.tls && typeof opts.tls === "object" && opts.tls.serverName || hostname || "localhost");
     \\  socket.__home_local_certificate_hostname = "localhost";
-    \\  socket.write = function(chunk) {
-    \\    if (socket.__home_closed) return 0;
-    \\    const bytes = Array.from(__home_net_bytes(chunk));
-    \\    socket.bytesWritten += bytes.length;
-    \\    for (let i = 0; i < bytes.length; i++) pending.push(bytes[i] & 0xff);
-    \\    if (!headerParsed) {
-    \\      headerText = __home_net_latin1(new Uint8Array(pending));
-    \\      const headerEnd = headerText.indexOf("\r\n\r\n");
-    \\      if (headerEnd === -1) return bytes.length;
-    \\      const lines = headerText.slice(0, headerEnd).split("\r\n");
-    \\      const requestLine = String(lines.shift() || "GET / HTTP/1.1").split(" ");
-    \\      method = requestLine[0] || "GET";
-    \\      path = requestLine[1] || "/";
-    \\      headers = new Headers();
-    \\      for (const line of lines) {
-    \\        const colon = line.indexOf(":");
-    \\        if (colon !== -1) headers.set(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
+    \\  function parseChunkedBody(bytes) {
+    \\    const body = [];
+    \\    let offset = 0;
+    \\    while (true) {
+    \\      let lineEnd = -1;
+    \\      for (let i = offset; i + 1 < bytes.length; i++) {
+    \\        if (bytes[i] === 13 && bytes[i + 1] === 10) { lineEnd = i; break; }
     \\      }
-    \\      expectedBodyLength = Number(headers.get("content-length") || 0) || 0;
-    \\      pending = pending.slice(headerEnd + 4);
-    \\      headerParsed = true;
+    \\      if (lineEnd === -1) return null;
+    \\      const line = __home_net_latin1(new Uint8Array(bytes.slice(offset, lineEnd)));
+    \\      const sizeText = line.split(";", 1)[0];
+    \\      if (!/^[0-9a-f]+$/i.test(sizeText)) return { error: true };
+    \\      const size = Number.parseInt(sizeText, 16);
+    \\      if (!Number.isSafeInteger(size) || size < 0) return { error: true };
+    \\      offset = lineEnd + 2;
+    \\      if (size === 0) {
+    \\        if (offset + 2 > bytes.length) return null;
+    \\        if (bytes[offset] !== 13 || bytes[offset + 1] !== 10) return { error: true };
+    \\        return { body, consumed: offset + 2 };
+    \\      }
+    \\      if (offset + size + 2 > bytes.length) return null;
+    \\      for (let i = 0; i < size; i++) body.push(bytes[offset + i]);
+    \\      offset += size;
+    \\      if (bytes[offset] !== 13 || bytes[offset + 1] !== 10) return { error: true };
+    \\      offset += 2;
     \\    }
-    \\    if (serveHandle && headerParsed && pending.length >= expectedBodyLength) {
-    \\      const bodyBytes = pending.slice(0, expectedBodyLength);
-    \\      pending = pending.slice(expectedBodyLength);
-    \\      const request = new Request(origin + path, { method, headers, body: expectedBodyLength ? new Uint8Array(bodyBytes) : undefined });
-    \\      Promise.resolve(serveHandle.fetch(request)).then(response => Promise.resolve(response && typeof response.text === "function" ? response.text() : "").then(body => {
-    \\        const target = socket.__home_response_target || socket;
-    \\        if (target !== socket) __home_bun_socket_call(socket, "data", Buffer.alloc(2048));
-    \\        __home_bun_socket_call(target, "data", __home_bun_socket_payload(__home_net_bytes(__home_http_raw_response_text(response, body)), target.__home_hooks));
+    \\  }
+    \\  function rejectMalformedRequest() {
+    \\    pending = [];
+    \\    responsePending = true;
+    \\    __home_bun_socket_call(socket, "data", __home_bun_socket_payload(__home_net_bytes("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), socket.__home_hooks));
+    \\    __home_bun_socket_close_pair(socket, null);
+    \\  }
+    \\  function processNextRequest() {
+    \\    if (responsePending || socket.__home_closed || !serveHandle) return;
+    \\    const requestText = __home_net_latin1(new Uint8Array(pending));
+    \\    const headerEnd = requestText.indexOf("\r\n\r\n");
+    \\    if (headerEnd === -1) return;
+    \\    const head = requestText.slice(0, headerEnd);
+    \\    if (__home_http_raw_request_status(head + "\r\n\r\n") !== 200) {
+    \\      rejectMalformedRequest();
+    \\      return;
+    \\    }
+    \\    const lines = head.split("\r\n");
+    \\    const requestLine = String(lines.shift() || "GET / HTTP/1.1").split(" ");
+    \\    const method = requestLine[0] || "GET";
+    \\    const path = requestLine[1] || "/";
+    \\    const version = requestLine[2] || "HTTP/1.1";
+    \\    const headers = new Headers();
+    \\    for (const line of lines) {
+    \\      const colon = line.indexOf(":");
+    \\      if (colon !== -1) headers.append(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
+    \\    }
+    \\    const bodyOffset = headerEnd + 4;
+    \\    let bodyBytes = [];
+    \\    let consumed = bodyOffset;
+    \\    if (/\bchunked\b/i.test(String(headers.get("transfer-encoding") || ""))) {
+    \\      const chunked = parseChunkedBody(pending.slice(bodyOffset));
+    \\      if (chunked === null) return;
+    \\      if (chunked.error) {
+    \\        rejectMalformedRequest();
+    \\        return;
+    \\      }
+    \\      bodyBytes = chunked.body;
+    \\      consumed += chunked.consumed;
+    \\    } else {
+    \\      const lengthText = headers.get("content-length");
+    \\      const bodyLength = lengthText === null ? 0 : Number(lengthText);
+    \\      if (!Number.isSafeInteger(bodyLength) || bodyLength < 0 || bodyOffset + bodyLength > pending.length) {
+    \\        if (Number.isSafeInteger(bodyLength) && bodyLength >= 0) return;
+    \\        rejectMalformedRequest();
+    \\        return;
+    \\      }
+    \\      bodyBytes = pending.slice(bodyOffset, bodyOffset + bodyLength);
+    \\      consumed += bodyLength;
+    \\    }
+    \\    pending = pending.slice(consumed);
+    \\    responsePending = true;
+    \\    const closeAfterResponse = version !== "HTTP/1.1" || String(headers.get("connection") || "").toLowerCase() === "close";
+    \\    const request = new Request(origin + path, { method, headers, body: bodyBytes.length ? new Uint8Array(bodyBytes) : undefined });
+    \\    Promise.resolve(serveHandle.fetch(request)).then(response => Promise.resolve(response && typeof response.text === "function" ? response.text() : "").then(body => {
+    \\      const target = socket.__home_response_target || socket;
+    \\      if (target !== socket) __home_bun_socket_call(socket, "data", Buffer.alloc(2048));
+    \\      __home_bun_socket_call(target, "data", __home_bun_socket_payload(__home_net_bytes(__home_http_raw_response_text(response, body)), target.__home_hooks));
+    \\      responsePending = false;
+    \\      if (closeAfterResponse || target.__home_closed || socket.__home_closed) {
     \\        __home_bun_socket_close_pair(target, null);
     \\        if (target !== socket) __home_bun_socket_close_pair(socket, null);
-    \\      }), error => {
-    \\        const target = socket.__home_response_target || socket;
-    \\        __home_bun_socket_close_pair(target, error);
-    \\        if (target !== socket) __home_bun_socket_close_pair(socket, error);
-    \\      });
-    \\    }
+    \\      } else {
+    \\        processNextRequest();
+    \\      }
+    \\    }), error => {
+    \\      const target = socket.__home_response_target || socket;
+    \\      __home_bun_socket_close_pair(target, error);
+    \\      if (target !== socket) __home_bun_socket_close_pair(socket, error);
+    \\    });
+    \\  }
+    \\  socket.write = function(chunk) {
+    \\    if (socket.__home_closed) return 0;
+    \\    let bytes = Array.from(__home_net_bytes(chunk));
+    \\    if (socket.__home_send_buffer_size) bytes = bytes.slice(0, Math.max(1, socket.__home_send_buffer_size));
+    \\    socket.bytesWritten += bytes.length;
+    \\    for (let i = 0; i < bytes.length; i++) pending.push(bytes[i] & 0xff);
+    \\    processNextRequest();
     \\    return bytes.length;
     \\  };
     \\  socket.end = function(chunk) { if (chunk !== undefined) socket.write(chunk); __home_bun_socket_close_pair(socket, null); return socket; };
@@ -45773,6 +45840,13 @@ const harness_prelude =
     \\    globalThis.__home_virtual_fds[readFd].peerFd = writeFd;
     \\    globalThis.__home_virtual_fds[writeFd].peerFd = readFd;
     \\    return [readFd, writeFd];
+    \\  },
+    \\  setSocketOptions(socket, option, value) {
+    \\    if (!socket || typeof socket !== "object") throw new TypeError("Expected a socket");
+    \\    const size = Math.max(1, Number(value) || 1);
+    \\    if (Number(option) === 1) socket.__home_send_buffer_size = size;
+    \\    else if (Number(option) === 2) socket.__home_receive_buffer_size = size;
+    \\    else throw new TypeError("Unsupported socket option");
     \\  },
     \\  decodeURIComponentSIMD: __home_decode_uri_component_simd,
     \\  lowercaseHeaderNameSIMD: __home_lowercase_header_name_simd,
@@ -61196,7 +61270,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/hspec.test.ts"))
         try rewriteHspecCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "HTTP server chunked transfer TCP integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.js"))
         try rewriteNativeTodoCorpus(allocator, "fetch proxy server integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.ts"))
@@ -83429,6 +83503,43 @@ test "bootstrap runner mirrors Bun.serve static response stress matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 34), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors HTTP chunked transfer TCP matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/http-server-chunking.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "HTTP server chunked transfer TCP integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "handles fragmented chunk terminators") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "handles requests with tiny send buffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.concurrentIf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "setSocketOptions(socket, option, value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function parseChunkedBody(bytes)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 11 or summary.todo != 0) {
+        std.debug.print(
+            "HTTP chunked transfer mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 11), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 11), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
