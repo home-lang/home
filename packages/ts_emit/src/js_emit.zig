@@ -2314,9 +2314,13 @@ pub const Printer = struct {
             try self.write("constructor");
         } else if (f.flags.is_method) {
             if (f.flags.is_static) try self.write("static ");
-            // `async` (unless downleveled) — accessors are never async.
-            if (f.flags.is_async and !f.flags.is_getter and !f.flags.is_setter and
-                !downlevel_async and !downlevel_async_gen) try self.write("async ");
+            // `async` (unless downleveled) — accessors are never async. Match
+            // Bun's js_printer: the generator `*` binds to the `async` keyword
+            // (`async* name`), so emit `async` here without its trailing space
+            // and add the space after the star below.
+            const native_async = f.flags.is_async and !f.flags.is_getter and !f.flags.is_setter and
+                !downlevel_async and !downlevel_async_gen;
+            if (native_async) try self.write("async");
             // Accessor keyword — `get x()` / `set x(v)`.
             if (f.flags.is_getter) {
                 try self.write("get ");
@@ -2324,6 +2328,7 @@ pub const Printer = struct {
                 try self.write("set ");
             }
             if (f.flags.is_generator and !downlevel_generator and !downlevel_async_gen) try self.write("*");
+            if (native_async) try self.write(" ");
             if (f.name != hir_mod.none_node_id) {
                 // A method name can be a string key (`class C { "a-b"() {} }`),
                 // which the parser stores as an identifier holding the raw text;
@@ -10265,8 +10270,15 @@ pub const Printer = struct {
             try self.write("set ");
             return;
         }
-        if (f.flags.is_async and self.options.es_target.supportsNativeAsync()) try self.write("async ");
+        // Match Bun's js_printer ordering: the generator `*` binds to the
+        // `async` keyword (`async* gen`), not to the name (`async *gen`). So
+        // emit `async`, then the star (no space), then the trailing space.
+        // Plain generators keep `*name` (no space); the star still precedes
+        // the name, which the caller emits next.
+        const native_async = f.flags.is_async and self.options.es_target.supportsNativeAsync();
+        if (native_async) try self.write("async");
         if (f.flags.is_generator) try self.write("*");
+        if (native_async) try self.write(" ");
     }
 
     fn printObjectMethodBody(self: *Printer, fn_node: NodeId) anyerror!void {
@@ -16316,4 +16328,35 @@ test "emit: object method shorthand lowers to property:function at es5" {
     // Shorthand form must NOT survive at ES5 — the property name
     // is followed by `:`, not directly by `(`.
     try T.expect(std.mem.indexOf(u8, out, "foo(") == null);
+}
+
+
+
+
+
+
+
+
+
+test "emit: async generator method binds star to async keyword (async* name)" {
+    // Bun's js_printer binds the generator `*` to the `async` keyword for
+    // methods: `async* name`, not `async *name`. Plain generators keep
+    // `*name` (star bound to the name, no leading space). Covers object
+    // shorthand and class methods (incl. static).
+    {
+        const out = try emit("const o = { *gen() {}, async *agen() {} };");
+        defer T.allocator.free(out);
+        try T.expect(std.mem.indexOf(u8, out, "*gen() {}") != null);
+        try T.expect(std.mem.indexOf(u8, out, "async* agen() {}") != null);
+        try T.expect(std.mem.indexOf(u8, out, "async *") == null);
+    }
+    {
+        const out = try emit("class C { *gen() {} async *agen() {} static *sgen() {} static async *sagen() {} }");
+        defer T.allocator.free(out);
+        try T.expect(std.mem.indexOf(u8, out, "*gen() {}") != null);
+        try T.expect(std.mem.indexOf(u8, out, "async* agen() {}") != null);
+        try T.expect(std.mem.indexOf(u8, out, "static *sgen() {}") != null);
+        try T.expect(std.mem.indexOf(u8, out, "static async* sagen() {}") != null);
+        try T.expect(std.mem.indexOf(u8, out, "async *") == null);
+    }
 }
