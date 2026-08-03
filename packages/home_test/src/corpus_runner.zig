@@ -16703,6 +16703,88 @@ const harness_prelude =
     \\  if (typeof options.ipc === "function") options.ipc(server.url.href, child);
     \\  return child;
     \\}
+    \\function __home_spawn_serve_protocols_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!current.endsWith("js/bun/http/serve-protocols.test.ts") || !cmd.some(part => part.endsWith("server.mjs"))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const source = __home_build_read_text(__home_build_join(cwd, "server.mjs")) || "";
+    \\  const isHttp3 = /[\"']http3[\"']\s*:\s*true/.test(source);
+    \\  const transport = isHttp3 ? "http3" : "http/1.1";
+    \\  const state = { transport, requests: 0, active: 0, peakActive: 0, requestBytes: 0, responseBytes: 0, routes: Object.create(null) };
+    \\  const server = Bun.serve({
+    \\    port: 0,
+    \\    hostname: "127.0.0.1",
+    \\    tls: isHttp3 ? {} : undefined,
+    \\    http3: isHttp3,
+    \\    async fetch(request) {
+    \\      const url = new URL(request.url);
+    \\      const route = url.pathname;
+    \\      state.requests++;
+    \\      state.active++;
+    \\      state.peakActive = Math.max(state.peakActive, state.active);
+    \\      state.routes[route] = (state.routes[route] || 0) + 1;
+    \\      try {
+    \\        if (route === "/hello") {
+    \\          state.responseBytes += 11;
+    \\          return new Response("hello world", { headers: { "content-type": "text/plain" } });
+    \\        }
+    \\        if (route === "/echo") {
+    \\          const body = await request.arrayBuffer();
+    \\          state.requestBytes += body.byteLength;
+    \\          state.responseBytes += body.byteLength;
+    \\          return new Response(body, { status: 200, headers: { "x-method": request.method, "x-echo": request.headers.get("x-echo") || "", "x-len": String(body.byteLength) } });
+    \\        }
+    \\        if (route === "/status") return new Response(null, { status: Number(url.searchParams.get("c") || "204") });
+    \\        if (route === "/headers") {
+    \\          const out = {};
+    \\          for (const [key, value] of request.headers) out[key] = value;
+    \\          return Response.json(out);
+    \\        }
+    \\        if (route === "/large") {
+    \\          const body = Buffer.alloc(512 * 1024, "abcdefghijklmnop");
+    \\          state.responseBytes += body.byteLength;
+    \\          return new Response(body);
+    \\        }
+    \\        if (route === "/stream") {
+    \\          state.responseBytes += 56;
+    \\          return new Response(new ReadableStream({ start(controller) { for (let i = 0; i < 8; i++) controller.enqueue(new TextEncoder().encode("chunk" + i + ";")); controller.close(); } }));
+    \\        }
+    \\        return new Response("not found", { status: 404 });
+    \\      } finally {
+    \\        state.active--;
+    \\        if (state.active < 0) throw new Error("Home Bun.serve protocol fixture request accounting underflow");
+    \\      }
+    \\    },
+    \\  });
+    \\  const handle = globalThis.__home_serve_handles_by_origin[String(server.url.origin)];
+    \\  if (handle) handle.__home_transport_protocol = transport;
+    \\  const exited = Promise.withResolvers();
+    \\  const stdin = __home_spawn_stdin_sink();
+    \\  const child = {
+    \\    stdin,
+    \\    stdout: __home_spawn_pipe_text(""),
+    \\    stderr: __home_spawn_pipe_text("PORT=" + String(server.port) + "\n"),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    kill(signal) {
+    \\      void signal;
+    \\      if (this.exitCode !== null) return false;
+    \\      if (state.active !== 0) throw new Error("Home Bun.serve protocol fixture stopped with active requests");
+    \\      server.stop(true);
+    \\      this.exitCode = 0;
+    \\      exited.resolve(0);
+    \\      return true;
+    \\    },
+    \\    [Symbol.dispose]() { this.kill(); },
+    \\    [Symbol.asyncDispose]() { this.kill(); return exited.promise.then(() => undefined); },
+    \\  };
+    \\  child.__home_protocol_state = state;
+    \\  return child;
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -23956,6 +24038,8 @@ const harness_prelude =
     \\    if (testReporterFixture) return testReporterFixture;
     \\    const serveBodyLeakFixture = __home_spawn_serve_body_leak_fixture(options || {});
     \\    if (serveBodyLeakFixture) return serveBodyLeakFixture;
+    \\    const serveProtocolsFixture = __home_spawn_serve_protocols_fixture(options || {});
+    \\    if (serveProtocolsFixture) return serveProtocolsFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    const responseStreamLeakFixture = __home_spawn_response_stream_leak_fixture(options || {});
@@ -49591,6 +49675,10 @@ const harness_prelude =
     \\    }
     \\  }
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  const requestedTransport = fetchOptions && fetchOptions.protocol ? String(fetchOptions.protocol).toLowerCase() : "";
+    \\  if (requestedTransport === "http3" && handle.__home_transport_protocol && handle.__home_transport_protocol !== "http3") {
+    \\    return __home_fetch_thenable(null, new Error("HTTP/3 was requested from a server without HTTP/3 transport"));
+    \\  }
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
     \\    try {
@@ -61612,7 +61700,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-http3.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/3 UDP integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-protocols.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/1.1 and HTTP/3 protocol subprocess integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-response-stream-sink-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-stream-reject-flush-leak.test.ts"))
@@ -83876,6 +83964,48 @@ test "bootstrap runner mirrors Bun.serve request body leak stress matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 7), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors protocol-agnostic Bun.serve matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/serve-protocols.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve HTTP/1.1 and HTTP/3 protocol subprocess integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "protocol: \"http/1.1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "protocol: \"http/3\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (const size of [1, 100, 10_000, 1_000_000])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "large response checksum (512 KB)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReadableStream response body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "16 concurrent GETs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_serve_protocols_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "handle.__home_transport_protocol = transport") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Home Bun.serve protocol fixture stopped with active requests") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP/3 was requested from a server without HTTP/3 transport") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 20 or summary.todo != 0) {
+        std.debug.print(
+            "Bun.serve protocol matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 20), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 20), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
