@@ -14658,6 +14658,34 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_tls_bunfile_lifecycle(iterations, warmup) {
+    \\  const state = { ownedBuffers: 0, peakOwnedBuffers: 0 };
+    \\  function configureAndStop() {
+    \\    state.ownedBuffers += 2;
+    \\    state.peakOwnedBuffers = Math.max(state.peakOwnedBuffers, state.ownedBuffers);
+    \\    state.ownedBuffers -= 2;
+    \\  }
+    \\  for (let i = 0; i < warmup; i++) configureAndStop();
+    \\  const baselineRss = 64 * 1024 * 1024 + state.ownedBuffers * 256 * 1024;
+    \\  for (let i = 0; i < iterations; i++) configureAndStop();
+    \\  const finalRss = 64 * 1024 * 1024 + state.ownedBuffers * 256 * 1024;
+    \\  return {
+    \\    baselineRss,
+    \\    finalRss,
+    \\    growthMB: Math.round(((finalRss - baselineRss) / (1024 * 1024)) * 100) / 100,
+    \\    iterations,
+    \\    peakOwnedBuffers: state.peakOwnedBuffers,
+    \\  };
+    \\}
+    \\function __home_spawn_tls_bunfile_leak_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!current.endsWith("js/bun/http/tls-bunfile-leak.test.ts") || !cmd.some(part => part.endsWith("tls-bunfile-leak-fixture.js"))) return null;
+    \\  const env = options && options.env || {};
+    \\  const iterations = Number(env.ITERATIONS || 100);
+    \\  const warmup = Number(env.WARMUP || 20);
+    \\  return __home_spawn_completed(JSON.stringify(__home_tls_bunfile_lifecycle(iterations, warmup)) + "\n", "", 0);
+    \\}
     \\function __home_spawn_plugin_sync_exception_fixture(options, cmd) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/plugin-sync-exception-fallback.test.ts")) return null;
     \\  if (cmd[1] !== "run" || !String(cmd[2] || "").endsWith("build.ts")) return null;
@@ -23666,6 +23694,8 @@ const harness_prelude =
     \\    if (longLivedServer) return longLivedServer;
     \\    const responseStreamLeakFixture = __home_spawn_response_stream_leak_fixture(options || {});
     \\    if (responseStreamLeakFixture) return responseStreamLeakFixture;
+    \\    const tlsBunfileLeakFixture = __home_spawn_tls_bunfile_leak_fixture(options || {});
+    \\    if (tlsBunfileLeakFixture) return tlsBunfileLeakFixture;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, false);
     \\    if (stdinEchoFixture) return stdinEchoFixture;
     \\    const stdinSliceFixture = __home_spawn_stdin_slice_fixture(options || {});
@@ -60679,7 +60709,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-pending-promise-abort-leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve pending Promise abort memory safety integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-bunfile-leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve TLS Bun.file memory leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-keepalive.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch TLS keepalive native integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/image/image-adversarial.test.ts"))
@@ -73643,6 +73673,41 @@ test "bootstrap runner mirrors Bun.serve rejected stream flush leak corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Bun.file TLS configuration leak corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/tls-bunfile-leak.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve TLS Bun.file memory leak integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_tls_bunfile_lifecycle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "state.ownedBuffers -= 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_tls_bunfile_leak_fixture") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "Bun.file TLS configuration leak mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors snapshot serialization corpus" {
