@@ -8663,7 +8663,7 @@ pub const Checker = struct {
                     try self.report(id_node, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
                 }
             },
-            .fn_decl => {
+            .fn_decl, .fn_expr => {
                 const f = hir_mod.fnDeclOf(self.hir, node);
                 if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier and
                     hir_mod.identifierOf(self.hir, f.name).name == await_id)
@@ -8671,7 +8671,7 @@ pub const Checker = struct {
                     try self.report(f.name, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
                 }
             },
-            .class_decl => {
+            .class_decl, .class_expr => {
                 const c = hir_mod.classOf(self.hir, node);
                 if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier and
                     hir_mod.identifierOf(self.hir, c.name).name == await_id)
@@ -10293,9 +10293,7 @@ pub const Checker = struct {
             .let_decl,
             .const_decl,
             .fn_decl,
-            .fn_expr,
             .class_decl,
-            .class_expr,
             .interface_decl,
             .type_alias_decl,
             => true,
@@ -10308,7 +10306,7 @@ pub const Checker = struct {
             const left = self.unwrapExportDecl(left_raw);
             if (left == hir_mod.none_node_id) continue;
             const left_kind = self.hir.kindOf(left);
-            if (left_kind != .type_alias_decl and left_kind != .class_decl and left_kind != .class_expr and left_kind != .interface_decl) continue;
+            if (left_kind != .type_alias_decl and left_kind != .class_decl and left_kind != .interface_decl) continue;
             const left_name = self.declarationName(left) orelse continue;
             const left_section = self.virtualSectionStartForNode(left);
             for (stmts[left_i + 1 ..]) |right_raw| {
@@ -10316,7 +10314,7 @@ pub const Checker = struct {
                 if (right == hir_mod.none_node_id) continue;
                 if (self.virtualSectionStartForNode(right) != left_section) continue;
                 const right_kind = self.hir.kindOf(right);
-                if (right_kind != .type_alias_decl and right_kind != .class_decl and right_kind != .class_expr and right_kind != .interface_decl) continue;
+                if (right_kind != .type_alias_decl and right_kind != .class_decl and right_kind != .interface_decl) continue;
                 if (left_kind != .type_alias_decl and right_kind != .type_alias_decl) continue;
                 if (left_kind == .type_alias_decl and right_kind == .type_alias_decl) continue;
                 const right_name = self.declarationName(right) orelse continue;
@@ -10467,9 +10465,9 @@ pub const Checker = struct {
                 previous_overload_section = 0;
                 continue;
             }
-            const is_fn = kind == .fn_decl or kind == .fn_expr;
+            const is_fn = kind == .fn_decl;
             const is_type_alias = kind == .type_alias_decl;
-            const is_class = kind == .class_decl or kind == .class_expr;
+            const is_class = kind == .class_decl;
             const is_var_kind = kind == .var_decl or kind == .let_decl or kind == .const_decl;
             const is_var = kind == .var_decl;
             const is_block_scoped = kind == .let_decl or kind == .const_decl;
@@ -10719,7 +10717,7 @@ pub const Checker = struct {
                 const next_node = self.unwrapExportDecl(stmts[i + 1]);
                 if (next_node == hir_mod.none_node_id) break;
                 const nk = self.hir.kindOf(next_node);
-                if (nk != .fn_decl and nk != .fn_expr) break;
+                if (nk != .fn_decl) break;
                 const next_fn = hir_mod.fnDeclOf(self.hir, next_node);
                 if (next_fn.body == hir_mod.none_node_id) break;
                 suppressed = true;
@@ -10733,9 +10731,7 @@ pub const Checker = struct {
             // TS7010 ÃÂ¢ÃÂÃÂ TS2391 would be noise on top. Mirrors
             // `parserEqualsGreaterThanAfterFunction1` / `2` and
             // `parserErrantEqualsGreaterThanAfterFunction1` / `2`.
-            if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl or
-                self.hir.kindOf(info.last_bodyless_fn) == .fn_expr)
-            {
+            if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl) {
                 const f_check = hir_mod.fnDeclOf(self.hir, info.last_bodyless_fn);
                 if (f_check.name != hir_mod.none_node_id and
                     self.hir.kindOf(f_check.name) == .identifier)
@@ -10751,9 +10747,7 @@ pub const Checker = struct {
                 if (f_check.flags.has_errant_arrow) continue;
             }
             const anchor_node = blk: {
-                if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl or
-                    self.hir.kindOf(info.last_bodyless_fn) == .fn_expr)
-                {
+                if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl) {
                     const f = hir_mod.fnDeclOf(self.hir, info.last_bodyless_fn);
                     if (f.name != hir_mod.none_node_id) break :blk f.name;
                 }
@@ -162987,6 +162981,19 @@ test "checker: class self-reference in computed member keys emits TS2449" {
     try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.class_used_before_declaration));
 }
 
+test "checker: named class and function expressions do not bind in the containing scope" {
+    const s = try newSetup(
+        \\class C {}
+        \\(class C {});
+        \\function f() {}
+        \\(function f() {});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_function_implementation));
+}
+
 test "checker: decorator after export with leading decorator reports TS8038" {
     const cases = [_][]const u8{
         \\declare var dec: any;
@@ -197287,6 +197294,21 @@ test "checker: static block await binding follows target grammar" {
     defer destroySetup(es2022);
     try es2022.checker.checkSourceFile(es2022.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(es2022, TsCodes.reserved_word_cannot_be_used_here));
+}
+
+test "checker: static block await names include class and function expressions" {
+    const s = try newSetup(
+        \\// @target: es2022
+        \\class C {
+        \\  static {
+        \\    (function await() {});
+        \\    (class await {});
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.reserved_word_cannot_be_used_here));
 }
 
 test "checker: structural Promise exposes finally" {

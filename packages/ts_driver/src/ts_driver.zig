@@ -457,6 +457,22 @@ fn reportDeprecatedOptionDirectives(
     source: []const u8,
     options: CompileOptions,
 ) CompileError!void {
+    const emit_decorator_metadata = directiveBool(source, "emitDecoratorMetadata") orelse
+        if (options.pub_tsconfig) |cfg| cfg.compiler_options.emit_decorator_metadata orelse false else false;
+    const experimental_decorators = directiveBool(source, "experimentalDecorators") orelse
+        if (options.pub_tsconfig) |cfg| cfg.compiler_options.experimental_decorators orelse false else false;
+    if (emit_decorator_metadata and !experimental_decorators) {
+        try c.diagnostics.append(gpa, .{
+            .phase = .parse,
+            .pos = 0,
+            .line = 0,
+            .code = 5052,
+            .is_global = true,
+            .message = try gpa.dupe(u8, "Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'."),
+        });
+        c.has_errors = true;
+    }
+
     const ignore_deprecations = ignoresTypeScriptSixDeprecations(source, options);
     const effective_resolve_json_module = blk: {
         if (directiveBool(source, "resolveJsonModule")) |explicit| break :blk explicit;
@@ -6323,6 +6339,37 @@ test "driver: recursive generic call with explicit type args — no bogus TS2347
     for (c.diagnostics.items) |d| {
         if (d.code == 2347) return error.UnexpectedTS2347;
     }
+}
+
+test "driver: emitDecoratorMetadata requires experimentalDecorators" {
+    var invalid = try compileSource(T.allocator,
+        \\// @emitDecoratorMetadata: true
+        \\class C {}
+    , .{ .no_emit = true });
+    defer {
+        invalid.deinit();
+        T.allocator.destroy(invalid);
+    }
+    var found_5052 = false;
+    for (invalid.diagnostics.items) |d| {
+        if (d.code == 5052 and d.is_global and
+            std.mem.eql(u8, d.message, "Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'."))
+        {
+            found_5052 = true;
+        }
+    }
+    try T.expect(found_5052);
+
+    var valid = try compileSource(T.allocator,
+        \\// @emitDecoratorMetadata: true
+        \\// @experimentalDecorators: true
+        \\class C {}
+    , .{ .no_emit = true });
+    defer {
+        valid.deinit();
+        T.allocator.destroy(valid);
+    }
+    for (valid.diagnostics.items) |d| try T.expect(d.code != 5052);
 }
 
 test "driver: @outFile directive emits TS5101 option-deprecation diagnostic" {

@@ -6280,6 +6280,12 @@ pub const Parser = struct {
         );
     }
 
+    fn parseClassExpression(self: *Parser) ParseError!NodeId {
+        const node = try self.parseClassDeclaration();
+        self.hir.markClassExpression(node);
+        return node;
+    }
+
     fn parseClassStaticBlockBody(self: *Parser) ParseError!NodeId {
         self.static_block_depth += 1;
         defer self.static_block_depth -= 1;
@@ -17876,7 +17882,7 @@ pub const Parser = struct {
                 if (self.peek().kind == .kw_class or
                     (self.peek().kind == .kw_abstract and self.abstractClassFollowsOnSameLine()))
                 {
-                    return try self.parseClassDeclaration();
+                    return try self.parseClassExpression();
                 }
                 // Mirrors typescript-go's `parseDecoratedExpression`:
                 // decorators in expression position are consumed first,
@@ -17897,9 +17903,9 @@ pub const Parser = struct {
                     0,
                 );
             },
-            .kw_class => return try self.parseClassDeclaration(),
+            .kw_class => return try self.parseClassExpression(),
             .kw_abstract => {
-                if (self.abstractClassFollowsOnSameLine()) return try self.parseClassDeclaration();
+                if (self.abstractClassFollowsOnSameLine()) return try self.parseClassExpression();
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -22968,6 +22974,23 @@ test "parser: class declaration with method and property" {
     try T.expectEqual(@as(usize, 2), members.len);
 }
 
+test "parser: named class and function expressions retain expression node kinds" {
+    var s = try newTestSetup(
+        \\(class NamedClass {});
+        \\(function namedFunction() {});
+        \\class NamedClass {}
+        \\function namedFunction() {}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.class_expr, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[2]));
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(stmts[3]));
+}
+
 test "parser: class method block recovers before next accessibility method" {
     var s = try newTestSetup(
         \\class C  {
@@ -26940,7 +26963,7 @@ test "parser: function expression in let-binding" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(top));
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
-    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(init_node));
+    try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(init_node));
     try T.expect(hir_mod.fnDeclOf(&s.hir, init_node).flags.is_expression);
 }
 

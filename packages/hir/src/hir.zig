@@ -1474,6 +1474,14 @@ pub const Hir = struct {
         self.fn_decl_payloads.items[payload_idx].flags.is_async = true;
     }
 
+    /// Reclassify a parsed class as an expression. Class declarations and
+    /// class expressions share the same payload, but only declarations bind
+    /// their name in the containing scope.
+    pub fn markClassExpression(self: *Hir, id: NodeId) void {
+        std.debug.assert(self.kinds.items[id] == .class_decl);
+        self.kinds.items[id] = .class_expr;
+    }
+
     /// Set the `is_const` flag on an existing enum decl. Used by the
     /// parser when `const enum E { ... }` is parsed at statement
     /// position — the leading `const` is consumed before
@@ -2046,7 +2054,12 @@ pub const Builder = struct {
             .body = body,
             .flags = flags,
         });
-        const kind: NodeKind = if (flags.is_arrow) .arrow_fn else if (flags.is_method or flags.is_constructor) .fn_expr else .fn_decl;
+        const kind: NodeKind = if (flags.is_arrow)
+            .arrow_fn
+        else if (flags.is_expression or flags.is_method or flags.is_constructor)
+            .fn_expr
+        else
+            .fn_decl;
         const id = try self.newNode(kind, span, payload_idx);
         if (name != none_node_id) self.hir.setParent(name, id);
         for (type_params) |tp| self.hir.setParent(tp, id);
