@@ -6745,6 +6745,20 @@ pub const Checker = struct {
                     }
                     if (!emitted_nullish_return_mismatch and
                         r.value != hir_mod.none_node_id and
+                        self.current_function_return_node != hir_mod.none_node_id and
+                        self.returnValueIsLiteralExpression(r.value) and
+                        self.typeParameterAssignmentNeedsInstantiationCheck(ret_t, declared))
+                    {
+                        try self.reportTypeNotAssignable(
+                            node,
+                            self.widenLiteralType(ret_t),
+                            declared,
+                            "Type is not assignable to function return type.",
+                        );
+                        emitted_nullish_return_mismatch = true;
+                    }
+                    if (!emitted_nullish_return_mismatch and
+                        r.value != hir_mod.none_node_id and
                         self.typeIsEmptyObjectType(declared) and
                         ret_t < self.interner.pool.typeCount() and
                         self.interner.pool.flagsOf(ret_t).is_type_parameter and
@@ -10416,6 +10430,7 @@ pub const Checker = struct {
         try self.checkClassInterfaceMemberModifierMerges(stmts);
         try self.checkEnumDeclarationMergeDiagnostics(stmts);
         try self.checkTypeAliasDeclarationMergeDiagnostics(stmts);
+        try self.checkInterfacesMergedWithDuplicateClasses(stmts);
 
         var previous_overload_name: ?hir_mod.StringId = null;
         var previous_overload_section: usize = 0;
@@ -10423,7 +10438,7 @@ pub const Checker = struct {
             const exported = self.hir.kindOf(raw) == .export_decl;
             const node = self.unwrapExportDecl(raw);
             if (node == hir_mod.none_node_id) continue;
-            const virtual_section = self.virtualSectionStartForNode(node);
+            const virtual_section = self.declarationVirtualSectionKey(node);
 
             const kind = self.hir.kindOf(node);
             const name = self.declarationName(node) orelse {
@@ -10770,6 +10785,57 @@ pub const Checker = struct {
                 "Function implementation is missing or not immediately following the declaration.",
             );
         }
+    }
+
+    /// A class may merge with an interface, but two classes cannot. Once
+    /// a symbol contains multiple class declarations, every declaration in
+    /// that symbol, including otherwise-mergeable interfaces, receives
+    /// TS2300. Global-script declarations share a symbol across virtual
+    /// files; external-module sections retain their own keys.
+    fn checkInterfacesMergedWithDuplicateClasses(self: *Checker, stmts: []const NodeId) CheckError!void {
+        const ClassGroup = struct {
+            first: NodeId,
+            count: usize,
+        };
+        var classes: std.AutoHashMapUnmanaged(DeclarationKey, ClassGroup) = .empty;
+        defer classes.deinit(self.gpa);
+
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .class_decl) continue;
+            const name = self.declarationName(node) orelse continue;
+            const key: DeclarationKey = .{
+                .name = name,
+                .virtual_section_start = self.declarationVirtualSectionKey(node),
+            };
+            const gop = try classes.getOrPut(self.gpa, key);
+            if (gop.found_existing) {
+                gop.value_ptr.count += 1;
+            } else {
+                gop.value_ptr.* = .{ .first = node, .count = 1 };
+            }
+        }
+
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .interface_decl) continue;
+            const name = self.declarationName(node) orelse continue;
+            const key: DeclarationKey = .{
+                .name = name,
+                .virtual_section_start = self.declarationVirtualSectionKey(node),
+            };
+            const group = classes.get(key) orelse continue;
+            if (group.count < 2) continue;
+            try self.reportDuplicateIdentifierWithOther(node, name, group.first);
+        }
+    }
+
+    fn declarationVirtualSectionKey(self: *Checker, node: NodeId) usize {
+        if (!self.sourceHasVirtualFilenameSections()) return 0;
+        const section = self.virtualSectionStartForNode(node);
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return section + 1;
+        return if (self.virtualSectionHasExternalModuleSyntax(root, section)) section + 1 else 0;
     }
 
     fn reportExportedVariableRedeclare(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
@@ -38984,8 +39050,9 @@ pub const Checker = struct {
         obj_t: TypeId,
         prop_name: hir_mod.StringId,
     ) CheckError!void {
+        const static_class = self.class_name_by_static.get(obj_t);
         const class_name = self.class_name_by_instance.get(obj_t) orelse
-            self.class_name_by_static.get(obj_t) orelse
+            static_class orelse
             self.objectMemberVisibilityClass(obj_t, prop_name, .private) orelse
             self.unionCommonNonPublicMemberClass(obj_t, prop_name, .private) orelse
             self.interfaceInheritedVisibilityClass(obj_t) orelse
@@ -38995,7 +39062,11 @@ pub const Checker = struct {
         // instance (`new Sub().basePriv`) still reports TS2341 against the
         // base. Mirrors checkProtectedMemberAccess. The error names the
         // declaring class.
-        const declaring_class = self.privateMemberDeclaringClass(class_name, prop_name) orelse return;
+        const declaring_class = self.privateMemberDeclaringClassOnSide(
+            class_name,
+            prop_name,
+            static_class != null,
+        ) orelse return;
         // Suppress TS2341 for `super.<data-property>` accesses on a
         // base class data property ÃÂ¢ÃÂÃÂ TS2340 ("Only public and
         // protected methods of the base class are accessible via the
@@ -39724,11 +39795,24 @@ pub const Checker = struct {
         receiver_class: hir_mod.StringId,
         prop_name: hir_mod.StringId,
     ) ?hir_mod.StringId {
+        return self.privateMemberDeclaringClassOnSide(receiver_class, prop_name, false);
+    }
+
+    fn privateMemberDeclaringClassOnSide(
+        self: *Checker,
+        receiver_class: hir_mod.StringId,
+        prop_name: hir_mod.StringId,
+        is_static: bool,
+    ) ?hir_mod.StringId {
         var probe: ?hir_mod.StringId = receiver_class;
         var depth: usize = 0;
         while (probe) |class_name| : (depth += 1) {
             if (depth >= 1024) return null;
-            if (self.class_private_members.getPtr(class_name)) |private_set| {
+            const private_map = if (is_static)
+                self.class_static_private_members.getPtr(class_name)
+            else
+                self.class_private_members.getPtr(class_name);
+            if (private_map) |private_set| {
                 if (private_set.contains(prop_name)) return class_name;
             }
             // A class that declares the property as its own (non-private)
@@ -39739,8 +39823,12 @@ pub const Checker = struct {
             // this stops the chain walk at the most-derived redeclaration.
             // Mirrors `readonlyConstructorAssignment` (subclass redeclares
             // a base `private readonly x` as a public parameter property).
-            if (self.class_instance_member_names.getPtr(class_name)) |inst_set| {
-                if (inst_set.contains(prop_name)) return null;
+            const member_map = if (is_static)
+                self.class_static_member_names.getPtr(class_name)
+            else
+                self.class_instance_member_names.getPtr(class_name);
+            if (member_map) |member_set| {
+                if (member_set.contains(prop_name)) return null;
             }
             probe = self.class_parent.get(class_name);
         }
@@ -131922,6 +132010,19 @@ pub const Checker = struct {
         }
     }
 
+    fn returnValueIsLiteralExpression(self: *Checker, value: NodeId) bool {
+        return switch (self.hir.kindOf(value)) {
+            .literal_string,
+            .literal_number,
+            .literal_bool,
+            .literal_bigint,
+            .literal_null,
+            .literal_undefined,
+            => true,
+            else => false,
+        };
+    }
+
     fn declaredReturnRejectsNullish(self: *Checker, declared: TypeId, ret_t: TypeId) bool {
         if (declared == ret_t) return false;
         if (declared == types.Primitive.any or declared == types.Primitive.unknown) return false;
@@ -134152,6 +134253,7 @@ pub const Checker = struct {
         object_t: TypeId,
         index_t: TypeId,
     ) !void {
+        if (self.indexNodeIsRecoveredPrivateName(index_node)) return;
         if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
         if (try self.reportPrivateOrProtectedIndexedAccessOnTypeParameter(index_node, object_t, index_t)) return;
@@ -134184,6 +134286,14 @@ pub const Checker = struct {
         if (invalid_index_reported or missing_index_reported or missing_property_reported) return;
         if (!self.indexTypeHasKeysMissingFromObject(object_t, index_t)) return;
         try self.reportTypeCannotIndexType(access_node, index_node, object_node, index_t, object_t);
+    }
+
+    fn indexNodeIsRecoveredPrivateName(self: *Checker, index_node: NodeId) bool {
+        if (index_node == hir_mod.none_node_id) return false;
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(index_node);
+        if (span.start == 0 or span.start >= src.len or src[span.start] != '#') return false;
+        return src[span.start - 1] == '[';
     }
 
     fn symbolicIndexedAccessKeyRelation(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?bool {
@@ -218644,4 +218754,73 @@ test "checker: exported decorator modifiers are not export assignments" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_es_module));
+}
+
+test "checker: duplicate ambient classes share global symbols across virtual files" {
+    const s = try newSetup(
+        \\// @filename: file1.ts
+        \\declare class C1 {}
+        \\declare class C1 {}
+        \\declare class C2 {}
+        \\interface C2 {}
+        \\declare class C2 {}
+        \\// @filename: file2.ts
+        \\declare class C3 {}
+        \\// @filename: file3.ts
+        \\declare class C3 {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 7), checkerCountCode(s, TsCodes.duplicate_identifier));
+}
+
+test "checker: static lookup does not expose private instance members" {
+    const s = try newSetup(
+        \\class Derived {
+        \\  private x: string;
+        \\  private fn(): string { return ''; }
+        \\  private get a() { return 1; }
+        \\  private set a(v) {}
+        \\}
+        \\Derived.x;
+        \\Derived.fn();
+        \\Derived.a;
+        \\Derived.a = 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.private_member_access));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: concrete returns cannot satisfy a constrained type parameter" {
+    const s = try newSetup(
+        \\class E<T extends string> {
+        \\  get x(): T { return ''; }
+        \\  foo(): T { return ''; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: recovered private-name type index suppresses TS2538 cascade" {
+    const s = try newSetup(
+        \\class C {
+        \\  #bar = 3;
+        \\  method() {
+        \\    const badForNow: C[#bar] = 3;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
 }
