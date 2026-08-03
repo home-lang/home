@@ -37,6 +37,8 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
 - `Home.engine` reports `zig-js` or `jsc`.
 - `Home.readTextFile`, `Home.writeTextFile`, and `Home.fileExists` provide
   synchronous repository-file access.
+- `Home.readFileHex` and `Home.writeFileHex` preserve arbitrary binary bytes
+  through an engine-neutral lowercase hexadecimal transport.
 - `Home.spawnSync(argv)` resolves the executable through `PATH` and returns
   `{ exitCode, stdout, stderr }`.
 

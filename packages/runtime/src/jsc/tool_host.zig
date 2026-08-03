@@ -91,6 +91,75 @@ fn writeTextFileNative(
     return extern_fns.JSValueMakeBoolean(c, true);
 }
 
+fn readFileHexNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argument_count == 0 or arguments[0] == null) return extern_fns.JSValueMakeNull(c);
+    const allocator = std.heap.page_allocator;
+    const path = valueToOwnedUtf8(c, arguments[0].?, allocator) orelse return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(path);
+    const contents = std.Io.Dir.cwd().readFileAlloc(g_io, path, allocator, std.Io.Limit.unlimited) catch
+        return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(contents);
+    const encoded = allocator.alloc(u8, contents.len * 2) catch return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(encoded);
+    const digits = "0123456789abcdef";
+    for (contents, 0..) |byte, index| {
+        encoded[index * 2] = digits[byte >> 4];
+        encoded[index * 2 + 1] = digits[byte & 0x0f];
+    }
+    return stringValue(c, encoded) orelse extern_fns.JSValueMakeNull(c);
+}
+
+fn hexNibble(byte: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
+}
+
+fn writeFileHexNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) return extern_fns.JSValueMakeBoolean(c, false);
+    const allocator = std.heap.page_allocator;
+    const path = valueToOwnedUtf8(c, arguments[0].?, allocator) orelse return extern_fns.JSValueMakeBoolean(c, false);
+    defer allocator.free(path);
+    const encoded = valueToOwnedUtf8(c, arguments[1].?, allocator) orelse return extern_fns.JSValueMakeBoolean(c, false);
+    defer allocator.free(encoded);
+    if (encoded.len % 2 != 0) return extern_fns.JSValueMakeBoolean(c, false);
+    const contents = allocator.alloc(u8, encoded.len / 2) catch return extern_fns.JSValueMakeBoolean(c, false);
+    defer allocator.free(contents);
+    for (contents, 0..) |*byte, index| {
+        const high = hexNibble(encoded[index * 2]) orelse return extern_fns.JSValueMakeBoolean(c, false);
+        const low = hexNibble(encoded[index * 2 + 1]) orelse return extern_fns.JSValueMakeBoolean(c, false);
+        byte.* = (high << 4) | low;
+    }
+    std.Io.Dir.cwd().writeFile(g_io, .{ .sub_path = path, .data = contents }) catch
+        return extern_fns.JSValueMakeBoolean(c, false);
+    return extern_fns.JSValueMakeBoolean(c, true);
+}
+
 fn fileExistsNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -181,11 +250,15 @@ const install_glue =
     \\(function() {
     \\  var read = globalThis.__home_tool_read_text_file;
     \\  var write = globalThis.__home_tool_write_text_file;
+    \\  var readHex = globalThis.__home_tool_read_file_hex;
+    \\  var writeHex = globalThis.__home_tool_write_file_hex;
     \\  var exists = globalThis.__home_tool_file_exists;
     \\  var spawn = globalThis.__home_tool_spawn_sync;
     \\  globalThis.Home = {
     \\    readTextFile: function(path) { var out = read(String(path)); if (out === null) throw new Error("cannot read " + path); return out; },
     \\    writeTextFile: function(path, text) { if (!write(String(path), String(text))) throw new Error("cannot write " + path); },
+    \\    readFileHex: function(path) { var out = readHex(String(path)); if (out === null) throw new Error("cannot read " + path); return out; },
+    \\    writeFileHex: function(path, hex) { if (!writeHex(String(path), String(hex))) throw new Error("cannot write " + path); },
     \\    fileExists: function(path) { return exists(String(path)); },
     \\    spawnSync: function(argv) { var out = spawn(argv); if (out === null) throw new Error("cannot spawn process"); return out; },
     \\    engine: "
@@ -194,6 +267,8 @@ const install_glue =
     \\  };
     \\  delete globalThis.__home_tool_read_text_file;
     \\  delete globalThis.__home_tool_write_text_file;
+    \\  delete globalThis.__home_tool_read_file_hex;
+    \\  delete globalThis.__home_tool_write_file_hex;
     \\  delete globalThis.__home_tool_file_exists;
     \\  delete globalThis.__home_tool_spawn_sync;
     \\})();
@@ -202,6 +277,8 @@ const install_glue =
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     callback.registerCallback(ctx, global, "__home_tool_read_text_file", readTextFileNative);
     callback.registerCallback(ctx, global, "__home_tool_write_text_file", writeTextFileNative);
+    callback.registerCallback(ctx, global, "__home_tool_read_file_hex", readFileHexNative);
+    callback.registerCallback(ctx, global, "__home_tool_write_file_hex", writeFileHexNative);
     callback.registerCallback(ctx, global, "__home_tool_file_exists", fileExistsNative);
     callback.registerCallback(ctx, global, "__home_tool_spawn_sync", spawnSyncNative);
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:tool-host-install", 1) catch return;

@@ -2,6 +2,8 @@ declare const Home: {
   readonly engine: "zig-js" | "jsc";
   readTextFile(path: string): string;
   writeTextFile(path: string, contents: string): void;
+  readFileHex(path: string): string;
+  writeFileHex(path: string, contents: string): void;
   fileExists(path: string): boolean;
   spawnSync(argv: string[]): { exitCode: number | null; stdout: string; stderr: string };
 };
@@ -26,6 +28,11 @@ const marker = "/tmp/home-tool-smoke.txt";
 Home.writeTextFile(marker, expectedEngineMarker(Home.engine));
 if (!Home.fileExists(marker) || Home.readTextFile(marker) !== expectedEngineMarker(Home.engine)) {
   throw new Error("Home filesystem host functions do not round-trip");
+}
+const binaryMarker = "/tmp/home-tool-smoke.bin";
+Home.writeFileHex(binaryMarker, "00017fff80fe");
+if (Home.readFileHex(binaryMarker) !== "00017fff80fe") {
+  throw new Error("Home binary filesystem host functions do not round-trip");
 }
 
 const child = Home.spawnSync(["printf", "home-tool"]);
