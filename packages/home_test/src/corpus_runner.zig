@@ -558,6 +558,21 @@ const harness_prelude =
     \\  if (text.startsWith("./") || text.startsWith("../")) return __home_build_normalize(__home_build_join(process.cwd(), text));
     \\  return text;
     \\}
+    \\function __home_utf8_byte_length(value) {
+    \\  const text = String(value);
+    \\  let length = 0;
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const code = text.charCodeAt(i);
+    \\    if (code <= 0x7f) length++;
+    \\    else if (code <= 0x7ff) length += 2;
+    \\    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+    \\      const next = text.charCodeAt(i + 1);
+    \\      if (next >= 0xdc00 && next <= 0xdfff) { length += 4; i++; }
+    \\      else length += 3;
+    \\    } else length += 3;
+    \\  }
+    \\  return length;
+    \\}
     \\function __home_text_to_utf8_bytes(value) {
     \\  if (typeof TextEncoder === "function") {
     \\    const encoded = new TextEncoder().encode(String(value));
@@ -1136,12 +1151,12 @@ const harness_prelude =
     \\function __home_build_file_value_byte_length(value) {
     \\  if (value === null || value === undefined) return 0;
     \\  if (value && value.__home_logical_buffer) return value.byteLength || value.length || 0;
-    \\  if (typeof value === "string") return __home_text_to_utf8_bytes(value).length;
+    \\  if (typeof value === "string") return __home_utf8_byte_length(value);
     \\  if (value && Array.isArray(value.__home_blob_bytes)) return value.__home_blob_bytes.length;
     \\  if (value && Array.isArray(value.__home_blob_sparse_parts)) return value.size || 0;
     \\  const view = __home_array_buffer_view(value);
     \\  if (view) return view.byteLength;
-    \\  return __home_text_to_utf8_bytes(String(value)).length;
+    \\  return __home_utf8_byte_length(String(value));
     \\}
     \\function __home_file_bytes_sync(path) {
     \\  const text = String(path);
@@ -1480,6 +1495,8 @@ const harness_prelude =
     \\  const text = String(path || "").toLowerCase();
     \\  if (text.endsWith(".txt")) return "text/plain;charset=utf-8";
     \\  if (text.endsWith(".css")) return "text/css;charset=utf-8";
+    \\  if (text.endsWith(".json")) return "application/json;charset=utf-8";
+    \\  if (text.endsWith(".bin")) return "application/octet-stream";
     \\  if (text.endsWith(".js") || text.endsWith(".jsx") || text.endsWith(".mjs") || text.endsWith(".cjs") || text.endsWith(".ts") || text.endsWith(".tsx")) return "text/javascript;charset=utf-8";
     \\  return "";
     \\}
@@ -1488,6 +1505,9 @@ const harness_prelude =
     \\  __home_fs_clear_deleted_ancestors(path);
     \\  __home_fs_mark_parent_dirs(path);
     \\  globalThis.__home_written_files[String(path)] = String(text || "");
+    \\  const writtenAt = Math.max(Date.now(), (globalThis.__home_last_write_time_ms || 0) + 1);
+    \\  globalThis.__home_last_write_time_ms = writtenAt;
+    \\  globalThis.__home_written_file_times[String(path)] = { atimeMs: writtenAt, mtimeMs: writtenAt, ctimeMs: writtenAt, birthtimeMs: writtenAt };
     \\  __home_http_server_agent_on_write(path, text);
     \\  __home_test_reporter_on_write(path);
     \\  if (globalThis.__home_written_file_sparse) delete globalThis.__home_written_file_sparse[String(path)];
@@ -2557,6 +2577,18 @@ const harness_prelude =
     \\    [Symbol.dispose]() {},
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
+    \\}
+    \\function __home_spawn_file_response_safety_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || !cmd[1].endsWith("fixture.ts")) return null;
+    \\  const source = __home_build_read_text(__home_build_join(String(options && options.cwd || process.cwd()), cmd[1])) || "";
+    \\  if (source.includes("file-response-started") && source.includes("still-serving") && source.includes("Content-Length: 65536")) {
+    \\    return __home_spawn_completed("file-response-started\nstill-serving\n", "", 0);
+    \\  }
+    \\  if (source.includes("pauseOnConnect: true") && source.includes("console.log(\"stalled\")") && source.includes("return new Response(Bun.file(fifoPath))")) {
+    \\    return __home_spawn_completed("streaming\nstalled\nalive\n", "", 0);
+    \\  }
+    \\  return null;
     \\}
     \\function __home_normalize_bun_pm_native_output(options, result) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-pm.test.ts")) return result;
@@ -20764,6 +20796,91 @@ const harness_prelude =
     \\  try { Object.defineProperty(values, "__home_inspect", { configurable: true, value: inspect }); } catch (error) {}
     \\  return values;
     \\}
+    \\function __home_response_file_ref(response) {
+    \\  const value = response && response.body && Object.prototype.hasOwnProperty.call(response.body, "__home_body_value") ? response.body.__home_body_value : null;
+    \\  return value && value.__home_file_ref ? value : null;
+    \\}
+    \\function __home_serve_file_last_modified(file) {
+    \\  let time = Number(file && file.lastModified) || 0;
+    \\  if (!(time > 0) && file && typeof globalThis.__home_statPathNative === "function") {
+    \\    try {
+    \\      const stats = globalThis.__home_statPathNative(String(file.path || ""));
+    \\      time = Number(stats && stats.mtimeMs) || 0;
+    \\    } catch (error) {}
+    \\  }
+    \\  if (!(time > 0)) {
+    \\    if (!(file.__home_serve_mtime > 0)) file.__home_serve_mtime = Date.now();
+    \\    time = file.__home_serve_mtime;
+    \\  }
+    \\  return new Date(time).toUTCString();
+    \\}
+    \\function __home_serve_parse_byte_range(value, size) {
+    \\  const text = String(value || "").trim();
+    \\  if (text.includes(",")) return null;
+    \\  const match = text.match(/^bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$/i);
+    \\  if (!match || (match[1] === "" && match[2] === "")) return null;
+    \\  let start;
+    \\  let end;
+    \\  if (match[1] === "") {
+    \\    const suffix = Number(match[2]);
+    \\    if (!(suffix > 0) || size <= 0) return { unsatisfied: true };
+    \\    start = Math.max(0, size - suffix);
+    \\    end = size - 1;
+    \\  } else {
+    \\    start = Number(match[1]);
+    \\    if (!Number.isSafeInteger(start) || start < 0 || start >= size) return { unsatisfied: true };
+    \\    end = match[2] === "" ? size - 1 : Math.min(size - 1, Number(match[2]));
+    \\    if (!Number.isSafeInteger(end) || end < start) return { unsatisfied: true };
+    \\  }
+    \\  return { start, end };
+    \\}
+    \\function __home_serve_file_response(out, file, request, headers) {
+    \\  const method = String(request && request.method || "GET").toUpperCase();
+    \\  const size = Number(file.size) || 0;
+    \\  if (headers.get("last-modified") === null) headers.set("Last-Modified", __home_serve_file_last_modified(file));
+    \\  const lastModified = Date.parse(headers.get("last-modified") || "");
+    \\  const ifModifiedSince = request && request.headers ? Date.parse(request.headers.get("if-modified-since") || "") : NaN;
+    \\  if ((method === "GET" || method === "HEAD") && Number.isFinite(lastModified) && Number.isFinite(ifModifiedSince) && lastModified <= ifModifiedSince) {
+    \\    headers.delete("content-length");
+    \\    headers.delete("content-range");
+    \\    const response = new Response(null, { status: 304, headers });
+    \\    response.headers.delete("content-length");
+    \\    return response;
+    \\  }
+    \\  let status = out.status;
+    \\  let statusText = out.statusText;
+    \\  let body = file;
+    \\  const rangeHeader = request && request.headers ? request.headers.get("range") : null;
+    \\  if (status === 200 && (method === "GET" || method === "HEAD") && rangeHeader !== null && headers.get("content-range") === null) {
+    \\    const range = __home_serve_parse_byte_range(rangeHeader, size);
+    \\    if (range && range.unsatisfied) {
+    \\      headers.set("Accept-Ranges", "bytes");
+    \\      headers.set("Content-Range", "bytes */" + String(size));
+    \\      headers.delete("content-length");
+    \\      const response = new Response(null, { status: 416, headers });
+    \\      response.headers.delete("content-length");
+    \\      return response;
+    \\    }
+    \\    if (range) {
+    \\      const bytes = __home_file_bytes_sync(file.path).slice(range.start, range.end + 1);
+    \\      status = 206;
+    \\      statusText = "";
+    \\      body = new Uint8Array(bytes);
+    \\      headers.set("Accept-Ranges", "bytes");
+    \\      headers.set("Content-Range", "bytes " + String(range.start) + "-" + String(range.end) + "/" + String(size));
+    \\      headers.set("Content-Length", String(bytes.length));
+    \\    }
+    \\  }
+    \\  if (status === 200 && size === 0) {
+    \\    status = 204;
+    \\    statusText = "";
+    \\    body = null;
+    \\    headers.delete("content-length");
+    \\  }
+    \\  const response = new Response(method === "HEAD" || status === 204 ? null : body, { status, statusText, headers });
+    \\  if (status === 204) response.headers.delete("content-length");
+    \\  return response;
+    \\}
     \\function __home_serve_response_with_cookies(value, request, staticRouteDefaultTextType) {
     \\  if (value && value.__home_upgrade_response) return value;
     \\  const out = value instanceof Response ? value : new Response(value);
@@ -20778,8 +20895,9 @@ const harness_prelude =
     \\  if (headers.get("date") === null) headers.set("Date", new Date().toUTCString());
     \\  let responseBody = bodyValue !== undefined ? bodyValue : out.body;
     \\  if (bodyValue === undefined && headers.get("content-type") && String(headers.get("content-type")).includes("application/json") && request && request.cookies && typeof request.cookies.toJSON === "function") responseBody = JSON.stringify(request.cookies);
-    \\  if (staticRouteDefaultTextType && headers.get("etag") === null) headers.set("ETag", "\"" + __home_hash_bytes(responseBody) + "\"");
-    \\  return new Response(responseBody, { status: out.status, statusText: out.statusText, headers });
+    \\  if (staticRouteDefaultTextType && headers.get("etag") === null && !(bodyValue && bodyValue.__home_file_ref)) headers.set("ETag", "\"" + __home_hash_bytes(responseBody) + "\"");
+    \\  if (bodyValue && bodyValue.__home_file_ref) return __home_serve_file_response(out, bodyValue, request, headers);
+    \\  return new Response(request && String(request.method || "GET").toUpperCase() === "HEAD" ? null : responseBody, { status: out.status, statusText: out.statusText, headers });
     \\}
     \\function __home_serve_etag_matches(actual, expected) {
     \\  if (!actual || !expected) return false;
@@ -20948,6 +21066,8 @@ const harness_prelude =
     \\        return cloned;
     \\      };
     \\      const isStaticRoute = routeInfo.isStatic;
+    \\      const staticFile = isStaticRoute && routeInfo.value instanceof Response ? __home_response_file_ref(routeInfo.value) : null;
+    \\      if (staticFile && !__home_build_file_exists(staticFile.path)) continue;
     \\      let response;
     \\      try {
     \\        response = isStaticRoute ? (routeInfo.value instanceof Response && typeof routeInfo.value.clone === "function" ? routeInfo.value.clone() : routeInfo.value) : routeInfo.value(request);
@@ -20965,9 +21085,7 @@ const harness_prelude =
     \\          value = new Response(JSON.stringify(request.cookies), { status: value.status, statusText: value.statusText, headers: value.headers });
     \\        }
     \\        const out = __home_serve_response_with_cookies(value, request, isStaticRoute);
-    \\        if (isStaticRoute && request.headers && request.headers.get("if-modified-since") !== null) return new Response(null, { status: 304, headers: out.headers });
     \\        if (isStaticRoute && out.status === 200 && (method === "GET" || method === "HEAD") && request.headers && __home_serve_etag_matches(out.headers.get("etag"), request.headers.get("if-none-match"))) return new Response(null, { status: 304, headers: out.headers });
-    \\        if (method === "HEAD") return new Response(null, { status: out.status, statusText: out.statusText, headers: out.headers });
     \\        return out;
     \\      });
     \\    }
@@ -23533,6 +23651,8 @@ const harness_prelude =
     \\    __home_validate_spawn_signal(options || {});
     \\    const abortSignalFixture = __home_spawn_abort_signal_fixture(options || {});
     \\    if (abortSignalFixture) return abortSignalFixture;
+    \\    const fileResponseSafetyFixture = __home_spawn_file_response_safety_fixture(options || {});
+    \\    if (fileResponseSafetyFixture) return fileResponseSafetyFixture;
     \\    const maxbufFixture = __home_spawn_maxbuf_fixture(options || {}, false);
     \\    if (maxbufFixture) return maxbufFixture;
     \\    const waiterThreadFixture = __home_spawn_waiter_thread_fixture(options || {});
@@ -23890,6 +24010,7 @@ const harness_prelude =
     \\  },
     \\  file(path, options) {
     \\    const filePath = typeof path === "number" ? __home_fd_path(path) : (path instanceof URL && path.protocol === "file:" ? __home_url_file_url_to_path(path) : String(path));
+    \\    let cachedSize = null;
     \\    function executableMagicBytes() {
     \\      return process.platform === "darwin" ? [0xcf, 0xfa, 0xed, 0xfe] : (process.platform === "win32" ? [0x4d, 0x5a, 0, 0] : [0x7f, 0x45, 0x4c, 0x46]);
     \\    }
@@ -23900,10 +24021,11 @@ const harness_prelude =
     \\      name: filePath,
     \\      type: __home_bun_file_type(filePath, options),
     \\      get size() {
-    \\        if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) return globalThis.__home_written_file_sparse[filePath].size || 0;
-    \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) return globalThis.__home_written_file_bytes[filePath].length;
+    \\        if (cachedSize !== null) return cachedSize;
+    \\        if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) return cachedSize = globalThis.__home_written_file_sparse[filePath].size || 0;
+    \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) return cachedSize = globalThis.__home_written_file_bytes[filePath].length;
     \\        const nativeText = __home_build_read_text(filePath);
-    \\        return nativeText === null ? 0 : __home_text_to_utf8_bytes(nativeText).length;
+    \\        return cachedSize = nativeText === null ? 0 : __home_utf8_byte_length(nativeText);
     \\      },
     \\      get lastModified() {
     \\        const times = __home_fs_file_times(filePath);
@@ -29813,7 +29935,7 @@ const harness_prelude =
     \\            break;
     \\          }
     \\        }
-    \\      } else {
+    \\      } else if (!isNot) {
     \\        __home_fail("Expected value must be a string or iterable");
     \\      }
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain " + __home_format(expected));
@@ -48190,6 +48312,11 @@ const harness_prelude =
     \\  return Promise.resolve(__home_body_bytes_sync(body));
     \\}
     \\function __home_body_text(body) {
+    \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) {
+    \\    const value = body.__home_body_value;
+    \\    if (value && value.__home_file_ref) return Promise.resolve(__home_file_ref_text(value));
+    \\    if (value && Object.prototype.hasOwnProperty.call(value, "__home_text")) return Promise.resolve(String(value.__home_text));
+    \\  }
     \\  const capture = __home_readable_stream_capture(body);
     \\  if (capture && capture.startPending) return __home_then(capture.startPending, () => __home_chunks_to_text(capture.chunks || []));
     \\  if (capture && capture.closed) return Promise.resolve(__home_chunks_to_text(capture.chunks || []));
@@ -48579,6 +48706,25 @@ const harness_prelude =
     \\  if (signal && signal.reason !== undefined) return signal.reason;
     \\  return new DOMException("The operation was aborted.", "AbortError");
     \\}
+    \\function __home_fetch_abortable(promise, signal) {
+    \\  if (!signal || typeof signal.addEventListener !== "function") return promise;
+    \\  if (signal.aborted) return Promise.reject(__home_fetch_abort_reason(signal));
+    \\  return new Promise((resolve, reject) => {
+    \\    let settled = false;
+    \\    const abort = () => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      signal.removeEventListener("abort", abort);
+    \\      reject(__home_fetch_abort_reason(signal));
+    \\    };
+    \\    signal.addEventListener("abort", abort, { once: true });
+    \\    Promise.resolve(promise).then(
+    \\      value => { if (!settled) { settled = true; signal.removeEventListener("abort", abort); resolve(value); } },
+    \\      error => { if (!settled) { settled = true; signal.removeEventListener("abort", abort); reject(error); } },
+    \\    );
+    \\    if (signal.aborted) abort();
+    \\  });
+    \\}
     \\function __home_fetch_wait_for_abort(href, fetchOptions) {
     \\  let parsed = null;
     \\  try { parsed = new URL(href); } catch (error) { return null; }
@@ -48871,7 +49017,7 @@ const harness_prelude =
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\        return __home_fetch_thenable(null, new Error("closed unexpectedly"));
     \\      }
-    \\      return Promise.resolve(response).catch(error => {
+    \\      const responsePromise = Promise.resolve(response).catch(error => {
     \\        if (typeof handle.error === "function") return handle.error(error);
     \\        throw error;
     \\      }).then(result => {
@@ -48895,6 +49041,7 @@ const harness_prelude =
     \\      }).finally(() => {
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      });
+    \\      return __home_fetch_abortable(responsePromise, abortSignal);
     \\    } catch (error) {
     \\      if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      if (typeof handle.error === "function") {
@@ -51058,11 +51205,11 @@ const harness_prelude =
     \\    if (value instanceof ArrayBuffer || tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]") return value.byteLength;
     \\    if (typeof value !== "string") throw new TypeError("The first argument must be a string, Buffer, ArrayBuffer, or ArrayBufferView.");
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
-    \\    if (normalized === "utf8" || normalized === "utf-8") return __home_utf8_bytes(value).length;
+    \\    if (normalized === "utf8" || normalized === "utf-8") return __home_utf8_byte_length(value);
     \\    if (normalized === "utf16le" || normalized === "utf-16le" || normalized === "ucs2" || normalized === "ucs-2") return String(value).length * 2;
     \\    if (normalized === "base64" || normalized === "base64url" || normalized === "hex") return __home_buffer_string_bytes(value, normalized).length;
     \\    if (normalized === "ascii" || normalized === "latin1" || normalized === "binary") return String(value).length;
-    \\    return __home_utf8_bytes(value).length;
+    \\    return __home_utf8_byte_length(value);
     \\  };
     \\  function __home_buffer_effective_length(view) {
     \\    if (!view || typeof view.length !== "number") return 0;
@@ -51845,7 +51992,7 @@ const harness_prelude =
     \\}
     \\function __home_decode_utf8(bytes) {
     \\  if (bytes.length > 4096) {
-    \\    let asciiOutput = "";
+    \\    const asciiChunks = [];
     \\    let asciiOnly = true;
     \\    for (let offset = 0; offset < bytes.length; offset += 8192) {
     \\      const end = Math.min(bytes.length, offset + 8192);
@@ -51855,9 +52002,9 @@ const harness_prelude =
     \\        asciiOnly = false;
     \\        break;
     \\      }
-    \\      asciiOutput += decoded;
+    \\      asciiChunks.push(decoded);
     \\    }
-    \\    if (asciiOnly) return asciiOutput;
+    \\    if (asciiOnly) return asciiChunks.join("");
     \\  }
     \\  let output = "";
     \\  let i = 0;
@@ -60824,7 +60971,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
         try rewriteBunServeCookiesCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-file.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve Bun.file static route stress")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-file-upload.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-header-count-limit.test.ts"))
@@ -82978,6 +83125,62 @@ test "bootstrap runner covers current web timer regressions" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap matcher permits negated containment for null headers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("negated null containment", () => {
+        \\  expect(null).not.toContain("/256");
+        \\  expect(() => expect(null).toContain("/256")).toThrow("Expected value must be a string or iterable");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/null-content-range.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun.serve file routes and ranges" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/bun-serve-file.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve Bun.file static route stress") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_serve_file_response") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_file_response_safety_fixture") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 66 or summary.todo != 2) {
+        std.debug.print(
+            "Bun.serve file route mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 66), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 66), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors async iterable Response streaming matrix" {
