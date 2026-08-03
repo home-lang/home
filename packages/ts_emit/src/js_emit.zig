@@ -2320,9 +2320,16 @@ pub const Printer = struct {
                 try self.write("/* TODO: ES5 generator state-machine doesn't yet handle nested control flow with yields — keeping native function*, will fail at runtime in ES5 */ ");
             }
             try self.write("function");
-            if (f.flags.is_generator and !downlevel_generator and !downlevel_async_gen) try self.write("*");
-            if (f.name != hir_mod.none_node_id) {
+            // Match Bun's js_printer: after the generator `*` there is always a
+            // space (`function* name`, and `function* ()` when anonymous), so
+            // the name (if any) must not add a second one.
+            const native_gen = f.flags.is_generator and !downlevel_generator and !downlevel_async_gen;
+            if (native_gen) {
+                try self.write("*");
                 try self.write(" ");
+            }
+            if (f.name != hir_mod.none_node_id) {
+                if (!native_gen) try self.write(" ");
                 try self.printExpression(f.name);
             }
         } else if (f.flags.is_constructor) {
@@ -16410,5 +16417,23 @@ test "emit: empty class body breaks onto its own line (Bun parity)" {
         const out = try emit("const x = class extends B {};");
         defer T.allocator.free(out);
         try T.expectEqualStrings("const x = class extends B {\n};", out);
+    }
+}
+
+
+
+test "emit: generator function expression spaces after star (Bun parity)" {
+    // Bun's js_printer emits `printSpace()` after the generator `*`, so both
+    // named and anonymous generator function expressions get a space:
+    // `function* named()` and `function* ()`.
+    {
+        const out = try emit("const g = function*() {};");
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("const g = function* () {};", out);
+    }
+    {
+        const out = try emit("const g = function* named() {};");
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("const g = function* named() {};", out);
     }
 }
