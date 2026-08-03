@@ -42637,40 +42637,170 @@ const harness_prelude =
     \\  for (const entry of headers.entries()) text += __home_http_raw_header_name(entry[0], headers) + ": " + entry[1] + "\r\n";
     \\  return text + "\r\n" + String(body);
     \\}
-    \\function __home_http_raw_request_status(requestText) {
+    \\function __home_http_raw_request_metadata(requestText) {
     \\  const text = String(requestText || "");
     \\  const headerEnd = text.indexOf("\r\n\r\n");
-    \\  if (headerEnd === -1) return null;
+    \\  if (headerEnd === -1) return { status: null };
     \\  const head = text.slice(0, headerEnd);
-    \\  if (/\r(?!\n)/.test(head)) return 400;
+    \\  if (/\r(?!\n)/.test(head)) return { status: 400 };
     \\  const lines = head.split("\r\n");
     \\  const requestLine = String(lines.shift() || "");
     \\  const match = requestLine.match(/^([!#$%&'*+\-.^_|~0-9A-Za-z]+) ([^ ]+) HTTP\/(1\.[01])$/);
-    \\  if (!match) return 400;
+    \\  if (!match) return { status: 400 };
     \\  const target = match[2];
-    \\  if (!(target.startsWith("/") || /^https?:\/\//i.test(target))) return 400;
-    \\  let host = null;
-    \\  let contentLength = null;
-    \\  let transferEncoding = null;
+    \\  if (!(target.startsWith("/") || /^https?:\/\//i.test(target))) return { status: 400 };
+    \\  const hosts = [];
+    \\  const contentLengths = [];
+    \\  const transferCodings = [];
+    \\  let hasTransferEncoding = false;
     \\  for (const line of lines) {
     \\    const colon = line.indexOf(":");
-    \\    if (colon <= 0) return 400;
+    \\    if (colon <= 0) return { status: 400 };
     \\    const name = line.slice(0, colon);
     \\    const value = line.slice(colon + 1);
-    \\    if (!/^[!#$%&'*+\-.^_|~0-9A-Za-z]+$/.test(name)) return 400;
+    \\    if (!/^[!#$%&'*+\-.^_|~0-9A-Za-z]+$/.test(name)) return { status: 400 };
     \\    for (let i = 0; i < value.length; i++) {
     \\      const code = value.charCodeAt(i);
-    \\      if ((code < 32 && code !== 9) || code === 127) return 400;
+    \\      if ((code < 32 && code !== 9) || code === 127) return { status: 400 };
     \\    }
     \\    const lower = name.toLowerCase();
-    \\    if (lower === "host") host = value.trim();
-    \\    if (lower === "content-length") contentLength = value.trim();
-    \\    if (lower === "transfer-encoding") transferEncoding = value.trim();
+    \\    const trimmed = __home_net_trim_header_value(value);
+    \\    if (lower === "host") hosts.push(trimmed);
+    \\    if (lower === "content-length") {
+    \\      const values = trimmed.split(",");
+    \\      for (const item of values) contentLengths.push(__home_net_trim_header_value(item));
+    \\    }
+    \\    if (lower === "transfer-encoding") {
+    \\      hasTransferEncoding = true;
+    \\      const values = trimmed.split(",");
+    \\      for (const item of values) transferCodings.push(__home_net_trim_header_value(item).toLowerCase());
+    \\    }
     \\  }
-    \\  if (match[3] === "1.1" && !host) return 400;
-    \\  if (contentLength !== null && (!/^\d+$/.test(contentLength) || !Number.isSafeInteger(Number(contentLength)))) return 400;
-    \\  if (contentLength !== null && transferEncoding !== null) return 400;
-    \\  return 200;
+    \\  if (match[3] === "1.1" && (hosts.length !== 1 || !hosts[0])) return { status: 400 };
+    \\  let contentLength = null;
+    \\  for (const value of contentLengths) {
+    \\    if (!/^\d+$/.test(value)) return { status: 400 };
+    \\    const parsed = Number(value);
+    \\    if (!Number.isSafeInteger(parsed) || parsed < 0) return { status: 400 };
+    \\    if (contentLength === null) contentLength = parsed;
+    \\    else if (contentLength !== parsed) return { status: 400 };
+    \\  }
+    \\  if (hasTransferEncoding) {
+    \\    if (contentLengths.length > 0 || transferCodings.length === 0) return { status: 400 };
+    \\    let chunkedCount = 0;
+    \\    for (const coding of transferCodings) {
+    \\      if (!coding || !/^[!#$%&'*+\-.^_|~0-9a-z]+(?:\s*;[^\r\n]*)?$/.test(coding)) return { status: 400 };
+    \\      if (coding.split(";", 1)[0].trim() === "chunked") {
+    \\        if (coding.includes(";")) return { status: 400 };
+    \\        chunkedCount++;
+    \\      }
+    \\    }
+    \\    const finalCoding = transferCodings[transferCodings.length - 1].split(";", 1)[0].trim();
+    \\    if (chunkedCount !== 1 || finalCoding !== "chunked") return { status: 400 };
+    \\  }
+    \\  return {
+    \\    status: 200,
+    \\    method: match[1],
+    \\    target,
+    \\    version: "HTTP/" + match[3],
+    \\    contentLength: contentLength === null ? 0 : contentLength,
+    \\    chunked: hasTransferEncoding,
+    \\  };
+    \\}
+    \\function __home_http_raw_request_status(requestText) {
+    \\  return __home_http_raw_request_metadata(requestText).status;
+    \\}
+    \\function __home_net_connect_bun_serve(port, hostname, timeoutMs, connectCallback) {
+    \\  const socket = __home_http_event_target();
+    \\  const queuedWrites = [];
+    \\  let inner = null;
+    \\  let shouldEnd = false;
+    \\  let closeEmitted = false;
+    \\  let errorEmitted = false;
+    \\  socket._handle = { fd: __home_alloc_virtual_fd("tcp-client:" + String(port), "r") };
+    \\  socket.destroyed = false;
+    \\  socket.connecting = true;
+    \\  socket.__home_port = port;
+    \\  socket.__home_hostname = hostname;
+    \\  socket.__home_timeout_ms = timeoutMs > 0 ? timeoutMs : 0;
+    \\  socket.__home_timeout_handle = null;
+    \\  socket.setTimeout = function(timeout, callback) { return __home_net_set_idle_timeout(this, timeout, callback); };
+    \\  socket.setNoDelay = function() { return this; };
+    \\  function writeInner(bytes, callback) {
+    \\    let offset = 0;
+    \\    while (offset < bytes.length && inner && !inner.__home_closed) {
+    \\      const accepted = Number(inner.write(bytes.slice(offset))) || 0;
+    \\      if (accepted <= 0) break;
+    \\      offset += accepted;
+    \\    }
+    \\    if (typeof callback === "function") Promise.resolve().then(callback);
+    \\  }
+    \\  socket.write = function(chunk, callback) {
+    \\    if (socket.destroyed) return false;
+    \\    const bytes = Buffer.from(__home_net_bytes(chunk));
+    \\    if (inner) writeInner(bytes, callback);
+    \\    else queuedWrites.push({ bytes, callback });
+    \\    return true;
+    \\  };
+    \\  socket.end = function(chunk) {
+    \\    if (chunk !== undefined) socket.write(chunk);
+    \\    shouldEnd = true;
+    \\    if (inner && !inner.__home_closed) inner.end();
+    \\    return socket;
+    \\  };
+    \\  socket.destroy = function(error) {
+    \\    if (error) socket.emit("error", error);
+    \\    shouldEnd = true;
+    \\    if (inner && !inner.__home_closed) inner.end();
+    \\    else if (!inner && !closeEmitted) {
+    \\      closeEmitted = true;
+    \\      socket.destroyed = true;
+    \\      socket.emit("close", !!error);
+    \\    }
+    \\    return socket;
+    \\  };
+    \\  Promise.resolve().then(() => __home_bun_connect({
+    \\    hostname,
+    \\    port,
+    \\    socket: {
+    \\      open() {},
+    \\      data(_socket, data) {
+    \\        __home_net_refresh_idle_timeout(socket);
+    \\        socket.emit("data", Buffer.from(__home_net_bytes(data)));
+    \\      },
+    \\      error(_socket, error) { errorEmitted = true; socket.emit("error", error); },
+    \\      connectError(_socket, error) { errorEmitted = true; socket.emit("error", error); },
+    \\      close(_socket, hadError) {
+    \\        if (closeEmitted) return;
+    \\        closeEmitted = true;
+    \\        socket.destroyed = true;
+    \\        socket.connecting = false;
+    \\        __home_net_clear_idle_timeout(socket);
+    \\        socket.emit("close", !!hadError);
+    \\      },
+    \\    },
+    \\  })).then(connected => {
+    \\    inner = connected;
+    \\    if (socket.destroyed || closeEmitted) {
+    \\      if (!inner.__home_closed) inner.end();
+    \\      return;
+    \\    }
+    \\    socket.connecting = false;
+    \\    socket.emit("connect");
+    \\    if (typeof connectCallback === "function") connectCallback();
+    \\    for (const entry of queuedWrites.splice(0)) writeInner(entry.bytes, entry.callback);
+    \\    if (shouldEnd && !inner.__home_closed) inner.end();
+    \\    __home_net_refresh_idle_timeout(socket);
+    \\  }, error => {
+    \\    if (!errorEmitted) socket.emit("error", error);
+    \\    if (!closeEmitted) {
+    \\      closeEmitted = true;
+    \\      socket.destroyed = true;
+    \\      socket.connecting = false;
+    \\      socket.emit("close", true);
+    \\    }
+    \\  });
+    \\  return socket;
     \\}
     \\function __home_net_pipe(source, destination) {
     \\  source.on("data", chunk => {
@@ -42747,6 +42877,8 @@ const harness_prelude =
     \\    });
     \\    return client;
     \\  }
+    \\  const bunServeHandle = globalThis.__home_serve_handles_by_origin["http://" + hostname + ":" + String(port)] || globalThis.__home_serve_handles_by_origin["http://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(port)];
+    \\  if (!__home_http_servers[port] && bunServeHandle && !bunServeHandle.stopped) return __home_net_connect_bun_serve(port, hostname, timeoutMs, connectCallback);
     \\  const socket = __home_http_event_target();
     \\  socket._handle = { fd: __home_alloc_virtual_fd("tcp-client:" + String(port), "r") };
     \\  socket.destroyed = false;
@@ -43150,6 +43282,7 @@ const harness_prelude =
     \\  }
     \\  let pending = [];
     \\  let responsePending = false;
+    \\  let pendingBody = null;
     \\  const hooks = opts.socket || {};
     \\  const origin = "http://" + hostname + ":" + String(port);
     \\  const serveHandle = globalThis.__home_serve_handles_by_origin[origin] || globalThis.__home_serve_handles_by_origin["http://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://" + hostname + ":" + String(port)] || globalThis.__home_serve_handles_by_origin["https://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://127.0.0.1:" + String(port)] || (hasUnix ? globalThis.__home_serve_handles_by_unix[unix] : null);
@@ -43186,26 +43319,104 @@ const harness_prelude =
     \\    }
     \\  }
     \\  function rejectMalformedRequest() {
+    \\    if (pendingBody) {
+    \\      pendingBody.deferred.reject(new Error("Invalid HTTP request body framing"));
+    \\      pendingBody = null;
+    \\    }
     \\    pending = [];
     \\    responsePending = true;
     \\    __home_bun_socket_call(socket, "data", __home_bun_socket_payload(__home_net_bytes("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), socket.__home_hooks));
     \\    __home_bun_socket_close_pair(socket, null);
     \\  }
+    \\  function dispatchRequest(method, path, version, headers, body) {
+    \\    responsePending = true;
+    \\    const closeAfterResponse = version !== "HTTP/1.1" || String(headers.get("connection") || "").toLowerCase() === "close";
+    \\    const request = new Request(origin + path, { method, headers, body });
+    \\    function failResponse(error) {
+    \\      if (socket.__home_closed) return;
+    \\      const target = socket.__home_response_target || socket;
+    \\      __home_bun_socket_close_pair(target, error);
+    \\      if (target !== socket) __home_bun_socket_close_pair(socket, error);
+    \\    }
+    \\    function finishResponse(response, responseBody) {
+    \\      if (socket.__home_closed) return;
+    \\      const target = socket.__home_response_target || socket;
+    \\      if (target !== socket) __home_bun_socket_call(socket, "data", Buffer.alloc(2048));
+    \\      __home_bun_socket_call(target, "data", __home_bun_socket_payload(__home_net_bytes(__home_http_raw_response_text(response, responseBody)), target.__home_hooks));
+    \\      responsePending = false;
+    \\      if (closeAfterResponse || target.__home_closed || socket.__home_closed) {
+    \\        __home_bun_socket_close_pair(target, null);
+    \\        if (target !== socket) __home_bun_socket_close_pair(socket, null);
+    \\      } else {
+    \\        processNextRequest();
+    \\      }
+    \\    }
+    \\    function consumeResponse(response) {
+    \\      if (!response || response.body == null) {
+    \\        finishResponse(response, "");
+    \\        return;
+    \\      }
+    \\      if (Object.prototype.hasOwnProperty.call(response.body, "__home_body_value")) {
+    \\        finishResponse(response, __home_response_body_text(response.body.__home_body_value));
+    \\        return;
+    \\      }
+    \\      Promise.resolve(typeof response.text === "function" ? response.text() : "").then(responseBody => finishResponse(response, responseBody), failResponse);
+    \\    }
+    \\    let response;
+    \\    try {
+    \\      response = serveHandle.fetch(request);
+    \\    } catch (error) {
+    \\      failResponse(error);
+    \\      return;
+    \\    }
+    \\    if (response && typeof response.then === "function") Promise.resolve(response).then(consumeResponse, failResponse);
+    \\    else consumeResponse(response);
+    \\  }
+    \\  function processPendingBody() {
+    \\    if (!pendingBody || socket.__home_closed) return false;
+    \\    let bodyBytes;
+    \\    let consumed;
+    \\    if (pendingBody.chunked) {
+    \\      const chunked = parseChunkedBody(pending);
+    \\      if (chunked === null) return false;
+    \\      if (chunked.error) {
+    \\        rejectMalformedRequest();
+    \\        return false;
+    \\      }
+    \\      bodyBytes = chunked.body;
+    \\      consumed = chunked.consumed;
+    \\    } else {
+    \\      if (pending.length < pendingBody.contentLength) return false;
+    \\      bodyBytes = pending.slice(0, pendingBody.contentLength);
+    \\      consumed = pendingBody.contentLength;
+    \\    }
+    \\    const completed = pendingBody;
+    \\    pendingBody = null;
+    \\    pending = pending.slice(consumed);
+    \\    completed.deferred.resolve(bodyBytes.length ? [new Uint8Array(bodyBytes)] : []);
+    \\    return true;
+    \\  }
     \\  function processNextRequest() {
-    \\    if (responsePending || socket.__home_closed || !serveHandle) return;
+    \\    if (socket.__home_closed || !serveHandle) return;
+    \\    if (pendingBody) {
+    \\      processPendingBody();
+    \\      return;
+    \\    }
+    \\    if (responsePending) return;
     \\    const requestText = __home_net_latin1(new Uint8Array(pending));
     \\    const headerEnd = requestText.indexOf("\r\n\r\n");
     \\    if (headerEnd === -1) return;
     \\    const head = requestText.slice(0, headerEnd);
-    \\    if (__home_http_raw_request_status(head + "\r\n\r\n") !== 200) {
+    \\    const metadata = __home_http_raw_request_metadata(head + "\r\n\r\n");
+    \\    if (metadata.status !== 200) {
     \\      rejectMalformedRequest();
     \\      return;
     \\    }
     \\    const lines = head.split("\r\n");
-    \\    const requestLine = String(lines.shift() || "GET / HTTP/1.1").split(" ");
-    \\    const method = requestLine[0] || "GET";
-    \\    const path = requestLine[1] || "/";
-    \\    const version = requestLine[2] || "HTTP/1.1";
+    \\    lines.shift();
+    \\    const method = metadata.method;
+    \\    const path = metadata.target;
+    \\    const version = metadata.version;
     \\    const headers = new Headers();
     \\    for (const line of lines) {
     \\      const colon = line.indexOf(":");
@@ -43214,9 +43425,16 @@ const harness_prelude =
     \\    const bodyOffset = headerEnd + 4;
     \\    let bodyBytes = [];
     \\    let consumed = bodyOffset;
-    \\    if (/\bchunked\b/i.test(String(headers.get("transfer-encoding") || ""))) {
+    \\    if (metadata.chunked) {
     \\      const chunked = parseChunkedBody(pending.slice(bodyOffset));
-    \\      if (chunked === null) return;
+    \\      if (chunked === null) {
+    \\        const deferred = Promise.withResolvers();
+    \\        deferred.promise.catch(function() {});
+    \\        pending = pending.slice(bodyOffset);
+    \\        pendingBody = { chunked: true, contentLength: 0, deferred };
+    \\        dispatchRequest(method, path, version, headers, __home_deferred_chunks_reader(deferred.promise));
+    \\        return;
+    \\      }
     \\      if (chunked.error) {
     \\        rejectMalformedRequest();
     \\        return;
@@ -43224,36 +43442,20 @@ const harness_prelude =
     \\      bodyBytes = chunked.body;
     \\      consumed += chunked.consumed;
     \\    } else {
-    \\      const lengthText = headers.get("content-length");
-    \\      const bodyLength = lengthText === null ? 0 : Number(lengthText);
-    \\      if (!Number.isSafeInteger(bodyLength) || bodyLength < 0 || bodyOffset + bodyLength > pending.length) {
-    \\        if (Number.isSafeInteger(bodyLength) && bodyLength >= 0) return;
-    \\        rejectMalformedRequest();
+    \\      const bodyLength = metadata.contentLength;
+    \\      if (bodyOffset + bodyLength > pending.length) {
+    \\        const deferred = Promise.withResolvers();
+    \\        deferred.promise.catch(function() {});
+    \\        pending = pending.slice(bodyOffset);
+    \\        pendingBody = { chunked: false, contentLength: bodyLength, deferred };
+    \\        dispatchRequest(method, path, version, headers, __home_deferred_chunks_reader(deferred.promise));
     \\        return;
     \\      }
     \\      bodyBytes = pending.slice(bodyOffset, bodyOffset + bodyLength);
     \\      consumed += bodyLength;
     \\    }
     \\    pending = pending.slice(consumed);
-    \\    responsePending = true;
-    \\    const closeAfterResponse = version !== "HTTP/1.1" || String(headers.get("connection") || "").toLowerCase() === "close";
-    \\    const request = new Request(origin + path, { method, headers, body: bodyBytes.length ? new Uint8Array(bodyBytes) : undefined });
-    \\    Promise.resolve(serveHandle.fetch(request)).then(response => Promise.resolve(response && typeof response.text === "function" ? response.text() : "").then(body => {
-    \\      const target = socket.__home_response_target || socket;
-    \\      if (target !== socket) __home_bun_socket_call(socket, "data", Buffer.alloc(2048));
-    \\      __home_bun_socket_call(target, "data", __home_bun_socket_payload(__home_net_bytes(__home_http_raw_response_text(response, body)), target.__home_hooks));
-    \\      responsePending = false;
-    \\      if (closeAfterResponse || target.__home_closed || socket.__home_closed) {
-    \\        __home_bun_socket_close_pair(target, null);
-    \\        if (target !== socket) __home_bun_socket_close_pair(socket, null);
-    \\      } else {
-    \\        processNextRequest();
-    \\      }
-    \\    }), error => {
-    \\      const target = socket.__home_response_target || socket;
-    \\      __home_bun_socket_close_pair(target, error);
-    \\      if (target !== socket) __home_bun_socket_close_pair(socket, error);
-    \\    });
+    \\    dispatchRequest(method, path, version, headers, bodyBytes.length ? new Uint8Array(bodyBytes) : undefined);
     \\  }
     \\  socket.write = function(chunk) {
     \\    if (socket.__home_closed) return 0;
@@ -43264,7 +43466,15 @@ const harness_prelude =
     \\    processNextRequest();
     \\    return bytes.length;
     \\  };
-    \\  socket.end = function(chunk) { if (chunk !== undefined) socket.write(chunk); __home_bun_socket_close_pair(socket, null); return socket; };
+    \\  socket.end = function(chunk) {
+    \\    if (chunk !== undefined) socket.write(chunk);
+    \\    if (pendingBody) {
+    \\      pendingBody.deferred.reject(new Error("Request body terminated before completion"));
+    \\      pendingBody = null;
+    \\    }
+    \\    __home_bun_socket_close_pair(socket, null);
+    \\    return socket;
+    \\  };
     \\  return Promise.resolve().then(() => {
     \\    __home_bun_socket_call(socket, "open");
     \\    if (opts.tls && typeof hooks.handshake === "function") __home_bun_socket_call(socket, "handshake", true, null);
@@ -43406,7 +43616,7 @@ const harness_prelude =
     \\      if (settled) return;
     \\      settled = true;
     \\      client.destroy();
-    \\      resolve(testCase[1]);
+    \\      resolve({ passed: testCase[1], outcome: "timeout" });
     \\    }, 500);
     \\    client.on("data", data => {
     \\      if (settled) return;
@@ -43414,13 +43624,13 @@ const harness_prelude =
     \\      clearTimeout(timeout);
     \\      const status = __home_http_spec_status(data.toString());
     \\      client.destroy();
-    \\      resolve(testCase[2].some(range => status >= range[0] && status <= range[1]));
+    \\      resolve({ passed: testCase[2].some(range => status >= range[0] && status <= range[1]), outcome: "status " + String(status) + " from " + JSON.stringify(String(data.toString()).split("\r\n")[0]) });
     \\    });
-    \\    client.on("error", () => {
+    \\    client.on("error", error => {
     \\      if (settled) return;
     \\      settled = true;
     \\      clearTimeout(timeout);
-    \\      resolve(false);
+    \\      resolve({ passed: false, outcome: "socket error " + String(error && error.message || error) });
     \\    });
     \\  });
     \\}
@@ -43428,7 +43638,12 @@ const harness_prelude =
     \\  const server = Bun.serve({ port: 0, fetch() { return new Response("Hello, world!"); } });
     \\  try {
     \\    const results = await Promise.all(__home_http_spec_cases.map(testCase => __home_http_spec_run_case(testCase, server.url.hostname, Number(server.url.port))));
-    \\    return results.every(Boolean);
+    \\    const failures = [];
+    \\    for (let i = 0; i < results.length; i++) {
+    \\      if (!results[i].passed) failures.push(String(i + 1) + ": " + JSON.stringify(String(__home_http_spec_cases[i][0]).split("\r\n")[0]) + " (" + results[i].outcome + ")");
+    \\    }
+    \\    if (failures.length) throw new Error("h1spec failed cases: " + failures.join(", "));
+    \\    return true;
     \\  } finally {
     \\    server.stop(true);
     \\  }
@@ -61278,7 +61493,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/req-url-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/request-smuggling.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve raw TCP request smuggling integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-body-leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve request body memory leak integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-http3.test.ts"))
@@ -83540,6 +83755,43 @@ test "bootstrap runner mirrors HTTP chunked transfer TCP matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 11), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors HTTP request smuggling hardening matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/request-smuggling.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve raw TCP request smuggling integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "prevents request smuggling attack") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "pipelined request header isolation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_raw_request_metadata(requestText)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_net_connect_bun_serve(port, hostname, timeoutMs, connectCallback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request body terminated before completion") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 59 or summary.todo != 0) {
+        std.debug.print(
+            "HTTP request smuggling mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 59), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 59), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
