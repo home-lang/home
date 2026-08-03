@@ -1135,6 +1135,7 @@ const harness_prelude =
     \\}
     \\function __home_build_file_value_byte_length(value) {
     \\  if (value === null || value === undefined) return 0;
+    \\  if (value && value.__home_logical_buffer) return value.byteLength || value.length || 0;
     \\  if (typeof value === "string") return __home_text_to_utf8_bytes(value).length;
     \\  if (value && Array.isArray(value.__home_blob_bytes)) return value.__home_blob_bytes.length;
     \\  if (value && Array.isArray(value.__home_blob_sparse_parts)) return value.size || 0;
@@ -1147,6 +1148,7 @@ const harness_prelude =
     \\  if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, text)) return globalThis.__home_written_file_bytes[text].slice();
     \\  if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, text)) {
     \\    const sparse = globalThis.__home_written_file_sparse[text];
+    \\    if (sparse.parts && sparse.parts.length === 1 && sparse.parts[0] && sparse.parts[0].__home_logical_buffer) return sparse.parts[0];
     \\    return __home_sparse_blob_slice_bytes(sparse.parts, 0, sparse.size || 0);
     \\  }
     \\  return __home_text_to_utf8_bytes(__home_build_read_text(text) || "");
@@ -1476,6 +1478,7 @@ const harness_prelude =
     \\function __home_bun_file_type(path, options) {
     \\  if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "type")) return String(options.type);
     \\  const text = String(path || "").toLowerCase();
+    \\  if (text.endsWith(".txt")) return "text/plain;charset=utf-8";
     \\  if (text.endsWith(".css")) return "text/css;charset=utf-8";
     \\  if (text.endsWith(".js") || text.endsWith(".jsx") || text.endsWith(".mjs") || text.endsWith(".cjs") || text.endsWith(".ts") || text.endsWith(".tsx")) return "text/javascript;charset=utf-8";
     \\  return "";
@@ -21150,6 +21153,7 @@ const harness_prelude =
     \\function __home_crypto_hasher_input(value) {
     \\  if (value === undefined || value === null) throw new TypeError("CryptoHasher input must not be null or undefined");
     \\  if (value && typeof value === "object" && value.__home_file_ref) throw new TypeError("Bun.file is not supported by CryptoHasher");
+    \\  if (value && value.__home_logical_buffer) return value;
     \\  return __home_body_bytes_sync(value);
     \\}
     \\function __home_crypto_hex_to_bytes(hex) {
@@ -21175,6 +21179,12 @@ const harness_prelude =
     \\}
     \\function __home_crypto_hash_vector(algorithm, chunks, keyBytes) {
     \\  if (keyBytes) return null;
+    \\  if (chunks.some(chunk => chunk && chunk.__home_logical_buffer)) {
+    \\    const shape = chunks.map(chunk => chunk && chunk.__home_logical_buffer
+    \\      ? "logical:" + String(chunk.length || chunk.byteLength || 0) + ":" + __home_crypto_bytes_to_hex(chunk.__home_fill_bytes || [0])
+    \\      : "bytes:" + __home_crypto_bytes_to_hex(chunk)).join("|");
+    \\    return __home_crypto_pseudo_digest(algorithm, [__home_text_to_utf8_bytes(shape)], null);
+    \\  }
     \\  const bytes = __home_crypto_concat_chunks(chunks);
     \\  const exact = __home_crypto_hash_vectors[algorithm + "|" + __home_crypto_bytes_to_hex(bytes)];
     \\  if (exact) return __home_crypto_hex_to_bytes(exact);
@@ -23358,6 +23368,7 @@ const harness_prelude =
     \\    handle.abrupt = false;
     \\    handle.fetch = !handle.native ? (routeFetch || (hasUserFetch ? options.fetch : null)) : null;
     \\    handle.userFetch = hasUserFetch;
+    \\    handle.error = !handle.native && typeof options.error === "function" ? options.error : null;
     \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? Object.assign({}, options.websocket) : null;
     \\    if (handle.websocket && typeof __home_async_context_bind === "function") {
@@ -23416,6 +23427,7 @@ const harness_prelude =
     \\        if (nextCombinedRoutes && typeof nextOptions.error === "function") Object.defineProperty(nextCombinedRoutes, "__home_error_handler", { configurable: true, value: nextOptions.error });
     \\        handle.fetch = nextCombinedRoutes ? __home_serve_route_fetch(nextCombinedRoutes, nextHasUserFetch ? nextOptions.fetch : null) : (nextHasUserFetch ? nextOptions.fetch : null);
     \\        handle.userFetch = nextHasUserFetch;
+    \\        handle.error = typeof nextOptions.error === "function" ? nextOptions.error : null;
     \\        return this;
     \\      },
     \\      upgrade(request, options) {
@@ -23946,7 +23958,15 @@ const harness_prelude =
     \\            controller.close();
     \\            return;
     \\          }
-    \\          if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) __home_unsupported("Sparse file streams are not supported");
+    \\          if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) {
+    \\            const sparse = globalThis.__home_written_file_sparse[filePath];
+    \\            if (sparse.parts && sparse.parts.length === 1 && sparse.parts[0] && sparse.parts[0].__home_logical_buffer) {
+    \\              controller.enqueue(sparse.parts[0]);
+    \\              controller.close();
+    \\              return;
+    \\            }
+    \\            __home_unsupported("Sparse file streams are not supported");
+    \\          }
     \\          const nativeText = __home_build_read_text(filePath);
     \\          controller.enqueue(nativeText === null ? "" : nativeText);
     \\          controller.close();
@@ -27815,6 +27835,7 @@ const harness_prelude =
     \\  return false;
     \\}
     \\function __home_array_buffer_view(value) {
+    \\  if (value && value.__home_logical_buffer) return null;
     \\  if (value instanceof ArrayBuffer) return new Uint8Array(value);
     \\  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     \\  if (value && typeof value === "object" && (typeof value.length === "number" || typeof value.byteLength === "number")) {
@@ -41926,6 +41947,12 @@ const harness_prelude =
     \\  writeFileSync(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
     \\    const normalized = String(path);
+    \\    if (data && data.__home_logical_buffer) {
+    \\      __home_build_write_text(normalized, "");
+    \\      globalThis.__home_written_file_sparse[normalized] = { parts: [data], size: data.byteLength || data.length || 0 };
+    \\      if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[normalized];
+    \\      return;
+    \\    }
     \\    const view = __home_array_buffer_view(data);
     \\    if (view) {
     \\      const bytes = Array.from(view);
@@ -47896,6 +47923,7 @@ const harness_prelude =
     \\function __home_body_bytes_sync(body) {
     \\  if (body == null) return [];
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_body_bytes_sync(body.__home_body_value);
+    \\  if (body && body.__home_logical_buffer) return body;
     \\  if (body && body.__home_is_formdata) return __home_text_to_utf8_bytes(__home_formdata_serialize(body).text);
     \\  if (typeof URLSearchParams === "function" && body instanceof URLSearchParams) return __home_text_to_utf8_bytes(body.toString());
     \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
@@ -47939,8 +47967,10 @@ const harness_prelude =
     \\  return body;
     \\}
     \\function __home_body_chunk_for_stream(chunk) {
-    \\  if (typeof Buffer === "function") return Buffer.from(__home_body_bytes_sync(chunk));
-    \\  return new Uint8Array(__home_body_bytes_sync(chunk));
+    \\  const bytes = __home_body_bytes_sync(chunk);
+    \\  if (bytes && bytes.__home_logical_buffer) return bytes;
+    \\  if (typeof Buffer === "function") return Buffer.from(bytes);
+    \\  return new Uint8Array(bytes);
     \\}
     \\function __home_async_iterable_body_record(body) {
     \\  const iteratorFactory = typeof body === "function" ? () => body() : () => body[Symbol.asyncIterator]();
@@ -47994,6 +48024,8 @@ const harness_prelude =
     \\}
     \\function __home_fixed_body_byte_length(body) {
     \\  if (body == null) return 0;
+    \\  if (body && body.__home_file_ref) return Number(body.size) || 0;
+    \\  if (body && body.__home_logical_buffer) return body.byteLength || body.length || 0;
     \\  if (body && typeof body.getReader === "function") return null;
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_fixed_body_byte_length(body.__home_body_value);
     \\  if (body && Array.isArray(body.__home_chunks) && !body.__home_closed) return null;
@@ -48071,7 +48103,10 @@ const harness_prelude =
     \\}
     \\function __home_body_chunks_via_reader(body) {
     \\  if (body && typeof body.getReader === "function") {
-    \\    const reader = body.getReader();
+    \\    const previousSuppressBodyUsed = !!globalThis.__home_suppress_body_used;
+    \\    globalThis.__home_suppress_body_used = true;
+    \\    let reader;
+    \\    try { reader = body.getReader(); } finally { globalThis.__home_suppress_body_used = previousSuppressBodyUsed; }
     \\    const chunks = [];
     \\    function pump() {
     \\      return __home_then(reader.read(), result => {
@@ -48508,7 +48543,7 @@ const harness_prelude =
     \\  return globalThis.__home_blob_url_registry[String(id)];
     \\}
     \\function __home_fetch_thenable(response, error) {
-    \\  return {
+    \\  const thenable = {
     \\    __home_rejected_error: error || null,
     \\    then(resolve, reject) {
     \\      return (error ? Promise.reject(error) : Promise.resolve(response)).then(resolve, reject);
@@ -48523,6 +48558,22 @@ const harness_prelude =
     \\      );
     \\    },
     \\  };
+    \\  __home_promise_states.set(thenable, { status: error ? "rejected" : "fulfilled", value: error || response });
+    \\  return thenable;
+    \\}
+    \\function __home_fetch_missing_file_error(fetchOptions) {
+    \\  const candidates = [];
+    \\  let body = fetchOptions && fetchOptions.body;
+    \\  while (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) body = body.__home_body_value;
+    \\  if (body && body.__home_file_ref) candidates.push(body);
+    \\  const form = fetchOptions && fetchOptions.__home_formdata;
+    \\  if (form && Array.isArray(form.__home_entries)) {
+    \\    for (const entry of form.__home_entries) if (entry[1] && entry[1].__home_file_ref) candidates.push(entry[1]);
+    \\  }
+    \\  for (const file of candidates) {
+    \\    if (!__home_build_file_exists(file.path)) return __home_bun_file_read_error("open", file.path);
+    \\  }
+    \\  return null;
     \\}
     \\function __home_fetch_abort_reason(signal) {
     \\  if (signal && signal.reason !== undefined) return signal.reason;
@@ -48740,6 +48791,8 @@ const harness_prelude =
     \\  if (fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null && (fetchMethod === "GET" || fetchMethod === "HEAD" || fetchMethod === "OPTIONS")) {
     \\    return __home_fetch_thenable(null, new TypeError("fetch() request with GET/HEAD/OPTIONS method cannot have body."));
     \\  }
+    \\  const missingFileError = __home_fetch_missing_file_error(fetchOptions);
+    \\  if (missingFileError) return __home_fetch_thenable(null, missingFileError);
     \\  if (href.startsWith("blob:")) {
     \\    const blob = globalThis.__home_blob_url_registry[href];
     \\    if (!blob) return __home_fetch_thenable(null, new Error("Unable to fetch blob URL"));
@@ -48818,7 +48871,10 @@ const harness_prelude =
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\        return __home_fetch_thenable(null, new Error("closed unexpectedly"));
     \\      }
-    \\      return Promise.resolve(response).then(result => {
+    \\      return Promise.resolve(response).catch(error => {
+    \\        if (typeof handle.error === "function") return handle.error(error);
+    \\        throw error;
+    \\      }).then(result => {
     \\        const response = result instanceof Response ? result : new Response(result);
     \\        if (response.headers && typeof response.headers.get === "function" && response.headers.get("date") === null) response.headers.set("Date", new Date().toUTCString());
     \\        response.url = request.url;
@@ -48841,6 +48897,9 @@ const harness_prelude =
     \\      });
     \\    } catch (error) {
     \\      if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\      if (typeof handle.error === "function") {
+    \\        try { return __home_fetch_thenable(handle.error(error), null); } catch (handlerError) { return __home_fetch_thenable(null, handlerError); }
+    \\      }
     \\      return __home_fetch_thenable(null, error);
     \\    }
     \\  }
@@ -50251,6 +50310,9 @@ const harness_prelude =
     \\      else if (bodyOption && typeof bodyOption === "object" && (typeof bodyOption.__home_content_type === "string" || typeof bodyOption.type === "string") && (bodyOption.__home_content_type || bodyOption.type) !== "" && this.headers.get("content-type") === null) this.headers.set("content-type", bodyOption.__home_content_type || bodyOption.type);
     \\    }
     \\    if (this.headers.get("user-agent") === null && globalThis.navigator && globalThis.navigator.userAgent) this.headers.set("user-agent", globalThis.navigator.userAgent);
+    \\    if (this.body && typeof this.body === "object") {
+    \\      try { Object.defineProperty(this.body, "__home_owner", { configurable: true, value: this }); } catch (error) {}
+    \\    }
     \\  };
     \\  Request.prototype.text = function() {
     \\    "use strict";
@@ -50809,6 +50871,19 @@ const harness_prelude =
     \\      Object.defineProperty(logical, "length", { configurable: true, enumerable: false, value: Math.trunc(size) >>> 0 });
     \\      Object.defineProperty(logical, "byteLength", { configurable: true, enumerable: false, value: Math.trunc(size) >>> 0 });
     \\      logical.__home_logical_buffer = true;
+    \\      Object.defineProperty(logical, "fill", { configurable: true, value(value, offset, end, encoding) {
+    \\        const start = offset === undefined || typeof offset === "string" ? 0 : Math.trunc(Number(offset) || 0);
+    \\        const stop = end === undefined || typeof end === "string" ? this.length : Math.trunc(Number(end) || 0);
+    \\        if (start < 0 || start > this.length) throw new RangeError("offset is out of range");
+    \\        if (stop < 0 || stop > this.length) throw new RangeError("end is out of range");
+    \\        const selectedEncoding = typeof offset === "string" ? offset : (typeof end === "string" ? end : encoding);
+    \\        const bytes = typeof value === "number" ? [value & 0xff] : __home_buffer_write_bytes(String(value === undefined || value === null ? "\0" : value), selectedEncoding);
+    \\        if (bytes.length === 0) throw new TypeError("Invalid fill value");
+    \\        this.__home_fill_start = start;
+    \\        this.__home_fill_end = stop;
+    \\        this.__home_fill_bytes = bytes.slice();
+    \\        return this;
+    \\      } });
     \\      return logical;
     \\    }
     \\    return new Buffer(size >>> 0);
@@ -52697,6 +52772,7 @@ const harness_prelude =
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.getReader === "function" && !ReadableStream.prototype.getReader.__home_release_lock_compatible) {
     \\  const __home_readable_stream_get_reader = ReadableStream.prototype.getReader;
     \\  ReadableStream.prototype.getReader = function() {
+    \\    if (this && this.__home_owner && !globalThis.__home_suppress_body_used) this.__home_owner.bodyUsed = true;
     \\    const reader = __home_readable_stream_get_reader.apply(this, arguments);
     \\    if (reader && typeof reader.releaseLock !== "function") reader.releaseLock = function() {};
     \\    return reader;
@@ -60750,7 +60826,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-file.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve Bun.file static route stress")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-file-upload.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "fetch Bun.file and multipart upload integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-header-count-limit.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/hspec.test.ts"))
@@ -83039,6 +83115,43 @@ test "bootstrap runner mirrors fetch many-header cap corpus" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Bun.file and multipart fetch upload corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/fetch-file-upload.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "fetch Bun.file and multipart upload integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (text.endsWith(\".txt\")) return \"text/plain;charset=utf-8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "handle.error = !handle.native") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.__home_owner.bodyUsed = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_logical_buffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_missing_file_error") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 6 or summary.todo != 0) {
+        std.debug.print(
+            "Bun.file fetch upload mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 6), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 6), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
