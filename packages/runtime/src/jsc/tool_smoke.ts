@@ -39,6 +39,10 @@ const child = Home.spawnSync(["printf", "home-tool"]);
 if (child.exitCode !== 0 || child.stdout !== "home-tool" || child.stderr !== "") {
   throw new Error("Home.spawnSync returned an unexpected result");
 }
+const inheritedHome = Home.spawnSync(["printenv", "HOME"]);
+if (inheritedHome.exitCode !== 0 || !inheritedHome.stdout.trim()) {
+  throw new Error("Home.spawnSync did not inherit the parent environment");
+}
 
 if (process.argv[1] !== "packages/runtime/src/jsc/tool_smoke.ts") {
   throw new Error("home-tool did not expose the script path in process.argv");
