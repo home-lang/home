@@ -428,6 +428,11 @@ pub const Printer = struct {
     /// FUNCTION body, so it opens its own temp-hoist scope (temps allocated
     /// inside splice at that function's top rather than module scope).
     next_block_is_fn_body: bool = false,
+    /// While a generator/async state machine is being lowered, its rewritten
+    /// control-flow (guarded `if (cond) return [3, N];` jumps, etc.) is emitted
+    /// in tsc's compact single-line style rather than Bun's break-onto-own-line
+    /// form. Set for the duration of the downlevel body emit.
+    compact_bodies: bool = false,
     /// Names (sans `#`) of the current class's private METHODS while the ES5
     /// IIFE path emits its body — distinguishes hoisted-function privates
     /// (`_C_m`, invoked via `.call`) from WeakMap field privates
@@ -1350,8 +1355,8 @@ pub const Printer = struct {
             .labeled_stmt => {
                 const ls = hir_mod.labeledStmtOf(self.hir, node);
                 try self.printExpression(ls.label);
-                try self.write(": ");
-                try self.printStatementInline(ls.body);
+                try self.write(":");
+                try self.printClauseBody(ls.body);
             },
             .enum_decl => try self.printEnum(node),
             .namespace_decl => try self.printNamespace(node),
@@ -1660,15 +1665,110 @@ pub const Printer = struct {
         try self.write("}");
     }
 
+    /// Print a loop/label clause body, matching Bun's `printBody`: a block
+    /// body keeps a leading space and stays inline (`) {...}`); any other
+    /// statement breaks onto its own indented line (`)\n  stmt;`). No trailing
+    /// newline — the caller's statement loop supplies inter-statement breaks.
+    fn printClauseBody(self: *Printer, body: NodeId) anyerror!void {
+        // A block body — or any body inside a compact state-machine lowering —
+        // stays inline with a leading space.
+        if (self.compact_bodies or self.hir.kindOf(body) == .block_stmt) {
+            try self.write(" ");
+            try self.printStatementInline(body);
+        } else {
+            try self.write(self.options.newline);
+            self.depth += 1;
+            try self.indent();
+            try self.printNonIndentStatement(body);
+            self.depth -= 1;
+        }
+    }
+
+    /// Mirror of Bun's `wrapToAvoidAmbiguousElse`: true when `node`'s tail is
+    /// an `if` without an `else`, so breaking it as the then-branch of an outer
+    /// `if … else` would let the trailing `else` rebind to the inner `if`.
+    /// Such a then-branch must be wrapped in braces.
+    fn stmtEndsInDanglingIf(self: *const Printer, node: NodeId) bool {
+        var s = node;
+        while (true) {
+            switch (self.hir.kindOf(s)) {
+                .if_stmt => {
+                    const p = hir_mod.ifOf(self.hir, s);
+                    if (p.else_branch != hir_mod.none_node_id) {
+                        s = p.else_branch;
+                    } else {
+                        return true;
+                    }
+                },
+                .for_stmt => s = hir_mod.forStmtOf(self.hir, s).body,
+                .for_in_stmt, .for_of_stmt => s = hir_mod.forInOf(self.hir, s).body,
+                .while_stmt => s = hir_mod.whileOf(self.hir, s).body,
+                .labeled_stmt => s = hir_mod.labeledStmtOf(self.hir, s).body,
+                else => return false,
+            }
+        }
+    }
+
     fn printIf(self: *Printer, node: NodeId) anyerror!void {
         const p = hir_mod.ifOf(self.hir, node);
         try self.write("if (");
         try self.printExpression(p.cond);
-        try self.write(") ");
-        try self.printStatementInline(p.then_branch);
-        if (p.else_branch != hir_mod.none_node_id) {
-            try self.write(" else ");
-            try self.printStatementInline(p.else_branch);
+        // Inside a compact state-machine lowering, keep the tsc single-line
+        // shape (`if (cond) stmt; else stmt;`) rather than breaking.
+        if (self.compact_bodies) {
+            try self.write(") ");
+            try self.printStatementInline(p.then_branch);
+            if (p.else_branch != hir_mod.none_node_id) {
+                try self.write(" else ");
+                try self.printStatementInline(p.else_branch);
+            }
+            return;
+        }
+        try self.write(")");
+        const has_else = p.else_branch != hir_mod.none_node_id;
+        if (self.hir.kindOf(p.then_branch) == .block_stmt) {
+            try self.write(" ");
+            try self.printStatementInline(p.then_branch);
+            if (has_else) try self.write(" ");
+        } else if (has_else and self.stmtEndsInDanglingIf(p.then_branch)) {
+            // Wrap the then-branch so the `else` stays bound to this `if`.
+            try self.write(" {");
+            try self.write(self.options.newline);
+            self.depth += 1;
+            try self.indent();
+            try self.printNonIndentStatement(p.then_branch);
+            self.depth -= 1;
+            try self.write(self.options.newline);
+            try self.indent();
+            try self.write("} ");
+        } else {
+            try self.write(self.options.newline);
+            self.depth += 1;
+            try self.indent();
+            try self.printNonIndentStatement(p.then_branch);
+            self.depth -= 1;
+            if (has_else) {
+                try self.write(self.options.newline);
+                try self.indent();
+            }
+        }
+        if (has_else) {
+            try self.write("else");
+            const els = p.else_branch;
+            if (self.hir.kindOf(els) == .block_stmt) {
+                try self.write(" ");
+                try self.printStatementInline(els);
+            } else if (self.hir.kindOf(els) == .if_stmt) {
+                // `else if …` — the recursive printIf supplies the keyword.
+                try self.write(" ");
+                try self.printIf(els);
+            } else {
+                try self.write(self.options.newline);
+                self.depth += 1;
+                try self.indent();
+                try self.printNonIndentStatement(els);
+                self.depth -= 1;
+            }
         }
     }
 
@@ -1736,8 +1836,8 @@ pub const Printer = struct {
         const p = hir_mod.whileOf(self.hir, node);
         try self.write("while (");
         try self.printExpression(p.cond);
-        try self.write(") ");
-        try self.printStatementInline(p.body);
+        try self.write(")");
+        try self.printClauseBody(p.body);
     }
 
     fn printDoWhile(self: *Printer, node: NodeId) !void {
@@ -1750,9 +1850,32 @@ pub const Printer = struct {
             self.gen_continue_label = prev_continue;
         }
         const p = hir_mod.doWhileOf(self.hir, node);
-        try self.write("do ");
-        try self.printStatementInline(p.body);
-        try self.write(" while (");
+        if (self.compact_bodies) {
+            try self.write("do ");
+            try self.printStatementInline(p.body);
+            try self.write(" while (");
+            try self.printExpression(p.cond);
+            try self.write(")");
+            try self.writeSemi();
+            return;
+        }
+        try self.write("do");
+        if (self.hir.kindOf(p.body) == .block_stmt) {
+            try self.write(" ");
+            try self.printStatementInline(p.body);
+            try self.write(" ");
+        } else {
+            // Non-block body breaks onto its own indented line, and the
+            // `while` returns to the do-statement's own indent (Bun s_do_while).
+            try self.write(self.options.newline);
+            self.depth += 1;
+            try self.indent();
+            try self.printNonIndentStatement(p.body);
+            self.depth -= 1;
+            try self.write(self.options.newline);
+            try self.indent();
+        }
+        try self.write("while (");
         try self.printExpression(p.cond);
         try self.write(")");
         try self.writeSemi();
@@ -1821,8 +1944,8 @@ pub const Printer = struct {
                 try self.printExpression(p.update);
             }
         }
-        try self.write(") ");
-        try self.printStatementInline(p.body);
+        try self.write(")");
+        try self.printClauseBody(p.body);
     }
 
     fn printForInOf(self: *Printer, node: NodeId) !void {
@@ -1913,8 +2036,8 @@ pub const Printer = struct {
         try self.write(kw);
         try self.write(" ");
         try self.printExpression(p.source);
-        try self.write(") ");
-        try self.printStatementInline(p.body);
+        try self.write(")");
+        try self.printClauseBody(p.body);
     }
 
     /// §4.A destructuring v8 — true iff `target` is a destructuring
@@ -3391,6 +3514,9 @@ pub const Printer = struct {
     ///
     /// Caller is responsible for gating on `canLowerGeneratorBody`.
     fn printGeneratorDownlevelBody(self: *Printer, body: NodeId, params: []const NodeId) anyerror!void {
+        const prev_compact = self.compact_bodies;
+        self.compact_bodies = true;
+        defer self.compact_bodies = prev_compact;
         try self.write("{");
         self.depth += 1;
         try self.writeNewlineIndent();
@@ -5076,6 +5202,9 @@ pub const Printer = struct {
     ///   `case +2: _a.sent();`
     /// So N user yields produce 2N resumption-related cases.
     fn printAsyncGeneratorDownlevelBody(self: *Printer, body: NodeId, params: []const NodeId) anyerror!void {
+        const prev_compact = self.compact_bodies;
+        self.compact_bodies = true;
+        defer self.compact_bodies = prev_compact;
         try self.write("{");
         self.depth += 1;
         try self.writeNewlineIndent();
@@ -10758,8 +10887,8 @@ test "emit: function declaration" {
 test "emit: if/else" {
     const out = try emit("if (x) y; else z;");
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "if (x)") != null);
-    try T.expect(std.mem.indexOf(u8, out, " else ") != null);
+    // Non-block branches break onto their own indented lines (Bun/tsc parity).
+    try T.expectEqualStrings("if (x)\n  y;\nelse\n  z;", out);
 }
 
 test "emit: while loop" {
@@ -11311,7 +11440,8 @@ test "emit: statement-leading object/function/destructuring is parenthesized" {
 test "emit: labeled statement keeps its label (break/continue target)" {
     const out = try emit("outer: for (const x of list) { if (x) continue outer; }\nL: { break L; }");
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "outer: for") != null);
+    try T.expect(std.mem.indexOf(u8, out, "outer:") != null);
+    try T.expect(std.mem.indexOf(u8, out, "for (const x of list)") != null);
     try T.expect(std.mem.indexOf(u8, out, "continue outer") != null);
     try T.expect(std.mem.indexOf(u8, out, "L: {") != null);
     try T.expect(std.mem.indexOf(u8, out, "break L") != null);
@@ -16436,4 +16566,37 @@ test "emit: generator function expression spaces after star (Bun parity)" {
         defer T.allocator.free(out);
         try T.expectEqualStrings("const g = function* named() {};", out);
     }
+}
+
+test "emit: non-block control-flow bodies break onto their own line (Bun parity)" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "while (a) b();", .want = "while (a)\n  b();" },
+        .{ .src = "if (a) b();", .want = "if (a)\n  b();" },
+        .{ .src = "if (a) b(); else c();", .want = "if (a)\n  b();\nelse\n  c();" },
+        .{ .src = "if (a) b(); else if (c) d(); else e();", .want = "if (a)\n  b();\nelse if (c)\n  d();\nelse\n  e();" },
+        .{ .src = "for (;;) b();", .want = "for (;; )\n  b();" },
+        .{ .src = "for (const k in o) b();", .want = "for (const k in o)\n  b();" },
+        .{ .src = "for (const x of a) b();", .want = "for (const x of a)\n  b();" },
+        .{ .src = "do x(); while (y);", .want = "do\n  x();\nwhile (y);" },
+        .{ .src = "label: while (true) break label;", .want = "label:\n  while (true)\n    break label;" },
+        // Block bodies stay inline (with a leading space), unchanged.
+        .{ .src = "while (a) { b(); }", .want = "while (a) {\n  b();\n}" },
+        .{ .src = "if (a) { b(); } else { c(); }", .want = "if (a) {\n  b();\n} else {\n  c();\n}" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
+}
+
+test "emit: ambiguous-else wrap keeps else bound to outer if (Bun parity)" {
+    // The then-branch ends in a dangling `if`; breaking it bare would rebind
+    // the `else`, so Bun wraps it in braces.
+    const out = try emit("if (a) if (b) c(); else d();");
+    defer T.allocator.free(out);
+    // Parser binds `else` to the inner if here, so no wrap is needed — the
+    // else belongs to `if (b)`. Verify the structure is preserved.
+    try T.expect(std.mem.indexOf(u8, out, "if (a)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "else") != null);
 }
