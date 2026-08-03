@@ -1797,14 +1797,29 @@ pub const Printer = struct {
             }
         }
         try self.write(";");
-        if (p.cond != hir_mod.none_node_id) {
-            try self.write(" ");
-            try self.printExpression(p.cond);
-        }
-        try self.write(";");
-        if (p.update != hir_mod.none_node_id) {
-            try self.write(" ");
-            try self.printExpression(p.update);
+        if (self.options.es_target == .es5) {
+            // ES5 downlevel targets tsc's shape: a space after each `;`
+            // (before a non-empty clause).
+            if (p.cond != hir_mod.none_node_id) {
+                try self.write(" ");
+                try self.printExpression(p.cond);
+            }
+            try self.write(";");
+            if (p.update != hir_mod.none_node_id) {
+                try self.write(" ");
+                try self.printExpression(p.update);
+            }
+        } else {
+            // Modern emit matches Bun's js_printer (s_for): no space after the
+            // init `;`, but a single space after the test `;` (printSpace),
+            // even for empty clauses — `for (init;test; update)`.
+            if (p.cond != hir_mod.none_node_id) {
+                try self.printExpression(p.cond);
+            }
+            try self.write("; ");
+            if (p.update != hir_mod.none_node_id) {
+                try self.printExpression(p.update);
+            }
         }
         try self.write(") ");
         try self.printStatementInline(p.body);
@@ -6325,10 +6340,12 @@ pub const Printer = struct {
             self.depth -= 1;
         }
         if (members.len == 0) {
-            if (has_static_block) {
-                try self.write(self.options.newline);
-                try self.indent();
-            }
+            // Bun always breaks the class body onto its own lines, even when
+            // empty: `class C {\n}`. Emit newline + the class's outer indent
+            // before the closing brace (the static-block sub-case already did
+            // this; do it unconditionally to match Bun for bare empty bodies).
+            try self.write(self.options.newline);
+            try self.indent();
             try self.write("}");
             return;
         }
@@ -16358,5 +16375,40 @@ test "emit: async generator method binds star to async keyword (async* name)" {
         try T.expect(std.mem.indexOf(u8, out, "static *sgen() {}") != null);
         try T.expect(std.mem.indexOf(u8, out, "static async* sagen() {}") != null);
         try T.expect(std.mem.indexOf(u8, out, "async *") == null);
+    }
+}
+
+
+test "emit: for-loop semicolon spacing matches Bun (no space after init ;)" {
+    // Bun's js_printer emits `for (init;test; update)`: no space after the
+    // init `;`, one space after the test `;` (even for empty test/update).
+    {
+        const out = try emit("for (let i = 0, j = 1; i < j; i++, j--) {}");
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("for (let i = 0, j = 1;i < j; i++, j--) {}", out);
+    }
+    {
+        const out = try emit("for (; c; u) {}");
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("for (;c; u) {}", out);
+    }
+    {
+        const out = try emit("for (let i = 0; ; ) {}");
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("for (let i = 0;; ) {}", out);
+    }
+}
+
+test "emit: empty class body breaks onto its own line (Bun parity)" {
+    // Bun always breaks the class body: `class C {\n}`, never `{}`.
+    {
+        const out = try emit("class C {}");
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("class C {\n}", out);
+    }
+    {
+        const out = try emit("const x = class extends B {};");
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("const x = class extends B {\n};", out);
     }
 }
