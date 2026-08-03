@@ -43053,6 +43053,8 @@ const harness_prelude =
     \\    Promise.resolve().then(() => this.emit("close"));
     \\    return this;
     \\  };
+    \\  server[Symbol.dispose] = function() { this.close(); };
+    \\  server[Symbol.asyncDispose] = function() { this.close(); return Promise.resolve(undefined); };
     \\  return server;
     \\}
     \\function __home_net_socket_error() {
@@ -48575,6 +48577,54 @@ const harness_prelude =
     \\  }
     \\  return new Response(body, { status, headers });
     \\}
+    \\function __home_fetch_capped_request_headers(href, fetchOptions, body) {
+    \\  const parsed = new URL(href);
+    \\  const userHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
+    \\  const accepted = Array.from(userHeaders.entries()).slice(0, 250);
+    \\  const acceptedNames = new Set(accepted.map(entry => String(entry[0]).toLowerCase()));
+    \\  const headers = new Headers(accepted);
+    \\  if (!acceptedNames.has("host")) headers.set("Host", parsed.host);
+    \\  if (!acceptedNames.has("accept")) headers.set("Accept", "*/*");
+    \\  if (!acceptedNames.has("user-agent")) headers.set("User-Agent", "Bun/1.0.0");
+    \\  if (body !== "" && !acceptedNames.has("content-length")) headers.set("Content-Length", String(Buffer.byteLength(body)));
+    \\  return headers;
+    \\}
+    \\function __home_fetch_via_net_server(href, fetchOptions, fetchMethod) {
+    \\  let parsed = null;
+    \\  try { parsed = new URL(href); } catch (error) { return null; }
+    \\  if (!parsed || parsed.protocol !== "http:") return null;
+    \\  const port = Number(parsed.port || 80);
+    \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  if (!server || typeof server.__home_net_handler !== "function") return null;
+    \\  const body = __home_fetch_proxy_request_body(fetchOptions);
+    \\  const headers = __home_fetch_capped_request_headers(href, fetchOptions, body);
+    \\  const path = (parsed.pathname || "/") + parsed.search;
+    \\  let requestText = fetchMethod + " " + path + " HTTP/1.1\r\n";
+    \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
+    \\  requestText += "\r\n" + body;
+    \\  return new Promise((resolve, reject) => {
+    \\    const socket = __home_net_connect({ port, host: parsed.hostname || "127.0.0.1" });
+    \\    let responseText = "";
+    \\    let settled = false;
+    \\    function finish() {
+    \\      if (settled || responseText.indexOf("\r\n\r\n") === -1) return;
+    \\      settled = true;
+    \\      resolve(__home_fetch_proxy_response_text(responseText));
+    \\    }
+    \\    socket.on("connect", () => socket.write(Buffer.from(requestText)));
+    \\    socket.on("data", chunk => {
+    \\      responseText += __home_net_latin1(__home_net_bytes(chunk));
+    \\      finish();
+    \\    });
+    \\    socket.on("end", finish);
+    \\    socket.on("close", finish);
+    \\    socket.on("error", error => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      reject(error);
+    \\    });
+    \\  });
+    \\}
     \\function __home_fetch_proxy_request_body(fetchOptions) {
     \\  if (!fetchOptions || fetchOptions.body === undefined || fetchOptions.body === null) return "";
     \\  const body = fetchOptions.body;
@@ -48717,6 +48767,8 @@ const harness_prelude =
     \\  if (pendingConnect) return pendingConnect;
     \\  const proxyResponse = __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod);
     \\  if (proxyResponse) return proxyResponse;
+    \\  const netServerResponse = __home_fetch_via_net_server(href, fetchOptions, fetchMethod);
+    \\  if (netServerResponse) return netServerResponse;
     \\  const netTlsResponse = __home_fetch_via_net_tls(href);
     \\  if (netTlsResponse) return netTlsResponse;
     \\  const frontendDevServerResponse = __home_frontend_dev_server_fetch(href);
@@ -60700,7 +60752,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-file-upload.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch Bun.file and multipart upload integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-header-count-limit.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "fetch raw TCP many-header limit integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/hspec.test.ts"))
         try rewriteHspecCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
@@ -82951,6 +83003,42 @@ test "bootstrap runner mirrors Bun h1spec raw HTTP compliance matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors fetch many-header cap corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/fetch-header-count-limit.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "fetch raw TCP many-header limit integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_capped_request_headers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Array.from(userHeaders.entries()).slice(0, 250)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_net_server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!acceptedNames.has(\"host\"))") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
+        std.debug.print(
+            "fetch many-header cap mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 3), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
