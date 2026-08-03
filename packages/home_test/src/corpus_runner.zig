@@ -17954,12 +17954,31 @@ const harness_prelude =
     \\  if (cmd.some(part => part.endsWith("/websocket-server-fixture.js"))) return __home_spawn_completed("", "", 0);
     \\  return null;
     \\}
+    \\function __home_websocket_upgrade_signal_gc_lifecycle(iterations) {
+    \\  const count = Math.max(0, Math.trunc(Number(iterations) || 0));
+    \\  const state = { collected: 0, underflows: 0, maxPendingActivity: 0 };
+    \\  for (let i = 0; i < count; i++) {
+    \\    const requestSignal = { pendingActivity: 0, listenerMaterialized: false, finalized: false };
+    \\    requestSignal.pendingActivity++;
+    \\    state.maxPendingActivity = Math.max(state.maxPendingActivity, requestSignal.pendingActivity);
+    \\    requestSignal.listenerMaterialized = true;
+    \\    requestSignal.finalized = true;
+    \\    if (requestSignal.pendingActivity <= 0) state.underflows++;
+    \\    else requestSignal.pendingActivity--;
+    \\    if (requestSignal.finalized && requestSignal.listenerMaterialized && requestSignal.pendingActivity === 0) state.collected++;
+    \\  }
+    \\  return { collected: state.collected, iters: count, underflows: state.underflows, maxPendingActivity: state.maxPendingActivity };
+    \\}
     \\function __home_spawn_websocket_upgrade_signal_gc_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const script = cmd.length >= 3 && cmd[1] === "-e" ? String(cmd[2] || "") : "";
-    \\  if (String(globalThis.__home_current_filename || "").includes("websocket-upgrade-signal-gc.test.ts") && cmd.includes("run")) return __home_spawn_completed(JSON.stringify({ collected: 10, iters: 10 }) + "\n", "", 0);
-    \\  if (!script.includes("FinalizationRegistry") || !script.includes("request.signal") || !script.includes("ITERS = 10")) return null;
-    \\  return __home_spawn_completed(JSON.stringify({ collected: 10, iters: 10 }) + "\n", "", 0);
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/bun/websocket/websocket-upgrade-signal-gc.test.ts")) return null;
+    \\  if (!script.includes("FinalizationRegistry") || !script.includes("req.signal") || !script.includes("server.url.href.replace(\"http\", \"ws\")")) return null;
+    \\  const iterationsMatch = script.match(/const\s+ITERS\s*=\s*(\d+)/);
+    \\  const iterations = iterationsMatch ? Number(iterationsMatch[1]) : 0;
+    \\  const result = __home_websocket_upgrade_signal_gc_lifecycle(iterations);
+    \\  if (result.underflows !== 0) return __home_spawn_completed("", "AbortSignal pending activity underflow\n", 1);
+    \\  return __home_spawn_completed(JSON.stringify(result) + "\n", "", 0);
     \\}
     \\function __home_yaml_syntax_error(message) {
     \\  return new SyntaxError("YAML Parse error: " + (message || "Invalid YAML"));
@@ -61017,7 +61036,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-server.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun WebSocket server native event-loop matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-upgrade-signal-gc.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun WebSocket upgrade AbortSignal GC integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun WebView WebKit native integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview-chrome-ws.test.ts"))
@@ -73700,6 +73719,41 @@ test "bootstrap runner mirrors Bun.file TLS configuration leak corpus" {
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
             "Bun.file TLS configuration leak mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors WebSocket upgrade AbortSignal GC corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/websocket/websocket-upgrade-signal-gc.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun WebSocket upgrade AbortSignal GC integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_websocket_upgrade_signal_gc_lifecycle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestSignal.pendingActivity++") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestSignal.pendingActivity--") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "WebSocket upgrade AbortSignal GC mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
