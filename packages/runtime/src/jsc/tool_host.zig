@@ -229,7 +229,10 @@ fn spawnSyncNative(
     // argv/environment arena and the two pipe readers for this synchronous run.
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    const result = std.process.run(allocator, threaded.io(), .{ .argv = argv }) catch |err| {
+    var inherited = std.process.Environ.createMap(.{ .block = .{ .slice = std.mem.span(std.c.environ) } }, allocator) catch
+        return extern_fns.JSValueMakeNull(c);
+    defer inherited.deinit();
+    const result = std.process.run(allocator, threaded.io(), .{ .argv = argv, .environ_map = &inherited }) catch |err| {
         std.debug.print("home-tool: cannot spawn {s}: {t}\n", .{ argv[0], err });
         return extern_fns.JSValueMakeNull(c);
     };
