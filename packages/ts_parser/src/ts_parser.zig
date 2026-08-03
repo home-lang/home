@@ -2035,6 +2035,7 @@ pub const Parser = struct {
                 (self.peekAt(2).kind == .identifier or self.peekAt(2).kind == .open_brace) and
                 !self.peekAt(2).flags.preceded_by_newline;
             if (self.peek().kind == .identifier or
+                self.peek().kind == .less_than or
                 (self.peek().kind == .kw_await and !await_starts_using_declaration))
             {
                 const missing_pos = if (self.cursor > 0)
@@ -2382,6 +2383,16 @@ pub const Parser = struct {
                 // class body) are handled by the member-modifier loop.
                 if (self.abstractClassFollowsOnSameLine()) {
                     break :blk try self.parseClassDeclaration();
+                }
+                // A decorator cannot follow the `abstract` modifier. Recover
+                // `abstract @dec class C {}` as an identifier statement plus
+                // a fresh decorated class declaration, matching tsgo's
+                // contextual-modifier lookahead and ASI behavior.
+                if (self.peekAt(1).kind == .at) {
+                    const abstract_tok = self.advance();
+                    try self.reportCodeAt(abstract_tok.span.start, abstract_tok.line, 1434, "Unexpected keyword or identifier.");
+                    const name = try self.internToken(abstract_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(abstract_tok), name);
                 }
                 // `abstract interface/enum/namespace/module/function/var/let/const`
                 // — TS1242: `abstract` modifier can only appear on a
@@ -7248,6 +7259,46 @@ pub const Parser = struct {
         return idx;
     }
 
+    fn leadingDecoratorBeforeExport(self: *const Parser, export_index: usize) ?Token {
+        var idx = export_index;
+        while (idx > 0) {
+            idx -= 1;
+            const tok = self.tokens[idx];
+            if (tok.kind == .at) return tok;
+            switch (tok.kind) {
+                .semicolon, .open_brace, .close_brace => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn reportJsDecoratorAfterExport(
+        self: *Parser,
+        export_index: usize,
+        export_token: Token,
+        trailing: Token,
+    ) ParseError!void {
+        if (!self.isJavaScriptSyntaxAt(export_token.span.start)) return;
+        const leading = self.leadingDecoratorBeforeExport(export_index) orelse return;
+        const message = try self.diag_arena.allocator().dupe(u8, "Decorators may not appear after 'export' or 'export default' if they also appear before 'export'.");
+        const related = try self.diag_arena.allocator().alloc(RelatedInfo, 1);
+        related[0] = .{
+            .code = 1486,
+            .message = "Decorator used before 'export' here.",
+            .pos = leading.span.start,
+            .span_len = leading.span.end - leading.span.start,
+        };
+        try self.diagnostics.append(self.gpa, .{
+            .pos = trailing.span.start,
+            .line = trailing.line,
+            .span_len = trailing.span.end - trailing.span.start,
+            .code = 8038,
+            .message = message,
+            .related = related,
+        });
+    }
+
     fn skipBalancedLookahead(self: *const Parser, start: usize) usize {
         var idx = start;
         var depth: usize = 0;
@@ -8650,6 +8701,7 @@ pub const Parser = struct {
 
     fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // export
+        const export_index = self.cursor - 1;
         // A `declare` modifier recorded by the statement dispatcher
         // anchors TS1120 / TS1193 on the `declare` keyword itself.
         const pending_modifier = self.pending_decl_modifier;
@@ -8711,6 +8763,42 @@ pub const Parser = struct {
             switch (self.peek().kind) {
                 .equal, .open_brace, .asterisk, .kw_default => try self.reportCodeAt(start.span.start, start.line, 2666, "Exports and export assignments are not permitted in module augmentations."),
                 else => {},
+            }
+        }
+
+        // JavaScript decorator ordering is a parser-owned syntax check in
+        // tsgo (`checkJSDecoratorSyntax`). TypeScript sources perform the
+        // equivalent check in the checker, while virtual `.js` sections need
+        // it here because their declarations are intentionally not bound as
+        // TypeScript decorator metadata.
+        if (self.peek().kind == .at) {
+            try self.reportJsDecoratorAfterExport(export_index, start, self.peek());
+        }
+
+        // Decorators may follow `export`, except in the specifically invalid
+        // `export @dec default class` ordering. Preserve the valid decorator
+        // as the export payload so a leading decorator can detect TS8038;
+        // for the invalid ordering, diagnose TS1206 and recover the class as
+        // an ordinary default export without cascading TS1005.
+        if (self.peek().kind == .at) {
+            const after_decorator = self.skipDecoratorLookahead(self.cursor);
+            if (after_decorator < self.tokens.len and self.tokens[after_decorator].kind == .kw_default) {
+                const dec_start = self.peek();
+                _ = try self.parseDecoratorExpression();
+                _ = self.advance(); // `default`
+                try self.reportCodeAt(dec_start.span.start, dec_start.line, 1206, "Decorators are not valid here.");
+                const decl = if (self.peek().kind == .kw_class)
+                    try self.parseClassDeclaration()
+                else
+                    try self.parseStatement();
+                return try self.builder.addExport(
+                    .{ .start = start.span.start, .end = self.hir.spanOf(decl).end },
+                    decl,
+                    &.{},
+                    empty_string,
+                    is_type_only,
+                    true,
+                );
             }
         }
 
@@ -8811,8 +8899,28 @@ pub const Parser = struct {
         // export default <expr>;
         if (self.match(.kw_default)) {
             const default_token = self.tokens[self.cursor - 1];
+            // `abstract` is not a declaration modifier once a decorator
+            // follows it. In `export default abstract @dec class`, tsgo
+            // parses `abstract` as the exported value, inserts a semicolon at
+            // the decorator boundary, then parses the decorated class.
+            if (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .at) {
+                const abstract_tok = self.advance();
+                const at_tok = self.peek();
+                try self.reportCodeAt(at_tok.span.start, at_tok.line, 1005, "';' expected.");
+                const name = try self.internToken(abstract_tok);
+                const expr = try self.builder.addIdentifier(tokenSpan(abstract_tok), name);
+                return try self.builder.addExport(
+                    .{ .start = start.span.start, .end = abstract_tok.span.end },
+                    expr,
+                    &.{},
+                    empty_string,
+                    is_type_only,
+                    true,
+                );
+            }
             if (self.peek().kind == .at) {
                 const dec_start = self.peek();
+                try self.reportJsDecoratorAfterExport(export_index, start, dec_start);
                 const dec_expr = try self.parseDecoratorExpression();
                 const dec = try self.builder.addDecorator(
                     .{ .start = dec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -9053,6 +9161,10 @@ pub const Parser = struct {
         // `export` is a modifier on the following declaration; nested in a
         // block it is TS1184, matching `export function`/`export var` etc.
         try self.reportModifierInBlock(start);
+        if (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .at) {
+            try self.reportCodeAt(start.span.start, start.line, 1128, "Declaration or statement expected.");
+            return try self.parseStatement();
+        }
         const old_in_export_declaration = self.in_export_declaration;
         self.in_export_declaration = true;
         defer self.in_export_declaration = old_in_export_declaration;
@@ -32199,4 +32311,70 @@ test "parser: variable list recovery preserves a following comma expression" {
     try T.expectEqualStrings("',' expected.", missing_comma.message);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "32").?)), missing_comma.pos);
     try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+}
+
+test "parser: generic tails after decorator expressions require declarations" {
+    const src =
+        \\declare let g: <T>(...args: any) => any;
+        \\{ @g<number> class C {} }
+        \\{ @g()<number> class D {} }
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1146));
+    const first_less = std.mem.indexOf(u8, src, "@g<number>").? + 2;
+    const second_less = std.mem.indexOf(u8, src, "@g()<number>").? + 4;
+    var saw_first = false;
+    var saw_second = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1146) continue;
+        if (d.pos == first_less) saw_first = true;
+        if (d.pos == second_less) saw_second = true;
+    }
+    try T.expect(saw_first);
+    try T.expect(saw_second);
+}
+
+test "parser: decorator ordering around export and abstract matches tsgo recovery" {
+    const src =
+        \\declare var dec: any;
+        \\export @dec default class C3 {}
+        \\abstract @dec class C13 {}
+        \\export abstract @dec class C14 {}
+        \\export default abstract @dec class C15 {}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1206));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1434));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1128));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+
+    const invalid_decorator = findDiag(s, 1206) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "@dec default").?)), invalid_decorator.pos);
+    const missing_semicolon = findDiag(s, 1005) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, @intCast(std.mem.lastIndexOf(u8, src, "@dec class").?)), missing_semicolon.pos);
+}
+
+test "parser: JavaScript decorators on both sides of export report TS8038" {
+    const src =
+        \\@dec export @dec class C6 {}
+        \\@dec export default @dec class C7 {}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    s.parser.setJavaScriptFile(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 8038));
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 8038) continue;
+        try T.expectEqual(@as(usize, 1), d.related.len);
+        try T.expectEqual(@as(u32, 1486), d.related[0].code);
+        try T.expectEqualStrings("Decorator used before 'export' here.", d.related[0].message);
+    }
 }

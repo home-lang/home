@@ -12491,6 +12491,7 @@ pub const Checker = struct {
             .module_decl,
             .import_decl,
             .export_decl,
+            .decorator,
             => false,
             else => true,
         };
@@ -31117,61 +31118,33 @@ pub const Checker = struct {
                 "The runtime will invoke the decorator with {d} arguments, but the decorator expects {d}.",
                 .{ runtime_arg_count, expected_count },
             );
-        // Under legacy (experimentalDecorators) the decorator is resolved
-        // as a CALL expression, so a failed resolution surfaces as the
-        // signature-unresolved HEADER (TS1238/1240/1241) with the specific
-        // failure — here the arity mismatch (TS1278/TS1279 text) — nested
-        // as a message-chain detail UNDER it. Mirrors tsc's
-        // `getDiagnosticHeadMessageForDecoratorResolution` + `resolveCall`
-        // headMessage, and conformance baselines decoratorOnClass8 /
-        // ...Method8 / ...Method10 / ...Property7. The standalone TS1278/
-        // TS1279 "runtime will invoke" header is emitted only under TC39
-        // (ES) decorators, where the decorator is NOT called as an
-        // expression. The unresolved header anchors at the `@` token for
-        // class decorators and at the expression following `@` otherwise.
-        if (self.sourceUsesLegacyDecorators()) {
-            const unresolved_msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Unable to resolve signature of {s} decorator when called as an expression.",
-                .{kind},
-            );
-            const chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{.{
-                .code = arity_code,
-                .message = arity_msg,
-            }});
-            // Class decorators anchor at the `@` token. Property/method/
-            // parameter forms anchor at the expression following `@`,
-            // EXCEPT when the signature requires more arguments than the
-            // runtime supplies — then tsc anchors at `@` so the squiggle
-            // covers `@dec`. Mirrors decoratorOnClassProperty7 (wants more,
-            // anchors at `@`) vs decoratorOnClassProperty6 (anchors at name).
-            const requires_more = runtime_arg_count < min_required;
-            const unresolved_pos = if (std.mem.eql(u8, kind, "class") or requires_more)
-                self.decoratorAtPos(decorator_node)
-            else
-                self.decoratorExpressionPos(decorator_node);
-            try self.diagnostics.append(self.gpa, .{
-                .node = decorator_node,
-                .pos = unresolved_pos,
-                .code = signature_unresolved_code,
-                .message = unresolved_msg,
-                .chain = chain,
-            });
-            return;
-        }
-        // TC39 (ES) decorators: the standalone arity diagnostic. Class form
-        // (and any form requiring more args than the runtime supplies)
-        // anchors at `@`; others at the expression after `@`.
+        // Decorators are resolved as synthetic calls in both legacy and
+        // standard mode. Keep the arity failure as a TS1278/TS1279 detail
+        // under the decorator-kind TS1238/TS1240/TS1241 diagnostic head.
+        // This is tsgo's `resolveDecorator` + `resolveCall(headMessage)`
+        // behavior, including standard decorators such as
+        // `@((a, b, c) => {}) class C {}`.
+        const unresolved_msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Unable to resolve signature of {s} decorator when called as an expression.",
+            .{kind},
+        );
+        const chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{.{
+            .code = arity_code,
+            .message = arity_msg,
+        }});
         const requires_more = runtime_arg_count < min_required;
-        const dec_pos = if (std.mem.eql(u8, kind, "class") or requires_more)
+        const unresolved_pos = if (requires_more or
+            (self.sourceUsesLegacyDecorators() and std.mem.eql(u8, kind, "class")))
             self.decoratorAtPos(decorator_node)
         else
             self.decoratorExpressionPos(decorator_node);
         try self.diagnostics.append(self.gpa, .{
             .node = decorator_node,
-            .pos = dec_pos,
-            .code = arity_code,
-            .message = arity_msg,
+            .pos = unresolved_pos,
+            .code = signature_unresolved_code,
+            .message = unresolved_msg,
+            .chain = chain,
         });
     }
 
@@ -31180,8 +31153,17 @@ pub const Checker = struct {
         const params = self.interner.signatureParams(sig);
         const min_required = self.signatureMinRequiredArgs(sig, params);
         const has_unbounded_rest = self.decoratorSignatureHasUnboundedRest(sig, params);
-        if (runtime_arg_count > params.len and self.decoratorSignatureAllowsExtraRuntimeArgs(kind, params)) return true;
-        return runtime_arg_count >= min_required and (has_unbounded_rest or runtime_arg_count <= params.len);
+        // Standard decorators synthesize one or two arguments depending on
+        // the candidate signature: min(max(parameterCount, 1), 2). The
+        // diagnostic still describes the two runtime arguments. This lets a
+        // one-parameter decorator intentionally ignore the context argument,
+        // while zero- and three-required-parameter signatures remain errors.
+        const effective_runtime_arg_count = if (self.sourceUsesLegacyDecorators())
+            runtime_arg_count
+        else
+            @min(@max(params.len, 1), runtime_arg_count);
+        if (effective_runtime_arg_count > params.len and self.decoratorSignatureAllowsExtraRuntimeArgs(kind, params)) return true;
+        return effective_runtime_arg_count >= min_required and (has_unbounded_rest or effective_runtime_arg_count <= params.len);
     }
 
     fn decoratorSignatureHasUnboundedRest(self: *Checker, sig: TypeId, params: []const TypeId) bool {
@@ -72689,6 +72671,19 @@ pub const Checker = struct {
 
         // Type the initializer.
         var init_type: TypeId = if (v.is_ambient) types.Primitive.any else types.Primitive.undefined_t;
+        if (!v.is_ambient and
+            v.init == hir_mod.none_node_id and
+            v.type_annotation == hir_mod.none_node_id and
+            self.hir.kindOf(node) != .const_decl and
+            !self.strict_flags.strict_null_checks and
+            !self.strict_flags.no_implicit_any)
+        {
+            // Without strict null checking, an uninitialized mutable binding
+            // is an evolving `any`, not the literal `undefined` type. This is
+            // the widening performed by tsgo's variable-type inference for
+            // `var dec;` / `let dec;` under `strict: false`.
+            init_type = types.Primitive.any;
+        }
         if (!v.is_ambient and
             v.init == hir_mod.none_node_id and
             v.type_annotation == hir_mod.none_node_id and
@@ -218472,4 +218467,87 @@ test "checker: mapped syntax in class fields uses TS7061" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, 1166));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_only_used_as_value));
+}
+
+test "checker: standard class decorator arity uses TS1238 diagnostic heads" {
+    const source =
+        \\@(() => {})
+        \\@((a: any) => {})
+        \\@((a: any, b: any) => {})
+        \\@((a: any, b: any, c: any) => {})
+        \\@((a: any, b: any, c: any, ...d: any[]) => {})
+        \\class C {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.class_decorator_signature_unresolved));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.decorator_runtime_expects));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.decorator_runtime_expects_at_least));
+
+    var saw_zero = false;
+    var saw_three = false;
+    var saw_rest = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.class_decorator_signature_unresolved) continue;
+        for (d.chain) |entry| {
+            if (std.mem.eql(u8, entry.message, "The runtime will invoke the decorator with 2 arguments, but the decorator expects 0.")) saw_zero = true;
+            if (std.mem.eql(u8, entry.message, "The runtime will invoke the decorator with 2 arguments, but the decorator expects 3.")) saw_three = true;
+            if (std.mem.eql(u8, entry.message, "The runtime will invoke the decorator with 2 arguments, but the decorator expects at least 3.")) saw_rest = true;
+        }
+    }
+    try T.expect(saw_zero);
+    try T.expect(saw_three);
+    try T.expect(saw_rest);
+}
+
+test "checker: abstract before decorators remains an unresolved identifier" {
+    const source =
+        \\declare var dec: any;
+        \\abstract @dec class C13 {}
+        \\export abstract @dec class C14 {}
+        \\export default abstract @dec class C15 {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var parser_1434: u32 = 0;
+    var parser_1128: u32 = 0;
+    var parser_1005: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1434) parser_1434 += 1;
+        if (d.code == 1128) parser_1128 += 1;
+        if (d.code == 1005) parser_1005 += 1;
+    }
+    try T.expectEqual(@as(u32, 2), parser_1434);
+    try T.expectEqual(@as(u32, 1), parser_1128);
+    try T.expectEqual(@as(u32, 1), parser_1005);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: uninitialized mutable decorator binding widens to any under strict false" {
+    const s = try newSetup(
+        \\var dec;
+        \\@dec class C {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false, .no_implicit_any = false });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.class_decorator_signature_unresolved));
+}
+
+test "checker: exported decorator modifiers are not export assignments" {
+    const s = try newSetup(
+        \\// @module: esnext
+        \\declare var dec: any;
+        \\export @dec class C4 {}
+        \\@dec export @dec class C6 {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_es_module));
 }
