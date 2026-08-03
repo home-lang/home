@@ -257,7 +257,12 @@ pub fn build(b: *std.Build) void {
     const parallel_build = b.option(bool, "parallel", "Enable parallel compilation") orelse true;
 
     // Safety options
-    const extra_safety = b.option(bool, "extra-safety", "Enable additional runtime safety checks") orelse (optimize == .Debug);
+    // Zig 0.17 moved the build-facing optimize enum to `std.lang.Optimize`,
+    // whose tags are lowercase, while older supported dev builds return
+    // `std.builtin.OptimizeMode` with title-case tags. The semantic tag name is
+    // stable across that API transition.
+    const extra_safety = b.option(bool, "extra-safety", "Enable additional runtime safety checks") orelse
+        std.ascii.eqlIgnoreCase(@tagName(optimize), "debug");
 
     // Profiling
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
