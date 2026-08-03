@@ -1143,6 +1143,7 @@ const harness_prelude =
     \\  if (value === null || value === undefined) return "";
     \\  if (typeof value === "string") return value;
     \\  if (value && Array.isArray(value.__home_blob_bytes)) return __home_utf8_bytes_to_text(value.__home_blob_bytes);
+    \\  if (value && value.__home_blob_typed_bytes) return __home_utf8_bytes_to_text(value.__home_blob_typed_bytes);
     \\  if (value && Array.isArray(value.__home_blob_sparse_parts)) __home_unsupported("Sparse Blob text materialization is not supported");
     \\  const view = __home_array_buffer_view(value);
     \\  if (view) return __home_utf8_bytes_to_text(Array.from(view));
@@ -1153,6 +1154,7 @@ const harness_prelude =
     \\  if (value && value.__home_logical_buffer) return value.byteLength || value.length || 0;
     \\  if (typeof value === "string") return __home_utf8_byte_length(value);
     \\  if (value && Array.isArray(value.__home_blob_bytes)) return value.__home_blob_bytes.length;
+    \\  if (value && value.__home_blob_typed_bytes) return value.__home_blob_typed_bytes.byteLength;
     \\  if (value && Array.isArray(value.__home_blob_sparse_parts)) return value.size || 0;
     \\  const view = __home_array_buffer_view(value);
     \\  if (view) return view.byteLength;
@@ -23143,7 +23145,7 @@ const harness_prelude =
     \\  stdout: { __home_stdio: "stdout" },
     \\  stderr: { __home_stdio: "stderr" },
     \\  isMainThread: true,
-    \\  gc(force) {},
+    \\  gc(force) { if (typeof globalThis.__home_gcNative === "function") return globalThis.__home_gcNative(!!force); },
     \\  generateHeapSnapshot(format, outputType) {
     \\    if (String(format || "") === "v8") {
     \\      const text = __home_v8_heap_snapshot_json();
@@ -27504,6 +27506,13 @@ const harness_prelude =
     \\function __home_format(value) {
     \\  try {
     \\    if (typeof value === "string") return value;
+    \\    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    \\      const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    \\      const preview = Array.from(bytes.subarray(0, 16)).join(", ");
+    \\      const name = value && value.constructor && value.constructor.name ? value.constructor.name : "BinaryData";
+    \\      return name + "(" + String(bytes.byteLength) + ") [" + preview + (bytes.byteLength > 16 ? ", ..." : "") + "]";
+    \\    }
+    \\    if (typeof Blob === "function" && value instanceof Blob) return "Blob(" + String(value.size || 0) + ", " + JSON.stringify(value.type || "") + ")";
     \\    return JSON.stringify(value);
     \\  } catch (error) {
     \\    return String(value);
@@ -27877,7 +27886,7 @@ const harness_prelude =
     \\  return value !== null && (typeof value === "object" || typeof value === "function") && typeof value.then === "function";
     \\}
     \\function __home_assert(pass, isNot, message) {
-    \\  if (isNot ? pass : !pass) __home_fail(message);
+    \\  if (isNot ? pass : !pass) __home_fail(typeof message === "function" ? message() : message);
     \\}
     \\function __home_has_own_property(value, key) {
     \\  return Object.prototype.hasOwnProperty.call(value, key);
@@ -27992,12 +28001,21 @@ const harness_prelude =
     \\function __home_is_array_buffer_like(value) {
     \\  return value instanceof ArrayBuffer || __home_is_shared_array_buffer_like(value);
     \\}
-    \\function __home_array_buffer_bytes_equal(a, b) {
+    \\function __home_byte_views_equal(a, b) {
     \\  if (a.byteLength !== b.byteLength) return false;
-    \\  const aView = new DataView(a);
-    \\  const bView = new DataView(b);
-    \\  for (let i = 0; i < a.byteLength; i++) if (aView.getUint8(i) !== bView.getUint8(i)) return false;
+    \\  const aView = new DataView(a.buffer, a.byteOffset, a.byteLength);
+    \\  const bView = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    \\  let offset = 0;
+    \\  if (typeof aView.getBigUint64 === "function") {
+    \\    for (; offset + 8 <= a.byteLength; offset += 8) {
+    \\      if (aView.getBigUint64(offset) !== bView.getBigUint64(offset)) return false;
+    \\    }
+    \\  }
+    \\  for (; offset < a.byteLength; offset++) if (aView.getUint8(offset) !== bView.getUint8(offset)) return false;
     \\  return true;
+    \\}
+    \\function __home_array_buffer_bytes_equal(a, b) {
+    \\  return __home_byte_views_equal(new Uint8Array(a), new Uint8Array(b));
     \\}
     \\function __home_typed_array_equal(a, b, strict) {
     \\  if (!ArrayBuffer.isView(a) || !ArrayBuffer.isView(b)) return false;
@@ -28005,6 +28023,7 @@ const harness_prelude =
     \\  const aLength = typeof a.BYTES_PER_ELEMENT === "number" ? a.byteLength / a.BYTES_PER_ELEMENT : (typeof a.length === "number" ? a.length : a.byteLength);
     \\  const bLength = typeof b.BYTES_PER_ELEMENT === "number" ? b.byteLength / b.BYTES_PER_ELEMENT : (typeof b.length === "number" ? b.length : b.byteLength);
     \\  if (aLength !== bLength || a.byteLength !== b.byteLength) return false;
+    \\  if (a instanceof Uint8Array && b instanceof Uint8Array) return __home_byte_views_equal(a, b);
     \\  if (typeof a.length !== "number" || typeof b.length !== "number") {
     \\    const aBytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
     \\    const bBytes = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
@@ -28112,6 +28131,9 @@ const harness_prelude =
     \\  }
     \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
     \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    \\  if (typeof Headers === "function" && (a instanceof Headers || b instanceof Headers)) {
+    \\    return a instanceof Headers && b instanceof Headers && __home_deep_equal(Array.from(a.entries()), Array.from(b.entries()), strict, seen);
+    \\  }
     \\  if (a instanceof Number || b instanceof Number) {
     \\    return a instanceof Number && b instanceof Number && Object.is(a.valueOf(), b.valueOf()) && Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && (!strict || __home_boxed_primitive_properties_equal(a, b, strict, seen));
     \\  }
@@ -29704,18 +29726,18 @@ const harness_prelude =
     \\        const result = expected.asymmetricMatch(value);
     \\        if (__home_is_thenable(result)) {
     \\          return Promise.resolve(result).then(pass => {
-    \\            __home_assert(!!pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\            __home_assert(!!pass, isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
     \\          });
     \\        }
-    \\        __home_assert(!!result, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\        __home_assert(!!result, isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
     \\        return;
     \\      }
     \\      if (__home_contains_async_asymmetric(value, new Set()) || __home_contains_async_asymmetric(expected, new Set())) {
     \\        return __home_deep_equal_async(value, expected, false, new Map()).then(pass => {
-    \\          __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\          __home_assert(pass, isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
     \\        });
     \\      }
-    \\      __home_assert(__home_deep_equal(value, expected, false, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\      __home_assert(__home_deep_equal(value, expected, false, new Map()), isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
     \\    },
     \\    toStrictEqual(expected) {
     \\      if (arguments.length < 1) __home_fail("toStrictEqual() requires 1 argument");
@@ -29723,13 +29745,13 @@ const harness_prelude =
     \\        const result = expected.asymmetricMatch(value);
     \\        if (__home_is_thenable(result)) {
     \\          return Promise.resolve(result).then(pass => {
-    \\            __home_assert(!!pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
+    \\            __home_assert(!!pass, isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
     \\          });
     \\        }
-    \\        __home_assert(!!result, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
+    \\        __home_assert(!!result, isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
     \\        return;
     \\      }
-    \\      __home_assert(__home_deep_equal(value, expected, true, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
+    \\      __home_assert(__home_deep_equal(value, expected, true, new Map()), isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
     \\    },
     \\    toThrow(expected) {
     \\      if (typeof value !== "function" && !(value instanceof Error)) throw new Error("Expected value to be a function");
@@ -34639,7 +34661,20 @@ const harness_prelude =
     \\  });
     \\  return { url: server.url, ca: useHttps ? __home_harness_tls.cert : undefined, server, stop() { return server.stop(); }, async [Symbol.asyncDispose]() { return server.stop(); } };
     \\}
+    \\function __home_harness_fill_repeating(dstBuffer, start, end) {
+    \\  const length = Number(dstBuffer && dstBuffer.length) || 0;
+    \\  let sourceLength = Math.max(0, Number(end) - Number(start));
+    \\  if (sourceLength === 0) return;
+    \\  let position = sourceLength;
+    \\  while (position < length) {
+    \\    if (position + sourceLength > length) sourceLength = length - position;
+    \\    dstBuffer.copyWithin(position, start, sourceLength);
+    \\    position += sourceLength;
+    \\    sourceLength <<= 1;
+    \\  }
+    \\}
     \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"].fillRepeating = __home_harness_fill_repeating;
     \\globalThis.__home_modules["harness"].disableAggressiveGCScope = function() { return { [Symbol.dispose]() {} }; };
     \\globalThis.__home_modules["harness"].normalizeBunSnapshot = function(value, dir) {
     \\  let text = String(value).replace(/\r\n/g, "\n");
@@ -46678,7 +46713,7 @@ const harness_prelude =
     \\}
     \\var Headers = function(init) {
     \\  if (init === null) throw new TypeError("Headers constructor does not accept null");
-    \\  this.__home_headers = Object.create(null);
+    \\  Object.defineProperty(this, "__home_headers", { configurable: true, value: Object.create(null), writable: true });
     \\  if (init === undefined) return;
     \\  if (init instanceof Headers) {
     \\    for (const entry of init.entries()) this.append(entry[0], entry[1]);
@@ -48049,9 +48084,10 @@ const harness_prelude =
     \\  if (body && body.__home_is_formdata) return __home_text_to_utf8_bytes(__home_formdata_serialize(body).text);
     \\  if (typeof URLSearchParams === "function" && body instanceof URLSearchParams) return __home_text_to_utf8_bytes(body.toString());
     \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
-    \\  if (body instanceof ArrayBuffer) return Array.from(new Uint8Array(body));
-    \\  if (ArrayBuffer.isView(body)) return Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+    \\  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+    \\  if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
     \\  if (body && Array.isArray(body.__home_blob_bytes)) return body.__home_blob_bytes.slice();
+    \\  if (body && body.__home_blob_typed_bytes) return new Uint8Array(body.__home_blob_typed_bytes);
     \\  if (body && Array.isArray(body.__home_chunks)) {
     \\    const bytes = [];
     \\    for (const chunk of body.__home_chunks) {
@@ -48148,6 +48184,7 @@ const harness_prelude =
     \\  if (body == null) return 0;
     \\  if (body && body.__home_file_ref) return Number(body.size) || 0;
     \\  if (body && body.__home_logical_buffer) return body.byteLength || body.length || 0;
+    \\  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body.byteLength;
     \\  if (body && typeof body.getReader === "function") return null;
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_fixed_body_byte_length(body.__home_body_value);
     \\  if (body && Array.isArray(body.__home_chunks) && !body.__home_closed) return null;
@@ -48316,6 +48353,8 @@ const harness_prelude =
     \\    const value = body.__home_body_value;
     \\    if (value && value.__home_file_ref) return Promise.resolve(__home_file_ref_text(value));
     \\    if (value && Object.prototype.hasOwnProperty.call(value, "__home_text")) return Promise.resolve(String(value.__home_text));
+    \\    if (value instanceof ArrayBuffer) return Promise.resolve(__home_utf8_bytes_to_text(new Uint8Array(value)));
+    \\    if (ArrayBuffer.isView(value)) return Promise.resolve(__home_utf8_bytes_to_text(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
     \\  }
     \\  const capture = __home_readable_stream_capture(body);
     \\  if (capture && capture.startPending) return __home_then(capture.startPending, () => __home_chunks_to_text(capture.chunks || []));
@@ -48562,18 +48601,52 @@ const harness_prelude =
     \\  if (this.body && Object.prototype.hasOwnProperty.call(this.body, "__home_body_value") && typeof this.body.__home_body_value === "string") return Promise.resolve(__home_parse_json_body_text(this.body.__home_body_value));
     \\  return this.text().then(text => __home_parse_json_body_text(text));
     \\};
+    \\function __home_response_direct_body_view(response) {
+    \\  if (!response || !response.body || !Object.prototype.hasOwnProperty.call(response.body, "__home_body_value")) return null;
+    \\  const value = response.body.__home_body_value;
+    \\  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    \\  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    \\  return null;
+    \\}
     \\Response.prototype.arrayBuffer = function() {
+    \\  const direct = __home_response_direct_body_view(this);
+    \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
+    \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\    this.bodyUsed = true;
+    \\    return Promise.resolve(new Uint8Array(direct).buffer);
+    \\  }
     \\  return __home_consume_response_bytes(this).then(bytes => new Uint8Array(bytes).buffer);
     \\};
     \\Response.prototype.blob = function() {
     \\  const type = this.headers.get("content-type") || "";
+    \\  const direct = __home_response_direct_body_view(this);
+    \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
+    \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\    this.bodyUsed = true;
+    \\    return Promise.resolve(__home_typed_blob_from_view(direct, type));
+    \\  }
     \\  return __home_consume_response_bytes(this).then(bytes => {
     \\    const blob = new Blob([new Uint8Array(bytes)], { type });
     \\    blob.__home_content_type = type;
     \\    return blob;
     \\  });
     \\};
+    \\function __home_response_blob_sync(response) {
+    \\  const type = response && response.headers && typeof response.headers.get === "function" ? response.headers.get("content-type") || "" : "";
+    \\  const direct = __home_response_direct_body_view(response);
+    \\  if (direct) return __home_typed_blob_from_view(direct, type);
+    \\  const bytes = __home_body_bytes_sync(response && response.body);
+    \\  const blob = new Blob([new Uint8Array(bytes)], { type });
+    \\  blob.__home_content_type = type;
+    \\  return blob;
+    \\}
     \\Response.prototype.bytes = function() {
+    \\  const direct = __home_response_direct_body_view(this);
+    \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
+    \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\    this.bodyUsed = true;
+    \\    return Promise.resolve(new Uint8Array(direct));
+    \\  }
     \\  return __home_consume_response_bytes(this).then(bytes => new Uint8Array(bytes));
     \\};
     \\Response.prototype.formData = function() {
@@ -50045,6 +50118,7 @@ const harness_prelude =
     \\globalThis.__home_modules["ws"] = __home_ws_module;
     \\function __home_blob_part_to_bytes(part) {
     \\  if (part && Array.isArray(part.__home_blob_bytes)) return part.__home_blob_bytes.slice();
+    \\  if (part && part.__home_blob_typed_bytes) return new Uint8Array(part.__home_blob_typed_bytes);
     \\  if (part && part.__home_file_ref) return __home_text_to_utf8_bytes(__home_file_ref_text(part));
     \\  if (part instanceof ArrayBuffer) return Array.from(new Uint8Array(part));
     \\  if (ArrayBuffer.isView(part)) return Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
@@ -50105,6 +50179,15 @@ const harness_prelude =
     \\  blob.__home_blob_sparse_parts = (parts || []).slice();
     \\  blob.size = size || 0;
     \\  blob.type = type === undefined ? "" : __home_blob_type(type);
+    \\  return blob;
+    \\}
+    \\function __home_typed_blob_from_view(view, type) {
+    \\  const blob = Object.create(Blob.prototype);
+    \\  blob.parts = [];
+    \\  blob.__home_blob_typed_bytes = new Uint8Array(view);
+    \\  blob.size = blob.__home_blob_typed_bytes.byteLength;
+    \\  blob.type = type === undefined ? "" : __home_blob_type(type);
+    \\  blob.__home_content_type = blob.type;
     \\  return blob;
     \\}
     \\function __home_array_append(array, value) {
@@ -50168,14 +50251,17 @@ const harness_prelude =
     \\};
     \\Blob.prototype.arrayBuffer = function() {
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return Promise.resolve(new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)).buffer);
+    \\  if (this.__home_blob_typed_bytes) return Promise.resolve(new Uint8Array(this.__home_blob_typed_bytes).buffer);
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []).buffer);
     \\};
     \\Blob.prototype.bytes = function() {
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return Promise.resolve(new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)));
+    \\  if (this.__home_blob_typed_bytes) return Promise.resolve(new Uint8Array(this.__home_blob_typed_bytes));
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []));
     \\};
     \\Blob.prototype.text = function() {
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return this.bytes().then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(Array.from(bytes))));
+    \\  if (this.__home_blob_typed_bytes) return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_typed_bytes)));
     \\  return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_bytes || [])));
     \\};
     \\Blob.prototype.json = function() {
@@ -50212,6 +50298,7 @@ const harness_prelude =
     \\  first = Number.isNaN(first) ? 0 : first < 0 ? Math.max(size + first, 0) : Math.min(first, size);
     \\  last = Number.isNaN(last) ? 0 : last < 0 ? Math.max(size + last, 0) : Math.min(last, size);
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_sparse_blob_from_parts(__home_sparse_blob_slice_parts(this.__home_blob_sparse_parts, first, Math.max(first, last)), Math.max(first, last) - first, contentType);
+    \\  if (this.__home_blob_typed_bytes) return __home_typed_blob_from_view(this.__home_blob_typed_bytes.slice(first, Math.max(first, last)), contentType);
     \\  const blob = Object.create(Blob.prototype);
     \\  blob.parts = [];
     \\  blob.__home_blob_bytes = (this.__home_blob_bytes || []).slice(first, Math.max(first, last));
@@ -50221,7 +50308,7 @@ const harness_prelude =
     \\};
     \\Blob.prototype.stream = function() {
     \\  if (Array.isArray(this.__home_blob_sparse_parts) && (this.size || 0) > 64 * 1024 * 1024) __home_unsupported("Sparse Blob stream materialization is too large");
-    \\  const bytes = Array.isArray(this.__home_blob_sparse_parts) ? new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)) : new Uint8Array(this.__home_blob_bytes || []);
+    \\  const bytes = Array.isArray(this.__home_blob_sparse_parts) ? new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)) : (this.__home_blob_typed_bytes ? new Uint8Array(this.__home_blob_typed_bytes) : new Uint8Array(this.__home_blob_bytes || []));
     \\  return new ReadableStream({
     \\    start(controller) {
     \\      controller.enqueue(bytes);
@@ -59620,7 +59707,16 @@ fn sourceNeedsBootstrapTypeScriptRewrite(source: []const u8, relative_path: []co
 }
 
 fn finishModuleRewrite(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
-    const with_module_imports = try rewriteBootstrapModuleImports(allocator, source);
+    const with_buffered_response_initializers = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "await response.clone().blob()",
+        "__home_response_blob_sync(response.clone())",
+    );
+    defer allocator.free(with_buffered_response_initializers);
+
+    const with_module_imports = try rewriteBootstrapModuleImports(allocator, with_buffered_response_initializers);
     defer allocator.free(with_module_imports);
 
     const with_import_meta = try rewriteImportMeta(allocator, with_module_imports);
@@ -61157,7 +61253,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-ssl.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve TLS SSL integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-static.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve static file subprocess fixture")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-server.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve native server socket and abort integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/ffi/cc.test.ts"))
@@ -83180,6 +83276,40 @@ test "bootstrap runner mirrors Bun.serve file routes and ranges" {
     try std.testing.expectEqual(@as(usize, 66), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 2), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors Bun.serve static response stress matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/bun-serve-static.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve static file subprocess fixture") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_response_blob_sync(response.clone())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_gcNative") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 34 or summary.todo != 0) {
+        std.debug.print(
+            "Bun.serve static response mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 34), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 34), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 

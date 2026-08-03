@@ -166,6 +166,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_gcNative",
+            garbageCollectNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_mimallocStatsJsonNative",
             mimallocStatsJsonNative,
         );
@@ -4812,6 +4818,25 @@ fn mimallocStatsJsonNative(
         setExceptionFmt(actual_ctx, exception, "bun:jsc heapStats() could not return mimalloc statistics: {s}", .{@errorName(err)});
         return null;
     };
+}
+
+fn garbageCollectNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+
+    const actual_ctx = ctx.?;
+    extern_fns.JSGarbageCollect(actual_ctx);
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
 }
 
 fn mimallocDumpJsonNative(
