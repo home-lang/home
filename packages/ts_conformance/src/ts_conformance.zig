@@ -2599,8 +2599,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     }
     defer tsconfig_options.deinit(gpa);
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
-    const configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
-    defer freeStringList(gpa, configured_type_names);
+    const raw_configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
+    defer freeStringList(gpa, raw_configured_type_names);
     const module_kind_label = selectedModuleKind(c, directive_source, tsconfig_options.module);
     const resolver_strategy = if (tsconfig_options.module_resolution.len > 0)
         (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, module_kind_label))
@@ -2617,6 +2617,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .type_roots = tsconfig_options.type_roots,
     });
     defer resolver.deinit();
+    const current_directory = directiveValue(directive_source, "currentDirectory") orelse "/";
+    const configured_type_names = try resolver.expandTypeDirectiveNames(
+        gpa,
+        raw_configured_type_names,
+        current_directory,
+    );
+    defer freeStringList(gpa, configured_type_names);
 
     var owned_program_sources: std.ArrayListUnmanaged([]u8) = .empty;
     defer {

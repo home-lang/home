@@ -502,6 +502,137 @@ pub const Resolver = struct {
         }
     }
 
+    /// Expand wildcard entries in `compilerOptions.types` using the
+    /// package directories visible from the effective type roots. This
+    /// mirrors tsgo's `GetAutomaticTypeDirectiveNames`: literal entries
+    /// retain their position, each `*` expands to the sorted visible
+    /// packages, duplicates are removed, and packages marked with a null
+    /// `typings` field are omitted.
+    pub fn expandTypeDirectiveNames(
+        self: *Resolver,
+        gpa: std.mem.Allocator,
+        configured_names: []const []const u8,
+        current_directory: []const u8,
+    ) ResolveError![]const []const u8 {
+        var uses_wildcard = false;
+        for (configured_names) |name| {
+            if (std.mem.eql(u8, name, "*")) {
+                uses_wildcard = true;
+                break;
+            }
+        }
+        if (!uses_wildcard) {
+            var copied = std.ArrayListUnmanaged([]const u8).empty;
+            errdefer {
+                freeOwnedStringItems(gpa, copied.items);
+                copied.deinit(gpa);
+            }
+            for (configured_names) |name| {
+                const owned = gpa.dupe(u8, name) catch return error.OutOfMemory;
+                copied.append(gpa, owned) catch {
+                    gpa.free(owned);
+                    return error.OutOfMemory;
+                };
+            }
+            return copied.toOwnedSlice(gpa) catch error.OutOfMemory;
+        }
+
+        var wildcard_names = std.ArrayListUnmanaged([]const u8).empty;
+        defer {
+            freeOwnedStringItems(gpa, wildcard_names.items);
+            wildcard_names.deinit(gpa);
+        }
+        var seen_wildcards = std.StringHashMapUnmanaged(void).empty;
+        defer seen_wildcards.deinit(gpa);
+
+        if (self.config.type_roots.len != 0) {
+            for (self.config.type_roots) |root| {
+                try self.collectTypeRootPackageNames(gpa, root, &wildcard_names, &seen_wildcards);
+            }
+        } else {
+            var dir = if (current_directory.len == 0) "/" else current_directory;
+            while (true) {
+                const root = try self.joinPath(dir, "node_modules/@types");
+                try self.collectTypeRootPackageNames(gpa, root, &wildcard_names, &seen_wildcards);
+                if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
+                const parent = dirname(dir);
+                if (std.mem.eql(u8, parent, dir)) break;
+                dir = parent;
+            }
+        }
+        std.mem.sort([]const u8, wildcard_names.items, {}, struct {
+            fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+                return std.mem.lessThan(u8, lhs, rhs);
+            }
+        }.lessThan);
+
+        var result = std.ArrayListUnmanaged([]const u8).empty;
+        errdefer {
+            freeOwnedStringItems(gpa, result.items);
+            result.deinit(gpa);
+        }
+        var seen_result = std.StringHashMapUnmanaged(void).empty;
+        defer seen_result.deinit(gpa);
+        for (configured_names) |configured| {
+            if (!std.mem.eql(u8, configured, "*")) {
+                if (seen_result.contains(configured)) continue;
+                const owned = gpa.dupe(u8, configured) catch return error.OutOfMemory;
+                result.append(gpa, owned) catch {
+                    gpa.free(owned);
+                    return error.OutOfMemory;
+                };
+                seen_result.put(gpa, owned, {}) catch return error.OutOfMemory;
+                continue;
+            }
+            for (wildcard_names.items) |name| {
+                if (seen_result.contains(name)) continue;
+                const owned = gpa.dupe(u8, name) catch return error.OutOfMemory;
+                result.append(gpa, owned) catch {
+                    gpa.free(owned);
+                    return error.OutOfMemory;
+                };
+                seen_result.put(gpa, owned, {}) catch return error.OutOfMemory;
+            }
+        }
+        return result.toOwnedSlice(gpa) catch error.OutOfMemory;
+    }
+
+    fn collectTypeRootPackageNames(
+        self: *Resolver,
+        gpa: std.mem.Allocator,
+        root: []const u8,
+        names: *std.ArrayListUnmanaged([]const u8),
+        seen: *std.StringHashMapUnmanaged(void),
+    ) ResolveError!void {
+        if (!self.fs.directoryExists(root)) return;
+        const entries = self.fs.readDir(gpa, root) catch return;
+        defer FileSystem.freeDirEntries(gpa, entries);
+        for (entries) |entry| {
+            if (!entry.is_dir or entry.name.len == 0 or entry.name[0] == '.') continue;
+            if (seen.contains(entry.name)) continue;
+            const package_dir = try self.joinPath(root, entry.name);
+            const package_json = try self.joinPath(package_dir, "package.json");
+            if (self.typePackageHasNullTypings(package_json)) continue;
+            const owned = gpa.dupe(u8, entry.name) catch return error.OutOfMemory;
+            names.append(gpa, owned) catch {
+                gpa.free(owned);
+                return error.OutOfMemory;
+            };
+            seen.put(gpa, owned, {}) catch return error.OutOfMemory;
+        }
+    }
+
+    fn typePackageHasNullTypings(self: *Resolver, package_json: []const u8) bool {
+        if (!self.fs.fileExists(package_json)) return false;
+        const bytes = self.fs.readFile(self.gpa, package_json) catch return false;
+        defer self.gpa.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return false;
+        defer parsed.deinit();
+        if (parsed.value != .object) return false;
+        const typings = parsed.value.object.get("typings") orelse return false;
+        return typings == .null;
+    }
+
     /// Resolve a triple-slash `<reference types="...">` directive with
     /// an explicit `resolution-mode` attribute. TypeScript applies that
     /// requested ESM/CJS condition set to package exports even when the
@@ -745,7 +876,7 @@ pub const Resolver = struct {
                     return .{ .resolution = r, .primary = true };
                 }
             }
-            if (saw_existing_root) {
+            if (saw_existing_root and isInferredTypesContainingFile(containing_file)) {
                 self.traceMsg(6265, "Resolving type reference directive for program that specifies custom typeRoots, skipping lookup in 'node_modules' folder.", .{});
                 return error.NotFound;
             }
@@ -1852,25 +1983,25 @@ pub const Resolver = struct {
         if (subpath.len > 0) {
             const cand = try self.joinPath(at_root, subpath);
             if (try self.tryFileWithExtensions(cand)) |r| {
-                if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+                if (isSupportedTypeScriptPath(r.path)) return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
             }
             if (try self.tryDirectoryIndex(cand)) |r| {
-                if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+                if (isSupportedTypeScriptPath(r.path)) return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
             }
             return null;
         }
         if (self.fs.fileExists(at_pkg_json)) {
             const outcome = try self.resolvePackageSubpath(at_root, at_pkg_json, ".");
             switch (outcome) {
-                .resolved => |r| if (r.is_declaration) {
-                    return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+                .resolved => |r| if (isSupportedTypeScriptPath(r.path)) {
+                    return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
                 },
                 .blocked, .none => {},
             }
         }
         const fallback = try self.joinPath(at_root, "index");
         if (try self.tryFileWithExtensions(fallback)) |r| {
-            if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+            if (isSupportedTypeScriptPath(r.path)) return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
         }
         return null;
     }
@@ -2622,6 +2753,24 @@ fn isSupportedTsOrJsonPath(s: []const u8) bool {
         std.mem.endsWith(u8, s, ".hm") or
         std.mem.endsWith(u8, s, ".home") or
         std.mem.endsWith(u8, s, ".json");
+}
+
+fn isSupportedTypeScriptPath(s: []const u8) bool {
+    return std.mem.endsWith(u8, s, ".ts") or
+        std.mem.endsWith(u8, s, ".tsx") or
+        std.mem.endsWith(u8, s, ".mts") or
+        std.mem.endsWith(u8, s, ".cts") or
+        std.mem.endsWith(u8, s, ".hm") or
+        std.mem.endsWith(u8, s, ".home");
+}
+
+fn isInferredTypesContainingFile(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, "/__inferred type names__.ts") or
+        std.mem.eql(u8, path, "__inferred type names__.ts");
+}
+
+fn freeOwnedStringItems(gpa: std.mem.Allocator, items: []const []const u8) void {
+    for (items) |item| gpa.free(item);
 }
 
 fn isPreferredNodeModuleExtension(ext: []const u8) bool {
@@ -3616,7 +3765,7 @@ test "Resolver: type reference directives trace custom typeRoots primary lookup"
 
     const res = try r.resolveTypeReferenceDirective("node", "/proj/src/app.ts");
     try T.expectEqualStrings("/proj/types/node/index.d.ts", res.path);
-    try T.expectError(error.NotFound, r.resolveTypeReferenceDirective("missing", "/proj/src/app.ts"));
+    try T.expectError(error.NotFound, r.resolveTypeReferenceDirective("missing", "/proj/__inferred type names__.ts"));
 
     var saw_6116 = false;
     var saw_6119 = false;
@@ -3638,6 +3787,44 @@ test "Resolver: type reference directives trace custom typeRoots primary lookup"
     try T.expect(saw_6120);
     try T.expect(saw_6121);
     try T.expect(saw_6265);
+}
+
+test "Resolver: explicit type references fall back from custom typeRoots to node_modules" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/src/root.ts", "/// <reference types=\"foo\" />");
+    try vfs.addFile("/node_modules/foo/index.d.ts", "declare const foo: unknown;");
+
+    const roots = [_][]const u8{"/src"};
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .type_roots = &roots });
+    defer r.deinit();
+
+    const explicit = try r.resolveTypeReferenceDirective("foo", "/src/root.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.d.ts", explicit.path);
+    try T.expectError(error.NotFound, r.resolveTypeReferenceDirective("foo", "/src/__inferred type names__.ts"));
+}
+
+test "Resolver: wildcard type names expand visible packages in place" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/project/node_modules/@types/zeta/index.d.ts", "");
+    try vfs.addFile("/project/node_modules/@types/jquery/index.d.ts", "");
+    try vfs.addFile("/project/node_modules/@types/not-needed/package.json", "{\"typings\":null}");
+    try vfs.addFile("/project/src/app.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const configured = [_][]const u8{ "literal", "*", "jquery" };
+    const expanded = try r.expandTypeDirectiveNames(T.allocator, &configured, "/project/src");
+    defer {
+        freeOwnedStringItems(T.allocator, expanded);
+        T.allocator.free(expanded);
+    }
+
+    try T.expectEqual(@as(usize, 3), expanded.len);
+    try T.expectEqualStrings("literal", expanded[0]);
+    try T.expectEqualStrings("jquery", expanded[1]);
+    try T.expectEqualStrings("zeta", expanded[2]);
 }
 
 test "Resolver: type reference directives trace @types package IDs and missing root" {
@@ -4861,6 +5048,25 @@ test "Resolver: @types/<pkg> fallback — bare pkg with no types resolves throug
     const res = try r.resolve("foo", "/main.ts");
     try T.expectEqualStrings("/node_modules/@types/foo/index.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: @types package typings entries accept TypeScript source files" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/@types/lquery/package.json", "{\"typings\":\"lquery\"}");
+    try vfs.addFile("/node_modules/@types/lquery/lquery.ts", "export const l = 2;");
+    try vfs.addFile("/node_modules/@types/mquery/package.json", "{\"typings\":\"mquery\"}");
+    try vfs.addFile("/node_modules/@types/mquery/mquery/index.tsx", "export const m = 3;");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const lquery = try r.resolve("lquery", "/main.ts");
+    try T.expectEqualStrings("/node_modules/@types/lquery/lquery.ts", lquery.path);
+    try T.expect(!lquery.is_declaration);
+    const mquery = try r.resolve("mquery", "/main.ts");
+    try T.expectEqualStrings("/node_modules/@types/mquery/mquery/index.tsx", mquery.path);
+    try T.expect(!mquery.is_declaration);
 }
 
 test "Resolver: @types/<scope>__<name> fallback — scoped pkg flips to flattened types" {

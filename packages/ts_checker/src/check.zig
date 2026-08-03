@@ -12127,7 +12127,8 @@ pub const Checker = struct {
                     "Module '\"{s}\"' uses 'export =' and cannot be used with 'export *'.",
                     .{display_name},
                 );
-                try self.report(stmt, TsCodes.export_star_export_assignment_target, msg);
+                const spec = self.string_interner.get(ex.module);
+                try self.reportAt(stmt, self.moduleSpecifierQuotePos(stmt, spec), TsCodes.export_star_export_assignment_target, msg);
             }
         }
     }
@@ -155107,13 +155108,22 @@ test "checker: export star from export assignment module emits TS2498" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.export_star_export_assignment_target));
     var saw_plain = false;
     var saw_namespace = false;
+    const source = s.checker.source.?;
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.export_star_export_assignment_target) continue;
         try T.expect(std.mem.indexOf(u8, d.message, "Module '\"/a\"' uses 'export =' and cannot be used with 'export *'.") != null);
         const sp = s.checker.hir.spanOf(d.node);
-        const text = s.checker.source.?[sp.start..sp.end];
-        if (std.mem.indexOf(u8, text, "export * from") != null) saw_plain = true;
-        if (std.mem.indexOf(u8, text, "export * as ns") != null) saw_namespace = true;
+        const text = source[sp.start..sp.end];
+        if (std.mem.indexOf(u8, text, "export * from") != null) {
+            const expected: u32 = @intCast(std.mem.indexOfPos(u8, source, sp.start, "\"./a\"") orelse unreachable);
+            try T.expectEqual(expected, d.pos orelse unreachable);
+            saw_plain = true;
+        }
+        if (std.mem.indexOf(u8, text, "export * as ns") != null) {
+            const expected: u32 = @intCast(std.mem.indexOfPos(u8, source, sp.start, "\"./a\"") orelse unreachable);
+            try T.expectEqual(expected, d.pos orelse unreachable);
+            saw_namespace = true;
+        }
     }
     try T.expect(saw_plain);
     try T.expect(saw_namespace);
