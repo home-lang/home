@@ -8,6 +8,7 @@ pub const Engine = @import("engine.zig").Engine;
 pub const console = @import("console.zig");
 pub const process = @import("process.zig");
 pub const host = @import("tool_host.zig");
+pub const modules = @import("tool_modules.zig");
 pub const evaluate = @import("evaluate.zig");
 pub const extern_fns = @import("extern_fns.zig");
 pub const opaques = @import("opaques.zig");

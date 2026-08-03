@@ -51,6 +51,7 @@ fn runSource(
     tool_runtime.console.install(allocator, ctx, global);
     tool_runtime.process.install(allocator, ctx, global, argv);
     tool_runtime.host.install(allocator, ctx, global);
+    tool_runtime.modules.install(allocator, ctx, global);
 
     const evaluation = try tool_runtime.evaluate.evaluateUtf8Detailed(allocator, ctx, source, source_url, 1);
     defer evaluation.deinit(allocator);
@@ -96,14 +97,7 @@ pub fn main(init: std.process.Init) !void {
         try argv.append(allocator, path);
         while (iterator.next()) |arg| try argv.append(allocator, arg);
 
-        const source = try std.Io.Dir.cwd().readFileAlloc(g_io, path, allocator, std.Io.Limit.unlimited);
-        defer allocator.free(source);
-        if (isTypeScript(path)) {
-            const emitted = try emitTypeScript(allocator, source, std.mem.endsWith(u8, path, ".tsx"));
-            defer allocator.free(emitted);
-            return runSource(allocator, emitted, path, argv.items, false);
-        }
-        return runSource(allocator, source, path, argv.items, false);
+        return runSource(allocator, "Home.runModule(process.argv[1]);", path, argv.items, false);
     }
 
     usage();

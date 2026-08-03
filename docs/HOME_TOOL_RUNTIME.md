@@ -39,7 +39,11 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
   synchronous repository-file access.
 - `Home.spawnSync(argv)` returns `{ exitCode, stdout, stderr }`.
 
-Keep repository utilities standalone for now: CommonJS is the emitted module
-format, but module discovery/loading is not yet part of this narrow runner.
+The runner resolves relative and absolute modules plus offline `node_modules`
+packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
+directly, package `main`/`module` entries and `index.*` fallbacks are supported,
+and the cache is populated before evaluation so CommonJS cycles terminate.
+
 Use `zig build home-tool-smoke` with either engine selection to verify
-TypeScript emission, filesystem access, process execution, and argument setup.
+TypeScript emission, module loading, filesystem access, process execution, and
+argument setup.

@@ -493,6 +493,7 @@ pub fn build(b: *std.Build) void {
     const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
     tool_runtime_pkg.addImport("bun", tool_compat_pkg);
     tool_runtime_pkg.addImport("build_options", tool_build_options_module);
+    tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
     tool_runtime_pkg.link_libc = true;
     if (tool_use_zig_js) {
         linkZigJs(b, tool_runtime_pkg, configured_zig_js_root);
@@ -520,8 +521,12 @@ pub fn build(b: *std.Build) void {
     const run_home_tool_smoke = b.addRunArtifact(home_tool_exe);
     run_home_tool_smoke.setCwd(b.path(""));
     run_home_tool_smoke.addArgs(&.{ "run", "packages/runtime/src/jsc/tool_smoke.ts" });
+    const run_home_tool_package_smoke = b.addRunArtifact(home_tool_exe);
+    run_home_tool_package_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+    run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
     const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
     home_tool_smoke_step.dependOn(&run_home_tool_smoke.step);
+    home_tool_smoke_step.dependOn(&run_home_tool_package_smoke.step);
 
     // TS-parity Phase 1.E follow-up — module resolver.
     const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
