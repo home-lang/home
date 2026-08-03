@@ -42609,7 +42609,7 @@ const harness_prelude =
     \\  if (ms > 0) __home_net_refresh_idle_timeout(socket);
     \\  return socket;
     \\}
-    \\function __home_http_raw_header_name(name) {
+    \\function __home_http_raw_header_name(name, headers) {
     \\  const key = String(name || "").toLowerCase();
     \\  if (key === "date") return "Date";
     \\  if (key === "content-length") return "Content-Length";
@@ -42619,6 +42619,7 @@ const harness_prelude =
     \\  if (key === "set-cookie") return "Set-Cookie";
     \\  if (key === "upgrade") return "Upgrade";
     \\  if (key === "x-custom-header") return "X-Custom-Header";
+    \\  if (headers instanceof Headers && headers.__home_header_names && headers.__home_header_names[key]) return headers.__home_header_names[key];
     \\  return key;
     \\}
     \\function __home_http_raw_response_text(response, body) {
@@ -42627,7 +42628,7 @@ const harness_prelude =
     \\  const headers = new Headers(response && response.headers || {});
     \\  if (!headers.has("content-length")) headers.set("content-length", String(String(body).length));
     \\  let text = "HTTP/1.1 " + status + " " + statusText + "\r\n";
-    \\  for (const entry of headers.entries()) text += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
+    \\  for (const entry of headers.entries()) text += __home_http_raw_header_name(entry[0], headers) + ": " + entry[1] + "\r\n";
     \\  return text + "\r\n" + String(body);
     \\}
     \\function __home_http_raw_request_status(requestText) {
@@ -44621,6 +44622,25 @@ const harness_prelude =
     \\  for (const key of Object.keys(headers)) out[String(key).toLowerCase()] = String(headers[key]);
     \\  return out;
     \\}
+    \\function __home_http_response_headers(headers) {
+    \\  const out = new Headers();
+    \\  if (!headers) return out;
+    \\  if (headers instanceof Headers || headers instanceof Map || Array.isArray(headers)) {
+    \\    for (const entry of headers) {
+    \\      if (entry && entry.length >= 2) out.append(entry[0], entry[1]);
+    \\    }
+    \\    return out;
+    \\  }
+    \\  for (const key of Object.keys(headers)) {
+    \\    const value = headers[key];
+    \\    if (Array.isArray(value)) {
+    \\      for (const item of value) out.append(key, item);
+    \\    } else {
+    \\      out.set(key, value);
+    \\    }
+    \\  }
+    \\  return out;
+    \\}
     \\function __home_http_body_text(chunks) {
     \\  return chunks.map(chunk => {
     \\    if (chunk === undefined || chunk === null) return "";
@@ -44723,7 +44743,7 @@ const harness_prelude =
     \\                __home_http_apply_headers(this, headers);
     \\              },
     \\              end(body) {
-    \\                resolve(new Response(body === undefined || body === null ? "" : String(body), { status: this.statusCode, headers: this.headers }));
+    \\                resolve(new Response(body === undefined || body === null ? "" : String(body), { status: this.statusCode, headers: __home_http_response_headers(this.headers) }));
     \\              },
     \\            };
     \\            self.__home_handler(serverRequest, serverResponse);
@@ -46674,27 +46694,43 @@ const harness_prelude =
     \\  return namespace;
     \\}
     \\function __home_header_validate_name(name) {
+    \\  if (typeof name === "symbol") throw new TypeError("Cannot convert a symbol to a string");
     \\  const key = String(name).toLowerCase();
-    \\  if (key.length === 0) throw new TypeError("Invalid header name");
+    \\  if (key.length === 0) throw new TypeError("Invalid header name: ''");
     \\  const tokens = "!#$%&'*+-.^_`|~";
     \\  for (let i = 0; i < key.length; i++) {
     \\    const code = key.charCodeAt(i);
     \\    const isAlpha = code >= 97 && code <= 122;
     \\    const isDigit = code >= 48 && code <= 57;
-    \\    if (!isAlpha && !isDigit && tokens.indexOf(key[i]) === -1) throw new TypeError("Invalid header name");
+    \\    if (!isAlpha && !isDigit && tokens.indexOf(key[i]) === -1) throw new TypeError("Invalid header name: '" + String(name) + "'");
     \\  }
     \\  return key;
     \\}
-    \\function __home_header_validate_value(value) {
-    \\  const text = String(value);
+    \\function __home_header_validate_value(value, name) {
+    \\  if (typeof value === "symbol") throw new TypeError("Cannot convert a symbol to a string");
+    \\  let text = String(value);
+    \\  let start = 0;
+    \\  let end = text.length;
+    \\  while (start < end) {
+    \\    const code = text.charCodeAt(start);
+    \\    if (code !== 9 && code !== 10 && code !== 13 && code !== 32) break;
+    \\    start++;
+    \\  }
+    \\  while (end > start) {
+    \\    const code = text.charCodeAt(end - 1);
+    \\    if (code !== 9 && code !== 10 && code !== 13 && code !== 32) break;
+    \\    end--;
+    \\  }
+    \\  if (start !== 0 || end !== text.length) text = text.slice(start, end);
     \\  for (let i = 0; i < text.length; i++) {
     \\    const code = text.charCodeAt(i);
-    \\    if (code === 0 || code === 10 || code === 13 || code > 255) throw new TypeError("Invalid header value");
+    \\    if (code === 0 || code === 10 || code === 13 || code > 255) throw new TypeError("Header '" + String(name) + "' has invalid value: '" + text + "'");
     \\  }
     \\  return text;
     \\}
     \\function __home_header_validate(name, value) {
-    \\  return [__home_header_validate_name(name), __home_header_validate_value(value)];
+    \\  const key = __home_header_validate_name(name);
+    \\  return [key, __home_header_validate_value(value, key)];
     \\}
     \\function __home_header_entries_sorted(headers) {
     \\  const entries = [];
@@ -46711,75 +46747,148 @@ const harness_prelude =
     \\  for (const entry of __home_header_entries_sorted(headers)) json[entry[0]] = entry[1];
     \\  return json;
     \\}
-    \\var Headers = function(init) {
+    \\function __home_iterator_to_array(value, iteratorMethod, description) {
+    \\  if (typeof iteratorMethod !== "function") throw new TypeError(description + " must be iterable");
+    \\  const iterator = iteratorMethod.call(value);
+    \\  if (iterator === null || (typeof iterator !== "object" && typeof iterator !== "function")) throw new TypeError("Iterator is not an object");
+    \\  const next = iterator.next;
+    \\  if (typeof next !== "function") throw new TypeError("Iterator next must be callable");
+    \\  const values = [];
+    \\  while (true) {
+    \\    const step = next.call(iterator);
+    \\    if (step === null || (typeof step !== "object" && typeof step !== "function")) throw new TypeError("Iterator result is not an object");
+    \\    if (step.done) return values;
+    \\    values.push(step.value);
+    \\  }
+    \\}
+    \\function __home_headers_assert_instance(value) {
+    \\  if (!(value instanceof Headers) || !Object.prototype.hasOwnProperty.call(value, "__home_headers")) throw new TypeError("Illegal invocation");
+    \\  return value;
+    \\}
+    \\var Headers = function() {
+    \\  const init = arguments.length === 0 ? undefined : arguments[0];
     \\  if (init === null) throw new TypeError("Headers constructor does not accept null");
     \\  Object.defineProperty(this, "__home_headers", { configurable: true, value: Object.create(null), writable: true });
+    \\  Object.defineProperty(this, "__home_header_names", { configurable: true, value: Object.create(null), writable: true });
     \\  if (init === undefined) return;
+    \\  const initType = typeof init;
+    \\  if (initType !== "object" && initType !== "function") throw new TypeError("Headers initializer must be an object");
     \\  if (init instanceof Headers) {
-    \\    for (const entry of init.entries()) this.append(entry[0], entry[1]);
-    \\  } else if (init && typeof init[Symbol.iterator] === "function") {
-    \\    for (const pair of init) {
-    \\      if (pair == null || typeof pair[Symbol.iterator] !== "function") throw new TypeError("Header pair must be iterable");
-    \\      const values = Array.from(pair);
+    \\    for (const key of Object.keys(init.__home_headers)) {
+    \\      const name = init.__home_header_names[key] || key;
+    \\      for (const value of init.__home_headers[key]) this.append(name, value);
+    \\    }
+    \\    return;
+    \\  }
+    \\  const iteratorMethod = init[Symbol.iterator];
+    \\  if (iteratorMethod !== undefined && iteratorMethod !== null) {
+    \\    const pairs = __home_iterator_to_array(init, iteratorMethod, "Headers initializer");
+    \\    for (const pair of pairs) {
+    \\      if (pair === null || (typeof pair !== "object" && typeof pair !== "string" && typeof pair !== "function")) throw new TypeError("Header pair must be iterable");
+    \\      const pairIteratorMethod = pair[Symbol.iterator];
+    \\      const values = __home_iterator_to_array(pair, pairIteratorMethod, "Header pair");
     \\      if (values.length !== 2) throw new TypeError("Header pair must have exactly two items");
     \\      this.append(values[0], values[1]);
     \\    }
-    \\  } else if (init && typeof init.forEach === "function") {
-    \\    init.forEach((value, key) => this.append(key, value));
-    \\  } else if (init && typeof init === "object") {
-    \\    for (const key of Object.keys(init)) this.append(key, init[key]);
+    \\  } else {
+    \\    for (const key of Reflect.ownKeys(init)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(init, key);
+    \\      if (!descriptor || !descriptor.enumerable) continue;
+    \\      if (typeof key === "symbol") throw new TypeError("Cannot convert a symbol to a string");
+    \\      this.append(key, init[key]);
+    \\    }
     \\  }
     \\};
     \\Headers.prototype.append = function(name, value) {
+    \\  __home_headers_assert_instance(this);
     \\  if (arguments.length < 2) throw new TypeError("append requires 2 arguments");
     \\  const pair = __home_header_validate(name, value);
+    \\  if (!Object.prototype.hasOwnProperty.call(this.__home_header_names, pair[0])) this.__home_header_names[pair[0]] = String(name);
     \\  if (!this.__home_headers[pair[0]]) this.__home_headers[pair[0]] = [];
     \\  this.__home_headers[pair[0]].push(pair[1]);
     \\};
     \\Headers.prototype.set = function(name, value) {
+    \\  __home_headers_assert_instance(this);
     \\  if (arguments.length < 2) throw new TypeError("set requires 2 arguments");
     \\  const pair = __home_header_validate(name, value);
+    \\  if (!Object.prototype.hasOwnProperty.call(this.__home_header_names, pair[0])) this.__home_header_names[pair[0]] = String(name);
     \\  this.__home_headers[pair[0]] = [pair[1]];
     \\};
     \\Headers.prototype.delete = function(name) {
+    \\  __home_headers_assert_instance(this);
     \\  if (arguments.length < 1) throw new TypeError("delete requires 1 argument");
-    \\  delete this.__home_headers[__home_header_validate_name(name)];
+    \\  const key = __home_header_validate_name(name);
+    \\  delete this.__home_headers[key];
+    \\  delete this.__home_header_names[key];
     \\};
     \\Headers.prototype.get = function(name) {
+    \\  __home_headers_assert_instance(this);
     \\  if (arguments.length < 1) throw new TypeError("get requires 1 argument");
     \\  const values = this.__home_headers[__home_header_validate_name(name)];
     \\  return values ? values.join(", ") : null;
     \\};
     \\Headers.prototype.getAll = function(name) {
+    \\  __home_headers_assert_instance(this);
     \\  if (String(name).toLowerCase() !== "set-cookie") throw new TypeError("getAll is only supported for Set-Cookie");
     \\  return (this.__home_headers["set-cookie"] || []).slice();
     \\};
     \\Headers.prototype.getSetCookie = function() {
+    \\  __home_headers_assert_instance(this);
     \\  return (this.__home_headers["set-cookie"] || []).slice();
     \\};
     \\Headers.prototype.has = function(name) {
+    \\  __home_headers_assert_instance(this);
     \\  if (arguments.length < 1) throw new TypeError("has requires 1 argument");
     \\  return Object.prototype.hasOwnProperty.call(this.__home_headers, __home_header_validate_name(name));
     \\};
-    \\Headers.prototype.entries = function*() {
-    \\  for (const entry of __home_header_entries_sorted(this)) yield entry;
+    \\const __home_headers_iterator_prototype = {
+    \\  next() {
+    \\    const iterator = this;
+    \\    if (!iterator || !iterator.__home_headers_target) throw new TypeError("Illegal invocation");
+    \\    const entries = __home_header_entries_sorted(iterator.__home_headers_target);
+    \\    if (iterator.__home_headers_index >= entries.length) return { value: undefined, done: true };
+    \\    const entry = entries[iterator.__home_headers_index++];
+    \\    return { value: iterator.__home_headers_kind === "key" ? entry[0] : iterator.__home_headers_kind === "value" ? entry[1] : entry, done: false };
+    \\  },
+    \\  [Symbol.iterator]() { return this; },
     \\};
-    \\Headers.prototype.keys = function*() {
-    \\  for (const entry of __home_header_entries_sorted(this)) yield entry[0];
+    \\function __home_headers_iterator(headers, kind) {
+    \\  __home_headers_assert_instance(headers);
+    \\  const iterator = Object.create(__home_headers_iterator_prototype);
+    \\  Object.defineProperty(iterator, "__home_headers_target", { value: headers });
+    \\  Object.defineProperty(iterator, "__home_headers_kind", { value: kind });
+    \\  Object.defineProperty(iterator, "__home_headers_index", { value: 0, writable: true });
+    \\  return iterator;
     \\};
-    \\Headers.prototype.values = function*() {
-    \\  for (const entry of __home_header_entries_sorted(this)) yield entry[1];
+    \\Headers.prototype.entries = function() {
+    \\  return __home_headers_iterator(this, "entry");
     \\};
-    \\Headers.prototype.forEach = function(callback, thisArg) {
+    \\Headers.prototype.keys = function() {
+    \\  return __home_headers_iterator(this, "key");
+    \\};
+    \\Headers.prototype.values = function() {
+    \\  return __home_headers_iterator(this, "value");
+    \\};
+    \\Headers.prototype.forEach = function(callback) {
+    \\  __home_headers_assert_instance(this);
     \\  if (arguments.length < 1) throw new TypeError("forEach requires 1 argument");
-    \\  for (const entry of __home_header_entries_sorted(this)) callback.call(thisArg, entry[1], entry[0], this);
+    \\  if (typeof callback !== "function") throw new TypeError("forEach callback must be callable");
+    \\  const thisArg = arguments.length > 1 ? arguments[1] : undefined;
+    \\  let index = 0;
+    \\  while (true) {
+    \\    const entries = __home_header_entries_sorted(this);
+    \\    if (index >= entries.length) return;
+    \\    const entry = entries[index++];
+    \\    callback.call(thisArg, entry[1], entry[0], this);
+    \\  }
     \\};
     \\Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
     \\Headers.prototype.toJSON = function() {
+    \\  __home_headers_assert_instance(this);
     \\  return __home_header_json(this);
     \\};
-    \\Headers.prototype.toString = function() { return "[object Headers]"; };
-    \\Object.defineProperty(Headers.prototype, "count", { configurable: true, get() { return Object.keys(this.__home_headers).length; } });
+    \\Object.defineProperty(Headers.prototype, Symbol.for("nodejs.util.inspect.custom"), { configurable: true, value: function() { __home_headers_assert_instance(this); return this.toJSON(); } });
+    \\Object.defineProperty(Headers.prototype, "count", { configurable: true, get() { __home_headers_assert_instance(this); return Object.keys(this.__home_headers).length; } });
     \\Object.defineProperty(Headers.prototype, Symbol.toStringTag, { value: "Headers" });
     \\globalThis.Headers = Headers;
     \\if (true) {
@@ -48852,7 +48961,8 @@ const harness_prelude =
     \\  const userHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
     \\  const accepted = Array.from(userHeaders.entries()).slice(0, 250);
     \\  const acceptedNames = new Set(accepted.map(entry => String(entry[0]).toLowerCase()));
-    \\  const headers = new Headers(accepted);
+    \\  const headers = new Headers();
+    \\  for (const entry of accepted) headers.append(userHeaders.__home_header_names[entry[0]] || entry[0], entry[1]);
     \\  if (!acceptedNames.has("host")) headers.set("Host", parsed.host);
     \\  if (!acceptedNames.has("accept")) headers.set("Accept", "*/*");
     \\  if (!acceptedNames.has("user-agent")) headers.set("User-Agent", "Bun/1.0.0");
@@ -48870,7 +48980,7 @@ const harness_prelude =
     \\  const headers = __home_fetch_capped_request_headers(href, fetchOptions, body);
     \\  const path = (parsed.pathname || "/") + parsed.search;
     \\  let requestText = fetchMethod + " " + path + " HTTP/1.1\r\n";
-    \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
+    \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0], headers) + ": " + entry[1] + "\r\n";
     \\  requestText += "\r\n" + body;
     \\  return new Promise((resolve, reject) => {
     \\    const socket = __home_net_connect({ port, host: parsed.hostname || "127.0.0.1" });
@@ -48930,7 +49040,7 @@ const harness_prelude =
     \\  if (!headers.has("host")) headers.set("Host", authority);
     \\  if (body !== "" && !headers.has("content-length")) headers.set("Content-Length", String(Buffer.byteLength(body)));
     \\  let requestText = fetchMethod + " " + requestTarget + " HTTP/1.1\r\n";
-    \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
+    \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0], headers) + ": " + entry[1] + "\r\n";
     \\  requestText += "\r\n" + body;
     \\  return new Promise((resolve, reject) => {
     \\    const socket = __home_http_event_target();
@@ -49000,7 +49110,18 @@ const harness_prelude =
     \\}
     \\function fetch(input, init) {
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
-    \\  const fetchOptions = init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
+    \\  const fetchOptions = (() => {
+    \\    if (typeof Request === "function" && input instanceof Request) {
+    \\      const options = Object.assign({}, init || {});
+    \\      if (options.method === undefined) options.method = input.method;
+    \\      if (options.headers === undefined) options.headers = input.headers;
+    \\      if (options.body === undefined && input.body !== null) options.body = input.body;
+    \\      if (options.redirect === undefined) options.redirect = input.redirect;
+    \\      if (options.signal === undefined && input.signal !== undefined) options.signal = input.signal;
+    \\      return options;
+    \\    }
+    \\    return init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
+    \\  })();
     \\  const fetchMethod = String((fetchOptions && fetchOptions.method) || "GET").toUpperCase();
     \\  const abortSignal = fetchOptions && fetchOptions.signal;
     \\  if (abortSignal && abortSignal.aborted) {
@@ -83313,6 +83434,41 @@ test "bootstrap runner mirrors Bun.serve static response stress matrix" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors Undici Headers WebIDL matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/headers.undici.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "fails if primitive is passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Symbol.iterator is only accessed once") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_headers_assert_instance") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_response_headers") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 51 or summary.todo != 0) {
+        std.debug.print(
+            "Undici Headers mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 51), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 51), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors async iterable Response streaming matrix" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -92595,6 +92751,9 @@ test "bootstrap runner mirrors issue 21677 single Date header" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    if (file_run.result.status() != .passed) {
+        std.debug.print("issue 21677 Date header mismatch: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
