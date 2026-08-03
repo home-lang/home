@@ -5553,12 +5553,29 @@ pub const Parser = struct {
                     }
                 }
             }
-            // TS1243: `private` modifier cannot be used with `abstract`
-            // modifier. tsc emits at the `abstract` keyword (not the
-            // `private` one) per baselines.
-            if (mods.is_abstract and mods.visibility == .private and mods.has_accessibility) {
-                if (mods.abstract_token) |at| {
-                    try self.reportCodeAt(at.span.start, at.line, 1243, "'private' modifier cannot be used with 'abstract' modifier.");
+            if (mods.is_abstract) {
+                const abstract_token = mods.abstract_token.?;
+                if (mods.has_accessibility) {
+                    const accessibility_token = mods.accessibility_token.?;
+                    if (mods.visibility == .private) {
+                        const conflict = if (accessibility_token.span.start > abstract_token.span.start) accessibility_token else abstract_token;
+                        try self.reportCodeAt(conflict.span.start, conflict.line, 1243, "'private' modifier cannot be used with 'abstract' modifier.");
+                    } else if (accessibility_token.span.start > abstract_token.span.start) {
+                        const visibility_name = self.source[accessibility_token.span.start..accessibility_token.span.end];
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "'{s}' modifier must precede 'abstract' modifier.",
+                            .{visibility_name},
+                        );
+                        try self.reportCodeAt(accessibility_token.span.start, accessibility_token.line, 1029, msg);
+                    }
+                }
+                if (mods.static_token) |static_token| {
+                    const conflict = if (static_token.span.start > abstract_token.span.start) static_token else abstract_token;
+                    try self.reportCodeAt(conflict.span.start, conflict.line, 1243, "'static' modifier cannot be used with 'abstract' modifier.");
+                }
+                if (mods.async_token) |async_token| {
+                    try self.reportCodeAt(async_token.span.start, async_token.line, 1243, "'async' modifier cannot be used with 'abstract' modifier.");
                 }
             }
             try self.reportClassMemberConstKeyword(mods);
@@ -20805,6 +20822,56 @@ test "parser: abstract class modifier cannot cross a line break" {
     try T.expect(!hir_mod.classOf(&s.hir, stmts[2]).is_abstract);
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[3]));
     try T.expect(!hir_mod.classOf(&s.hir, stmts[4]).is_abstract);
+}
+
+test "parser: abstract member modifier conflicts anchor the conflicting keyword" {
+    const source =
+        \\abstract class A {
+        \\    public abstract ok1();
+        \\    protected abstract ok2();
+        \\    private abstract a();
+        \\    abstract public b();
+        \\    abstract protected c();
+        \\    abstract private d();
+        \\    abstract static e();
+        \\    static abstract f();
+        \\    abstract async g();
+        \\    async abstract h();
+        \\}
+    ;
+    var s = try newTestSetup(source);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    var conflicts: usize = 0;
+    var ordering: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1243) conflicts += 1;
+        if (d.code == 1029) ordering += 1;
+    }
+    try T.expectEqual(@as(usize, 6), conflicts);
+    try T.expectEqual(@as(usize, 2), ordering);
+
+    const expected_positions = [_]usize{
+        std.mem.indexOf(u8, source, "abstract a").?,
+        std.mem.indexOf(u8, source, "public b").?,
+        std.mem.indexOf(u8, source, "protected c").?,
+        std.mem.indexOf(u8, source, "private d").?,
+        std.mem.indexOf(u8, source, "static e").?,
+        std.mem.indexOf(u8, source, "abstract f").?,
+        std.mem.indexOf(u8, source, "async g").?,
+        std.mem.indexOf(u8, source, "async abstract h").?,
+    };
+    for (expected_positions) |expected| {
+        var found = false;
+        for (s.parser.diagnostics.items) |d| {
+            if (d.pos == expected) {
+                found = true;
+                break;
+            }
+        }
+        try T.expect(found);
+    }
 }
 
 test "parser: malformed default and import recover into abstract classes" {

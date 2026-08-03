@@ -2927,6 +2927,10 @@ const ClassMethodSeen = struct {
     /// diagnostics at *every* declaration of the overload group).
     /// See symbolProperty39 baseline.
     prior_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+    /// Parallel to `prior_nodes`; avoids assuming every diagnostic anchor
+    /// is itself a function node (computed methods use an object-property
+    /// anchor while their function lives in the value payload).
+    prior_abstractness: std.ArrayListUnmanaged(bool) = .empty,
     /// Parallel to `prior_nodes` ÃÂ¢ÃÂÃÂ each entry's visibility modifier.
     /// Used by the post-loop visibility-mismatch pass to compare
     /// every overload against the implementation's visibility, which
@@ -2942,6 +2946,7 @@ const ClassMethodSeen = struct {
     /// excluded from the post-loop visibility-mismatch pass so we
     /// don't double-report at the impl itself.
     impl_node: NodeId = hir_mod.none_node_id,
+    impl_abstract: ?bool = null,
 };
 
 const ConstructorParamPropertyMerge = struct {
@@ -3651,6 +3656,10 @@ pub const Checker = struct {
     /// of an abstract class.") when the construction target resolves
     /// to an abstract class.
     abstract_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// First class declaration seen for a merged symbol. Constructor
+    /// abstractness follows that value declaration even when a later
+    /// duplicate class carries the opposite modifier.
+    class_abstractness_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Classes whose constructor carries a `private` modifier, keyed
     /// by class name. Used by TS2673 when `new C()` appears outside the
     /// class declaration.
@@ -4507,6 +4516,7 @@ pub const Checker = struct {
             .class_static_member_names = .empty,
             .class_parent = .empty,
             .abstract_classes = .empty,
+            .class_abstractness_seen = .empty,
             .private_constructor_classes = .empty,
             .protected_constructor_classes = .empty,
             .class_abstract_members = .empty,
@@ -4827,6 +4837,7 @@ pub const Checker = struct {
         self.class_static_member_names.deinit(self.gpa);
         self.class_parent.deinit(self.gpa);
         self.abstract_classes.deinit(self.gpa);
+        self.class_abstractness_seen.deinit(self.gpa);
         self.private_constructor_classes.deinit(self.gpa);
         self.protected_constructor_classes.deinit(self.gpa);
         var am_it = self.class_abstract_members.valueIterator();
@@ -33377,6 +33388,7 @@ pub const Checker = struct {
             var msit = method_seen.iterator();
             while (msit.next()) |e| {
                 e.value_ptr.prior_nodes.deinit(self.gpa);
+                e.value_ptr.prior_abstractness.deinit(self.gpa);
                 e.value_ptr.prior_visibilities.deinit(self.gpa);
             }
             method_seen.deinit(self.gpa);
@@ -33386,6 +33398,7 @@ pub const Checker = struct {
             var sit = static_method_seen.iterator();
             while (sit.next()) |e| {
                 e.value_ptr.prior_nodes.deinit(self.gpa);
+                e.value_ptr.prior_abstractness.deinit(self.gpa);
                 e.value_ptr.prior_visibilities.deinit(self.gpa);
             }
             static_method_seen.deinit(self.gpa);
@@ -35270,6 +35283,8 @@ pub const Checker = struct {
         try self.checkUnusedPrivateClassMembers(node, &unused_private_member_candidates);
         try self.checkClassMethodMissingImplementations(node, &method_seen);
         try self.checkClassMethodMissingImplementations(node, &static_method_seen);
+        try self.checkClassMethodOverloadAbstractMismatch(&method_seen);
+        try self.checkClassMethodOverloadAbstractMismatch(&static_method_seen);
         try self.checkClassMethodOverloadVisibilityMismatch(&method_seen);
         try self.checkClassMethodOverloadVisibilityMismatch(&static_method_seen);
         if (ctor_overload_nodes.items.len > 1 or
@@ -35529,7 +35544,7 @@ pub const Checker = struct {
                         }
                     }
                     if (missing.items.len > 0) {
-                        const anchor_node = self.classExpressionBindingAnchor(node);
+                        const anchor_node = node;
                         const parent_str = try self.renderExtendsExpression(c.extends, ext_name);
                         if (missing.items.len == 1) {
                             const member_str = self.string_interner.get(missing.items[0]);
@@ -35815,11 +35830,12 @@ pub const Checker = struct {
                     try self.reportClassIncorrectlyImplements(node, impl_node, target_t, cid.name);
                 }
             }
-            // Track abstract classes so `new X()` can emit TS2511.
-            if (c.is_abstract) {
-                try self.abstract_classes.put(self.gpa, cid.name, {});
-            } else {
-                _ = self.abstract_classes.remove(cid.name);
+            // The constructor symbol for duplicate class declarations
+            // keeps the first class value declaration. A later class with
+            // the opposite modifier must not replace its abstractness.
+            if (!self.class_abstractness_seen.contains(cid.name)) {
+                try self.class_abstractness_seen.put(self.gpa, cid.name, {});
+                if (c.is_abstract) try self.abstract_classes.put(self.gpa, cid.name, {});
             }
             if (parent_class_name) |ext_name| {
                 try self.checkPrivateBaseRedeclarations(node, cid.name, ext_name, &private_names, &own_member_names);
@@ -36045,11 +36061,9 @@ pub const Checker = struct {
                                 }
                             }
                             if (missing.items.len > 0) {
-                                // Class-expression detection: anchor
-                                // at the binding identifier when
-                                // assigned (`const C = class extends
-                                // ÃÂ¢ÃÂÃÂ¦`) so TS2650 / TS2656 reports at
-                                // `C`, mirroring tsc.
+                                // Class-expression diagnostics anchor at
+                                // the `class` keyword, while declarations
+                                // anchor at their declared name.
                                 const is_class_expr = self.classNodeIsExpression(node);
                                 const child_str = try self.renderClassNameWithTypeParams(cid.name, c.type_params_start, c.type_params_len);
                                 const parent_str = try self.renderExtendsExpression(c.extends, ext_name);
@@ -36068,7 +36082,7 @@ pub const Checker = struct {
                                             .{ child_str, member_str, parent_str },
                                         );
                                     try self.diagnostics.append(self.gpa, .{
-                                        .node = if (is_class_expr) self.classExpressionBindingAnchor(node) else c.name,
+                                        .node = if (is_class_expr) node else c.name,
                                         .code = if (is_class_expr) TsCodes.abstract_member_not_implemented_class_expr else TsCodes.abstract_member_not_implemented,
                                         .message = msg,
                                     });
@@ -36126,14 +36140,10 @@ pub const Checker = struct {
                                         (if (truncated) TsCodes.abstract_members_missing_class_expr_truncated else TsCodes.abstract_members_missing_class_expr_aggregate)
                                     else
                                         (if (truncated) TsCodes.abstract_members_missing_truncated else TsCodes.abstract_members_missing_aggregate);
-                                    // For class expressions the anchor
-                                    // is the enclosing binding name
-                                    // (e.g. `const C = class ...`
-                                    // reports at `C`). Fall back to
-                                    // `c.name` (which for class_expr
-                                    // is `none_node_id`) when there's
-                                    // no binding pattern.
-                                    const anchor_node = if (is_class_expr) self.classExpressionBindingAnchor(node) else c.name;
+                                    // Class expressions report at their
+                                    // `class` keyword; declarations report
+                                    // at the declared name.
+                                    const anchor_node = if (is_class_expr) node else c.name;
                                     try self.diagnostics.append(self.gpa, .{
                                         .node = anchor_node,
                                         .code = code,
@@ -36175,7 +36185,7 @@ pub const Checker = struct {
                                         .{ child_str, member_str, parent_str },
                                     );
                                 try self.diagnostics.append(self.gpa, .{
-                                    .node = if (is_class_expr) self.classExpressionBindingAnchor(node) else c.name,
+                                    .node = if (is_class_expr) node else c.name,
                                     .code = if (is_class_expr) TsCodes.abstract_member_not_implemented_class_expr else TsCodes.abstract_member_not_implemented,
                                     .message = msg,
                                 });
@@ -36202,7 +36212,7 @@ pub const Checker = struct {
                                         .{ child_str, parent_str, names_str },
                                     );
                                 try self.diagnostics.append(self.gpa, .{
-                                    .node = if (is_class_expr) self.classExpressionBindingAnchor(node) else c.name,
+                                    .node = if (is_class_expr) node else c.name,
                                     .code = if (is_class_expr) TsCodes.abstract_members_missing_class_expr_aggregate else TsCodes.abstract_members_missing_aggregate,
                                     .message = msg,
                                 });
@@ -41237,11 +41247,14 @@ pub const Checker = struct {
                 .bodyless_count = if (has_body) 0 else 1,
                 .implementation_count = if (has_body) 1 else 0,
                 .prior_nodes = .empty,
+                .prior_abstractness = .empty,
                 .prior_visibilities = .empty,
                 .impl_visibility = if (has_body) visibility else null,
                 .impl_node = if (has_body) node else hir_mod.none_node_id,
+                .impl_abstract = if (has_body) is_abstract else null,
             };
             try gop.value_ptr.prior_nodes.append(self.gpa, node);
+            try gop.value_ptr.prior_abstractness.append(self.gpa, is_abstract);
             try gop.value_ptr.prior_visibilities.append(self.gpa, visibility);
             return;
         }
@@ -41249,16 +41262,14 @@ pub const Checker = struct {
             const code = if (is_static) TsCodes.overload_must_not_be_static else TsCodes.overload_must_be_static;
             try self.report(node, code, "Overload signatures must all be static or non-static.");
         }
-        if (gop.value_ptr.first_abstract != is_abstract) {
-            try self.report(node, TsCodes.overloads_must_all_be_abstract_or_not, "Overload signatures must all be abstract or non-abstract.");
-        }
         // TS2516 — a declaration of an abstract method that is not
         // adjacent to the previous declaration of the same name (a
         // differently-named member split the overload group) is
         // non-consecutive. Upstream gates this on the current node
         // being abstract; non-abstract gaps surface TS2391 instead.
         if (is_abstract and member_idx != gop.value_ptr.last_member_index + 1) {
-            try self.report(node, TsCodes.abstract_method_declarations_must_be_consecutive, "All declarations of an abstract method must be consecutive.");
+            const anchor = if (gop.value_ptr.last_bodyless_node != hir_mod.none_node_id) gop.value_ptr.last_bodyless_node else node;
+            try self.report(anchor, TsCodes.abstract_method_declarations_must_be_consecutive, "All declarations of an abstract method must be consecutive.");
         }
         gop.value_ptr.last_member_index = member_idx;
         if (has_body) {
@@ -41281,13 +41292,30 @@ pub const Checker = struct {
             if (gop.value_ptr.impl_visibility == null) {
                 gop.value_ptr.impl_visibility = visibility;
                 gop.value_ptr.impl_node = node;
+                gop.value_ptr.impl_abstract = is_abstract;
             }
         } else {
             gop.value_ptr.bodyless_count += 1;
             gop.value_ptr.last_bodyless_node = node;
         }
         try gop.value_ptr.prior_nodes.append(self.gpa, node);
+        try gop.value_ptr.prior_abstractness.append(self.gpa, is_abstract);
         try gop.value_ptr.prior_visibilities.append(self.gpa, visibility);
+    }
+
+    fn checkClassMethodOverloadAbstractMismatch(
+        self: *Checker,
+        seen: *const std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen),
+    ) CheckError!void {
+        var it = seen.valueIterator();
+        while (it.next()) |group| {
+            if (group.prior_nodes.items.len < 2) continue;
+            const canonical_abstract = group.impl_abstract orelse group.first_abstract;
+            for (group.prior_nodes.items, group.prior_abstractness.items) |member, is_abstract| {
+                if (is_abstract == canonical_abstract) continue;
+                try self.report(member, TsCodes.overloads_must_all_be_abstract_or_not, "Overload signatures must all be abstract or non-abstract.");
+            }
+        }
     }
 
     /// Post-pass over `method_seen` / `static_method_seen` ÃÂ¢ÃÂÃÂ emit
@@ -44417,8 +44445,7 @@ pub const Checker = struct {
     }
 
     /// Returns the binding name (variable / property) that a class
-    /// expression is being assigned to so TS2650 / TS2656 can anchor
-    /// at the user-facing name. Walks the parent chain for the
+    /// expression is being assigned to. Walks the parent chain for the
     /// simplest patterns (`var X = class ÃÂ¢ÃÂÃÂ¦`, `const X = class ÃÂ¢ÃÂÃÂ¦`).
     /// Falls back to the class-expression node itself when no
     /// suitable anchor exists.
@@ -99191,7 +99218,10 @@ pub const Checker = struct {
             if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
         }
         const selected_is_abstract_construct = self.signatureIsAbstractConstruct(selected_sig);
-        if (selected_is_abstract_construct and !self.newCalleeIsAbstractClass(callee_node)) {
+        if (selected_is_abstract_construct and
+            !self.newCalleeIsAbstractClass(callee_node) and
+            !self.newCalleeIsKnownConcreteClass(callee_node))
+        {
             try self.report(
                 node,
                 TsCodes.abstract_class_instantiation,
@@ -99415,6 +99445,12 @@ pub const Checker = struct {
         if (self.hir.kindOf(callee_node) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, callee_node);
         return self.abstract_classes.contains(id.name);
+    }
+
+    fn newCalleeIsKnownConcreteClass(self: *Checker, callee_node: NodeId) bool {
+        if (callee_node == hir_mod.none_node_id or self.hir.kindOf(callee_node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, callee_node).name;
+        return self.class_abstractness_seen.contains(name) and !self.abstract_classes.contains(name);
     }
 
     fn newCalleeAcceptsTypeArguments(self: *Checker, callee_node: NodeId) bool {
@@ -184319,6 +184355,25 @@ test "checker: `new ConcreteSubclass()` of an abstract class is allowed" {
     }
 }
 
+test "checker: merged class constructor abstractness follows the first class declaration" {
+    const s = try newSetup(
+        \\abstract class First {}
+        \\class First {}
+        \\class Second {}
+        \\abstract class Second {}
+        \\new First;
+        \\new Second;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.abstract_class_instantiation));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.abstract_class_instantiation) continue;
+        try T.expect(std.mem.indexOf(u8, s.checker.nodeSourceTextOrEmpty(d.node), "First") != null);
+    }
+}
+
 test "checker: non-abstract subclass missing abstract member emits TS2515" {
     const s = try newSetup(
         \\abstract class A { abstract m(): void }
@@ -184348,6 +184403,11 @@ test "checker: class expression missing one abstract member emits TS2653" {
         "Non-abstract class expression does not implement inherited abstract member 'm' from class 'A'.",
         msg,
     );
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.abstract_member_not_implemented_class_expr) continue;
+        try T.expectEqual(hir_mod.NodeKind.class_expr, s.checker.hir.kindOf(d.node));
+        try T.expect(std.mem.startsWith(u8, s.checker.nodeSourceTextOrEmpty(d.node), "class"));
+    }
 }
 
 test "checker: non-abstract subclass implementing abstract member passes (no TS2515)" {
@@ -184378,9 +184438,12 @@ test "checker: TS2516 fires for non-consecutive abstract method overloads" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.abstract_method_declarations_must_be_consecutive));
+    const class_node = hir_mod.blockStmts(s.checker.hir, s.root)[0];
+    const members = hir_mod.classMembers(s.checker.hir, class_node);
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.abstract_method_declarations_must_be_consecutive) {
             try T.expectEqualStrings("All declarations of an abstract method must be consecutive.", d.message);
+            try T.expectEqual(members[1], d.node);
         }
     }
 }
@@ -208701,6 +208764,27 @@ test "checker: TS2512 for mixed abstract/non-abstract method overloads" {
         if (d.code == TsCodes.overloads_must_all_be_abstract_or_not) {
             try T.expectEqualStrings("Overload signatures must all be abstract or non-abstract.", d.message);
         }
+    }
+}
+
+test "checker: TS2512 uses the implementation as overload abstractness canonical" {
+    const s = try newSetup(
+        \\abstract class C {
+        \\    abstract baz(): void;
+        \\    baz(): void;
+        \\    abstract baz(): void;
+        \\    baz(): void {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const class_node = hir_mod.blockStmts(s.checker.hir, s.root)[0];
+    const members = hir_mod.classMembers(s.checker.hir, class_node);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.overloads_must_all_be_abstract_or_not));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.overloads_must_all_be_abstract_or_not) continue;
+        try T.expect(d.node == members[0] or d.node == members[2]);
     }
 }
 
