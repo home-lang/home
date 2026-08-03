@@ -37,7 +37,8 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
 - `Home.engine` reports `zig-js` or `jsc`.
 - `Home.readTextFile`, `Home.writeTextFile`, and `Home.fileExists` provide
   synchronous repository-file access.
-- `Home.spawnSync(argv)` returns `{ exitCode, stdout, stderr }`.
+- `Home.spawnSync(argv)` resolves the executable through `PATH` and returns
+  `{ exitCode, stdout, stderr }`.
 
 The runner resolves relative and absolute modules plus offline `node_modules`
 packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load

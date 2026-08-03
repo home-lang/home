@@ -28,7 +28,7 @@ if (!Home.fileExists(marker) || Home.readTextFile(marker) !== expectedEngineMark
   throw new Error("Home filesystem host functions do not round-trip");
 }
 
-const child = Home.spawnSync(["/usr/bin/printf", "home-tool"]);
+const child = Home.spawnSync(["printf", "home-tool"]);
 if (child.exitCode !== 0 || child.stdout !== "home-tool" || child.stderr !== "") {
   throw new Error("Home.spawnSync returned an unexpected result");
 }

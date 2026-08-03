@@ -142,13 +142,28 @@ fn spawnSyncNative(
             return extern_fns.JSValueMakeNull(c);
         argv[initialized] = valueToOwnedUtf8(c, value, allocator) orelse return extern_fns.JSValueMakeNull(c);
     }
+    if (std.mem.indexOfScalar(u8, argv[0], '/') == null) {
+        const path_value = if (std.c.getenv("PATH")) |raw| std.mem.span(raw) else "";
+        var paths = std.mem.splitScalar(u8, path_value, ':');
+        while (paths.next()) |directory| {
+            const candidate = std.fs.path.join(allocator, &.{ if (directory.len == 0) "." else directory, argv[0] }) catch
+                return extern_fns.JSValueMakeNull(c);
+            if (std.Io.Dir.cwd().access(g_io, candidate, .{})) |_| {
+                allocator.free(argv[0]);
+                argv[0] = candidate;
+                break;
+            } else |_| allocator.free(candidate);
+        }
+    }
     // The global single-threaded Io singleton has no process-spawn arena and
     // reports OutOfMemory from spawnPosix. A scoped Threaded instance owns the
     // argv/environment arena and the two pipe readers for this synchronous run.
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    const result = std.process.run(allocator, threaded.io(), .{ .argv = argv }) catch
+    const result = std.process.run(allocator, threaded.io(), .{ .argv = argv }) catch |err| {
+        std.debug.print("home-tool: cannot spawn {s}: {t}\n", .{ argv[0], err });
         return extern_fns.JSValueMakeNull(c);
+    };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
