@@ -5044,6 +5044,7 @@ pub const Checker = struct {
         try self.checkJSDocImportRequireSyntax(root);
         try self.reportLargeControlFlowBodyIfNeeded(stmts);
         try self.checkCircularBaseExpressions();
+        try self.preRegisterTopLevelClassAccessibility(stmts);
         // Pre-register top-level type aliases so recursive and mutually
         // recursive references (`type Tree<T> = { children: Tree<T>[] }`,
         // `type A = { b: B }; type B = { a: A }`) resolve to a stub body
@@ -5092,6 +5093,58 @@ pub const Checker = struct {
         // doesn't trip on ordering alone.
         self.sortDiagnosticsByPosition();
         if (self.source != null) try self.applyDirectives(root);
+    }
+
+    /// The binder owns class symbols before the checker visits any class
+    /// body. Pre-register heritage and protected accessibility from syntax
+    /// so an early class can correctly resolve members declared by a later
+    /// sibling class.
+    fn preRegisterTopLevelClassAccessibility(self: *Checker, stmts: []const NodeId) CheckError!void {
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .class_decl) continue;
+            const c = hir_mod.classOf(self.hir, node);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            const class_name = hir_mod.identifierOf(self.hir, c.name).name;
+
+            if (self.class_protected_members.contains(class_name)) continue;
+
+            var protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+            var static_protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+            errdefer protected_names.deinit(self.gpa);
+            errdefer static_protected_names.deinit(self.gpa);
+
+            for (hir_mod.classMembers(self.hir, node)) |member| {
+                var name: ?hir_mod.StringId = null;
+                var is_static = false;
+                var is_protected = false;
+                switch (self.hir.kindOf(member)) {
+                    .fn_decl, .fn_expr => {
+                        const f = hir_mod.fnDeclOf(self.hir, member);
+                        name = try self.classMemberNameFromFunctionName(f.name);
+                        is_static = f.flags.is_static;
+                        is_protected = f.flags.is_protected;
+                    },
+                    .object_property => {
+                        const op = hir_mod.objectPropertyOf(self.hir, member);
+                        name = try self.classMemberNameFromPropertyKey(op.key, op.is_computed);
+                        is_static = op.is_static;
+                        is_protected = op.visibility == .protected;
+                    },
+                    else => continue,
+                }
+                const member_name = name orelse continue;
+                if (is_protected) {
+                    try protected_names.put(self.gpa, member_name, {});
+                    if (is_static) try static_protected_names.put(self.gpa, member_name, {});
+                }
+            }
+
+            try self.class_protected_members.put(self.gpa, class_name, protected_names);
+            protected_names = .empty;
+            try self.class_static_protected_members.put(self.gpa, class_name, static_protected_names);
+            static_protected_names = .empty;
+        }
     }
 
     fn applyCompilerCorpusExactDiagnosticReconciliations(self: *Checker, root: NodeId) CheckError!void {
@@ -39733,8 +39786,63 @@ pub const Checker = struct {
     }
 
     fn classIsOrExtendsClass(self: *Checker, child: hir_mod.StringId, parent: hir_mod.StringId) bool {
-        if (child == parent) return true;
-        return self.classExtendsClass(child, parent);
+        var probe: ?hir_mod.StringId = child;
+        var depth: usize = 0;
+        while (probe) |class_name| : (depth += 1) {
+            if (depth >= 1024) return false;
+            if (class_name == parent) return true;
+            probe = self.class_parent.get(class_name) orelse self.classParentNameFromSyntax(class_name);
+        }
+        return false;
+    }
+
+    fn classParentNameFromSyntax(self: *Checker, class_name: hir_mod.StringId) ?hir_mod.StringId {
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, node);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.name).name != class_name) continue;
+            if (c.extends == hir_mod.none_node_id) return null;
+            return self.classExtendsName(c.extends);
+        }
+        return null;
+    }
+
+    fn classSyntaxDeclaresMember(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        prop_name: hir_mod.StringId,
+        is_static: bool,
+    ) bool {
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, node);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.name).name != class_name) continue;
+            for (hir_mod.classMembers(self.hir, node)) |member| {
+                const member_info: ?struct { name: hir_mod.StringId, is_static: bool } = switch (self.hir.kindOf(member)) {
+                    .fn_decl, .fn_expr => blk: {
+                        const f = hir_mod.fnDeclOf(self.hir, member);
+                        const name = (self.classMemberNameFromFunctionName(f.name) catch null) orelse continue;
+                        break :blk .{ .name = name, .is_static = f.flags.is_static };
+                    },
+                    .object_property => blk: {
+                        const op = hir_mod.objectPropertyOf(self.hir, member);
+                        const name = (self.classMemberNameFromPropertyKey(op.key, op.is_computed) catch null) orelse continue;
+                        break :blk .{ .name = name, .is_static = op.is_static };
+                    },
+                    else => continue,
+                };
+                const info = member_info orelse continue;
+                if (info.name == prop_name and info.is_static == is_static) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     fn nearestEnclosingClassInProtectedChain(
@@ -39784,8 +39892,10 @@ pub const Checker = struct {
                 self.class_instance_member_names.getPtr(class_name);
             if (member_map) |own_names| {
                 if (own_names.contains(prop_name)) return null;
+            } else if (self.classSyntaxDeclaresMember(class_name, prop_name, is_static)) {
+                return null;
             }
-            probe = self.class_parent.get(class_name);
+            probe = self.class_parent.get(class_name) orelse self.classParentNameFromSyntax(class_name);
         }
         return null;
     }
@@ -40144,15 +40254,21 @@ pub const Checker = struct {
         obj_t: TypeId,
         prop_name: hir_mod.StringId,
     ) CheckError!void {
+        var syntax_static_class: ?hir_mod.StringId = null;
         if (self.hir.kindOf(node) == .member_access) {
             const m = hir_mod.memberOf(self.hir, node);
             if (self.hir.kindOf(m.object) == .identifier) {
                 const ident = hir_mod.identifierOf(self.hir, m.object);
                 if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) return;
+                if (self.findVisibleNamedClassDecl(m.object, ident.name) != null) {
+                    syntax_static_class = ident.name;
+                }
             }
         }
         const Receiver = struct { class_name: hir_mod.StringId, is_static: bool };
-        const receiver: Receiver = if (self.class_name_by_instance.get(obj_t)) |name|
+        const receiver: Receiver = if (syntax_static_class) |name|
+            .{ .class_name = name, .is_static = true }
+        else if (self.class_name_by_instance.get(obj_t)) |name|
             .{ .class_name = name, .is_static = false }
         else if (self.class_name_by_static.get(obj_t)) |name|
             .{ .class_name = name, .is_static = true }
@@ -40166,8 +40282,13 @@ pub const Checker = struct {
             return;
         const declaring_class = self.protectedMemberDeclaringClass(receiver.class_name, prop_name, receiver.is_static) orelse return;
         if (self.nearestEnclosingClassInProtectedChain(node, declaring_class)) |access_class| {
+            // TS2446's receiver constraint applies to instance members.
+            // Static protected members are accessible through any class
+            // constructor while lexically inside the declaring class or a
+            // subclass; a redeclared static member has its own declaring
+            // class and therefore still fails the lexical-chain test above.
+            if (receiver.is_static) return;
             if (self.classIsOrExtendsClass(receiver.class_name, access_class)) return;
-            if (receiver.is_static and self.classIsOrExtendsClass(access_class, receiver.class_name)) return;
             const prop_str = self.string_interner.get(prop_name);
             const access_display = try self.classDisplayName(node, access_class);
             defer self.gpa.free(access_display);
@@ -218823,4 +218944,48 @@ test "checker: recovered private-name type index suppresses TS2538 cascade" {
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: protected access sees later sibling heritage and redeclarations" {
+    const s = try newSetup(
+        \\class Base {
+        \\  protected x!: string;
+        \\  method() {
+        \\    let d3: Derived3 = undefined as any;
+        \\    d3.x;
+        \\  }
+        \\}
+        \\class Derived1 extends Base {
+        \\  method1() {
+        \\    let d2: Derived2 = undefined as any;
+        \\    d2.x;
+        \\  }
+        \\}
+        \\class Derived2 extends Base {}
+        \\class Derived3 extends Derived1 { protected x!: string; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.protected_member_access));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.protected_member_wrong_receiver));
+}
+
+test "checker: static protected access has no instance receiver constraint" {
+    const s = try newSetup(
+        \\class Base {
+        \\  protected static x: string;
+        \\  static method() { Derived3.x; }
+        \\}
+        \\class Derived1 extends Base {}
+        \\class Derived2 extends Base {
+        \\  static method() { Derived1.x; }
+        \\}
+        \\class Derived3 extends Derived1 { protected static x: string; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.protected_member_access));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.protected_member_wrong_receiver));
 }
