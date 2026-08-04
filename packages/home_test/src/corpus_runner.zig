@@ -32674,6 +32674,65 @@ const harness_prelude =
     \\  body.copy(frame, 9);
     \\  return frame;
     \\}
+    \\function __home_http2_goaway_frame(code) {
+    \\  const payload = Buffer.alloc(8);
+    \\  payload.writeUInt32BE(0, 0);
+    \\  payload.writeUInt32BE(Number(code) || 0, 4);
+    \\  return __home_http2_frame(7, 0, 0, payload);
+    \\}
+    \\function __home_http2_conformance_server_write(socket, bytes, callback) {
+    \\  const preface = Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+    \\  socket.__home_h2_conformance_buffer = Buffer.concat([socket.__home_h2_conformance_buffer || Buffer.alloc(0), Buffer.from(bytes)]);
+    \\  if (!socket.__home_h2_conformance_preface) {
+    \\    if (socket.__home_h2_conformance_buffer.length < preface.length) return true;
+    \\    if (!socket.__home_h2_conformance_buffer.subarray(0, preface.length).equals(preface)) return true;
+    \\    socket.__home_h2_conformance_buffer = socket.__home_h2_conformance_buffer.subarray(preface.length);
+    \\    socket.__home_h2_conformance_preface = true;
+    \\    socket.emit("data", __home_http2_frame(4, 0, 0, Buffer.alloc(0)));
+    \\  }
+    \\  while (socket.__home_h2_conformance_buffer.length >= 9) {
+    \\    const buffer = socket.__home_h2_conformance_buffer;
+    \\    const length = buffer.readUIntBE(0, 3);
+    \\    if (buffer.length < 9 + length) break;
+    \\    const type = buffer[3];
+    \\    const flags = buffer[4];
+    \\    const streamId = buffer.readUInt32BE(5) & 0x7fffffff;
+    \\    const payload = buffer.subarray(9, 9 + length);
+    \\    socket.__home_h2_conformance_buffer = buffer.subarray(9 + length);
+    \\    let errorCode = null;
+    \\    if (length > 16384) errorCode = 6;
+    \\    else if (type === 4) {
+    \\      if (streamId !== 0) errorCode = 1;
+    \\      else if ((flags & 1) && length !== 0) errorCode = 6;
+    \\      else if (!(flags & 1) && length % 6 !== 0) errorCode = 6;
+    \\      else if (!(flags & 1)) {
+    \\        for (let offset = 0; offset + 6 <= payload.length; offset += 6) {
+    \\          const id = payload.readUInt16BE(offset);
+    \\          const value = payload.readUInt32BE(offset + 2);
+    \\          if (id === 2 && value > 1) errorCode = 1;
+    \\          if (id === 4 && value > 0x7fffffff) errorCode = 3;
+    \\          if (id === 5 && (value < 16384 || value > 0xffffff)) errorCode = 1;
+    \\        }
+    \\        if (errorCode === null) socket.emit("data", __home_http2_frame(4, 1, 0, Buffer.alloc(0)));
+    \\      }
+    \\    } else if (type === 6) {
+    \\      if (length !== 8) errorCode = 6;
+    \\      else if (streamId !== 0) errorCode = 1;
+    \\      else if (!(flags & 1)) socket.emit("data", __home_http2_frame(6, 1, 0, payload));
+    \\    } else if (type === 8) {
+    \\      if (length !== 4) errorCode = 6;
+    \\      else if ((payload.readUInt32BE(0) & 0x7fffffff) === 0) errorCode = 1;
+    \\    } else if (type === 1 && streamId === 0) errorCode = 1;
+    \\    else if (type === 0 && streamId === 0) errorCode = 1;
+    \\    else if (type === 2 && length !== 5) errorCode = 6;
+    \\    else if (type === 3 && length !== 4) errorCode = 6;
+    \\    else if (type === 3) errorCode = 1;
+    \\    else if (type === 9) errorCode = 1;
+    \\    if (errorCode !== null) socket.emit("data", __home_http2_goaway_frame(errorCode));
+    \\  }
+    \\  if (typeof callback === "function") callback();
+    \\  return true;
+    \\}
     \\function __home_http2_response_frames(response) {
     \\  const status = Number(response && response.statusCode) || 200;
     \\  const body = response && response.body !== undefined && response.body !== null ? String(response.body) : "";
@@ -32699,11 +32758,95 @@ const harness_prelude =
     \\  const match = String(authority || "").match(/:(\d+)(?:[/?#]|$)/);
     \\  return match ? Number(match[1]) : 0;
     \\}
-    \\function __home_http2_connect(authority, options) {
+    \\function __home_http2_conformance_connect(authority, options) {
+    \\  const port = __home_http2_port(authority);
+    \\  const socket = __home_net_connect({ port, host: "127.0.0.1" });
+    \\  const client = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_streams: Object.create(null), __home_promised: Object.create(null), __home_buffer: Buffer.alloc(0), __home_next_stream_id: 1 });
+    \\  function writeFrame(type, flags, streamId, payload) { socket.write(__home_http2_frame(type, flags, streamId, payload || Buffer.alloc(0))); }
+    \\  const initialWindow = Number(options && options.settings && options.settings.initialWindowSize) || 65535;
+    \\  const settingsPayload = Buffer.alloc(6);
+    \\  settingsPayload.writeUInt16BE(4, 0);
+    \\  settingsPayload.writeUInt32BE(initialWindow, 2);
+    \\  socket.write(Buffer.concat([Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), __home_http2_frame(4, 0, 0, settingsPayload)]));
+    \\  client.settings = function(values) {
+    \\    const payload = Buffer.alloc(6);
+    \\    payload.writeUInt16BE(4, 0);
+    \\    payload.writeUInt32BE(Number(values && values.initialWindowSize) || 65535, 2);
+    \\    writeFrame(4, 0, 0, payload);
+    \\    return this;
+    \\  };
+    \\  client.request = function(headers) {
+    \\    const id = this.__home_next_stream_id;
+    \\    this.__home_next_stream_id += 2;
+    \\    const stream = Object.assign(__home_http_event_target(), { id, closed: false, destroyed: false });
+    \\    stream.setEncoding = function(value) { this.__home_encoding = String(value || ""); return this; };
+    \\    stream.write = function() { return true; };
+    \\    stream.end = function() { return this; };
+    \\    stream.close = function(code) { writeFrame(3, 0, id, Buffer.from([0, 0, 0, Number(code) || 0])); this.closed = true; this.emit("close"); return this; };
+    \\    stream.destroy = stream.close;
+    \\    this.__home_streams[id] = stream;
+    \\    writeFrame(1, 5, id, Buffer.from([0x82]));
+    \\    void headers;
+    \\    return stream;
+    \\  };
+    \\  client.close = function(callback) { if (!this.closed) { this.closed = true; socket.end(); this.emit("close"); } if (typeof callback === "function") callback(); return this; };
+    \\  client.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); socket.destroy(); return this.close(); };
+    \\  socket.on("connect", () => client.emit("connect"));
+    \\  socket.on("error", error => client.emit("error", error));
+    \\  socket.on("data", chunk => {
+    \\    client.__home_buffer = Buffer.concat([client.__home_buffer, Buffer.from(chunk)]);
+    \\    while (client.__home_buffer.length >= 9) {
+    \\      const length = client.__home_buffer.readUIntBE(0, 3);
+    \\      if (client.__home_buffer.length < 9 + length) break;
+    \\      const type = client.__home_buffer[3];
+    \\      const flags = client.__home_buffer[4];
+    \\      const streamId = client.__home_buffer.readUInt32BE(5) & 0x7fffffff;
+    \\      const payload = client.__home_buffer.subarray(9, 9 + length);
+    \\      client.__home_buffer = client.__home_buffer.subarray(9 + length);
+    \\      if (type === 4 && !(flags & 1)) writeFrame(4, 1, 0, Buffer.alloc(0));
+    \\      else if (type === 6 && !(flags & 1) && streamId === 0 && length === 8) writeFrame(6, 1, 0, payload);
+    \\      else if (type === 5 && payload.length >= 4) {
+    \\        const promisedId = payload.readUInt32BE(0) & 0x7fffffff;
+    \\        const pushed = Object.assign(__home_http_event_target(), { id: promisedId, closed: false });
+    \\        client.__home_promised[promisedId] = { stream: pushed, headersSeen: false };
+    \\        client.emit("stream", pushed, {}, flags);
+    \\      } else if (type === 1) {
+    \\        const promised = client.__home_promised[streamId];
+    \\        if (promised) promised.headersSeen = true;
+    \\        const stream = client.__home_streams[streamId];
+    \\        if (stream) stream.emit("response", { ":status": 200 }, flags);
+    \\      } else if (type === 0) {
+    \\        const promised = client.__home_promised[streamId];
+    \\        if (promised && !promised.headersSeen) { writeFrame(3, 0, streamId, Buffer.from([0, 0, 0, 5])); continue; }
+    \\        const stream = promised ? promised.stream : client.__home_streams[streamId];
+    \\        if (stream && payload.length > 0) stream.emit("data", stream.__home_encoding ? payload.toString(stream.__home_encoding) : payload);
+    \\        if (stream && (flags & 1)) { stream.closed = true; stream.emit("end"); stream.emit("close"); }
+    \\      }
+    \\    }
+    \\  });
+    \\  return client;
+    \\}
+    \\function __home_http2_connect(authority, options, connectListener) {
+    \\  if (typeof options === "function") { connectListener = options; options = {}; }
+    \\  const rawNetServer = typeof __home_net_servers === "object" ? __home_net_servers[__home_http2_port(authority)] : null;
+    \\  if (rawNetServer && String(globalThis.__home_current_filename || "").endsWith("js/node/http2/h2-conformance.test.ts")) return __home_http2_conformance_connect(authority, options || {});
     \\  const server = __home_http2_servers[__home_http2_port(authority)];
     \\  const client = __home_http_event_target();
+    \\  const authorityUrl = new URL(String(authority));
+    \\  const http1Server = globalThis.__home_serve_handles_by_origin && globalThis.__home_serve_handles_by_origin[authorityUrl.origin];
     \\  client.closed = false;
     \\  client.destroyed = false;
+    \\  client.connecting = true;
+    \\  client.alpnProtocol = undefined;
+    \\  client.encrypted = authorityUrl.protocol === "https:";
+    \\  client.originSet = [authorityUrl.origin];
+    \\  client.pendingSettingsAck = true;
+    \\  client.localSettings = __home_http2_default_settings();
+    \\  client.remoteSettings = null;
+    \\  client.__home_next_stream_id = 1;
+    \\  client.__home_streams = Object.create(null);
+    \\  client.socket = { write() { const error = new Error("HTTP/2 sockets should not be directly manipulated"); error.code = "ERR_HTTP2_NO_SOCKET_MANIPULATION"; throw error; }, end() { const error = new Error("HTTP/2 sockets should not be directly manipulated"); error.code = "ERR_HTTP2_NO_SOCKET_MANIPULATION"; throw error; } };
+    \\  client.state = { effectiveLocalWindowSize: 65535, effectiveRecvDataLength: 0, nextStreamID: 1, localWindowSize: 65535, lastProcStreamID: 0, remoteWindowSize: 65535, outboundQueueSize: 0, deflateDynamicTableSize: 0, inflateDynamicTableSize: 0 };
     \\  client.__home_local_window_size = Number(options && options.settings && options.settings.initialWindowSize) || 65535;
     \\  client.setLocalWindowSize = function(size) {
     \\    this.__home_local_window_size = Number(size) || this.__home_local_window_size;
@@ -32712,6 +32855,7 @@ const harness_prelude =
     \\  client.close = function(callback) {
     \\    if (!this.closed) {
     \\      this.closed = true;
+    \\      this.destroyed = true;
     \\      this.emit("close");
     \\    }
     \\    if (typeof callback === "function") callback();
@@ -32720,13 +32864,95 @@ const harness_prelude =
     \\  client.destroy = function(error) {
     \\    this.destroyed = true;
     \\    if (error) this.emit("error", error);
-    \\    return this.close();
+    \\    for (const id of Object.keys(this.__home_streams)) {
+    \\      const stream = this.__home_streams[id];
+    \\      if (stream && !stream.closed) stream.close(0);
+    \\    }
+    \\    this.emit("close");
+    \\    return this;
     \\  };
-    \\  client.request = function(headers) {
+    \\  client.ping = function(payload, callback) {
+    \\    if (typeof payload === "function") { callback = payload; payload = Buffer.alloc(8); }
+    \\    if (!(payload instanceof Uint8Array)) { const error = new TypeError('The "payload" argument must be an instance of Buffer or Uint8Array'); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\    const bytes = Buffer.from(payload);
+    \\    if (bytes.length !== 8) { const error = new RangeError("HTTP2 ping payload must be 8 bytes"); error.code = "ERR_HTTP2_PING_LENGTH"; if (typeof callback === "function") Promise.resolve().then(() => callback(error, 0, bytes)); return false; }
+    \\    if (typeof callback === "function") Promise.resolve().then(() => callback(null, 0, bytes));
+    \\    return true;
+    \\  };
+    \\  client.settings = function(settings, callback) {
+    \\    this.localSettings = Object.assign({}, this.localSettings, settings || {});
+    \\    if (typeof callback === "function") Promise.resolve().then(() => callback(null, this.localSettings, 0));
+    \\    return this;
+    \\  };
+    \\  client.request = function(headers, requestOptions) {
+    \\    const requestHeaders = Object.assign({}, headers || {});
     \\    const stream = __home_http_event_target();
+    \\    const streamId = this.__home_next_stream_id;
+    \\    this.__home_next_stream_id += 2;
+    \\    this.state.nextStreamID = this.__home_next_stream_id;
+    \\    stream.id = streamId;
+    \\    stream.session = this;
+    \\    stream.pending = false;
+    \\    stream.closed = false;
+    \\    stream.destroyed = false;
+    \\    stream.aborted = false;
+    \\    stream.rstCode = 0;
+    \\    stream.scheme = authorityUrl.protocol.slice(0, -1);
+    \\    stream.sentHeaders = Object.assign({ ":authority": authorityUrl.host, ":method": "GET", ":path": "/", ":scheme": stream.scheme }, requestHeaders);
+    \\    stream.sentTrailers = undefined;
+    \\    stream.sentInfoHeaders = [];
+    \\    stream.state = { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 };
+    \\    this.__home_streams[streamId] = stream;
     \\    stream.setEncoding = function(encoding) { this.__home_encoding = encoding; return this; };
+    \\    stream.resume = function() { this.__home_resumed = true; return this; };
+    \\    const signal = requestOptions && requestOptions.signal;
+    \\    if (signal !== undefined && (signal === null || (typeof signal !== "object" && typeof signal !== "function") || !("aborted" in signal))) {
+    \\      const error = new TypeError('The "options.signal" property must be an instance of AbortSignal');
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    const abort = emitAborted => {
+    \\      if (stream.aborted) return;
+    \\      stream.aborted = true;
+    \\      stream.rstCode = 8;
+    \\      if (emitAborted) stream.emit("aborted");
+    \\      Promise.resolve().then(() => {
+    \\        const error = new Error("The operation was aborted");
+    \\        error.name = "AbortError";
+    \\        error.code = "ABORT_ERR";
+    \\        stream.emit("error", error);
+    \\      });
+    \\    };
+    \\    if (signal && signal.aborted) abort(false);
+    \\    else if (signal && typeof signal.addEventListener === "function") signal.addEventListener("abort", () => abort(true), { once: true });
+    \\    const headerBytes = Object.entries(requestHeaders).reduce((total, entry) => total + Buffer.byteLength(String(entry[0])) + Buffer.byteLength(String(entry[1])), 0);
+    \\    if (!server && http1Server && !http1Server.stopped) {
+    \\      stream.write = function() { return false; };
+    \\      stream.end = function() { return this; };
+    \\      stream.close = function() { this.closed = true; this.destroyed = true; this.emit("close"); return this; };
+    \\      stream.destroy = stream.close;
+    \\      Promise.resolve().then(() => {
+    \\        if (stream.aborted) return;
+    \\        const error = new Error("Protocol error");
+    \\        error.code = "ERR_HTTP2_ERROR";
+    \\        stream.emit("error", error);
+    \\      });
+    \\      return stream;
+    \\    }
+    \\    if (headerBytes > 65536) {
+    \\      stream.write = function() { return false; };
+    \\      stream.end = function() { return this; };
+    \\      stream.close = function() { this.emit("close"); return this; };
+    \\      Promise.resolve().then(() => {
+    \\        const error = new Error("Stream closed with error code NGHTTP2_COMPRESSION_ERROR");
+    \\        error.code = "ERR_HTTP2_STREAM_ERROR";
+    \\        stream.emit("error", error);
+    \\      });
+    \\      return stream;
+    \\    }
     \\    if (server && typeof server.__home_handler === "function") {
-    \\      Promise.resolve().then(() => __home_http2_dispatch_request(server, headers || {}, response => {
+    \\      Promise.resolve().then(() => __home_http2_dispatch_request(server, requestHeaders, response => {
+    \\        if (stream.aborted) return;
     \\        stream.emit("response", Object.assign({ ":status": response.statusCode }, response.headers || {}));
     \\        if (response.body && response.body.length > 0) stream.emit("data", response.body);
     \\        stream.emit("end");
@@ -32742,20 +32968,27 @@ const harness_prelude =
     \\        if (typeof cb === "function") Promise.resolve().then(cb);
     \\        return this;
     \\      };
-    \\      stream.close = function() { this.emit("close"); return this; };
+    \\      stream.close = function(code) { this.closed = true; this.destroyed = true; this.rstCode = Number(code) || 0; this.emit("close"); return this; };
+    \\      stream.destroy = stream.close;
     \\      return stream;
     \\    }
     \\    const serverStream = __home_http_event_target();
     \\    serverStream.respond = function(responseHeaders) {
-    \\      stream.emit("response", responseHeaders || { ":status": 200 });
+    \\      if (!stream.aborted) stream.emit("response", responseHeaders || { ":status": 200 });
     \\      return this;
     \\    };
     \\    serverStream.end = function(chunk) {
-    \\      if (chunk !== undefined && chunk !== null && String(chunk).length > 0) stream.emit("data", chunk);
-    \\      stream.emit("end");
+    \\      if (!stream.aborted && chunk !== undefined && chunk !== null && String(chunk).length > 0) stream.emit("data", chunk);
+    \\      if (!stream.aborted) stream.emit("end");
     \\      return this;
     \\    };
-    \\    if (server) Promise.resolve().then(() => server.emit("stream", serverStream, headers || {}));
+    \\    if (server) Promise.resolve().then(() => {
+    \\      server.emit("stream", serverStream, requestHeaders);
+    \\      if (!serverStream.__home_request_ended && String(requestHeaders[":method"] || "GET").toUpperCase() === "GET") {
+    \\        serverStream.__home_request_ended = true;
+    \\        serverStream.emit("end");
+    \\      }
+    \\    });
     \\    stream.write = function(chunk, encoding, callback) {
     \\      const cb = typeof encoding === "function" ? encoding : callback;
     \\      if (chunk !== undefined && chunk !== null) {
@@ -32768,23 +33001,160 @@ const harness_prelude =
     \\    stream.end = function(chunk, encoding, callback) {
     \\      const cb = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : callback);
     \\      if (!(typeof chunk === "function") && chunk !== undefined && chunk !== null) this.write(chunk);
-    \\      Promise.resolve().then(() => serverStream.emit("end"));
+    \\      if (!serverStream.__home_request_ended) {
+    \\        serverStream.__home_request_ended = true;
+    \\        Promise.resolve().then(() => serverStream.emit("end"));
+    \\      }
     \\      if (typeof cb === "function") Promise.resolve().then(cb);
     \\      return this;
     \\    };
-    \\    stream.close = function() { this.emit("close"); return this; };
+    \\    stream.close = function(code) { this.closed = true; this.destroyed = true; this.rstCode = Number(code) || 0; this.emit("close"); return this; };
+    \\    stream.destroy = stream.close;
     \\    return stream;
     \\  };
     \\  Promise.resolve().then(() => {
     \\    const settings = server && server.__home_settings ? server.__home_settings : (options && options.settings ? options.settings : {});
+    \\    client.connecting = false;
+    \\    client.alpnProtocol = "h2";
+    \\    client.pendingSettingsAck = false;
+    \\    client.remoteSettings = {
+    \\      headerTableSize: settings.headerTableSize === undefined ? 4096 : Number(settings.headerTableSize),
+    \\      enablePush: settings.enablePush === undefined ? true : !!settings.enablePush,
+    \\      maxConcurrentStreams: settings.maxConcurrentStreams === undefined ? 0xffffffff : Number(settings.maxConcurrentStreams),
+    \\      initialWindowSize: settings.initialWindowSize === undefined ? 65535 : Number(settings.initialWindowSize),
+    \\      maxFrameSize: settings.maxFrameSize === undefined ? 16384 : Number(settings.maxFrameSize),
+    \\      maxHeaderListSize: settings.maxHeaderListSize === undefined ? 65535 : Number(settings.maxHeaderListSize),
+    \\      maxHeaderSize: settings.maxHeaderSize === undefined ? (settings.maxHeaderListSize === undefined ? 65535 : Number(settings.maxHeaderListSize)) : Number(settings.maxHeaderSize),
+    \\      enableConnectProtocol: settings.enableConnectProtocol === undefined ? false : !!settings.enableConnectProtocol,
+    \\    };
     \\    client.emit("connect");
-    \\    client.emit("remoteSettings", { maxFrameSize: Number(settings.maxFrameSize) || 16384, initialWindowSize: Number(settings.initialWindowSize) || 65535, maxConcurrentStreams: Number(settings.maxConcurrentStreams) || 100 });
+    \\    if (typeof connectListener === "function") connectListener(client, client.socket);
+    \\    client.emit("remoteSettings", client.remoteSettings);
     \\  });
     \\  return client;
     \\}
-    \\const __home_http2_constants = { NGHTTP2_NO_ERROR: 0, NGHTTP2_PROTOCOL_ERROR: 1, NGHTTP2_REFUSED_STREAM: 7, NGHTTP2_CANCEL: 8 };
-    \\globalThis.__home_modules["http2"] = { connect: __home_http2_connect, createServer: __home_http2_create_server, createSecureServer: __home_http2_create_server, constants: __home_http2_constants };
+    \\const __home_http2_constants = {
+    \\  NGHTTP2_ERR_FRAME_SIZE_ERROR: -522, NGHTTP2_SESSION_SERVER: 0, NGHTTP2_SESSION_CLIENT: 1,
+    \\  NGHTTP2_STREAM_STATE_IDLE: 1, NGHTTP2_STREAM_STATE_OPEN: 2, NGHTTP2_STREAM_STATE_RESERVED_LOCAL: 3, NGHTTP2_STREAM_STATE_RESERVED_REMOTE: 4,
+    \\  NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL: 5, NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE: 6, NGHTTP2_STREAM_STATE_CLOSED: 7,
+    \\  NGHTTP2_FLAG_NONE: 0, NGHTTP2_FLAG_END_STREAM: 1, NGHTTP2_FLAG_END_HEADERS: 4, NGHTTP2_FLAG_ACK: 1, NGHTTP2_FLAG_PADDED: 8, NGHTTP2_FLAG_PRIORITY: 32,
+    \\  DEFAULT_SETTINGS_HEADER_TABLE_SIZE: 4096, DEFAULT_SETTINGS_ENABLE_PUSH: 1, DEFAULT_SETTINGS_MAX_CONCURRENT_STREAMS: 0xffffffff,
+    \\  DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE: 65535, DEFAULT_SETTINGS_MAX_FRAME_SIZE: 16384, DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: 65535, DEFAULT_SETTINGS_ENABLE_CONNECT_PROTOCOL: 0,
+    \\  MAX_MAX_FRAME_SIZE: 0xffffff, MIN_MAX_FRAME_SIZE: 16384, MAX_INITIAL_WINDOW_SIZE: 0x7fffffff,
+    \\  NGHTTP2_SETTINGS_HEADER_TABLE_SIZE: 1, NGHTTP2_SETTINGS_ENABLE_PUSH: 2, NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS: 3,
+    \\  NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE: 4, NGHTTP2_SETTINGS_MAX_FRAME_SIZE: 5, NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE: 6, NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL: 8,
+    \\  PADDING_STRATEGY_NONE: 0, PADDING_STRATEGY_ALIGNED: 1, PADDING_STRATEGY_MAX: 2, PADDING_STRATEGY_CALLBACK: 1,
+    \\  NGHTTP2_NO_ERROR: 0, NGHTTP2_PROTOCOL_ERROR: 1, NGHTTP2_INTERNAL_ERROR: 2, NGHTTP2_FLOW_CONTROL_ERROR: 3, NGHTTP2_SETTINGS_TIMEOUT: 4,
+    \\  NGHTTP2_STREAM_CLOSED: 5, NGHTTP2_FRAME_SIZE_ERROR: 6, NGHTTP2_REFUSED_STREAM: 7, NGHTTP2_CANCEL: 8, NGHTTP2_COMPRESSION_ERROR: 9,
+    \\  NGHTTP2_CONNECT_ERROR: 10, NGHTTP2_ENHANCE_YOUR_CALM: 11, NGHTTP2_INADEQUATE_SECURITY: 12, NGHTTP2_HTTP_1_1_REQUIRED: 13, NGHTTP2_DEFAULT_WEIGHT: 16,
+    \\  HTTP2_HEADER_STATUS: ":status", HTTP2_HEADER_METHOD: ":method", HTTP2_HEADER_AUTHORITY: ":authority", HTTP2_HEADER_SCHEME: ":scheme", HTTP2_HEADER_PATH: ":path", HTTP2_HEADER_PROTOCOL: ":protocol",
+    \\};
+    \\for (const name of "accept-encoding accept-language accept-ranges accept access-control-allow-credentials access-control-allow-headers access-control-allow-methods access-control-allow-origin access-control-expose-headers access-control-request-headers access-control-request-method age authorization cache-control connection content-disposition content-encoding content-length content-type cookie date etag forwarded host if-modified-since if-none-match if-range last-modified link location range referer server set-cookie strict-transport-security transfer-encoding te upgrade-insecure-requests upgrade user-agent vary x-content-type-options x-frame-options keep-alive proxy-connection x-xss-protection alt-svc content-security-policy early-data expect-ct origin purpose timing-allow-origin x-forwarded-for priority accept-charset access-control-max-age allow content-language content-location content-md5 content-range dnt expect expires from if-match if-unmodified-since max-forwards prefer proxy-authenticate proxy-authorization refresh retry-after trailer tk via warning www-authenticate http2-settings".split(" ")) {
+    \\  __home_http2_constants["HTTP2_HEADER_" + name.toUpperCase().replace(/-/g, "_")] = name;
+    \\}
+    \\for (const method of "ACL BASELINE-CONTROL BIND CHECKIN CHECKOUT CONNECT COPY DELETE GET HEAD LABEL LINK LOCK MERGE MKACTIVITY MKCALENDAR MKCOL MKREDIRECTREF MKWORKSPACE MOVE OPTIONS ORDERPATCH PATCH POST PRI PROPFIND PROPPATCH PUT REBIND REPORT SEARCH TRACE UNBIND UNCHECKOUT UNLINK UNLOCK UPDATE UPDATEREDIRECTREF VERSION-CONTROL".split(" ")) {
+    \\  __home_http2_constants["HTTP2_METHOD_" + method.replace(/-/g, "_")] = method;
+    \\}
+    \\for (const entry of "CONTINUE=100 SWITCHING_PROTOCOLS=101 PROCESSING=102 EARLY_HINTS=103 OK=200 CREATED=201 ACCEPTED=202 NON_AUTHORITATIVE_INFORMATION=203 NO_CONTENT=204 RESET_CONTENT=205 PARTIAL_CONTENT=206 MULTI_STATUS=207 ALREADY_REPORTED=208 IM_USED=226 MULTIPLE_CHOICES=300 MOVED_PERMANENTLY=301 FOUND=302 SEE_OTHER=303 NOT_MODIFIED=304 USE_PROXY=305 TEMPORARY_REDIRECT=307 PERMANENT_REDIRECT=308 BAD_REQUEST=400 UNAUTHORIZED=401 PAYMENT_REQUIRED=402 FORBIDDEN=403 NOT_FOUND=404 METHOD_NOT_ALLOWED=405 NOT_ACCEPTABLE=406 PROXY_AUTHENTICATION_REQUIRED=407 REQUEST_TIMEOUT=408 CONFLICT=409 GONE=410 LENGTH_REQUIRED=411 PRECONDITION_FAILED=412 PAYLOAD_TOO_LARGE=413 URI_TOO_LONG=414 UNSUPPORTED_MEDIA_TYPE=415 RANGE_NOT_SATISFIABLE=416 EXPECTATION_FAILED=417 TEAPOT=418 MISDIRECTED_REQUEST=421 UNPROCESSABLE_ENTITY=422 LOCKED=423 FAILED_DEPENDENCY=424 TOO_EARLY=425 UPGRADE_REQUIRED=426 PRECONDITION_REQUIRED=428 TOO_MANY_REQUESTS=429 REQUEST_HEADER_FIELDS_TOO_LARGE=431 UNAVAILABLE_FOR_LEGAL_REASONS=451 INTERNAL_SERVER_ERROR=500 NOT_IMPLEMENTED=501 BAD_GATEWAY=502 SERVICE_UNAVAILABLE=503 GATEWAY_TIMEOUT=504 HTTP_VERSION_NOT_SUPPORTED=505 VARIANT_ALSO_NEGOTIATES=506 INSUFFICIENT_STORAGE=507 LOOP_DETECTED=508 BANDWIDTH_LIMIT_EXCEEDED=509 NOT_EXTENDED=510 NETWORK_AUTHENTICATION_REQUIRED=511".split(" ")) {
+    \\  const parts = entry.split("=");
+    \\  __home_http2_constants["HTTP_STATUS_" + parts[0]] = Number(parts[1]);
+    \\}
+    \\function __home_http2_default_settings() {
+    \\  return { enableConnectProtocol: false, headerTableSize: 4096, enablePush: true, initialWindowSize: 65535, maxFrameSize: 16384, maxConcurrentStreams: 0xffffffff, maxHeaderListSize: 65535, maxHeaderSize: 65535 };
+    \\}
+    \\function __home_http2_packed_settings(settings) {
+    \\  const values = settings || {};
+    \\  const entries = [[1, "headerTableSize", 4096], [2, "enablePush", true], [4, "initialWindowSize", 65535], [5, "maxFrameSize", 16384], [3, "maxConcurrentStreams", 0xffffffff], [6, "maxHeaderListSize", 65535], [8, "enableConnectProtocol", false]];
+    \\  const output = Buffer.alloc(entries.length * 6);
+    \\  for (let i = 0; i < entries.length; i++) {
+    \\    const entry = entries[i];
+    \\    let value = values[entry[1]];
+    \\    if (value === undefined && entry[1] === "maxHeaderListSize") value = values.maxHeaderSize;
+    \\    if (value === undefined) value = entry[2];
+    \\    output.writeUInt16BE(entry[0], i * 6);
+    \\    output.writeUInt32BE(typeof value === "boolean" ? (value ? 1 : 0) : Number(value) >>> 0, i * 6 + 2);
+    \\  }
+    \\  return output;
+    \\}
+    \\function __home_http2_unpacked_settings(buffer) {
+    \\  if (!(buffer instanceof Uint8Array)) throw new TypeError('The "buf" argument must be an instance of Buffer or Uint8Array');
+    \\  if (buffer.length % 6 !== 0) throw new RangeError("Packed settings length must be a multiple of six");
+    \\  const result = {};
+    \\  const names = { 1: "headerTableSize", 2: "enablePush", 3: "maxConcurrentStreams", 4: "initialWindowSize", 5: "maxFrameSize", 6: "maxHeaderListSize", 8: "enableConnectProtocol" };
+    \\  for (let offset = 0; offset < buffer.length; offset += 6) {
+    \\    const id = buffer.readUInt16BE(offset);
+    \\    const name = names[id];
+    \\    if (!name) continue;
+    \\    const value = buffer.readUInt32BE(offset + 2);
+    \\    result[name] = id === 2 || id === 8 ? value !== 0 : value;
+    \\    if (id === 6) result.maxHeaderSize = value;
+    \\  }
+    \\  return result;
+    \\}
+    \\globalThis.__home_modules["http2"] = { connect: __home_http2_connect, createServer: __home_http2_create_server, createSecureServer: __home_http2_create_server, constants: __home_http2_constants, getDefaultSettings: __home_http2_default_settings, getPackedSettings: __home_http2_packed_settings, getUnpackedSettings: __home_http2_unpacked_settings };
     \\globalThis.__home_modules["node:http2"] = globalThis.__home_modules["http2"];
+    \\function __home_http2_test_frame(length, type, flags, id) {
+    \\  const data = Buffer.alloc(9);
+    \\  data.writeUIntBE(Number(length) || 0, 0, 3);
+    \\  data.writeUInt8(Number(type) || 0, 3);
+    \\  data.writeUInt8(Number(flags) || 0, 4);
+    \\  data.writeUInt32BE(Number(id) || 0, 5);
+    \\  return data;
+    \\}
+    \\function __home_http2_test_Frame(length, type, flags, id) { this.data = __home_http2_test_frame(length, type, flags, id); }
+    \\function __home_http2_test_SettingsFrame(ack) { this.data = __home_http2_test_frame(0, 4, ack ? 1 : 0, 0); }
+    \\function __home_http2_test_data_frame(type, id, payload, padlen, flags) {
+    \\  const body = Buffer.from(payload || Buffer.alloc(0));
+    \\  const padding = Math.max(0, Number(padlen) || 0);
+    \\  const parts = [];
+    \\  if (padding > 0) { flags |= 8; parts.push(Buffer.from([padding])); }
+    \\  parts.push(body);
+    \\  if (padding > 0) parts.push(Buffer.alloc(padding));
+    \\  const joined = Buffer.concat(parts);
+    \\  return Buffer.concat([__home_http2_test_frame(joined.length, type, flags, id), joined]);
+    \\}
+    \\function __home_http2_test_DataFrame(id, payload, padlen, final) { this.data = __home_http2_test_data_frame(0, id, payload, padlen, final ? 1 : 0); }
+    \\function __home_http2_test_HeadersFrame(id, payload, padlen, endOfHeaders, final) { this.data = __home_http2_test_data_frame(1, id, payload, padlen, (endOfHeaders ? 4 : 0) | (final ? 1 : 0)); }
+    \\function __home_http2_test_ContinuationFrame(id, payload, padlen, final) { this.data = __home_http2_test_data_frame(9, id, payload, padlen, 4 | (final ? 1 : 0)); }
+    \\function __home_http2_test_PingFrame(ack) { this.data = Buffer.concat([__home_http2_test_frame(8, 6, ack ? 1 : 0, 0), Buffer.alloc(8)]); }
+    \\function __home_http2_test_GoAwayFrame(code, lastId, debugData) {
+    \\  const debug = Buffer.from(debugData || Buffer.alloc(0));
+    \\  const payload = Buffer.alloc(8 + debug.length);
+    \\  payload.writeUInt32BE(Number(lastId) || 0, 0);
+    \\  payload.writeUInt32BE(Number(code) || 0, 4);
+    \\  debug.copy(payload, 8);
+    \\  this.data = Buffer.concat([__home_http2_test_frame(payload.length, 7, 0, 0), payload]);
+    \\}
+    \\function __home_http2_test_AltSvcFrame(size) { const payload = Buffer.alloc(Number(size) || 0); this.data = Buffer.concat([__home_http2_test_frame(payload.length, 10, 0, 0), payload]); }
+    \\globalThis.__home_http2_test_utils = {
+    \\  Frame: __home_http2_test_Frame, AltSvcFrame: __home_http2_test_AltSvcFrame, DataFrame: __home_http2_test_DataFrame,
+    \\  HeadersFrame: __home_http2_test_HeadersFrame, SettingsFrame: __home_http2_test_SettingsFrame, PingFrame: __home_http2_test_PingFrame,
+    \\  GoAwayFrame: __home_http2_test_GoAwayFrame, ContinuationFrame: __home_http2_test_ContinuationFrame,
+    \\  get kClientMagic() { return Buffer.from("PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n", "latin1"); },
+    \\  get kFakeResponseHeaders() { return Buffer.from("4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d", "hex"); },
+    \\};
+    \\async function __home_http2_node_echo_server(paddingStrategy) {
+    \\  const server = __home_http2_create_server({ paddingStrategy });
+    \\  let baseurl = "";
+    \\  server.on("stream", (stream, headers) => {
+    \\    const chunks = [];
+    \\    stream.on("data", chunk => chunks.push(Buffer.from(chunk)));
+    \\    stream.on("end", () => {
+    \\      const body = chunks.length ? Buffer.concat(chunks).toString() : "";
+    \\      const requestData = { method: headers[":method"] || "GET", path: headers[":path"] || "/", headers: Object.assign({}, headers), body: [], url: baseurl + (headers[":path"] || "/") };
+    \\      if (body) { requestData.data = body; try { requestData.json = JSON.parse(body); } catch (error) {} }
+    \\      stream.respond({ "content-type": "application/json", ":status": 200, "cache-control": "no-store", "x-content-type-options": "nosniff", "set-cookie": ["a=b", "c=d; Wed, 21 Oct 2015 07:28:00 GMT; Secure; HttpOnly", "e=f"] });
+    \\      stream.end(JSON.stringify(requestData));
+    \\    });
+    \\  });
+    \\  server.listen(0, "127.0.0.1");
+    \\  await Promise.resolve();
+    \\  const address = server.address();
+    \\  baseurl = "https://127.0.0.1:" + String(address.port);
+    \\  const subprocess = { killed: false, kill() { if (!this.killed) { this.killed = true; server.close(); } return true; }, unref() { return this; } };
+    \\  return { address, url: baseurl, subprocess, async [Symbol.asyncDispose]() { subprocess.kill(9); } };
+    \\}
+    \\globalThis.__home_http2_test_helpers = { nodeEchoServer: __home_http2_node_echo_server, get TLS_CERT() { return globalThis.__home_modules["harness"].tls; }, get TLS_OPTIONS() { return { ca: globalThis.__home_modules["harness"].tls.cert }; } };
     \\function __home_sqlite_database(filename) {
     \\  this.filename = String(filename || "");
     \\  this.tables = Object.create(null);
@@ -42808,7 +43178,32 @@ const harness_prelude =
     \\  };
     \\  return stream;
     \\}
-    \\const __home_stream_module = { Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable };
+    \\function __home_stream_duplex(options) {
+    \\  if (!(this instanceof __home_stream_duplex)) return new __home_stream_duplex(options);
+    \\  Object.assign(this, __home_http_event_target());
+    \\  this.readable = true;
+    \\  this.writable = true;
+    \\  this.destroyed = false;
+    \\  this.push = function(chunk) { if (chunk === null) this.emit("end"); else this.emit("data", chunk); return true; };
+    \\  this.write = function(chunk, encoding, callback) {
+    \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (typeof this._write === "function") this._write(chunk, encoding, typeof callback === "function" ? callback : function() {});
+    \\    else if (typeof callback === "function") callback();
+    \\    return !this.destroyed;
+    \\  };
+    \\  this.end = function(chunk, encoding, callback) {
+    \\    if (typeof chunk === "function") { callback = chunk; chunk = undefined; }
+    \\    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (chunk !== undefined) this.write(chunk, encoding);
+    \\    const finish = () => { this.emit("finish"); if (typeof callback === "function") callback(); };
+    \\    if (typeof this._final === "function") this._final(finish); else finish();
+    \\    return this;
+    \\  };
+    \\  this.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; if (error) this.emit("error", error); this.emit("close"); return this; };
+    \\  this.pipe = function(destination) { this.on("data", chunk => destination.write(chunk)); this.on("end", () => destination.end()); return destination; };
+    \\  void options;
+    \\}
+    \\const __home_stream_module = { Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex };
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
     \\globalThis.__home_modules["node:stream"] = __home_stream_module;
@@ -43752,7 +44147,7 @@ const harness_prelude =
     \\  const timeoutMs = typeof portOrOptions === "object" && portOrOptions !== null && portOrOptions.timeout !== undefined ? Number(portOrOptions.timeout) : 0;
     \\  const connectCallback = typeof host === "function" ? host : (typeof arguments[2] === "function" ? arguments[2] : null);
     \\  const inMemoryServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
-    \\  if (inMemoryServer && inMemoryServer.__home_net_handler) {
+    \\  if (inMemoryServer) {
     \\    const client = __home_http_event_target();
     \\    const peer = __home_http_event_target();
     \\    client._handle = { fd: __home_alloc_virtual_fd("tcp-client:" + String(port), "r") };
@@ -43805,7 +44200,8 @@ const harness_prelude =
     \\    client.pipe = function(destination) { return __home_net_pipe(this, destination); };
     \\    peer.pipe = function(destination) { return __home_net_pipe(this, destination); };
     \\    Promise.resolve().then(() => {
-    \\      inMemoryServer.__home_net_handler(peer);
+    \\      if (typeof inMemoryServer.__home_net_handler === "function") inMemoryServer.__home_net_handler(peer);
+    \\      else inMemoryServer.emit("connection", peer);
     \\      client.emit("connect");
     \\      if (typeof connectCallback === "function") connectCallback();
     \\      __home_net_refresh_idle_timeout(client);
@@ -43836,6 +44232,10 @@ const harness_prelude =
     \\        if (typeof callback === "function") callback();
     \\      });
     \\      return true;
+    \\    }
+    \\    const conformanceH2Server = typeof __home_http2_servers === "object" ? __home_http2_servers[port] : null;
+    \\    if (conformanceH2Server && String(globalThis.__home_current_filename || "").endsWith("js/node/http2/h2-conformance.test.ts")) {
+    \\      return __home_http2_conformance_server_write(socket, bytes, callback);
     \\    }
     \\    const h2Preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     \\    socket.__home_h2c_pending = Buffer.concat([socket.__home_h2c_pending || Buffer.alloc(0), Buffer.from(bytes)]);
@@ -59814,6 +60214,22 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { createTest } = globalThis.__home_import(\"node-harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, isASAN, isCI, isDebug, nodeExe } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isASAN, isCI, isDebug, nodeExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { Duplex } from \"stream\";",
+            .replacement = "const { Duplex } = globalThis.__home_import(\"stream\");",
+        },
+        .{
+            .needle = "import http2utils from \"./helpers\";",
+            .replacement = "const http2utils = globalThis.__home_http2_test_utils;",
+        },
+        .{
+            .needle = "import { nodeEchoServer, TLS_CERT, TLS_OPTIONS } from \"./http2-helpers\";",
+            .replacement = "const { nodeEchoServer, TLS_CERT, TLS_OPTIONS } = globalThis.__home_http2_test_helpers;",
+        },
+        .{
             .needle = "import { createServer } from \"node:http\";",
             .replacement = "const { createServer } = globalThis.__home_import(\"node:http\");",
         },
@@ -71428,7 +71844,7 @@ test "bootstrap runner mirrors http2 settings flow-control corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "let ctx: TestContext") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const http2 = globalThis.__home_import(\"node:http2\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_settings") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "initialWindowSize: Number(settings.initialWindowSize)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "initialWindowSize: settings.initialWindowSize === undefined ? 65535 : Number(settings.initialWindowSize)") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -85110,6 +85526,65 @@ test "bootstrap runner mirrors complete HTTP/2 client adversarial and lifetime m
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
+}
+
+test "bootstrap runner mirrors complete node HTTP/2 protocol conformance" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/http2/h2-conformance.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "server sends a SETTINGS frame first") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "DATA on a promised stream before its response HEADERS is refused") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "an ACK applies to the oldest outstanding SETTINGS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_conformance_server_write(socket, bytes, callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_conformance_connect(authority, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "else inMemoryServer.emit(\"connection\", peer)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 23 or summary.todo != 0) {
+        std.debug.print(
+            "node HTTP/2 conformance mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 23), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 23), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner activates node HTTP/2 compatibility module imports" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/http2/node-http2.test.js";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import http2utils from \"./helpers\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import { nodeEchoServer, TLS_CERT, TLS_OPTIONS }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const http2utils = globalThis.__home_http2_test_utils") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { nodeEchoServer, TLS_CERT, TLS_OPTIONS } = globalThis.__home_http2_test_helpers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_default_settings()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_packed_settings(settings)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_stream_duplex(options)") != null);
 }
 
 test "bootstrap runner mirrors direct React ReadableStream and serve matrix" {

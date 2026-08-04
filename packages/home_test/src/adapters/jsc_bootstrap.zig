@@ -123,6 +123,10 @@ pub const Runtime = struct {
         defer evaluation.deinit(allocator);
 
         if (evaluation.exception != null or evaluation.value == null) {
+            std.debug.print(
+                "failed to install Bun corpus harness: {s}\n",
+                .{evaluation.exception_message orelse "JavaScript evaluation returned no value"},
+            );
             return error.CorpusHarnessInstallFailed;
         }
     }
