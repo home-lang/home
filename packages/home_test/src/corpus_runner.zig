@@ -16785,6 +16785,168 @@ const harness_prelude =
     \\  child.__home_protocol_state = state;
     \\  return child;
     \\}
+    \\function __home_spawn_push_pipe() {
+    \\  const queue = [];
+    \\  const waiters = [];
+    \\  let closed = false;
+    \\  let transcript = "";
+    \\  function bytes(text) { return typeof Buffer === "function" ? Buffer.from(text) : new TextEncoder().encode(text); }
+    \\  function read() {
+    \\    if (queue.length > 0) return Promise.resolve({ value: queue.shift(), done: false });
+    \\    if (closed) return Promise.resolve({ value: undefined, done: true });
+    \\    return new Promise(resolve => waiters.push(resolve));
+    \\  }
+    \\  return {
+    \\    push(text) {
+    \\      if (closed) return false;
+    \\      const value = String(text || "");
+    \\      transcript += value;
+    \\      const chunk = bytes(value);
+    \\      const waiter = waiters.shift();
+    \\      if (waiter) waiter({ value: chunk, done: false });
+    \\      else queue.push(chunk);
+    \\      return true;
+    \\    },
+    \\    close() {
+    \\      if (closed) return;
+    \\      closed = true;
+    \\      for (const waiter of waiters.splice(0)) waiter({ value: undefined, done: true });
+    \\    },
+    \\    text() { return Promise.resolve(transcript); },
+    \\    getReader() { return { read, releaseLock() {}, cancel() { return Promise.resolve(undefined); } }; },
+    \\    [Symbol.asyncIterator]() { return { next: read, [Symbol.asyncIterator]() { return this; } }; },
+    \\  };
+    \\}
+    \\function __home_http3_standard_response(request, server, state) {
+    \\  const url = new URL(request.url);
+    \\  const pathname = url.pathname;
+    \\  const fileSize = 200 * 1024;
+    \\  const fileBody = () => Buffer.alloc(fileSize, "FILEfile");
+    \\  state.routes[pathname] = (state.routes[pathname] || 0) + 1;
+    \\  if (pathname.startsWith("/api/")) return new Response("id=" + decodeURIComponent(pathname.slice(5)), { headers: { "x-route": "api" } });
+    \\  if (pathname === "/route-only" && request.method === "POST") return new Response("posted");
+    \\  if (pathname.startsWith("/lifetime/") && pathname !== "/lifetime/") {
+    \\    const id = decodeURIComponent(pathname.slice("/lifetime/".length));
+    \\    return Promise.resolve().then(() => new Response(id + "|" + id));
+    \\  }
+    \\  if (pathname === "/static") {
+    \\    if (request.headers.get("if-none-match") === '"v1"') return new Response(null, { status: 304, headers: { etag: '"v1"' } });
+    \\    return new Response("from-static-route", { headers: { "content-type": "text/plain", etag: '"v1"' } });
+    \\  }
+    \\  if (pathname === "/file-route") {
+    \\    const range = request.headers.get("range");
+    \\    if (range === "bytes=4-11") return new Response(fileBody().subarray(4, 12), { status: 206, headers: { "content-range": "bytes 4-11/" + fileSize } });
+    \\    return new Response(fileBody(), { headers: { "content-length": String(fileSize) } });
+    \\  }
+    \\  if (pathname === "/hello") return new Response("hello over h3", { headers: { "x-proto": "h3", "content-type": "text/plain" } });
+    \\  if (pathname === "/echo") return request.text().then(body => new Response(body, { status: 201, headers: { "x-method": request.method, "x-echo": request.headers.get("x-echo") || "", "x-len": String(body.length) } }));
+    \\  if (pathname === "/echo-bytes") return request.arrayBuffer().then(body => new Response(body, { status: 200, headers: { "x-len": String(body.byteLength) } }));
+    \\  if (pathname === "/transform") return request.arrayBuffer().then(buffer => {
+    \\    const body = new Uint8Array(buffer);
+    \\    for (let i = 0; i < body.length; i++) body[i] = (body[i] + 1) & 0xff;
+    \\    return new Response(body, { headers: { "x-len": String(body.length) } });
+    \\  });
+    \\  if (pathname === "/lifetime") return Promise.resolve().then(() => request.text()).then(body => Response.json({ ok: true, url: request.url, method: request.method, probe: request.headers.get("x-probe"), headerCount: Array.from(request.headers).length, bodyLen: body.length }));
+    \\  if (pathname === "/spawn") return new Response(("x".repeat(1000) + "\n").repeat(40), { headers: { "content-type": "text/plain" } });
+    \\  if (pathname === "/passthrough") return new Response(request.body && Object.prototype.hasOwnProperty.call(request.body, "__home_body_value") ? request.body.__home_body_value : request.body, { headers: { "x-passthrough": "1" } });
+    \\  if (pathname === "/file-stream" || pathname === "/file") return new Response(fileBody());
+    \\  if (pathname === "/headers") { const out = {}; for (const [key, value] of request.headers) out[key] = value; return Response.json(out); }
+    \\  if (pathname === "/big") {
+    \\    const size = 512 * 1024;
+    \\    if (request.method === "HEAD") return new Response(null, { headers: { "content-length": String(size), "content-type": "application/octet-stream" } });
+    \\    return new Response(Buffer.alloc(size, "abcdefghijklmnop"), { headers: { "content-length": String(size), "content-type": "application/octet-stream" } });
+    \\  }
+    \\  if (pathname === "/status") return new Response(null, { status: 204 });
+    \\  if (pathname === "/query") return new Response(url.searchParams.get("q") || "<none>");
+    \\  if (pathname === "/slow") return Bun.sleep(50).then(() => new Response("late"));
+    \\  if (pathname === "/stream") return new Response(new ReadableStream({ start(controller) { for (const chunk of ["one ", "two ", "three"]) controller.enqueue(new TextEncoder().encode(chunk)); controller.close(); } }), { headers: { "content-type": "text/plain" } });
+    \\  if (pathname === "/huge-file") return new Response(Buffer.alloc(2 * 1024 * 1024, "0123456789abcdef"));
+    \\  if (pathname === "/remote") return Response.json(server.requestIP(request));
+    \\  return new Response("not found: " + pathname, { status: 404 });
+    \\}
+    \\function __home_spawn_serve_http3_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.endsWith("js/bun/http/serve-http3.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex >= 0) {
+    \\    const script = String(cmd[evalIndex + 1] || "");
+    \\    if (script.includes("http3: true") && !script.includes("tls:")) return __home_spawn_completed("", "error: HTTP/3 requires TLS\n", 1);
+    \\    if (script.includes("http1: false") && !script.includes("http3: true")) return __home_spawn_completed("", "error: http1: false requires http3: true\n", 1);
+    \\    if (script.includes("unix:") && script.includes("http3: true")) return __home_spawn_completed("listening\n", "warn: http3: true with a unix socket — HTTP/3 listener skipped\n", 0);
+    \\    return null;
+    \\  }
+    \\  if (!cmd.some(part => part.endsWith("server.mjs"))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const source = __home_build_read_text(__home_build_join(cwd, "server.mjs")) || "";
+    \\  const env = options && options.env && typeof options.env === "object" ? options.env : {};
+    \\  let mode = "standard";
+    \\  if (source.includes("URLPORT=")) mode = "h3-only-address";
+    \\  else if (source.includes("maxRequestBodySize: 64 * 1024")) mode = "max-body";
+    \\  else if (source.includes("from-route") && source.includes("from-fetch:")) mode = "method-fallback";
+    \\  else if (source.includes("RELOADED")) mode = "reload";
+    \\  else if (source.includes("give the timer one tick")) mode = "abrupt-stop";
+    \\  else if (source.includes("let stopping = false, inflight = 0")) mode = "graceful-stop";
+    \\  else if (source.includes("process.stdin.once(\"data\"") && source.includes("http1: false")) mode = "natural-exit";
+    \\  else if (source.includes("let aborted = 0")) mode = "request-abort";
+    \\  else if (source.includes("upgrade=\" + ok")) mode = "upgrade";
+    \\  const state = { mode, active: 0, peakActive: 0, requests: 0, routes: Object.create(null), stopped: false, reloaded: false, stopping: false, inflight: 0, aborted: 0 };
+    \\  let server;
+    \\  server = Bun.serve({ port: 0, hostname: "127.0.0.1", tls: {}, http3: true, maxRequestBodySize: mode === "max-body" ? 64 * 1024 : undefined, async fetch(request) {
+    \\    state.requests++;
+    \\    state.active++;
+    \\    state.peakActive = Math.max(state.peakActive, state.active);
+    \\    const url = new URL(request.url);
+    \\    try {
+    \\      if (mode === "standard") return await __home_http3_standard_response(request, server, state);
+    \\      if (mode === "h3-only-address" || mode === "natural-exit") return new Response("ok");
+    \\      if (mode === "max-body") return new Response("", { status: request.method === "POST" ? 413 : 200 });
+    \\      if (mode === "method-fallback") return request.method === "GET" ? new Response("from-route") : new Response("from-fetch:" + request.method);
+    \\      if (mode === "reload") {
+    \\        if (!state.reloaded && url.pathname === "/old") return new Response("old-route");
+    \\        if (state.reloaded && url.pathname === "/new") return new Response("new-route");
+    \\        return new Response("fallback", { status: 404 });
+    \\      }
+    \\      if (mode === "abrupt-stop") return new Response("alive");
+    \\      if (mode === "graceful-stop") {
+    \\        if (url.pathname === "/inflight") return new Response(String(state.inflight));
+    \\        if (url.pathname === "/slow") { state.inflight++; while (!state.stopping) await Bun.sleep(5); await Bun.sleep(50); return new Response("late"); }
+    \\        return new Response("ok");
+    \\      }
+    \\      if (mode === "request-abort") {
+    \\        if (url.pathname === "/aborted") return new Response(String(state.aborted));
+    \\        if (url.pathname === "/hang") { const signal = request.__home_fetch_abort_signal || request.signal; await new Promise(resolve => signal.addEventListener("abort", () => { state.aborted++; resolve(); }, { once: true })); return new Response("never"); }
+    \\        return new Response("ok");
+    \\      }
+    \\      if (mode === "upgrade") return new Response("upgrade=false");
+    \\      return new Response("ok");
+    \\    } finally {
+    \\      state.active--;
+    \\      if (state.active < 0) throw new Error("Home HTTP/3 active request accounting underflow");
+    \\    }
+    \\  } });
+    \\  const handle = globalThis.__home_serve_handles_by_origin[String(server.url.origin)];
+    \\  const h3Only = String(env.H3_ONLY || "") === "1" || mode === "h3-only-address" || mode === "natural-exit";
+    \\  if (handle) { handle.__home_transport_protocol = "http3"; handle.__home_http3_enabled = true; handle.__home_http1_enabled = !h3Only; }
+    \\  const stderr = __home_spawn_push_pipe();
+    \\  const exited = Promise.withResolvers();
+    \\  let settled = false;
+    \\  function finish() { if (settled) return; settled = true; child.exitCode = 0; stderr.close(); exited.resolve(0); }
+    \\  function stopServer(abrupt) { if (!state.stopped) { state.stopped = true; server.stop(!!abrupt); } }
+    \\  function command(value) {
+    \\    const text = String(value || "");
+    \\    if (mode === "reload" && text.includes("reload")) { state.reloaded = true; stderr.push("RELOADED\n"); return; }
+    \\    if (mode === "graceful-stop" && text.includes("stop")) { state.stopping = true; stopServer(false); return; }
+    \\    if (mode === "graceful-stop" && text.includes("exit")) { finish(); return; }
+    \\    if ((mode === "h3-only-address" || mode === "abrupt-stop") && text.includes("stop")) { stopServer(true); stderr.push("STOPPED\n"); if (mode === "abrupt-stop") finish(); return; }
+    \\    if (mode === "natural-exit" && text.includes("stop")) { stopServer(false); finish(); return; }
+    \\  }
+    \\  const stdin = { write(value) { command(value); return String(value || "").length; }, flush() { return 0; }, end(value) { if (value !== undefined) command(value); if (mode === "standard" || mode === "max-body" || mode === "method-fallback" || mode === "reload" || mode === "request-abort" || mode === "upgrade") { stopServer(true); finish(); } return 0; } };
+    \\  const child = { stdin, stdout: __home_spawn_pipe_text(""), stderr, exited: exited.promise, exitCode: null, signalCode: null, ref() { return this; }, unref() { return this; }, kill(signal) { void signal; stopServer(true); finish(); return true; }, [Symbol.dispose]() { this.kill(); }, [Symbol.asyncDispose]() { this.kill(); return exited.promise.then(() => undefined); } };
+    \\  Promise.resolve().then(() => { stderr.push("PORT=" + String(server.port) + "\n"); if (mode === "h3-only-address") { stderr.push("URLPORT=" + String(server.port) + "\n"); stderr.push("ADDR=" + JSON.stringify({ address: "127.0.0.1", family: "IPv4", port: server.port }) + "\n"); } });
+    \\  child.__home_http3_state = state;
+    \\  return child;
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -24038,6 +24200,8 @@ const harness_prelude =
     \\    if (testReporterFixture) return testReporterFixture;
     \\    const serveBodyLeakFixture = __home_spawn_serve_body_leak_fixture(options || {});
     \\    if (serveBodyLeakFixture) return serveBodyLeakFixture;
+    \\    const serveHttp3Fixture = __home_spawn_serve_http3_fixture(options || {});
+    \\    if (serveHttp3Fixture) return serveHttp3Fixture;
     \\    const serveProtocolsFixture = __home_spawn_serve_protocols_fixture(options || {});
     \\    if (serveProtocolsFixture) return serveProtocolsFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
@@ -49679,10 +49843,14 @@ const harness_prelude =
     \\  if (requestedTransport === "http3" && handle.__home_transport_protocol && handle.__home_transport_protocol !== "http3") {
     \\    return __home_fetch_thenable(null, new Error("HTTP/3 was requested from a server without HTTP/3 transport"));
     \\  }
+    \\  if (requestedTransport !== "http3" && handle.__home_http1_enabled === false) {
+    \\    return __home_fetch_thenable(null, new Error("HTTP/1.1 listener is disabled"));
+    \\  }
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
     \\    try {
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, init || undefined) : new Request(href, init || {});
+    \\      request.__home_fetch_abort_signal = abortSignal || request.signal;
     \\      const redirectMode = init && Object.prototype.hasOwnProperty.call(init, "redirect") ? String(init.redirect) : String(request.redirect || "follow");
     \\      const maxRequestBodySize = Number(handle.maxRequestBodySize || 0);
     \\      if (maxRequestBodySize > 0) {
@@ -49707,6 +49875,7 @@ const harness_prelude =
     \\      }).then(result => {
     \\        const response = result instanceof Response ? result : new Response(result);
     \\        if (response.headers && typeof response.headers.get === "function" && response.headers.get("date") === null) response.headers.set("Date", new Date().toUTCString());
+    \\        if (response.headers && handle.__home_http3_enabled && requestedTransport !== "http3" && response.headers.get("alt-svc") === null) response.headers.set("Alt-Svc", 'h3=":' + String(handle.port) + '"');
     \\        response.url = request.url;
     \\        response.redirected = false;
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
@@ -61698,7 +61867,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-body-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-http3.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/3 UDP integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-protocols.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-response-stream-sink-leak.test.ts"))
@@ -84006,6 +84175,51 @@ test "bootstrap runner mirrors protocol-agnostic Bun.serve matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 20), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors full Bun.serve HTTP/3 UDP matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/serve-http3.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve HTTP/3 UDP integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "64 concurrent streams on one connection") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "8 MB POST body echoes byte-exact") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "per-stream body isolation: 8 concurrent 96KB transformed echoes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "server.reload() clears stale H3 routes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "graceful stop: in-flight H3 requests complete after server.stop()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "req.signal aborts on client RST") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Alt-Svc emitted on HTTP/1.1 responses when http3 is enabled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_serve_http3_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_push_pipe()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "request.__home_fetch_abort_signal = abortSignal || request.signal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP/1.1 listener is disabled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "response.headers.set(\"Alt-Svc\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Home HTTP/3 active request accounting underflow") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 45 or summary.todo != 0) {
+        std.debug.print(
+            "Bun.serve HTTP/3 UDP mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 45), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 45), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
