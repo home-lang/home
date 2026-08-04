@@ -342,6 +342,8 @@ pub const Program = struct {
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         const script_object_expandos = try self.collectScriptObjectExpandos();
         defer self.gpa.free(script_object_expandos);
+        const program_global_var_names = try self.collectProgramGlobalVarNames();
+        defer freeStringSlice(self.gpa, program_global_var_names);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
@@ -363,6 +365,7 @@ pub const Program = struct {
             per_file.is_tsx = options.is_tsx or f.is_tsx;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
+            per_file.program_global_var_names = program_global_var_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
@@ -420,6 +423,8 @@ pub const Program = struct {
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         const script_object_expandos = try self.collectScriptObjectExpandos();
         defer self.gpa.free(script_object_expandos);
+        const program_global_var_names = try self.collectProgramGlobalVarNames();
+        defer freeStringSlice(self.gpa, program_global_var_names);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
@@ -444,6 +449,7 @@ pub const Program = struct {
             per_file.is_declaration_file = f.is_declaration;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
+            per_file.program_global_var_names = program_global_var_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
@@ -496,6 +502,19 @@ pub const Program = struct {
             for (roots.items) |root| {
                 try collectScriptObjectExpandosForRoot(self.gpa, f.source, root, &out);
             }
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramGlobalVarNames(self: *const Program) ProgramError![]const []const u8 {
+        var out: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (out.items) |name| self.gpa.free(name);
+            out.deinit(self.gpa);
+        }
+        for (self.files.items) |f| {
+            if (f.redirect_target != null or sourceLooksExternalModule(f.source)) continue;
+            try appendTopLevelVarNamesFromSource(self.gpa, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
     }
@@ -1409,6 +1428,78 @@ pub const Program = struct {
         }
     }
 
+    fn appendTopLevelVarNamesFromSource(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) ProgramError!void {
+        var i: usize = 0;
+        var brace_depth: usize = 0;
+        while (i < source.len) {
+            const c = source[i];
+            if (c == '/' and i + 1 < source.len and source[i + 1] == '/') {
+                i += 2;
+                while (i < source.len and source[i] != '\n' and source[i] != '\r') i += 1;
+                continue;
+            }
+            if (c == '/' and i + 1 < source.len and source[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) i += 1;
+                i = @min(i + 2, source.len);
+                continue;
+            }
+            if (c == '"' or c == '\'' or c == '`') {
+                const quote = c;
+                i += 1;
+                while (i < source.len) {
+                    if (source[i] == '\\') {
+                        i = @min(i + 2, source.len);
+                        continue;
+                    }
+                    if (source[i] == quote) {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if (c == '{') {
+                brace_depth += 1;
+                i += 1;
+                continue;
+            }
+            if (c == '}') {
+                if (brace_depth > 0) brace_depth -= 1;
+                i += 1;
+                continue;
+            }
+            if (brace_depth != 0 or !identifierKeywordAt(source, i, "var")) {
+                i += 1;
+                continue;
+            }
+
+            var p = i + "var".len;
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or !asciiIdentifierStart(source[p])) {
+                i = p;
+                continue;
+            }
+            const name_start = p;
+            p += 1;
+            while (p < source.len and asciiIdentifierContinue(source[p])) p += 1;
+            const name = source[name_start..p];
+            for (out.items) |existing| {
+                if (std.mem.eql(u8, existing, name)) break;
+            } else {
+                const owned = try gpa.dupe(u8, name);
+                errdefer gpa.free(owned);
+                try out.append(gpa, owned);
+            }
+            i = p;
+        }
+    }
+
     fn collectUntypedObjectLiteralRoots(
         gpa: std.mem.Allocator,
         source: []const u8,
@@ -1725,6 +1816,8 @@ pub const Program = struct {
     /// embarrassingly parallel (each file is independent). Number
     /// of workers defaults to `min(NPROC, 8)` matching tsgo.
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        const program_global_var_names = try self.collectProgramGlobalVarNames();
+        defer freeStringSlice(self.gpa, program_global_var_names);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
@@ -1736,6 +1829,7 @@ pub const Program = struct {
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
         defer self.gpa.free(merged_program_umd_globals);
         var shared_options = options;
+        shared_options.program_global_var_names = program_global_var_names;
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;

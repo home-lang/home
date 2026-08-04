@@ -4430,6 +4430,10 @@ pub const Checker = struct {
     /// `var Ns = {}; Ns.C = function() {}` discovered in sibling
     /// script files. Borrowed from the driver/program while checking.
     script_object_expandos: []const ScriptObjectExpando = &.{},
+    /// Top-level `var` names contributed by sibling global script files.
+    /// These are properties of `globalThis`, `window`, and `self`, but not
+    /// of the nullable `top: Window | null` DOM binding.
+    program_global_var_names: []const []const u8 = &.{},
     /// Program-level namespace roots contributed by `declare global {
     /// namespace X { ... } }` blocks in sibling files. Borrowed from
     /// the driver/program while checking this file.
@@ -4735,6 +4739,10 @@ pub const Checker = struct {
 
     pub fn setScriptObjectExpandos(self: *Checker, expandos: []const ScriptObjectExpando) void {
         self.script_object_expandos = expandos;
+    }
+
+    pub fn setProgramGlobalVarNames(self: *Checker, names: []const []const u8) void {
+        self.program_global_var_names = names;
     }
 
     pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
@@ -64235,8 +64243,16 @@ pub const Checker = struct {
                 };
                 const idx = try self.lowererLowerWithTypeParams(ia.index);
                 if (self.typeNodeIsTypeofGlobalThis(ia.object)) {
-                    if (self.singleStringLiteralIndexKey(idx)) |key| {
-                        if (self.sourceHasBlockScopedGlobalDeclarationText(key)) {
+                    const index_literal = if (self.hir.kindOf(ia.index) == .type_literal)
+                        hir_mod.literalTypeOf(self.hir, ia.index).literal
+                    else
+                        ia.index;
+                    const global_key: ?hir_mod.StringId = if (self.hir.kindOf(index_literal) == .literal_string)
+                        try self.globalThisTypeIndexKeyId(index_literal)
+                    else
+                        self.singleStringLiteralIndexKey(idx);
+                    if (global_key) |key| {
+                        if (!self.globalThisHasProperty(type_node, key)) {
                             try self.reportGlobalThisMissingProperty(ia.index, key, "typeof globalThis");
                             return types.Primitive.any;
                         }
@@ -89609,7 +89625,10 @@ pub const Checker = struct {
                         // property's optionality (`result.groups.year` emits
                         // both TS18047 and TS18048). Unknown properties still
                         // degrade to `any`, avoiding a secondary TS2339.
-                        obj_t = if ((try self.lookupObjectMember(non_nullish_t, m.name)) != null)
+                        const preserve_missing_member = self.hir.kindOf(m.object) == .identifier and
+                            std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, m.object).name), "top");
+                        obj_t = if (preserve_missing_member or
+                            (try self.lookupObjectMember(non_nullish_t, m.name)) != null)
                             non_nullish_t
                         else
                             types.Primitive.any;
@@ -106251,6 +106270,12 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "window")) {
             return self.windowGlobalType() catch types.Primitive.any;
         }
+        if (std.mem.eql(u8, name_str, "self")) {
+            return self.windowGlobalType() catch types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "top")) {
+            return self.topGlobalType() catch types.Primitive.any;
+        }
         if (std.mem.eql(u8, name_str, "NaN") or std.mem.eql(u8, name_str, "Infinity")) {
             return types.Primitive.number_t;
         }
@@ -106948,7 +106973,8 @@ pub const Checker = struct {
             // Core globals / values.
             "console",                "undefined",                    "NaN",
             "Infinity",               "globalThis",                   "this",
-            "new.target",             "window",                       "document",
+            "new.target",             "window",                       "self",
+            "top",                    "document",
             "Element",                "Node",                         "HTMLElement",
             "HTMLBodyElement",        "HTMLDivElement",               "HTMLAnchorElement",
             "HTMLImageElement",       "HTMLInputElement",             "HTMLSpanElement",
@@ -111375,6 +111401,19 @@ pub const Checker = struct {
         const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
         try self.type_names.put(self.gpa, global_name, t);
         return t;
+    }
+
+    fn topGlobalType(self: *Checker) CheckError!TypeId {
+        const window_global_t = try self.windowGlobalType();
+        const document_name = self.string_interner.intern("document") catch return error.OutOfMemory;
+        var window_t = window_global_t;
+        for (self.interner.intersectionMembers(window_global_t)) |member| {
+            if ((try self.lookupObjectMember(member, document_name)) != null) {
+                window_t = member;
+                break;
+            }
+        }
+        return self.interner.internUnion(&.{ window_t, types.Primitive.null_t }) catch return error.OutOfMemory;
     }
 
     fn appendDeclaredInterfaceMembers(
@@ -118060,10 +118099,39 @@ pub const Checker = struct {
         {
             return true;
         }
+        if (self.module) |module| {
+            const quoted_module_name = raw.len >= 2 and
+                ((raw[0] == '"' and raw[raw.len - 1] == '"') or
+                    (raw[0] == '\'' and raw[raw.len - 1] == '\''));
+            if (!quoted_module_name and module.root.namespaces.get(name) != null) return true;
+            if (module.root.values.get(name)) |symbol| {
+                for (symbol.decls.items) |decl| {
+                    if (self.hir.kindOf(decl) == .namespace_decl and self.namespaceHasRuntimeValue(decl)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        for (self.program_global_var_names) |program_name| {
+            if (std.mem.eql(u8, program_name, raw)) return true;
+        }
         return self.rootHasVarDeclarationNamed(anchor, name) or
             self.rootHasFunctionDeclarationNamed(anchor, name) or
             self.sourceHasVarKeywordDeclaration(name) or
             self.sourceHasFunctionKeywordDeclaration(name);
+    }
+
+    fn checkJsGlobalPropertyAssignmentDefinesMember(self: *Checker, node: NodeId, object_node: NodeId) bool {
+        return (self.check_js_enabled or self.sourceHasCheckJsDirective()) and
+            self.virtualSectionIsJsLike(node) and
+            self.isInAssignmentTargetChain(node) and
+            self.memberAccessObjectIsGlobalThisThis(object_node);
+    }
+
+    fn globalWindowReceiverIncludesGlobalProperties(self: *Checker, object_node: NodeId) bool {
+        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .identifier) return false;
+        const raw = self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name);
+        return std.mem.eql(u8, raw, "window") or std.mem.eql(u8, raw, "self");
     }
 
     fn sourceHasVarKeywordDeclaration(self: *Checker, name: hir_mod.StringId) bool {
@@ -118106,6 +118174,25 @@ pub const Checker = struct {
         });
     }
 
+    fn globalThisTypeIndexKeyId(self: *Checker, node: NodeId) CheckError!hir_mod.StringId {
+        if (self.source) |source| {
+            const span = self.hir.spanOf(node);
+            if (span.start < span.end and span.end <= source.len) {
+                const token = std.mem.trim(u8, source[span.start..span.end], " \t\r\n");
+                if (token.len >= 2 and
+                    ((token[0] == '"' and token[token.len - 1] == '"') or
+                        (token[0] == '\'' and token[token.len - 1] == '\'')))
+                {
+                    var buf: std.ArrayListUnmanaged(u8) = .empty;
+                    defer buf.deinit(self.gpa);
+                    try self.appendCookedStringText(token[1 .. token.len - 1], &buf);
+                    return self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+                }
+            }
+        }
+        return self.literalStringCookedId(node);
+    }
+
     fn reportGlobalThisMissingOrReadonlyMember(self: *Checker, node: NodeId, object_node: NodeId, obj_t: TypeId, name: hir_mod.StringId) CheckError!bool {
         _ = obj_t;
         const object_is_global_this =
@@ -118113,6 +118200,7 @@ pub const Checker = struct {
             std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name), "globalThis");
         const object_is_global_this_receiver = object_is_global_this or self.memberAccessObjectIsGlobalThisThis(object_node);
         const annotation_mentions_global = self.identifierAnnotationMentionsGlobalThis(object_node);
+        if (self.globalWindowReceiverIncludesGlobalProperties(object_node) and self.globalThisHasProperty(node, name)) return true;
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
         if (object_is_global_this and
             std.mem.eql(u8, self.string_interner.get(name), "globalThis") and
@@ -118126,6 +118214,7 @@ pub const Checker = struct {
             });
             return true;
         }
+        if (self.checkJsGlobalPropertyAssignmentDefinesMember(node, object_node)) return true;
         if (self.globalThisHasProperty(node, name)) return false;
         if (object_is_global_this_receiver and
             !self.sourceHasBlockScopedGlobalDeclarationText(name) and
@@ -118151,7 +118240,9 @@ pub const Checker = struct {
         const object_is_global_this_receiver = object_is_global_this or self.memberAccessObjectIsGlobalThisThis(object_node);
         _ = obj_t;
         const annotation_mentions_global = self.identifierAnnotationMentionsGlobalThis(object_node);
+        if (self.globalWindowReceiverIncludesGlobalProperties(object_node) and self.globalThisHasProperty(node, name)) return true;
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
+        if (self.checkJsGlobalPropertyAssignmentDefinesMember(node, object_node)) return true;
         if (self.globalThisHasProperty(node, name)) return false;
         if (object_is_global_this_receiver and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
         if (object_is_global_this and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
@@ -165751,6 +165842,55 @@ test "checker: global script this computed index reports TS7053 under noImplicit
         }
     }
     try T.expect(saw_7053);
+}
+
+test "checker: typeof globalThis excludes ambient external modules" {
+    const s = try newSetup(
+        \\declare module "ambientModule" {
+        \\    export type typ = 1;
+        \\    export var val: typ;
+        \\}
+        \\type GlobalBad1 = (typeof globalThis)["\"ambientModule\""];
+        \\const bad1: (typeof globalThis)["\"ambientModule\""] = "ambientModule";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: checked JS global property assignments define expandos" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: globals.js
+        \\this.x = 1;
+        \\var y = 2;
+        \\window.z = 3;
+        \\globalThis.alpha = 4;
+    );
+    defer destroySetup(s);
+    s.checker.setAllowJsEnabled(true);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+}
+
+test "checker: top is nullable Window without global var properties" {
+    const s = try newSetup(
+        \\var a = 1;
+        \\top.a;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'a' does not exist on type 'Window'."));
 }
 
 test "checker: non-strict top-level arrow this.name reports globalThis property" {

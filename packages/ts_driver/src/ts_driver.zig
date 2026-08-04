@@ -346,6 +346,8 @@ pub const CompileOptions = struct {
     /// Program-level JS namespace-object expandos discovered in
     /// sibling script files.
     script_object_expandos: []const ScriptObjectExpando = &.{},
+    /// Top-level `var` names contributed by sibling global scripts.
+    program_global_var_names: []const []const u8 = &.{},
     /// Program-level relative module interface augmentations discovered
     /// in sibling files.
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
@@ -2027,6 +2029,9 @@ pub fn compileSource(
     if (options.external_resolver) |er| checker.setExternalResolver(er);
     if (options.script_object_expandos.len > 0) {
         checker.setScriptObjectExpandos(options.script_object_expandos);
+    }
+    if (options.program_global_var_names.len > 0) {
+        checker.setProgramGlobalVarNames(options.program_global_var_names);
     }
     if (options.ambient_global_namespace_roots.len > 0) {
         checker.setAmbientGlobalNamespaceRoots(options.ambient_global_namespace_roots);
