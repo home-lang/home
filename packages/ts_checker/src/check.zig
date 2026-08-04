@@ -40548,10 +40548,10 @@ pub const Checker = struct {
         const prop_str = self.string_interner.get(prop_name);
         const bare_class_display = try self.classDisplayName(node, declaring_class);
         defer self.gpa.free(bare_class_display);
-        const declaring_class_owns_static = if (self.class_static_member_names.getPtr(declaring_class)) |members|
+        const declaring_class_owns_static = (if (self.class_static_member_names.getPtr(declaring_class)) |members|
             members.contains(prop_name)
         else
-            false;
+            false) or self.classSyntaxMemberVisibility(declaring_class, prop_name, true) != null;
         const owned_static_display: ?[]u8 = if (receiver.is_static and !declaring_class_owns_static)
             try std.fmt.allocPrint(self.gpa, "typeof {s}", .{bare_class_display})
         else
@@ -42827,6 +42827,14 @@ pub const Checker = struct {
     /// already declare. The child wins on name conflict ÃÂ¢ÃÂÃÂ that's
     /// override semantics. Silent no-op when the parent expression
     /// isn't a known class identifier.
+    fn getterReadTypeForHeritageMember(self: *Checker, member: types.ObjectMember) ?TypeId {
+        if (member.decl_node == hir_mod.none_node_id or !self.interner.isSignature(member.type)) return null;
+        const kind = self.hir.kindOf(member.decl_node);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
+        if (!hir_mod.fnDeclOf(self.hir, member.decl_node).flags.is_getter) return null;
+        return self.interner.signatureReturn(member.type) orelse types.Primitive.any;
+    }
+
     fn mergeExtendedMembers(
         self: *Checker,
         child_node: NodeId,
@@ -42873,7 +42881,11 @@ pub const Checker = struct {
         // last) win after sort+dedup is performed by the caller.
         var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer inherited.deinit(self.gpa);
+        var processed_parent_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer processed_parent_names.deinit(self.gpa);
         for (parent_members) |pm| {
+            if (processed_parent_names.contains(pm.name)) continue;
+            try processed_parent_names.put(self.gpa, pm.name, {});
             // ECMA private names (`#foo`) are lexically scoped per class and
             // do NOT participate in inheritance or override compatibility:
             // the base's `#foo` and a derived class's `#foo` are entirely
@@ -42882,6 +42894,8 @@ pub const Checker = struct {
             // (TS2416). Pins privateNamesAndMethods.
             if (self.memberNameIsEcmaPrivate(pm.name)) continue;
             if (child_by_name.get(pm.name)) |cm| {
+                const parent_getter_read_t = self.getterReadTypeForHeritageMember(pm);
+                const parent_compare_t = parent_getter_read_t orelse pm.type;
                 // Methods declared with method shorthand (`foo()` rather
                 // than `foo: () => void`) compare bivariantly in tsc ÃÂ¢ÃÂÃÂ
                 // an override is permitted if EITHER direction assigns,
@@ -42891,13 +42905,14 @@ pub const Checker = struct {
                 // child method widens a parameter type and TS does NOT
                 // emit TS2416. Properties (data fields, function-typed
                 // properties) keep the standard one-way check.
-                const both_methods = pm.is_method and cm.is_method;
+                const parent_is_method = pm.is_method and parent_getter_read_t == null;
+                const both_methods = parent_is_method and cm.is_method;
                 const assignable = if (both_methods)
-                    try self.methodOverrideAssignable(cm.type, pm.type)
-                else if (pm.is_method != cm.is_method)
-                    self.heritageAssignable(cm.type, pm.type) catch false
+                    try self.methodOverrideAssignable(cm.type, parent_compare_t)
+                else if (parent_is_method != cm.is_method)
+                    self.heritageAssignable(cm.type, parent_compare_t) catch false
                 else
-                    try self.heritageMemberAssignable(cm.type, pm.type);
+                    try self.heritageMemberAssignable(cm.type, parent_compare_t);
                 if (!assignable) {
                     // Use the source-written form for the property name so
                     // string-literal keys (`'2.0'`) and computed keys keep
@@ -220436,4 +220451,43 @@ test "checker: generic class heritage substitutes homomorphic mapped members" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: mixin accessor override uses the effective parent member" {
+    const s = try newSetup(
+        \\type Constructor<T = {}> = new (...args: any[]) => T;
+        \\type PropertiesOf<T> = { [K in keyof T]: T[K] };
+        \\interface IApiItemConstructor extends Constructor<ApiItem>, PropertiesOf<typeof ApiItem> {}
+        \\class ApiItem {
+        \\  get members(): ReadonlyArray<ApiItem> { return []; }
+        \\}
+        \\function mixin<TBaseClass extends IApiItemConstructor>(baseClass: TBaseClass) {
+        \\  abstract class MixedClass extends baseClass {
+        \\    get members(): ReadonlyArray<ApiItem> { return []; }
+        \\  }
+        \\  return MixedClass;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+}
+
+test "checker: redefined static protected diagnostics omit typeof" {
+    const s = try newSetup(
+        \\class Base { protected static x: string; }
+        \\class Derived extends Base { protected static x: string; }
+        \\class Other extends Base { static test() { Derived.x; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const message = checkerFirstMessageForCode(s, TsCodes.protected_member_access) orelse
+        return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Property 'x' is protected and only accessible within class 'Derived' and its subclasses.",
+        message,
+    );
 }

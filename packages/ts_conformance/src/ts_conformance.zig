@@ -1487,6 +1487,15 @@ fn splitVirtualFiles(
     defer markers.deinit(gpa);
 
     for (markers.items, 0..) |m, idx| {
+        var shadowed_by_later_file = false;
+        for (markers.items[idx + 1 ..]) |later| {
+            if (std.mem.eql(u8, m.path, later.path)) {
+                shadowed_by_later_file = true;
+                break;
+            }
+        }
+        if (shadowed_by_later_file) continue;
+
         // Section content starts on the line AFTER the marker line.
         const marker_line_end = lineEndOffset(raw, m.byte_offset);
         const content_start = if (marker_line_end < raw.len) marker_line_end + 1 else raw.len;
@@ -1507,6 +1516,28 @@ fn splitVirtualFiles(
         });
     }
     return out;
+}
+
+test "conformance: duplicate virtual filenames keep the final section" {
+    const raw =
+        \\// @filename: repeated.ts
+        \\class First {}
+        \\// @filename: repeated.ts
+        \\class Final {}
+    ;
+    var files = try splitVirtualFiles(T.allocator, raw);
+    defer files.deinit(T.allocator);
+
+    try T.expectEqual(@as(usize, 1), files.items.len);
+    try T.expectEqualStrings("repeated.ts", files.items[0].path);
+    try T.expect(std.mem.indexOf(u8, files.items[0].source, "class Final") != null);
+    try T.expect(std.mem.indexOf(u8, files.items[0].source, "class First") == null);
+
+    const stripped = (try stripNonCodeVirtualSections(T.allocator, raw)) orelse
+        return error.TestExpectedEqual;
+    defer T.allocator.free(stripped);
+    try T.expect(std.mem.indexOf(u8, stripped, "class Final") != null);
+    try T.expect(std.mem.indexOf(u8, stripped, "class First") == null);
 }
 
 fn lineEndOffset(raw: []const u8, start: usize) usize {
@@ -6495,14 +6526,28 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
     }
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
+    var markers = try buildVirtualFileIndex(gpa, source);
+    defer markers.deinit(gpa);
     var include_section = true;
     var comment_section = false;
+    var marker_index: usize = 0;
     const allow_js = directiveBool(source, "allowJs") orelse false;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line_with_cr| {
         const line = std.mem.trim(u8, line_with_cr, "\r");
         if (virtualFilename(line)) |path| {
-            include_section = isCodeVirtualFile(path) or isTsConfigVirtualPath(path);
+            var shadowed_by_later_file = false;
+            if (marker_index < markers.items.len) {
+                for (markers.items[marker_index + 1 ..]) |later| {
+                    if (std.mem.eql(u8, path, later.path)) {
+                        shadowed_by_later_file = true;
+                        break;
+                    }
+                }
+            }
+            marker_index += 1;
+            include_section = !shadowed_by_later_file and
+                (isCodeVirtualFile(path) or isTsConfigVirtualPath(path));
             comment_section = include_section and isNodeModulesVirtualPath(path) and isJsLikeVirtualFile(path) and !allow_js;
             if (include_section and isTsConfigVirtualPath(path)) comment_section = true;
             if (include_section) {
