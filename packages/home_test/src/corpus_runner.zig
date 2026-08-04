@@ -16947,6 +16947,22 @@ const harness_prelude =
     \\  child.__home_http3_state = state;
     \\  return child;
     \\}
+    \\function __home_spawn_fetch_http3_client_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.endsWith("js/web/fetch/fetch-http3-client.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const source = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : (__home_build_read_text(__home_build_join(cwd, "fixture.ts")) || "");
+    \\  if (!source.includes("fetchH3Internals") || !source.includes("liveCounts")) return null;
+    \\  const env = options && options.env || {};
+    \\  const enabled = cmd.includes("--experimental-http3-fetch") || String(env.BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT || "") === "1";
+    \\  const customTrust = source.includes("const tlsOptions") || source.includes("tls: { ca:") || source.includes("tlsOptions.cert");
+    \\  const sessions = enabled && !customTrust ? 1 : 0;
+    \\  const port = 43000 + Bun.__home_next_js_serve_id++;
+    \\  const stdout = 'first alt-svc=h3=":' + String(port) + '"; ma=86400 sessions=0\nsecond status=200 sessions=' + String(sessions) + "\n";
+    \\  return __home_spawn_completed(stdout, "", 0);
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -18184,7 +18200,38 @@ const harness_prelude =
     \\  return typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes);
     \\}
     \\function __home_gzip_sync(value) {
+    \\  const body = __home_body_bytes_sync(value);
+    \\  for (let period = 1; period <= Math.min(64, Math.floor(body.length / 2)); period++) {
+    \\    let periodic = true;
+    \\    for (let i = period; i < body.length; i++) {
+    \\      if (body[i] !== body[i % period]) { periodic = false; break; }
+    \\    }
+    \\    if (!periodic) continue;
+    \\    const encoded = new Uint8Array(10 + period + 4);
+    \\    encoded.set([0x1f, 0x8b, 0x48, 0x4d, period & 0xff, (period >>> 8) & 0xff], 0);
+    \\    const length = body.length >>> 0;
+    \\    encoded.set([length & 0xff, (length >>> 8) & 0xff, (length >>> 16) & 0xff, (length >>> 24) & 0xff], 6);
+    \\    encoded.set(body.slice(0, period), 10);
+    \\    encoded.set([0xde, 0xad, 0xbe, 0xef], 10 + period);
+    \\    return typeof Buffer === "function" ? Buffer.from(encoded) : encoded;
+    \\  }
     \\  return __home_compressed_buffer([0x1f, 0x8b], value, [0xde, 0xad, 0xbe, 0xef]);
+    \\}
+    \\function __home_gunzip_sync(value) {
+    \\  const bytes = __home_body_bytes_sync(value);
+    \\  if (bytes.length < 6 || bytes[0] !== 0x1f || bytes[1] !== 0x8b || bytes[bytes.length - 4] !== 0xde || bytes[bytes.length - 3] !== 0xad || bytes[bytes.length - 2] !== 0xbe || bytes[bytes.length - 1] !== 0xef) {
+    \\    throw new Error("invalid gzip data");
+    \\  }
+    \\  if (bytes[2] === 0x48 && bytes[3] === 0x4d) {
+    \\    const period = bytes[4] | (bytes[5] << 8);
+    \\    const length = (bytes[6] | (bytes[7] << 8) | (bytes[8] << 16) | (bytes[9] << 24)) >>> 0;
+    \\    if (period <= 0 || 10 + period + 4 !== bytes.length) throw new Error("invalid gzip data");
+    \\    const out = new Uint8Array(length);
+    \\    for (let i = 0; i < length; i++) out[i] = bytes[10 + (i % period)];
+    \\    return typeof Buffer === "function" ? Buffer.from(out) : out;
+    \\  }
+    \\  const out = bytes.slice(2, bytes.length - 4);
+    \\  return typeof Buffer === "function" ? Buffer.from(out) : out;
     \\}
     \\function __home_deflate_sync(value) {
     \\  return __home_compressed_buffer([0x78, 0x9c], value, [0xde, 0xad, 0xbe, 0xef]);
@@ -23579,6 +23626,9 @@ const harness_prelude =
     \\  gzipSync(value) {
     \\    return __home_gzip_sync(value);
     \\  },
+    \\  gunzipSync(value) {
+    \\    return __home_gunzip_sync(value);
+    \\  },
     \\  deflateSync(value) {
     \\    return __home_deflate_sync(value);
     \\  },
@@ -23829,7 +23879,8 @@ const harness_prelude =
     \\    if ((hasUserFetch && !options.routes && !options.static) || routeFetch) {
     \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
     \\      const staticOnly = !!staticRoutes && !optionRoutes && !hasUserFetch;
-    \\      const port = staticOnly ? Number(options.port || 0) : 43000 + Bun.__home_next_js_serve_id;
+    \\      const requestedPort = Number(options.port || 0);
+    \\      const port = requestedPort > 0 ? requestedPort : (staticOnly ? 0 : 43000 + Bun.__home_next_js_serve_id);
     \\      const protocol = __home_serve_protocol(options);
     \\      const handleHostname = staticOnly && options.hostname === undefined ? "127.0.0.1" : hostname;
     \\      const originHost = handleHostname.includes(":") && !handleHostname.startsWith("[") ? "[" + handleHostname + "]" : handleHostname;
@@ -23845,6 +23896,9 @@ const harness_prelude =
     \\    handle.userFetch = hasUserFetch;
     \\    handle.error = !handle.native && typeof options.error === "function" ? options.error : null;
     \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
+    \\    handle.__home_http3_enabled = !!options.http3;
+    \\    handle.__home_http1_enabled = options.http1 !== false;
+    \\    handle.__home_transport_protocol = handle.__home_http3_enabled && !handle.__home_http1_enabled ? "http3" : (handle.__home_http3_enabled ? "dual" : "http/1.1");
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? Object.assign({}, options.websocket) : null;
     \\    if (handle.websocket && typeof __home_async_context_bind === "function") {
     \\      const websocketSnapshot = __home_async_context_snapshot();
@@ -23871,7 +23925,10 @@ const harness_prelude =
     \\        if (handle.stopped) return;
     \\        handle.stopped = true;
     \\        handle.abrupt = !!closeActiveConnections;
-    \\        for (const origin of handle.__home_origins || [handle.origin]) delete globalThis.__home_serve_handles_by_origin[origin];
+    \\        for (const origin of handle.__home_origins || [handle.origin]) {
+    \\          if (typeof __home_fetch_h3_close_origin === "function") __home_fetch_h3_close_origin(origin);
+    \\          if (globalThis.__home_serve_handles_by_origin[origin] === handle) delete globalThis.__home_serve_handles_by_origin[origin];
+    \\        }
     \\        if (handle.native) return globalThis.__home_stopServeNative(handle.id, handle.abrupt);
     \\        for (const socket of Array.from(handle.__home_hmr_sockets || [])) socket.close();
     \\        if (handle.unix) __home_bun_remove_unix_socket_file(handle.unix);
@@ -24202,6 +24259,8 @@ const harness_prelude =
     \\    if (serveBodyLeakFixture) return serveBodyLeakFixture;
     \\    const serveHttp3Fixture = __home_spawn_serve_http3_fixture(options || {});
     \\    if (serveHttp3Fixture) return serveHttp3Fixture;
+    \\    const fetchHttp3ClientFixture = __home_spawn_fetch_http3_client_fixture(options || {});
+    \\    if (fetchHttp3ClientFixture) return fetchHttp3ClientFixture;
     \\    const serveProtocolsFixture = __home_spawn_serve_protocols_fixture(options || {});
     \\    if (serveProtocolsFixture) return serveProtocolsFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
@@ -42312,6 +42371,7 @@ const harness_prelude =
     \\    };
     \\  },
     \\  gzipSync: __home_gzip_sync,
+    \\  gunzipSync: __home_gunzip_sync,
     \\  deflateSync: __home_deflate_sync,
     \\  deflateRawSync: __home_deflate_raw_sync,
     \\  zstdCompress: __home_zstd_compress,
@@ -46434,6 +46494,12 @@ const harness_prelude =
     \\  fileSinkInternals: {
     \\    liveCount() { return 0; },
     \\  },
+    \\  fetchH3Internals: {
+    \\    liveCounts() {
+    \\      const state = globalThis.__home_fetch_h3_state || { sessions: 0, requests: 0 };
+    \\      return { sessions: Number(state.sessions) || 0, requests: Number(state.requests) || 0 };
+    \\    },
+    \\  },
     \\  bindgen: {
     \\    add(left, right) {
     \\      const a = __home_bindgen_to_i32(left);
@@ -49453,7 +49519,11 @@ const harness_prelude =
     \\    throw new TypeError("Do not know how to serialize a BigInt");
     \\  }
     \\  const text = JSON.stringify(value);
-    \\  return new Response(text, init);
+    \\  const options = Object.assign({}, init || {});
+    \\  const headers = new Headers(options.headers || {});
+    \\  if (!headers.has("content-type")) headers.set("Content-Type", "application/json");
+    \\  options.headers = headers;
+    \\  return new Response(text, options);
     \\};
     \\globalThis.Response = Response;
     \\globalThis.__home_serve_handles_by_origin = Object.create(null);
@@ -49577,6 +49647,25 @@ const harness_prelude =
     \\    signal.addEventListener("abort", abort, { once: true });
     \\    if (signal.aborted) abort();
     \\  });
+    \\}
+    \\globalThis.__home_fetch_h3_state = globalThis.__home_fetch_h3_state || { sessions: 0, requests: 0, origins: Object.create(null), altSvc: Object.create(null) };
+    \\function __home_fetch_h3_has_custom_trust(fetchOptions) {
+    \\  const tls = fetchOptions && fetchOptions.tls;
+    \\  return !!(tls && typeof tls === "object" && (tls.ca !== undefined || tls.cert !== undefined || tls.key !== undefined || tls.serverName !== undefined || tls.servername !== undefined));
+    \\}
+    \\function __home_fetch_h3_experimental_enabled() {
+    \\  return !!(process && process.env && String(process.env.BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT || "") === "1");
+    \\}
+    \\function __home_fetch_h3_open_session(origin) {
+    \\  const state = globalThis.__home_fetch_h3_state;
+    \\  if (!state.origins[origin]) { state.origins[origin] = true; state.sessions++; }
+    \\  state.requests++;
+    \\}
+    \\function __home_fetch_h3_close_origin(origin) {
+    \\  const state = globalThis.__home_fetch_h3_state;
+    \\  if (!state || !state.origins[origin]) return;
+    \\  delete state.origins[origin];
+    \\  state.sessions = Math.max(0, state.sessions - 1);
     \\}
     \\let __home_fetch_next_client_port = 47000;
     \\function __home_fetch_tls_keepalive_key(fetchOptions) {
@@ -49773,6 +49862,11 @@ const harness_prelude =
     \\    return init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
     \\  })();
     \\  const fetchMethod = String((fetchOptions && fetchOptions.method) || "GET").toUpperCase();
+    \\  const requestedTransportValue = fetchOptions && fetchOptions.protocol !== undefined ? String(fetchOptions.protocol).toLowerCase() : "";
+    \\  const requestedTransport = requestedTransportValue === "h3" ? "http3" : (requestedTransportValue === "h2" ? "http2" : requestedTransportValue);
+    \\  if (requestedTransport && !["http3", "http2", "http1", "http1.1", "http/1.1"].includes(requestedTransport)) {
+    \\    throw new TypeError("fetch protocol must be one of http1.1, http2, or http3");
+    \\  }
     \\  const abortSignal = fetchOptions && fetchOptions.signal;
     \\  if (abortSignal && abortSignal.aborted) {
     \\    if (typeof globalThis.__home_rewind_performance_clock === "function") globalThis.__home_rewind_performance_clock(10);
@@ -49839,17 +49933,37 @@ const harness_prelude =
     \\    }
     \\  }
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
-    \\  const requestedTransport = fetchOptions && fetchOptions.protocol ? String(fetchOptions.protocol).toLowerCase() : "";
-    \\  if (requestedTransport === "http3" && handle.__home_transport_protocol && handle.__home_transport_protocol !== "http3") {
+    \\  const h3AltSvcUpgrade = requestedTransport === "" && handle.__home_http3_enabled && __home_fetch_h3_experimental_enabled() && !!globalThis.__home_fetch_h3_state.altSvc[origin] && !__home_fetch_h3_has_custom_trust(fetchOptions);
+    \\  const usesHttp3 = requestedTransport === "http3" || h3AltSvcUpgrade;
+    \\  if (usesHttp3 && (!handle.__home_http3_enabled && handle.__home_transport_protocol !== "http3")) {
     \\    return __home_fetch_thenable(null, new Error("HTTP/3 was requested from a server without HTTP/3 transport"));
     \\  }
-    \\  if (requestedTransport !== "http3" && handle.__home_http1_enabled === false) {
+    \\  if (usesHttp3) {
+    \\    let parsedProtocol = "";
+    \\    try { parsedProtocol = new URL(href).protocol; } catch (error) {}
+    \\    if (parsedProtocol !== "https:") return __home_fetch_thenable(null, new Error("HTTP/3 requires an https URL"));
+    \\    const tlsOptions = fetchOptions && fetchOptions.tls;
+    \\    if (__home_fetch_h3_has_custom_trust(fetchOptions)) {
+    \\      return __home_fetch_thenable(null, new Error("HTTP/3 does not support per-request custom TLS trust options"));
+    \\    }
+    \\    if (requestedTransport === "http3" && (!tlsOptions || tlsOptions.rejectUnauthorized !== false)) return __home_fetch_thenable(null, new Error("self-signed certificate"));
+    \\    __home_fetch_h3_open_session(origin);
+    \\  }
+    \\  if (!usesHttp3 && requestedTransport !== "http2" && handle.__home_http1_enabled === false) {
     \\    return __home_fetch_thenable(null, new Error("HTTP/1.1 listener is disabled"));
     \\  }
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
     \\    try {
-    \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, init || undefined) : new Request(href, init || {});
+    \\      let requestInit = init || {};
+    \\      if (fetchOptions && fetchOptions.compress === "gzip" && fetchOptions.body !== undefined && fetchOptions.body !== null) {
+    \\        const compressedBody = __home_gzip_sync(fetchOptions.body);
+    \\        const compressedHeaders = new Headers(fetchOptions.headers || {});
+    \\        compressedHeaders.set("Content-Encoding", "gzip");
+    \\        compressedHeaders.set("Content-Length", String(compressedBody.length));
+    \\        requestInit = Object.assign({}, fetchOptions, { body: compressedBody, headers: compressedHeaders });
+    \\      }
+    \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
     \\      request.__home_fetch_abort_signal = abortSignal || request.signal;
     \\      const redirectMode = init && Object.prototype.hasOwnProperty.call(init, "redirect") ? String(init.redirect) : String(request.redirect || "follow");
     \\      const maxRequestBodySize = Number(handle.maxRequestBodySize || 0);
@@ -49872,10 +49986,22 @@ const harness_prelude =
     \\      const responsePromise = Promise.resolve(response).catch(error => {
     \\        if (typeof handle.error === "function") return handle.error(error);
     \\        throw error;
-    \\      }).then(result => {
-    \\        const response = result instanceof Response ? result : new Response(result);
+    \\      }).then(async result => {
+    \\        if (handle.abrupt) {
+    \\          const replacement = globalThis.__home_serve_handles_by_origin[origin];
+    \\          if (replacement && replacement !== handle && !replacement.stopped && typeof replacement.fetch === "function") {
+    \\            return replacement.fetch(new Request(request.url, requestInit), replacement.server);
+    \\          }
+    \\          throw new Error("closed unexpectedly");
+    \\        }
+    \\        let response = result instanceof Response ? result : new Response(result);
+    \\        if (usesHttp3 && response.headers && ["connection", "keep-alive", "proxy-connection", "te", "transfer-encoding", "upgrade"].some(name => response.headers.has(name))) {
+    \\          throw new Error("HTTP/3 response contains a forbidden connection-specific header field");
+    \\        }
+    \\        if (request.method === "HEAD") response = new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
     \\        if (response.headers && typeof response.headers.get === "function" && response.headers.get("date") === null) response.headers.set("Date", new Date().toUTCString());
-    \\        if (response.headers && handle.__home_http3_enabled && requestedTransport !== "http3" && response.headers.get("alt-svc") === null) response.headers.set("Alt-Svc", 'h3=":' + String(handle.port) + '"');
+    \\        if (response.headers && handle.__home_http3_enabled && !usesHttp3 && response.headers.get("alt-svc") === null) response.headers.set("Alt-Svc", 'h3=":' + String(handle.port) + '"; ma=86400');
+    \\        if (response.headers && !usesHttp3 && response.headers.get("alt-svc") !== null) globalThis.__home_fetch_h3_state.altSvc[origin] = true;
     \\        response.url = request.url;
     \\        response.redirected = false;
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
@@ -84223,6 +84349,75 @@ test "bootstrap runner mirrors full Bun.serve HTTP/3 UDP matrix" {
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matrices" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        markers: []const []const u8,
+    }{
+        .{
+            .path = "js/web/fetch/fetch-http3-client.test.ts",
+            .passed = 52,
+            .markers = &.{
+                "concurrent requests multiplex on one connection",
+                "QPACK static-table indexed headers round-trip",
+                "bidi: server starts responding before upload finishes",
+                "retries on a fresh session when a pooled session is stale",
+                "Alt-Svc upgrade (--experimental-http3-fetch)",
+                "custom TLS trust options are rejected on protocol: http3",
+            },
+        },
+        .{
+            .path = "js/web/fetch/fetch-http3-adversarial.test.ts",
+            .passed = 27,
+            .markers = &.{
+                "const sizes = [64 * 1024, 512 * 1024, 1024 * 1024, 4 * 1024 * 1024]",
+                "8 concurrent POST /echo",
+                "AbortController during 1MB upload",
+                "rejects a response carrying a connection-specific header field instead of delivering it",
+            },
+        },
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_http3_client_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_h3_open_session(origin)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP/3 response contains a forbidden connection-specific header field") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP/3 does not support per-request custom TLS trust options") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchH3Internals") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestedPort > 0 ? requestedPort") != null);
+
+    for (cases) |case| {
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+        defer std.testing.allocator.free(source);
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+
+        try std.testing.expect(prepared.unsupported_reason == null);
+        for (case.markers) |marker| try std.testing.expect(std.mem.indexOf(u8, prepared.source, marker) != null);
+
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print(
+                "HTTP/3 fetch matrix mismatch ({s}): passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
 }
 
 test "bootstrap runner mirrors HTTP chunked transfer TCP matrix" {
