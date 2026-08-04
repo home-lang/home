@@ -3665,8 +3665,12 @@ pub const H2FrameParser = struct {
                 const exception = globalObject.toTypeError(.HTTP2_INVALID_HEADER_VALUE, "Invalid value for header \"{s}\"", .{name});
                 return globalObject.throwValue(exception);
             }
-            const validated_name = toValidHeaderName(name, name_buffer[0..name.len]) catch {
-                const exception = globalObject.toTypeError(.INVALID_HTTP_TOKEN, "The arguments Header name is invalid. Received {s}", .{name});
+            // `toValidHeaderName` rejects names larger than the HPACK scratch
+            // buffer. Clamp the slice passed to it so validation happens before
+            // any bounds-checked indexing of untrusted header input.
+            const validated_name = toValidHeaderName(name, name_buffer[0..@min(name.len, name_buffer.len)]) catch {
+                const exception = globalObject.createTypeErrorInstance("The arguments Header name is invalid. Received {s}", .{name});
+                exception.put(globalObject, jsc.ZigString.static("code"), jsc.ZigString.static("ERR_INVALID_HTTP_TOKEN").toJS(globalObject));
                 return globalObject.throwValue(exception);
             };
 
@@ -4129,8 +4133,11 @@ pub const H2FrameParser = struct {
                 defer name_slice.deinit();
                 const name = name_slice.slice();
 
-                const validated_name = toValidHeaderName(name, name_buffer[0..name.len]) catch {
-                    const exception = globalObject.toTypeError(.INVALID_HTTP_TOKEN, "The arguments Header name is invalid. Received \"{s}\"", .{name});
+                // Keep oversized names on the normal JS exception path instead
+                // of trapping while constructing the validation scratch slice.
+                const validated_name = toValidHeaderName(name, name_buffer[0..@min(name.len, name_buffer.len)]) catch {
+                    const exception = globalObject.createTypeErrorInstance("The arguments Header name is invalid. Received \"{s}\"", .{name});
+                    exception.put(globalObject, jsc.ZigString.static("code"), jsc.ZigString.static("ERR_INVALID_HTTP_TOKEN").toJS(globalObject));
                     return globalObject.throwValue(exception);
                 };
 
@@ -4579,7 +4586,15 @@ pub const H2FrameParser = struct {
         const buffer = args_list.ptr[0];
         buffer.ensureStillAlive();
         if (buffer.asArrayBuffer(globalObject)) |array_buffer| {
-            var bytes = array_buffer.byteSlice();
+            // Frame callbacks are synchronous and may transfer/detach the
+            // caller-owned ArrayBuffer while this loop still has frames left
+            // to parse. Snapshot the chunk so re-entrant JS cannot invalidate
+            // the parser's remaining input.
+            const owned_bytes = bun.default_allocator.dupe(u8, array_buffer.byteSlice()) catch {
+                return globalObject.throwOutOfMemory();
+            };
+            defer bun.default_allocator.free(owned_bytes);
+            var bytes: []const u8 = owned_bytes;
             // read all the bytes
             while (bytes.len > 0) {
                 const result = try this.readBytes(bytes);
@@ -4906,3 +4921,14 @@ const BinaryType = jsc.ArrayBuffer.BinaryType;
 
 const JSTCPSocket = jsc.Codegen.JSTCPSocket;
 const JSTLSSocket = jsc.Codegen.JSTLSSocket;
+
+test "HTTP/2 header validation rejects names larger than its scratch buffer" {
+    var oversized_name: [4097]u8 = undefined;
+    @memset(&oversized_name, 'x');
+    var scratch: [4096]u8 = undefined;
+
+    try std.testing.expectError(
+        error.InvalidHeaderName,
+        H2FrameParser.toValidHeaderName(&oversized_name, &scratch),
+    );
+}

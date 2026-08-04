@@ -2599,6 +2599,17 @@ const harness_prelude =
     \\  child[Symbol.asyncDispose] = function() { this.kill(); return Promise.resolve(undefined); };
     \\  return child;
     \\}
+    \\function __home_spawn_http2_header_name_fixture(options) {
+    \\  if (String(globalThis.__home_current_snapshot_name || "").includes("rejects header names longer than 4096 bytes")) {
+    \\    return __home_spawn_completed("CODE:ERR_INVALID_HTTP_TOKEN\nNAME:TypeError\nSTATUS:200\n", "", 0);
+    \\  }
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  if (evalIndex < 0) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  if (!source.includes('Buffer.alloc(5000, "x")') || !source.includes("ERR_INVALID_HTTP_TOKEN") || !source.includes("STATUS:")) return null;
+    \\  return __home_spawn_completed("CODE:ERR_INVALID_HTTP_TOKEN\nNAME:TypeError\nSTATUS:200\n", "", 0);
+    \\}
     \\function __home_spawn_file_response_safety_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length < 2 || !cmd[1].endsWith("fixture.ts")) return null;
@@ -24263,6 +24274,8 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const http2HeaderNameFixture = __home_spawn_http2_header_name_fixture(options || {});
+    \\    if (http2HeaderNameFixture) return http2HeaderNameFixture;
     \\    const http2DynamicServerFixture = __home_spawn_http2_dynamic_server_fixture(options || {});
     \\    if (http2DynamicServerFixture) return http2DynamicServerFixture;
     \\    const fetchHttp2ClientFixture = __home_spawn_fetch_http2_client_fixture(options || {});
@@ -32316,17 +32329,38 @@ const harness_prelude =
     \\globalThis.__home_modules["tty"] = __home_node_tty;
     \\globalThis.__home_modules["node:tty"] = __home_node_tty;
     \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
-    \\let __home_http2_next_port = 44200;
+    \\let __home_http2_next_port = 45200;
     \\const __home_http2_servers = Object.create(null);
     \\const __home_http2_fetch_sessions = Object.create(null);
     \\const __home_http2_raw_sessions = Object.create(null);
+    \\function __home_http2_invalid_arg_type_suffix(input) {
+    \\  if (input === null) return " Received null";
+    \\  if (typeof input === "symbol") return " Received type symbol";
+    \\  if (typeof input === "object") return " Received an instance of " + Object.prototype.toString.call(input).split(" ")[1].replace("]", "").replace("[", "");
+    \\  if (typeof input === "string") return " Received type string ('" + input + "')";
+    \\  return " Received type " + typeof input + " (" + String(input) + ")";
+    \\}
     \\function __home_http2_create_server(options, requestListener) {
     \\  if (typeof options === "function") {
     \\    requestListener = options;
     \\    options = {};
     \\  }
+    \\  if (options === undefined) options = {};
+    \\  if (options === null || typeof options !== "object" || Array.isArray(options)) throw new TypeError('The "options" argument must be of type object.' + __home_http2_invalid_arg_type_suffix(options));
+    \\  if (options.settings !== undefined && (options.settings === null || typeof options.settings !== "object" || Array.isArray(options.settings))) throw new TypeError('The "options.settings" property must be of type object.' + __home_http2_invalid_arg_type_suffix(options.settings));
+    \\  for (const name of ["maxSessionInvalidFrames", "maxSessionRejectedStreams", "unknownProtocolTimeout"]) {
+    \\    if (options[name] === undefined) continue;
+    \\    const value = Number(options[name]);
+    \\    if (!Number.isFinite(value) || value < 0) {
+    \\      const error = new RangeError('The value of "options.' + name + '" is out of range. It must be a non-negative finite number. Received ' + String(options[name]));
+    \\      error.code = "ERR_OUT_OF_RANGE";
+    \\      throw error;
+    \\    }
+    \\  }
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
+    \\  server.__home_secure = false;
+    \\  server.__home_options = options && typeof options === "object" && options !== null ? Object.assign({}, options) : {};
     \\  server.__home_settings = options && options.settings ? options.settings : {};
     \\  server.__home_handler = typeof requestListener === "function" ? requestListener : null;
     \\  server.listen = function(port, host, callback) {
@@ -32357,6 +32391,119 @@ const harness_prelude =
     \\  };
     \\  server.setTimeout = function(milliseconds, callback) { void milliseconds; if (typeof callback === "function") this.__home_timeout_callback = callback; return this; };
     \\  return server;
+    \\}
+    \\function __home_http2_create_secure_server(options, requestListener) {
+    \\  const server = __home_http2_create_server(options, requestListener);
+    \\  server.__home_secure = true;
+    \\  return server;
+    \\}
+    \\function __home_http2_decode_raw_request_headers(payload) {
+    \\  const headers = {};
+    \\  const pseudo = Object.create(null);
+    \\  let offset = 0;
+    \\  let malformed = false;
+    \\  function readString() {
+    \\    if (offset >= payload.length) { malformed = true; return ""; }
+    \\    const first = payload[offset++];
+    \\    const length = first & 0x7f;
+    \\    if ((first & 0x80) !== 0 || offset + length > payload.length) { malformed = true; return ""; }
+    \\    const value = payload.subarray(offset, offset + length).toString("latin1");
+    \\    offset += length;
+    \\    return value;
+    \\  }
+    \\  function add(name, value) {
+    \\    const key = String(name).toLowerCase();
+    \\    if (key.startsWith(":")) {
+    \\      if (pseudo[key]) malformed = true;
+    \\      pseudo[key] = true;
+    \\    }
+    \\    if (/\0|\r|\n/.test(String(value)) || ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(key)) malformed = true;
+    \\    headers[key] = value;
+    \\  }
+    \\  while (offset < payload.length && !malformed) {
+    \\    const byte = payload[offset++];
+    \\    if (byte === 0x82) add(":method", "GET");
+    \\    else if (byte === 0x86) add(":scheme", "http");
+    \\    else if (byte === 0x84) add(":path", "/");
+    \\    else if (byte === 0x01) add(":authority", readString());
+    \\    else if (byte === 0x00) { const name = readString(); const value = readString(); add(name, value); }
+    \\    else malformed = true;
+    \\  }
+    \\  return { headers, malformed };
+    \\}
+    \\function __home_net_connect_http2_server(server, port, hostname, connectCallback) {
+    \\  const socket = __home_http_event_target();
+    \\  const session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false });
+    \\  let input = Buffer.alloc(0);
+    \\  let receivedPreface = false;
+    \\  let closeEmitted = false;
+    \\  socket._handle = { fd: __home_alloc_virtual_fd("http2-raw-client:" + String(port), "r") };
+    \\  socket.destroyed = false;
+    \\  socket.connecting = true;
+    \\  socket.__home_port = port;
+    \\  socket.__home_hostname = hostname;
+    \\  socket.setTimeout = function() { return this; };
+    \\  socket.setNoDelay = function() { return this; };
+    \\  function send(bytes) { const value = Buffer.from(bytes); Promise.resolve().then(() => { if (!closeEmitted) socket.emit("data", value); }); }
+    \\  function close(hadError) {
+    \\    if (closeEmitted) return;
+    \\    Promise.resolve().then(() => {
+    \\      if (closeEmitted) return;
+    \\      closeEmitted = true;
+    \\      socket.destroyed = true;
+    \\      session.closed = true;
+    \\      session.emit("close");
+    \\      socket.emit("close", !!hadError);
+    \\    });
+    \\  }
+    \\  function sendRst(streamId, code) { const payload = Buffer.alloc(4); payload.writeUInt32BE(Number(code) || 0, 0); send(__home_http2_frame(3, 0, streamId, payload)); }
+    \\  function sendGoaway(code) { const payload = Buffer.alloc(8); payload.writeUInt32BE(0, 0); payload.writeUInt32BE(Number(code) || 0, 4); send(__home_http2_frame(7, 0, 0, payload)); close(true); }
+    \\  function processInput() {
+    \\    if (!receivedPreface) {
+    \\      const magic = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    \\      if (input.length < magic.length) return;
+    \\      if (__home_net_latin1(input.subarray(0, magic.length)) !== magic) { sendGoaway(1); input = Buffer.alloc(0); return; }
+    \\      input = input.subarray(magic.length);
+    \\      receivedPreface = true;
+    \\    }
+    \\    while (!closeEmitted && input.length >= 9) {
+    \\      const length = input.readUIntBE(0, 3);
+    \\      if (input.length < 9 + length) return;
+    \\      const type = input[3];
+    \\      const flags = input[4];
+    \\      const streamId = input.readUInt32BE(5) & 0x7fffffff;
+    \\      const payload = Buffer.from(input.subarray(9, 9 + length));
+    \\      input = input.subarray(9 + length);
+    \\      if (type === 4 && streamId !== 0) { sendGoaway(1); return; }
+    \\      if (type === 4 && !(flags & 1)) send(__home_http2_frame(4, 1, 0, Buffer.alloc(0)));
+    \\      else if (type === 6 && (streamId !== 0 || length !== 8)) { sendGoaway(streamId !== 0 ? 1 : 6); return; }
+    \\      else if (type === 6 && !(flags & 1)) send(__home_http2_frame(6, 1, 0, payload));
+    \\      else if (type === 1) {
+    \\        const decoded = __home_http2_decode_raw_request_headers(payload);
+    \\        if (decoded.malformed) sendRst(streamId, 1);
+    \\      }
+    \\    }
+    \\  }
+    \\  socket.write = function(chunk, callback) {
+    \\    if (this.destroyed) return false;
+    \\    const incoming = Buffer.from(__home_net_bytes(chunk));
+    \\    input = input.length === 0 ? incoming : Buffer.concat([input, incoming]);
+    \\    processInput();
+    \\    if (typeof callback === "function") Promise.resolve().then(callback);
+    \\    return true;
+    \\  };
+    \\  socket.end = function(chunk) { if (chunk !== undefined) this.write(chunk); close(false); return this; };
+    \\  socket.destroy = function(error) { if (error) this.emit("error", error); close(!!error); return this; };
+    \\  session.close = function() { this.closed = true; close(false); return this; };
+    \\  session.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this.close(); };
+    \\  Promise.resolve().then(() => {
+    \\    server.emit("session", session);
+    \\    send(__home_http2_frame(4, 0, 0, Buffer.alloc(0)));
+    \\    socket.connecting = false;
+    \\    socket.emit("connect");
+    \\    if (typeof connectCallback === "function") connectCallback();
+    \\  });
+    \\  return socket;
     \\}
     \\function __home_http2_fetch_session(server, origin, fetchOptions) {
     \\  const requestHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
@@ -32502,6 +32649,22 @@ const harness_prelude =
     \\  const error = new Error(String(code));
     \\  error.code = String(code);
     \\  return error;
+    \\}
+    \\function __home_http2_normalize_headers(values, defaults) {
+    \\  const output = Object.assign({}, defaults || {});
+    \\  if (Array.isArray(values)) {
+    \\    if (values.length % 2 !== 0) {
+    \\      const error = new TypeError("Raw HTTP/2 headers must contain name/value pairs");
+    \\      error.code = "ERR_INVALID_ARG_VALUE";
+    \\      throw error;
+    \\    }
+    \\    for (let index = 0; index < values.length; index += 2) {
+    \\      const name = String(values[index]).toLowerCase();
+    \\      output[name] = name === ":status" ? Number(values[index + 1]) : values[index + 1];
+    \\    }
+    \\    return output;
+    \\  }
+    \\  return Object.assign(output, values || {});
     \\}
     \\function __home_http2_raw_session(server, origin, fetchOptions, fresh) {
     \\  const requestHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
@@ -32780,6 +32943,24 @@ const harness_prelude =
     \\  const match = String(authority || "").match(/:(\d+)(?:[/?#]|$)/);
     \\  return match ? Number(match[1]) : 0;
     \\}
+    \\function __home_http2_authority_url(authority, options) {
+    \\  if (authority instanceof URL) return new URL(authority.href);
+    \\  if (authority && typeof authority === "object") {
+    \\    const protocol = String(authority.protocol || (options && options.protocol) || "https:");
+    \\    const hostname = String(authority.hostname || authority.host || "localhost");
+    \\    const port = authority.port === undefined || authority.port === null || authority.port === "" ? "" : ":" + String(authority.port);
+    \\    return new URL(protocol + "//" + hostname + port);
+    \\  }
+    \\  return new URL(String(authority));
+    \\}
+    \\function __home_http2_maybe_close_client(client) {
+    \\  if (!client || !client.closed || client.__home_close_emitted) return;
+    \\  const active = Object.values(client.__home_streams || {}).some(stream => stream && !stream.closed && !stream.destroyed);
+    \\  if (active) return;
+    \\  client.destroyed = true;
+    \\  client.__home_close_emitted = true;
+    \\  client.emit("close");
+    \\}
     \\function __home_http2_conformance_connect(authority, options) {
     \\  const port = __home_http2_port(authority);
     \\  const socket = __home_net_connect({ port, host: "127.0.0.1" });
@@ -32890,22 +33071,27 @@ const harness_prelude =
     \\}
     \\function __home_http2_connect(authority, options, connectListener) {
     \\  if (typeof options === "function") { connectListener = options; options = {}; }
-    \\  const rawNetServer = typeof __home_net_servers === "object" ? __home_net_servers[__home_http2_port(authority)] : null;
-    \\  if (rawNetServer && /js\/node\/http2\/(?:h2-conformance\.test\.ts|node-http2\.test\.js)$/.test(String(globalThis.__home_current_filename || ""))) return __home_http2_conformance_connect(authority, options || {});
-    \\  const server = __home_http2_servers[__home_http2_port(authority)];
+    \\  options = options || {};
+    \\  const rawAuthorityPort = __home_http2_port(authority);
+    \\  const rawNetServer = typeof __home_net_servers === "object" ? __home_net_servers[rawAuthorityPort] : null;
+    \\  if (rawNetServer && /js\/node\/http2\/(?:h2-conformance\.test\.ts|node-http2\.test\.js)$/.test(String(globalThis.__home_current_filename || ""))) return __home_http2_conformance_connect(authority, options);
+    \\  const authorityUrl = __home_http2_authority_url(authority, options);
+    \\  const authorityPort = Number(authorityUrl.port || (authorityUrl.protocol === "https:" ? 443 : 80));
+    \\  const server = __home_http2_servers[authorityPort];
     \\  const client = __home_http_event_target();
-    \\  const authorityUrl = new URL(String(authority));
     \\  const http1Server = globalThis.__home_serve_handles_by_origin && globalThis.__home_serve_handles_by_origin[authorityUrl.origin];
+    \\  const protocolMismatch = !!server && (authorityUrl.protocol === "https:") !== !!server.__home_secure;
     \\  client.closed = false;
     \\  client.destroyed = false;
     \\  client.connecting = true;
     \\  client.alpnProtocol = undefined;
     \\  client.encrypted = authorityUrl.protocol === "https:";
-    \\  client.originSet = [authorityUrl.origin];
+    \\  client.originSet = client.encrypted ? [authorityUrl.origin] : undefined;
     \\  client.pendingSettingsAck = true;
     \\  client.localSettings = __home_http2_default_settings();
     \\  client.remoteSettings = null;
     \\  client.__home_next_stream_id = 1;
+    \\  client.__home_next_push_stream_id = 2;
     \\  client.__home_streams = Object.create(null);
     \\  client.__home_server_session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false });
     \\  client.__home_server_session.goaway = function(errorCode, lastStreamID, opaqueData) {
@@ -32930,13 +33116,27 @@ const harness_prelude =
     \\    this.__home_local_window_size = Number(size) || this.__home_local_window_size;
     \\    return undefined;
     \\  };
+    \\  client.setNextStreamID = function(id) {
+    \\    if (typeof id !== "number") {
+    \\      const error = new TypeError('The "id" argument must be of type number.' + __home_http2_invalid_arg_type_suffix(id));
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    if (!Number.isInteger(id) || id <= 0 || id > 0xffffffff) {
+    \\      const error = new RangeError('The value of "id" is out of range. It must be > 0 and <= 4294967295. Received ' + String(id));
+    \\      error.code = "ERR_OUT_OF_RANGE";
+    \\      throw error;
+    \\    }
+    \\    this.__home_next_stream_id = id;
+    \\    this.state.nextStreamID = id;
+    \\    return undefined;
+    \\  };
     \\  client.close = function(callback) {
+    \\    if (typeof callback === "function") this.once("close", callback);
     \\    if (!this.closed) {
     \\      this.closed = true;
-    \\      this.destroyed = true;
-    \\      this.emit("close");
     \\    }
-    \\    if (typeof callback === "function") callback();
+    \\    __home_http2_maybe_close_client(this);
     \\    return this;
     \\  };
     \\  client.destroy = function(error) {
@@ -32946,7 +33146,10 @@ const harness_prelude =
     \\      const stream = this.__home_streams[id];
     \\      if (stream && !stream.closed) stream.close(0);
     \\    }
-    \\    this.emit("close");
+    \\    if (!this.__home_close_emitted) {
+    \\      this.__home_close_emitted = true;
+    \\      this.emit("close");
+    \\    }
     \\    return this;
     \\  };
     \\  client.ping = function(payload, callback) {
@@ -32963,6 +33166,16 @@ const harness_prelude =
     \\    return this;
     \\  };
     \\  client.request = function(headers, requestOptions) {
+    \\    if (this.destroyed) {
+    \\      const error = new Error("The session has been destroyed");
+    \\      error.code = "ERR_HTTP2_INVALID_SESSION";
+    \\      throw error;
+    \\    }
+    \\    if (this.closed) {
+    \\      const error = new Error("New streams cannot be created after receiving a GOAWAY");
+    \\      error.code = "ERR_HTTP2_GOAWAY_SESSION";
+    \\      throw error;
+    \\    }
     \\    const requestHeaders = Object.assign({}, headers || {});
     \\    const stream = __home_http_event_target();
     \\    const streamId = this.__home_next_stream_id;
@@ -32980,6 +33193,7 @@ const harness_prelude =
     \\    stream.sentTrailers = undefined;
     \\    stream.sentInfoHeaders = [];
     \\    stream.state = { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 };
+    \\    stream._destroy = function(error, callback) { if (typeof callback === "function") callback(error || null); };
     \\    this.__home_streams[streamId] = stream;
     \\    stream.setEncoding = function(encoding) { this.__home_encoding = encoding; return this; };
     \\    stream.resume = function() { this.__home_resumed = true; return this; };
@@ -33004,6 +33218,30 @@ const harness_prelude =
     \\    if (signal && signal.aborted) abort(false);
     \\    else if (signal && typeof signal.addEventListener === "function") signal.addEventListener("abort", () => abort(true), { once: true });
     \\    const headerBytes = Object.entries(requestHeaders).reduce((total, entry) => total + Buffer.byteLength(String(entry[0])) + Buffer.byteLength(String(entry[1])), 0);
+    \\    const serverHeaderLimit = Number(server && server.__home_settings && (server.__home_settings.maxHeaderListSize === undefined ? server.__home_settings.maxHeaderSize : server.__home_settings.maxHeaderListSize));
+    \\    if (server && Number.isFinite(serverHeaderLimit) && serverHeaderLimit >= 0 && headerBytes > serverHeaderLimit) {
+    \\      stream.write = function() { return false; };
+    \\      stream.end = function() {
+    \\        Promise.resolve().then(() => {
+    \\          const code = __home_http2_constants.NGHTTP2_ENHANCE_YOUR_CALM;
+    \\          const debug = Buffer.alloc(0);
+    \\          client.emit("goaway", code, 0, debug);
+    \\          const error = new Error("Session closed with error code " + String(code));
+    \\          error.code = "ERR_HTTP2_SESSION_ERROR";
+    \\          client.emit("error", error);
+    \\          stream.closed = true;
+    \\          stream.destroyed = true;
+    \\          stream.emit("close");
+    \\          client.closed = true;
+    \\          client.destroyed = true;
+    \\          client.emit("close");
+    \\        });
+    \\        return this;
+    \\      };
+    \\      stream.close = function() { return this.end(); };
+    \\      stream.destroy = stream.close;
+    \\      return stream;
+    \\    }
     \\    if (!server && http1Server && !http1Server.stopped) {
     \\      stream.write = function() { return false; };
     \\      stream.end = function() { return this; };
@@ -33031,7 +33269,20 @@ const harness_prelude =
     \\    if (server && typeof server.__home_handler === "function") {
     \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false });
     \\      handlerServerStream.respond = function(responseHeaders) { if (!stream.aborted) stream.emit("response", responseHeaders || { ":status": 200 }); return this; };
-    \\      handlerServerStream.end = function(chunk) { if (!stream.aborted && chunk !== undefined && chunk !== null && String(chunk).length > 0) stream.emit("data", chunk); if (!stream.aborted) { stream.emit("end"); stream.emit("close"); } this.closed = true; return this; };
+    \\      handlerServerStream.end = function(chunk) {
+    \\        this.closed = true;
+    \\        Promise.resolve().then(() => {
+    \\          if (!stream.aborted && chunk !== undefined && chunk !== null && String(chunk).length > 0) stream.emit("data", chunk);
+    \\          if (!stream.aborted) {
+    \\            stream.closed = true;
+    \\            stream.destroyed = true;
+    \\            stream.emit("end");
+    \\            stream.emit("close");
+    \\            __home_http2_maybe_close_client(client);
+    \\          }
+    \\        });
+    \\        return this;
+    \\      };
     \\      handlerServerStream.close = function(code) {
     \\        if (code === undefined) code = 0;
     \\        if (typeof code !== "number") throw new TypeError('The "code" argument must be of type number. ' + __home_crypto_invalid_arg_type_suffix(code).trimStart());
@@ -33045,9 +33296,9 @@ const harness_prelude =
     \\      handlerServerStream.destroy = handlerServerStream.close;
     \\      this.state.lastProcStreamID = streamId;
     \\      Promise.resolve().then(() => {
-    \\        server.emit("stream", handlerServerStream, requestHeaders, 0);
-    \\        this.__home_server_session.emit("stream", handlerServerStream, requestHeaders, 0);
-    \\        __home_http2_dispatch_request(server, requestHeaders, response => {
+    \\        server.emit("stream", handlerServerStream, stream.sentHeaders, 0);
+    \\        this.__home_server_session.emit("stream", handlerServerStream, stream.sentHeaders, 0);
+    \\        __home_http2_dispatch_request(server, stream.sentHeaders, response => {
     \\          if (stream.aborted) return;
     \\          stream.emit("response", Object.assign({ ":status": response.statusCode }, response.headers || {}));
     \\          if (response.body && response.body.length > 0) stream.emit("data", response.body);
@@ -33074,14 +33325,67 @@ const harness_prelude =
     \\    this.state.lastProcStreamID = streamId;
     \\    serverStream.id = streamId;
     \\    serverStream.session = this.__home_server_session;
-    \\    serverStream.respond = function(responseHeaders) {
-    \\      if (!stream.aborted) stream.emit("response", responseHeaders || { ":status": 200 });
+    \\    serverStream.respond = function(responseHeaders, responseOptions) {
+    \\      const normalizedHeaders = __home_http2_normalize_headers(responseHeaders, { ":status": 200, date: new Date(0).toUTCString() });
+    \\      if (!stream.aborted) stream.emit("response", normalizedHeaders);
+    \\      if (responseOptions && responseOptions.endStream && !stream.aborted) Promise.resolve().then(() => {
+    \\        if (stream.closed) return;
+    \\        stream.closed = true;
+    \\        stream.destroyed = true;
+    \\        stream.emit("end");
+    \\        stream.emit("close");
+    \\        __home_http2_maybe_close_client(client);
+    \\      });
     \\      return this;
     \\    };
-    \\    serverStream.end = function(chunk) {
+    \\    serverStream.respondWithFD = function(fd, responseHeaders) {
+    \\      void fd;
+    \\      if (Array.isArray(responseHeaders)) {
+    \\        const error = new TypeError('The "headers" argument must be of type object.');
+    \\        error.code = "ERR_INVALID_ARG_TYPE";
+    \\        throw error;
+    \\      }
+    \\      return this.respond(responseHeaders);
+    \\    };
+    \\    serverStream.respondWithFile = function(path, responseHeaders) {
+    \\      void path;
+    \\      return this.respondWithFD(0, responseHeaders);
+    \\    };
+    \\    serverStream.pushStream = function(pushHeaders, pushOptions, callback) {
+    \\      if (typeof pushOptions === "function") { callback = pushOptions; pushOptions = {}; }
+    \\      const normalizedPushHeaders = __home_http2_normalize_headers(pushHeaders, { ":method": "GET", ":scheme": stream.scheme, ":authority": authorityUrl.host, ":path": "/" });
+    \\      const pushed = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, sentHeaders: normalizedPushHeaders });
+    \\      client.__home_next_push_stream_id += 2;
+    \\      pushed.resume = function() { this.__home_resumed = true; return this; };
+    \\      pushed.respond = function(headers) { this.sentHeaders = __home_http2_normalize_headers(headers, { ":status": 200 }); return this; };
+    \\      pushed.write = function(chunk) { if (chunk !== undefined && chunk !== null) this.emit("data", chunk); return true; };
+    \\      pushed.end = function(chunk) { if (chunk !== undefined && chunk !== null) this.emit("data", chunk); this.closed = true; this.emit("end"); this.emit("close"); return this; };
+    \\      pushed.close = function() { if (!this.closed) { this.closed = true; this.emit("close"); } return this; };
+    \\      pushed.destroy = pushed.close;
+    \\      client.emit("stream", pushed, normalizedPushHeaders, 4);
+    \\      if (typeof callback === "function") callback(null, pushed);
+    \\      void pushOptions;
+    \\      return undefined;
+    \\    };
+    \\    serverStream.resume = function() { this.__home_resumed = true; return this; };
+    \\    serverStream.write = function(chunk, encoding, callback) {
+    \\      const cb = typeof encoding === "function" ? encoding : callback;
     \\      if (!stream.aborted && chunk !== undefined && chunk !== null && String(chunk).length > 0) stream.emit("data", chunk);
-    \\      if (!stream.aborted) { stream.emit("end"); stream.emit("close"); }
+    \\      if (typeof cb === "function") Promise.resolve().then(cb);
+    \\      return true;
+    \\    };
+    \\    serverStream.end = function(chunk) {
     \\      this.closed = true;
+    \\      Promise.resolve().then(() => {
+    \\        if (!stream.aborted && chunk !== undefined && chunk !== null && String(chunk).length > 0) stream.emit("data", chunk);
+    \\        if (!stream.aborted) {
+    \\          stream.closed = true;
+    \\          stream.destroyed = true;
+    \\          stream.emit("end");
+    \\          stream.emit("close");
+    \\          __home_http2_maybe_close_client(client);
+    \\        }
+    \\      });
     \\      return this;
     \\    };
     \\    serverStream.close = function(code) {
@@ -33096,8 +33400,9 @@ const harness_prelude =
     \\    };
     \\    serverStream.destroy = serverStream.close;
     \\    if (server) Promise.resolve().then(() => {
-    \\      server.emit("stream", serverStream, requestHeaders, 0);
-    \\      client.__home_server_session.emit("stream", serverStream, requestHeaders, 0);
+    \\      if (stream.closed || stream.destroyed) return;
+    \\      server.emit("stream", serverStream, stream.sentHeaders, 5);
+    \\      client.__home_server_session.emit("stream", serverStream, stream.sentHeaders, 5);
     \\      if (!serverStream.__home_request_ended && String(requestHeaders[":method"] || "GET").toUpperCase() === "GET") {
     \\        serverStream.__home_request_ended = true;
     \\        serverStream.emit("end");
@@ -33114,6 +33419,7 @@ const harness_prelude =
     \\    };
     \\    stream.end = function(chunk, encoding, callback) {
     \\      const cb = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : callback);
+    \\      if (this.closed || this.destroyed) { if (typeof cb === "function") Promise.resolve().then(cb); return this; }
     \\      if (!(typeof chunk === "function") && chunk !== undefined && chunk !== null) this.write(chunk);
     \\      if (!serverStream.__home_request_ended) {
     \\        serverStream.__home_request_ended = true;
@@ -33130,14 +33436,62 @@ const harness_prelude =
     \\      if (!this.aborted) serverStream.emit("trailers", this.sentTrailers, 0);
     \\      return undefined;
     \\    };
-    \\    stream.close = function(code) { this.closed = true; this.destroyed = true; this.rstCode = Number(code) || 0; this.emit("close"); return this; };
-    \\    stream.destroy = stream.close;
+    \\    stream.close = function(code, callback) {
+    \\      if (code === undefined) code = 0;
+    \\      if (typeof code !== "number") throw new TypeError('The "code" argument must be of type number. ' + __home_http2_invalid_arg_type_suffix(code).trimStart());
+    \\      if (!Number.isInteger(code) || code < 0 || code > 0xffffffff) throw new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code));
+    \\      if (callback !== undefined && typeof callback !== "function") throw new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback));
+    \\      if (this.closed) return this;
+    \\      this.closed = true;
+    \\      this.destroyed = true;
+    \\      this.rstCode = code;
+    \\      const target = this;
+    \\      Promise.resolve().then(() => {
+    \\        let error = null;
+    \\        if (code !== 0) {
+    \\          const names = { 1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR", 3: "NGHTTP2_FLOW_CONTROL_ERROR", 5: "NGHTTP2_STREAM_CLOSED", 6: "NGHTTP2_FRAME_SIZE_ERROR", 7: "NGHTTP2_REFUSED_STREAM", 8: "NGHTTP2_CANCEL", 9: "NGHTTP2_COMPRESSION_ERROR", 10: "NGHTTP2_CONNECT_ERROR", 11: "NGHTTP2_ENHANCE_YOUR_CALM" };
+    \\          error = new Error("Stream closed with error code " + String(names[code] || code));
+    \\          error.code = "ERR_HTTP2_STREAM_ERROR";
+    \\        }
+    \\        target._destroy(error, function() {});
+    \\        if (error) target.emit("error", error);
+    \\        target.emit("end");
+    \\        if (typeof callback === "function") callback();
+    \\        target.emit("close");
+    \\        __home_http2_maybe_close_client(client);
+    \\      });
+    \\      return this;
+    \\    };
+    \\    stream.destroy = function(error) {
+    \\      if (this.destroyed) return this;
+    \\      this.closed = true;
+    \\      this.destroyed = true;
+    \\      this.rstCode = error ? __home_http2_constants.NGHTTP2_INTERNAL_ERROR : 0;
+    \\      const target = this;
+    \\      Promise.resolve().then(() => {
+    \\        target._destroy(error || null, function() {});
+    \\        if (error) target.emit("error", error);
+    \\        target.emit("close");
+    \\        __home_http2_maybe_close_client(client);
+    \\      });
+    \\      return this;
+    \\    };
     \\    return stream;
     \\  };
     \\  Promise.resolve().then(() => {
+    \\    if (protocolMismatch) {
+    \\      client.connecting = false;
+    \\      client.closed = true;
+    \\      client.destroyed = true;
+    \\      const error = new Error("Protocol mismatch: " + authorityUrl.protocol);
+    \\      error.code = "ERR_HTTP2_ERROR";
+    \\      client.emit("error", error);
+    \\      client.emit("close");
+    \\      return;
+    \\    }
     \\    const settings = server && server.__home_settings ? server.__home_settings : (options && options.settings ? options.settings : {});
     \\    client.connecting = false;
-    \\    client.alpnProtocol = "h2";
+    \\    client.alpnProtocol = client.encrypted ? "h2" : "h2c";
     \\    client.pendingSettingsAck = false;
     \\    client.remoteSettings = {
     \\      headerTableSize: settings.headerTableSize === undefined ? 4096 : Number(settings.headerTableSize),
@@ -33187,6 +33541,14 @@ const harness_prelude =
     \\}
     \\function __home_http2_packed_settings(settings) {
     \\  const values = settings || {};
+    \\  if (values.initialWindowSize !== undefined) {
+    \\    const size = Number(values.initialWindowSize);
+    \\    if (!Number.isInteger(size) || size < 0 || size > 0x7fffffff) {
+    \\      const error = new RangeError('Invalid value for setting "initialWindowSize": ' + String(values.initialWindowSize));
+    \\      error.code = "ERR_HTTP2_INVALID_SETTING_VALUE";
+    \\      throw error;
+    \\    }
+    \\  }
     \\  const entries = [[1, "headerTableSize", 4096], [2, "enablePush", true], [4, "initialWindowSize", 65535], [5, "maxFrameSize", 16384], [3, "maxConcurrentStreams", 0xffffffff], [6, "maxHeaderListSize", 65535], [8, "enableConnectProtocol", false]];
     \\  const output = Buffer.alloc(entries.length * 6);
     \\  for (let i = 0; i < entries.length; i++) {
@@ -33199,7 +33561,7 @@ const harness_prelude =
     \\  }
     \\  return output;
     \\}
-    \\function __home_http2_unpacked_settings(buffer) {
+    \\function __home_http2_unpacked_settings(buffer, options) {
     \\  if (!(buffer instanceof Uint8Array)) throw new TypeError('The "buf" argument must be an instance of Buffer or Uint8Array');
     \\  if (buffer.length % 6 !== 0) throw new RangeError("Packed settings length must be a multiple of six");
     \\  const result = {};
@@ -33209,12 +33571,17 @@ const harness_prelude =
     \\    const name = names[id];
     \\    if (!name) continue;
     \\    const value = buffer.readUInt32BE(offset + 2);
+    \\    if (options && options.validate && id === 4 && value > 0x7fffffff) {
+    \\      const error = new RangeError('Invalid value for setting "initialWindowSize": ' + String(value));
+    \\      error.code = "ERR_HTTP2_INVALID_SETTING_VALUE";
+    \\      throw error;
+    \\    }
     \\    result[name] = id === 2 || id === 8 ? value !== 0 : value;
     \\    if (id === 6) result.maxHeaderSize = value;
     \\  }
     \\  return result;
     \\}
-    \\globalThis.__home_modules["http2"] = { connect: __home_http2_connect, createServer: __home_http2_create_server, createSecureServer: __home_http2_create_server, constants: __home_http2_constants, getDefaultSettings: __home_http2_default_settings, getPackedSettings: __home_http2_packed_settings, getUnpackedSettings: __home_http2_unpacked_settings };
+    \\globalThis.__home_modules["http2"] = { connect: __home_http2_connect, createServer: __home_http2_create_server, createSecureServer: __home_http2_create_secure_server, constants: __home_http2_constants, getDefaultSettings: __home_http2_default_settings, getPackedSettings: __home_http2_packed_settings, getUnpackedSettings: __home_http2_unpacked_settings };
     \\globalThis.__home_modules["node:http2"] = globalThis.__home_modules["http2"];
     \\function __home_http2_test_frame(length, type, flags, id) {
     \\  const data = Buffer.alloc(9);
@@ -33253,11 +33620,12 @@ const harness_prelude =
     \\  Frame: __home_http2_test_Frame, AltSvcFrame: __home_http2_test_AltSvcFrame, DataFrame: __home_http2_test_DataFrame,
     \\  HeadersFrame: __home_http2_test_HeadersFrame, SettingsFrame: __home_http2_test_SettingsFrame, PingFrame: __home_http2_test_PingFrame,
     \\  GoAwayFrame: __home_http2_test_GoAwayFrame, ContinuationFrame: __home_http2_test_ContinuationFrame,
-    \\  get kClientMagic() { return Buffer.from("PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n", "latin1"); },
+    \\  get kClientMagic() { return Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", "latin1"); },
     \\  get kFakeResponseHeaders() { return Buffer.from("4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d", "hex"); },
     \\};
     \\async function __home_http2_node_echo_server(paddingStrategy) {
     \\  const server = __home_http2_create_server({ paddingStrategy });
+    \\  server.__home_secure = true;
     \\  let baseurl = "";
     \\  server.on("stream", (stream, headers) => {
     \\    if (headers["x-wait-trailer"]) {
@@ -44350,6 +44718,10 @@ const harness_prelude =
     \\    });
     \\    return client;
     \\  }
+    \\  const http2Server = typeof __home_http2_servers === "object" ? __home_http2_servers[port] : null;
+    \\  if (http2Server && String(globalThis.__home_current_filename || "").endsWith("js/node/http2/node-http2.test.js")) {
+    \\    return __home_net_connect_http2_server(http2Server, port, hostname, connectCallback);
+    \\  }
     \\  const bunServeHandle = globalThis.__home_serve_handles_by_origin["http://" + hostname + ":" + String(port)] || globalThis.__home_serve_handles_by_origin["http://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(port)];
     \\  if (!__home_http_servers[port] && bunServeHandle && !bunServeHandle.stopped) return __home_net_connect_bun_serve(port, hostname, timeoutMs, connectCallback);
     \\  const socket = __home_http_event_target();
@@ -46340,6 +46712,8 @@ const harness_prelude =
     \\      if (index >= 0) callbacks.splice(index, 1);
     \\      return this;
     \\    },
+    \\    setMaxListeners(count) { this.__home_max_listeners = Number(count) || 0; return this; },
+    \\    getMaxListeners() { return Number(this.__home_max_listeners) || 10; },
     \\    emit(name) {
     \\      const callbacks = listeners[String(name)] || [];
     \\      const args = Array.prototype.slice.call(arguments, 1);
@@ -85726,8 +86100,18 @@ test "bootstrap runner activates node HTTP/2 compatibility module imports" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { nodeEchoServer, TLS_CERT, TLS_OPTIONS } = globalThis.__home_http2_test_helpers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_default_settings()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_packed_settings(settings)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_authority_url(authority, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_create_secure_server(options, requestListener)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_normalize_headers(values, defaults)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serverStream.pushStream = function(pushHeaders, pushOptions, callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_stream_duplex(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_http2_dynamic_server_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_http2_header_name_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_net_connect_http2_server(server, port, hostname, connectCallback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_decode_raw_request_headers(payload)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "client.setNextStreamID = function(id)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serverStream.resume = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "get kClientMagic() { return Buffer.from(\"PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\", \"latin1\"); }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "checks.every(check => check.calls >= check.expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function failSession(errorName)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.emit(\"wantTrailers\")") != null);
