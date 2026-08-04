@@ -416,6 +416,11 @@ pub const ProgramAmbientModuleInterfaceExport = struct {
     members: []const ProgramAmbientInterfaceMember = &.{},
 };
 
+pub const ProgramCommonJsExport = struct {
+    module_path: []const u8,
+    name: []const u8,
+};
+
 pub const ProgramAmbientInterfaceMember = struct {
     name: []const u8,
     type_name: []const u8 = "any",
@@ -4448,6 +4453,9 @@ pub const Checker = struct {
     /// Program-level exported interfaces declared inside ambient external
     /// modules. Borrowed from the driver/program while checking this file.
     program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
+    /// Runtime-valued CommonJS named exports discovered in sibling program
+    /// files. Borrowed from the driver/program while checking importers.
+    program_commonjs_exports: []const ProgramCommonJsExport = &.{},
     /// Program-level UMD globals exported from sibling declaration files.
     /// Borrowed from the driver/program while checking this file.
     program_umd_globals: []const ProgramUmdGlobal = &.{},
@@ -4759,6 +4767,10 @@ pub const Checker = struct {
 
     pub fn setProgramAmbientModuleInterfaceExports(self: *Checker, exports: []const ProgramAmbientModuleInterfaceExport) void {
         self.program_ambient_module_interface_exports = exports;
+    }
+
+    pub fn setProgramCommonJsExports(self: *Checker, exports: []const ProgramCommonJsExport) void {
+        self.program_commonjs_exports = exports;
     }
 
     pub fn setProgramUmdGlobals(self: *Checker, globals: []const ProgramUmdGlobal) void {
@@ -28965,6 +28977,19 @@ pub const Checker = struct {
             }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
+            const js_default_is_empty_array = !has_anno and
+                pp.default_value != hir_mod.none_node_id and
+                self.sourceHasCheckJsDirective() and
+                self.virtualSectionIsJsLike(node) and
+                self.hir.kindOf(pp.default_value) == .array_literal and
+                hir_mod.arrayLiteralElements(self.hir, pp.default_value).len == 0;
+            const js_default_is_loose_nullish = !has_anno and
+                pp.default_value != hir_mod.none_node_id and
+                self.sourceHasCheckJsDirective() and
+                self.virtualSectionIsJsLike(node) and
+                !self.strict_flags.strict_null_checks and
+                (self.hir.kindOf(pp.default_value) == .literal_null or
+                    self.hir.kindOf(pp.default_value) == .literal_undefined);
             // Sweep param annotations for unresolved bare type-refs ÃÂ¢ÃÂÃÂ
             // for body-ful fns too. Mirrors upstream tsc, which fires
             // TS2304 on `function foo(x: V) { ... }` when `V` is not
@@ -29117,6 +29142,7 @@ pub const Checker = struct {
                 // `any` when no annotation/default is present.
                 try self.objectBindingPatternParameterType(pp.name)
             else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
+                if (js_default_is_loose_nullish) break :blk_default types.Primitive.any;
                 const default_t = if (try self.nullishArrayLiteralTypeFromSyntax(pp.default_value)) |nullish_array_t|
                     nullish_array_t
                 else
@@ -29126,11 +29152,12 @@ pub const Checker = struct {
                     default_t
                 else
                     self.widenForInference(default_t);
-                if (!self.typeIsAnyLike(widened) and widened != types.Primitive.none) {
+                if (!js_default_is_empty_array and
+                    !self.typeIsAnyLike(widened) and widened != types.Primitive.none)
+                {
                     inferred_from_default = true;
-                    break :blk_default widened;
                 }
-                break :blk_default types.Primitive.any;
+                break :blk_default widened;
             } else if (iife_context_t) |context_t|
                 context_t
             else if (array_callback_context_t) |context_t|
@@ -29417,6 +29444,12 @@ pub const Checker = struct {
                             try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+                                .{param_name},
+                            )
+                        else if (!param_is_suggestion and js_default_is_empty_array)
+                            try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Parameter '{s}' implicitly has an 'any[]' type.",
                                 .{param_name},
                             )
                         else if (param_is_suggestion)
@@ -46826,6 +46859,10 @@ pub const Checker = struct {
             }
             return;
         }
+        if (self.programAmbientModuleExists(spec)) {
+            try self.checkNamedImportSpecifiers(node, imp, spec);
+            return;
+        }
         if (try self.checkVirtualBareModuleImport(node, spec)) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
             return;
@@ -50645,8 +50682,9 @@ pub const Checker = struct {
     }
 
     fn checkNamedImportSpecifiers(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload, spec: []const u8) CheckError!void {
-        const scoped_virtual_relative = std.mem.startsWith(u8, spec, ".") and self.sourceHasVirtualFilenameSections();
-        const scoped_virtual_bare = !std.mem.startsWith(u8, spec, ".") and self.sourceHasVirtualFilenameSections();
+        const use_virtual_module_scan = self.sourceHasVirtualFilenameSections() and self.external_resolver == null;
+        const scoped_virtual_relative = std.mem.startsWith(u8, spec, ".") and use_virtual_module_scan;
+        const scoped_virtual_bare = !std.mem.startsWith(u8, spec, ".") and use_virtual_module_scan;
         const suppress_missing_named_exports =
             self.diagnosticExists(node, TsCodes.untyped_module) or
             self.hasInvalidUntypedAugmentationDiagnosticForModule(spec);
@@ -50760,6 +50798,14 @@ pub const Checker = struct {
                 continue;
             }
             if (scoped_virtual_bare) {
+                if (self.programAmbientModuleInterfaceExportsName(spec, sp.imported)) {
+                    if (self.virtualSectionIsJsLike(node)) {
+                        try self.reportJsTypeImportInJs(spec_node, spec, sp.imported);
+                    } else if (self.typeOnlyVerbatimDiagnosticsEnabled(node)) {
+                        try self.reportTypeOnlyImportRequired(spec_node, sp.imported, .type_only_decl);
+                    }
+                    continue;
+                }
                 if (try self.ambientModuleExportsNameForSpec(node, spec, sp.imported)) continue;
                 if (try self.virtualBareModuleAmbientConstEnum(node, spec, sp.imported)) {
                     try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
@@ -50792,6 +50838,21 @@ pub const Checker = struct {
                 });
                 continue;
             }
+            if (!std.mem.startsWith(u8, spec, ".") and
+                self.programAmbientModuleInterfaceExportsName(spec, sp.imported))
+            {
+                if (self.virtualSectionIsJsLike(node)) {
+                    try self.reportJsTypeImportInJs(spec_node, spec, sp.imported);
+                } else if (self.typeOnlyVerbatimDiagnosticsEnabled(node)) {
+                    try self.reportTypeOnlyImportRequired(spec_node, sp.imported, .type_only_decl);
+                }
+                continue;
+            }
+            if (std.mem.startsWith(u8, spec, ".") and
+                try self.programCommonJsModuleExportsName(node, spec, sp.imported))
+            {
+                continue;
+            }
             const external_status = self.externalModuleNamedExportRuntimeStatus(node, spec, sp.imported);
             switch (external_status) {
                 .value => continue,
@@ -50800,7 +50861,9 @@ pub const Checker = struct {
                     continue;
                 },
                 .type_only_decl, .type_only_alias => |status| {
-                    if (self.typeOnlyVerbatimDiagnosticsEnabled(node)) {
+                    if (self.virtualSectionIsJsLike(node)) {
+                        try self.reportJsTypeImportInJs(spec_node, spec, sp.imported);
+                    } else if (self.typeOnlyVerbatimDiagnosticsEnabled(node)) {
                         try self.reportTypeOnlyImportRequired(spec_node, sp.imported, status);
                     }
                     continue;
@@ -51122,12 +51185,17 @@ pub const Checker = struct {
             if (self.hir.kindOf(stmt) == .import_decl) {
                 const imp = hir_mod.importOf(self.hir, stmt);
                 const spec = self.string_interner.get(imp.module);
-                if (!std.mem.startsWith(u8, spec, ".")) continue;
                 for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                     if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                     const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                     if (sp.local != name) continue;
                     if (imp.is_type_only or sp.is_type_only) return .type_only_alias;
+                    if (!std.mem.startsWith(u8, spec, ".")) {
+                        if (self.programAmbientModuleInterfaceExportsName(spec, sp.imported)) return .type_only_decl;
+                        const status = self.externalModuleNamedExportRuntimeStatus(stmt, spec, sp.imported);
+                        if (status != .unknown and status != .missing) return status;
+                        continue;
+                    }
                     const status = try self.virtualRelativeModuleNamedExportRuntimeStatus(stmt, spec, sp.imported);
                     switch (status) {
                         .type_only_decl, .type_only_alias => {
@@ -51882,6 +51950,33 @@ pub const Checker = struct {
         return null;
     }
 
+    fn programAmbientModuleInterfaceExportsName(self: *Checker, spec: []const u8, name: hir_mod.StringId) bool {
+        const name_text = self.string_interner.get(name);
+        for (self.program_ambient_module_interface_exports) |exported| {
+            if (!self.moduleNameMatchesSpecifier(exported.specifier, spec)) continue;
+            if (std.mem.eql(u8, exported.name, name_text)) return true;
+        }
+        return false;
+    }
+
+    fn programAmbientModuleExists(self: *Checker, spec: []const u8) bool {
+        for (self.program_ambient_module_interface_exports) |exported| {
+            if (self.moduleNameMatchesSpecifier(exported.specifier, spec)) return true;
+        }
+        return false;
+    }
+
+    fn programCommonJsModuleExportsName(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!bool {
+        if (self.program_commonjs_exports.len == 0) return false;
+        const name_text = self.string_interner.get(name);
+        for (self.program_commonjs_exports) |exported| {
+            const matches = try self.programImportTargetsPath(node, spec, exported.module_path);
+            if (!matches) continue;
+            if (std.mem.eql(u8, exported.name, name_text)) return true;
+        }
+        return false;
+    }
+
     fn programAmbientInterfaceMemberType(self: *Checker, type_name: []const u8) CheckError!TypeId {
         _ = self;
         if (std.mem.eql(u8, type_name, "string")) return types.Primitive.string_t;
@@ -52228,6 +52323,7 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, raw);
                 if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
                 if (self.commonJsExportsAssignmentName(raw)) |prop_name| {
+                    if (self.expressionIsVoidValue(a.value)) continue;
                     const value_t = try self.commonJsExportAssignmentValueType(a.value);
                     try self.appendCommonJsExportEntry(&entries, prop_name, value_t, raw, true);
                     continue;
@@ -87128,7 +87224,7 @@ pub const Checker = struct {
             else
                 self.virtualSectionFilenameForNode(import_node) orelse "/__root__.ts";
             if (resolver.resolve(spec, containing)) |resolved| {
-                return programModulePathMatches(resolved.path, target_path);
+                if (programModulePathMatches(resolved.path, target_path)) return true;
             }
         }
         if (self.importer_path.len == 0) return false;
@@ -87665,16 +87761,18 @@ pub const Checker = struct {
                 var assignment_result_t = value_t;
                 if (a.op == null) {
                     assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
+                    const assignment_value_is_void = self.expressionIsVoidValue(a.value);
                     if (commonjs_export_key) |key| {
                         if (self.commonJsExportAssignmentIsUndefinedDeclaration(a.value, assignment_result_t)) {
                             if (try self.futureCommonJsExportLiteralAssignmentType(node, key)) |future_t| {
                                 try self.reportAssignmentTypeNotAssignable(node, a.value, a.target, types.Primitive.undefined_t, value_t, future_t, "Type is not assignable to target type.");
-                            } else if (self.strict_flags.no_implicit_any) {
+                            } else if (!assignment_value_is_void and self.strict_flags.no_implicit_any) {
                                 try self.reportCommonJsExportImplicitAnyMember(a.target, key.prop_name);
                             }
                         }
                     }
-                    if ((target_kind == .member_access or target_kind == .element_access) and
+                    if (!assignment_value_is_void and
+                        (target_kind == .member_access or target_kind == .element_access) and
                         assignment_result_t != types.Primitive.none and
                         assignment_result_t != types.Primitive.any and
                         assignment_result_t != types.Primitive.unknown)
@@ -89783,6 +89881,9 @@ pub const Checker = struct {
                     // so don't report TS2339. Mirrors `moduleExportAssignment2`
                     // and `commonJSAliasedExport`.
                     if (self.isInAssignmentTargetChain(node)) {
+                        if (self.assignmentTargetValueIsVoidExpression(node)) {
+                            try self.reportCommonJsExportMissingMember(node, m.name);
+                        }
                         break :blk types.Primitive.any;
                     }
                     try self.reportCommonJsExportMissingMember(node, m.name);
@@ -90083,7 +90184,7 @@ pub const Checker = struct {
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
                         if ((try self.checkJsImportedCallableExpandoTargetType(m.object, access_obj_t)) == null) {
                             if (self.memberNameIsEcmaPrivate(m.name) or
-                                self.checkJsAssignmentTargetShouldReportMissingMember(access_obj_t) or
+                                self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t) or
                                 (self.currentThisType() != null and
                                     self.thisInsideJsDocConstructorObjectLiteralMethod(m.object)))
                             {
@@ -97700,7 +97801,8 @@ pub const Checker = struct {
     }
 
     fn currentCommonJsModuleTypeName(self: *Checker, node: NodeId) CheckError![]const u8 {
-        const filename = self.virtualSectionFilenameForNode(node) orelse "module";
+        const filename = self.virtualSectionFilenameForNode(node) orelse
+            if (self.importer_path.len > 0) self.importer_path else "module";
         var display = filename;
         while (std.mem.startsWith(u8, display, "/")) display = display[1..];
         const exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
@@ -97714,7 +97816,8 @@ pub const Checker = struct {
     }
 
     fn currentCommonJsModuleTypeNameWithExtension(self: *Checker, node: NodeId) CheckError![]const u8 {
-        const filename = self.virtualSectionFilenameForNode(node) orelse "module";
+        const filename = self.virtualSectionFilenameForNode(node) orelse
+            if (self.importer_path.len > 0) self.importer_path else "module";
         var display = filename;
         while (std.mem.startsWith(u8, display, "/")) display = display[1..];
         return try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof import(\"{s}\")", .{display});
@@ -97786,8 +97889,30 @@ pub const Checker = struct {
     fn commonJsExportAssignmentIsUndefinedDeclaration(self: *Checker, value: NodeId, value_t: TypeId) bool {
         if (value_t == types.Primitive.undefined_t) return true;
         if (self.hir.kindOf(value) == .literal_undefined) return true;
-        if (self.hir.kindOf(value) == .unary_op) {
-            return hir_mod.unaryOf(self.hir, value).op == .void_;
+        return self.expressionIsVoidValue(value);
+    }
+
+    fn expressionIsVoidValue(self: *Checker, value: NodeId) bool {
+        return value != hir_mod.none_node_id and
+            self.hir.kindOf(value) == .unary_op and
+            hir_mod.unaryOf(self.hir, value).op == .void_;
+    }
+
+    fn assignmentTargetValueIsVoidExpression(self: *Checker, target: NodeId) bool {
+        var cur = target;
+        while (cur != hir_mod.none_node_id) {
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id) return false;
+            if (self.hir.kindOf(parent) == .assignment) {
+                const assignment = hir_mod.assignmentOf(self.hir, parent);
+                return assignment.op == null and
+                    assignment.target == cur and
+                    self.expressionIsVoidValue(assignment.value);
+            }
+            switch (self.hir.kindOf(parent)) {
+                .member_access, .element_access => cur = parent,
+                else => return false,
+            }
         }
         return false;
     }
@@ -118591,7 +118716,8 @@ pub const Checker = struct {
         return self.string_interner.intern(prefix[owner_start..proto_pos]) catch null;
     }
 
-    fn checkJsAssignmentTargetShouldReportMissingMember(self: *Checker, receiver_t: TypeId) bool {
+    fn checkJsAssignmentTargetShouldReportMissingMember(self: *Checker, node: NodeId, receiver_t: TypeId) bool {
+        if (self.assignmentTargetValueIsVoidExpression(node)) return true;
         const builtin = self.builtin_object_names.get(receiver_t) orelse return false;
         return std.mem.eql(u8, builtin, "Event");
     }
@@ -118602,7 +118728,7 @@ pub const Checker = struct {
         const member = hir_mod.memberOf(self.hir, target);
         if (!self.nodeIsThisReference(member.object)) return false;
         const this_t = self.checkJsPrototypeAssignmentThisType(member.object) orelse return false;
-        if (!self.checkJsAssignmentTargetShouldReportMissingMember(this_t)) return false;
+        if (!self.checkJsAssignmentTargetShouldReportMissingMember(target, this_t)) return false;
         if ((try self.lookupObjectMember(this_t, member.name)) != null) return false;
         try self.reportPropertyDoesNotExistOnType(target, member.name, this_t);
         return true;
@@ -120535,6 +120661,31 @@ pub const Checker = struct {
         return text;
     }
 
+    fn checkedJsObjectExpandoReceiverDisplay(
+        self: *Checker,
+        receiver_node: NodeId,
+        current_t: TypeId,
+    ) ?[]const u8 {
+        if (!self.sourceHasCheckJsDirective() or
+            receiver_node == hir_mod.none_node_id or
+            self.hir.kindOf(receiver_node) != .identifier or
+            !self.typeIsEmptyObjectType(current_t))
+        {
+            return null;
+        }
+        const id = hir_mod.identifierOf(self.hir, receiver_node);
+        const decl = self.findLocalValueDeclBeforeExpression(receiver_node, id.name) orelse return null;
+        const kind = self.hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return null;
+        const payload = hir_mod.varDeclOf(self.hir, decl);
+        if (payload.init == hir_mod.none_node_id or self.hir.kindOf(payload.init) != .object_literal) return null;
+        return std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "typeof {s}",
+            .{self.string_interner.get(id.name)},
+        ) catch null;
+    }
+
     fn instanceofUnionNarrowDisplayForMember(
         self: *Checker,
         node: NodeId,
@@ -120837,6 +120988,10 @@ pub const Checker = struct {
                 return;
             }
             if (self.assignmentTargetMissingMemberReportText(node, member.object, target_t)) |target_text| {
+                try self.reportPropertyDoesNotExistOnTypeText(node, name, target_text);
+                return;
+            }
+            if (self.checkedJsObjectExpandoReceiverDisplay(member.object, target_t)) |target_text| {
                 try self.reportPropertyDoesNotExistOnTypeText(node, name, target_text);
                 return;
             }
@@ -138963,7 +139118,54 @@ pub const Checker = struct {
                 if (a.op != null) return;
                 const prop_name = self.directThisPropertyName(a.target) orelse return;
                 if (objectMemberListContains(members.items, prop_name)) return;
-                const prop_t = (try self.jsConstructorAssignedMemberType(fn_node, a.value, fn_params, sig_params)) orelse types.Primitive.any;
+                if (self.expressionIsVoidValue(a.value)) {
+                    if (self.sourceHasCheckJsDirective() and
+                        !self.diagnosticExists(a.target, TsCodes.property_does_not_exist))
+                    {
+                        const fn_payload = hir_mod.fnDeclOf(self.hir, fn_node);
+                        if (fn_payload.name != hir_mod.none_node_id and
+                            self.hir.kindOf(fn_payload.name) == .identifier)
+                        {
+                            try self.reportPropertyDoesNotExistOnTypeText(
+                                a.target,
+                                prop_name,
+                                self.string_interner.get(hir_mod.identifierOf(self.hir, fn_payload.name).name),
+                            );
+                        }
+                    }
+                    return;
+                }
+                const value_kind = self.hir.kindOf(a.value);
+                const implicit_any_array = value_kind == .array_literal and
+                    hir_mod.arrayLiteralElements(self.hir, a.value).len == 0;
+                const implicit_any = implicit_any_array or
+                    value_kind == .literal_null or
+                    value_kind == .literal_undefined;
+                const prop_t = if (implicit_any_array)
+                    self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory
+                else if (implicit_any)
+                    types.Primitive.any
+                else
+                    (try self.jsConstructorAssignedMemberType(fn_node, a.value, fn_params, sig_params)) orelse types.Primitive.any;
+                if (implicit_any and
+                    self.strict_flags.no_implicit_any and
+                    !self.diagnosticExists(a.target, TsCodes.member_implicitly_any))
+                {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Member '{s}' implicitly has an '{s}' type.",
+                        .{
+                            self.string_interner.get(prop_name),
+                            if (implicit_any_array) "any[]" else "any",
+                        },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = a.target,
+                        .pos = self.hir.spanOf(a.target).start,
+                        .code = TsCodes.member_implicitly_any,
+                        .message = msg,
+                    });
+                }
                 try members.append(self.gpa, .{
                     .name = prop_name,
                     .type = prop_t,
@@ -139129,10 +139331,12 @@ pub const Checker = struct {
         anchor: NodeId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
-        const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            try self.collectJsConstructorPrototypeMembersFromNode(name, stmt, members);
+        var cur = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .block_stmt) continue;
+            for (hir_mod.blockStmts(self.hir, cur)) |stmt| {
+                try self.collectJsConstructorPrototypeMembersFromNode(name, stmt, members);
+            }
         }
     }
 
@@ -146194,6 +146398,8 @@ pub const Checker = struct {
         const target_reduces_to_never = target == types.Primitive.never or
             self.intersectionReducesToNeverForAssignability(target);
         const target_annotation_is_nonnullable = self.identifierAnnotationIsNonNullable(target_node);
+        const checked_js_default_parameter = self.checkedJsDefaultParameterForIdentifier(target_node) != null;
+        const checked_js_default_parameter_union = checked_js_default_parameter and self.typeIncludesUndefined(target);
         const explicit_function_source_name = if (value_node != hir_mod.none_node_id and
             (self.hir.kindOf(value_node) == .fn_decl or self.hir.kindOf(value_node) == .fn_expr or self.hir.kindOf(value_node) == .arrow_fn) and
             hir_mod.fnDeclOf(self.hir, value_node).return_type != hir_mod.none_node_id and
@@ -146221,27 +146427,32 @@ pub const Checker = struct {
             (try self.assignmentIdentifierObjectUnionAnnotationName(value_node, source)) orelse
             (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(value_node, source)) orelse
             (try self.functionExpressionAssignmentDiagnosticName(value_node, source)) orelse
+            (if (checked_js_default_parameter_union) try self.allocAssignmentDiagnosticTypeName(self.widenLiteralType(source)) else null) orelse
             (try self.assignmentValueExpressionDisplayName(value_node, source, target)) orelse
             (try self.literalExpressionAssignmentName(value_node, source)) orelse
             (try self.allocAssignmentDiagnosticTypeName(source)) orelse
             (if (target_annotation_is_nonnullable) try self.allocAssignmentDiagnosticTypeName(related_source) else null) orelse
             (try self.allocObjectTypeShape(source)) orelse
             return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
-        const target_name_raw = (try self.assignmentExpressionPredicateTypeName(target_node, target)) orelse
+        const diagnostic_target = if (checked_js_default_parameter_union)
+            self.subtractType(target, types.Primitive.undefined_t) catch target
+        else
+            target;
+        const target_name_raw = (try self.assignmentExpressionPredicateTypeName(target_node, diagnostic_target)) orelse
             (if (target_reduces_to_never) @as(?[]const u8, "never") else null) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(target_node)) orelse
             self.keyofAnnotationNameForIdentifier(target_node) orelse
             (try self.indexedAccessAnnotationNameForIdentifier(target_node)) orelse
             (try self.nullableAnnotationDiagnosticNameForIdentifier(target_node, false)) orelse
-            (try self.singleLiteralAliasAssignmentName(target_node, target)) orelse
-            (try self.assignmentIdentifierObjectUnionAnnotationName(target_node, target)) orelse
+            (try self.singleLiteralAliasAssignmentName(target_node, diagnostic_target)) orelse
+            (try self.assignmentIdentifierObjectUnionAnnotationName(target_node, diagnostic_target)) orelse
             (try self.visibleMixedCompoundAnnotationNameForIdentifier(target_node)) orelse
-            (try self.visibleSimpleAliasAnnotationNameForIdentifier(target_node, target)) orelse
-            (try self.overloadedSignatureObjectAssignmentName(target_node, target)) orelse
-            (try self.visibleGenericAssignmentAnnotationName(target_node, target)) orelse
-            (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, target)) orelse
-            (try self.allocAssignmentDiagnosticTypeName(target)) orelse
-            (try self.allocObjectTypeShape(target)) orelse
+            (try self.visibleSimpleAliasAnnotationNameForIdentifier(target_node, diagnostic_target)) orelse
+            (try self.overloadedSignatureObjectAssignmentName(target_node, diagnostic_target)) orelse
+            (try self.visibleGenericAssignmentAnnotationName(target_node, diagnostic_target)) orelse
+            (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, diagnostic_target)) orelse
+            (try self.allocAssignmentDiagnosticTypeName(diagnostic_target)) orelse
+            (try self.allocObjectTypeShape(diagnostic_target)) orelse
             return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
         const target_name = if (self.identifierAnnotationHasOverloadedSignatures(target_node) and
             std.mem.indexOfScalar(u8, target_name_raw, '\n') != null)
@@ -146270,6 +146481,30 @@ pub const Checker = struct {
             .related = related,
         });
         try self.attachDidYouMeanCallOrConstructRelated(value_node, related_source, target);
+    }
+
+    fn checkedJsDefaultParameterForIdentifier(self: *Checker, node: NodeId) ?NodeId {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(node)) return null;
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, cur)) |param| {
+                if (self.hir.kindOf(param) != .parameter) continue;
+                const payload = hir_mod.parameterOf(self.hir, param);
+                if (payload.default_value == hir_mod.none_node_id or
+                    payload.name == hir_mod.none_node_id or
+                    self.hir.kindOf(payload.name) != .identifier)
+                {
+                    continue;
+                }
+                if (hir_mod.identifierOf(self.hir, payload.name).name == name) return param;
+            }
+            return null;
+        }
+        return null;
     }
 
     fn normalizedKeyofIdentifierAnnotationName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
@@ -194603,6 +194838,49 @@ test "checker: checkjs CommonJS chained void export declarations use later liter
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type '2'."));
 }
 
+test "checker: checked JS void-zero assignments do not declare expando members" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @noImplicitAny: true
+        \\// @filename: assignmentToVoidZero2.js
+        \\exports.j = 1;
+        \\exports.k = void 0;
+        \\var o = {};
+        \\o.x = 1;
+        \\o.y = void 0;
+        \\o.x + o.y;
+        \\function C() {
+        \\  this.p = 1;
+        \\  this.q = void 0;
+        \\}
+        \\var c = new C();
+        \\c.p + c.q;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+}
+
+test "checker: program-routed CommonJS diagnostics use the importer module name" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\exports.k = void 0;
+    );
+    defer destroySetup(s);
+    s.checker.setImporterPath("/assignmentToVoidZero2.js");
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'k' does not exist on type 'typeof import(\"assignmentToVoidZero2\")'.",
+    ));
+}
+
 test "checker: checkjs CommonJS chained undefined export declarations report implicit-any members" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -194617,6 +194895,81 @@ test "checker: checkjs CommonJS chained undefined export declarations report imp
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.member_implicitly_any));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'a' implicitly has an 'any' type."));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'b' implicitly has an 'any' type."));
+}
+
+test "checker: checked JS nullish constructor members infer implicit any" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strictNullChecks: true
+        \\// @noImplicitAny: true
+        \\// @filename: a.js
+        \\function A() {
+        \\  this.unknown = null;
+        \\  this.unknowable = undefined;
+        \\  this.empty = [];
+        \\}
+        \\var a = new A();
+        \\a.unknown = 1;
+        \\a.unknown = true;
+        \\a.unknowable = {};
+        \\a.empty.push("ok");
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'empty' implicitly has an 'any[]' type."));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: checked JS default null and empty array parameters report implicit any" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strictNullChecks: false
+        \\// @noImplicitAny: true
+        \\// @filename: a.js
+        \\function f(a = null, l = []) {
+        \\  a = 1;
+        \\  a = "ok";
+        \\  l.push(1);
+        \\  l.push("ok");
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.parameter_implicitly_any, "Parameter 'l' implicitly has an 'any[]' type."));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: nested checked JS constructor instances include whole-object prototype members" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @filename: a.js
+        \\(function container() {
+        \\  var Multimap = function() { this._map = {}; };
+        \\  Multimap.prototype = {
+        \\    set: function() {},
+        \\    get() {}
+        \\  };
+        \\  Multimap.prototype.addon = function() {};
+        \\  var mm = new Multimap();
+        \\  mm._map;
+        \\  mm.set;
+        \\  mm.get;
+        \\  mm.addon;
+        \\})();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'addon' does not exist on type '{ set: () => void; get(): void; }'."));
 }
 
 test "checker: checkjs virtual CommonJS exports carry chained prototype constructor members" {
@@ -204010,6 +204363,27 @@ test "checker: TS18042 for JS named import of type-only relative export" {
         try T.expect(d.code != TsCodes.no_exported_member);
     }
     try T.expect(found);
+}
+
+test "checker: JS imports and re-exports ambient module interfaces as types" {
+    const b = try newBoundSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\import { writeFile, WriteFileOptions, WriteFileOptions as OtherName } from "fs";
+        \\export { WriteFileOptions };
+    );
+    defer destroyBoundSetup(b);
+    const ambient_exports = [_]ProgramAmbientModuleInterfaceExport{.{
+        .specifier = "fs",
+        .name = "WriteFileOptions",
+    }};
+    b.base.checker.setProgramAmbientModuleInterfaceExports(&ambient_exports);
+    b.base.checker.setImporterPath("/index.js");
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.js_type_import_in_js));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.js_type_export_in_js));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.no_exported_member));
 }
 
 test "checker: no TS18042 for JS named import of value relative export" {

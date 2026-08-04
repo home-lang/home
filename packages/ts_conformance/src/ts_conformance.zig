@@ -1196,6 +1196,8 @@ fn shouldRouteThroughProgram(c: Case) bool {
         if (rawSourceHasVirtualFileShebang(c.raw_source)) return true;
         return false;
     }
+    if (rawSourceHasAmbientExternalModuleAndBareImport(c.raw_source)) return true;
+    if (rawSourceHasCommonJsNamedExportsAndRelativeImport(c.raw_source)) return true;
     if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
     // Pure-code multi-file fixtures (only `.ts` / `.tsx` / `.d.ts`,
     // no non-code package.json / tsconfig / node_modules markers) work
@@ -1211,7 +1213,6 @@ fn shouldRouteThroughProgram(c: Case) bool {
     if (!rawSourceHasNonCodeMarker(c.raw_source)) {
         if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
         if (rawSourceHasRelativeModuleAugmentation(c.raw_source)) return true;
-        if (rawSourceHasAmbientExternalModuleAndBareImport(c.raw_source)) return true;
         if (rawSourceHasTypeReferenceProgramRoute(c.raw_source)) return true;
         if ((directiveBool(c.raw_source, "declaration") orelse false) and
             rawSourceHasNodeModulesCodeMarker(c.raw_source)) return true;
@@ -1386,6 +1387,17 @@ fn rawSourceHasAmbientExternalModuleAndBareImport(raw: []const u8) bool {
         if (saw_ambient_external_module and saw_bare_import) return true;
     }
     return false;
+}
+
+fn rawSourceHasCommonJsNamedExportsAndRelativeImport(raw: []const u8) bool {
+    const has_commonjs_named_export = std.mem.indexOf(u8, raw, "exports.") != null or
+        std.mem.indexOf(u8, raw, "module.exports.") != null or
+        std.mem.indexOf(u8, raw, "module.exports[") != null;
+    if (!has_commonjs_named_export) return false;
+    const has_named_import = std.mem.indexOf(u8, raw, "import {") != null;
+    const has_relative_from = std.mem.indexOf(u8, raw, " from './") != null or
+        std.mem.indexOf(u8, raw, " from \"./") != null;
+    return has_named_import and has_relative_from;
 }
 
 fn rawSourceHasNodeModulesCodeMarker(raw: []const u8) bool {
@@ -2310,6 +2322,46 @@ test "conformance: ambient external module virtual fixture routes through progra
     try T.expect(rawSourceHasAmbientExternalModuleAndBareImport(raw));
     try T.expectEqual(@as(ts_resolver.Strategy, .classic), resolverStrategyFromCase(c, ""));
     try T.expect(shouldRouteThroughProgram(c));
+}
+
+test "conformance: checked JS ambient modules route through program" {
+    const raw =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /node_modules/@types/node/index.d.ts
+        \\declare module "fs" { export interface Options {} }
+        \\// @Filename: /index.js
+        \\import { Options } from "fs";
+    ;
+    try T.expect(rawSourceHasAmbientExternalModuleAndBareImport(raw));
+    try T.expect(shouldRouteThroughProgram(.{
+        .name = "checkedJsAmbientImport",
+        .source = raw,
+        .path = "/index.js",
+        .raw_source = raw,
+        .expected_errors = "index.js(1,10): error TS18042: placeholder",
+        .strict_flags = .{},
+    }));
+}
+
+test "conformance: checked JS CommonJS named exports route through program" {
+    const raw =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\exports.j = 1;
+        \\// @filename: b.js
+        \\import { j } from './a';
+    ;
+    try T.expect(rawSourceHasCommonJsNamedExportsAndRelativeImport(raw));
+    try T.expect(shouldRouteThroughProgram(.{
+        .name = "checkedJsCommonJsImport",
+        .source = raw,
+        .path = "b.js",
+        .raw_source = raw,
+        .expected_errors = "b.js(1,10): error TS2305: placeholder",
+        .strict_flags = .{},
+    }));
 }
 
 test "conformance: clean virtual shebang fixture routes through program" {

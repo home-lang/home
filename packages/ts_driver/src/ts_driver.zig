@@ -29,6 +29,7 @@ pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
 pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
 pub const ProgramAmbientModuleInterfaceExport = ts_checker.ProgramAmbientModuleInterfaceExport;
+pub const ProgramCommonJsExport = ts_checker.ProgramCommonJsExport;
 pub const ProgramUmdGlobal = ts_checker.ProgramUmdGlobal;
 pub const ProgramAmbientInterfaceMember = ts_checker.ProgramAmbientInterfaceMember;
 
@@ -356,6 +357,8 @@ pub const CompileOptions = struct {
     /// Program-level exported interfaces declared inside ambient external
     /// modules in sibling files.
     program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
+    /// Program-level runtime-valued CommonJS named exports.
+    program_commonjs_exports: []const ProgramCommonJsExport = &.{},
     /// Program-level UMD globals exported from sibling declaration files.
     program_umd_globals: []const ProgramUmdGlobal = &.{},
     /// Program-level virtual file paths that are known to exist. Used
@@ -2044,6 +2047,9 @@ pub fn compileSource(
     }
     if (options.program_ambient_module_interface_exports.len > 0) {
         checker.setProgramAmbientModuleInterfaceExports(options.program_ambient_module_interface_exports);
+    }
+    if (options.program_commonjs_exports.len > 0) {
+        checker.setProgramCommonJsExports(options.program_commonjs_exports);
     }
     if (options.program_umd_globals.len > 0) {
         checker.setProgramUmdGlobals(options.program_umd_globals);

@@ -350,6 +350,8 @@ pub const Program = struct {
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
+        const program_commonjs_exports = try self.collectProgramCommonJsExports();
+        defer freeProgramCommonJsExports(self.gpa, program_commonjs_exports);
         const program_umd_globals = try self.collectProgramUmdGlobals();
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
@@ -369,6 +371,7 @@ pub const Program = struct {
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+            per_file.program_commonjs_exports = program_commonjs_exports;
             per_file.program_umd_globals = merged_program_umd_globals;
             per_file.known_reference_paths = known_reference_paths;
             per_file.suppress_import_helper_diagnostics = true;
@@ -431,6 +434,8 @@ pub const Program = struct {
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
+        const program_commonjs_exports = try self.collectProgramCommonJsExports();
+        defer freeProgramCommonJsExports(self.gpa, program_commonjs_exports);
         const program_umd_globals = try self.collectProgramUmdGlobals();
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
@@ -453,6 +458,7 @@ pub const Program = struct {
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+            per_file.program_commonjs_exports = program_commonjs_exports;
             per_file.program_umd_globals = merged_program_umd_globals;
             per_file.suppress_import_helper_diagnostics = true;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
@@ -582,6 +588,62 @@ pub const Program = struct {
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             try collectAmbientModuleInterfaceExportsFromSource(self.gpa, f.source, &out);
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramCommonJsExports(self: *const Program) ProgramError![]const ts_driver.ProgramCommonJsExport {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramCommonJsExport) = .empty;
+        errdefer freeProgramCommonJsExports(self.gpa, out.items);
+        for (self.files.items) |f| {
+            if (f.redirect_target != null or f.is_declaration) continue;
+            if (std.mem.indexOf(u8, f.source, "exports") == null) continue;
+            var compilation = ts_driver.compileSource(self.gpa, f.source, .{
+                .is_tsx = f.is_tsx,
+                .allow_js = true,
+                .continue_on_error = true,
+                .no_emit = true,
+                .suppress_js_check_diagnostics = true,
+            }) catch continue;
+            defer {
+                compilation.deinit();
+                self.gpa.destroy(compilation);
+            }
+            if (compilation.hir.kindOf(compilation.root) != .block_stmt) continue;
+            for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+                if (compilation.hir.kindOf(stmt) != .assignment) continue;
+                const assignment = hir_mod_ns.assignmentOf(&compilation.hir, stmt);
+                if (assignment.op != null or assignment.value == hir_mod_ns.none_node_id) continue;
+                const name = commonJsExportAssignmentName(
+                    &compilation.hir,
+                    &compilation.interner,
+                    assignment.target,
+                ) orelse continue;
+                if (compilation.hir.kindOf(assignment.value) == .unary_op and
+                    hir_mod_ns.unaryOf(&compilation.hir, assignment.value).op == .void_)
+                {
+                    continue;
+                }
+                const name_text = compilation.interner.get(name);
+                var duplicate = false;
+                for (out.items) |existing| {
+                    if (std.mem.eql(u8, existing.module_path, f.path) and
+                        std.mem.eql(u8, existing.name, name_text))
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+                const path_copy = try self.gpa.dupe(u8, f.path);
+                errdefer self.gpa.free(path_copy);
+                const name_copy = try self.gpa.dupe(u8, name_text);
+                errdefer self.gpa.free(name_copy);
+                try out.append(self.gpa, .{
+                    .module_path = path_copy,
+                    .name = name_copy,
+                });
+            }
         }
         return try out.toOwnedSlice(self.gpa);
     }
@@ -1670,6 +1732,14 @@ pub const Program = struct {
         gpa.free(items);
     }
 
+    fn freeProgramCommonJsExports(gpa: std.mem.Allocator, items: []const ts_driver.ProgramCommonJsExport) void {
+        for (items) |item| {
+            gpa.free(item.module_path);
+            gpa.free(item.name);
+        }
+        gpa.free(items);
+    }
+
     fn freeProgramAmbientInterfaceMembers(gpa: std.mem.Allocator, items: []const ts_driver.ProgramAmbientInterfaceMember) void {
         for (items) |item| {
             gpa.free(item.name);
@@ -1824,6 +1894,8 @@ pub const Program = struct {
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
+        const program_commonjs_exports = try self.collectProgramCommonJsExports();
+        defer freeProgramCommonJsExports(self.gpa, program_commonjs_exports);
         const program_umd_globals = try self.collectProgramUmdGlobals();
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
@@ -1833,6 +1905,7 @@ pub const Program = struct {
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+        shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const n = workers orelse @min(cpu_count, 8);
@@ -3305,9 +3378,75 @@ pub fn moduleExportsValueSpaceName(
         gpa.destroy(compilation);
     }
     const id = compilation.interner.lookup(name) orelse return false;
+    if (moduleRootHasCommonJsExportedRuntimeValue(&compilation.hir, &compilation.interner, compilation.root, id)) return true;
     const sym = compilation.module.root.values.get(id) orelse return false;
     if (sym.flags.is_type) return false;
     return moduleRootHasExportedRuntimeValue(&compilation.hir, compilation.root, id);
+}
+
+fn moduleRootHasCommonJsExportedRuntimeValue(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
+        if (hir.kindOf(stmt) != .assignment) continue;
+        const assignment = hir_mod_ns.assignmentOf(hir, stmt);
+        if (assignment.op != null or assignment.value == hir_mod_ns.none_node_id) continue;
+        if (commonJsExportAssignmentName(hir, interner, assignment.target) != name) continue;
+        if (hir.kindOf(assignment.value) == .unary_op and
+            hir_mod_ns.unaryOf(hir, assignment.value).op == .void_)
+        {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn commonJsExportAssignmentName(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    target: hir_mod_ns.NodeId,
+) ?hir_mod_ns.StringId {
+    const property_name = commonJsPropertyAccessName(hir, target) orelse return null;
+    const object = commonJsPropertyAccessObject(hir, target) orelse return null;
+    if (hir.kindOf(object) == .identifier and
+        std.mem.eql(u8, interner.get(hir_mod_ns.identifierOf(hir, object).name), "exports"))
+    {
+        return property_name;
+    }
+    const exports_name = commonJsPropertyAccessName(hir, object) orelse return null;
+    if (!std.mem.eql(u8, interner.get(exports_name), "exports")) return null;
+    const module_object = commonJsPropertyAccessObject(hir, object) orelse return null;
+    if (hir.kindOf(module_object) != .identifier or
+        !std.mem.eql(u8, interner.get(hir_mod_ns.identifierOf(hir, module_object).name), "module"))
+    {
+        return null;
+    }
+    return property_name;
+}
+
+fn commonJsPropertyAccessName(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) ?hir_mod_ns.StringId {
+    return switch (hir.kindOf(node)) {
+        .member_access => hir_mod_ns.memberOf(hir, node).name,
+        .element_access => blk: {
+            const index = hir_mod_ns.elementOf(hir, node).index;
+            if (hir.kindOf(index) != .literal_string) break :blk null;
+            break :blk hir_mod_ns.literalStringOf(hir, index).value;
+        },
+        else => null,
+    };
+}
+
+fn commonJsPropertyAccessObject(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) ?hir_mod_ns.NodeId {
+    return switch (hir.kindOf(node)) {
+        .member_access => hir_mod_ns.memberOf(hir, node).object,
+        .element_access => hir_mod_ns.elementOf(hir, node).object,
+        else => null,
+    };
 }
 
 /// True when `module_source` exports `name` as an ambient const enum. This is
@@ -3528,15 +3667,17 @@ fn collectAmbientModuleExportFacts(
     for (stmts) |stmt| {
         if (hir.kindOf(stmt) == .export_decl) {
             const ex = hir_mod_ns.exportOf(hir, stmt);
-            for (hir_mod_ns.exportNamed(hir, stmt)) |spec_node| {
-                if (hir.kindOf(spec_node) != .import_specifier) continue;
-                const sp = hir_mod_ns.importSpecifierOf(hir, spec_node);
-                if (sp.local != name and sp.imported != name) continue;
-                if (ex.is_type_only or sp.is_type_only) {
-                    facts.type_only_pos = 0;
-                    facts.exported_type = true;
-                } else {
-                    facts.exported_value = true;
+            if (ex.decl == hir_mod_ns.none_node_id) {
+                for (hir_mod_ns.exportNamed(hir, stmt)) |spec_node| {
+                    if (hir.kindOf(spec_node) != .import_specifier) continue;
+                    const sp = hir_mod_ns.importSpecifierOf(hir, spec_node);
+                    if (sp.local != name and sp.imported != name) continue;
+                    if (ex.is_type_only or sp.is_type_only) {
+                        facts.type_only_pos = 0;
+                        facts.exported_type = true;
+                    } else {
+                        facts.exported_value = true;
+                    }
                 }
             }
             if (ex.decl == hir_mod_ns.none_node_id) continue;
@@ -5473,6 +5614,22 @@ test "ambientModuleExportFacts distinguishes a missing wildcard export" {
     try T.expect(exported_type.exported_type);
 }
 
+test "ambientModuleExportFacts keeps exported interfaces out of value space" {
+    const source =
+        \\declare module "fs" {
+        \\  export interface WriteFileOptions {}
+        \\  export function writeFile(path: string): void;
+        \\}
+    ;
+    const interface_facts = ambientModuleExportFacts(T.allocator, source, "fs", "WriteFileOptions", false).?;
+    try T.expect(interface_facts.exported_type);
+    try T.expect(!interface_facts.exported_value);
+
+    const function_facts = ambientModuleExportFacts(T.allocator, source, "fs", "writeFile", false).?;
+    try T.expect(!function_facts.exported_type);
+    try T.expect(function_facts.exported_value);
+}
+
 test "module export facts follow explicit typesVersions back-references" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -5517,6 +5674,119 @@ test "moduleExportsTypeSpaceName: non-exported or value-only names are not type-
     try T.expect(!moduleExportsTypeSpaceName(T.allocator, "export function f() {}", "f", false));
     // Absent name.
     try T.expect(!moduleExportsTypeSpaceName(T.allocator, "export interface I {}", "Missing", false));
+}
+
+test "moduleExportsValueSpaceName: CommonJS void exports stay absent" {
+    const source =
+        \\exports.j = 1;
+        \\exports.k = void 0;
+        \\module.exports.m = "ok";
+        \\module.exports["n"] = true;
+    ;
+    try T.expect(moduleExportsValueSpaceName(T.allocator, source, "j", false));
+    try T.expect(!moduleExportsValueSpaceName(T.allocator, source, "k", false));
+    try T.expect(moduleExportsValueSpaceName(T.allocator, source, "m", false));
+    try T.expect(moduleExportsValueSpaceName(T.allocator, source, "n", false));
+}
+
+test "module export facts expose non-void CommonJS properties" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/assignmentToVoidZero2.js",
+        "exports.j = 1;\nexports.k = void 0;\n",
+    );
+    try vfs.addFile(
+        "/importer.js",
+        "// @checkJs: true\nimport { j, k } from './assignmentToVoidZero2';\n",
+    );
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .out_dir = "auss" });
+    defer resolver.deinit();
+    const resolution = try resolver.resolve("./assignmentToVoidZero2", "/importer.js");
+    try T.expectEqualStrings("/assignmentToVoidZero2.js", resolution.path);
+
+    const exported = moduleExportFactsFromResolvedModule(
+        T.allocator,
+        &resolver,
+        resolution.path,
+        "j",
+    );
+    const absent = moduleExportFactsFromResolvedModule(
+        T.allocator,
+        &resolver,
+        resolution.path,
+        "k",
+    );
+    try T.expect(exported.exported_value);
+    try T.expect(!absent.exported_value);
+}
+
+test "Program: collects only non-void CommonJS exports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/assignmentToVoidZero2.js",
+        "exports.j = 1;\nexports.k = void 0;\n",
+    );
+    try vfs.addFile(
+        "/importer.js",
+        "import { j, k } from './assignmentToVoidZero2';\n",
+    );
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .out_dir = "auss" });
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add(
+        "/assignmentToVoidZero2.js",
+        "exports.j = 1;\nexports.k = void 0;\n",
+    );
+    _ = try p.add(
+        "/importer.js",
+        "// @checkJs: true\nimport { j, k } from './assignmentToVoidZero2';\n",
+    );
+
+    const exports = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, exports);
+    var saw_j = false;
+    var saw_k = false;
+    for (exports) |item| {
+        if (!std.mem.eql(u8, item.module_path, "/assignmentToVoidZero2.js")) continue;
+        if (std.mem.eql(u8, item.name, "j")) saw_j = true;
+        if (std.mem.eql(u8, item.name, "k")) saw_k = true;
+    }
+    try T.expect(saw_j);
+    try T.expect(!saw_k);
+}
+
+test "Program: checked JS classifies ambient interface imports and re-exports as types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/node_modules/@types/node/index.d.ts",
+        \\declare module "fs" {
+        \\  export interface WriteFileOptions {}
+        \\  export function writeFile(path: string): void;
+        \\}
+    );
+    const js_id = try p.add("/index.js",
+        \\// @checkJs: true
+        \\import { writeFile, WriteFileOptions, WriteFileOptions as OtherName } from "fs";
+        \\export { WriteFileOptions };
+    );
+
+    try p.compileAll(.{ .allow_js = true, .no_emit = true });
+    const compilation = p.fileById(js_id).compilation.?;
+    var import_type_count: usize = 0;
+    var export_type_count: usize = 0;
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 18042) import_type_count += 1;
+        if (diagnostic.code == 18043) export_type_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), import_type_count);
+    try T.expectEqual(@as(usize, 1), export_type_count);
 }
 
 test "moduleExportsValueSpaceName: exported value-space names exclude interfaces and aliases" {
