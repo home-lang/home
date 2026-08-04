@@ -752,11 +752,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     defer actual.deinit(gpa);
     var actual_count: u32 = 0;
     // Per-diagnostic capture so we can reorder before emit. Upstream
-    // tsc groups baseline headers by file, with the principal/entry
-    // file's diagnostics first and any helper `@filename:` virtual-
-    // section diagnostics after. We emulate that by collecting the
-    // formatted lines + their per-diagnostic file, then sorting with
-    // entry-file-first / source-order-within-file at the end.
+    // program diagnostics sort virtual files by rendered filename,
+    // then by source position within each file.
     const FormattedEntry = struct {
         file: []const u8,
         diag_line: u32,
@@ -859,13 +856,10 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         actual_count += 1;
     }
 
-    // Upstream tsc baselines emit the principal/entry file's
-    // diagnostics first, then helper `@filename:` virtual-section
-    // diagnostics. Sort helper virtual files the same way the program
-    // path does: rendered file, line, column, original order.
+    // Sort virtual files the same way the program path does: rendered
+    // file, line, column, original order.
     const Ordering = struct {
-        case_path: []const u8,
-        fn lessThan(ctx: @This(), a: FormattedEntry, b: FormattedEntry) bool {
+        fn lessThan(_: void, a: FormattedEntry, b: FormattedEntry) bool {
             // Path-less global diagnostics (e.g. TS5107 option
             // deprecations) render first in upstream baselines, before
             // any file-scoped diagnostic.
@@ -876,9 +870,6 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
                 if (a.code != b.code) return a.code < b.code;
                 return a.src_idx < b.src_idx;
             }
-            const a_is_entry = std.mem.eql(u8, a.file, ctx.case_path);
-            const b_is_entry = std.mem.eql(u8, b.file, ctx.case_path);
-            if (a_is_entry != b_is_entry) return a_is_entry;
             const file_order = std.mem.order(u8, a.file, b.file);
             if (file_order != .eq) return file_order == .lt;
             if (a.diag_line != b.diag_line) return a.diag_line < b.diag_line;
@@ -902,7 +893,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             return a.src_idx < b.src_idx;
         }
     };
-    std.mem.sort(FormattedEntry, formatted_entries.items, Ordering{ .case_path = c.path }, Ordering.lessThan);
+    std.mem.sort(FormattedEntry, formatted_entries.items, {}, Ordering.lessThan);
 
     for (formatted_entries.items) |e| {
         try actual.appendSlice(gpa, e.line);

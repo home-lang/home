@@ -7836,6 +7836,14 @@ pub const Parser = struct {
                 try self.reportCodeWithSpanAt(next.span.start, next.line, 1357, 1, "An enum member name must be followed by a ',', '=', or '}'.");
                 continue;
             }
+            // Invalid separators do not end the enum member list. Consume
+            // one token and resume so later members remain available to the
+            // parser and semantic checker (`a; b: 1`, `a += 1`, and peers).
+            if (next.kind != .close_brace and next.kind != .eof) {
+                try self.reportCodeWithSpanAt(next.span.start, next.line, 1357, 1, "An enum member name must be followed by a ',', '=', or '}'.");
+                _ = self.advance();
+                continue;
+            }
             break;
         }
         const close_end = if (recovered_member_list_boundary)
@@ -18233,7 +18241,11 @@ pub const Parser = struct {
                     }
                 }
                 if (self.peek().kind != .open_paren) {
-                    if (self.peek().kind == .dot and (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword())) {
+                    if (self.peek().kind == .dot and
+                        (self.peekAt(1).kind == .identifier or
+                            self.peekAt(1).kind.isContextualKeyword() or
+                            self.peekAt(1).kind.isKeyword()))
+                    {
                         const prop = self.peekAt(1);
                         const is_meta = self.tokenTextEquals(prop, "meta");
                         const is_defer = self.tokenTextEquals(prop, "defer");
@@ -19374,6 +19386,39 @@ pub const Parser = struct {
                 continue;
             }
             const prop_start = self.peek();
+            // A declaration-looking `class C {}` is not an object-literal
+            // method. TypeScript recovers `class` as a property name whose
+            // missing value is the identifier `C`, then leaves the following
+            // block to the outer statement parser. Keeping that boundary is
+            // important: it produces `':' expected`, resolves `C` as a value,
+            // and lets the final object close brace become TS1128.
+            if (prop_start.kind == .kw_class and self.peekAt(1).kind == .identifier) {
+                const class_tok = self.advance();
+                const value_tok = self.advance();
+                try self.reportCodeAt(value_tok.span.start, value_tok.line, 1005, "':' expected.");
+                const key_id = try self.internPropertyName(class_tok, tokenSpan(class_tok));
+                const key = try self.builder.addIdentifier(tokenSpan(class_tok), key_id);
+                const value_id = try self.internToken(value_tok);
+                const value = try self.builder.addIdentifier(tokenSpan(value_tok), value_id);
+                const prop = try self.builder.addObjectProperty(
+                    .{ .start = class_tok.span.start, .end = value_tok.span.end },
+                    key,
+                    value,
+                    false,
+                    false,
+                    false,
+                );
+                try props.append(self.gpa, prop);
+                if (self.peek().kind == .open_brace) {
+                    const open = self.peek();
+                    try self.reportCodeAt(open.span.start, open.line, 1005, "',' expected.");
+                    return try self.builder.addObjectLiteral(
+                        .{ .start = start.span.start, .end = value_tok.span.end },
+                        props.items,
+                    );
+                }
+                continue;
+            }
             var method_is_async = false;
             if (self.peek().kind == .kw_async) {
                 const next = self.peekAt(1).kind;
