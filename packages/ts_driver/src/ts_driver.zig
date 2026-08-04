@@ -1787,6 +1787,11 @@ pub fn compileSource(
                     continue;
                 }
                 const normalized = normalizeScannerDiagnostic(d.message);
+                if (scannerDiagnosticIsInvalidStringTemplateEscape(normalized) and
+                    d.in_tagged_template)
+                {
+                    continue;
+                }
                 try c.diagnostics.append(gpa, .{
                     .phase = .lex,
                     .pos = d.pos,
@@ -1822,7 +1827,7 @@ pub fn compileSource(
         }
         const normalized = normalizeScannerDiagnostic(d.message);
         if (scannerDiagnosticIsInvalidStringTemplateEscape(normalized) and
-            scannerDiagnosticFallsInTaggedTemplate(c.tokens.items, d.pos))
+            d.in_tagged_template)
         {
             continue;
         }
@@ -1902,6 +1907,34 @@ pub fn compileSource(
                 var drop = false;
                 for (parser.regex_rescan_spans.items) |sp| {
                     if (d.pos >= sp.start and d.pos < sp.end) {
+                        drop = true;
+                        break;
+                    }
+                }
+                if (drop) {
+                    gpa.free(d.message);
+                    _ = c.diagnostics.orderedRemove(idx);
+                    continue;
+                }
+            }
+            idx += 1;
+        }
+    }
+    // A template's tag is parser context, so the initial scanner cannot know
+    // whether invalid escape sequences should produce cooked-text errors.
+    // Drop only those lexer diagnostics inside spans the parser later claimed
+    // as tagged templates, matching tsgo's tagged-template rescan mode.
+    if (parser.tagged_template_spans.items.len > 0) {
+        var idx: usize = 0;
+        while (idx < c.diagnostics.items.len) {
+            const d = c.diagnostics.items[idx];
+            if (d.phase == .lex and scannerDiagnosticIsInvalidStringTemplateEscape(.{
+                .code = d.code,
+                .message = d.message,
+            })) {
+                var drop = false;
+                for (parser.tagged_template_spans.items) |sp| {
+                    if (d.pos >= sp.start and d.pos <= sp.end) {
                         drop = true;
                         break;
                     }
@@ -2944,63 +2977,10 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
 }
 
 fn scannerDiagnosticIsInvalidStringTemplateEscape(d: NormalizedScannerDiagnostic) bool {
-    return d.code == 1487 or d.code == 1488;
-}
-
-fn tokenCanPrecedeTaggedTemplate(kind: ts_lexer.TokenKind) bool {
-    return switch (kind) {
-        .identifier,
-        .private_identifier,
-        .kw_this,
-        .kw_super,
-        .kw_import,
-        .close_paren,
-        .close_bracket,
-        .no_substitution_template,
-        .template_tail,
-        => true,
+    return switch (d.code) {
+        1125, 1127, 1160, 1199, 1487, 1488 => true,
         else => false,
     };
-}
-
-fn scannerDiagnosticFallsInTaggedTemplate(tokens: []const Token, pos: u32) bool {
-    var tagged_template_stack: [128]bool = undefined;
-    var template_depth: usize = 0;
-    var prev_kind: ?ts_lexer.TokenKind = null;
-
-    for (tokens) |tok| {
-        const in_tok = pos >= tok.span.start and pos < tok.span.end;
-        switch (tok.kind) {
-            .no_substitution_template => {
-                const tagged = if (prev_kind) |k| tokenCanPrecedeTaggedTemplate(k) else false;
-                if (in_tok) return tagged;
-            },
-            .template_head => {
-                const tagged = if (prev_kind) |k| tokenCanPrecedeTaggedTemplate(k) else false;
-                if (in_tok) return tagged;
-                if (template_depth < tagged_template_stack.len) {
-                    tagged_template_stack[template_depth] = tagged;
-                }
-                template_depth += 1;
-            },
-            .template_middle => {
-                const tagged = template_depth > 0 and
-                    template_depth <= tagged_template_stack.len and
-                    tagged_template_stack[template_depth - 1];
-                if (in_tok) return tagged;
-            },
-            .template_tail => {
-                const tagged = template_depth > 0 and
-                    template_depth <= tagged_template_stack.len and
-                    tagged_template_stack[template_depth - 1];
-                if (in_tok) return tagged;
-                if (template_depth > 0) template_depth -= 1;
-            },
-            else => {},
-        }
-        if (tok.kind != .eof) prev_kind = tok.kind;
-    }
-    return false;
 }
 
 fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -3801,16 +3781,45 @@ test "driver: string and template invalid escape diagnostics map to TS1487 and T
 }
 
 test "driver: tagged template suppresses invalid escape diagnostics" {
-    var c = try compileSource(T.allocator, "tag`\\1${tag`\\8`}\\9`;", .{ .no_emit = true });
+    var c = try compileSource(
+        T.allocator,
+        "tag`\\1${tag`\\8`}\\9`; tag`\\u{hello} ${1} \\xtraordinary ${2} \\uworld`; tag`${1}\\u{`;" ++
+            "\nconst a = tag`${1}\\u0`;" ++
+            "\nconst b = tag`${1}\\u000`;" ++
+            "\nconst c = tag`${1}\\x0`;" ++
+            "\nconst d = tag`${1}\\x00`;",
+        .{ .no_emit = true },
+    );
     defer {
         c.deinit();
         T.allocator.destroy(c);
     }
 
     for (c.diagnostics.items) |d| {
-        try T.expect(d.code != 1487);
-        try T.expect(d.code != 1488);
+        try T.expect(!scannerDiagnosticIsInvalidStringTemplateEscape(.{
+            .code = d.code,
+            .message = d.message,
+        }));
     }
+}
+
+test "driver: untagged template retains invalid escape diagnostics" {
+    var c = try compileSource(
+        T.allocator,
+        "tag`ok`; const first = `\\x0`; tag`still ok`; const second = `\\u000`;" ++
+            "\nconst value = `\\u{hello} ${1} \\xtraordinary ${2} \\uworld`;",
+        .{ .no_emit = true },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var hexadecimal_digit_diagnostics: usize = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1125) hexadecimal_digit_diagnostics += 1;
+    }
+    try T.expectEqual(@as(usize, 5), hexadecimal_digit_diagnostics);
 }
 
 test "driver: replacement character diagnostic maps to TS1490" {

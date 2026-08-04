@@ -139,6 +139,7 @@ pub fn internRegExpMatchArray(
 ) !TypeId {
     const string_t = types.Primitive.string_t;
     const number_t = types.Primitive.number_t;
+    const groups_t = try ti.internObjectTypeWithIndex(&.{}, string_t, types.Primitive.none);
     const members = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
         // `index?: number` — start offset of the match in the input.
@@ -147,8 +148,30 @@ pub fn internRegExpMatchArray(
         .{ .name = try sint.intern("input"), .type = string_t, .is_optional = true, .is_readonly = false, .is_method = false },
         // `0: string` — the whole-match capture, always present.
         .{ .name = try sint.intern("0"), .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        // Added by lib.es2018.regexp.d.ts for named capture groups.
+        .{ .name = try sint.intern("groups"), .type = groups_t, .is_optional = true, .is_readonly = false, .is_method = false },
     };
     // Number-key index → `string` mirrors `extends Array<string>`.
+    return ti.internObjectTypeWithIndex(&members, types.Primitive.none, string_t);
+}
+
+/// Build the `RegExpExecArray` shape. It shares the indexed string and
+/// named-capture members of `RegExpMatchArray`, but `index` and `input` are
+/// required on successful `RegExp.prototype.exec` results.
+pub fn internRegExpExecArray(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    const string_t = types.Primitive.string_t;
+    const number_t = types.Primitive.number_t;
+    const groups_t = try ti.internObjectTypeWithIndex(&.{}, string_t, types.Primitive.none);
+    const members = [_]types.ObjectMember{
+        .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("index"), .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("input"), .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("0"), .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("groups"), .type = groups_t, .is_optional = true, .is_readonly = false, .is_method = false },
+    };
     return ti.internObjectTypeWithIndex(&members, types.Primitive.none, string_t);
 }
 
@@ -244,23 +267,10 @@ pub fn stringProto(
     // `s.replace(/re/, "x")` and `s.replace("a", "b")` both resolve.
     // Replacement may be a string or a replacer function — modeled `any`.
     const sig_replace = try ti.internSignature(&[_]TypeId{ any_t, any_t }, string_t, false);
-    // `match(regexp: string | RegExp): RegExpMatchArray | null` — precise
-    // match-array result unioned with `null` (es5). The pattern accepts
-    // both `string` and `RegExp`, modeled `any`.
-    //
-    // NOTE: the faithful upstream return is `RegExpMatchArray | null`, but
-    // Home's flow engine has a pre-existing gap narrowing a CALL-RESULT
-    // union of `Obj | null` — `const m = s.match(re); if (m) { m.index }`
-    // fails to strip `null` (the same gap reproduces for a hand-written
-    // `declare function g(): Foo | null; const f = g(); if (f) f.bar`,
-    // i.e. it is orthogonal to lib typing). Unioning with `null` here
-    // would therefore turn the dominant `if (m)` idiom into a false
-    // positive. We return the precise NON-NULL `RegExpMatchArray` instead
-    // (a strict improvement over the old bare `any`: `m.index` / `m[0]` /
-    // `m.length` resolve), and defer the `| null` until the call-result
-    // narrowing gap is fixed in the flow engine.
+    // `match(regexp: string | RegExp): RegExpMatchArray | null`.
     const regexp_match_array = try internRegExpMatchArray(ti, sint);
-    const sig_match = try ti.internSignature(&[_]TypeId{any_t}, regexp_match_array, false);
+    const regexp_match_result = try ti.internUnion(&[_]TypeId{ regexp_match_array, types.Primitive.null_t });
+    const sig_match = try ti.internSignature(&[_]TypeId{any_t}, regexp_match_result, false);
     // `matchAll(regexp): IterableIterator<RegExpMatchArray>` — Home models
     // iterables as arrays on the iteration path, so `RegExpMatchArray[]`
     // is the closest faithful approximation (each yielded match has the
@@ -1185,16 +1195,17 @@ test "lib: stringProto exposes replace/padStart/at/matchAll and friends" {
     try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("replace")).?).?);
     // `search` returns `number`.
     try T.expectEqual(types.Primitive.number_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("search")).?).?);
-    // `match` returns the precise `RegExpMatchArray` (not bare `any`):
-    // it exposes `index?`, `input?`, `0` and a string number-index (it
-    // `extends Array<string>`). The `| null` is deferred pending the
-    // call-result narrowing fix (see the signature comment).
+    // `match` returns `RegExpMatchArray | null` and the array constituent
+    // exposes `index?`, `input?`, `groups?`, `0`, and a string number-index.
     const match_ret = ti.signatureReturn(ti.objectMember(proto, try sint.intern("match")).?).?;
     try T.expect(match_ret != types.Primitive.any);
-    const rma = match_ret;
+    const match_members = ti.unionMembers(match_ret);
+    try T.expectEqual(@as(usize, 2), match_members.len);
+    const rma = if (match_members[0] == types.Primitive.null_t) match_members[1] else match_members[0];
     try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(rma));
     try T.expectEqual(types.Primitive.number_t, ti.objectMember(rma, try sint.intern("index")).?);
     try T.expectEqual(types.Primitive.string_t, ti.objectMember(rma, try sint.intern("0")).?);
+    try T.expect(ti.objectMemberInfo(rma, try sint.intern("groups")).?.is_optional);
     // A genuinely-missing member still resolves to null.
     try T.expect(ti.objectMember(proto, try sint.intern("notARealStringMethod")) == null);
 }

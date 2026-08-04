@@ -135,6 +135,12 @@ pub const Parser = struct {
     /// know `\` (and other stray glyphs) actually belonged to a regex
     /// body. Mirrors tsc's `reScanSlashToken` flow.
     regex_rescan_spans: std.ArrayListUnmanaged(Span),
+    /// Raw template spans parsed in tagged position. The scanner cannot know
+    /// whether a template is tagged when it first sees an invalid escape, so
+    /// the driver uses these parser-owned spans to discard invalid cooked-text
+    /// diagnostics after contextual parsing. Mirrors tsgo's tagged rescan with
+    /// `shouldEmitInvalidEscapeError=false`.
+    tagged_template_spans: std.ArrayListUnmanaged(Span),
     /// Spans (first-element start → last-sibling end) of TS2657
     /// "JSX expressions must have one parent element" recoveries, where
     /// adjacent JSX elements were wrapped in a synthetic comma
@@ -318,6 +324,7 @@ pub const Parser = struct {
             .pending_statements = .empty,
             .for_init_extras = .empty,
             .regex_rescan_spans = .empty,
+            .tagged_template_spans = .empty,
             .jsx_comma_recovery_spans = .empty,
             .label_stack = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
@@ -401,6 +408,7 @@ pub const Parser = struct {
         self.pending_statements.deinit(self.gpa);
         self.for_init_extras.deinit(self.gpa);
         self.regex_rescan_spans.deinit(self.gpa);
+        self.tagged_template_spans.deinit(self.gpa);
         self.jsx_comma_recovery_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
@@ -14989,6 +14997,33 @@ pub const Parser = struct {
                 },
                 '(' => {
                     i += 1;
+                    if (i < close_at and self.source[i] == '?') {
+                        i += 1;
+                        if (i < close_at) {
+                            switch (self.source[i]) {
+                                '=', '!' => i += 1,
+                                '<' => {
+                                    i += 1;
+                                    if (i < close_at and (self.source[i] == '=' or self.source[i] == '!')) {
+                                        i += 1;
+                                    } else {
+                                        while (i < close_at and self.source[i] != '>') : (i += 1) {}
+                                        if (i < close_at) i += 1;
+                                    }
+                                },
+                                else => {
+                                    while (i < close_at and
+                                        (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1) {}
+                                    if (i < close_at and self.source[i] == '-') {
+                                        i += 1;
+                                        while (i < close_at and
+                                            (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1) {}
+                                    }
+                                    if (i < close_at and self.source[i] == ':') i += 1;
+                                },
+                            }
+                        }
+                    }
                     previous_quantifiable = false;
                 },
                 ')' => {
@@ -17714,6 +17749,7 @@ pub const Parser = struct {
         const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else head.span.end;
         const call_sp: Span = .{ .start = tag_span.start, .end = end_pos };
         const arr_span: Span = .{ .start = head.span.start, .end = end_pos };
+        try self.tagged_template_spans.append(self.gpa, arr_span);
         const strings_arr = try self.builder.addArrayLiteral(arr_span, strings.items);
 
         // Build args: [stringsArr, ...values]
@@ -27577,6 +27613,14 @@ test "parser: regex literal reports repetition after non-quantifiable assertion"
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1507), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: regex group prefixes are not quantifiers" {
+    var s = try newTestSetup("let r = /(?<year>\\d{4})(?:x)(?=y)(?!z)(?<=a)(?<!b)/u;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), countDiagCode(s, 1507));
 }
 
 test "parser: regex literal reports incomplete quantifier digit" {

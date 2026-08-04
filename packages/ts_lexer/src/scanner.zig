@@ -69,7 +69,31 @@ pub const Diagnostic = struct {
     line: u32,
     column: u32,
     message: []const u8,
+    /// Start of the template token segment being scanned when this diagnostic
+    /// was emitted. Preserves contextual ownership when malformed escape
+    /// recovery moves `pos` outside the eventual token span.
+    template_segment_start: ?u32 = null,
+    /// Whether the originating template was entered after a token that can be
+    /// used as a tag. Carried through substitution segments by the scanner's
+    /// template stack so malformed recovery never has to reconstruct context.
+    in_tagged_template: bool = false,
 };
+
+fn tokenCanPrecedeTaggedTemplate(kind: TokenKind) bool {
+    return switch (kind) {
+        .identifier,
+        .private_identifier,
+        .kw_this,
+        .kw_super,
+        .kw_import,
+        .close_paren,
+        .close_bracket,
+        .no_substitution_template,
+        .template_tail,
+        => true,
+        else => false,
+    };
+}
 
 pub const Scanner = struct {
     source: []const u8,
@@ -84,12 +108,15 @@ pub const Scanner = struct {
     jsx_context: bool,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
+    diagnostic_template_segment_start: ?u32,
+    diagnostic_in_tagged_template: bool,
     /// Template-substitution stack. Each entry is the number of
     /// pending `{` opens inside the current substitution body. When
     /// the stack is non-empty and we see `}` with `top == 0`, we
     /// resume scanning the template body (emitting `template_middle`
     /// or `template_tail`) instead of producing a `close_brace`.
     template_brace_stack: std.ArrayListUnmanaged(u32),
+    template_tagged_stack: std.ArrayListUnmanaged(bool),
     /// Kind of the most recently emitted significant token. Used to
     /// disambiguate `/` between division and regex-literal start —
     /// `/` is a regex when the preceding token leaves the parser in
@@ -128,7 +155,10 @@ pub const Scanner = struct {
             .jsx_context = false,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
+            .diagnostic_template_segment_start = null,
+            .diagnostic_in_tagged_template = false,
             .template_brace_stack = .empty,
+            .template_tagged_stack = .empty,
             .last_significant_kind = .eof,
             .suppress_unterminated_literal = false,
             .pending_unterm_string_start = null,
@@ -141,6 +171,7 @@ pub const Scanner = struct {
         self.diagnostics.deinit(gpa);
         self.diag_arena.deinit();
         self.template_brace_stack.deinit(gpa);
+        self.template_tagged_stack.deinit(gpa);
     }
 
     pub fn setInJsxContext(self: *Scanner, in_jsx: bool) void {
@@ -184,6 +215,8 @@ pub const Scanner = struct {
             .line = self.line,
             .column = self.currentColumn(),
             .message = owned,
+            .template_segment_start = self.diagnostic_template_segment_start,
+            .in_tagged_template = self.diagnostic_in_tagged_template,
         }) catch {};
     }
 
@@ -194,6 +227,8 @@ pub const Scanner = struct {
             .line = line,
             .column = if (pos >= self.line_start) pos - self.line_start else 0,
             .message = owned,
+            .template_segment_start = self.diagnostic_template_segment_start,
+            .in_tagged_template = self.diagnostic_in_tagged_template,
         }) catch {};
     }
 
@@ -204,6 +239,8 @@ pub const Scanner = struct {
             .line = 1,
             .column = 0,
             .message = owned,
+            .template_segment_start = self.diagnostic_template_segment_start,
+            .in_tagged_template = self.diagnostic_in_tagged_template,
         }) catch {};
     }
 
@@ -214,6 +251,8 @@ pub const Scanner = struct {
             .line = line,
             .column = pos - self.line_start,
             .message = owned,
+            .template_segment_start = self.diagnostic_template_segment_start,
+            .in_tagged_template = self.diagnostic_in_tagged_template,
         }) catch {};
     }
 
@@ -235,6 +274,13 @@ pub const Scanner = struct {
             const p = start + i;
             if (p >= self.source.len or !isHexDigit(self.source[p])) {
                 self.reportAt(gpa, p, line, "Hexadecimal digit expected.");
+                // Keep a literal delimiter or line break available to the
+                // outer string/template scanner. Consuming it here turns an
+                // invalid escape into a spurious unterminated literal and can
+                // swallow the following source line during recovery.
+                if (p < self.source.len and isLiteralTerminatorByte(self.source[p])) {
+                    return p;
+                }
                 return @min(p + 1, @as(u32, @intCast(self.source.len)));
             }
         }
@@ -1014,6 +1060,17 @@ pub const Scanner = struct {
     /// (via `rescanTemplateAfterClosingBrace`) after the parser has
     /// finished an interpolated expression.
     fn scanTemplate(self: *Scanner, gpa: std.mem.Allocator, start: u32, line: u32, flags: TokenFlags, after_close_brace: bool) ScanError!Token {
+        const previous_diagnostic_template_segment_start = self.diagnostic_template_segment_start;
+        const previous_diagnostic_in_tagged_template = self.diagnostic_in_tagged_template;
+        self.diagnostic_template_segment_start = start;
+        self.diagnostic_in_tagged_template = if (after_close_brace)
+            self.template_tagged_stack.items.len > 0 and self.template_tagged_stack.items[self.template_tagged_stack.items.len - 1]
+        else
+            tokenCanPrecedeTaggedTemplate(self.last_significant_kind);
+        defer {
+            self.diagnostic_template_segment_start = previous_diagnostic_template_segment_start;
+            self.diagnostic_in_tagged_template = previous_diagnostic_in_tagged_template;
+        }
         // If we entered via `}`, the scanner pos is already past it.
         // Otherwise the leading `` ` `` was consumed by the caller.
         const saw_substitution = after_close_brace;
@@ -1029,6 +1086,9 @@ pub const Scanner = struct {
                 // returning from a `}`-resume).
                 if (after_close_brace and self.template_brace_stack.items.len > 0) {
                     _ = self.template_brace_stack.pop();
+                    if (self.template_tagged_stack.items.len > 0) {
+                        _ = self.template_tagged_stack.pop();
+                    }
                 }
                 return .{
                     .span = .{ .start = start, .end = self.pos },
@@ -1047,6 +1107,7 @@ pub const Scanner = struct {
                 // (still on the stack — `}` didn't pop it).
                 if (!after_close_brace) {
                     try self.template_brace_stack.append(gpa, 0);
+                    try self.template_tagged_stack.append(gpa, self.diagnostic_in_tagged_template);
                 }
                 return .{
                     .span = .{ .start = start, .end = self.pos },
@@ -1954,6 +2015,23 @@ test "Scanner: template legacy octal and decimal escapes report when untagged" {
     try t.expectEqual(@as(usize, 2), s.diagnostics.items.len);
     try t.expectEqualStrings("Octal escape sequences are not allowed. Use the syntax '\\x05'.", s.diagnostics.items[0].message);
     try t.expectEqualStrings("Escape sequence '\\9' is not allowed.", s.diagnostics.items[1].message);
+    for (s.diagnostics.items) |diagnostic| {
+        try t.expect(!diagnostic.in_tagged_template);
+        try t.expect(diagnostic.template_segment_start != null);
+    }
+}
+
+test "Scanner: tagged template diagnostics retain tag context across substitutions" {
+    var s = Scanner.init(t.allocator, "tag`\\u{hello}${value}\\xtraordinary`");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(@as(usize, 2), s.diagnostics.items.len);
+    for (s.diagnostics.items) |diagnostic| {
+        try t.expect(diagnostic.in_tagged_template);
+        try t.expect(diagnostic.template_segment_start != null);
+    }
 }
 
 test "Scanner: unterminated string at EOF is a hard error" {

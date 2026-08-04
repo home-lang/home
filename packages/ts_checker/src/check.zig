@@ -6944,6 +6944,9 @@ pub const Checker = struct {
                 const w = hir_mod.whileOf(self.hir, node);
                 _ = try self.checkExpression(w.cond);
                 try self.reportStaticTruthinessForStatementCond(w.cond);
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
+                try self.applyTypeGuard(w.cond, true);
                 try self.checkStatement(w.body);
             },
             .do_while_stmt => {
@@ -68735,6 +68738,12 @@ pub const Checker = struct {
             const any_t = types.Primitive.any;
             const sig_string_boolean = self.interner.internSignature(&[_]TypeId{string_t}, boolean_t, false) catch
                 return types.Primitive.unknown;
+            const regexp_exec_array = lib.internRegExpExecArray(self.interner, self.string_interner) catch
+                return types.Primitive.unknown;
+            const regexp_exec_result = self.interner.internUnion(&[_]TypeId{ regexp_exec_array, types.Primitive.null_t }) catch
+                return types.Primitive.unknown;
+            const sig_exec = self.interner.internSignature(&[_]TypeId{string_t}, regexp_exec_result, false) catch
+                return types.Primitive.unknown;
             const sig_string_any = self.interner.internSignature(&[_]TypeId{string_t}, any_t, false) catch
                 return types.Primitive.unknown;
             // Symbol-keyed string-coercion methods (`@@match`, `@@replace`,
@@ -68751,7 +68760,7 @@ pub const Checker = struct {
                 return types.Primitive.unknown;
             const members = [_]types.ObjectMember{
                 .{ .name = self.string_interner.intern("test") catch return types.Primitive.unknown, .type = sig_string_boolean, .is_optional = false, .is_readonly = false, .is_method = true },
-                .{ .name = self.string_interner.intern("exec") catch return types.Primitive.unknown, .type = sig_string_any, .is_optional = false, .is_readonly = false, .is_method = true },
+                .{ .name = self.string_interner.intern("exec") catch return types.Primitive.unknown, .type = sig_exec, .is_optional = false, .is_readonly = false, .is_method = true },
                 .{ .name = self.string_interner.intern("compile") catch return types.Primitive.unknown, .type = sig_compile, .is_optional = false, .is_readonly = false, .is_method = true },
                 // ES1 flag/state fields.
                 .{ .name = self.string_interner.intern("source") catch return types.Primitive.unknown, .type = string_t, .is_optional = false, .is_readonly = true, .is_method = false },
@@ -89594,16 +89603,16 @@ pub const Checker = struct {
                 {
                     if (!self.identifierIsPendingJsDocTypedVar(m.object)) {
                         try self.reportPossiblyNullishMember(m.object, obj_t);
-                        // After TS18047/TS18048/TS18049 fires, treat
-                        // the receiver as `any` for the property
-                        // resolution that follows so we don't cascade
-                        // a TS2339 on the narrowed-non-nullish type
-                        // (`f11.toFixed()` on `1 | 0 | ''` would fire
-                        // a spurious "Property 'toFixed' does not
-                        // exist on type '1 | 0 | \"\"'"). Mirrors
-                        // upstream tsc's nullish-then-stop behavior
-                        // on `nullishCoalescingOperator11.ts`.
-                        obj_t = types.Primitive.any;
+                        const non_nullish_t = self.subtractNullUndefined(obj_t) catch obj_t;
+                        // Preserve a known property after the nullability
+                        // error so a following access can still observe that
+                        // property's optionality (`result.groups.year` emits
+                        // both TS18047 and TS18048). Unknown properties still
+                        // degrade to `any`, avoiding a secondary TS2339.
+                        obj_t = if ((try self.lookupObjectMember(non_nullish_t, m.name)) != null)
+                            non_nullish_t
+                        else
+                            types.Primitive.any;
                     } else {
                         obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                     }
@@ -90267,7 +90276,14 @@ pub const Checker = struct {
                 };
                 const obj_t = if (element_is_optional_chain)
                     self.subtractNullUndefined(raw_obj_t) catch raw_obj_t
-                else
+                else if (self.strict_flags.strict_null_checks and
+                    self.typeIsPossiblyNullishStrict(raw_obj_t))
+                blk_non_nullish: {
+                    if (!self.identifierIsPendingJsDocTypedVar(e.object)) {
+                        try self.reportPossiblyNullishMember(e.object, raw_obj_t);
+                    }
+                    break :blk_non_nullish self.subtractNullUndefined(raw_obj_t) catch raw_obj_t;
+                } else
                     raw_obj_t;
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
                 const idx_t = try self.checkExpression(e.index);
@@ -102510,6 +102526,48 @@ pub const Checker = struct {
         return true;
     }
 
+    fn applyAssignmentNullishEqualityGuard(
+        self: *Checker,
+        assignment_node: NodeId,
+        nullish_node: NodeId,
+        op: hir_mod.BinOp,
+        positive: bool,
+    ) CheckError!bool {
+        if (self.hir.kindOf(assignment_node) != .assignment) return false;
+        const assignment = hir_mod.assignmentOf(self.hir, assignment_node);
+        if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) return false;
+
+        const compares_null = self.nodeIsNullLiteralish(nullish_node);
+        const compares_undefined = self.nodeIsUndefinedLiteralish(nullish_node);
+        if (!compares_null and !compares_undefined) return false;
+
+        var current = self.hir.typeOf(assignment_node);
+        if (current == types.Primitive.none) current = try self.checkExpression(assignment_node);
+        const narrowed = if (positive) blk_positive: {
+            if (op == .eq or op == .neq) {
+                break :blk_positive try self.nullUndefinedUnionType();
+            }
+            break :blk_positive if (compares_null)
+                types.Primitive.null_t
+            else
+                types.Primitive.undefined_t;
+        } else blk_negative: {
+            var result = if (compares_null)
+                self.subtractType(current, types.Primitive.null_t) catch current
+            else
+                self.subtractType(current, types.Primitive.undefined_t) catch current;
+            if (op == .eq or op == .neq) {
+                result = if (compares_null)
+                    self.subtractType(result, types.Primitive.undefined_t) catch result
+                else
+                    self.subtractType(result, types.Primitive.null_t) catch result;
+            }
+            break :blk_negative result;
+        };
+        try self.recordNarrow(hir_mod.identifierOf(self.hir, assignment.target).name, narrowed);
+        return true;
+    }
+
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
         // Aliased conditional narrowing: `if (cond)` where `cond`
         // was bound to a guard expression. Expand the alias and
@@ -102886,6 +102944,8 @@ pub const Checker = struct {
         // `positive` = "this branch represents the equality
         // matching" (i.e. `===` in then, `!==` in else).
         const positive = (b.op == .eq_strict or b.op == .eq) == when_true;
+        if (try self.applyAssignmentNullishEqualityGuard(b.lhs, b.rhs, b.op, positive)) return;
+        if (try self.applyAssignmentNullishEqualityGuard(b.rhs, b.lhs, b.op, positive)) return;
 
         // Discriminated union narrowing: `x.kind === "circle"`.
         // LHS is a member access, RHS is a literal. We walk the
@@ -151583,7 +151643,11 @@ pub const Checker = struct {
             }
             return;
         }
-        if (obj_kind == .identifier or (obj_kind == .member_access and kind == .only_undefined)) {
+        if (obj_kind == .identifier or
+            (obj_kind == .member_access and
+                kind == .only_undefined and
+                self.identifierRootedMemberKey(obj_node) != null))
+        {
             const code: u32 = switch (kind) {
                 .only_null => TsCodes.object_possibly_null,
                 .only_undefined => TsCodes.object_possibly_undefined_18048,
@@ -158575,6 +158639,41 @@ test "checker: TS1503 not emitted for named groups with no target directive" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.regex_named_group_requires_target));
+}
+
+test "checker: regexp result arrays preserve null and optional named groups" {
+    const s = try newSetup(
+        \\const re = /(?<year>\d{4})/u;
+        \\const result = re.exec("2026");
+        \\result[0];
+        \\result.groups.year;
+        \\"2026".match(re)!.groups.year;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: nullish comparison narrows an assignment expression target" {
+    const s = try newSetup(
+        \\const re = /./g;
+        \\let match: RegExpExecArray | null;
+        \\while ((match = re.exec("xxx")) != null) {
+        \\    match[1].length + match[2].length;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: property assignment target reads object for TS2454" {
