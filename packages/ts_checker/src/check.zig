@@ -10707,6 +10707,11 @@ pub const Checker = struct {
             if ((gop.value_ptr.is_class and is_var_kind) or
                 ((gop.value_ptr.is_var or gop.value_ptr.is_block_scoped) and is_class))
             {
+                const first_section = self.virtualSectionStartForNode(gop.value_ptr.node);
+                const current_section = self.virtualSectionStartForNode(node);
+                const merges_across_js_files = first_section != current_section and
+                    (self.virtualSectionIsJsLike(gop.value_ptr.node) or self.virtualSectionIsJsLike(node));
+                if (merges_across_js_files) continue;
                 try self.reportDuplicateIdentifierWithOther(gop.value_ptr.node, name, node);
                 try self.reportDuplicateIdentifierWithOther(node, name, gop.value_ptr.node);
                 continue;
@@ -52785,13 +52790,25 @@ pub const Checker = struct {
             }
         }
         for (entries.items) |entry| {
-            try self.upsertObjectMember(&members, .{
-                .name = entry.name,
-                .type = entry.typ,
-                .is_optional = false,
-                .is_readonly = false,
-                .is_method = false,
-            });
+            var merged_existing = false;
+            for (members.items) |*existing| {
+                if (existing.name != entry.name) continue;
+                existing.type = self.interner.internUnion(&.{ existing.type, entry.typ }) catch return error.OutOfMemory;
+                existing.is_optional = false;
+                existing.is_readonly = false;
+                existing.is_method = false;
+                merged_existing = true;
+                break;
+            }
+            if (!merged_existing) {
+                try members.append(self.gpa, .{
+                    .name = entry.name,
+                    .type = entry.typ,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+            }
         }
         const module_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         var display_spec = stripJsOutputExtension(spec);
@@ -53033,7 +53050,14 @@ pub const Checker = struct {
     ) CheckError!void {
         for (entries.items) |*entry| {
             if (entry.name != prop_name) continue;
-            entry.typ = value_t;
+            const crosses_export_origins = if (is_module_write)
+                entry.alias_nodes.items.len > 0
+            else
+                entry.module_nodes.items.len > 0;
+            entry.typ = if (crosses_export_origins)
+                self.interner.internUnion(&.{ entry.typ, value_t }) catch return error.OutOfMemory
+            else
+                value_t;
             if (is_module_write) {
                 try entry.module_nodes.append(self.gpa, node);
             } else {
@@ -88371,8 +88395,10 @@ pub const Checker = struct {
                     const assignment_value_is_void = self.expressionIsVoidValue(a.value);
                     if (commonjs_export_key) |key| {
                         if (self.commonJsExportAssignmentIsUndefinedDeclaration(a.value, assignment_result_t)) {
-                            if (try self.futureCommonJsExportLiteralAssignmentType(node, key)) |future_t| {
-                                try self.reportAssignmentTypeNotAssignable(node, a.value, a.target, types.Primitive.undefined_t, value_t, future_t, "Type is not assignable to target type.");
+                            if (try self.futureCommonJsExportAssignmentValue(node, key)) |future_value| {
+                                if (try self.literalCommonJsExportAssignmentType(future_value)) |future_t| {
+                                    try self.reportAssignmentTypeNotAssignable(node, a.value, a.target, types.Primitive.undefined_t, value_t, future_t, "Type is not assignable to target type.");
+                                }
                             } else if (!assignment_value_is_void and self.strict_flags.no_implicit_any) {
                                 try self.reportCommonJsExportImplicitAnyMember(a.target, key.prop_name);
                             }
@@ -90501,7 +90527,9 @@ pub const Checker = struct {
                     // and `commonJSAliasedExport`.
                     if (self.isInAssignmentTargetChain(node)) {
                         if (self.assignmentTargetValueIsVoidExpression(node)) {
-                            try self.reportCommonJsExportMissingMember(node, m.name);
+                            if ((try self.futureCommonJsExportAssignmentValue(node, key)) == null) {
+                                try self.reportCommonJsExportMissingMember(node, m.name);
+                            }
                         }
                         break :blk types.Primitive.any;
                     }
@@ -98643,7 +98671,7 @@ pub const Checker = struct {
         return false;
     }
 
-    fn futureCommonJsExportLiteralAssignmentType(self: *Checker, node: NodeId, key: MemberKey) CheckError!?TypeId {
+    fn futureCommonJsExportAssignmentValue(self: *Checker, node: NodeId, key: MemberKey) CheckError!?NodeId {
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const use_start = self.hir.spanOf(node).start;
@@ -98657,7 +98685,8 @@ pub const Checker = struct {
             if (later.op != null or later.target == hir_mod.none_node_id or later.value == hir_mod.none_node_id) continue;
             const later_key = (try self.commonJsExportMemberKey(later.target)) orelse continue;
             if (later_key.obj_name != key.obj_name or later_key.prop_name != key.prop_name) continue;
-            return try self.literalCommonJsExportAssignmentType(later.value);
+            if (self.expressionIsVoidValue(later.value) or self.hir.kindOf(later.value) == .literal_undefined) continue;
+            return later.value;
         }
         return null;
     }
@@ -220490,4 +220519,66 @@ test "checker: redefined static protected diagnostics omit typeof" {
         "Property 'x' is protected and only accessible within class 'Derived' and its subclasses.",
         message,
     );
+}
+
+test "checker: class and JavaScript values merge across virtual files" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @filename: declaration.d.ts
+        \\declare class A {}
+        \\// @filename: value.js
+        \\const A = {};
+        \\// @filename: constructor.js
+        \\var B = function () {};
+        \\// @filename: class.js
+        \\class B {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+}
+
+test "checker: CommonJS export writes union with direct export properties" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: requires.d.ts
+        \\declare var module: { exports: any };
+        \\declare function require(name: string): any;
+        \\// @filename: mod.js
+        \\module.exports.before = "string";
+        \\module.exports = { before: 1, after: 2 };
+        \\module.exports.after = "string";
+        \\// @filename: use.js
+        \\var mod = require("./mod");
+        \\mod.before.toFixed();
+        \\mod.after.toFixed();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "number | \"string\"") != null);
+    }
+}
+
+test "checker: future CommonJS value assignment suppresses implicit any" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: true
+        \\exports.apply = undefined;
+        \\function apply() {}
+        \\exports.apply();
+        \\exports.apply = apply;
+        \\exports.apply();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_invoke_possibly_undefined));
 }
