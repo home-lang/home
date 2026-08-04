@@ -32428,12 +32428,55 @@ const harness_prelude =
     \\    return { protocol: "grpc", options: options || {} };
     \\  },
     \\};
-    \\const __home_react_module = { createElement: __home_react_create_element, Fragment: Symbol.for("react.fragment") };
+    \\function __home_react_create_context(defaultValue) {
+    \\  const context = {
+    \\    $$typeof: Symbol.for("react.context"),
+    \\    _currentValue: defaultValue,
+    \\    _currentValue2: defaultValue,
+    \\    _threadCount: 0,
+    \\    Provider: null,
+    \\    Consumer: null,
+    \\  };
+    \\  context.Provider = { $$typeof: Symbol.for("react.provider"), _context: context };
+    \\  context.Consumer = context;
+    \\  return context;
+    \\}
+    \\function __home_react_render_to_readable_stream(node, textChunks) {
+    \\  const rendered = __home_react_render_to_string(node);
+    \\  return new ReadableStream({
+    \\    start(controller) {
+    \\      controller.enqueue(textChunks ? rendered : new TextEncoder().encode(rendered));
+    \\      controller.close();
+    \\    },
+    \\  });
+    \\}
+    \\function __home_react_jsx(type, props, key) {
+    \\  const element = __home_react_element(type, props, undefined, { reactVersion: 19 });
+    \\  if (key !== undefined) element.key = String(key);
+    \\  return element;
+    \\}
+    \\globalThis.jsxDEV_7x81h0kn = __home_react_jsx;
+    \\globalThis.jsx_7x81h0kn = __home_react_jsx;
+    \\globalThis.jsxs_7x81h0kn = __home_react_jsx;
+    \\globalThis.Fragment_7x81h0kn = Symbol.for("react.fragment");
+    \\globalThis.Fragment_8vg9x3sq = Symbol.for("react.fragment");
+    \\const __home_react_module = {
+    \\  createContext: __home_react_create_context,
+    \\  createElement: __home_react_create_element,
+    \\  Fragment: Symbol.for("react.fragment"),
+    \\};
     \\__home_react_module.default = __home_react_module;
     \\globalThis.__home_modules["react"] = __home_react_module;
-    \\globalThis.__home_modules["react-dom/server"] = {
+    \\const __home_react_dom_server_module = {
+    \\  version: "19.2.0-canary-b94603b9-20250513",
     \\  renderToString: __home_react_render_to_string,
-    \\  renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; },
+    \\  renderToReadableStream(node) { return __home_react_render_to_readable_stream(node, false); },
+    \\  renderToReadableStreamBun(node) { return __home_react_render_to_readable_stream(node, true); },
+    \\};
+    \\globalThis.__home_modules["react-dom/server"] = __home_react_dom_server_module;
+    \\globalThis.__home_modules["react-dom/server.browser"] = {
+    \\  version: __home_react_dom_server_module.version,
+    \\  renderToReadableStream(node) { return __home_react_render_to_readable_stream(node, false); },
     \\};
     \\globalThis.__home_modules["@testing-library/react"] = { cleanup() {} };
     \\globalThis.__home_modules["@testing-library/jest-dom/matchers"] = {
@@ -48913,6 +48956,14 @@ const harness_prelude =
     \\  if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
     \\  if (body && Array.isArray(body.__home_blob_bytes)) return body.__home_blob_bytes.slice();
     \\  if (body && body.__home_blob_typed_bytes) return new Uint8Array(body.__home_blob_typed_bytes);
+    \\  if (Array.isArray(body)) {
+    \\    const bytes = [];
+    \\    for (const chunk of body) {
+    \\      const chunkBytes = __home_body_bytes_sync(chunk);
+    \\      for (let i = 0; i < chunkBytes.length; i++) __home_array_append(bytes, chunkBytes[i]);
+    \\    }
+    \\    return bytes;
+    \\  }
     \\  if (body && Array.isArray(body.__home_chunks)) {
     \\    const bytes = [];
     \\    for (const chunk of body.__home_chunks) {
@@ -48944,7 +48995,7 @@ const harness_prelude =
     \\}
     \\function __home_attach_body_async_iterator(body) {
     \\  if (!body || typeof body !== "object" || typeof body.getReader !== "function") return body;
-    \\  if (typeof body[Symbol.asyncIterator] !== "function") {
+    \\  if (!Object.prototype.hasOwnProperty.call(body, Symbol.asyncIterator)) {
     \\    try { Object.defineProperty(body, Symbol.asyncIterator, { configurable: true, value() { return __home_body_async_iterator_from_reader(this); } }); } catch (error) {}
     \\  }
     \\  return body;
@@ -53868,6 +53919,22 @@ const harness_prelude =
     \\  ReadableStream.__home_controllers = __home_stream_controllers;
     \\  ReadableStream.__home_capture_meta = __home_stream_captures;
     \\}
+    \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype[Symbol.asyncIterator] !== "function") {
+    \\  Object.defineProperty(ReadableStream.prototype, Symbol.asyncIterator, { configurable: true, writable: true, value: function() {
+    \\    const reader = this.getReader();
+    \\    return {
+    \\      next() { return reader.read(); },
+    \\      return(reason) {
+    \\        const canceled = typeof reader.cancel === "function" ? reader.cancel(reason) : Promise.resolve(undefined);
+    \\        return Promise.resolve(canceled).then(() => {
+    \\          if (typeof reader.releaseLock === "function") reader.releaseLock();
+    \\          return { done: true, value: undefined };
+    \\        });
+    \\      },
+    \\      [Symbol.asyncIterator]() { return this; },
+    \\    };
+    \\  } });
+    \\}
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.tee !== "function") {
     \\  Object.defineProperty(ReadableStream.prototype, "tee", { configurable: true, writable: true, value: function() {
     \\    const captured = Array.isArray(this.__home_all_chunks) ? this.__home_all_chunks.slice() : null;
@@ -54440,7 +54507,9 @@ const harness_prelude =
     \\}
     \\function __home_readable_stream_to_array_buffer(stream) {
     \\  if (!stream) throw new TypeError("Expected ReadableStream");
-    \\  if (__home_stream_chunks_replayable(stream)) return __home_concat_array_buffers(stream.__home_chunks);
+    \\  if (__home_stream_chunks_replayable(stream)) {
+    \\    return Promise.resolve(new Uint8Array(__home_body_bytes_sync(stream)).buffer);
+    \\  }
     \\  return __home_then(__home_body_bytes(stream), bytes => new Uint8Array(bytes).buffer);
     \\}
     \\Bun.readableStreamToBytes = function(stream) {
@@ -59037,6 +59106,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const React = globalThis.__home_import(\"react\").default;",
         },
         .{
+            .needle = "import * as React from \"react\";",
+            .replacement = "const React = globalThis.__home_import(\"react\");",
+        },
+        .{
+            .needle = "import * as ReactDOM from \"react-dom/server\";",
+            .replacement = "const ReactDOM = globalThis.__home_import(\"react-dom/server\");",
+        },
+        .{
+            .needle = "import { renderToReadableStream as renderToReadableStreamBrowser } from \"react-dom/server.browser\";",
+            .replacement = "const { renderToReadableStream: renderToReadableStreamBrowser } = globalThis.__home_import(\"react-dom/server.browser\");",
+        },
+        .{
             .needle = "import { renderToString } from \"react-dom/server\";",
             .replacement = "const { renderToString } = globalThis.__home_import(\"react-dom/server\");",
         },
@@ -62301,7 +62382,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/stream/direct-readable-stream.test.tsx"))
-        try rewriteNativeTodoCorpus(allocator, "Bun direct ReadableStream and serve integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/symbols.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun binary symbol import inspection")
     else if (std.mem.eql(u8, relative_path, "js/bun/terminal/terminal-platform-gaps.test.ts"))
@@ -84418,6 +84499,46 @@ test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matr
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
+}
+
+test "bootstrap runner mirrors direct React ReadableStream and serve matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/stream/direct-readable-stream.test.tsx";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun direct ReadableStream and serve integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "React.createContext works") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "readableStreamToArrayBuffer(stream)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for await (chunk of stream)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "protocol: \"http3\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const count = 4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_react_create_context(defaultValue)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_react_render_to_readable_stream(node, textChunks)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype, Symbol.asyncIterator") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 537 or summary.todo != 0) {
+        std.debug.print(
+            "direct React ReadableStream matrix mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 537), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 537), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors HTTP chunked transfer TCP matrix" {
