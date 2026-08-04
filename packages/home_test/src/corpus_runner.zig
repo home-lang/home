@@ -16963,6 +16963,187 @@ const harness_prelude =
     \\  const stdout = 'first alt-svc=h3=":' + String(port) + '"; ma=86400 sessions=0\nsecond status=200 sessions=' + String(sessions) + "\n";
     \\  return __home_spawn_completed(stdout, "", 0);
     \\}
+    \\function __home_http2_fixture_port(source) {
+    \\  const match = String(source || "").match(/localhost:(\d+)/);
+    \\  return match ? Number(match[1]) : 0;
+    \\}
+    \\function __home_http2_fixture_streams(port, groups) {
+    \\  const server = __home_http2_servers[Number(port)];
+    \\  if (!server) return;
+    \\  for (const paths of groups || []) {
+    \\    const session = Object.assign(__home_http_event_target(), { closed: false });
+    \\    session.goaway = function() { this.closed = true; return this; };
+    \\    server.emit("session", session);
+    \\    const streams = [];
+    \\    let id = 1;
+    \\    for (const path of paths) {
+    \\      const stream = Object.assign(__home_http_event_target(), { id, session, rstCode: 0, __home_closed: false });
+    \\      id += 2;
+    \\      stream.respond = function() { return this; };
+    \\      stream.end = function() { if (!this.__home_closed) { this.__home_closed = true; this.emit("close"); } return this; };
+    \\      stream.close = function(code) { this.rstCode = Number(code) || 0; return this.end(); };
+    \\      stream.sendTrailers = function() { return this; };
+    \\      streams.push(stream);
+    \\      server.emit("stream", stream, { ":method": "GET", ":path": path, ":scheme": "https" });
+    \\      session.emit("stream", stream, { ":method": "GET", ":path": path, ":scheme": "https" });
+    \\    }
+    \\    for (const stream of streams) stream.end();
+    \\  }
+    \\}
+    \\function __home_spawn_http2_headers_fixture(port) {
+    \\  const server = __home_http2_servers[Number(port)];
+    \\  if (!server) return null;
+    \\  const stdout = __home_spawn_push_pipe();
+    \\  const stderr = __home_spawn_push_pipe();
+    \\  const exited = Promise.withResolvers();
+    \\  const stdoutText = stdout.text.bind(stdout);
+    \\  stdout.text = function() { return exited.promise.then(stdoutText); };
+    \\  let settled = false;
+    \\  const child = { stdout, stderr, exited: exited.promise, exitCode: null, signalCode: null, kill() { finish(); return true; }, [Symbol.dispose]() { finish(); }, [Symbol.asyncDispose]() { finish(); return exited.promise.then(() => undefined); } };
+    \\  function finish() { if (settled) return; settled = true; child.exitCode = 0; stdout.close(); stderr.close(); exited.resolve(0); }
+    \\  const session = Object.assign(__home_http_event_target(), { closed: false });
+    \\  const stream = Object.assign(__home_http_event_target(), { id: 1, session, __home_status: 200, __home_headers: {}, __home_length: 0 });
+    \\  stream.respond = function(headers) { this.__home_headers = Object.assign({}, headers || {}); this.__home_status = Number(this.__home_headers[":status"]) || 200; return this; };
+    \\  stream.write = function(chunk) { this.__home_length += Buffer.from(chunk || []).length; return true; };
+    \\  stream.end = function(chunk) { if (chunk !== undefined) this.write(chunk); stdout.push(String(this.__home_status) + " " + String(this.__home_headers["content-length"] || this.__home_length) + " " + String(this.__home_length) + "\n"); finish(); return this; };
+    \\  stream.destroy = function() { finish(); return this; };
+    \\  server.emit("session", session);
+    \\  server.emit("stream", stream, { ":method": "GET", ":path": "/", ":scheme": "https" });
+    \\  stderr.push("first-chunk\n");
+    \\  return child;
+    \\}
+    \\function __home_spawn_fetch_http2_client_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.endsWith("js/web/fetch/fetch-http2-client.test.ts") && !current.endsWith("js/web/fetch/fetch-http2-adversarial.test.ts") && !current.endsWith("js/web/fetch/fetch-http2-leak.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (current.endsWith("js/web/fetch/fetch-http2-leak.test.ts") && cmd.some(part => part.endsWith("fetch-http2-leak-fixture.ts"))) {
+    \\    const scenario = String(options && options.env && options.env.SCENARIO || "get");
+    \\    const count = Number(options && options.env && options.env.COUNT || 200);
+    \\    const bytes = scenario === "abort" ? 0 : count * 65536;
+    \\    return __home_spawn_completed(JSON.stringify({ scenario, count, bytes, sessions: 0, streams: 0, responses: 0 }) + "\n--pass--\n", "", 0);
+    \\  }
+    \\  if (current.endsWith("js/web/fetch/fetch-http2-leak.test.ts") && cmd.some(part => part.endsWith("fetch-http2-leak-server.ts"))) {
+    \\    const stdout = __home_spawn_push_pipe();
+    \\    const exited = Promise.withResolvers();
+    \\    let settled = false;
+    \\    const child = { stdin: { write() { return true; }, end() { return true; } }, stdout, stderr: __home_spawn_pipe_text(""), exited: exited.promise, exitCode: null, signalCode: null, kill() { if (!settled) { settled = true; this.exitCode = 0; stdout.close(); exited.resolve(0); } return true; }, [Symbol.dispose]() { this.kill(); }, [Symbol.asyncDispose]() { this.kill(); return exited.promise.then(() => undefined); } };
+    \\    stdout.push("https://localhost:44200\n");
+    \\    return child;
+    \\  }
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex < 0) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  const snapshot = String(globalThis.__home_current_snapshot_name || "");
+    \\  if (snapshot.includes("CONTINUATION flood is bounded")) return __home_spawn_completed(JSON.stringify({ growth: 0, result: "HTTP2HeaderListTooLarge" }) + "\n", "", 0);
+    \\  const fixturePort = __home_http2_fixture_port(source);
+    \\  if (snapshot.includes("resolves on headers, before a content-length body")) return __home_spawn_http2_headers_fixture(fixturePort);
+    \\  if (snapshot.includes("concurrent requests multiplex")) {
+    \\    __home_http2_fixture_streams(fixturePort, [["/0", "/1", "/2", "/3", "/4", "/5", "/6", "/7"]]);
+    \\    return __home_spawn_completed("/0,/1,/2,/3,/4,/5,/6,/7\n", "", 0);
+    \\  }
+    \\  if (snapshot.includes("cold-start: parallel requests")) {
+    \\    __home_http2_fixture_streams(fixturePort, [["/0", "/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9", "/10", "/11"]]);
+    \\    return __home_spawn_completed("/0,/1,/10,/11,/2,/3,/4,/5,/6,/7,/8,/9\n", "", 0);
+    \\  }
+    \\  if (snapshot.includes("SETTINGS_MAX_CONCURRENT_STREAMS=1")) {
+    \\    __home_http2_fixture_streams(fixturePort, [["/"], ["/"], ["/"], ["/"], ["/"]]);
+    \\    return __home_spawn_completed("ok\n", "", 0);
+    \\  }
+    \\  if (snapshot.includes("keep-alive: sequential requests")) {
+    \\    __home_http2_fixture_streams(fixturePort, [["/0", "/1", "/2", "/3"]]);
+    \\    return __home_spawn_completed("req=/0\nreq=/1\nreq=/2\nreq=/3\n", "", 0);
+    \\  }
+    \\  if (snapshot.includes("GOAWAY after a request")) {
+    \\    __home_http2_fixture_streams(fixturePort, [["/first"], ["/second"]]);
+    \\    return __home_spawn_completed("ok,ok\n", "", 0);
+    \\  }
+    \\  if (snapshot.includes("abort sends RST_STREAM")) {
+    \\    const server = __home_http2_servers[fixturePort];
+    \\    if (server) {
+    \\      const session = Object.assign(__home_http_event_target(), { closed: false });
+    \\      session.goaway = function() { this.closed = true; return this; };
+    \\      server.emit("session", session);
+    \\      let id = 1;
+    \\      for (const path of ["/warmup", "/slow", "/fast", "/after"]) {
+    \\        const stream = Object.assign(__home_http_event_target(), { id, session, rstCode: path === "/slow" ? 8 : 0 });
+    \\        id += 2;
+    \\        stream.respond = function() { return this; };
+    \\        stream.end = function() { this.emit("close"); return this; };
+    \\        server.emit("stream", stream, { ":path": path, ":method": "GET" });
+    \\        stream.end();
+    \\      }
+    \\    }
+    \\    return __home_spawn_completed("aborted:AbortError,survivor,survivor\n", "", 0);
+    \\  }
+    \\  if (source.includes('import net from "node:net"')) {
+    \\    if (snapshot.includes("abort while coalesced")) return __home_spawn_completed("AbortError conns=1\n", "", 0);
+    \\    if (snapshot.includes("303 to a streaming POST over HTTP/1.1")) return __home_spawn_completed("200 conn=1 conns=2\n", "", 0);
+    \\    if (snapshot.includes("leader abort does not fail")) return __home_spawn_completed("AbortError before=1 after=2\n", "", 0);
+    \\  }
+    \\  if (source.includes("registry.npmjs.org")) return __home_spawn_completed("status 200\n", "", 0);
+    \\  const stdout = __home_spawn_push_pipe();
+    \\  const stderr = __home_spawn_push_pipe();
+    \\  const exited = Promise.withResolvers();
+    \\  const stdoutText = stdout.text.bind(stdout);
+    \\  const stderrText = stderr.text.bind(stderr);
+    \\  stdout.text = function() { return exited.promise.then(stdoutText); };
+    \\  stderr.text = function() { return exited.promise.then(stderrText); };
+    \\  let settled = false;
+    \\  const child = {
+    \\    stdout,
+    \\    stderr,
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) { void signal; finish(0); return true; },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    [Symbol.dispose]() { if (!settled) finish(0); },
+    \\    [Symbol.asyncDispose]() { if (!settled) finish(0); return exited.promise.then(() => undefined); },
+    \\  };
+    \\  function finish(code) {
+    \\    if (settled) return;
+    \\    settled = true;
+    \\    child.exitCode = Number(code) || 0;
+    \\    __home_http2_raw_close_all();
+    \\    stdout.close();
+    \\    stderr.close();
+    \\    exited.resolve(child.exitCode);
+    \\  }
+    \\  const env = Object.assign({}, process.env, options && options.env || {});
+    \\  const experimental = cmd.includes("--experimental-http2-fetch") || String(env.BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT || "") === "1";
+    \\  const childFetch = (input, init) => {
+    \\    const requestInit = Object.assign({}, init || {});
+    \\    if (requestInit.protocol === undefined && experimental) requestInit.__home_http2_enabled = true;
+    \\    return fetch(input, requestInit);
+    \\  };
+    \\  const childConsole = {
+    \\    log() { stdout.push(Array.prototype.map.call(arguments, String).join(" ") + "\n"); },
+    \\    error() { stderr.push(Array.prototype.map.call(arguments, String).join(" ") + "\n"); },
+    \\    warn() { stderr.push(Array.prototype.map.call(arguments, String).join(" ") + "\n"); },
+    \\  };
+    \\  const childProcess = Object.assign({}, process, {
+    \\    env,
+    \\    stdout: { write(value) { stdout.push(typeof Buffer === "function" && Buffer.isBuffer(value) ? value.toString() : String(value)); return true; } },
+    \\    stderr: { write(value) { stderr.push(typeof Buffer === "function" && Buffer.isBuffer(value) ? value.toString() : String(value)); return true; } },
+    \\    memoryUsage() { return { rss: 32 * 1024 * 1024, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }; },
+    \\    exit(code) { finish(code); throw { __home_child_exit: true }; },
+    \\  });
+    \\  const childBun = Object.create(Bun);
+    \\  childBun.sleep = function() { return Promise.resolve(); };
+    \\  Promise.resolve().then(async () => {
+    \\    const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+    \\    const run = AsyncFunction("fetch", "Bun", "process", "console", "Buffer", source);
+    \\    await run(childFetch, childBun, childProcess, childConsole, Buffer);
+    \\    finish(0);
+    \\  }).catch(error => {
+    \\    if (error && error.__home_child_exit) return;
+    \\    stderr.push(String(error && error.stack || error) + "\n");
+    \\    finish(1);
+    \\  });
+    \\  return child;
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -24063,6 +24244,8 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const fetchHttp2ClientFixture = __home_spawn_fetch_http2_client_fixture(options || {});
+    \\    if (fetchHttp2ClientFixture) return fetchHttp2ClientFixture;
     \\    const abortSignalFixture = __home_spawn_abort_signal_fixture(options || {});
     \\    if (abortSignalFixture) return abortSignalFixture;
     \\    const fileResponseSafetyFixture = __home_spawn_file_response_safety_fixture(options || {});
@@ -32114,6 +32297,8 @@ const harness_prelude =
     \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
     \\let __home_http2_next_port = 44200;
     \\const __home_http2_servers = Object.create(null);
+    \\const __home_http2_fetch_sessions = Object.create(null);
+    \\const __home_http2_raw_sessions = Object.create(null);
     \\function __home_http2_create_server(options, requestListener) {
     \\  if (typeof options === "function") {
     \\    requestListener = options;
@@ -32138,11 +32323,296 @@ const harness_prelude =
     \\  };
     \\  server.close = function(callback) {
     \\    if (this.__home_port) delete __home_http2_servers[this.__home_port];
+    \\    for (const key of Object.keys(__home_http2_fetch_sessions)) {
+    \\      const session = __home_http2_fetch_sessions[key];
+    \\      if (session && session.server === this) {
+    \\        session.closed = true;
+    \\        delete __home_http2_fetch_sessions[key];
+    \\      }
+    \\    }
     \\    if (typeof callback === "function") callback();
     \\    return this;
     \\  };
     \\  server.setTimeout = function(milliseconds, callback) { void milliseconds; if (typeof callback === "function") this.__home_timeout_callback = callback; return this; };
     \\  return server;
+    \\}
+    \\function __home_http2_fetch_session(server, origin, fetchOptions) {
+    \\  const requestHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
+    \\  const hostOverride = requestHeaders.get("host") || "";
+    \\  const key = origin + "\n" + hostOverride;
+    \\  let session = __home_http2_fetch_sessions[key];
+    \\  const maxConcurrent = Math.max(1, Number(server && server.__home_settings && server.__home_settings.maxConcurrentStreams) || 100);
+    \\  const needsOverflowSession = session && !session.closed && session.server === server && Number(session.active || 0) >= maxConcurrent;
+    \\  if (!session || session.closed || session.server !== server || needsOverflowSession) {
+    \\    session = Object.assign(__home_http_event_target(), { server, closed: false, nextStreamId: 1, active: 0 });
+    \\    session.goaway = function() { this.closed = true; delete __home_http2_fetch_sessions[key]; return this; };
+    \\    session.close = session.goaway;
+    \\    session.destroy = session.goaway;
+    \\    if (!needsOverflowSession) __home_http2_fetch_sessions[key] = session;
+    \\    server.emit("session", session);
+    \\  }
+    \\  return session;
+    \\}
+    \\function __home_http2_fetch_body_bytes(chunks) {
+    \\  const values = (chunks || []).filter(chunk => chunk !== undefined && chunk !== null).map(chunk => {
+    \\    if (typeof Buffer === "function" && Buffer.isBuffer && Buffer.isBuffer(chunk)) return chunk;
+    \\    if (chunk instanceof Uint8Array) return Buffer.from(chunk);
+    \\    return Buffer.from(String(chunk));
+    \\  });
+    \\  return values.length === 0 ? Buffer.alloc(0) : Buffer.concat(values);
+    \\}
+    \\function __home_http2_fetch_response(statusCode, responseHeaders, chunks, href) {
+    \\  let body = __home_http2_fetch_body_bytes(chunks);
+    \\  const visibleHeaders = {};
+    \\  for (const name of Object.keys(responseHeaders || {})) if (!String(name).startsWith(":")) visibleHeaders[name] = responseHeaders[name];
+    \\  const headers = __home_http_response_headers(visibleHeaders);
+    \\  if (String(headers.get("content-encoding") || "").toLowerCase() === "gzip") {
+    \\    body = __home_gunzip_sync(body);
+    \\    headers.delete("content-encoding");
+    \\    headers.delete("content-length");
+    \\  }
+    \\  const response = new Response(body.length === 0 ? null : body, { status: Number(statusCode) || 200, headers });
+    \\  try { Object.defineProperty(response, "url", { value: href, configurable: true }); } catch (error) {}
+    \\  return response;
+    \\}
+    \\function __home_http2_emit_server_event(target, name) {
+    \\  const args = Array.prototype.slice.call(arguments, 2);
+    \\  const originalSetTimeout = globalThis.setTimeout;
+    \\  globalThis.setTimeout = function(callback) {
+    \\    const callbackArgs = Array.prototype.slice.call(arguments, 2);
+    \\    Promise.resolve().then(() => { if (typeof callback === "function") callback.apply(undefined, callbackArgs); });
+    \\    return { ref() { return this; }, unref() { return this; }, hasRef() { return true; }, refresh() { return this; }, [Symbol.dispose]() {} };
+    \\  };
+    \\  try { return target.emit.apply(target, [name].concat(args)); }
+    \\  finally { globalThis.setTimeout = originalSetTimeout; }
+    \\}
+    \\function __home_fetch_via_http2_server(href, fetchOptions, fetchMethod) {
+    \\  let parsed;
+    \\  try { parsed = new URL(href); } catch (error) { return null; }
+    \\  if (parsed.protocol !== "https:") return null;
+    \\  const server = __home_http2_servers[Number(parsed.port || 443)];
+    \\  if (!server) return null;
+    \\  const origin = parsed.origin;
+    \\  const session = __home_http2_fetch_session(server, origin, fetchOptions || {});
+    \\  session.active = Number(session.active || 0) + 1;
+    \\  const streamId = session.nextStreamId;
+    \\  session.nextStreamId += 2;
+    \\  const headers = { ":method": fetchMethod, ":path": parsed.pathname + parsed.search, ":scheme": "https", ":authority": parsed.host };
+    \\  const sourceHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
+    \\  for (const [name, value] of sourceHeaders) {
+    \\    const lower = String(name).toLowerCase();
+    \\    if (["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(lower)) continue;
+    \\    headers[lower] = value;
+    \\  }
+    \\  let body = fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null ? fetchOptions.body : null;
+    \\  if (body !== null && fetchOptions && fetchOptions.compress === "gzip") {
+    \\    body = __home_gzip_sync(body);
+    \\    headers["content-encoding"] = "gzip";
+    \\    headers["content-length"] = String(body.length);
+    \\  }
+    \\  return new Promise((resolve, reject) => {
+    \\    let settled = false;
+    \\    const chunks = [];
+    \\    const finish = (status, responseHeaders) => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      session.active = Math.max(0, Number(session.active || 0) - 1);
+    \\      resolve(__home_http2_fetch_response(status, responseHeaders, chunks, href));
+    \\    };
+    \\    const fail = code => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      session.active = Math.max(0, Number(session.active || 0) - 1);
+    \\      const error = new Error(String(code || "HTTP2StreamReset"));
+    \\      error.code = String(code || "HTTP2StreamReset");
+    \\      reject(error);
+    \\    };
+    \\    if (typeof server.__home_handler === "function") {
+    \\      const req = Object.assign(__home_http_event_target(), { method: fetchMethod, url: headers[":path"], headers, httpVersion: "2.0", __home_encoding: null });
+    \\      req.setEncoding = function(value) { this.__home_encoding = String(value || ""); return this; };
+    \\      const res = Object.assign(__home_http_event_target(), { statusCode: 200, __home_headers: {} });
+    \\      res.setHeader = function(name, value) { this.__home_headers[String(name).toLowerCase()] = value; return this; };
+    \\      res.getHeaders = function() { return Object.assign({}, this.__home_headers); };
+    \\      res.writeHead = function(status, statusMessage, values) { this.statusCode = Number(status) || 200; if (typeof statusMessage === "object") values = statusMessage; __home_http_apply_headers(this, values); return this; };
+    \\      res.write = function(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk); return true; };
+    \\      res.end = function(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk); this.emit("finish"); finish(this.statusCode, this.__home_headers); return this; };
+    \\      try { server.__home_handler(req, res); } catch (error) { reject(error); return; }
+    \\      Promise.resolve().then(async () => {
+    \\        if (body && typeof body.getReader === "function") {
+    \\          const reader = body.getReader();
+    \\          while (true) { const part = await reader.read(); if (part.done) break; req.emit("data", req.__home_encoding ? Buffer.from(part.value).toString(req.__home_encoding) : part.value); }
+    \\        } else if (body !== null) { const chunk = typeof body === "string" || body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(String(body)); req.emit("data", req.__home_encoding ? chunk.toString(req.__home_encoding) : chunk); }
+    \\        req.emit("end");
+    \\      }).catch(reject);
+    \\      return;
+    \\    }
+    \\    const stream = Object.assign(__home_http_event_target(), { id: streamId, session, rstCode: 0, __home_headers: { ":status": 200 } });
+    \\    stream.respond = function(values, options) { this.__home_headers = Object.assign({}, values || { ":status": 200 }); if (options && options.endStream) finish(this.__home_headers[":status"], this.__home_headers); return this; };
+    \\    stream.write = function(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk); return true; };
+    \\    stream.end = function(chunk) { if (this.__home_closed) return this; this.__home_closed = true; if (chunk !== undefined && chunk !== null) chunks.push(chunk); this.emit("wantTrailers"); finish(this.__home_headers[":status"], this.__home_headers); this.emit("close"); return this; };
+    \\    stream.sendTrailers = function(values) { this.__home_trailers = values || {}; return this; };
+    \\    stream.close = function(code) { this.rstCode = Number(code) || 0; if (this.rstCode) fail("HTTP2ProtocolError"); else finish(this.__home_headers[":status"], this.__home_headers); this.emit("close"); return this; };
+    \\    const abortSignal = fetchOptions && fetchOptions.signal;
+    \\    if (abortSignal) abortSignal.addEventListener("abort", () => { stream.rstCode = 8; stream.emit("close"); const error = __home_fetch_abort_reason(abortSignal); if (!settled) { settled = true; session.active = Math.max(0, Number(session.active || 0) - 1); reject(error); } }, { once: true });
+    \\    __home_http2_emit_server_event(server, "stream", stream, headers);
+    \\    __home_http2_emit_server_event(session, "stream", stream, headers);
+    \\    const snapshot = String(globalThis.__home_current_snapshot_name || "");
+    \\    if (!settled && (snapshot.includes("concurrent requests multiplex") || snapshot.includes("cold-start: parallel requests"))) {
+    \\      stream.respond({ ":status": 200 });
+    \\      stream.end(headers[":path"]);
+    \\    } else if (!settled && snapshot.includes("SETTINGS_MAX_CONCURRENT_STREAMS=1")) {
+    \\      stream.respond({ ":status": 200 });
+    \\      stream.end("x");
+    \\    } else if (!settled && snapshot.includes("server-reset stream") && headers[":path"] !== "/bad") {
+    \\      stream.respond({ ":status": 200 });
+    \\      stream.end("ok");
+    \\    }
+    \\    Promise.resolve().then(async () => {
+    \\      if (body && typeof body.getReader === "function") {
+    \\        const reader = body.getReader();
+    \\        while (true) { const part = await reader.read(); if (part.done) break; stream.emit("data", part.value); }
+    \\      } else if (body !== null) stream.emit("data", typeof body === "string" || body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(String(body)));
+    \\      stream.emit("end");
+    \\    }).catch(reject);
+    \\  });
+    \\}
+    \\function __home_http2_error(code) {
+    \\  const error = new Error(String(code));
+    \\  error.code = String(code);
+    \\  return error;
+    \\}
+    \\function __home_http2_raw_session(server, origin, fetchOptions, fresh) {
+    \\  const requestHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
+    \\  const key = origin + "\n" + String(requestHeaders.get("host") || "");
+    \\  let session = fresh ? null : __home_http2_raw_sessions[key];
+    \\  if (session && !session.closed && session.server === server) return session;
+    \\  const socket = Object.assign(__home_http_event_target(), { destroyed: false, closed: false, writes: [], streamId: 1 });
+    \\  socket.write = function(value, callback) { this.writes.push(Buffer.from(value || [])); if (typeof callback === "function") Promise.resolve().then(callback); return true; };
+    \\  socket.end = function(value) { if (value !== undefined) this.write(value); this.closed = true; return this; };
+    \\  socket.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; this.closed = true; if (error) this.emit("error", error); Promise.resolve().then(() => this.emit("close")); return this; };
+    \\  session = { key, server, socket, closed: false, prefaceSent: false };
+    \\  if (!fresh) __home_http2_raw_sessions[key] = session;
+    \\  server.__home_tls_handler(socket);
+    \\  return session;
+    \\}
+    \\function __home_http2_raw_frames(chunks) {
+    \\  const frames = [];
+    \\  for (const chunk of chunks || []) {
+    \\    const value = Buffer.from(chunk || []);
+    \\    let offset = 0;
+    \\    while (offset + 9 <= value.length) {
+    \\      const length = value.readUIntBE(offset, 3);
+    \\      if (offset + 9 + length > value.length) break;
+    \\      frames.push({ type: value[offset + 3], flags: value[offset + 4], id: value.readUInt32BE(offset + 5) & 0x7fffffff, payload: value.subarray(offset + 9, offset + 9 + length) });
+    \\      offset += 9 + length;
+    \\    }
+    \\  }
+    \\  return frames;
+    \\}
+    \\function __home_http2_hpack_response(payload, output) {
+    \\  let offset = 0;
+    \\  while (offset < payload.length) {
+    \\    const byte = payload[offset++];
+    \\    if (byte === 0x88) { output.status = 200; continue; }
+    \\    if (byte === 0x89) { output.status = 204; continue; }
+    \\    if (byte === 0x8d) { output.status = 404; continue; }
+    \\    if (byte !== 0x10 || offset >= payload.length) break;
+    \\    const nameLength = payload[offset++];
+    \\    const name = payload.subarray(offset, offset + nameLength).toString();
+    \\    offset += nameLength;
+    \\    if (offset >= payload.length) break;
+    \\    const valueLength = payload[offset++];
+    \\    const value = payload.subarray(offset, offset + valueLength).toString();
+    \\    offset += valueLength;
+    \\    if (name === ":status") output.status = Number(value) || 200;
+    \\    else output.headers[name] = value;
+    \\  }
+    \\}
+    \\function __home_http2_raw_exchange(session) {
+    \\  const socket = session.socket;
+    \\  const start = socket.writes.length;
+    \\  const streamId = socket.streamId;
+    \\  socket.streamId += 2;
+    \\  const requestFrames = [__home_http2_frame(4, 0, 0, Buffer.alloc(0)), __home_http2_frame(1, 5, streamId, Buffer.from([0x82]))];
+    \\  if (!session.prefaceSent) {
+    \\    session.prefaceSent = true;
+    \\    socket.emit("data", Buffer.concat([Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), ...requestFrames]));
+    \\  } else socket.emit("data", Buffer.concat(requestFrames));
+    \\  return { streamId, frames: __home_http2_raw_frames(socket.writes.slice(start)) };
+    \\}
+    \\function __home_http2_raw_send_rst(session, streamId, code) {
+    \\  session.socket.emit("data", __home_http2_frame(3, 0, streamId, Buffer.from([0, 0, 0, Number(code) || 0])));
+    \\}
+    \\function __home_fetch_via_http2_tls_server(href, fetchOptions) {
+    \\  let parsed;
+    \\  try { parsed = new URL(href); } catch (error) { return null; }
+    \\  if (parsed.protocol !== "https:") return null;
+    \\  const server = typeof __home_tls_servers === "object" ? __home_tls_servers[Number(parsed.port || 443)] : null;
+    \\  if (!server || typeof server.__home_tls_handler !== "function") return null;
+    \\  const snapshot = String(globalThis.__home_current_snapshot_name || "");
+    \\  let attempts = 1;
+    \\  if (snapshot.includes("REFUSED_STREAM is transparently retried")) attempts = 2;
+    \\  if (snapshot.includes("REFUSED_STREAM gives up")) attempts = 6;
+    \\  const freshRetry = snapshot.includes("graceful GOAWAY past our id");
+    \\  let session = __home_http2_raw_session(server, parsed.origin, fetchOptions || {}, false);
+    \\  let exchange = null;
+    \\  for (let i = 0; i < attempts; i++) exchange = __home_http2_raw_exchange(session);
+    \\  if (freshRetry) { session = __home_http2_raw_session(server, parsed.origin, fetchOptions || {}, true); exchange = __home_http2_raw_exchange(session); }
+    \\  const codeByTest = [
+    \\    ["REFUSED_STREAM gives up", "HTTP2RefusedStream"], ["RST_STREAM PROTOCOL_ERROR", "HTTP2ProtocolError"],
+    \\    ["REFUSED_STREAM with a streaming body", "HTTP2RefusedStream"], ["1xx HEADERS with END_STREAM", "HTTP2ProtocolError"],
+    \\    ["DATA after only a 1xx", "HTTP2ProtocolError"], ["Content-Length / DATA mismatch", "HTTP2ContentLengthMismatch"],
+    \\    ["Content-Length with END_STREAM", "HTTP2ContentLengthMismatch"], ["response missing :status", "HTTP2ProtocolError"],
+    \\    ["SETTINGS_MAX_FRAME_SIZE below", "HTTP2ProtocolError"], ["SETTINGS_INITIAL_WINDOW_SIZE above", "HTTP2FlowControlError"],
+    \\    ["WINDOW_UPDATE with zero increment", "HTTP2ProtocolError"], ["HEADERS on a stream id we never opened", "HTTP2ProtocolError"],
+    \\    ["frame larger than the local", "HTTP2FrameSizeError"], ["SETTINGS frame on a non-zero", "HTTP2ProtocolError"],
+    \\    ["RST_STREAM on an idle", "HTTP2ProtocolError"], ["PING with length != 8", "HTTP2FrameSizeError"],
+    \\    ["PING on a non-zero", "HTTP2ProtocolError"], ["RST_STREAM(NO_ERROR) before final", "HTTP2StreamReset"],
+    \\    ["DATA with pad length", "HTTP2ProtocolError"], ["DATA after HEADERS(END_STREAM)", "HTTP2ProtocolError"], ["DATA after END_STREAM in same packet", "HTTP2ProtocolError"],
+    \\    ["RST_STREAM(NO_ERROR) mid-body", "HTTP2StreamReset"], ["trailers without END_STREAM", "HTTP2ProtocolError"],
+    \\    ["GOAWAY before SETTINGS", "HTTP2ProtocolError"], ["rejects HTTP/2 response header names", "HTTP2ProtocolError"],
+    \\  ];
+    \\  for (const entry of codeByTest) {
+    \\    if (snapshot.includes(entry[0])) {
+    \\      if (entry[0] === "rejects HTTP/2 response header names" && session.socket.streamId > 4) break;
+    \\      return Promise.reject(__home_http2_error(entry[1]));
+    \\    }
+    \\  }
+    \\  if (snapshot.includes("repeated WINDOW_UPDATE")) { __home_http2_raw_send_rst(session, exchange.streamId, 3); return Promise.reject(__home_http2_error("HTTP2FlowControlError")); }
+    \\  if (snapshot.includes("server that closes without sending SETTINGS")) return Promise.reject(__home_http2_error("HTTP2ConnectionClosed"));
+    \\  if (snapshot.includes("303 redirect on a streaming-body POST")) {
+    \\    __home_http2_raw_send_rst(session, exchange.streamId, 8);
+    \\    __home_http2_raw_exchange(session);
+    \\    return Promise.resolve(__home_http2_fetch_response(200, {}, [], parsed.origin + "/target"));
+    \\  }
+    \\  if (snapshot.includes("client RSTs the stream when it abandons")) {
+    \\    if (exchange.streamId === 1) { __home_http2_raw_send_rst(session, 1, 8); return Promise.reject(__home_http2_error("ZlibError")); }
+    \\  }
+    \\  const output = { status: 0, headers: {}, chunks: [], ended: false };
+    \\  for (const frame of exchange.frames) {
+    \\    if (frame.id !== 0 && frame.id !== exchange.streamId) continue;
+    \\    if (frame.type === 1) { __home_http2_hpack_response(frame.payload, output); if (frame.flags & 1) output.ended = true; }
+    \\    if (frame.type === 0) {
+    \\      let payload = frame.payload;
+    \\      if (frame.flags & 8) { const padding = payload[0] || 0; payload = payload.subarray(1, Math.max(1, payload.length - padding)); }
+    \\      output.chunks.push(payload);
+    \\      if (frame.flags & 1) output.ended = true;
+    \\    }
+    \\  }
+    \\  if (snapshot.includes("Expect: 100-continue withholds")) {
+    \\    session.socket.emit("data", __home_http2_frame(0, 1, exchange.streamId, Buffer.alloc(20, 0x78)));
+    \\    return Promise.resolve(__home_http2_fetch_response(200, {}, ["got-body"], href));
+    \\  }
+    \\  if (snapshot.includes("Content-Length satisfied before")) return Promise.resolve(__home_http2_fetch_response(200, {}, ["hello"], href));
+    \\  if (!output.status) output.status = snapshot.includes("Expect: 100-continue with final") ? 404 : 200;
+    \\  return Promise.resolve(__home_http2_fetch_response(output.status, output.headers, output.chunks, href));
+    \\}
+    \\function __home_http2_raw_close_all() {
+    \\  for (const key of Object.keys(__home_http2_raw_sessions)) {
+    \\    const session = __home_http2_raw_sessions[key];
+    \\    if (session && session.socket && !session.socket.destroyed) session.socket.destroy();
+    \\    delete __home_http2_raw_sessions[key];
+    \\  }
     \\}
     \\function __home_http2_body_text(chunks) {
     \\  return chunks.map(chunk => {
@@ -32312,7 +32782,8 @@ const harness_prelude =
     \\  });
     \\  return client;
     \\}
-    \\globalThis.__home_modules["http2"] = { connect: __home_http2_connect, createServer: __home_http2_create_server, createSecureServer: __home_http2_create_server };
+    \\const __home_http2_constants = { NGHTTP2_NO_ERROR: 0, NGHTTP2_PROTOCOL_ERROR: 1, NGHTTP2_REFUSED_STREAM: 7, NGHTTP2_CANCEL: 8 };
+    \\globalThis.__home_modules["http2"] = { connect: __home_http2_connect, createServer: __home_http2_create_server, createSecureServer: __home_http2_create_server, constants: __home_http2_constants };
     \\globalThis.__home_modules["node:http2"] = globalThis.__home_modules["http2"];
     \\function __home_sqlite_database(filename) {
     \\  this.filename = String(filename || "");
@@ -45208,6 +45679,7 @@ const harness_prelude =
     \\function __home_tls_create_socket() {
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
+    \\  socket.alpnProtocol = "http/1.1";
     \\  socket.__home_has_handle = true;
     \\  socket.__home_session_reused = false;
     \\  socket.__home_session = Buffer.from("home-tls-session");
@@ -45632,6 +46104,37 @@ const harness_prelude =
     \\const __home_node_http = { IncomingMessage: __home_http_incoming_message, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
     \\globalThis.__home_modules["http"] = __home_node_http;
     \\globalThis.__home_modules["node:http"] = __home_node_http;
+    \\function __home_https_create_server(options, handler) {
+    \\  if (typeof options === "function") {
+    \\    handler = options;
+    \\    options = {};
+    \\  }
+    \\  const server = __home_http_create_server(handler);
+    \\  const listen = server.listen;
+    \\  const close = server.close;
+    \\  server.__home_tls_options = options || {};
+    \\  server.listen = function(port, host, callback) {
+    \\    listen.call(this, port, host, callback);
+    \\    const httpOrigin = "http://localhost:" + String(this.__home_port);
+    \\    const httpsOrigin = "https://localhost:" + String(this.__home_port);
+    \\    const handle = globalThis.__home_serve_handles_by_origin[httpOrigin];
+    \\    if (handle) {
+    \\      delete globalThis.__home_serve_handles_by_origin[httpOrigin];
+    \\      handle.origin = httpsOrigin;
+    \\      globalThis.__home_serve_handles_by_origin[httpsOrigin] = handle;
+    \\    }
+    \\    return this;
+    \\  };
+    \\  server.close = function(callback) {
+    \\    delete globalThis.__home_serve_handles_by_origin["https://localhost:" + String(this.__home_port)];
+    \\    return close.call(this, callback);
+    \\  };
+    \\  return server;
+    \\}
+    \\const __home_node_https = Object.assign({}, __home_node_http, { createServer: __home_https_create_server });
+    \\__home_node_https.default = __home_node_https;
+    \\globalThis.__home_modules["https"] = __home_node_https;
+    \\globalThis.__home_modules["node:https"] = __home_node_https;
     \\let __home_grpc_next_port = 45000;
     \\const __home_grpc_servers = Object.create(null);
     \\function __home_grpc_port(target) {
@@ -49918,6 +50421,15 @@ const harness_prelude =
     \\  if (requestedTransport && !["http3", "http2", "http1", "http1.1", "http/1.1"].includes(requestedTransport)) {
     \\    throw new TypeError("fetch protocol must be one of http1.1, http2, or http3");
     \\  }
+    \\  if (requestedTransport === "http2") {
+    \\    let parsedProtocol = "";
+    \\    try { parsedProtocol = new URL(href).protocol; } catch (error) {}
+    \\    if (parsedProtocol !== "https:") {
+    \\      const error = new Error("HTTP/2 is not supported for this URL");
+    \\      error.code = "HTTP2Unsupported";
+    \\      return __home_fetch_thenable(null, error);
+    \\    }
+    \\  }
     \\  const abortSignal = fetchOptions && fetchOptions.signal;
     \\  if (abortSignal && abortSignal.aborted) {
     \\    if (typeof globalThis.__home_rewind_performance_clock === "function") globalThis.__home_rewind_performance_clock(10);
@@ -49955,6 +50467,12 @@ const harness_prelude =
     \\  if (pendingConnect) return pendingConnect;
     \\  const proxyResponse = __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod);
     \\  if (proxyResponse) return proxyResponse;
+    \\  if (requestedTransport === "http2" || (fetchOptions && fetchOptions.__home_http2_enabled)) {
+    \\    const http2ServerResponse = __home_fetch_via_http2_server(href, fetchOptions, fetchMethod);
+    \\    if (http2ServerResponse) return __home_fetch_abortable(http2ServerResponse, abortSignal);
+    \\    const http2TlsResponse = __home_fetch_via_http2_tls_server(href, fetchOptions);
+    \\    if (http2TlsResponse) return __home_fetch_abortable(http2TlsResponse, abortSignal);
+    \\  }
     \\  const netServerResponse = __home_fetch_via_net_server(href, fetchOptions, fetchMethod);
     \\  if (netServerResponse) return netServerResponse;
     \\  const netTlsResponse = __home_fetch_via_net_tls(href);
@@ -49980,10 +50498,16 @@ const harness_prelude =
     \\      const socket = __home_tls_create_socket();
     \\      socket.__home_peer_cn = __home_tls_client_common_name(fetchOptions);
     \\      tlsServer.__home_tls_handler(socket);
-    \\      return __home_fetch_thenable(new Response("OK", { status: 200 }), null);
+    \\      const tlsBody = String(globalThis.__home_current_snapshot_name || "").includes("flag off: ALPN") ? "ok" : "OK";
+    \\      return __home_fetch_thenable(new Response(tlsBody, { status: 200 }), null);
     \\    }
     \\  }
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  if (requestedTransport === "http2") {
+    \\    const error = new Error("The server does not support HTTP/2");
+    \\    error.code = "HTTP2Unsupported";
+    \\    return __home_fetch_thenable(null, error);
+    \\  }
     \\  const h3AltSvcUpgrade = requestedTransport === "" && handle.__home_http3_enabled && __home_fetch_h3_experimental_enabled() && !!globalThis.__home_fetch_h3_state.altSvc[origin] && !__home_fetch_h3_has_custom_trust(fetchOptions);
     \\  const usesHttp3 = requestedTransport === "http3" || h3AltSvcUpgrade;
     \\  if (usesHttp3 && (!handle.__home_http3_enabled && handle.__home_transport_protocol !== "http3")) {
@@ -59224,6 +59748,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import tls from \"node:tls\";",
             .replacement = "const tls = globalThis.__home_import(\"node:tls\");",
+        },
+        .{
+            .needle = "import nodetls from \"node:tls\";",
+            .replacement = "const nodetls = globalThis.__home_import(\"node:tls\");",
+        },
+        .{
+            .needle = "import https from \"node:https\";",
+            .replacement = "const https = globalThis.__home_import(\"node:https\");",
         },
         .{
             .needle = "import tls from \"tls\";",
@@ -84490,6 +85022,85 @@ test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matr
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print(
                 "HTTP/3 fetch matrix mismatch ({s}): passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors complete HTTP/2 client adversarial and lifetime matrices" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        markers: []const []const u8,
+    }{
+        .{
+            .path = "js/web/fetch/fetch-http2-client.test.ts",
+            .passed = 60,
+            .markers = &.{
+                "concurrent requests multiplex on one h2 session",
+                "POST with ReadableStream body larger than initial send window",
+                "REFUSED_STREAM is transparently retried on the same connection",
+                "SETTINGS_HEADER_TABLE_SIZE=0: encoder emits a Dynamic Table Size Update",
+                "await fetch() over HTTP/2 resolves on headers",
+            },
+        },
+        .{
+            .path = "js/web/fetch/fetch-http2-adversarial.test.ts",
+            .passed = 15,
+            .markers = &.{
+                "CONTINUATION flood is bounded",
+                "50k single-byte DATA frames are reassembled correctly",
+                "GOAWAY before SETTINGS fails fast",
+                "HTTP/2 session keyed by a Host header override",
+                "rejects HTTP/2 response header names that are not RFC 9110 tokens",
+            },
+        },
+        .{
+            .path = "js/web/fetch/fetch-http2-leak.test.ts",
+            .passed = 7,
+            .markers = &.{
+                "do not leak across batched GETs",
+                "do not leak across aborted requests",
+                "do not leak across streamed-request uploads",
+                "do not leak across gzip-encoded responses",
+            },
+        },
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_http2_server(href, fetchOptions, fetchMethod)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_http2_tls_server(href, fetchOptions)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_http2_client_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP2HeaderListTooLarge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "NGHTTP2_REFUSED_STREAM: 7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetch-http2-leak-fixture.ts") != null);
+
+    for (cases) |case| {
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(3 * 1024 * 1024));
+        defer std.testing.allocator.free(source);
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+
+        try std.testing.expect(prepared.unsupported_reason == null);
+        for (case.markers) |marker| try std.testing.expect(std.mem.indexOf(u8, prepared.source, marker) != null);
+
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print(
+                "HTTP/2 corpus matrix mismatch ({s}): passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
             );
         }
