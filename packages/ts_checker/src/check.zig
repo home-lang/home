@@ -29759,7 +29759,14 @@ pub const Checker = struct {
                     try self.reportUnresolvedBodylessSignatureTypeRefs(arg, type_params);
                 }
                 if (self.importTypeModuleSpecifier(type_node) != null) return;
-                if (r.qualifier_len != 0) return;
+                if (r.qualifier_len != 0) {
+                    if (self.typeAnnotationContainsUnresolvedRef(type_node) and
+                        (try self.resolveQualifiedTypeRef(type_node)) == null)
+                    {
+                        try self.reportCannotFindNamespaceForQualifiedTypeRef(type_node);
+                    }
+                    return;
+                }
                 if (self.typeParamNameMatches(r.name, type_params)) return;
                 if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return;
                 if (try self.resolveUnqualifiedImportEqualsTypeRef(type_node, r.name)) |_| return;
@@ -29771,7 +29778,13 @@ pub const Checker = struct {
                     try self.reportCannotFindNamePlainOnce(type_node, r.name);
                     return;
                 }
-                if (r.args_len != 0 and self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, raw)) return;
+                if (r.args_len != 0) {
+                    if (self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, raw)) return;
+                    if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
+                        try self.reportTypeNotGeneric(type_node, r.name);
+                        return;
+                    }
+                }
                 if (self.lowerBuiltinObjectType(raw) != null) return;
                 if (std.mem.eql(u8, raw, "Null") or std.mem.eql(u8, raw, "Undefined")) {
                     try self.reportCannotFindNamePlainOnce(type_node, r.name);
@@ -61657,6 +61670,7 @@ pub const Checker = struct {
     }
 
     fn reportTypeNotGeneric(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        if (self.diagnosticExists(node, TsCodes.type_not_generic)) return;
         const raw = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -65467,16 +65481,19 @@ pub const Checker = struct {
         for (args) |arg| {
             if (self.hir.kindOf(arg) != .type_ref) continue;
             const r = hir_mod.typeRefOf(self.hir, arg);
-            if (r.qualifier_len != 0) continue;
-            const name_str = self.string_interner.get(r.name);
-            if (isPrimitiveTypeNameText(name_str)) continue;
-            if (self.lookupNarrow(r.name) != null) continue;
-            if (self.isBuiltinName(r.name)) continue;
-            if ((try self.importedTypeRefForLocal(r.name, arg)) != null) continue;
-            if ((try self.importedReferenceLibTypeForLocal(r.name, arg)) != null) continue;
-            if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(arg, r.name)) continue;
-            if (self.typeRefNameAcceptsTypeArgsAt(arg, r.name, name_str)) continue;
-            try self.reportCannotFindNameOnce(arg, r.name);
+            if (r.qualifier_len == 0) {
+                const name_str = self.string_interner.get(r.name);
+                const resolves = isPrimitiveTypeNameText(name_str) or
+                    self.lookupNarrow(r.name) != null or
+                    self.isBuiltinName(r.name) or
+                    (try self.importedTypeRefForLocal(r.name, arg)) != null or
+                    (try self.importedReferenceLibTypeForLocal(r.name, arg)) != null or
+                    self.typeRefNameExists(r.name) or
+                    self.visibleTypeDeclarationExistsAt(arg, r.name) or
+                    self.typeRefNameAcceptsTypeArgsAt(arg, r.name, name_str);
+                if (!resolves) try self.reportCannotFindNameOnce(arg, r.name);
+            }
+            try self.reportUnresolvedCallTypeArgumentNodes(hir_mod.typeRefArgs(self.hir, arg));
         }
     }
 
@@ -65780,9 +65797,11 @@ pub const Checker = struct {
                 "Cannot find namespace '{s}'.",
                 .{root_text},
             );
+        const code = if (suggestion != null) TsCodes.cannot_find_namespace_did_you_mean else TsCodes.cannot_find_namespace;
+        if (self.diagnosticExists(qualifiers[0], code)) return;
         try self.diagnostics.append(self.gpa, .{
             .node = qualifiers[0],
-            .code = if (suggestion != null) TsCodes.cannot_find_namespace_did_you_mean else TsCodes.cannot_find_namespace,
+            .code = code,
             .message = msg,
         });
     }
@@ -218419,6 +218438,28 @@ test "checker: GH58603 negative — genuinely-missing namespace still errors" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCode(b, TsCodes.cannot_find_namespace));
+}
+
+test "checker: unresolved generic variable annotations preserve outer diagnostics" {
+    const b = try newBoundSetup(
+        \\class C {}
+        \\var c: C<T>;
+        \\var e: E.F<T>;
+        \\var g: G.H.I<T>;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_generic));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.cannot_find_namespace));
+}
+
+test "checker: unresolved heritage type arguments recurse through nested generics" {
+    const b = try newBoundSetup(
+        \\class C extends A<X<T>, Y<Z<T>>> implements B<X<T>, Y<Z<T>>> {}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 12), checkerCountCode(b.base, TsCodes.cannot_find_name));
 }
 
 test "checker: GH58603 fix preserves genuine merged-enum TS2432" {
