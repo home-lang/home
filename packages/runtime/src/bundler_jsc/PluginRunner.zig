@@ -10,12 +10,13 @@ pub const PluginRunner = struct {
 
     pub fn extractNamespace(specifier: string) string {
         const colon = strings.indexOfChar(specifier, ':') orelse return "";
-        if (Environment.isWindows and
-            colon == 1 and
-            specifier.len > 3 and
-            bun.path.isSepAny(specifier[2]) and
-            ((specifier[0] > 'a' and specifier[0] < 'z') or (specifier[0] > 'A' and specifier[0] < 'Z')))
-            return "";
+        // Module keys can contain Windows absolute paths even when the host is
+        // not Windows (for example, a literal import passed through a plugin).
+        // Never treat the drive letter as a one-character plugin namespace.
+        if (colon == 1 and
+            specifier.len > 2 and
+            std.ascii.isAlphabetic(specifier[0]) and
+            bun.path.isSepAny(specifier[2])) return "";
         return specifier[0..colon];
     }
 
@@ -234,7 +235,6 @@ const string = []const u8;
 const std = @import("std");
 
 const bun = @import("home");
-const Environment = bun.Environment;
 const Fs = bun.fs;
 const jsc = bun.jsc;
 const logger = bun.logger;

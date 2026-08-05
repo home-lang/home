@@ -1144,6 +1144,17 @@ pub const Resolver = struct {
 
         var import_path = input_import_path;
 
+        // A module graph can contain a Windows drive path even on a POSIX
+        // host (notably when a plugin sees a literal such as `C:\\x.js`). It
+        // cannot name a file on this host, and treating it as a package path
+        // eventually asks dirInfoCached() to open a non-absolute `C:/...`
+        // directory. Reject it as unresolved instead of reaching that assert.
+        if (!Environment.isWindows and
+            import_path.len > 2 and
+            std.ascii.isAlphabetic(import_path[0]) and
+            import_path[1] == ':' and
+            bun.path.isSepAny(import_path[2])) return .{ .not_found = {} };
+
         // This implements the module resolution algorithm from node.js, which is
         // described here: https://nodejs.org/api/modules.html#modules_all_together
         var result: Result = Result{
