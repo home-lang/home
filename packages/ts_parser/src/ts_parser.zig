@@ -2086,6 +2086,20 @@ pub const Parser = struct {
             return dec;
         }
         const t = self.peek();
+        if (t.kind == .identifier and self.peekAt(1).kind == .open_brace) {
+            const name_text = self.source[t.span.start..t.span.end];
+            if (try self.statementKeywordSpaceSuggestion(name_text)) |suggestion| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Unknown keyword or identifier. Did you mean '{s}'?",
+                    .{suggestion},
+                );
+                try self.reportCodeAt(t.span.start, t.line, 1435, msg);
+                try self.reportCannotFindNameToken(t);
+                _ = self.advance();
+                return try self.parseBlockStatement();
+            }
+        }
         // `await using` is parsed as a single `using` declaration; the
         // generic TS1036 ambient-statement gate would otherwise fire on
         // the leading `await` token before the dispatch reroutes it.
@@ -7039,6 +7053,19 @@ pub const Parser = struct {
         return if (best != null and best_distance <= threshold) best else null;
     }
 
+    fn statementKeywordSpaceSuggestion(self: *Parser, name: []const u8) ParseError!?[]const u8 {
+        const candidates = [_][]const u8{
+            "class",
+            "enum",
+            "function",
+            "interface",
+            "module",
+            "namespace",
+            "type",
+        };
+        return try self.spaceSeparatedKeywordSuggestion(name, &candidates);
+    }
+
     fn spaceSeparatedKeywordSuggestion(self: *Parser, name: []const u8, candidates: []const []const u8) ParseError!?[]const u8 {
         for (candidates) |candidate| {
             if (name.len > candidate.len + 2 and std.mem.startsWith(u8, name, candidate)) {
@@ -7625,10 +7652,7 @@ pub const Parser = struct {
             self.advance()
         else blk: {
             const at = self.peek();
-            const suppress_after_unterminated_type_args = at.kind == .eof and
-                self.diagnostics.items.len > 0 and
-                self.diagnostics.items[self.diagnostics.items.len - 1].code == 1005 and
-                std.mem.eql(u8, self.diagnostics.items[self.diagnostics.items.len - 1].message, "'>' expected.");
+            const suppress_after_unterminated_type_args = self.shouldSuppressMissingCloseAfterUnterminatedTypeArgs(at);
             if (!suppress_after_unterminated_type_args) {
                 try self.reportCodeAtWithMatchedPair(
                     at.span.start,
@@ -8042,6 +8066,9 @@ pub const Parser = struct {
             const close = self.peek();
             if (close.kind == .eof and self.enum_recovered_missing_close_at_eof) {
                 self.enum_recovered_missing_close_at_eof = false;
+            } else if (self.shouldSuppressMissingCloseAfterUnterminatedTypeArgs(close)) {
+                // The unterminated generic already explains why every
+                // enclosing declaration reaches EOF without its close brace.
             } else {
                 try self.reportCodeAtWithMatchedPair(
                     close.span.start,
@@ -14468,7 +14495,16 @@ pub const Parser = struct {
         const after_kind = self.tokens[after_paren_idx].kind;
         const recover_missing_arrow_before_block = after_kind == .open_brace and
             self.parenContentsLookLikeTypedOrRestParams(self.cursor, after_paren_idx);
-        if (after_kind != .arrow and after_kind != .colon and !recover_missing_arrow_before_block) return null;
+        const recover_missing_arrow_before_semicolon = after_kind == .colon and
+            !self.disallow_arrow_return_type and
+            self.parenContentsLookLikeTypedOrRestParams(self.cursor, after_paren_idx) and
+            self.scanForMissingArrowSemicolonAfterColon(after_paren_idx + 1);
+        if (after_kind != .arrow and after_kind != .colon and
+            !recover_missing_arrow_before_block and
+            !recover_missing_arrow_before_semicolon)
+        {
+            return null;
+        }
         if (after_kind == .arrow and
             self.ambiguousParenArrowHasInvalidParameterStart(self.cursor, after_paren_idx - 1))
         {
@@ -14483,7 +14519,8 @@ pub const Parser = struct {
             // Simple approach: look for the next top-level `=>` before
             // a statement-terminator-class token.
             if (!self.scanForArrowAfterColon(after_paren_idx + 1) and
-                !self.scanForMissingArrowBlockAfterColon(after_paren_idx + 1))
+                !self.scanForMissingArrowBlockAfterColon(after_paren_idx + 1) and
+                !recover_missing_arrow_before_semicolon)
             {
                 return null;
             }
@@ -14520,7 +14557,12 @@ pub const Parser = struct {
             const arrow_tok = self.peek();
             try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "',' expected.");
         }
-        if (self.peek().kind == .open_brace) {
+        var body: NodeId = hir_mod.none_node_id;
+        if (recover_missing_arrow_before_semicolon and self.peek().kind == .semicolon) {
+            const semicolon = self.advance();
+            try self.reportCodeAt(semicolon.span.start, semicolon.line, 1005, "'=>' expected.");
+            body = try self.builder.addBlock(.{ .start = semicolon.span.start, .end = semicolon.span.start }, &.{});
+        } else if (self.peek().kind == .open_brace) {
             const body_tok = self.peek();
             try self.reportCodeAt(body_tok.span.start, body_tok.line, 1005, "'=>' expected.");
         } else {
@@ -14535,7 +14577,7 @@ pub const Parser = struct {
             self.function_depth -= 1;
             if (is_async) self.async_function_depth -= 1;
         }
-        const body = try self.parseArrowBody();
+        if (body == hir_mod.none_node_id) body = try self.parseArrowBody();
         if (recover_numeric_param) try self.reportNumericArrowRecoveryBodyDiagnostics(body);
         // TS parity (parserArrowFunctionExpression8/9/10/11/12): when
         // we're inside the `true` branch of a conditional expression
@@ -16532,6 +16574,38 @@ pub const Parser = struct {
         return false;
     }
 
+    fn scanForMissingArrowSemicolonAfterColon(self: *const Parser, idx: u32) bool {
+        var depth: i32 = 0;
+        var saw_type_token = false;
+        var i: u32 = idx;
+        while (i < self.tokens.len) : (i += 1) {
+            const kind = self.tokens[i].kind;
+            if (depth == 0) {
+                if (kind == .semicolon) return saw_type_token;
+                if (kind == .arrow or kind == .comma or kind == .close_paren or
+                    kind == .close_brace or kind == .close_bracket or kind == .eof)
+                {
+                    return false;
+                }
+                saw_type_token = true;
+            }
+            switch (kind) {
+                .less_than, .open_paren, .open_brace, .open_bracket => depth += 1,
+                .greater_than, .close_paren, .close_brace, .close_bracket => {
+                    if (depth > 0) depth -= 1;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn shouldSuppressMissingCloseAfterUnterminatedTypeArgs(self: *const Parser, at: Token) bool {
+        if (at.kind != .eof or self.diagnostics.items.len == 0) return false;
+        const last = self.diagnostics.items[self.diagnostics.items.len - 1];
+        return last.code == 1005 and std.mem.eql(u8, last.message, "'>' expected.");
+    }
+
     fn parseArrowBody(self: *Parser) ParseError!NodeId {
         if (self.peek().kind == .open_brace) {
             return try self.parseBlockStatement();
@@ -17890,6 +17964,11 @@ pub const Parser = struct {
                     break :blk try self.builder.addSpread(.{ .start = dot_tok.span.start, .end = end }, inner);
                 } else try self.parseAssignmentExpression();
                 try args.append(self.gpa, arg);
+                if (self.peek().kind == .colon) {
+                    const colon = self.advance();
+                    try self.reportCodeAt(colon.span.start, colon.line, 1005, "',' expected.");
+                    continue;
+                }
                 if (!self.match(.comma)) {
                     if (self.peek().kind == .invalid) {
                         const bad = self.advance();
@@ -32633,4 +32712,28 @@ test "parser: skipped tokens preserve following declarations and expressions" {
 
     const root_stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expect(root_stmts.len >= 7);
+}
+
+test "parser: unterminated generic recovery preserves malformed ambient signatures" {
+    const src =
+        \\declare namespace ng {
+        \\    interfaceICompiledExpression {
+        \\        (context: any, locals?: any): any;
+        \\        assign(context: any, value: any): any;
+        \\    }
+        \\    interface IQService {
+        \\        all(promises: IPromise < any > []): IPromise<
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1435));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2304));
+    try T.expectEqual(@as(u32, 5), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1036));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1434));
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(!std.mem.eql(u8, d.message, "'}' expected."));
+    }
 }

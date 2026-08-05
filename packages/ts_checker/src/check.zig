@@ -114098,8 +114098,8 @@ pub const Checker = struct {
             try self.reportCannotFindTestRunnerName(node, name);
             return;
         }
-        // Lowercase primitive type names (`string`, `number`, `boolean`,
-        // `symbol`, `bigint`, `object`) used in a value-position
+        // Lowercase primitive type names (`any`, `string`, `number`,
+        // `boolean`, `symbol`, `bigint`, `object`) used in a value-position
         // identifier reference are TS2693 ("only refers to a type"),
         // not TS2552 ("Did you mean 'String'?"). Upstream tsc routes
         // these through `resolveName` finding the type-only symbol and
@@ -114107,7 +114107,8 @@ pub const Checker = struct {
         // and `parserRealSource10.ts(129,41)` for `new string[]` /
         // `new number[]`. Skip type_ref nodes ÃÂ¢ÃÂÃÂ those have their own
         // resolution path and the lowercase primitives are valid there.
-        const is_primitive_type_name = std.mem.eql(u8, name_str, "string") or
+        const is_primitive_type_name = std.mem.eql(u8, name_str, "any") or
+            std.mem.eql(u8, name_str, "string") or
             std.mem.eql(u8, name_str, "number") or
             std.mem.eql(u8, name_str, "boolean") or
             std.mem.eql(u8, name_str, "symbol") or
@@ -222093,4 +222094,22 @@ test "checker: skipped parser tokens retain semantic diagnostics" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_return_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: malformed signatures retain primitive type-only value diagnostics" {
+    const s = try newSetup(
+        \\declare namespace ng {
+        \\    interfaceICompiledExpression {
+        \\        (context: any, locals?: any): any;
+        \\        assign(context: any, value: any): any;
+        \\    }
+        \\    interface IQService {
+        \\        all(promises: IPromise < any > []): IPromise<
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_only_used_as_value));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
 }
