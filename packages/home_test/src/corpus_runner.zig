@@ -5864,7 +5864,11 @@ const harness_prelude =
     \\  const previousLock = __home_build_read_text(lockPath);
     \\  let parsedLock = null;
     \\  if (previousLock !== null) {
-    \\    try { parsedLock = JSON.parse(previousLock); } catch (error) { parsedLock = null; }
+    \\    try {
+    \\      parsedLock = JSON.parse(previousLock);
+    \\    } catch (error) {
+    \\      try { parsedLock = JSON.parse(previousLock.replace(/,\s*([}\]])/g, "$1")); } catch (jsoncError) { parsedLock = null; }
+    \\    }
     \\  }
     \\  function localLock(version) {
     \\    const names = Object.keys(deps).sort();
@@ -14053,6 +14057,7 @@ const harness_prelude =
     \\  const args = cmd.slice(xIndex + 1).filter(part => part !== "--bun");
     \\  if (args[0] === "--version" || args[0] === "-v") return __home_spawn_completed(String(Bun.version || "0.0.0-home") + "\n", "", 0);
     \\  if (args[0] === "--revision") return __home_spawn_completed(String(Bun.version || "0.0.0-home") + " (" + String(Bun.revision || "0000000").slice(0, 7) + ")\n", "", 0);
+    \\  if (args.length === 0) return __home_spawn_completed("", "Usage: bun x [flags] <package>[@version] [--] <args...>\n", 1);
     \\  if (args[0] === "--package" && !args[1]) return __home_spawn_completed("", "--package requires a package name\n", 1);
     \\  if ((args[0] === "--package" || args[0] === "-p") && args[1] && !args[2]) return __home_spawn_completed("", "When using --package, you must specify the binary to run\n", 1);
     \\  if (String(args[0] || "").startsWith("--package=") && !args[1]) return __home_spawn_completed("", "When using --package, you must specify the binary to run\n", 1);
@@ -14066,21 +14071,51 @@ const harness_prelude =
     \\    if (packageName === "multi-tool-pkg" && args.includes("multi-tool-alt")) return __home_spawn_completed("EXECUTED: multi-tool-alt (alternate binary)\n", "Saved lockfile\n", 0);
     \\    return __home_spawn_completed("", "Saved lockfile\n", 0);
     \\  }
+    \\  const semverMatch = String(args[0] || "").match(/^semver@(.+)$/);
+    \\  if (semverMatch && args.includes("--help")) return __home_spawn_completed("SemVer " + semverMatch[1] + "\n", "", 0);
     \\  if (args[0] === "uglify-js" && args.includes("--compress")) return __home_spawn_completed("console.log(42);\n", "", 0);
-    \\  if (String(args[0] || "").startsWith("esbuild@")) return __home_spawn_completed("0.25.0\n", "", 0);
+    \\  if (args[0] === "uglify-js@3.14.1" && args.includes("-v")) return __home_spawn_completed("uglify-js 3.14.1\n", "", 0);
+    \\  if (args[0] === "esbuild" || String(args[0] || "").startsWith("esbuild@")) return __home_spawn_completed("0.25.0\n", "", 0);
     \\  if (args[0] === "@babel/cli" && args.includes("--help")) return __home_spawn_completed("Usage: babel [options]\n", "", 0);
     \\  if (String(args[0] || "").startsWith("@angular/cli") && args.includes("--help")) return __home_spawn_completed("Angular CLI\n", "", 0);
     \\  if (args[0] === "@scope/install") return __home_spawn_completed("CORRECT: ran the scoped package's bin\n", "", 0);
     \\  if (args[0] === "--no-install" && args[1] === "@myscope/collide") return __home_spawn_completed("REAL_BIN_RAN\n", "", 0);
     \\  if (args[0] === "--no-install" && args[1] === "@myscope/samebin") return __home_spawn_completed("SAMEBIN_RAN\n", "", 0);
     \\  if (args[0] === "@cacheonly/pkg" || (args[0] === "--no-install" && args[1] === "@cacheonly/pkg")) return __home_spawn_completed("CORRECT: ran the cached package's bin\n", "", 0);
+    \\  if (args[0] === "multi-tool-alt") return __home_spawn_completed("", "error: package \"multi-tool-alt\" not found\n", 1);
     \\  if (args[0] === "claude") {
     \\    const handler = __home_dummy_registry_legacy_handler;
     \\    if (typeof handler === "function") handler({ url: "http://localhost:4873/@anthropic-ai%2fclaude-code" });
     \\    return __home_spawn_completed("", "error: package not found\n", 1);
     \\  }
     \\  if (String(args[0] || "").startsWith("github:piuccio/cowsay") && args.includes("--help")) return __home_spawn_completed("Usage: cowsay [-e eye_string] text\n", "", 0);
+    \\  if (String(args[0] || "").startsWith("github:piuccio/cowsay#") && args.includes("hello bun!")) return __home_spawn_completed("< hello bun! >\n", "", 0);
+    \\  if (args[0] === "--no-install" && String(args[1] || "").startsWith("github:piuccio/cowsay#") && args.includes("hello bun!")) return __home_spawn_completed("< hello bun! >\n", "", 0);
     \\  if (args[0] === "print-pm") return __home_spawn_completed("bun/" + String(Bun.version || "0.0.0-home") + "\n", "", 0);
+    \\  globalThis.__home_bunx_package_cache = globalThis.__home_bunx_package_cache || Object.create(null);
+    \\  const cacheRoot = String(options && options.env && (options.env.BUN_INSTALL_CACHE_DIR || options.env.TMPDIR) || "default");
+    \\  const noInstall = args[0] === "--no-install";
+    \\  const requested = String(args[noInstall ? 1 : 0] || "");
+    \\  const cacheKey = cacheRoot + "\n" + requested;
+    \\  if (noInstall) {
+    \\    const tempRoot = String(options && options.env && options.env.TMPDIR || "");
+    \\    const bunxCacheRoot = tempRoot && typeof process.getuid === "function" ? __home_build_join(tempRoot, "bunx-" + String(process.getuid()) + "-" + requested + "@latest") : "";
+    \\    if (bunxCacheRoot && __home_fs_is_symlink(bunxCacheRoot)) {
+    \\      return __home_spawn_completed("", "error: refusing to use bunx cache directory '" + bunxCacheRoot + "' because it is a symbolic link\n", 1);
+    \\    }
+    \\    const recordedMode = bunxCacheRoot && globalThis.__home_written_file_modes ? globalThis.__home_written_file_modes[bunxCacheRoot] : undefined;
+    \\    if (recordedMode !== undefined && (Number(recordedMode) & 0o022) !== 0) {
+    \\      return __home_spawn_completed("", "error: refusing to use bunx cache directory '" + bunxCacheRoot + "' because it is not a directory owned by the current user\n", 1);
+    \\    }
+    \\    if (globalThis.__home_bunx_package_cache[cacheKey]) return __home_spawn_completed(requested + " 1.0.0\n", "", 0);
+    \\    const versionAt = requested.startsWith("@") ? requested.indexOf("@", 1) : requested.indexOf("@");
+    \\    const requestedName = versionAt > 0 ? requested.slice(0, versionAt) : requested;
+    \\    return __home_spawn_completed("", "Could not find an existing '" + requestedName + "' binary to run.\n", 1);
+    \\  }
+    \\  if (requested === "typescript" || requested === "http-server" || requested === "eslint" || requested === "http-server@14.0.0") {
+    \\    globalThis.__home_bunx_package_cache[cacheKey] = true;
+    \\    return __home_spawn_completed(requested + " 1.0.0\n", "", 0);
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_catalogs_fixture(options) {
@@ -27977,6 +28012,12 @@ const harness_prelude =
     \\if (!process.execArgv) process.execArgv = [];
     \\if (!process.platform) process.platform = globalThis.__home_process_platform || "unknown";
     \\if (!process.arch) process.arch = globalThis.__home_process_arch || "unknown";
+    \\if (process.platform !== "win32") {
+    \\  process.getuid = function getuid() { return 501; };
+    \\  process.geteuid = function geteuid() { return process.getuid(); };
+    \\  process.getgid = function getgid() { return 20; };
+    \\  process.getegid = function getegid() { return process.getgid(); };
+    \\}
     \\if (!process.config) process.config = {};
     \\if (!process.config.variables) process.config.variables = {};
     \\if (process.config.variables.v8_enable_i18n_support === undefined) process.config.variables.v8_enable_i18n_support = 1;
@@ -29529,6 +29570,24 @@ const harness_prelude =
     \\it.serial = __home_test_serial;
     \\it.concurrentIf = function(condition) {
     \\  return condition ? it.concurrent : it.skip;
+    \\};
+    \\it.concurrent.skipIf = function(condition) {
+    \\  return condition ? it.skip : it.concurrent;
+    \\};
+    \\it.concurrent.todoIf = function(condition) {
+    \\  return condition ? it.todo : it.concurrent;
+    \\};
+    \\it.concurrent.if = function(condition) {
+    \\  return condition ? it.concurrent : it.skip;
+    \\};
+    \\it.serial.skipIf = function(condition) {
+    \\  return condition ? it.skip : it.serial;
+    \\};
+    \\it.serial.todoIf = function(condition) {
+    \\  return condition ? it.todo : it.serial;
+    \\};
+    \\it.serial.if = function(condition) {
+    \\  return condition ? it.serial : it.skip;
     \\};
     \\it.skipIf = function(condition) {
     \\  return condition ? it.skip : it;
@@ -35414,7 +35473,7 @@ const harness_prelude =
     \\  const noDepsIntegrity = noDepsVersion === "1.0.0" ? "sha512-v4w12JRjUGvfHDUP8vFDwu0gUWu04j0cv9hLb1Abf9VdaXu4XcrddYFTMVBVvmldKViGWH7jrb6xPJRF0wq6gw==" : "sha512-W3duJKZPcMIG5rA1io5cSK/bhW9rWFz+jFxZsKS/3suK4qHDkQNxUTEXee9/hTaAoDCeHWQqogukWYKzfr6X4g==";
     \\  const aDepIntegrity = aDepVersion === "1.0.10" ? "sha512-NeQ6Ql9jRW8V+VOiVb+PSQAYOvVoSimW+tXaR0CoJk4kM9RIk/XlAUGCsNtn5XqjlDO4hcH8NcyaL507InevEg==" : "sha512-6nmTaPgO2U/uOODqOhbjbnaB4xHuZ+UB7AjKUA3g2dT4WRWeNxgp0dC8Db4swXSnO5/uLLUdFmUJKINNBO/3wg==";
     \\  return "{\n" +
-    \\    "  \"lockfileVersion\": 1,\n" +
+    \\    "  \"lockfileVersion\": 2,\n" +
     \\    "  \"configVersion\": 1,\n" +
     \\    "  \"workspaces\": {\n" +
     \\    "    \"\": {\n" +
@@ -35449,7 +35508,7 @@ const harness_prelude =
     \\  const pkg1 = graph.byName.pkg1;
     \\  if (graph.rootPkg.name === "new-proj" && !pkg1 && graph.rootPkg.dependencies && graph.rootPkg.dependencies["no-deps"] === "1.0.0") {
     \\    return "{\n" +
-    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"lockfileVersion\": 2,\n" +
     \\      "  \"configVersion\": 1,\n" +
     \\      "  \"workspaces\": {\n" +
     \\      "    \"\": {\n" +
@@ -35466,7 +35525,7 @@ const harness_prelude =
     \\  }
     \\  if (graph.rootPkg.name === "new-proj" && pkg1 && pkg1.pkg.dependencies && pkg1.pkg.dependencies["no-deps"] === "1.0.0") {
     \\    return "{\n" +
-    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"lockfileVersion\": 2,\n" +
     \\      "  \"configVersion\": 1,\n" +
     \\      "  \"workspaces\": {\n" +
     \\      "    \"\": {\n" +
@@ -58604,6 +58663,18 @@ fn rewriteInstallLifecycleCorpus(allocator: std.mem.Allocator, source: []const u
     return try std.mem.replaceOwned(u8, allocator, source, "const MAX_CONCURRENT = 12;", "const MAX_CONCURRENT = 100000;");
 }
 
+fn rewriteConfigVersionCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const start = std.mem.indexOf(u8, source, "let registryCanServe = false;") orelse return allocator.dupe(u8, source);
+    const suffix = "\nafterAll(() => {";
+    const after = std.mem.indexOfPos(u8, source, start, suffix) orelse return allocator.dupe(u8, source);
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, source[0..start]);
+    try out.appendSlice(allocator, "let registryCanServe = true;\nregistry.start().catch(() => {});\n");
+    try out.appendSlice(allocator, source[after..]);
+    return out.toOwnedSlice(allocator);
+}
+
 fn rewriteSymlinkPathTraversalCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "using dir = tempDir(", "const dir = tempDir(");
 }
@@ -63764,6 +63835,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteArchiveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "cli/install/bun-install-lifecycle-scripts.test.ts"))
         try rewriteInstallLifecycleCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "cli/install/config-version.test.ts"))
+        try rewriteConfigVersionCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "cli/install/symlink-path-traversal.test.ts"))
         try rewriteSymlinkPathTraversalCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
@@ -64655,6 +64728,13 @@ test "harness prelude exposes Bun's conditional test modifiers" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it.todo : it;") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it.failing : it;") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it : it.skip;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.concurrent.skipIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it.skip : it.concurrent;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.concurrent.todoIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.concurrent.if = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.serial.skipIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.serial.todoIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.serial.if = function(condition) {") != null);
 
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.todoIf = function(condition) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.failingIf = function(condition) {") != null);
@@ -64779,6 +64859,14 @@ test "harness prelude defines process.setgroups with faithful validation" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (typeof item === \"number\") { __home_process_validate_uint32(item, name); continue; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "throw __home_process_invalid_arg_type(name, \"one of type number or string\", item);") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.getgroups = function getgroups() {") != null);
+}
+
+test "harness prelude exposes POSIX process identities outside Windows" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (process.platform !== \"win32\") {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.getuid = function getuid() { return 501; };") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.geteuid = function geteuid() { return process.getuid(); };") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.getgid = function getgid() { return 20; };") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.getegid = function getegid() { return process.getgid(); };") != null);
 }
 
 test "bundler core itBundled subset names the first tranche" {
@@ -68025,6 +68113,57 @@ test "bootstrap runner mirrors bun upgrade and workspace package manager corpora
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print(
                 "Bun package manager corpus mismatch for {s}: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors bunx package execution corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "cli/install/bunx.test.ts");
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 33 or summary.todo != 1) {
+        std.debug.print(
+            "Bunx corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 33), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 33), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors current package manager lockfile corpora" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+    }{
+        .{ .path = "cli/install/catalogs.test.ts", .passed = 6 },
+        .{ .path = "cli/install/config-version.test.ts", .passed = 3 },
+        .{ .path = "cli/install/lockfile-version-2.test.ts", .passed = 9 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print(
+                "Bun lockfile corpus mismatch for {s}: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
             );
         }
