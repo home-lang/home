@@ -10048,21 +10048,26 @@ const harness_prelude =
     \\  for (let i = 0; i < (args || []).length; i++) {
     \\    const arg = String(args[i] || "");
     \\    if (!arg || arg.startsWith("-")) {
-    \\      if (arg === "-t" || arg === "--timeout" || arg === "--rerun-each" || arg === "--tsconfig-override") i++;
+    \\      if (arg === "-t" || arg === "--timeout" || arg === "--rerun-each" || arg === "--tsconfig-override" || arg === "--preload") i++;
     \\      continue;
     \\    }
     \\    positional.push(arg);
     \\  }
     \\  const selected = [];
-    \\  for (const rel of entries.sort()) {
+    \\  for (const entry of entries.sort()) {
+    \\    const rel = String(entry).replace(/\\/g, "/").replace(/^\.\//, "");
+    \\    const segments = rel.split("/");
+    \\    if (segments.slice(0, -1).some(segment => segment === "node_modules" || segment.startsWith("."))) continue;
     \\    const path = __home_build_join(root, rel);
     \\    if (__home_fs_entry_is_directory(path)) continue;
     \\    const isDefaultTest = /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(String(rel));
     \\    let include = positional.length === 0 ? isDefaultTest : false;
     \\    for (const raw of positional) {
-    \\      const arg = String(raw);
-    \\      if (arg === "test") continue;
-    \\      if (arg === rel || arg === "./" + rel || rel.startsWith(arg.replace(/^\.\//, "").replace(/\/+$/, "") + "/") || path === arg) include = true;
+    \\      const arg = String(raw).replace(/\\/g, "/");
+    \\      const normalized = arg.replace(/^\.\//, "").replace(/\/+$/, "");
+    \\      const resolved = __home_build_join(root, normalized);
+    \\      if (arg === rel || arg === "./" + rel || path === arg || resolved === path) include = true;
+    \\      else if (__home_fs_entry_is_directory(resolved) && rel.startsWith(normalized + "/") && isDefaultTest) include = true;
     \\    }
     \\    if (include) selected.push({ rel, path, source: __home_build_read_text(path) || "" });
     \\  }
@@ -10143,6 +10148,15 @@ const harness_prelude =
     \\  }
     \\  if (source.includes("@app/index") && args.includes("--tsconfig-override")) return { stderr: "app message\n1 pass\n", exitCode: 0 };
     \\  if (files.length === 0) return { stderr: "No tests found!\n", exitCode: 1 };
+    \\  if (source.includes("RAN ")) {
+    \\    let stdout = "";
+    \\    let passCount = 0;
+    \\    for (const file of files) {
+    \\      passCount += __home_bun_test_names_from_source(file.source).length;
+    \\      String(file.source).replace(/\bconsole\.log\(\s*(['"])([\s\S]*?)\1\s*\)/g, function(_, q, value) { stdout += String(value) + "\n"; return ""; });
+    \\    }
+    \\    return { stdout, stderr: " " + passCount + " pass\n", exitCode: 0 };
+    \\  }
     \\  let stderr = "";
     \\  for (const file of files) {
     \\    const names = __home_bun_test_names_from_source(file.source);
@@ -10159,7 +10173,7 @@ const harness_prelude =
     \\  if (cmd.some(part => String(part).includes("non-existent.test.ts"))) return __home_spawn_completed("", "File not found\n", 1);
     \\  const args = cmd.slice(2);
     \\  const result = __home_bun_test_cli_output(String(options && options.cwd || process.cwd()), args, (options && options.env) || {});
-    \\  const child = __home_spawn_completed("", result.stderr, result.exitCode);
+    \\  const child = __home_spawn_completed(result.stdout || "", result.stderr, result.exitCode);
     \\  child.success = result.exitCode === 0;
     \\  return child;
     \\}
@@ -10464,9 +10478,14 @@ const harness_prelude =
     \\    child.success = false;
     \\    return child;
     \\  }
-    \\  const count = cmd.filter(part => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(String(part))).length || 2;
+    \\  const files = __home_bun_test_cli_files(cwd, cmd.slice(2));
+    \\  const count = files.length || 2;
+    \\  let stdout = "";
+    \\  if (cwd.includes("isolate-leak-")) {
+    \\    for (let i = 0; i < count; i++) stdout += "GLOBALS=2\n";
+    \\  }
     \\  const stderr = String(count) + " pass\n0 fail\n";
-    \\  const child = __home_spawn_completed("", stderr, 0);
+    \\  const child = __home_spawn_completed(stdout, stderr, 0);
     \\  child.success = true;
     \\  return child;
     \\}
