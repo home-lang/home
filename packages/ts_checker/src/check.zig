@@ -33879,7 +33879,10 @@ pub const Checker = struct {
                 try instance_member_names_local.put(self.gpa, pid.name, {});
                 // Seed `instance_members` with the param-property's
                 // declared type so `this.<name>` access type-checks.
-                const param_t = if (self.hir.typeOf(param_node) != types.Primitive.none)
+                const param_t = if (pp.type_annotation != hir_mod.none_node_id and
+                    self.typeAnnotationContainsUnresolvedRef(pp.type_annotation))
+                    types.Primitive.any
+                else if (self.hir.typeOf(param_node) != types.Primitive.none)
                     self.hir.typeOf(param_node)
                 else if (pp.type_annotation != hir_mod.none_node_id)
                     try self.lowererLowerWithTypeParams(pp.type_annotation)
@@ -34236,7 +34239,9 @@ pub const Checker = struct {
                             }
                             try self.checkOverrideModifierWithContext(param_node, parent_instance_t, pid.name, pp.flags.is_override, true, no_extends_class_name, override_base_class_name);
                         }
-                        if (!self.constructorHasBindingPatternParameterProperty(m)) {
+                        if ((self.sourceHasCheckJsDirective() or self.virtualSectionIsJsLike(m)) and
+                            !self.constructorHasBindingPatternParameterProperty(m))
+                        {
                             try self.collectConstructorThisAssignments(m, parent_instance_t, &instance_members);
                         }
                         // Checked-JS: a constructor `this.x = …` assignment may
@@ -129955,7 +129960,7 @@ pub const Checker = struct {
                 true;
             const ok = satisfies_context_ok or (structurally_assignable and predicate_assignable);
             if (!ok) {
-                _ = self.discardAnnotatedCallbackContextualReturnDiagnostics(args[i]);
+                _ = self.discardCallArgumentContextualReturnDiagnostics(args[i]);
             }
             const contextual_ok = if (!ok)
                 self.unresolvedRestTupleCallbackFromPriorArrayArg(args, param_ts, i, param_t) catch false
@@ -137713,6 +137718,16 @@ pub const Checker = struct {
 
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
         if (self.noInferInnerType(param_t)) |inner| return self.isArgumentAssignableToParam(arg_node, arg_t, inner);
+        if (self.isContextualFunctionExpressionLike(arg_node) and
+            self.interner.isSignature(arg_t) and
+            self.interner.isSignature(param_t) and
+            !self.functionArgumentTargetsGenericCallee(arg_node))
+        {
+            const source_ret = self.interner.signatureReturn(arg_t) orelse types.Primitive.void_t;
+            const target_ret = self.interner.signatureReturn(param_t) orelse types.Primitive.void_t;
+            if (!self.containsFreeTypeParameter(target_ret) and
+                !try self.contextualFunctionReturnAssignable(source_ret, target_ret)) return false;
+        }
         if (self.sameTypeParameterName(arg_t, param_t)) return true;
         if (try self.sameEnclosingTypeParameterDisplay(arg_node, arg_t, param_t)) return true;
         if (self.functionObjectTargetAcceptsArgument(arg_t, param_t, 0)) return true;
@@ -137812,6 +137827,21 @@ pub const Checker = struct {
         return self.engine.isAssignableTo(arg_t, param_t);
     }
 
+    fn functionArgumentTargetsGenericCallee(self: *Checker, arg_node: NodeId) bool {
+        const parent = self.hir.parentOf(arg_node);
+        if (parent == hir_mod.none_node_id) return false;
+        const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind != .call_expr and parent_kind != .new_expr) return false;
+        const call = hir_mod.callOf(self.hir, parent);
+        if (call.callee == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(call.callee) == .identifier) {
+            const callee = hir_mod.identifierOf(self.hir, call.callee);
+            if (self.generic_fns.contains(callee.name)) return true;
+        }
+        const callee_t = self.hir.typeOf(call.callee);
+        return callee_t != types.Primitive.none and self.generic_signature_params.contains(callee_t);
+    }
+
     fn callableArgumentCannotSatisfyCustomRestTuple(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
         if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return false;
         if (!self.rest_signatures.contains(target_t)) return false;
@@ -137835,6 +137865,7 @@ pub const Checker = struct {
     fn functionObjectTargetAcceptsArgument(self: *Checker, source_t: TypeId, target_t: TypeId, depth: u8) bool {
         if (target_t >= self.interner.pool.typeCount() or depth >= 16) return false;
         const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_signature) return false;
         if (target_flags.is_type_parameter) {
             const constraint = self.typeParameterConstraint(target_t) orelse return false;
             if (constraint == target_t) return false;
@@ -139142,6 +139173,11 @@ pub const Checker = struct {
         try self.recordFunctionAnnotationDisplaysAgainstSignature(arg_node, target_t);
         const f = hir_mod.fnDeclOf(self.hir, arg_node);
         if (f.body == hir_mod.none_node_id) return null;
+        var source_value_param_count: usize = 0;
+        for (hir_mod.fnParams(self.hir, arg_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            source_value_param_count += 1;
+        }
         const target_params_borrow = self.interner.signatureParams(target_t);
         const target_params = try self.gpa.dupe(TypeId, target_params_borrow);
         defer self.gpa.free(target_params);
@@ -139179,7 +139215,8 @@ pub const Checker = struct {
                 try self.buildStructuralPromise(self.evalAwaited(ret_t));
         }
         if (ret_t == types.Primitive.none or ret_t == types.Primitive.any or ret_t == types.Primitive.unknown) return null;
-        const sig = self.interner.internSignature(target_params, ret_t, false) catch return null;
+        const diagnostic_params: []const TypeId = if (source_value_param_count == 0) &.{} else target_params;
+        const sig = self.interner.internSignature(diagnostic_params, ret_t, false) catch return null;
         if (source_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source_t).is_signature) {
             try self.copySignatureParamNames(sig, source_t);
         }
@@ -139295,20 +139332,22 @@ pub const Checker = struct {
         return false;
     }
 
-    fn discardAnnotatedCallbackContextualReturnDiagnostics(
+    fn discardCallArgumentContextualReturnDiagnostics(
         self: *Checker,
         arg_node: NodeId,
     ) bool {
         if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
         const f = hir_mod.fnDeclOf(self.hir, arg_node);
         var has_annotated_parameter = false;
+        var has_value_parameter = false;
         for (hir_mod.fnParams(self.hir, arg_node)) |param_node| {
             if (self.hir.kindOf(param_node) != .parameter) continue;
+            if (!self.isThisParameter(param_node)) has_value_parameter = true;
             if (hir_mod.parameterOf(self.hir, param_node).type_annotation == hir_mod.none_node_id) continue;
             has_annotated_parameter = true;
             break;
         }
-        if (!has_annotated_parameter or
+        if ((!has_annotated_parameter and has_value_parameter) or
             f.return_type != hir_mod.none_node_id or
             f.body == hir_mod.none_node_id or
             self.hir.kindOf(f.body) == .block_stmt)
@@ -139588,6 +139627,12 @@ pub const Checker = struct {
             if (!self.interner.isSignature(source_ret)) return false;
             return try self.contextualFunctionSignatureAssignable(source_ret, target_ret);
         }
+        if (self.interner.isSignature(source_ret) and
+            target_ret < types.Primitive.first_dynamic and
+            target_ret != types.Primitive.object_t)
+        {
+            return false;
+        }
         if (self.sameNonGenericClassInstanceDeclaration(source_ret, target_ret)) return true;
         if (try self.contextualReturnLacksRequiredObjectShape(source_ret, target_ret)) return false;
         if (self.engine.isAssignableTo(source_ret, target_ret) catch false) return true;
@@ -139771,7 +139816,8 @@ pub const Checker = struct {
     fn functionExpressionAssignableToCallableObject(self: *Checker, arg_node: NodeId, target_t: TypeId) CheckError!bool {
         if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
         if (target_t >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(target_t).is_object_type) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_signature or !target_flags.is_object_type) return false;
         const source_t = self.hir.typeOf(arg_node);
         if (source_t >= self.interner.pool.typeCount() or !self.interner.isSignature(source_t)) return false;
         if (try self.typeIsFunctionObjectLike(target_t)) return true;
@@ -221927,4 +221973,36 @@ test "checker: initialized var is unassigned before its hoisted initializer" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
+test "checker: direct callback signatures retain inferred return incompatibility" {
+    const s = try newSetup(
+        \\function foo(f: (x: string) => string) { return f(""); }
+        \\var g = (x: string) => x + "blah";
+        \\var x = () => g;
+        \\foo(g);
+        \\foo(() => g);
+        \\foo(x);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: TypeScript constructor assignments do not declare class fields" {
+    const b = try newBoundSetup(
+        \\export class LoggerAdapter implements ILogger {
+        \\    constructor(public logger: ILogger) {
+        \\        this._information = this.logger.information();
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.unknown_catch_variable));
 }
