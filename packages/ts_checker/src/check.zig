@@ -65526,6 +65526,13 @@ pub const Checker = struct {
             const r = hir_mod.typeRefOf(self.hir, arg);
             if (r.qualifier_len == 0) {
                 const name_str = self.string_interner.get(r.name);
+                if (self.visibleValueOnlyDeclarationExistsAt(arg, r.name) and
+                    !self.visibleTypeDeclarationExistsAt(arg, r.name))
+                {
+                    try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(arg, r.name);
+                    try self.reportUnresolvedCallTypeArgumentNodes(hir_mod.typeRefArgs(self.hir, arg));
+                    continue;
+                }
                 const resolves = isPrimitiveTypeNameText(name_str) or
                     self.lookupNarrow(r.name) != null or
                     self.isBuiltinName(r.name) or
@@ -105599,6 +105606,14 @@ pub const Checker = struct {
                 const vid = hir_mod.identifierOf(self.hir, v.name);
                 if (vid.name == id.name) {
                     self.reportDeprecatedDeclarationUse(node, decl, id.name) catch {};
+                    if (sk == .var_decl and
+                        self.strict_flags.strict_null_checks and
+                        !v.is_ambient and
+                        v.type_annotation == hir_mod.none_node_id and
+                        v.init == hir_mod.none_node_id)
+                    {
+                        return types.Primitive.undefined_t;
+                    }
                     if (self.nodeIsCallCallee(node) and v.init != hir_mod.none_node_id) {
                         const init_kind = self.hir.kindOf(v.init);
                         if ((init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn) and
@@ -105703,6 +105718,34 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn identifierReadsUninitializedVar(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        if (self.isDeclNameSlot(node)) return false;
+        const section = self.virtualSectionStartForNode(node);
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            const stmts: []const NodeId = switch (kind) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => continue,
+            };
+            for (stmts) |raw| {
+                if (self.sourceHasVirtualFilenameSections() and
+                    self.virtualSectionStartForNode(raw) != section) continue;
+                const decl = self.unwrapExportDecl(raw);
+                if (self.hir.kindOf(decl) != .var_decl) continue;
+                const variable = hir_mod.varDeclOf(self.hir, decl);
+                if (variable.is_ambient or
+                    variable.type_annotation != hir_mod.none_node_id or
+                    variable.init != hir_mod.none_node_id or
+                    variable.name == hir_mod.none_node_id or
+                    self.hir.kindOf(variable.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, variable.name).name == name) return true;
+            }
+        }
+        return false;
     }
 
     fn valueDeclVisibleFromNode(self: *Checker, decl: NodeId, node: NodeId) bool {
@@ -106056,6 +106099,12 @@ pub const Checker = struct {
                             return declared_t;
                         }
                     }
+                }
+                if (t == types.Primitive.any and
+                    self.strict_flags.strict_null_checks and
+                    self.identifierReadsUninitializedVar(node, id.name))
+                {
+                    return types.Primitive.undefined_t;
                 }
                 return t;
             }
@@ -222005,4 +222054,20 @@ test "checker: TypeScript constructor assignments do not declare class fields" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.this_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.unknown_catch_variable));
+}
+
+test "checker: generic call ambiguity keeps uninitialized var and value-only type diagnostics" {
+    const s = try newSetup(
+        \\function g() {
+        \\    var a, b, c;
+        \\    if (a<b, b>(c + 1)) { }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_invoke_possibly_undefined));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
 }
