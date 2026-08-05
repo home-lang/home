@@ -23771,18 +23771,41 @@ pub const Checker = struct {
         defer self.gpa.free(resolved);
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        var reexport_alias_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
+        defer reexport_alias_sections.deinit(self.gpa);
+        for (stmts) |raw| {
+            if (self.hir.kindOf(raw) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, raw);
+            if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) continue;
+            const target = hir_mod.identifierOf(self.hir, assignment.target);
+            if (!std.mem.eql(u8, self.string_interner.get(target.name), "exports")) continue;
+            const alias_spec = self.requireCallSpecifier(assignment.value) orelse continue;
+            const alias_resolved = (try self.resolveVirtualModuleSpecifierPath(raw, alias_spec)) orelse continue;
+            defer self.gpa.free(alias_resolved);
+            if (!std.mem.eql(u8, alias_resolved, resolved)) continue;
+            try reexport_alias_sections.put(self.gpa, self.virtualSectionStartForNode(raw), {});
+        }
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         var found_module = false;
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
-            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec)) continue;
-            found_module = true;
+        for (stmts) |raw| {
+            const in_target_section = self.virtualSectionMatchesResolvedModule(raw, resolved, spec);
+            const in_reexport_alias_section = reexport_alias_sections.contains(self.virtualSectionStartForNode(raw));
+            if (!in_target_section and !in_reexport_alias_section) continue;
+            if (in_target_section) found_module = true;
             // CommonJS `exports.X = value` / `module.exports.X = value`
             // contributes member `X` to the module's namespace shape.
             // tsc surfaces these as named members so a default import or
             // `import x = require(...)` binding can access `x.X`. Mirrors
             // `modulePreserve4`'s `/g.js` (`exports.default = 0`).
             if (self.hir.kindOf(raw) == .assignment) {
+                const assignment = hir_mod.assignmentOf(self.hir, raw);
+                if (in_reexport_alias_section and self.hir.kindOf(assignment.target) == .identifier and
+                    self.requireCallSpecifier(assignment.value) != null)
+                {
+                    continue;
+                }
                 if (try self.commonJsExportsAssignmentMember(raw)) |member| {
                     try self.upsertObjectMember(&members, member);
                 } else if (try self.commonJsNestedExportsAssignmentMember(raw)) |nested| {
@@ -52730,6 +52753,25 @@ pub const Checker = struct {
         }
         if (!found_section) return null;
 
+        const target_resolved = try self.resolveVirtualModuleSpecifierPath(anchor, spec);
+        defer if (target_resolved) |resolved| self.gpa.free(resolved);
+        var reexport_alias_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
+        defer reexport_alias_sections.deinit(self.gpa);
+        if (target_resolved) |wanted_path| {
+            for (stmts) |raw| {
+                if (self.hir.kindOf(raw) != .assignment) continue;
+                const assignment = hir_mod.assignmentOf(self.hir, raw);
+                if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) continue;
+                const target = hir_mod.identifierOf(self.hir, assignment.target);
+                if (!std.mem.eql(u8, self.string_interner.get(target.name), "exports")) continue;
+                const alias_spec = self.requireCallSpecifier(assignment.value) orelse continue;
+                const alias_resolved = (try self.resolveVirtualModuleSpecifierPath(raw, alias_spec)) orelse continue;
+                defer self.gpa.free(alias_resolved);
+                if (!std.mem.eql(u8, alias_resolved, wanted_path)) continue;
+                try reexport_alias_sections.put(self.gpa, self.virtualSectionStartForNode(raw), {});
+            }
+        }
+
         var entries: std.ArrayListUnmanaged(CommonJsExportEntry) = .empty;
         defer {
             for (entries.items) |*entry| entry.deinit(self.gpa);
@@ -52737,10 +52779,17 @@ pub const Checker = struct {
         }
 
         for (stmts) |raw| {
-            if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+            const in_target_section = self.virtualSectionMatchesSpecifier(src, raw, spec);
+            const in_reexport_alias_section = reexport_alias_sections.contains(self.virtualSectionStartForNode(raw));
+            if (!in_target_section and !in_reexport_alias_section) continue;
             if (self.hir.kindOf(raw) == .assignment) {
                 const a = hir_mod.assignmentOf(self.hir, raw);
                 if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
+                if (in_reexport_alias_section and self.hir.kindOf(a.target) == .identifier and
+                    self.requireCallSpecifier(a.value) != null)
+                {
+                    continue;
+                }
                 if (self.commonJsExportsAssignmentName(raw)) |prop_name| {
                     if (self.expressionIsVoidValue(a.value)) continue;
                     const value_t = try self.commonJsExportAssignmentValueType(a.value);
@@ -88401,6 +88450,8 @@ pub const Checker = struct {
                 const target_is_js_container_prototype_object_assignment = a.op == null and
                     !target_has_explicit_jsdoc_prototype_type and
                     try self.checkJsContainerPrototypeObjectAssignment(node, a.target, a.value);
+                const target_is_js_namespace_declaration_initialization = a.op == null and
+                    self.checkJsNamespaceDeclarationValueInitialization(a.target);
                 if (target_is_js_container_prototype_object_assignment) {
                     self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
                     self.removePriorDiagnosticsInNodeSpan(a.target, TsCodes.property_does_not_exist);
@@ -88628,6 +88679,7 @@ pub const Checker = struct {
                     !target_is_untyped_uninitialized_var and
                     !target_is_commonjs_export_assignment and
                     !target_is_js_container_prototype_object_assignment and
+                    !target_is_js_namespace_declaration_initialization and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -88637,6 +88689,7 @@ pub const Checker = struct {
                     !target_is_untyped_uninitialized_var and
                     !target_is_commonjs_export_assignment and
                     !target_is_js_container_prototype_object_assignment and
+                    !target_is_js_namespace_declaration_initialization and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -88644,7 +88697,7 @@ pub const Checker = struct {
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
                 const dedicated_generic_indexed_assignment =
                     self.genericIndexedAssignmentUsesDedicatedRelation(a.target, a.value);
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and a.op == null and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -90530,6 +90583,9 @@ pub const Checker = struct {
                 if (try self.reportGlobalThisMissingOrReadonlyMember(node, m.object, access_obj_t, m.name)) {
                     break :blk types.Primitive.any;
                 }
+                if (try self.reportCheckJsReboundExportsMember(node, m.object, m.name)) {
+                    break :blk types.Primitive.any;
+                }
                 if (try self.commonJsExportMemberKey(node)) |key| {
                     if (self.lookupCommonJsExportNarrow(key)) |nt| {
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
@@ -90583,6 +90639,9 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(enum_t, member_is_optional_chain);
                     }
                     if (try self.mergedNamespaceValueMemberType(obj_id.name, m.name, node)) |member_t| {
+                        break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
+                    }
+                    if (try self.checkJsNamespaceInterfaceValueMemberType(obj_id.name, m.name, node)) |member_t| {
                         break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
                     }
                     // TS2339: `<ns>.<x>` where `<x>` lives inside `<ns>`
@@ -151089,6 +151148,106 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn checkJsNamespaceDeclarationValueInitialization(self: *Checker, target: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(target)) return false;
+        if (self.hir.kindOf(target) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, target);
+        if (self.hir.kindOf(member.object) == .identifier) {
+            const object = hir_mod.identifierOf(self.hir, member.object);
+            const decl = self.checkJsAmbientNamespaceMemberDeclaration(object.name, member.name, target) orelse return false;
+            const kind = self.hir.kindOf(decl);
+            return kind == .interface_decl or kind == .enum_decl;
+        }
+        if (self.hir.kindOf(member.object) != .member_access) return false;
+        const prototype = hir_mod.memberOf(self.hir, member.object);
+        if (!std.mem.eql(u8, self.string_interner.get(prototype.name), "prototype")) return false;
+        if (self.hir.kindOf(prototype.object) != .member_access) return false;
+        const container = hir_mod.memberOf(self.hir, prototype.object);
+        if (self.hir.kindOf(container.object) != .identifier) return false;
+        const namespace = hir_mod.identifierOf(self.hir, container.object);
+        const decl = self.checkJsAmbientNamespaceMemberDeclaration(namespace.name, container.name, target) orelse return false;
+        return self.hir.kindOf(decl) == .interface_decl;
+    }
+
+    fn checkJsNamespaceInterfaceValueMemberType(
+        self: *Checker,
+        namespace_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        const decl = self.checkJsAmbientNamespaceMemberDeclaration(namespace_name, member_name, anchor) orelse return null;
+        if (self.hir.kindOf(decl) != .interface_decl) return null;
+        if (self.isAssignmentTarget(anchor)) return types.Primitive.any;
+        try self.checkInterfaceDecl(decl);
+        const instance_t = self.hir.typeOf(decl);
+        if (instance_t == types.Primitive.none) return null;
+        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{.{
+            .name = prototype_name,
+            .type = instance_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        }};
+        return self.interner.internObjectType(&members) catch return error.OutOfMemory;
+    }
+
+    fn checkJsAmbientNamespaceMemberDeclaration(
+        self: *Checker,
+        namespace_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) ?NodeId {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(anchor)) return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const namespace_decl = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(namespace_decl) != .namespace_decl) continue;
+            const name = self.declarationName(namespace_decl) orelse continue;
+            if (name != namespace_name or !self.virtualSectionIsDeclarationFile(namespace_decl)) continue;
+            for (hir_mod.namespaceBody(self.hir, namespace_decl)) |namespace_raw| {
+                if (self.hir.kindOf(namespace_raw) != .export_decl) continue;
+                const decl = self.unwrapExportDecl(namespace_raw);
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name == member_name) return decl;
+            }
+        }
+        return null;
+    }
+
+    fn reportCheckJsReboundExportsMember(
+        self: *Checker,
+        node: NodeId,
+        object_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(object_node) != .identifier) return false;
+        const object = hir_mod.identifierOf(self.hir, object_node);
+        if (!std.mem.eql(u8, self.string_interner.get(object.name), "exports")) return false;
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(node);
+        var rebinds_exports = false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.virtualSectionStartForNode(stmt) != section or self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) continue;
+            const target = hir_mod.identifierOf(self.hir, assignment.target);
+            if (!std.mem.eql(u8, self.string_interner.get(target.name), "exports")) continue;
+            if (self.requireCallSpecifier(assignment.value) == null) continue;
+            rebinds_exports = true;
+            break;
+        }
+        if (!rebinds_exports) return false;
+        try self.reportPropertyDoesNotExistOnTypeText(
+            node,
+            member_name,
+            try self.currentCommonJsModuleTypeName(node),
+        );
+        return true;
     }
 
     fn localNameIsImportBinding(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
@@ -220726,4 +220885,62 @@ test "checker: unexported CommonJS JSDoc typedef stays private" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.namespace_no_exported_member));
+}
+
+test "checker: checked JavaScript initializes ambient namespace interface values" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: declarations.d.ts
+        \\declare namespace N { export interface C { run(): void } }
+        \\// @filename: values.js
+        \\N.C = function () {};
+        \\N.C.prototype.run = function () {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: checked JavaScript initializes ambient namespace enum values" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: declarations.d.ts
+        \\declare namespace N { export enum Order { ASC, DESC } }
+        \\// @filename: values.js
+        \\N.Order = {};
+        \\N.Order.ASC = 1;
+        \\N.Order.DESC = 0;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.readonly_property));
+}
+
+test "checker: rebound exports propagate nested writes to required module" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: false
+        \\// @filename: mod.js
+        \\exports.formatters = {};
+        \\// @filename: first.js
+        \\exports = require("./mod");
+        \\exports.formatters.j = function (value) { return value; };
+        \\// @filename: second.js
+        \\exports = require("./mod");
+        \\exports.formatters.o = function (value) { return value; };
+        \\// @filename: use.js
+        \\import * as debug from "./mod";
+        \\debug.formatters.j;
+        \\debug.formatters.o(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
