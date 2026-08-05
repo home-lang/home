@@ -67212,10 +67212,14 @@ pub const Checker = struct {
         receiver_t: TypeId,
     ) CheckError!bool {
         const one = [_]hir_mod.StringId{ns_name};
-        const ns_node = self.findVisibleNamespaceByPath(node, &one) orelse return false;
-        if (self.findExportedValueDeclInNamespace(ns_node, member_name) != null) return false;
-        const ns_t = try self.namespaceValueObjectType(ns_node);
-        if (!self.objectTypeMemberNamesMatch(receiver_t, ns_t)) return false;
+        if (self.findVisibleNamespaceByPath(node, &one)) |ns_node| {
+            if (self.findExportedValueDeclInNamespace(ns_node, member_name) != null) return false;
+            const ns_t = try self.namespaceValueObjectType(ns_node);
+            if (!self.objectTypeMemberNamesMatch(receiver_t, ns_t)) return false;
+        } else {
+            const dotted_member_exists = self.dottedNamespaceRootMemberState(node, ns_name, member_name) orelse return false;
+            if (dotted_member_exists) return false;
+        }
         const ns_text = self.string_interner.get(ns_name);
         const leaf_text = self.string_interner.get(member_name);
         const msg = try std.fmt.allocPrint(
@@ -67248,6 +67252,39 @@ pub const Checker = struct {
             .message = msg,
         });
         return true;
+    }
+
+    /// A dotted declaration such as `namespace A.B {}` creates the
+    /// runtime root `A` even when there is no separate `namespace A`
+    /// declaration in the file. Return whether `member_name` is the
+    /// next exported namespace segment, or null when no such root is
+    /// visible. This lets `A.missing` report TS2339 on `typeof A`
+    /// without treating the valid `A.B` prefix as missing.
+    fn dottedNamespaceRootMemberState(
+        self: *Checker,
+        anchor: NodeId,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) ?bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const root_text = self.string_interner.get(root_name);
+        const member_text = self.string_interner.get(member_name);
+        var found_root = false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, decl);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const dotted = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            var parts = std.mem.splitScalar(u8, dotted, '.');
+            const first = parts.next() orelse continue;
+            if (!std.mem.eql(u8, first, root_text)) continue;
+            const next = parts.next() orelse continue;
+            found_root = true;
+            if (std.mem.eql(u8, next, member_text)) return true;
+        }
+        return if (found_root) false else null;
     }
 
     fn typeOfQualifiedNamespaceValue(
@@ -90069,18 +90106,34 @@ pub const Checker = struct {
                         }
                     }
                 }
+                if (self.hir.kindOf(c.callee) == .element_access) {
+                    const e = hir_mod.elementOf(self.hir, c.callee);
+                    const receiver_t = try self.checkExpression(e.object);
+                    const index_t = try self.checkExpression(e.index);
+                    if (self.typeIsAnyLike(index_t)) {
+                        const number_index_t = try self.arrayElementType(receiver_t);
+                        if (number_index_t != types.Primitive.none) {
+                            effective_callee_t = self.interner.objectMember(number_index_t, call_member_id) orelse number_index_t;
+                            recovered_declared_signature = true;
+                        }
+                    }
+                }
                 try self.checkAssertionCallTarget(node, c.callee, callee_t, effective_callee_t);
+                const invocation_callee_t = if (self.hir.kindOf(c.callee) == .element_access and recovered_declared_signature)
+                    effective_callee_t
+                else
+                    callee_t;
                 if (try self.resolveUnionSignatureInvocation(
                     node,
-                    callee_t,
+                    invocation_callee_t,
                     args,
                     arg_types.items,
                     false,
                 )) |ret| {
                     break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                 }
-                if (try self.unionHasIncompatibleCallSignatures(callee_t)) {
-                    try self.reportNotCallableWithPossibleMissingSemicolon(node, c.callee, callee_t);
+                if (try self.unionHasIncompatibleCallSignatures(invocation_callee_t)) {
+                    try self.reportNotCallableWithPossibleMissingSemicolon(node, c.callee, invocation_callee_t);
                     if (self.hir.kindOf(c.callee) == .member_access and self.diagnostics.items.len > 0) {
                         const last = &self.diagnostics.items[self.diagnostics.items.len - 1];
                         if (last.code == TsCodes.not_callable and last.node == c.callee) {
@@ -90089,7 +90142,7 @@ pub const Checker = struct {
                     }
                     break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
                 }
-                if (try self.resolveOverloadedObjectCall(node, c.callee, callee_t, args, arg_types.items, call_is_optional_chain)) |ret| {
+                if (try self.resolveOverloadedObjectCall(node, c.callee, invocation_callee_t, args, arg_types.items, call_is_optional_chain)) |ret| {
                     break :blk ret;
                 }
                 var used_explicit_type_args = false;
@@ -222154,4 +222207,41 @@ test "checker: unresolved legacy annotations preserve any recovery and callback 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unknown_catch_variable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: dotted namespaces expose only their next runtime segment" {
+    const s = try newSetup(
+        \\namespace TypeScript.AstWalkerWithDetailCallback {
+        \\    export function walk() {
+        \\        TypeScript.AstWalkerWithDetailCallback;
+        \\        TypeScript.getAstWalkerFactory();
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'getAstWalkerFactory' does not exist on type 'typeof TypeScript'.",
+    ));
+}
+
+test "checker: any-indexed callable arrays use their numeric element signature" {
+    const s = try newSetup(
+        \\interface Callback { (value: Missing): void; }
+        \\class Runner {
+        \\    constructor(private callbacks: Callback[]) {}
+        \\    run(value: Missing) {
+        \\        this.callbacks[value.kind](value);
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
 }
