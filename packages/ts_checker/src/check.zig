@@ -114257,7 +114257,7 @@ pub const Checker = struct {
         }
 
         const considerCandidate = struct {
-            fn call(typo: []const u8, cand_str: []const u8, value_only: bool, in_type_pos: bool, b: *Best) void {
+            fn call(typo: []const u8, cand_str: []const u8, value_only: bool, allow_case_only_value: bool, in_type_pos: bool, b: *Best) void {
                 if (cand_str.len == 0) return;
                 if (std.mem.eql(u8, cand_str, typo)) return;
                 // Mirrors tsc's `getSuggestedSymbolForNonexistentSymbol`
@@ -114268,12 +114268,15 @@ pub const Checker = struct {
                 // When we're checking from a value-position node, fall
                 // back to the legacy case-only equal-length filter so
                 // `symbol` ÃÂ¢ÃÂÃÂ `Symbol` (parserSymbolIndexer5) still
-                // works and bare lowercase typos still suggest
-                // matching builtins. Mirrors parserRealSource5/11/12/14
-                // and parserClass2.
+                // works and bare lowercase typos still suggest matching
+                // builtins. Function declarations are the exception:
+                // tsgo suggests `Foo` for a value-position `foo`, while
+                // variables and parameters retain the self-suggestion
+                // suppression. Mirrors parserSkippedTokens16 alongside
+                // parserRealSource5/11/12/14 and parserClass2.
                 if (value_only) {
                     if (in_type_pos) return;
-                    if (cand_str.len == typo.len) {
+                    if (!allow_case_only_value and cand_str.len == typo.len) {
                         var case_only = true;
                         for (cand_str, typo) |x, y| {
                             if (std.ascii.toLower(x) != std.ascii.toLower(y)) {
@@ -114317,7 +114320,7 @@ pub const Checker = struct {
                     if (pp.name == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(pp.name) != .identifier) continue;
                     const pid = hir_mod.identifierOf(self.hir, pp.name);
-                    considerCandidate(name_str, self.string_interner.get(pid.name), true, in_type_position, &best);
+                    considerCandidate(name_str, self.string_interner.get(pid.name), true, false, in_type_position, &best);
                 }
             } else if (k == .block_stmt) {
                 const stmts = hir_mod.blockStmts(self.hir, cur);
@@ -114327,13 +114330,13 @@ pub const Checker = struct {
                         const v = hir_mod.varDeclOf(self.hir, s);
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                             const vid = hir_mod.identifierOf(self.hir, v.name);
-                            considerCandidate(name_str, self.string_interner.get(vid.name), true, in_type_position, &best);
+                            considerCandidate(name_str, self.string_interner.get(vid.name), true, false, in_type_position, &best);
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
                         const fp = hir_mod.fnDeclOf(self.hir, s);
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
-                            considerCandidate(name_str, self.string_interner.get(fid.name), true, in_type_position, &best);
+                            considerCandidate(name_str, self.string_interner.get(fid.name), true, true, in_type_position, &best);
                         }
                     }
                 }
@@ -114348,7 +114351,7 @@ pub const Checker = struct {
                 var it = @field(module.root, field_name).iterator();
                 while (it.next()) |entry| {
                     const cand_id = entry.key_ptr.*;
-                    considerCandidate(name_str, self.string_interner.get(cand_id), value_only, in_type_position, &best);
+                    considerCandidate(name_str, self.string_interner.get(cand_id), value_only, false, in_type_position, &best);
                 }
             }
         }
@@ -114374,7 +114377,7 @@ pub const Checker = struct {
             "setInterval", "clearInterval",
         };
         for (builtin_suggestions) |b| {
-            considerCandidate(name_str, b, false, in_type_position, &best);
+            considerCandidate(name_str, b, false, false, in_type_position, &best);
         }
 
         // Program-routed JS files can contribute namespace-object
@@ -222070,4 +222073,24 @@ test "checker: generic call ambiguity keeps uninitialized var and value-only typ
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
+}
+
+test "checker: skipped parser tokens retain semantic diagnostics" {
+    const source = "foo(): Bar { }\n" ++
+        "function Foo      () \xC2\xAC   { }\n" ++
+        "4+:5\n" ++
+        "namespace M {\n" ++
+        "function a(\n" ++
+        "    : T) { }\n" ++
+        "}\n" ++
+        "var x       =";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_return_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }

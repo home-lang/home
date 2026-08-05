@@ -2736,6 +2736,13 @@ pub const Parser = struct {
                 self.cursor -= 1;
                 break :blk try self.parseExpressionStatement();
             },
+            .colon => blk: {
+                // Source-element recovery skips punctuation that cannot
+                // begin a statement. The preceding expression parser owns
+                // the useful diagnostic at this position.
+                const colon = self.advance();
+                break :blk try self.builder.addBlock(tokenSpan(colon), &.{});
+            },
             .close_paren, .close_brace => blk: {
                 if (self.block_depth == 0 and self.nested_statement_depth == 0) {
                     try self.reportCodeAt(t.span.start, t.line, 1128, "Declaration or statement expected.");
@@ -4214,6 +4221,17 @@ pub const Parser = struct {
             }
         }
 
+        // Scanner `Unknown` tokens terminate the signature before a body.
+        // Report them, preserve the function as a bodyless declaration, and
+        // leave any following block for source-element recovery. The checker
+        // can then apply normal implicit-any signature diagnostics.
+        var invalid_before_body = false;
+        while (self.peek().kind == .invalid) {
+            const bad = self.advance();
+            try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+            invalid_before_body = true;
+        }
+
         var body: NodeId = hir_mod.none_node_id;
         var had_errant_arrow_recovery = false;
         if (recovered_body_as_missing_close) {
@@ -4224,6 +4242,8 @@ pub const Parser = struct {
                 2391,
                 "Function implementation is missing or not immediately following the declaration.",
             );
+        } else if (invalid_before_body) {
+            // The following block is a separate statement.
         } else if (self.peek().kind == .open_brace) {
             // TS1183: An implementation body for a `function` in an
             // ambient context (`.d.ts` or inside `declare namespace …`)
@@ -4302,7 +4322,7 @@ pub const Parser = struct {
             .{
                 .is_generator = is_generator,
                 .is_expression = is_expression,
-                .has_errant_arrow = had_errant_arrow_recovery,
+                .has_errant_arrow = had_errant_arrow_recovery or invalid_before_body,
             },
         );
     }
@@ -4379,7 +4399,7 @@ pub const Parser = struct {
         var missing_close_reported = false;
         if (self.peek().kind != .close_paren) {
             while (true) {
-                const param_start = self.peek();
+                var param_start = self.peek();
                 if (param_start.kind == .open_brace and self.peekAt(1).kind == .close_brace and
                     (self.peekAt(1).flags.preceded_by_newline or self.peekAt(2).kind == .eof) and
                     !emptyBindingPatternParameterCanContinue(self.peekAt(2).kind))
@@ -4654,7 +4674,18 @@ pub const Parser = struct {
                 // the parameter's "name" — downstream the binder walks
                 // the pattern to declare each binding, and the checker
                 // resolves identifier types through the pattern.
-                const name_node: NodeId = if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) blk: {
+                const name_node: NodeId = if (self.peek().kind == .colon) blk: {
+                    // A leading `:` cannot begin a parameter declaration.
+                    // Skip it and recover the following identifier as the
+                    // parameter name, rather than treating that identifier as
+                    // a type annotation and abandoning the whole list.
+                    const colon_tok = self.advance();
+                    try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1138, "Parameter declaration expected.");
+                    const name_tok = try self.expectIdentifierLike();
+                    param_start = name_tok;
+                    const name_id = try self.internToken(name_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                } else if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) blk: {
                     const template_tok = self.peek();
                     try self.reportCodeAt(template_tok.span.start, template_tok.line, 1003, "Identifier expected.");
                     self.skipTemplateLiteralTokens();
@@ -9691,6 +9722,12 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             if (self.peek().kind == .kw_var) {
                 type_annotation = try self.recoverNestedVarInitializer();
+            } else if (self.peek().kind == .eof or
+                self.peek().kind == .semicolon or
+                self.peek().kind == .close_brace)
+            {
+                const missing = self.peek();
+                try self.reportCodeAt(missing.span.start, missing.line, 1109, "Expression expected.");
             } else {
                 init_node = try self.parseAssignmentExpression();
             }
@@ -9863,7 +9900,17 @@ pub const Parser = struct {
             } else hir_mod.none_node_id;
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
-            if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
+            if (self.match(.equal)) {
+                if (self.peek().kind == .eof or
+                    self.peek().kind == .semicolon or
+                    self.peek().kind == .close_brace)
+                {
+                    const missing = self.peek();
+                    try self.reportCodeAt(missing.span.start, missing.line, 1109, "Expression expected.");
+                } else {
+                    extra_init = try self.parseAssignmentExpression();
+                }
+            }
             try self.reportVariableDefiniteAssignment(extra_definite_assignment_token, extra_type, extra_init, is_ambient_decl);
             try self.recoverRegexVariableDeclarationTail(extra_init);
             if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and !is_ambient_decl) {
@@ -10380,8 +10427,28 @@ pub const Parser = struct {
             return recovered;
         }
         const expr = try self.parseExpression();
+        if (self.peek().kind == .colon) {
+            const colon = self.peek();
+            var already_reported = false;
+            for (self.diagnostics.items) |diagnostic| {
+                if (diagnostic.pos == colon.span.start) {
+                    already_reported = true;
+                    break;
+                }
+            }
+            if (!already_reported) {
+                try self.reportCodeAt(colon.span.start, colon.line, 1005, "';' expected.");
+            }
+            // Leave the unexpected colon to source-element recovery. The
+            // expression itself remains in HIR for checker diagnostics.
+            return expr;
+        }
         if (self.hir.kindOf(expr) == .identifier and self.cursor > 0) {
             const expr_tok = self.tokens[self.cursor - 1];
+            if (self.peek().kind == .open_brace and !self.peek().flags.preceded_by_newline) {
+                try self.reportCodeAt(expr_tok.span.start, expr_tok.line, 1434, "Unexpected keyword or identifier.");
+                return expr;
+            }
             if (!self.peek().flags.preceded_by_newline and self.tokenTextEquals(expr_tok, "declare")) {
                 return expr;
             }
@@ -32543,4 +32610,27 @@ test "parser: JavaScript decorators on both sides of export report TS8038" {
         try T.expectEqual(@as(u32, 1486), d.related[0].code);
         try T.expectEqualStrings("Decorator used before 'export' here.", d.related[0].message);
     }
+}
+
+test "parser: skipped tokens preserve following declarations and expressions" {
+    const src = "foo(): Bar { }\n" ++
+        "function Foo      () \xC2\xAC   { }\n" ++
+        "4+:5\n" ++
+        "namespace M {\n" ++
+        "function a(\n" ++
+        "    : T) { }\n" ++
+        "}\n" ++
+        "var x       =";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1434));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1127));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1109));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1138));
+
+    const root_stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(root_stmts.len >= 7);
 }
