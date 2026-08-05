@@ -82032,6 +82032,8 @@ pub const Checker = struct {
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
         if (final_type == types.Primitive.none) return;
+        if (v.type_annotation != hir_mod.none_node_id and
+            self.typeAnnotationContainsUnresolvedRef(v.type_annotation)) return;
         const id = hir_mod.identifierOf(self.hir, v.name);
         if (try self.checkGlobalSymbolConstructorVarMerge(node)) return;
         if (try self.checkGlobalPromiseConstructorVarMerge(node, final_type)) return;
@@ -82140,6 +82142,7 @@ pub const Checker = struct {
                         break :blk true;
                     }
                 }
+                if (self.repeatedVarCallableParameterCountMismatch(prior, final_type)) break :blk false;
                 if ((self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) and
                     try self.repeatedVarAssertedInferredTypesCompatible(prior, final_type)) break :blk true;
                 if (!prior_explicit and
@@ -82233,6 +82236,12 @@ pub const Checker = struct {
         try self.var_decl_js_like.put(self.gpa, key, self.virtualSectionIsJsLike(node));
         if (current_jsdoc_type_name) |name| try self.var_decl_jsdoc_type_names.put(self.gpa, key, name);
         if (has_annotation) try self.var_decl_annotation_nodes.put(self.gpa, key, v.type_annotation);
+    }
+
+    fn repeatedVarCallableParameterCountMismatch(self: *Checker, prior: TypeId, current: TypeId) bool {
+        const prior_sig = self.nonConstructCallSignatureOfType(prior) orelse return false;
+        const current_sig = self.nonConstructCallSignatureOfType(current) orelse return false;
+        return self.interner.signatureParams(prior_sig).len != self.interner.signatureParams(current_sig).len;
     }
 
     fn checkGlobalSymbolConstructorVarMerge(self: *Checker, node: NodeId) CheckError!bool {
@@ -87649,8 +87658,16 @@ pub const Checker = struct {
         name: hir_mod.StringId,
         signature: TypeId,
     ) CheckError!void {
-        if (!self.interner.isSignature(signature) or self.generic_signature_params.contains(signature)) return;
+        if (!self.interner.isSignature(signature)) return;
         const method = self.string_interner.get(name);
+        if (std.mem.eql(u8, method, "includes") or
+            std.mem.eql(u8, method, "indexOf") or
+            std.mem.eql(u8, method, "lastIndexOf"))
+        {
+            try self.signature_min_args.put(self.gpa, signature, 1);
+            return;
+        }
+        if (self.generic_signature_params.contains(signature)) return;
         if (!std.mem.eql(u8, method, "map") and
             !std.mem.eql(u8, method, "flatMap") and
             !std.mem.eql(u8, method, "reduce") and
@@ -89181,6 +89198,13 @@ pub const Checker = struct {
                         break :blk self.lowerBuiltinObjectType("Function") orelse types.Primitive.any;
                     }
                 }
+                if (try self.checkInferredArrayConstructorArguments(
+                    node,
+                    c.callee,
+                    callee_t,
+                    args,
+                    arg_types.items,
+                )) |ret| break :blk ret;
                 if (try self.checkNewConstructSignatures(node, c.callee, callee_t, args, arg_types.items)) |ret| {
                     if (self.hir.kindOf(c.callee) == .identifier) {
                         const class_name = hir_mod.identifierOf(self.hir, c.callee).name;
@@ -100452,6 +100476,68 @@ pub const Checker = struct {
                 try out.append(self.gpa, member.type);
             }
         }
+    }
+
+    fn checkInferredArrayConstructorArguments(
+        self: *Checker,
+        node: NodeId,
+        callee_node: NodeId,
+        callee_t: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!?TypeId {
+        if (callee_node == hir_mod.none_node_id or self.hir.kindOf(callee_node) != .identifier) return null;
+        if (hir_mod.callTypeArgs(self.hir, node).len != 0 or args.len <= 1 or args.len != arg_types.len) return null;
+        const callee = hir_mod.identifierOf(self.hir, callee_node);
+        if (!std.mem.eql(u8, self.string_interner.get(callee.name), "Array")) return null;
+        const array_global = lib.arrayGlobal(
+            &self.lib_cache,
+            self.interner,
+            self.string_interner,
+            self.gpa,
+            &self.rest_signatures,
+        ) catch return null;
+        if (callee_t != array_global) return null;
+
+        const base_element_t = try self.widenFreshLiteralType(arg_types[0]);
+        var saw_null = false;
+        var saw_undefined = false;
+        for (arg_types[1..], 1..) |arg_t, arg_index| {
+            if (arg_t == types.Primitive.null_t) {
+                saw_null = true;
+                continue;
+            }
+            if (arg_t == types.Primitive.undefined_t or arg_t == types.Primitive.void_t) {
+                saw_undefined = true;
+                continue;
+            }
+            const target_t = try self.inferredArrayConstructorElementType(base_element_t, saw_null, saw_undefined);
+            const widened_arg_t = try self.widenFreshLiteralType(arg_t);
+            if (self.engine.isAssignableTo(widened_arg_t, target_t) catch false) continue;
+            const diagnostic_arg_t = self.expressionLiteralType(args[arg_index], arg_t) catch arg_t;
+            try self.diagnostics.append(self.gpa, .{
+                .node = args[arg_index],
+                .code = TsCodes.argument_type_mismatch,
+                .message = try self.formatArgumentNotAssignable(diagnostic_arg_t, target_t, arg_index),
+            });
+            break;
+        }
+        const element_t = try self.inferredArrayConstructorElementType(base_element_t, saw_null, saw_undefined);
+        return self.interner.internArrayType(self.string_interner, element_t) catch return error.OutOfMemory;
+    }
+
+    fn inferredArrayConstructorElementType(
+        self: *Checker,
+        base: TypeId,
+        saw_null: bool,
+        saw_undefined: bool,
+    ) CheckError!TypeId {
+        if (saw_null and saw_undefined) {
+            return self.interner.internUnion(&.{ base, types.Primitive.null_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        }
+        if (saw_null) return self.unionWithNull(base) catch return error.OutOfMemory;
+        if (saw_undefined) return self.unionWithUndefined(base) catch return error.OutOfMemory;
+        return base;
     }
 
     fn checkNewConstructSignatures(
@@ -117058,6 +117144,18 @@ pub const Checker = struct {
     fn typeAnnotationContainsUnresolvedRef(self: *Checker, type_node: NodeId) bool {
         if (type_node == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(type_node)) {
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, type_node);
+                const raw = self.string_interner.get(id.name);
+                if (isPrimitiveTypeNameText(raw) or self.isBuiltinName(id.name)) break :blk false;
+                if (self.lookupNarrow(id.name)) |t| {
+                    if (t != types.Primitive.none and
+                        t != types.Primitive.any and
+                        t != types.Primitive.unknown) break :blk false;
+                }
+                if (self.visibleTypeDeclarationExistsAt(type_node, id.name)) break :blk false;
+                break :blk true;
+            },
             .type_ref => blk: {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
@@ -130053,6 +130151,13 @@ pub const Checker = struct {
                         i,
                     )) |explicit_wrapper_msg|
                         explicit_wrapper_msg
+                    else if (try self.formatArraySearchArgumentNotAssignable(
+                        call_node,
+                        args[i],
+                        diagnostic_arg_t,
+                        display_param_t,
+                    )) |array_search_msg|
+                        array_search_msg
                     else
                         try self.formatArgumentNotAssignable(
                             diagnostic_arg_t,
@@ -132274,6 +132379,46 @@ pub const Checker = struct {
             self.diag_arena.allocator(),
             "Argument of type '{s}' is not assignable to parameter of type 'keyof {s}'.",
             .{ arg_name, object_name },
+        );
+    }
+
+    fn formatArraySearchArgumentNotAssignable(
+        self: *Checker,
+        call_node: NodeId,
+        arg_node: NodeId,
+        arg_t: TypeId,
+        param_t: TypeId,
+    ) CheckError!?[]const u8 {
+        if (self.hir.kindOf(call_node) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, call.callee);
+        const method = self.string_interner.get(member.name);
+        if (!std.mem.eql(u8, method, "includes") and
+            !std.mem.eql(u8, method, "indexOf") and
+            !std.mem.eql(u8, method, "lastIndexOf")) return null;
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t == types.Primitive.none or self.arrayLikeElementType(receiver_t) == null) return null;
+        const literal_arg_t = self.expressionLiteralType(arg_node, arg_t) catch arg_t;
+        const arg_text: []const u8 = if (self.hir.kindOf(arg_node) == .unary_op) blk: {
+            const unary = hir_mod.unaryOf(self.hir, arg_node);
+            if (unary.op == .neg and
+                self.hir.kindOf(unary.operand) == .literal_number and
+                hir_mod.literalNumberOf(self.hir, unary.operand) == 0)
+            {
+                break :blk "0";
+            }
+            break :blk (try self.literalDiagnosticName(literal_arg_t)) orelse
+                (try self.simpleDiagnosticTypeName(literal_arg_t)) orelse
+                return null;
+        } else (try self.literalDiagnosticName(literal_arg_t)) orelse
+            (try self.simpleDiagnosticTypeName(literal_arg_t)) orelse
+            return null;
+        const param_text = (try self.simpleDiagnosticTypeName(param_t)) orelse return null;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+            .{ arg_text, param_text },
         );
     }
 
@@ -202878,6 +203023,63 @@ test "checker: unresolved annotation walk includes parameterized roots" {
     }
     try T.expect(saw_outer);
     try T.expect(saw_arg);
+}
+
+test "checker: unresolved generic annotations do not create TS2403" {
+    const s = try newSetup(
+        \\var v: Foo<T>;
+        \\var v: Foo<Bar<T>>;
+        \\var v: Foo<Bar<Quux<T>>>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: repeated generic arrows require equal parameter counts" {
+    const s = try newSetup(
+        \\var v = <T>() => 1;
+        \\var v = <T>(a) => 1;
+        \\var v = <T>(a, b) => 1;
+        \\var v = <T>(a = 1, b = 2) => 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: inferred Array constructor checks the first element family" {
+    const s = try newSetup(
+        \\const obj = {};
+        \\const one = 1;
+        \\const a = new Array(false, undefined, null, "0", obj, -1.5, "str", -0, true, +0, one, 1, 0, false);
+        \\a.indexOf(-(4 / 3));
+        \\a.indexOf(0);
+        \\a.indexOf(-0);
+        \\a.indexOf(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    const first = checkerFirstMessageForCode(s, TsCodes.argument_type_mismatch) orelse return error.MissingDiagnostic;
+    try T.expect(std.mem.indexOf(u8, first, "boolean | null | undefined") != null);
+    var saw_number = false;
+    var saw_zero = false;
+    var saw_one = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.argument_type_mismatch) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "boolean | null | undefined") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "type '-0'") == null);
+        if (std.mem.indexOf(u8, d.message, "type 'number'") != null) saw_number = true;
+        if (std.mem.indexOf(u8, d.message, "type '0'") != null) saw_zero = true;
+        if (std.mem.indexOf(u8, d.message, "type '1'") != null) saw_one = true;
+    }
+    try T.expect(saw_number);
+    try T.expect(saw_zero);
+    try T.expect(saw_one);
 }
 
 // ÃÂÃÂ§6.A 2000-3000 ratchet ÃÂ¢ÃÂÃÂ TS2552 must skip qualified-name lookups
