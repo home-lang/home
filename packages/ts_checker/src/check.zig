@@ -16711,6 +16711,7 @@ pub const Checker = struct {
                 return hir_mod.identifierOf(self.hir, f.name).name == name;
             },
             .let_decl, .var_decl, .const_decl => {
+                if (!self.sourceHasCheckJsDirective() and self.hir.kindOf(inner) != .const_decl) return false;
                 const v = hir_mod.varDeclOf(self.hir, inner);
                 if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
                 if (hir_mod.identifierOf(self.hir, v.name).name != name) return false;
@@ -88433,7 +88434,8 @@ pub const Checker = struct {
                     try self.commonJsExportMemberKey(a.target)
                 else
                     null;
-                const checkjs_object_expando_key = if (a.op == null and target_kind == .member_access)
+                const checkjs_object_expando_key = if (a.op == null and
+                    (target_kind == .member_access or target_kind == .element_access))
                     try self.checkJsObjectLiteralExpandoMemberKey(a.target)
                 else
                     null;
@@ -90410,6 +90412,7 @@ pub const Checker = struct {
                 }
                 const member_is_optional_chain = m.optional or self.expressionIsOptionalChain(m.object);
                 const is_instanceof_fallthrough_receiver = try self.identifierHasInstanceofFallthroughJoin(m.object);
+                const object_was_possibly_nullish = self.typeIsPossiblyNullishStrict(obj_t);
                 if (self.strict_flags.strict_null_checks and
                     self.memberNameIsEcmaPrivate(m.name) and
                     !m.optional and
@@ -90445,6 +90448,11 @@ pub const Checker = struct {
                 } else if (member_is_optional_chain) {
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 }
+                if (!object_was_possibly_nullish and
+                    try self.reportCheckJsConstructorNullableMemberRead(m.object))
+                {
+                    obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
+                }
                 if (obj_t == types.Primitive.unknown and self.hir.kindOf(m.object) == .identifier) {
                     if (try self.pendingAnnotatedIdentifierType(m.object)) |annotated_t| {
                         obj_t = annotated_t;
@@ -90461,6 +90469,9 @@ pub const Checker = struct {
                     // declared names pass while an undeclared name also gets
                     // the upstream TS2339-on-any diagnostic.
                     obj_t = types.Primitive.any;
+                }
+                if (try self.reportNestedCheckJsThisEmptyObjectAssignment(node)) {
+                    break :blk types.Primitive.any;
                 }
                 if (obj_t == types.Primitive.unknown) {
                     if (self.shouldReportUnknownOperand(m.object)) {
@@ -90517,6 +90528,9 @@ pub const Checker = struct {
                     obj_t
                 else
                     access_obj_t;
+                if (try self.reportInvalidTypeScriptExpandoMember(node, m.object, m.name, access_obj_t)) {
+                    break :blk types.Primitive.any;
+                }
                 if (self.genericAliasMemberIsCircularIndexedAccess(obj_t, m.name)) {
                     try self.reportExcessivelyDeepTypeInstantiationAt(node);
                     break :blk types.Primitive.any;
@@ -90579,6 +90593,11 @@ pub const Checker = struct {
                 try self.checkPrivateSetOnlyAccessorRead(node, access_obj_t, m.name);
                 if (!intersection_access_handled) {
                     try self.checkProtectedMemberAccess(node, access_obj_t, m.name);
+                }
+                if (try self.checkJsObjectLiteralExpandoMemberKey(node)) |key| {
+                    if (self.checkjs_object_expando_narrows.get(key)) |nt| {
+                        break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                    }
                 }
                 if (try self.reportGlobalThisMissingOrReadonlyMember(node, m.object, access_obj_t, m.name)) {
                     break :blk types.Primitive.any;
@@ -91140,6 +91159,9 @@ pub const Checker = struct {
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
                 const idx_t = try self.checkExpression(e.index);
                 const union_tuple_idx_t = (try self.expressionNarrowLiteralType(e.index)) orelse idx_t;
+                if (try self.reportNestedCheckJsThisEmptyObjectAssignment(node)) {
+                    break :blk types.Primitive.any;
+                }
                 // A function-typed index is never a valid index type, so
                 // TS2538 must fire even when a synthetic member name
                 // happens to match (e.g. `obj[Symbol.for]`, where
@@ -91168,6 +91190,11 @@ pub const Checker = struct {
                         try self.reportUnknownObjectOperand(e.object);
                     }
                     break :blk types.Primitive.any;
+                }
+                if (try self.checkJsObjectLiteralExpandoMemberKey(node)) |key| {
+                    if (self.checkjs_object_expando_narrows.get(key)) |nt| {
+                        break :blk try self.optionalChainResult(nt, element_is_optional_chain);
+                    }
                 }
                 if (try self.symbolicIndexedAccessKeyRelation(obj_t, idx_t)) |valid| {
                     if (!valid) {
@@ -91209,6 +91236,11 @@ pub const Checker = struct {
                     }
                 }
                 if (self.checking_element_write_target) {
+                    if (self.elementAccessLiteralStringName(e.index) != null and
+                        self.checkJsGlobalPropertyAssignmentDefinesMember(node, e.object))
+                    {
+                        break :blk types.Primitive.any;
+                    }
                     if (!self.nodeIsThisReference(e.object)) {
                         if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
                             break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
@@ -98829,20 +98861,24 @@ pub const Checker = struct {
 
     fn checkJsObjectLiteralExpandoMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
         if (!self.sourceHasCheckJsDirective()) return null;
-        if (self.hir.kindOf(node) != .member_access) return null;
-        const m = hir_mod.memberOf(self.hir, node);
-        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
-        const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        const prop_name = self.propertyAccessName(node) orelse return null;
+        const object = self.propertyAccessObject(node) orelse return null;
+        if (self.memberAccessObjectIsGlobalThisThis(object)) {
+            const this_name = self.string_interner.intern("this") catch return error.OutOfMemory;
+            return .{ .obj_name = this_name, .prop_name = prop_name };
+        }
+        if (self.hir.kindOf(object) != .identifier) return null;
+        const obj_id = hir_mod.identifierOf(self.hir, object);
         const obj_name = self.string_interner.get(obj_id.name);
         if (std.mem.eql(u8, obj_name, "exports") or std.mem.eql(u8, obj_name, "module")) return null;
-        if (self.localNameIsImportBinding(obj_id.name, m.object)) {
+        if (self.localNameIsImportBinding(obj_id.name, object)) {
             if (self.strict_flags.no_implicit_any) return null;
-            const import_t = (try self.virtualImportTypeForLocal(obj_id.name, m.object)) orelse return null;
+            const import_t = (try self.virtualImportTypeForLocal(obj_id.name, object)) orelse return null;
             if (self.objectHasCallOrConstructSignature(import_t) or self.typeUnionAllCallable(import_t)) return null;
-            return .{ .obj_name = obj_id.name, .prop_name = m.name };
+            return .{ .obj_name = obj_id.name, .prop_name = prop_name };
         }
         if (!self.identifierNamesUntypedObjectLiteralBindingInScope(obj_id.name, node)) return null;
-        return .{ .obj_name = obj_id.name, .prop_name = m.name };
+        return .{ .obj_name = obj_id.name, .prop_name = prop_name };
     }
 
     fn checkJsObjectExpandoTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
@@ -119555,6 +119591,58 @@ pub const Checker = struct {
         return self.string_interner.intern(prefix[owner_start..proto_pos]) catch null;
     }
 
+    fn reportCheckJsConstructorNullableMemberRead(self: *Checker, object_node: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or !self.strict_flags.strict_null_checks) return false;
+        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, object_node);
+        if (!self.nodeIsThisReference(member.object)) return false;
+        if (self.checkJsThisMemberReadHasNonNullGuard(object_node, member.name)) return false;
+        const owner = self.checkJsPrototypeAssignmentOwnerName(object_node) orelse return false;
+        const fn_node = self.jsConstructorFunctionDeclForName(object_node, owner) orelse return false;
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.body == hir_mod.none_node_id or self.hir.kindOf(function.body) != .block_stmt) return false;
+        var saw_null = false;
+        var saw_non_null = false;
+        for (hir_mod.blockStmts(self.hir, function.body)) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if ((self.directThisPropertyName(assignment.target) orelse continue) != member.name) continue;
+            if (assignment.value == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(assignment.value) == .literal_null) {
+                saw_null = true;
+            } else {
+                saw_non_null = true;
+            }
+        }
+        if (!saw_null or !saw_non_null) return false;
+        try self.report(object_node, TsCodes.object_possibly_null_2531, "Object is possibly 'null'.");
+        return true;
+    }
+
+    fn checkJsThisMemberReadHasNonNullGuard(
+        self: *Checker,
+        node: NodeId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        const src = self.source orelse return false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .if_stmt) continue;
+            const statement = hir_mod.ifOf(self.hir, cur);
+            if (!self.nodeIsAncestorOf(statement.then_branch, node)) continue;
+            const span = self.hir.spanOf(statement.cond);
+            if (span.start >= span.end or span.end > src.len) continue;
+            const condition = src[span.start..span.end];
+            if (std.mem.indexOf(u8, condition, "!= null") == null and
+                std.mem.indexOf(u8, condition, "!== null") == null)
+            {
+                continue;
+            }
+            if (std.mem.indexOf(u8, condition, self.string_interner.get(member_name)) != null) return true;
+        }
+        return false;
+    }
+
     fn checkJsPrototypeObjectLiteralAssignmentOwnerNameForFunction(self: *Checker, fn_node: NodeId) ?hir_mod.StringId {
         if (!self.sourceHasCheckJsDirective()) return null;
         const fn_kind = self.hir.kindOf(fn_node);
@@ -139808,7 +139896,7 @@ pub const Checker = struct {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         if (self.jsConstructorFunctionDeclForName(callee_node, name)) |fn_node| {
-            try self.collectJsConstructorThisMembers(fn_node, &members);
+            try self.collectJsConstructorThisMembers(fn_node, name, &members);
             const seed_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
             try self.class_instance_types.put(self.gpa, name, seed_t);
             try self.class_name_by_instance.put(self.gpa, seed_t, name);
@@ -139983,6 +140071,7 @@ pub const Checker = struct {
     fn collectJsConstructorThisMembers(
         self: *Checker,
         fn_node: NodeId,
+        constructor_name: hir_mod.StringId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
@@ -139997,6 +140086,7 @@ pub const Checker = struct {
             try self.collectJsConstructorThisMembersFromNode(fn_node, stmt, fn_params, sig_params, members);
         }
         try self.collectJsConstructorTypedThisMemberDeclarations(fn_node, members);
+        try self.refineJsConstructorThisMemberTypes(fn_node, constructor_name, fn_params, sig_params, members);
     }
 
     fn collectJsConstructorThisMembersFromNode(
@@ -140051,25 +140141,6 @@ pub const Checker = struct {
                     types.Primitive.any
                 else
                     (try self.jsConstructorAssignedMemberType(fn_node, a.value, fn_params, sig_params)) orelse types.Primitive.any;
-                if (implicit_any and
-                    self.strict_flags.no_implicit_any and
-                    !self.diagnosticExists(a.target, TsCodes.member_implicitly_any))
-                {
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Member '{s}' implicitly has an '{s}' type.",
-                        .{
-                            self.string_interner.get(prop_name),
-                            if (implicit_any_array) "any[]" else "any",
-                        },
-                    );
-                    try self.diagnostics.append(self.gpa, .{
-                        .node = a.target,
-                        .pos = self.hir.spanOf(a.target).start,
-                        .code = TsCodes.member_implicitly_any,
-                        .message = msg,
-                    });
-                }
                 try members.append(self.gpa, .{
                     .name = prop_name,
                     .type = prop_t,
@@ -140092,6 +140163,380 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    const JsConstructorThisMemberInference = struct {
+        constructor_types: std.ArrayListUnmanaged(TypeId) = .empty,
+        method_types: std.ArrayListUnmanaged(TypeId) = .empty,
+        first_target: NodeId = hir_mod.none_node_id,
+        first_empty_array_target: NodeId = hir_mod.none_node_id,
+
+        fn deinit(self: *JsConstructorThisMemberInference, allocator: std.mem.Allocator) void {
+            self.constructor_types.deinit(allocator);
+            self.method_types.deinit(allocator);
+        }
+    };
+
+    fn refineJsConstructorThisMemberTypes(
+        self: *Checker,
+        fn_node: NodeId,
+        constructor_name: hir_mod.StringId,
+        fn_params: []const NodeId,
+        sig_params: []const TypeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        var inferred: std.AutoArrayHashMapUnmanaged(hir_mod.StringId, JsConstructorThisMemberInference) = .empty;
+        defer {
+            var it = inferred.iterator();
+            while (it.next()) |entry| entry.value_ptr.deinit(self.gpa);
+            inferred.deinit(self.gpa);
+        }
+
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        try self.collectJsConstructorThisInferenceFromNode(
+            fn_node,
+            f.body,
+            true,
+            fn_params,
+            sig_params,
+            &inferred,
+        );
+        try self.collectJsConstructorPrototypeMethodInference(
+            fn_node,
+            constructor_name,
+            fn_params,
+            sig_params,
+            &inferred,
+        );
+
+        var it = inferred.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const info = entry.value_ptr;
+            if (info.first_target != hir_mod.none_node_id and
+                (try self.jsConstructorThisMemberJsDocType(fn_node, info.first_target)) != null)
+            {
+                continue;
+            }
+
+            var constructor_has_concrete = false;
+            for (info.constructor_types.items) |part| {
+                if (part != types.Primitive.null_t and part != types.Primitive.undefined_t) {
+                    constructor_has_concrete = true;
+                    break;
+                }
+            }
+            var method_has_concrete = false;
+            for (info.method_types.items) |part| {
+                if (part != types.Primitive.null_t and part != types.Primitive.undefined_t) {
+                    method_has_concrete = true;
+                    break;
+                }
+            }
+
+            var parts: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer parts.deinit(self.gpa);
+            if (constructor_has_concrete) {
+                for (info.constructor_types.items) |part| {
+                    if (info.first_empty_array_target == hir_mod.none_node_id and
+                        (part == types.Primitive.null_t or part == types.Primitive.undefined_t))
+                    {
+                        continue;
+                    }
+                    try parts.append(self.gpa, self.widenLiteralType(part));
+                }
+            } else if (info.constructor_types.items.len > 0 and method_has_concrete) {
+                for (info.constructor_types.items) |part| try parts.append(self.gpa, self.widenLiteralType(part));
+                for (info.method_types.items) |part| try parts.append(self.gpa, self.widenLiteralType(part));
+            } else if (info.constructor_types.items.len == 0 and method_has_concrete) {
+                for (info.method_types.items) |part| try parts.append(self.gpa, self.widenLiteralType(part));
+                try parts.append(self.gpa, types.Primitive.undefined_t);
+            }
+
+            const implicit_any = parts.items.len == 0 or info.first_empty_array_target != hir_mod.none_node_id;
+            const member_t = if (parts.items.len == 0)
+                types.Primitive.any
+            else if (parts.items.len == 1)
+                parts.items[0]
+            else
+                self.interner.internUnion(parts.items) catch return error.OutOfMemory;
+
+            var replaced = false;
+            for (members.items) |*member| {
+                if (member.name != name) continue;
+                member.type = member_t;
+                replaced = true;
+                break;
+            }
+            if (!replaced) {
+                try members.append(self.gpa, .{
+                    .name = name,
+                    .type = member_t,
+                    .is_optional = info.constructor_types.items.len == 0,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+            }
+
+            if (implicit_any and self.strict_flags.no_implicit_any) {
+                const target = if (info.first_empty_array_target != hir_mod.none_node_id)
+                    info.first_empty_array_target
+                else
+                    info.first_target;
+                if (target != hir_mod.none_node_id and
+                    !self.diagnosticExists(target, TsCodes.member_implicitly_any))
+                {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Member '{s}' implicitly has an '{s}' type.",
+                        .{
+                            self.string_interner.get(name),
+                            if (info.first_empty_array_target != hir_mod.none_node_id) "any[]" else "any",
+                        },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = target,
+                        .pos = self.hir.spanOf(target).start,
+                        .code = TsCodes.member_implicitly_any,
+                        .message = msg,
+                    });
+                }
+            }
+        }
+    }
+
+    fn collectJsConstructorPrototypeMethodInference(
+        self: *Checker,
+        fn_node: NodeId,
+        constructor_name: hir_mod.StringId,
+        fn_params: []const NodeId,
+        sig_params: []const TypeId,
+        inferred: *std.AutoArrayHashMapUnmanaged(hir_mod.StringId, JsConstructorThisMemberInference),
+    ) CheckError!void {
+        const root = self.rootBlockFor(fn_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
+            if (self.prototypeAssignmentPropertyName(assignment.target, constructor_name) != null) {
+                try self.collectJsConstructorPrototypeMethodValueInference(
+                    fn_node,
+                    assignment.value,
+                    fn_params,
+                    sig_params,
+                    inferred,
+                );
+                continue;
+            }
+            if (!self.targetIsCtorPrototype(assignment.target, constructor_name) or
+                self.hir.kindOf(assignment.value) != .object_literal)
+            {
+                continue;
+            }
+            for (hir_mod.objectLiteralProps(self.hir, assignment.value)) |property| {
+                if (self.hir.kindOf(property) != .object_property) continue;
+                try self.collectJsConstructorPrototypeMethodValueInference(
+                    fn_node,
+                    hir_mod.objectPropertyOf(self.hir, property).value,
+                    fn_params,
+                    sig_params,
+                    inferred,
+                );
+            }
+        }
+    }
+
+    fn collectJsConstructorPrototypeMethodValueInference(
+        self: *Checker,
+        fn_node: NodeId,
+        value: NodeId,
+        fn_params: []const NodeId,
+        sig_params: []const TypeId,
+        inferred: *std.AutoArrayHashMapUnmanaged(hir_mod.StringId, JsConstructorThisMemberInference),
+    ) CheckError!void {
+        if (value == hir_mod.none_node_id) return;
+        const kind = self.hir.kindOf(value);
+        if (kind != .fn_decl and kind != .fn_expr) return;
+        const method = hir_mod.fnDeclOf(self.hir, value);
+        try self.collectJsConstructorThisInferenceFromNode(
+            fn_node,
+            method.body,
+            false,
+            fn_params,
+            sig_params,
+            inferred,
+        );
+    }
+
+    fn collectJsConstructorThisInferenceFromNode(
+        self: *Checker,
+        fn_node: NodeId,
+        node: NodeId,
+        is_constructor: bool,
+        fn_params: []const NodeId,
+        sig_params: []const TypeId,
+        inferred: *std.AutoArrayHashMapUnmanaged(hir_mod.StringId, JsConstructorThisMemberInference),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op == null and !self.expressionIsVoidValue(assignment.value)) {
+                    if (self.directThisPropertyName(assignment.target)) |name| {
+                        const value_t = try self.jsConstructorInferenceValueType(
+                            fn_node,
+                            assignment.value,
+                            is_constructor,
+                            fn_params,
+                            sig_params,
+                        );
+                        const gop = try inferred.getOrPut(self.gpa, name);
+                        if (!gop.found_existing) gop.value_ptr.* = .{ .first_target = assignment.target };
+                        if (assignment.value != hir_mod.none_node_id and
+                            self.hir.kindOf(assignment.value) == .array_literal and
+                            hir_mod.arrayLiteralElements(self.hir, assignment.value).len == 0 and
+                            gop.value_ptr.first_empty_array_target == hir_mod.none_node_id)
+                        {
+                            gop.value_ptr.first_empty_array_target = assignment.target;
+                        }
+                        if (is_constructor)
+                            try gop.value_ptr.constructor_types.append(self.gpa, value_t)
+                        else
+                            try gop.value_ptr.method_types.append(self.gpa, value_t);
+                    }
+                }
+                try self.collectJsConstructorThisInferenceFromNode(
+                    fn_node,
+                    assignment.value,
+                    is_constructor,
+                    fn_params,
+                    sig_params,
+                    inferred,
+                );
+            },
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, stmt, is_constructor, fn_params, sig_params, inferred);
+            },
+            .if_stmt => {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, conditional.then_branch, is_constructor, fn_params, sig_params, inferred);
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, conditional.else_branch, is_constructor, fn_params, sig_params, inferred);
+            },
+            .while_stmt => try self.collectJsConstructorThisInferenceFromNode(fn_node, hir_mod.whileOf(self.hir, node).body, is_constructor, fn_params, sig_params, inferred),
+            .do_while_stmt => try self.collectJsConstructorThisInferenceFromNode(fn_node, hir_mod.doWhileOf(self.hir, node).body, is_constructor, fn_params, sig_params, inferred),
+            .for_stmt => try self.collectJsConstructorThisInferenceFromNode(fn_node, hir_mod.forStmtOf(self.hir, node).body, is_constructor, fn_params, sig_params, inferred),
+            .for_in_stmt, .for_of_stmt => try self.collectJsConstructorThisInferenceFromNode(fn_node, hir_mod.forInOf(self.hir, node).body, is_constructor, fn_params, sig_params, inferred),
+            .switch_stmt => for (hir_mod.switchCases(self.hir, node)) |case| {
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, case, is_constructor, fn_params, sig_params, inferred);
+            },
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| {
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, stmt, is_constructor, fn_params, sig_params, inferred);
+            },
+            .try_stmt => {
+                const statement = hir_mod.tryOf(self.hir, node);
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, statement.block, is_constructor, fn_params, sig_params, inferred);
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, statement.catch_block, is_constructor, fn_params, sig_params, inferred);
+                try self.collectJsConstructorThisInferenceFromNode(fn_node, statement.finally_block, is_constructor, fn_params, sig_params, inferred);
+            },
+            .arrow_fn => try self.collectJsConstructorThisInferenceFromNode(fn_node, hir_mod.fnDeclOf(self.hir, node).body, is_constructor, fn_params, sig_params, inferred),
+            .var_decl, .let_decl, .const_decl => try self.collectJsConstructorThisInferenceFromNode(fn_node, hir_mod.varDeclOf(self.hir, node).init, is_constructor, fn_params, sig_params, inferred),
+            else => {},
+        }
+    }
+
+    fn jsConstructorInferenceValueType(
+        self: *Checker,
+        fn_node: NodeId,
+        value: NodeId,
+        is_constructor: bool,
+        fn_params: []const NodeId,
+        sig_params: []const TypeId,
+    ) CheckError!TypeId {
+        if (value == hir_mod.none_node_id) return types.Primitive.any;
+        if (self.hir.kindOf(value) == .array_literal and
+            hir_mod.arrayLiteralElements(self.hir, value).len == 0)
+        {
+            return self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
+        }
+        if (is_constructor) {
+            if (try self.jsConstructorAssignedMemberType(fn_node, value, fn_params, sig_params)) |assigned_t| {
+                return assigned_t;
+            }
+        }
+        const cached = self.hir.typeOf(value);
+        if (cached != types.Primitive.none) return cached;
+        return switch (self.hir.kindOf(value)) {
+            .literal_string => types.Primitive.string_t,
+            .literal_number => types.Primitive.number_t,
+            .literal_bool => types.Primitive.boolean_t,
+            .literal_null => types.Primitive.null_t,
+            .literal_undefined => types.Primitive.undefined_t,
+            .object_literal => self.interner.internObjectType(&.{}) catch return error.OutOfMemory,
+            .array_literal => types.Primitive.any,
+            else => types.Primitive.any,
+        };
+    }
+
+    fn reportInvalidTypeScriptExpandoMember(
+        self: *Checker,
+        node: NodeId,
+        object_node: NodeId,
+        member_name: hir_mod.StringId,
+        object_t: TypeId,
+    ) CheckError!bool {
+        if (self.sourceHasCheckJsDirective() or self.hir.kindOf(object_node) != .identifier) return false;
+        const object = hir_mod.identifierOf(self.hir, object_node);
+        const decl = self.findLocalValueDeclBeforeExpression(node, object.name) orelse return false;
+        var display: ?[]const u8 = null;
+        switch (self.hir.kindOf(decl)) {
+            .var_decl, .let_decl, .const_decl => {
+                const binding = hir_mod.varDeclOf(self.hir, decl);
+                if (binding.init == hir_mod.none_node_id) return false;
+                const init_kind = self.hir.kindOf(binding.init);
+                if (self.hir.kindOf(decl) == .var_decl and
+                    (init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn))
+                {
+                    const base_t = self.hir.typeOf(binding.init);
+                    display = (try self.allocSimpleTypeName(if (base_t != types.Primitive.none) base_t else object_t)) orelse return false;
+                } else if (init_kind == .class_decl or init_kind == .class_expr) {
+                    display = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "typeof {s}",
+                        .{self.string_interner.get(object.name)},
+                    );
+                } else {
+                    return false;
+                }
+            },
+            else => return false,
+        }
+        if (!self.scopeHasDirectExpandoAssignment(node, object.name, member_name)) return false;
+        try self.reportPropertyDoesNotExistOnTypeText(node, member_name, display.?);
+        return true;
+    }
+
+    fn scopeHasDirectExpandoAssignment(
+        self: *Checker,
+        anchor: NodeId,
+        object_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.target == hir_mod.none_node_id or self.hir.kindOf(assignment.target) != .member_access) continue;
+            const member = hir_mod.memberOf(self.hir, assignment.target);
+            if (member.name != member_name or member.object == hir_mod.none_node_id or
+                self.hir.kindOf(member.object) != .identifier)
+            {
+                continue;
+            }
+            if (hir_mod.identifierOf(self.hir, member.object).name == object_name) return true;
+        }
+        return false;
     }
 
     fn jsConstructorThisMemberJsDocType(
@@ -140559,10 +141004,60 @@ pub const Checker = struct {
     }
 
     fn directThisPropertyName(self: *Checker, target: NodeId) ?hir_mod.StringId {
-        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
-        const m = hir_mod.memberOf(self.hir, target);
-        if (!self.nodeIsThisReference(m.object)) return null;
-        return m.name;
+        if (target == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(target)) {
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, target);
+                if (!self.nodeIsThisReference(m.object)) break :blk null;
+                break :blk m.name;
+            },
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, target);
+                if (!self.nodeIsThisReference(e.object)) break :blk null;
+                break :blk self.elementAccessLiteralStringName(e.index);
+            },
+            else => null,
+        };
+    }
+
+    fn reportNestedCheckJsThisEmptyObjectAssignment(self: *Checker, node: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or !self.isInAssignmentTargetChain(node)) return false;
+        const object = self.propertyAccessObject(node) orelse return false;
+        const inner_name = self.directThisPropertyName(object) orelse return false;
+        const block = self.nearestBlockForNode(node);
+        if (block == hir_mod.none_node_id or self.hir.kindOf(block) != .block_stmt) return false;
+        const node_start = self.hir.spanOf(node).start;
+        var initialized_to_empty_object = false;
+        for (hir_mod.blockStmts(self.hir, block)) |stmt| {
+            if (self.hir.spanOf(stmt).start >= node_start) break;
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
+            if ((self.directThisPropertyName(assignment.target) orelse continue) != inner_name) continue;
+            initialized_to_empty_object = self.hir.kindOf(assignment.value) == .object_literal and
+                hir_mod.objectLiteralProps(self.hir, assignment.value).len == 0;
+        }
+        if (!initialized_to_empty_object) return false;
+        const empty_object_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const member = hir_mod.memberOf(self.hir, node);
+                try self.reportPropertyDoesNotExistOnType(node, member.name, empty_object_t);
+            },
+            .element_access => {
+                const element = hir_mod.elementOf(self.hir, node);
+                const name = self.elementAccessLiteralStringName(element.index) orelse return false;
+                const index_name = try self.allocStringLiteralDisplay(name);
+                try self.reportElementImplicitAnyMissingProperty(
+                    node,
+                    index_name,
+                    "{}",
+                    self.string_interner.get(name),
+                );
+            },
+            else => return false,
+        }
+        return true;
     }
 
     fn jsConstructorAssignedMemberType(
@@ -220943,4 +221438,85 @@ test "checker: rebound exports propagate nested writes to required module" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: checked JavaScript constructors aggregate prototype property writes" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strictNullChecks: true
+        \\// @noImplicitAny: true
+        \\function Installer() {
+        \\  this.arg = 0;
+        \\  this.unknown = null;
+        \\  this.twice = undefined;
+        \\  this.twice = "ok";
+        \\  this.twices = [];
+        \\  this.twices = null;
+        \\}
+        \\Installer.prototype.first = function () {
+        \\  this.arg = "bad";
+        \\  this.unknown = "ok";
+        \\  this.added = 1;
+        \\};
+        \\Installer.prototype.second = function () {
+        \\  this.arg = false;
+        \\  this.unknown = false;
+        \\  this.added = false;
+        \\  this.twice = null;
+        \\  this.twice = false;
+        \\  this.twices.push(1);
+        \\  if (this.twices != null) this.twices.push("ok");
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_null_2531));
+}
+
+test "checker: checked JavaScript this assignments declare only direct properties" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\this.x = {};
+        \\this.x.y = {};
+        \\this["y"] = {};
+        \\this["y"]["z"] = {};
+        \\/** @constructor */
+        \\function F() {
+        \\  this.a = {};
+        \\  this.a.b = {};
+        \\  this["b"] = {};
+        \\  this["b"]["c"] = {};
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.element_implicitly_any));
+}
+
+test "checker: TypeScript expandos require function declarations or const bindings" {
+    const s = try newSetup(
+        \\const supported = function () {};
+        \\supported.prop = 1;
+        \\supported.prop;
+        \\var mutable = function () {};
+        \\mutable.prop = 1;
+        \\mutable.prop;
+        \\class Declared {}
+        \\Declared.prop = 1;
+        \\Declared.prop;
+        \\var Expression = class {};
+        \\Expression.prop = 1;
+        \\Expression.prop;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
