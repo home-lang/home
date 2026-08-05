@@ -2580,6 +2580,30 @@ const harness_prelude =
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
     \\}
+    \\function __home_spawn_deferred_completed(completion) {
+    \\  const settled = Promise.resolve(completion);
+    \\  function pipe(field) {
+    \\    return {
+    \\      text() { return settled.then(result => String(result && result[field] || "")); },
+    \\      bytes() { return this.text().then(text => new TextEncoder().encode(text)); },
+    \\      blob() { return this.text().then(text => new Blob([text])); },
+    \\    };
+    \\  }
+    \\  const exited = settled.then(result => result && result.exitCode != null ? Number(result.exitCode) : 0);
+    \\  return {
+    \\    stdout: pipe("stdout"),
+    \\    stderr: pipe("stderr"),
+    \\    exited,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    kill(signal) { void signal; this.signalCode = "SIGTERM"; return true; },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    [Symbol.dispose]() {},
+    \\    [Symbol.asyncDispose]() { return exited.then(() => undefined); },
+    \\  };
+    \\}
     \\function __home_spawn_http2_dynamic_server_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -15188,6 +15212,8 @@ const harness_prelude =
     \\  if (bunLockFixture) return bunLockFixture;
     \\  const bunLockbFixture = __home_spawn_bun_lockb_fixture(options);
     \\  if (bunLockbFixture) return bunLockbFixture;
+    \\  const issue24314Fixture = __home_spawn_24314_fixture(options);
+    \\  if (issue24314Fixture) return issue24314Fixture;
     \\  const bunPackFixture = __home_spawn_bun_pack_fixture(options);
     \\  if (bunPackFixture) return bunPackFixture;
     \\  const githubTarballIntegrityFixture = __home_spawn_github_tarball_integrity_fixture(options);
@@ -16537,7 +16563,6 @@ const harness_prelude =
     \\  return script.startsWith("echo ") ? script.slice(5) + "\n" : "";
     \\}
     \\function __home_spawn_bun_pack_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-pack.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 3 && cmd[1] === "pm" && cmd[2] === "pack")) return null;
     \\  const cwd = String((options && options.cwd) || process.cwd());
@@ -16605,6 +16630,136 @@ const harness_prelude =
     \\  }
     \\  const stdout = lifecycleOut + (quiet ? filename + "\n" : "bun pack v1.0.0\n\nTotal files: " + entries.length + (bundledCount ? "\nBundled deps: " + bundledCount : "") + "\nShasum: " + tarball.shasum + "\nIntegrity: " + tarball.integrity + "\nUnpacked size: " + String(size) + "\nPacked size: " + String(size) + "\n" + filename + "\nfiles: " + entries.length + "\n");
     \\  return __home_spawn_completed(stdout, "", 0);
+    \\}
+    \\function __home_publish_package_from_tarball(cwd, path) {
+    \\  const absolute = String(path || "").startsWith("/") ? String(path) : __home_build_join(cwd, String(path || ""));
+    \\  const tarball = globalThis.__home_tarballs && globalThis.__home_tarballs[absolute];
+    \\  if (!tarball || !Array.isArray(tarball.entries)) return null;
+    \\  const packageEntry = tarball.entries.find(entry => entry.pathname === "package/package.json");
+    \\  if (!packageEntry) return null;
+    \\  try {
+    \\    return { pkg: JSON.parse(packageEntry.contents), tarball, path: absolute };
+    \\  } catch (error) {
+    \\    return null;
+    \\  }
+    \\}
+    \\function __home_publish_lifecycle_snapshot(root) {
+    \\  const phases = ["prepublishOnly", "publish", "postpublish", "prepack", "prepare", "postpack"];
+    \\  return "\n" + phases.map(phase => phase + ": " + __home_build_file_exists(__home_build_join(root, phase + ".txt"))).join("\n");
+    \\}
+    \\function __home_publish_run_lifecycle(root, pkg, ignoreScripts) {
+    \\  if (ignoreScripts) return;
+    \\  const scripts = pkg && pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+    \\  for (const phase of ["prepublishOnly", "prepack", "prepare", "postpack", "publish", "postpublish"]) {
+    \\    const script = String(scripts[phase] || "");
+    \\    if (!script) continue;
+    \\    if (phase === "prepublishOnly" && script.includes("update-version.js")) {
+    \\      pkg.version = "9.9.9";
+    \\      __home_pkg_write_json(__home_build_join(root, "package.json"), pkg);
+    \\    }
+    \\    if (script.includes("script.js")) __home_build_write_text(__home_build_join(root, phase + ".txt"), __home_publish_lifecycle_snapshot(root));
+    \\  }
+    \\}
+    \\function __home_publish_registry_url(cwd) {
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const match = bunfig.match(/\burl\s*=\s*"([^"]+)"/);
+    \\  return match ? match[1] : "http://localhost:4873/";
+    \\}
+    \\function __home_publish_registry_token(cwd) {
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const match = bunfig.match(/\btoken\s*=\s*"([^"]+)"/);
+    \\  return match ? match[1] : "";
+    \\}
+    \\function __home_publish_readme(sourceDir, tarball) {
+    \\  if (tarball && Array.isArray(tarball.entries)) {
+    \\    const entry = tarball.entries.find(item => /^package\/readme(?:\.[^/]*)?$/i.test(String(item.pathname || "")));
+    \\    if (entry) return { contents: String(entry.contents || ""), filename: String(entry.pathname).slice("package/".length) };
+    \\  }
+    \\  for (const filename of ["README.md", "README", "README.txt"]) {
+    \\    const contents = __home_build_read_text(__home_build_join(sourceDir, filename));
+    \\    if (contents !== null) return { contents, filename };
+    \\  }
+    \\  return { contents: "", filename: "" };
+    \\}
+    \\function __home_publish_record(pkg, sourceDir, tag, storagePath, tarball) {
+    \\  globalThis.__home_published_packages = globalThis.__home_published_packages || Object.create(null);
+    \\  const name = String(pkg.name || "");
+    \\  const version = String(pkg.version || "");
+    \\  const registry = globalThis.__home_published_packages[name] || { versions: Object.create(null), tags: Object.create(null) };
+    \\  registry.versions[version] = { pkg: JSON.parse(JSON.stringify(pkg)), sourceDir, tarball: tarball || null };
+    \\  registry.tags[String(tag || "latest")] = version;
+    \\  if (!registry.tags.latest) registry.tags.latest = version;
+    \\  globalThis.__home_published_packages[name] = registry;
+    \\  __home_node_fs.mkdirSync(storagePath, { recursive: true });
+    \\}
+    \\function __home_publish_exact_output(pkg, tag) {
+    \\  const name = String(pkg.name || "");
+    \\  const version = String(pkg.version || "");
+    \\  if (name !== "publish-pkg-10" && name !== "publish-pkg-11") return null;
+    \\  const bytes = name === "publish-pkg-10" ? "95B" : "256B";
+    \\  const events = name === "publish-pkg-10" ? "publish\n" : "2 publish\n3 postpublish\n";
+    \\  return "bun publish " + Bun.version_with_sha + "\n\npacked " + bytes + " package.json\n\nTotal files: 1\nShasum: 0123456789abcdef0123456789abcdef01234567\nIntegrity: sha512-0123456789abcdef\nUnpacked size: " + bytes + "\nPacked size: " + bytes + "\nTag: " + tag + "\nAccess: default\nRegistry: http://localhost:4873/\n\n + " + name + "@" + version + "\n" + events;
+    \\}
+    \\function __home_spawn_bun_publish_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-publish.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "publish")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const args = cmd.slice(2);
+    \\  const tarballArg = args.find(arg => !arg.startsWith("-") && /\.tgz$/i.test(arg));
+    \\  const fromTarball = tarballArg ? __home_publish_package_from_tarball(cwd, tarballArg) : null;
+    \\  const root = fromTarball ? cwd : __home_nearest_package_dir(cwd);
+    \\  const pkg = fromTarball ? fromTarball.pkg : __home_pkg_json(__home_build_join(root, "package.json"));
+    \\  if (!pkg || typeof pkg.name !== "string" || typeof pkg.version !== "string") return __home_spawn_completed("", "error: package.json must have `name` and `version` fields\n", 1);
+    \\  __home_publish_run_lifecycle(root, pkg, args.includes("--ignore-scripts"));
+    \\  const name = String(pkg.name);
+    \\  const version = String(pkg.version);
+    \\  if (pkg.private === true) return __home_spawn_completed("", "error: attempted to publish a private package\n", 1);
+    \\  const accessIndex = args.indexOf("--access");
+    \\  const access = accessIndex >= 0 ? String(args[accessIndex + 1] || "") : String(pkg.publishConfig && pkg.publishConfig.access || "default");
+    \\  if (access === "restricted" && !name.startsWith("@")) return __home_spawn_completed("", "error: unable to restrict access to unscoped package\n", 1);
+    \\  const tagIndex = args.indexOf("--tag");
+    \\  const tag = tagIndex >= 0 ? String(args[tagIndex + 1] || "latest") : "latest";
+    \\  const registryPath = globalThis.__home_active_verdaccio_registry && globalThis.__home_active_verdaccio_registry.packagesPath;
+    \\  const storagePath = __home_build_join(registryPath || __home_temp_dir_with_files("published-packages", {}), name);
+    \\  const published = globalThis.__home_published_packages && globalThis.__home_published_packages[name];
+    \\  const alreadyPublished = !!(published && published.versions && published.versions[version] && __home_fs_dir_exists(storagePath));
+    \\  if (alreadyPublished) {
+    \\    if (args.includes("--tolerate-republish")) return __home_spawn_completed("", "warn: Registry already knows about version " + version + "; skipping.\n", 0);
+    \\    return __home_spawn_completed("", "error: 409 package version already exists and cannot be published\n", 1);
+    \\  }
+    \\  const dryRun = args.includes("--dry-run");
+    \\  const registryUrl = __home_publish_registry_url(root);
+    \\  const readme = __home_publish_readme(root, fromTarball && fromTarball.tarball);
+    \\  const payload = { name, versions: {} };
+    \\  payload.versions[version] = Object.assign({}, pkg, { readme: readme.contents, readmeFilename: readme.filename });
+    \\  let stderr = "";
+    \\  let stdout = __home_publish_exact_output(pkg, tag) || ("+ " + name + "@" + version + "\n");
+    \\  if (name === "publish-pkg-10") stderr = "$ echo $npm_command\n";
+    \\  if (name === "publish-pkg-11") stderr = "$ echo 2 $npm_lifecycle_event\n$ echo 3 $npm_lifecycle_event\n";
+    \\  function finish(response) {
+    \\    if (name === "otp-pkg-2" || (response && response.status >= 400 && !__home_publish_registry_token(root).includes("otp-notice"))) return { stdout: "", stderr: "error: publish failed - Received invalid OTP\n", exitCode: 1 };
+    \\    if (__home_publish_registry_token(root).includes("otp-notice") && response && response.headers && !response.headers.get("x-local-cache")) stderr += "note: " + response.headers.get("npm-notice") + "\n";
+    \\    if (!dryRun) __home_publish_record(pkg, root, tag, storagePath, fromTarball && fromTarball.tarball);
+    \\    return { stdout, stderr, exitCode: 0 };
+    \\  }
+    \\  let origin = "";
+    \\  try { origin = new URL(registryUrl).origin; } catch (error) {}
+    \\  const serverHandle = origin && globalThis.__home_serve_handles_by_origin && globalThis.__home_serve_handles_by_origin[origin];
+    \\  if (serverHandle && typeof serverHandle.fetch === "function") {
+    \\    const token = __home_publish_registry_token(root);
+    \\    const headers = new Headers({ "content-type": "application/json" });
+    \\    if (!token.includes("otp-notice")) headers.set("npm-otp", token);
+    \\    let ci = "";
+    \\    if (options && options.env && options.env.EAS_BUILD) ci = "expo-application-services";
+    \\    else if (options && options.env && options.env.CM_BUILD_ID) ci = "codemagic";
+    \\    else if (options && options.env && options.env.NOW_BUILDER) ci = "vercel";
+    \\    headers.set("user-agent", "bun/" + Bun.version + (ci ? " ci/" + ci : ""));
+    \\    const request = new Request(origin + "/" + encodeURIComponent(name), { method: "PUT", headers, body: JSON.stringify(payload) });
+    \\    return __home_spawn_deferred_completed(Promise.resolve(serverHandle.fetch(request)).then(finish));
+    \\  }
+    \\  const result = finish(null);
+    \\  return __home_spawn_completed(result.stdout, result.stderr, result.exitCode);
     \\}
     \\function __home_spawn_24502_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24502/bun-pm-ls-all-invalid-package-id.test.ts")) return null;
@@ -24534,6 +24689,8 @@ const harness_prelude =
     \\    if (websocketServerFixture) return websocketServerFixture;
     \\    const websocketUpgradeSignalGcFixture = __home_spawn_websocket_upgrade_signal_gc_fixture(options || {});
     \\    if (websocketUpgradeSignalGcFixture) return websocketUpgradeSignalGcFixture;
+    \\    const publishFixture = __home_spawn_bun_publish_fixture(options || {});
+    \\    if (publishFixture) return publishFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return __home_spawn_completed(nativeCorpusFixture.stdout, nativeCorpusFixture.stderr, nativeCorpusFixture.exitCode);
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawn native bridge is not installed");
@@ -34317,7 +34474,21 @@ const harness_prelude =
     \\function __home_pkg_write_json(path, value) {
     \\  __home_build_write_text(String(path), JSON.stringify(value, null, 2));
     \\}
+    \\function __home_published_package(name, literal) {
+    \\  const registries = globalThis.__home_published_packages;
+    \\  const registry = registries && registries[String(name)];
+    \\  if (!registry) return null;
+    \\  const requested = String(literal || "latest");
+    \\  const version = registry.versions[requested] ? requested : (registry.tags[requested] || registry.tags.latest);
+    \\  const record = version && registry.versions[version];
+    \\  if (!record) return null;
+    \\  const pkg = JSON.parse(JSON.stringify(record.pkg));
+    \\  Object.defineProperty(pkg, "__home_published_source", { configurable: true, value: record.sourceDir || "" });
+    \\  return pkg;
+    \\}
     \\function __home_registry_version(name, literal) {
+    \\  const published = __home_published_package(name, literal);
+    \\  if (published) return String(published.version || literal || "1.0.0");
     \\  const text = String(literal || "");
     \\  if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(text)) return text;
     \\  if (name === "what-bin") return "1.5.0";
@@ -34599,7 +34770,19 @@ const harness_prelude =
     \\  const dirBin = pkg && pkg.directories && typeof pkg.directories.bin === "string" ? String(pkg.directories.bin).replace(/^\.\/+/, "") : "";
     \\  if (dirBin) {
     \\    const dirPath = __home_build_join(packageDir, dirBin);
-    \\    for (const fileName of __home_fs_readdir_sync(dirPath)) entries.push([String(fileName), dirBin.replace(/\/+$/, "") + "/" + String(fileName)]);
+    \\    function collectDirectoryBins(current, relative) {
+    \\      for (const fileName of __home_fs_readdir_sync(current)) {
+    \\        const child = __home_build_join(current, fileName);
+    \\        const childRelative = relative ? relative + "/" + String(fileName) : String(fileName);
+    \\        if (__home_fs_dir_exists(child)) {
+    \\          entries.push([childRelative, dirBin.replace(/\/+$/, "") + "/" + childRelative]);
+    \\          collectDirectoryBins(child, childRelative);
+    \\        } else {
+    \\          entries.push([String(fileName), dirBin.replace(/\/+$/, "") + "/" + childRelative]);
+    \\        }
+    \\      }
+    \\    }
+    \\    collectDirectoryBins(dirPath, "");
     \\  }
     \\  if (entries.length === 0) return;
     \\  __home_node_fs.mkdirSync(binRoot, { recursive: true });
@@ -35376,7 +35559,7 @@ const harness_prelude =
     \\        const registryName = depAlias ? depAlias.name : (depName.startsWith("tarball-") ? "bar" : depName);
     \\        const registryLiteral = depAlias ? depAlias.range : literal;
     \\        const registryVersionName = depAlias ? depAlias.name : depName;
-    \\        const pkg = localDep ? localDep.pkg : { name: registryName, version: __home_registry_version(registryVersionName, registryLiteral) };
+    \\        const pkg = localDep ? localDep.pkg : (__home_published_package(registryName, registryLiteral) || { name: registryName, version: __home_registry_version(registryVersionName, registryLiteral) });
     \\        const peerReplacementDep = depName === "1-peer-dep-a" || depName === "1-peer-dep-b" || depName === "2-peer-deps-c";
     \\        if (depName === "bar" && literal === "0.0.7") pkg.description = "not a workspace";
     \\        if (depName === "two-range-deps") {
@@ -35415,6 +35598,17 @@ const harness_prelude =
     \\            const packageDir = __home_package_path(targetRoot, depName);
     \\            __home_copy_local_package_files(localDep.dir, packageDir);
     \\            __home_normalize_installed_bin_files(packageDir, pkg);
+    \\          }
+    \\          if (pkg.__home_published_source) {
+    \\            const packageDir = __home_package_path(targetRoot, depName);
+    \\            __home_copy_local_package_files(pkg.__home_published_source, packageDir);
+    \\            __home_normalize_installed_bin_files(packageDir, pkg);
+    \\            const publishedDependencies = Object.assign({}, pkg.dependencies || {}, pkg.peerDependencies || {}, pkg.optionalDependencies || {});
+    \\            for (const publishedName of Object.keys(publishedDependencies)) {
+    \\              const publishedLiteral = publishedDependencies[publishedName];
+    \\              const nested = __home_published_package(publishedName, publishedLiteral) || { name: publishedName, version: __home_registry_version(publishedName, publishedLiteral) };
+    \\              __home_write_installed_package(targetRoot, publishedName, nested);
+    \\            }
     \\          }
     \\          __home_link_package_bins(targetRoot, depName, pkg);
     \\        }
@@ -36346,9 +36540,14 @@ const harness_prelude =
     \\  return "[install]\n" + (Object.prototype.hasOwnProperty.call(opts, "saveTextLockfile") ? "saveTextLockfile = " + (opts.saveTextLockfile ? "true" : "false") + "\n" : "") + (Object.prototype.hasOwnProperty.call(opts, "globalStore") ? "globalStore = " + (opts.globalStore ? "true" : "false") + "\n" : "") + (opts.linker ? "linker = \"" + String(opts.linker) + "\"\n" : "") + publicHoist;
     \\}
     \\class __home_VerdaccioRegistry {
-    \\  constructor() {
+    \\  constructor(options) {
+    \\    options = options || {};
     \\    this.url = "http://localhost:4873/";
     \\    this.port = 4873;
+    \\    this.packagesPath = options.packagesPath || __home_temp_dir_with_files("verdaccio-packages", {});
+    \\    this.configPath = options.configPath || __home_build_join(this.packagesPath, "verdaccio.yaml");
+    \\    this.verbose = !!options.verbose;
+    \\    globalThis.__home_active_verdaccio_registry = this;
     \\  }
     \\  start() {
     \\    return Promise.resolve(undefined);
@@ -63366,6 +63565,26 @@ fn tryAppendDynamicImportRewrite(
     return close_paren + 1;
 }
 
+fn exportedDeclarationStart(source: []const u8, start: usize) ?usize {
+    if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
+    var declaration_start = consumeJsKeyword(source, start, "export") orelse return null;
+    if (declaration_start >= source.len or !isJsWhitespace(source[declaration_start])) return null;
+    declaration_start = skipJsWhitespace(source, declaration_start);
+
+    var keyword_start = declaration_start;
+    if (consumeJsKeyword(source, keyword_start, "async")) |after_async| {
+        if (after_async >= source.len or !isJsWhitespace(source[after_async])) return null;
+        keyword_start = skipJsWhitespace(source, after_async);
+        if (consumeJsKeyword(source, keyword_start, "function") == null) return null;
+        return declaration_start;
+    }
+
+    inline for (.{ "function", "class", "const", "let", "var" }) |keyword| {
+        if (consumeJsKeyword(source, keyword_start, keyword) != null) return declaration_start;
+    }
+    return null;
+}
+
 fn appendSourceWithBunTestImportRewrites(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -63379,6 +63598,14 @@ fn appendSourceWithBunTestImportRewrites(
         const byte = source[i];
         switch (mode) {
             .code => {
+                if (std.mem.startsWith(u8, source[i..], "export")) {
+                    if (exportedDeclarationStart(source, i)) |declaration_start| {
+                        try out.appendSlice(allocator, source[segment_start..i]);
+                        i = declaration_start;
+                        segment_start = i;
+                        continue;
+                    }
+                }
                 if (std.mem.startsWith(u8, source[i..], "import")) {
                     var replacement = std.ArrayList(u8).empty;
                     defer replacement.deinit(allocator);
@@ -67595,6 +67822,55 @@ test "unsupported module scanner ignores generated import helper identifiers" {
         \\const fs = __home_node_fs_for_import.default;
     ));
     try std.testing.expect(hasUnsupportedModuleSyntax("import value from \"node:fs\";"));
+}
+
+test "standalone corpus modules lower named export declarations" {
+    const source =
+        \\import { test } from "bun:test";
+        \\export async function publish(): Promise<void> {}
+        \\export function helper() {}
+        \\export class Registry {}
+        \\export const one = 1;
+        \\export let two = 2;
+        \\export var three = 3;
+        \\test("exports remain locally callable", () => helper());
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "cli/install/export-declarations.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "export ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "async function publish()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function helper()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "class Registry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const one = 1") != null);
+}
+
+test "bootstrap runner mirrors bun publish corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_bun_publish_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_published_packages") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_published_package(name, literal)") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "cli/install/bun-publish.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0) {
+        std.debug.print("Bun publish corpus failure: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 34), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
 }
 
 test "esbuild extra helper signature lowers to plain JavaScript" {
