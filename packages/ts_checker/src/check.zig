@@ -45238,7 +45238,11 @@ pub const Checker = struct {
                     }
                 }
                 if (self.class_instance_types.get(id.name)) |t| {
-                    break :blk self.merged_class_instance_types.get(t) orelse t;
+                    const inherited_t = self.merged_class_instance_types.get(t) orelse t;
+                    if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, inherited_t)) |instantiated| {
+                        break :blk instantiated;
+                    }
+                    break :blk inherited_t;
                 }
                 if (try self.resolveForwardClassInstanceType(extends_expr, id.name)) |t| break :blk t;
                 if (self.lowerBuiltinObjectType(self.string_interner.get(id.name))) |t| break :blk t;
@@ -45772,6 +45776,7 @@ pub const Checker = struct {
             try subs.put(self.gpa, type_params[i], arg_t);
         }
         if (subs.count() == 0) return null;
+        try self.extendSubstitutionsByMatchingTypeParamNames(inherited_t, type_params, &subs);
         return try self.substituteTypeNoCycles(inherited_t, &subs);
     }
 
@@ -46234,7 +46239,12 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
-                if (self.class_static_types.get(id.name)) |t| break :blk t;
+                if (self.class_static_types.get(id.name)) |t| {
+                    if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| {
+                        break :blk instantiated;
+                    }
+                    break :blk t;
+                }
                 if (try self.jsConstructorStaticTypeForHeritage(extends_expr, id.name)) |t| {
                     if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| break :blk instantiated;
                     break :blk t;
@@ -78166,6 +78176,9 @@ pub const Checker = struct {
             return null;
         }
         const id = hir_mod.identifierOf(self.hir, node);
+        if (self.nearestPriorValueDeclInSameFunction(node, id.name)) |decl| {
+            if (try self.jsDocTypeForLeadingNode(decl)) |declared_t| return declared_t;
+        }
         const use_start = self.hir.spanOf(node).start;
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -78191,7 +78204,44 @@ pub const Checker = struct {
         return null;
     }
 
-    fn jsDocArrayAssignmentDefinitelyMismatches(self: *Checker, target_node: NodeId, value_node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!bool {
+    fn jsDocAssignmentIdentifierTypeName(self: *Checker, node: NodeId, source_t: TypeId) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        if ((try self.jsDocTypeForPreviousIdentifierDecl(node)) == null) return null;
+        return try self.allocAssignmentDiagnosticTypeName(source_t);
+    }
+
+    fn nearestPriorValueDeclInSameFunction(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const use_start = self.hir.spanOf(node).start;
+        const use_function = self.enclosingFunctionLike(node);
+        var nearest = hir_mod.none_node_id;
+        var nearest_start: u32 = 0;
+        var candidate: NodeId = 0;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            const kind = self.hir.kindOf(candidate);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const start = self.hir.spanOf(candidate).start;
+            if (start >= use_start or (nearest != hir_mod.none_node_id and start <= nearest_start)) continue;
+            const declaration = hir_mod.varDeclOf(self.hir, candidate);
+            if (declaration.name == hir_mod.none_node_id or self.hir.kindOf(declaration.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, declaration.name).name != name) continue;
+            const candidate_function = self.enclosingFunctionLike(candidate);
+            if (candidate_function != use_function) {
+                if (candidate_function != null or use_function == null) continue;
+                const function_span = self.hir.spanOf(use_function.?);
+                if (start < function_span.start or start >= function_span.end) continue;
+            }
+            if (self.source_has_virtual_sections and
+                self.virtualSectionStartForNode(candidate) != self.virtualSectionStartForNode(node))
+            {
+                continue;
+            }
+            nearest = candidate;
+            nearest_start = start;
+        }
+        return if (nearest == hir_mod.none_node_id) null else nearest;
+    }
+
+    fn reportJsDocArrayAssignmentMismatch(self: *Checker, node: NodeId, target_node: NodeId, value_node: NodeId) CheckError!bool {
         if (!self.sourceHasCheckJsDirective()) return false;
         if (target_node == hir_mod.none_node_id or value_node == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(target_node) != .identifier or self.hir.kindOf(value_node) != .identifier) return false;
@@ -78200,16 +78250,24 @@ pub const Checker = struct {
         {
             return false;
         }
-        if ((try self.jsDocTypeForPreviousIdentifierDecl(target_node)) == null or
-            (try self.jsDocTypeForPreviousIdentifierDecl(value_node)) == null)
-        {
-            return false;
-        }
+        const target_t = (try self.jsDocTypeForPreviousIdentifierDecl(target_node)) orelse return false;
+        const source_t = (try self.jsDocTypeForPreviousIdentifierDecl(value_node)) orelse return false;
         if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
         const source_idx = self.interner.objectNumberIndex(source_t);
         const target_idx = self.interner.objectNumberIndex(target_t);
         if (source_idx == types.Primitive.none or target_idx == types.Primitive.none) return false;
-        return !(self.engine.isAssignableTo(source_idx, target_idx) catch return error.OutOfMemory);
+        if (self.engine.isAssignableTo(source_idx, target_idx) catch return error.OutOfMemory) return false;
+        self.removePriorDiagnosticsInNodeSpan(node, TsCodes.type_not_assignable);
+        try self.reportAssignmentTypeNotAssignable(
+            node,
+            value_node,
+            target_node,
+            source_t,
+            source_t,
+            target_t,
+            "Type is not assignable to target type.",
+        );
+        return true;
     }
 
     fn dynamicImportDefinitelyMismatchesTypeofNamespace(self: *Checker, init_node: NodeId, type_annotation: NodeId) bool {
@@ -78266,8 +78324,17 @@ pub const Checker = struct {
 
     fn jsDocTypeForLeadingNodeUnchecked(self: *Checker, node: NodeId) CheckError!?TypeId {
         const src = self.source orelse return null;
-        const body = self.leadingJsDocBody(src, self.leadingJsDocStartForNode(node)) orelse return null;
-        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        var body = self.leadingJsDocBody(src, self.leadingJsDocStartForNode(node));
+        if (body == null) {
+            const kind = self.hir.kindOf(node);
+            if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                if (self.varStatementStartForDeclarator(src, self.hir.spanOf(node).start)) |statement_start| {
+                    body = self.leadingJsDocBody(src, statement_start);
+                }
+            }
+        }
+        const jsdoc_body = body orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, jsdoc_body) catch return null;
         defer self.gpa.free(tags);
 
         for (tags) |tag| {
@@ -88403,8 +88470,12 @@ pub const Checker = struct {
                 if (a.op == null) {
                     try self.checkJsImportedPrototypeFunctionThisAssignments(a.target, a.value);
                 }
+                const assignment_value_jsdoc_t = if (self.hir.kindOf(a.value) == .identifier)
+                    try self.jsDocTypeForPreviousIdentifierDecl(a.value)
+                else
+                    null;
                 var assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
-                    if (try self.jsDocTypeForPreviousIdentifierDecl(a.value)) |declared_t| break :blk_assign_value declared_t;
+                    if (assignment_value_jsdoc_t) |declared_t| break :blk_assign_value declared_t;
                     const value_id = hir_mod.identifierOf(self.hir, a.value);
                     if (self.lookupNarrow(value_id.name) != null and !self.identifierAnnotationIsNonNullable(a.target)) break :blk_assign_value value_t;
                     break :blk_assign_value self.typeOfIdentifierDeclared(a.value);
@@ -88422,6 +88493,7 @@ pub const Checker = struct {
                         value_t = contextual_t;
                         assignment_check_value_t = contextual_t;
                     }
+                    if (assignment_value_jsdoc_t) |declared_t| assignment_check_value_t = declared_t;
                 }
                 const assignment_value_has_error = self.diagnostics.items.len > value_diag_start;
                 const target_is_destructuring = a.op == null and
@@ -88770,8 +88842,8 @@ pub const Checker = struct {
                             self.typeIsExactNullish(assignment_check_value_t) and
                             self.enumNameFromNominal(target_t) != null)
                             true
-                        else if (try self.jsDocArrayAssignmentDefinitelyMismatches(a.target, a.value, assignment_check_value_t, target_t))
-                            false
+                        else if (try self.reportJsDocArrayAssignmentMismatch(node, a.target, a.value))
+                            true
                         else if (self.enumIdentityAssignmentResult(
                             if (self.hir.kindOf(a.value) == .identifier)
                                 self.visibleAnnotatedIdentifierType(a.value) orelse self.typeOfIdentifierDeclared(a.value)
@@ -147814,6 +147886,7 @@ pub const Checker = struct {
         const source_name = explicit_function_source_name orelse
             (try self.assignmentExpressionPredicateTypeName(value_node, source)) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(value_node)) orelse
+            (try self.jsDocAssignmentIdentifierTypeName(value_node, source)) orelse
             (if (target_reduces_to_never) try self.assignmentSourceNameAgainstNever(value_node, source) else null) orelse
             (try self.visibleMixedCompoundAnnotationNameForIdentifier(value_node)) orelse
             (try self.assignmentIntersectionConstraintSourceName(value_node, source, target)) orelse
@@ -193959,6 +194032,33 @@ test "checker: checkjs class JSDoc @extends suppresses TS8026 heritage diagnosti
     }
 }
 
+test "checker: cached JavaScript constructor heritage applies JSDoc type arguments" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\function Box(value) { this.value = value; }
+        \\new Box(1);
+        \\/** @extends {Box<{ claim: "yes" | "no" }>} */
+        \\class ClaimedBox extends Box {}
+        \\const valid = new ClaimedBox({ claim: "yes" });
+        \\valid.value.claim;
+        \\new ClaimedBox(0);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'number' is not assignable to parameter of type '{ claim: \"yes\" | \"no\"; }'.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
 test "checker: checkjs class extends generic skips TS8026 when noImplicitAny is off" {
     const s = try newSetup(
         \\// @checkjs: true
@@ -195998,7 +196098,7 @@ test "checker: checkjs JSDoc array var assignment reports TS2322" {
     try T.expect(found);
 }
 
-test "checker: checkjs JSDoc array var assignment in method parses without crash" {
+test "checker: checkjs JSDoc array var assignment in method reports TS2322" {
     const s = try newSetup(
         \\// @checkJs: true
         \\var A = {};
@@ -196014,6 +196114,11 @@ test "checker: checkjs JSDoc array var assignment in method parses without crash
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'string[]' is not assignable to type 'number[]'.",
+    ));
 }
 
 test "checker: assignment diagnostic widens boolean literal source for number target" {
