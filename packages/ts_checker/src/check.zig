@@ -24912,7 +24912,8 @@ pub const Checker = struct {
                     if (c.callee == prev) return self.iifeParameterHasArgumentContext(fn_node, param_node);
                     if (self.callHasDirectFunctionCallee(cur)) return false;
                     if (self.callCalleeRootHasInvalidContextualType(c.callee)) return false;
-                    return true;
+                    const target_t = self.contextualTargetTypeForFunction(fn_node) orelse return false;
+                    return self.contextualParameterTypeForFunctionParam(fn_node, param_node, target_t) != null;
                 },
                 .var_decl, .let_decl, .const_decl => {
                     const v = hir_mod.varDeclOf(self.hir, cur);
@@ -29178,8 +29179,14 @@ pub const Checker = struct {
                 try self.arrayCallbackParameterElementType(node, param_index)
             else
                 null;
-            const t: TypeId = if (has_anno)
-                try self.lowererLowerWithTypeParams(pp.type_annotation)
+            const t: TypeId = if (has_anno) blk: {
+                const lowered_annotation_t = try self.lowererLowerWithTypeParams(pp.type_annotation);
+                break :blk if (lowered_annotation_t == types.Primitive.unknown and
+                    self.typeAnnotationContainsUnresolvedRef(pp.type_annotation))
+                    types.Primitive.any
+                else
+                    lowered_annotation_t;
+            }
             else if (jsdoc_param_t) |jt|
                 jt
             else if (jsdoc_context_param_t) |jt|
@@ -35279,7 +35286,12 @@ pub const Checker = struct {
                             try self.pushNarrowScope();
                             defer self.popNarrowScope();
                             try self.recordNarrow(this_id, partial_this_t);
-                            const declared_t = try self.lowererLowerWithTypeParams(op.type_annotation);
+                            const lowered_declared_t = try self.lowererLowerWithTypeParams(op.type_annotation);
+                            const declared_t = if (lowered_declared_t == types.Primitive.unknown and
+                                self.typeAnnotationContainsUnresolvedRef(op.type_annotation))
+                                types.Primitive.any
+                            else
+                                lowered_declared_t;
                             if (op.value != hir_mod.none_node_id) {
                                 const value_kind = self.hir.kindOf(op.value);
                                 if (value_kind == .fn_expr or value_kind == .arrow_fn) {
@@ -64027,6 +64039,7 @@ pub const Checker = struct {
                         try self.reportUnresolvedCallTypeArgumentNodes(args_extra);
                         for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
                     }
+                    return types.Primitive.any;
                 }
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     if (try self.circularTypeArgReference(r.name)) return types.Primitive.any;
@@ -222112,4 +222125,33 @@ test "checker: malformed signatures retain primitive type-only value diagnostics
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_only_used_as_value));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: unresolved legacy annotations preserve any recovery and callback diagnostics" {
+    const s = try newSetup(
+        \\namespace Formatting {
+        \\    export class Indenter {
+        \\        private bag: MissingBag;
+        \\        public options: Services.EditorOptions;
+        \\        run(node: ParseNode) {
+        \\            this.bag.FindIndent();
+        \\            this.options.TabSize;
+        \\            var indentationInfo: any = null;
+        \\            IndentationEditInfo.create();
+        \\            unresolved.foreach((item) => item);
+        \\        }
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(
+        @as(usize, 4),
+        checkerCountCode(s, TsCodes.cannot_find_name) + checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean),
+    );
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }

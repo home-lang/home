@@ -6329,7 +6329,10 @@ pub const Parser = struct {
                 continue;
             }
             // Unknown — advance to keep error-recovery flowing.
-            _ = self.advance();
+            const bad = self.advance();
+            if (bad.kind == .comma) {
+                try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
+            }
         }
         const close = if (recovered_nested_declaration)
             self.peek()
@@ -7002,6 +7005,12 @@ pub const Parser = struct {
         {
             return false;
         }
+        if ((name_tok.kind == .identifier or name_tok.kind.isContextualKeyword()) and
+            next.kind == .comma)
+        {
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1434, "Unexpected keyword or identifier.");
+            return true;
+        }
         const name_text = self.source[name_tok.span.start..name_tok.span.end];
         const suggestion = try self.classMemberKeywordSuggestion(name_text) orelse return false;
         const msg = try std.fmt.allocPrint(
@@ -7566,6 +7575,11 @@ pub const Parser = struct {
         if (self.peek().kind == .at and !self.peek().flags.preceded_by_newline) {
             const dec_tok = self.peek();
             try self.reportCodeAt(dec_tok.span.start, dec_tok.line, 1436, "Decorators must precede the name and all keywords of property declarations.");
+            return;
+        }
+        if (self.peek().kind == .comma) {
+            const comma = self.advance();
+            try self.reportCodeAt(comma.span.start, comma.line, 1005, "';' expected.");
             return;
         }
         try self.consumeStatementTerminator();
@@ -19450,7 +19464,7 @@ pub const Parser = struct {
         var elements: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elements.deinit(self.gpa);
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
-            if (self.peek().kind == .close_brace) {
+            if (self.peek().kind == .close_brace or self.peek().kind == .close_paren) {
                 const close = self.peek();
                 try self.reportCodeAt(close.span.start, close.line, 1137, "Expression or comma expected.");
                 return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.start }, elements.items);
@@ -25344,6 +25358,26 @@ test "parser: array literal recovers class close as TS1137" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1137), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Expression or comma expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: array literal leaves a mismatched call close for outer recovery" {
+    var s = try newTestSetup(
+        \\export class Game {
+        \\    private position = new DisplayPosition([), 3, 3, 0], NoMove, 0);
+        \\    private prevConfig: SeedCoords[][];
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const exported = hir_mod.blockStmts(&s.hir, root)[0];
+    const class_node = hir_mod.exportOf(&s.hir, exported).decl;
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(class_node));
+    try T.expect(hir_mod.classMembers(&s.hir, class_node).len >= 7);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1137));
+    try T.expectEqual(@as(u32, 5), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1068));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1434));
 }
 
 test "parser: call expression with spread arguments" {
