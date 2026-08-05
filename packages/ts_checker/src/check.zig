@@ -51786,9 +51786,14 @@ pub const Checker = struct {
             {
                 target_is_esm = true;
             }
-            if (self.hir.kindOf(raw) == .assignment and self.commonJsExportsAssignmentName(raw) != null) {
-                target_is_commonjs_shape = true;
-                continue;
+            if (self.hir.kindOf(raw) == .assignment) {
+                const assignment = hir_mod.assignmentOf(self.hir, raw);
+                if (self.commonJsExportsAssignmentName(raw) != null or
+                    (assignment.target != hir_mod.none_node_id and self.memberAccessIsModuleExports(assignment.target)))
+                {
+                    target_is_commonjs_shape = true;
+                    continue;
+                }
             }
             if (self.hir.kindOf(raw) != .export_decl) continue;
             if ((self.isExportAssignmentDecl(raw) or self.exportDeclIsExportEquals(raw)) and !target_file_is_esm_format) {
@@ -52233,6 +52238,14 @@ pub const Checker = struct {
                 hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
             {
                 if (try self.virtualExportAssignmentTargetInstanceType(anchor, imp.module)) |t| return t;
+            }
+            if (!self.importDeclIsRequireAssignment(stmt) and
+                imp.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(imp.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name and
+                std.mem.startsWith(u8, spec_text, "."))
+            {
+                if (try self.virtualCommonJsModuleExportObjectType(stmt, spec_text)) |t| return t;
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
@@ -78482,6 +78495,7 @@ pub const Checker = struct {
             const inner_text = std.mem.trim(u8, trimmed[1..], " \t\r\n");
             if (inner_text.len > 0) return try self.jsDocTypeTextToType(src, inner_text);
         }
+        if (try self.jsDocImportTypeTextToType(src, trimmed)) |import_t| return import_t;
         if (try self.jsDocTypeofTextToType(trimmed)) |typeof_t| return typeof_t;
         if (try self.jsDocKeyofTextToType(src, trimmed)) |keyof_t| return keyof_t;
         if (try self.jsDocIndexedAccessTextToType(src, trimmed)) |indexed_t| return indexed_t;
@@ -78539,7 +78553,6 @@ pub const Checker = struct {
         }
         if (try self.jsDocGenericTypeTextToType(src, trimmed)) |generic_t| return generic_t;
         if (try self.jsDocFunctionType(trimmed)) |sig| return sig;
-        if (try self.jsDocImportTypeTextToType(src, trimmed)) |import_t| return import_t;
         if (try self.jsDocImportedNamespaceMemberType(src, trimmed)) |import_t| return import_t;
         if (try self.jsDocPrimitiveType(trimmed)) |prim| return prim;
         if (try self.jsDocMappedTypeTextToType(src, trimmed)) |mapped_t| return mapped_t;
@@ -88337,6 +88350,9 @@ pub const Checker = struct {
                     if (truthy != types.Primitive.never) try self.recordNarrow(target_id.name, truthy);
                     break :logical_rhs try self.checkExpression(a.value);
                 } else try self.checkExpression(a.value);
+                if (a.op == null) {
+                    try self.checkJsImportedPrototypeFunctionThisAssignments(a.target, a.value);
+                }
                 var assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
                     if (try self.jsDocTypeForPreviousIdentifierDecl(a.value)) |declared_t| break :blk_assign_value declared_t;
                     const value_id = hir_mod.identifierOf(self.hir, a.value);
@@ -90832,6 +90848,7 @@ pub const Checker = struct {
                         if ((try self.checkJsImportedCallableExpandoTargetType(m.object, access_obj_t)) == null) {
                             if (self.memberNameIsEcmaPrivate(m.name) or
                                 self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t) or
+                                (try self.checkJsAssignmentTargetsImportedClassPrototype(m.object)) or
                                 (self.currentThisType() != null and
                                     self.thisInsideJsDocConstructorObjectLiteralMethod(m.object)))
                             {
@@ -98759,7 +98776,12 @@ pub const Checker = struct {
         const obj_id = hir_mod.identifierOf(self.hir, m.object);
         const obj_name = self.string_interner.get(obj_id.name);
         if (std.mem.eql(u8, obj_name, "exports") or std.mem.eql(u8, obj_name, "module")) return null;
-        if (self.localNameIsImportBinding(obj_id.name, m.object)) return null;
+        if (self.localNameIsImportBinding(obj_id.name, m.object)) {
+            if (self.strict_flags.no_implicit_any) return null;
+            const import_t = (try self.virtualImportTypeForLocal(obj_id.name, m.object)) orelse return null;
+            if (self.objectHasCallOrConstructSignature(import_t) or self.typeUnionAllCallable(import_t)) return null;
+            return .{ .obj_name = obj_id.name, .prop_name = m.name };
+        }
         if (!self.identifierNamesUntypedObjectLiteralBindingInScope(obj_id.name, node)) return null;
         return .{ .obj_name = obj_id.name, .prop_name = m.name };
     }
@@ -119425,6 +119447,11 @@ pub const Checker = struct {
         const owner_str = self.string_interner.get(owner);
         if (std.mem.eql(u8, owner_str, "Event")) {
             return self.lowerBuiltinObjectType("Event") orelse types.Primitive.any;
+        }
+        if (self.localNameIsImportBinding(owner, node)) {
+            const imported_t = (self.virtualImportTypeForLocal(owner, node) catch null) orelse return null;
+            const instance_t = (self.constructReturnType(imported_t) catch null) orelse return null;
+            return instance_t;
         }
         return (self.jsConstructorInstanceTypeForHeritage(node, owner) catch null) orelse null;
     }
@@ -151001,6 +151028,67 @@ pub const Checker = struct {
         if (!self.localNameIsImportBinding(id.name, object_node)) return null;
         if (self.objectHasCallOrConstructSignature(object_t) or self.typeUnionAllCallable(object_t)) return object_t;
         return try self.localNameRelativeImportClassOrFunctionValueType(id.name, object_node);
+    }
+
+    fn checkJsAssignmentTargetsImportedClassPrototype(self: *Checker, object_node: NodeId) CheckError!bool {
+        if (self.hir.kindOf(object_node) != .member_access) return false;
+        const prototype = hir_mod.memberOf(self.hir, object_node);
+        if (!std.mem.eql(u8, self.string_interner.get(prototype.name), "prototype")) return false;
+        if (self.hir.kindOf(prototype.object) != .identifier) return false;
+        const root = hir_mod.identifierOf(self.hir, prototype.object);
+        if (!self.localNameIsImportBinding(root.name, prototype.object)) return false;
+        const import_t = (try self.virtualImportTypeForLocal(root.name, prototype.object)) orelse return false;
+        return self.objectHasCallOrConstructSignature(import_t) or self.typeUnionAllCallable(import_t);
+    }
+
+    fn checkJsImportedPrototypeFunctionThisAssignments(
+        self: *Checker,
+        target: NodeId,
+        value: NodeId,
+    ) CheckError!void {
+        if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(target) != .member_access) return;
+        const member = hir_mod.memberOf(self.hir, target);
+        if (self.hir.kindOf(member.object) != .member_access) return;
+        const prototype = hir_mod.memberOf(self.hir, member.object);
+        if (!std.mem.eql(u8, self.string_interner.get(prototype.name), "prototype")) return;
+        if (self.hir.kindOf(prototype.object) != .identifier) return;
+        const root = hir_mod.identifierOf(self.hir, prototype.object);
+        if (!self.localNameIsImportBinding(root.name, prototype.object)) return;
+        const value_kind = self.hir.kindOf(value);
+        if (value_kind != .fn_decl and value_kind != .fn_expr) return;
+        const imported_t = (try self.virtualImportTypeForLocal(root.name, prototype.object)) orelse return;
+        const instance_t = (try self.constructReturnType(imported_t)) orelse return;
+        const function = hir_mod.fnDeclOf(self.hir, value);
+        try self.checkJsImportedPrototypeThisAssignmentsInNode(function.body, instance_t);
+    }
+
+    fn checkJsImportedPrototypeThisAssignmentsInNode(
+        self: *Checker,
+        node: NodeId,
+        instance_t: TypeId,
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                try self.checkJsImportedPrototypeThisAssignmentsInNode(stmt, instance_t);
+            },
+            .if_stmt => {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                try self.checkJsImportedPrototypeThisAssignmentsInNode(conditional.then_branch, instance_t);
+                try self.checkJsImportedPrototypeThisAssignmentsInNode(conditional.else_branch, instance_t);
+            },
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (self.directThisPropertyName(assignment.target)) |name| {
+                    if ((try self.lookupObjectMember(instance_t, name)) == null and
+                        !self.diagnosticExists(assignment.target, TsCodes.property_does_not_exist))
+                    {
+                        try self.reportPropertyDoesNotExistOnType(assignment.target, name, instance_t);
+                    }
+                }
+            },
+            else => {},
+        }
     }
 
     fn localNameIsImportBinding(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
@@ -220581,4 +220669,61 @@ test "checker: future CommonJS value assignment suppresses implicit any" {
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_invoke_possibly_undefined));
+}
+
+test "checker: non-strict imported object aliases retain property writes" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: false
+        \\// @filename: values.js
+        \\export class Value {}
+        \\export const config = { x: 0 };
+        \\// @filename: use.js
+        \\import { Value, config } from "./values";
+        \\Value.extra = {};
+        \\config.y = {};
+        \\config.y;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: CommonJS default imports retain exported class shape" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @esModuleInterop: true
+        \\// @filename: exported.js
+        \\class Exported { method() {} }
+        \\module.exports = Exported;
+        \\// @filename: use.js
+        \\import E from "./exported";
+        \\E.prototype.extra = function () { this.inner = 1; };
+        \\new E().extra;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_default_export));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: unexported CommonJS JSDoc typedef stays private" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: mod.js
+        \\/** @typedef {() => number} Hidden */
+        \\module.exports = { visible: 1 };
+        \\// @filename: use.js
+        \\/** @param {typeof import("./mod").Hidden} value */
+        \\function use(value) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.namespace_no_exported_member));
 }
