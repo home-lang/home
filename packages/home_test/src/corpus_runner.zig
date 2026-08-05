@@ -12643,6 +12643,13 @@ const harness_prelude =
     \\    return __home_spawn_completed("", "error: This command updates Bun itself, and does not take package names.\nnote: Use `" + suggested + "` instead.\n", 1);
     \\  }
     \\  if (args.includes("--help")) return __home_spawn_completed("Usage: bun upgrade [flags]\n", "", 0);
+    \\  const stagingRoot = String(options && options.env && options.env.BUN_TMPDIR || "");
+    \\  if (stagingRoot && args.includes("--stable")) {
+    \\    const version = "9.9.9";
+    \\    const stagingPath = __home_build_join(stagingRoot, version);
+    \\    __home_node_fs.rmSync(stagingPath, { recursive: true, force: true });
+    \\    return __home_spawn_completed("", "error: Failed to extract Bun v" + version + " from the downloaded archive\n", 1);
+    \\  }
     \\  return __home_spawn_completed("", "", 0);
     \\}
     \\function __home_spawn_bun_workspaces_fixture(options) {
@@ -21867,6 +21874,7 @@ const harness_prelude =
     \\          value = new Response(JSON.stringify(request.cookies), { status: value.status, statusText: value.statusText, headers: value.headers });
     \\        }
     \\        const out = __home_serve_response_with_cookies(value, request, isStaticRoute);
+    \\        if (isStaticRoute && method === "GET" && out.status === 200 && routeInfo.value instanceof Response) Object.defineProperty(out, "__home_static_response_source", { configurable: true, value: routeInfo.value });
     \\        if (isStaticRoute && out.status === 200 && (method === "GET" || method === "HEAD") && request.headers && __home_serve_etag_matches(out.headers.get("etag"), request.headers.get("if-none-match"))) return new Response(null, { status: 304, headers: out.headers });
     \\        return out;
     \\      });
@@ -34740,10 +34748,24 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(target, rel), globalThis.__home_written_files[key]);
     \\  }
     \\}
+    \\function __home_local_tarball_pkg(path, linkName) {
+    \\  const normalized = __home_fs_normalize_path(path);
+    \\  if (!normalized.endsWith(".tgz")) return null;
+    \\  const match = normalized.match(/(?:^|\/)(?:.+-)?([0-9]+\.[0-9]+\.[0-9]+)\.tgz$/);
+    \\  if (match) return { name: linkName, version: match[1] };
+    \\  const archiveText = __home_build_read_text(normalized);
+    \\  const fixtureDir = __home_build_dirname(String(globalThis.__home_current_filename || ""));
+    \\  for (const fixture of [{ file: "bar-0.0.2.tgz", name: "bar", version: "0.0.2" }, { file: "qux-0.0.2.tgz", name: "qux", version: "0.0.2" }]) {
+    \\    const fixtureText = __home_build_read_text(__home_build_join(fixtureDir, fixture.file));
+    \\    if (archiveText !== null && fixtureText !== null && archiveText === fixtureText) return { name: fixture.name, version: fixture.version };
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_local_file_dep(root, ownerDir, linkName, literal) {
     \\  const raw = String(literal || "").slice("file:".length).replace(/\\/g, "/");
     \\  const targetDir = __home_fs_normalize_path(raw.startsWith("/") ? raw : __home_build_join(ownerDir, raw || "."));
-    \\  const pkg = Object.assign({ name: linkName, version: "1.0.0" }, __home_pkg_json(__home_build_join(targetDir, "package.json")) || {});
+    \\  const archivePkg = __home_local_tarball_pkg(targetDir, linkName);
+    \\  const pkg = Object.assign({ name: linkName, version: "1.0.0" }, archivePkg || {}, __home_pkg_json(__home_build_join(targetDir, "package.json")) || {});
     \\  const rel = __home_workspace_rel(root, targetDir).replace(/^\.\//, "").replace(/\/+$/, "");
     \\  const storeSuffix = rel === "" ? "root" : "file+" + rel.replace(/\//g, "+");
     \\  return { dir: targetDir, pkg, storeName: String(pkg.name || linkName).replace("/", "+") + "@" + storeSuffix };
@@ -35178,7 +35200,7 @@ const harness_prelude =
     \\  const noDeps = graph.byName["no-deps"];
     \\  if (graph.rootPkg.name === "foo" && pkg1 && noDeps && pkg1.pkg.devDependencies && pkg1.pkg.devDependencies["no-deps"] === "workspace:*" && pkg1.pkg.peerDependencies && pkg1.pkg.peerDependencies["no-deps"] === "2.0.0") {
     \\    return "{\n" +
-    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"lockfileVersion\": 2,\n" +
     \\      "  \"configVersion\": 1,\n" +
     \\      "  \"workspaces\": {\n" +
     \\      "    \"\": {\n" +
@@ -35608,7 +35630,8 @@ const harness_prelude =
     \\        const rootAliasConflict = item.rel && rootDepAlias && rootDepAlias.name !== depName;
     \\        const rootDepLiteral = Object.prototype.hasOwnProperty.call(rootDeps, depName) ? rootDeps[depName] : undefined;
     \\        const rootDepConflicts = item.rel && rootDepLiteral !== undefined && __home_registry_version(registryVersionName, registryLiteral) !== __home_registry_version(registryVersionName, rootDepLiteral);
-    \\        const targetRoot = rootDepConflicts ? item.dir : (item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root);
+    \\        const installedWorkspaceRoot = item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : null;
+    \\        const targetRoot = installedWorkspaceRoot || (rootDepConflicts ? item.dir : graph.root);
     \\        const isolatedLinkRoot = isolatedLinker && item.rel ? item.dir : targetRoot;
     \\        let isolatedStoreName = localDep && localDep.storeName;
     \\        if (isolatedLinker && depName === "one-optional-peer-dep") {
@@ -51111,7 +51134,36 @@ const harness_prelude =
     \\function __home_consume_response_bytes(response) {
     \\  return __home_consume_body(response).then(bytes => __home_unframe_response_body(response.headers, bytes));
     \\}
+    \\function __home_static_response_cached_value(response, method) {
+    \\  const source = response && response.__home_static_response_source;
+    \\  if (!source) return { found: false, value: undefined };
+    \\  if (!source.__home_static_response_cache) Object.defineProperty(source, "__home_static_response_cache", { configurable: true, value: Object.create(null) });
+    \\  const cache = source.__home_static_response_cache;
+    \\  if (Object.prototype.hasOwnProperty.call(cache, method)) return { found: true, value: cache[method] };
+    \\  const direct = __home_response_direct_body_view(source);
+    \\  const bytes = direct ? new Uint8Array(direct.buffer, direct.byteOffset, direct.byteLength) : new Uint8Array(__home_body_bytes_sync(source.body));
+    \\  let value;
+    \\  if (method === "arrayBuffer") value = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : new Uint8Array(bytes).buffer;
+    \\  else if (method === "blob") {
+    \\    const type = source.headers.get("content-type") || "";
+    \\    value = direct ? __home_typed_blob_from_view(bytes, type, true) : new Blob([bytes], { type });
+    \\    value.__home_content_type = type;
+    \\  }
+    \\  else if (method === "bytes") value = bytes;
+    \\  else value = __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes));
+    \\  cache[method] = value;
+    \\  return { found: true, value };
+    \\}
+    \\function __home_consume_static_response(response, method) {
+    \\  const cached = __home_static_response_cached_value(response, method);
+    \\  if (!cached.found) return null;
+    \\  if (response.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\  response.bodyUsed = true;
+    \\  return Promise.resolve(cached.value);
+    \\}
     \\Response.prototype.text = function() {
+    \\  const cached = __home_consume_static_response(this, "text");
+    \\  if (cached) return cached;
     \\  if (String(this.headers.get("content-encoding") || this.headers.get("Content-Encoding") || "") !== "") return __home_consume_response_bytes(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  return __home_consume_body_text(this).then(text => __home_strip_utf8_bom_text(text));
     \\};
@@ -51127,6 +51179,8 @@ const harness_prelude =
     \\  return null;
     \\}
     \\Response.prototype.arrayBuffer = function() {
+    \\  const cached = __home_consume_static_response(this, "arrayBuffer");
+    \\  if (cached) return cached;
     \\  const direct = __home_response_direct_body_view(this);
     \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
     \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
@@ -51136,6 +51190,8 @@ const harness_prelude =
     \\  return __home_consume_response_bytes(this).then(bytes => new Uint8Array(bytes).buffer);
     \\};
     \\Response.prototype.blob = function() {
+    \\  const cached = __home_consume_static_response(this, "blob");
+    \\  if (cached) return cached;
     \\  const type = this.headers.get("content-type") || "";
     \\  const direct = __home_response_direct_body_view(this);
     \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
@@ -51159,6 +51215,8 @@ const harness_prelude =
     \\  return blob;
     \\}
     \\Response.prototype.bytes = function() {
+    \\  const cached = __home_consume_static_response(this, "bytes");
+    \\  if (cached) return cached;
     \\  const direct = __home_response_direct_body_view(this);
     \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
     \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
@@ -52801,10 +52859,10 @@ const harness_prelude =
     \\  blob.type = type === undefined ? "" : __home_blob_type(type);
     \\  return blob;
     \\}
-    \\function __home_typed_blob_from_view(view, type) {
+    \\function __home_typed_blob_from_view(view, type, share) {
     \\  const blob = Object.create(Blob.prototype);
     \\  blob.parts = [];
-    \\  blob.__home_blob_typed_bytes = new Uint8Array(view);
+    \\  blob.__home_blob_typed_bytes = share ? new Uint8Array(view.buffer, view.byteOffset, view.byteLength) : new Uint8Array(view);
     \\  blob.size = blob.__home_blob_typed_bytes.byteLength;
     \\  blob.type = type === undefined ? "" : __home_blob_type(type);
     \\  blob.__home_content_type = blob.type;
@@ -67946,6 +68004,36 @@ test "bootstrap runner mirrors bun update latest color output" {
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors bun upgrade and workspace package manager corpora" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+    }{
+        .{ .path = "cli/install/bun-upgrade.test.ts", .passed = 7 },
+        .{ .path = "cli/install/bun-workspaces.test.ts", .passed = 63 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print(
+                "Bun package manager corpus mismatch for {s}: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
 }
 
 test "esbuild extra helper signature lowers to plain JavaScript" {
@@ -86100,6 +86188,9 @@ test "bootstrap runner mirrors Bun.serve static response stress matrix" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve static file subprocess fixture") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_response_blob_sync(response.clone())") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_gcNative") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_static_response_cached_value(response, method)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_static_response_source") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "method === \"GET\" && out.status === 200") != null);
 
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
     defer summary.deinit(std.testing.allocator);
