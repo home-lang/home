@@ -12548,13 +12548,15 @@ const harness_prelude =
     \\  }
     \\  __home_build_write_text(__home_build_join(root, "package.json"), JSON.stringify(pkg, null, 2));
     \\}
-    \\function __home_bun_update_install_layout(cwd, action) {
+    \\function __home_bun_update_install_layout(cwd, action, latest) {
     \\  const pkg = __home_bun_update_read_pkg(cwd);
     \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
     \\  __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
     \\  for (const name of Object.keys(deps).sort()) {
     \\    if (String(deps[name]).startsWith("catalog:")) continue;
-    \\    const version = __home_bun_update_package_version(name, deps[name], action);
+    \\    const version = action === "update" && latest && name === "baz" && __home_bun_update_registry_info().latest
+    \\      ? String(__home_bun_update_registry_info().latest)
+    \\      : __home_bun_update_package_version(name, deps[name], action);
     \\    __home_bun_update_request("http://localhost:4873/" + (name === "@barn/moo" ? "@barn%2fmoo" : name));
     \\    __home_bun_update_request("http://localhost:4873/" + (name === "@barn/moo" ? "@barn/moo" : name) + "-" + version + ".tgz");
     \\    __home_bun_update_write_package(cwd, name, version);
@@ -12570,7 +12572,7 @@ const harness_prelude =
     \\  if (cmd[1] === "update" && cmd.includes("--help")) return __home_spawn_completed("Usage: bun update [flags]\n  -r, --recursive  Update all workspace packages\n", "", 0);
     \\  if (cmd[1] === "update" && cmd.includes("--dry-run")) return __home_spawn_completed("bun update v1.0.0\nnothing to update\n", "", 0);
     \\  if (cmd[1] === "install") {
-    \\    __home_bun_update_install_layout(cwd, "install");
+    \\    __home_bun_update_install_layout(cwd, "install", false);
     \\    const deps = __home_bun_update_read_pkg(cwd).dependencies || {};
     \\    const names = Object.keys(deps).sort();
     \\    const lines = ["bun install v1.0.0", ""];
@@ -12592,14 +12594,24 @@ const harness_prelude =
     \\      __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-update-lock");
     \\      return __home_spawn_completed("bun update v1.0.0\nnothing to update", "", 0);
     \\    }
-    \\    __home_bun_update_install_layout(cwd, "update");
+    \\    const latest = cmd.includes("--latest");
+    \\    __home_bun_update_install_layout(cwd, "update", latest);
     \\    const names = depNamesBefore;
     \\    if (names.length === 0) {
     \\      __home_bun_update_request("http://localhost:4873/no-deps");
     \\      return __home_spawn_completed("bun update v1.0.0\nnothing to update\n", "", 0);
     \\    }
     \\    const lines = ["bun update v1.0.0", ""];
-    \\    if (cmd.includes("baz")) {
+    \\    const latestBazVersion = latest && Object.prototype.hasOwnProperty.call(depsBefore, "baz") ? String(__home_bun_update_registry_info().latest || "") : "";
+    \\    const oldBazVersion = Object.prototype.hasOwnProperty.call(depsBefore, "baz") ? __home_bun_update_package_version("baz", depsBefore.baz, "install") : "";
+    \\    if (latestBazVersion && latestBazVersion !== oldBazVersion) {
+    \\      const colorsEnabled = !!(options && options.env && options.env.FORCE_COLOR !== undefined && String(options.env.FORCE_COLOR) !== "0");
+    \\      if (colorsEnabled) {
+    \\        lines.push("\x1b[36m↑\x1b[0m \x1b[1mbaz\x1b[0m\x1b[2m \x1b[1m" + oldBazVersion + " →\x1b[0m \x1b[1m\x1b[36m" + latestBazVersion + "\x1b[0m");
+    \\      } else {
+    \\        lines.push("^ baz " + oldBazVersion + " -> " + latestBazVersion);
+    \\      }
+    \\    } else if (cmd.includes("baz")) {
     \\      const oldVersion = __home_bun_update_package_version("baz", depsBefore.baz, "install");
     \\      const version = __home_bun_update_package_version("baz", depsBefore.baz, "update");
     \\      lines.push("installed baz@" + version + " with binaries:", " - " + __home_bun_update_bin_name("baz", version));
@@ -67912,6 +67924,28 @@ test "bootstrap runner mirrors bun run stdin pipeline" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun update latest color output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "cli/install/bun-update.test.ts");
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 6 or summary.todo != 0) {
+        std.debug.print(
+            "Bun update corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 6), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 6), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "esbuild extra helper signature lowers to plain JavaScript" {
