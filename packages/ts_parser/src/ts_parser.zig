@@ -13272,14 +13272,20 @@ pub const Parser = struct {
             const next = self.peek();
             if (next.kind != .close_brace and next.kind != .eof and !next.flags.preceded_by_newline) {
                 try self.reportCodeAt(next.span.start, next.line, 1005, "';' expected.");
-                while (self.peek().kind != .semicolon and
-                    self.peek().kind != .close_brace and
-                    self.peek().kind != .eof)
-                {
-                    _ = self.advance();
-                }
-                if (self.match(.semicolon)) {
-                    self.type_member_list_leave_close = true;
+                // A modifier starts the next class member even without the
+                // separator. Leave it for the outer class-member loop after
+                // reporting TS1005 so `[k: string]: T public v: U` recovers
+                // as an index signature followed by `public v`.
+                if (!next.kind.isModifierKeyword()) {
+                    while (self.peek().kind != .semicolon and
+                        self.peek().kind != .close_brace and
+                        self.peek().kind != .eof)
+                    {
+                        _ = self.advance();
+                    }
+                    if (self.match(.semicolon)) {
+                        self.type_member_list_leave_close = true;
+                    }
                 }
             }
         }
@@ -29003,12 +29009,17 @@ test "parser: class index signature missing separator reports TS1005" {
     var s = try newTestSetup("class C { [a: string]: number public v: number }");
     defer destroyTestSetup(s);
 
-    _ = try s.parser.parseSourceFile();
+    const root = try s.parser.parseSourceFile();
     var found = false;
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 1005 and std.mem.eql(u8, d.message, "';' expected.")) found = true;
     }
     try T.expect(found);
+    const class_node = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, class_node);
+    try T.expectEqual(@as(usize, 2), members.len);
+    try T.expectEqual(hir_mod.NodeKind.index_signature, s.hir.kindOf(members[0]));
+    try T.expectEqual(hir_mod.NodeKind.object_property, s.hir.kindOf(members[1]));
 }
 
 test "parser: malformed interface index signatures use upstream recovery diagnostics" {

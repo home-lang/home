@@ -16450,7 +16450,36 @@ pub const Checker = struct {
         if (self.has_parse_diagnostics) return;
         var pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer pending.deinit(self.gpa);
+        try self.preseedHoistedVarAssignments(stmts, &pending);
         for (stmts) |s| try self.scanForUsedBeforeAssign(s, &pending);
+    }
+
+    fn preseedHoistedVarAssignments(
+        self: *Checker,
+        stmts: []const NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (!self.strict_flags.strict_null_checks) return;
+        for (stmts) |raw_stmt| {
+            const stmt = self.unwrapExportDecl(raw_stmt);
+            if (self.hir.kindOf(stmt) != .var_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, stmt);
+            if (v.is_ambient or v.init == hir_mod.none_node_id or
+                v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier)
+            {
+                continue;
+            }
+            const init_type = self.hir.typeOf(v.init);
+            const inferred = if (init_type != types.Primitive.none) init_type else self.hir.typeOf(stmt);
+            if (inferred == types.Primitive.none or
+                inferred == types.Primitive.any or
+                inferred == types.Primitive.unknown or
+                self.typeIncludesExplicitUndefined(inferred))
+            {
+                continue;
+            }
+            try pending.put(self.gpa, hir_mod.identifierOf(self.hir, v.name).name, stmt);
+        }
     }
 
     const ExpandoAssignmentState = enum { assigned, maybe_unassigned };
@@ -18050,6 +18079,15 @@ pub const Checker = struct {
         if (self.declarationSourceHasLeadingDeclare(decl_node) or self.declarationLineHasDeclare(decl_node)) return;
         if (self.sourceHasDeclareAnyVarName(name)) return;
         if (std.mem.eql(u8, self.string_interner.get(name), "_")) return;
+        if (self.hir.kindOf(decl_node) == .var_decl) {
+            const decl = hir_mod.varDeclOf(self.hir, decl_node);
+            if (decl.init != hir_mod.none_node_id and
+                self.hir.spanOf(ref_node).start < self.hir.spanOf(decl_node).start)
+            {
+                try self.reportUsedBeforeAssignment(ref_node, name, pending);
+                return;
+            }
+        }
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (self.sourceHasStrictFalseDirective() and
                 self.varDeclHasTypeAnnotation(decl_node) and
@@ -221867,4 +221905,26 @@ test "checker: TypeScript expandos require function declarations or const bindin
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: malformed class index signature recovery preserves following field" {
+    const b = try newBoundSetup(
+        \\class C { [a: string]: number public v: number }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_property_initialization = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_not_initialized));
+}
+
+test "checker: initialized var is unassigned before its hoisted initializer" {
+    const s = try newSetup(
+        \\if (x !== 1) consume(x);
+        \\var x = 1;
+        \\declare function consume(value: number): void;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.used_before_assignment));
 }
