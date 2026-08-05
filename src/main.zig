@@ -2399,7 +2399,37 @@ fn runShellFile(file_path: []const u8, extra_args: []const [:0]const u8) !void {
     home_rt.Global.exit(@truncate(exit_code));
 }
 
+/// Execute source piped to `home run -` through the same full VM used by
+/// inline TypeScript. Bun exposes stdin as a virtual `[stdin]` module resolved
+/// from the current working directory, while `process.argv` retains `-` as the
+/// script name. Keep the upstream approximately-1-GiB input ceiling so an
+/// unbounded pipe cannot exhaust the process allocator.
+fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u8) !void {
+    const stdin_file = std.Io.File.stdin();
+    var stdin_buffer: [64 * 1024]u8 = undefined;
+    var stdin_reader = stdin_file.readerStreaming(g_io, &stdin_buffer);
+    const source = stdin_reader.interface.allocRemaining(
+        allocator,
+        std.Io.Limit.limited(1024 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("{s}error:{s} failed to read stdin: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+        return err;
+    };
+    defer allocator.free(source);
+
+    var argv: std.ArrayListUnmanaged([:0]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "-");
+    try argv.appendSlice(allocator, extra_args);
+
+    try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source);
+}
+
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    if (std.mem.eql(u8, file_path, "-")) {
+        return runStdinCommand(allocator, extra_args);
+    }
+
     if (fileExtIsShellLike(file_path)) {
         return runShellFile(file_path, extra_args);
     }
@@ -5357,6 +5387,8 @@ pub fn main(init: std.process.Init) !void {
                 }
                 continue;
             }
+            // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
+            if (std.mem.eql(u8, a, "-")) break;
             // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
             // --smol, --env-file=...); skip it. The first non-flag token is the
             // entrypoint.

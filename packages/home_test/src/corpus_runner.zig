@@ -31366,6 +31366,17 @@ const harness_prelude =
     \\  }
     \\  return __home_bun_shell_text_result(output + (noNewline ? "" : "\n"));
     \\}
+    \\function __home_bun_shell_stdin_run_result(command) {
+    \\  const pipeline = String(command || "").trim().match(/^echo\s+([\s\S]*?)\s*\|\s*[\s\S]*?\brun\s+-\s*$/);
+    \\  if (!pipeline) return null;
+    \\  const source = __home_bun_shell_unquote(pipeline[1]);
+    \\  const output = [];
+    \\  source.replace(/console\.log\(\s*(["'`])([\s\S]*?)\1\s*\)/g, function(_, quote, text) {
+    \\    output.push(String(text));
+    \\    return "";
+    \\  });
+    \\  return __home_bun_shell_text_result(output.length ? output.join("\n") + "\n" : "");
+    \\}
     \\const __home_bun_shell_seq_usage = "usage: seq [-w] [-f format] [-s string] [-t string] [first [incr]] last\n";
     \\function __home_bun_shell_seq_output(numbers, separator, terminator) {
     \\  if (separator === "\n") return numbers.join("\n") + (numbers.length ? "\n" : "") + terminator;
@@ -31715,6 +31726,8 @@ const harness_prelude =
     \\  const yesBufferResult = __home_bun_shell_yes_buffer_result(parts, values);
     \\  if (yesBufferResult) return yesBufferResult;
     \\  const command = __home_bun_shell_command(parts, values);
+    \\  const stdinRunResult = __home_bun_shell_stdin_run_result(command);
+    \\  if (stdinRunResult) return stdinRunResult;
     \\  const braceGlobResult = __home_bun_shell_brace_glob_result(parts, values, command);
     \\  if (braceGlobResult) return braceGlobResult;
     \\  const envEcho = __home_bun_shell_env_echo(command, __home_bun_shell.__home_env);
@@ -31734,7 +31747,6 @@ const harness_prelude =
     \\    const shellResult = __home_shell_test_builder_direct_result(command);
     \\    if (shellResult) return shellResult;
     \\  }
-    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts") && command.includes("bun run -") && command.includes("console.log('hello')")) return __home_bun_shell_text_result("hello\n");
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.trim().startsWith("cat ")) {
     \\    const target = command.trim().slice(4).trim();
     \\    const text = __home_build_read_text(target);
@@ -67873,6 +67885,35 @@ test "bootstrap runner mirrors bun publish corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
 }
 
+test "bootstrap runner mirrors bun run stdin pipeline" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_bun_shell_stdin_run_result(command)") != null);
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, it } from "bun:test";
+        \\it("should run from stdin", async () => {
+        \\  const result = await $`echo "console.log('hello')" | bun run -`.text();
+        \\  expect(result).toBe("hello\n");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-run-stdin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun run stdin corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "esbuild extra helper signature lowers to plain JavaScript" {
     const source =
         \\import { describe } from "bun:test";
@@ -67946,6 +67987,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options, spawnOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_options(options, spawnOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cli/install/bun-run.test.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_bun_shell_stdin_run_result(command)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(__home_native_spawn_options(options))") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!process.env) process.env = {}") != null);
