@@ -8931,7 +8931,6 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
-            const default_token = self.tokens[self.cursor - 1];
             // `abstract` is not a declaration modifier once a decorator
             // follows it. In `export default abstract @dec class`, tsgo
             // parses `abstract` as the exported value, inserts a semicolon at
@@ -8994,7 +8993,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(start.span.start, start.line, 1258, "A default export must be at the top level of a file or module declaration.");
             }
             if (!self.moduleElementContextIsIllegal() and self.namespace_depth > 0 and self.ambient_depth == 0) {
-                try self.reportCodeAt(default_token.span.start, default_token.line, 1319, "A default export can only be used in an ECMAScript-style module.");
+                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
             // `export default` may be followed by a class/function
             // *declaration* (no statement-terminator) — those have
@@ -24159,7 +24158,7 @@ test "parser: namespace export assignment forms report diagnostics" {
     try T.expectEqual(@as(u32, 1063), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
     try T.expectEqual(
-        @as(u32, @intCast(std.mem.lastIndexOf(u8, src, "default").?)),
+        @as(u32, @intCast(std.mem.lastIndexOf(u8, src, "export default").?)),
         s.parser.diagnostics.items[1].pos,
     );
     try T.expectEqualStrings("A default export can only be used in an ECMAScript-style module.", s.parser.diagnostics.items[1].message);
