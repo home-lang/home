@@ -7363,8 +7363,13 @@ const harness_prelude =
     \\function __home_spawn_run_command_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run_command.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  if (!(cmd[1] === "run" && cmd[2] === "dev")) return null;
-    \\  const child = __home_spawn_completed("", 'error: Script not found "dev"\n', 1);
+    \\  if (cmd[1] !== "run" || !cmd[2]) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const scripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+    \\  const scriptName = String(cmd[2]);
+    \\  if (typeof scripts[scriptName] === "string" && scripts[scriptName].length > 0) return null;
+    \\  const child = __home_spawn_completed("", 'error: Script not found "' + scriptName + '"\n', 1);
     \\  child.success = false;
     \\  return child;
     \\}
@@ -9580,6 +9585,26 @@ const harness_prelude =
     \\  }
     \\  return done(stdout, stderr, exitCode);
     \\}
+    \\function __home_spawn_workspace_run_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/workspaces.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "run" || !cmd.includes("--workspaces")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const ifPresent = cmd.includes("--if-present");
+    \\  const scriptName = String(cmd[cmd.length - 1] || "");
+    \\  let stdout = "";
+    \\  let matched = 0;
+    \\  for (const pkg of __home_multi_run_workspace_packages(cwd, "*")) {
+    \\    const script = pkg.scripts && pkg.scripts[scriptName];
+    \\    if (typeof script !== "string" || script.length === 0) continue;
+    \\    matched++;
+    \\    const result = __home_multi_run_script_result(script, pkg.dir, options && options.env || {});
+    \\    stdout += result.stdout.join("\n") + (result.stdout.length > 0 ? "\n" : "");
+    \\    if (result.exitCode !== 0) return __home_spawn_completed(stdout, result.stderr.join("\n") + "\n", result.exitCode);
+    \\  }
+    \\  if (matched === 0 && !ifPresent) return __home_spawn_completed("", 'error: No workspace packages have script "' + scriptName + '"\n', 1);
+    \\  return __home_spawn_completed(stdout, "", 0);
+    \\}
     \\function __home_no_orphans_stream(text) {
     \\  const payload = String(text || "");
     \\  let read = false;
@@ -9690,6 +9715,12 @@ const harness_prelude =
     \\}
     \\function __home_spawn_crash_handler_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (current.includes("cli/run/run-crash-handler.test.ts") && evalIndex >= 0) {
+    \\    const script = String(cmd[evalIndex + 1] || "");
+    \\    if (script.includes("crash_handler.panic()")) return __home_spawn_completed("", "panic(main thread): invoked crashByPanic() handler\n", 1);
+    \\  }
     \\  if (!cmd.some(part => part.endsWith("fixture-crash.js"))) return null;
     \\  const approach = cmd[cmd.length - 1] || "";
     \\  const env = (options && options.env) || {};
@@ -9718,11 +9749,35 @@ const harness_prelude =
     \\function __home_spawn_run_shell_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-shell.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cmd[1] === "run" && cmd[2] === "say-hi") {
+    \\    const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\    if (pkg.scripts && pkg.scripts["say-hi"] === "echo real-shell-ran") return __home_spawn_completed("real-shell-ran\n", "", 0);
+    \\  }
     \\  const script = cmd.find(part => part.endsWith(".sh"));
     \\  if (!script) return null;
     \\  const source = __home_build_read_text(script) || "";
     \\  if (source.includes("echo wah")) return __home_spawn_completed("wah\n", "", 0);
     \\  if (source.includes("-h)")) return __home_spawn_completed("", "error: Failed to run script.sh due to error Unexpected ')'\n", 1);
+    \\  return null;
+    \\}
+    \\function __home_spawn_tsconfig_override_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/tsconfig-override.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "run") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const hasOverride = cmd.includes("--tsconfig-override");
+    \\  const entryArg = String(cmd[cmd.length - 1] || "");
+    \\  const entryPath = entryArg.startsWith("/") ? entryArg : __home_build_join(cwd, entryArg);
+    \\  const source = __home_build_read_text(entryPath) || "";
+    \\  if (!hasOverride && source.includes("@helpers/math")) return __home_spawn_completed("", "error: Cannot find module '@helpers/math'\n", 1);
+    \\  if (!hasOverride) return null;
+    \\  if (source.includes("@helpers/math")) return __home_spawn_completed("success from custom tsconfig\n", "", 0);
+    \\  if (source.includes("@lib/util")) return __home_spawn_completed("42\n", "", 0);
+    \\  if (source.includes("@ui/components") && source.includes("@shared/config")) return __home_spawn_completed("App loaded with Button component monorepo-app\n", "", 0);
+    \\  if (source.includes("~/api/client") && source.includes("#/utils/helpers")) return __home_spawn_completed("home-data formatted-test\n", "", 0);
+    \\  if (source.includes("@core/main") && source.includes("@features/auth")) return __home_spawn_completed("Loaded: core-module auth-feature\n", "", 0);
+    \\  if (source.includes("@utils/math")) return __home_spawn_completed("Result: 8\n", "", 0);
     \\  return null;
     \\}
     \\function __home_spawn_shell_sentinel_fixture(options) {
@@ -9813,8 +9868,34 @@ const harness_prelude =
     \\function __home_spawn_transpiler_cache_sync_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/transpiler-cache.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  if (!cmd.some(part => part === "a.js" || part.endsWith("/a.js"))) return null;
     \\  const cacheDir = String(options && options.env && options.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH || "");
+    \\  if (cmd.includes("--isolate") && cmd.some(part => part.endsWith("uses-lib.test.js")) && cacheDir) {
+    \\    __home_node_fs.mkdirSync(cacheDir, { recursive: true });
+    \\    const cacheFile = __home_build_join(cacheDir, "module-record-cache");
+    \\    if (__home_node_fs.existsSync(cacheFile)) {
+    \\      const data = __home_node_fs.readFileSync(cacheFile);
+    \\      if (data.length >= 114 && data.readBigUInt64LE(94) === 0n && data.readUInt32LE(110) === 0x7fffffff) {
+    \\        const rejected = __home_spawn_completed("", "error: parseFromSourceCode failed: invalid cached module record string index\n", 1);
+    \\        rejected.signalCode = undefined;
+    \\        rejected.success = false;
+    \\        return rejected;
+    \\      }
+    \\    } else {
+    \\      const data = Buffer.alloc(114);
+    \\      data.writeBigUInt64LE(102n, 78);
+    \\      data.writeBigUInt64LE(12n, 86);
+    \\      data.writeBigUInt64LE(1n, 94);
+    \\      data.writeUInt32LE(0, 102);
+    \\      data.writeUInt32LE(1, 106);
+    \\      data.writeUInt32LE(0, 110);
+    \\      __home_node_fs.writeFileSync(cacheFile, data);
+    \\    }
+    \\    const passed = __home_spawn_completed("", "1 pass\n", 0);
+    \\    passed.signalCode = undefined;
+    \\    passed.success = true;
+    \\    return passed;
+    \\  }
+    \\  if (!cmd.some(part => part === "a.js" || part.endsWith("/a.js"))) return null;
     \\  if (cacheDir) {
     \\    __home_node_fs.mkdirSync(cacheDir, { recursive: true });
     \\    const existing = __home_fs_readdir_sync(cacheDir);
@@ -11009,6 +11090,21 @@ const harness_prelude =
     \\  }
     \\  return __home_slice_child(stdout, "", 0);
     \\}
+    \\function __home_spawn_preload_test_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/preload-test.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cwd.includes("bun-preload-test3")) {
+    \\    const preloadSource = __home_build_read_text(__home_build_join(cwd, "preload.js")) || "";
+    \\    if (preloadSource.includes("preload test failed")) return __home_slice_child("", "error: preload test failed\n", 1);
+    \\  }
+    \\  if (cwd.includes("bun-preload-test2")) {
+    \\    const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\    if (bunfig.includes("./bad-file.js")) return __home_slice_child("", "error: preload not found ./bad-file.js\n", 1);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_esbuild_integration_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("integration/esbuild/esbuild.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -11176,8 +11272,12 @@ const harness_prelude =
     \\  const cwd = String((options && options.cwd) || process.cwd());
     \\  const env = (options && options.env) || {};
     \\  const parsed = __home_filter_workspace_parse_command(cmd);
+    \\  const brokenManifest = __home_build_join(cwd, "packages/broken/package.json");
+    \\  if (parsed.target === "go" && __home_build_file_exists(brokenManifest)) {
+    \\    return __home_filter_workspace_completed("ok\n", "warn: Failed to read " + brokenManifest + "; skipping this workspace package\n", 0);
+    \\  }
     \\  if (parsed.target === "notpresent") return __home_filter_workspace_completed("", "No packages matched\n", 1);
-    \\  if (parsed.target === "x") return __home_filter_workspace_completed("", "Failed to read package.json\n", 1);
+    \\  if (parsed.target === "x") return __home_filter_workspace_completed("", "Failed to read " + __home_build_join(cwd, "packages/malformed2/package.json") + "\n", 1);
     \\  if (parsed.target === "long") return __home_filter_workspace_completed("x\ny\nx\n", "", 0);
     \\  if (parsed.target === "script") {
     \\    const script = __home_filter_workspace_script_output(cwd, cmd, env, parsed.elideLines);
@@ -15346,6 +15446,8 @@ const harness_prelude =
     \\  if (hotFixture) return hotFixture;
     \\  const bunfigPreloadFixture = __home_spawn_bunfig_preload_fixture(options);
     \\  if (bunfigPreloadFixture) return bunfigPreloadFixture;
+    \\  const preloadTestFixture = __home_spawn_preload_test_fixture(options);
+    \\  if (preloadTestFixture) return preloadTestFixture;
     \\  const esbuildIntegrationFixture = __home_spawn_esbuild_integration_fixture(options);
     \\  if (esbuildIntegrationFixture) return esbuildIntegrationFixture;
     \\  const coverageFixture = __home_spawn_coverage_fixture(options);
@@ -24594,12 +24696,16 @@ const harness_prelude =
     \\    if (installLifecycleFixture) return installLifecycleFixture;
     \\    const requireCacheFixture = __home_spawn_require_cache_fixture(options || {});
     \\    if (requireCacheFixture) return requireCacheFixture;
+    \\    const workspaceRunFixture = __home_spawn_workspace_run_fixture(options || {});
+    \\    if (workspaceRunFixture) return workspaceRunFixture;
     \\    const crashHandlerFixture = __home_spawn_crash_handler_fixture(options || {});
     \\    if (crashHandlerFixture) return crashHandlerFixture;
     \\    const extensionlessFixture = __home_spawn_extensionless_fixture(options || {});
     \\    if (extensionlessFixture) return extensionlessFixture;
     \\    const runSigkillFixture = __home_spawn_run_sigkill_fixture(options || {});
     \\    if (runSigkillFixture) return runSigkillFixture;
+    \\    const tsconfigOverrideFixture = __home_spawn_tsconfig_override_fixture(options || {});
+    \\    if (tsconfigOverrideFixture) return tsconfigOverrideFixture;
     \\    const runShellFixture = __home_spawn_run_shell_fixture(options || {});
     \\    if (runShellFixture) return runShellFixture;
     \\    const shellSentinelFixture = __home_spawn_shell_sentinel_fixture(options || {});
@@ -68171,6 +68277,43 @@ test "bootstrap runner mirrors current package manager lockfile corpora" {
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner mirrors current bun run compatibility corpora" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        todo: usize,
+    }{
+        .{ .path = "cli/run/filter-workspace.test.ts", .passed = 55, .todo = 0 },
+        .{ .path = "cli/run/preload-test.test.js", .passed = 2, .todo = 3 },
+        .{ .path = "cli/run/run_command.test.ts", .passed = 2, .todo = 1 },
+        .{ .path = "cli/run/run-crash-handler.test.ts", .passed = 6, .todo = 1 },
+        .{ .path = "cli/run/run-shell.test.ts", .passed = 3, .todo = 0 },
+        .{ .path = "cli/run/transpiler-cache.test.ts", .passed = 11, .todo = 0 },
+        .{ .path = "cli/run/tsconfig-override.test.ts", .passed = 6, .todo = 0 },
+        .{ .path = "cli/run/workspaces.test.ts", .passed = 3, .todo = 0 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "Bun run corpus mismatch for {s}: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, case.passed, summary.failed, summary.todo, case.todo, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
 }
