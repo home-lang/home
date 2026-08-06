@@ -38057,6 +38057,18 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!?TypeId {
+        // A namespace referenced from inside another namespace is resolved
+        // relative to that lexical namespace, not only from the source-file
+        // root. This is the value-space counterpart of qualified type lookup.
+        const path = [_]hir_mod.StringId{namespace_name};
+        if (self.findVisibleNamespaceByPath(anchor, &path)) |visible_ns| {
+            if (self.findExportedValueDeclInNamespace(visible_ns, member_name)) |member_node| {
+                if (self.hir.kindOf(member_node) != .namespace_decl) {
+                    return try self.checkedNamespaceValueMemberType(member_node, member_name, anchor);
+                }
+            }
+        }
+
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
@@ -38077,39 +38089,51 @@ pub const Checker = struct {
                 else
                     (self.declarationName(member_node) orelse continue);
                 if (decl_name != member_name) continue;
-                if (self.nodeHasAncestor(anchor, member_node)) {
-                    const existing_t = self.hir.typeOf(member_node);
-                    return if (existing_t != types.Primitive.none) existing_t else types.Primitive.any;
+                if (self.hir.kindOf(member_node) == .namespace_decl) {
+                    return try self.mergedNestedNamespaceValueMemberType(root, namespace_name, member_name);
                 }
-                switch (self.hir.kindOf(member_node)) {
-                    .class_decl, .class_expr => {
-                        try self.checkClassDecl(member_node);
-                        if (self.class_static_types.get(member_name)) |static_t| return static_t;
-                        return self.hir.typeOf(member_node);
-                    },
-                    .fn_decl, .fn_expr => {
-                        try self.checkFnDeclWithFlowBoundary(member_node);
-                        return self.hir.typeOf(member_node);
-                    },
-                    .var_decl, .let_decl, .const_decl => {
-                        try self.checkNamespaceValueDecl(member_node);
-                        return self.hir.typeOf(member_node);
-                    },
-                    .enum_decl => {
-                        try self.checkEnumDecl(member_node);
-                        self.reportConstEnumInvalidQualifiedUseIfNeeded(anchor, member_node);
-                        return try self.enumNamespaceValueType(member_node, member_name);
-                    },
-                    .import_decl => return types.Primitive.any,
-                    .namespace_decl => return try self.mergedNestedNamespaceValueMemberType(root, namespace_name, member_name),
-                    else => return null,
-                }
+                return try self.checkedNamespaceValueMemberType(member_node, member_name, anchor);
             }
         }
         if (try self.directQualifiedNamespaceValueMemberType(root, namespace_name, member_name)) |member_t| {
             return member_t;
         }
         return null;
+    }
+
+    fn checkedNamespaceValueMemberType(
+        self: *Checker,
+        member_node: NodeId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        if (self.nodeHasAncestor(anchor, member_node)) {
+            const existing_t = self.hir.typeOf(member_node);
+            return if (existing_t != types.Primitive.none) existing_t else types.Primitive.any;
+        }
+        return switch (self.hir.kindOf(member_node)) {
+            .class_decl, .class_expr => blk: {
+                try self.checkClassDecl(member_node);
+                if (self.class_static_types.get(member_name)) |static_t| break :blk static_t;
+                break :blk self.hir.typeOf(member_node);
+            },
+            .fn_decl, .fn_expr => blk: {
+                try self.checkFnDeclWithFlowBoundary(member_node);
+                break :blk self.hir.typeOf(member_node);
+            },
+            .var_decl, .let_decl, .const_decl => blk: {
+                try self.checkNamespaceValueDecl(member_node);
+                break :blk self.hir.typeOf(member_node);
+            },
+            .enum_decl => blk: {
+                try self.checkEnumDecl(member_node);
+                self.reportConstEnumInvalidQualifiedUseIfNeeded(anchor, member_node);
+                break :blk try self.enumNamespaceValueType(member_node, member_name);
+            },
+            .import_decl => types.Primitive.any,
+            .namespace_decl => try self.namespaceValueObjectType(member_node),
+            else => null,
+        };
     }
 
     fn mergedNestedNamespaceValueMemberType(
@@ -104254,7 +104278,11 @@ pub const Checker = struct {
         // their representable falsy units (`boolean` -> `false`, etc.).
         if (self.hir.kindOf(cond) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, cond);
-            const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(cond);
+            const declared_current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(cond);
+            const current = if (self.identifierIsUntypedUninitializedVar(cond))
+                (try self.enclosingLoopAssignmentFlowType(cond, id.name, declared_current)) orelse declared_current
+            else
+                declared_current;
             const narrowed = if (when_true)
                 if (current == types.Primitive.unknown)
                     try self.unknownEmptyObjectType()
@@ -104762,6 +104790,48 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn enclosingLoopAssignmentFlowType(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        initial: TypeId,
+    ) CheckError!?TypeId {
+        const containing_function = self.enclosingFunctionLike(node);
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .for_stmt and kind != .for_in_stmt and kind != .for_of_stmt and
+                kind != .while_stmt and kind != .do_while_stmt)
+            {
+                continue;
+            }
+            const loop_span = self.hir.spanOf(cur);
+            var flow = initial;
+            var found = false;
+            var candidate: NodeId = 0;
+            while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+                if (self.hir.kindOf(candidate) != .assignment) continue;
+                const span = self.hir.spanOf(candidate);
+                if (span.start < loop_span.start or span.end > loop_span.end) continue;
+                if (self.enclosingFunctionLike(candidate) != containing_function) continue;
+                const assignment = hir_mod.assignmentOf(self.hir, candidate);
+                if (assignment.target == hir_mod.none_node_id or
+                    self.hir.kindOf(assignment.target) != .identifier)
+                {
+                    continue;
+                }
+                if (hir_mod.identifierOf(self.hir, assignment.target).name != name) continue;
+                var value_t = self.hir.typeOf(assignment.value);
+                if (value_t == types.Primitive.none) value_t = try self.checkExpression(assignment.value);
+                if (value_t == types.Primitive.any or flow == types.Primitive.any) return types.Primitive.any;
+                if (value_t != flow) flow = self.interner.internUnion(&.{ flow, value_t }) catch return error.OutOfMemory;
+                found = true;
+            }
+            return if (found) flow else null;
+        }
+        return null;
     }
 
     fn typeofObjectLikePositiveBranchIsNever(self: *Checker, current: TypeId, lit_str: []const u8) bool {
@@ -125701,6 +125771,12 @@ pub const Checker = struct {
     /// unrelated reduction behavior. Returns the (possibly reduced)
     /// interned type for `members`.
     fn internConditionalUnion(self: *Checker, members: []const TypeId) CheckError!TypeId {
+        // `any` absorbs the other branch of a conditional expression in
+        // TypeScript. Keeping `any | T` here makes downstream calls reject
+        // values that tsc treats as plain `any`.
+        for (members) |member| {
+            if (member == types.Primitive.any) return types.Primitive.any;
+        }
         const u = try self.internUnionReducingStringSubtypes(members);
         if (u >= self.interner.pool.typeCount()) return u;
         if (!self.interner.pool.flagsOf(u).is_union) return u;
@@ -154275,12 +154351,83 @@ pub const Checker = struct {
         if (self.directIifeMinRequiredArgs(call_node)) |min_required| {
             return @min(min_required, params.len);
         }
+        if (self.namedFunctionMinRequiredArgsForCall(call_node, sig)) |min_required| {
+            return @min(min_required, params.len);
+        }
         var min_required = self.signatureMinRequiredArgs(sig, params);
         if (!self.nonStrictJsCallAllowsTrailingNullishOmissions(call_node)) return min_required;
         while (min_required > 0 and self.parameterTypeCanBeOmitted(params[min_required - 1])) {
             min_required -= 1;
         }
         return min_required;
+    }
+
+    fn namedFunctionMinRequiredArgsForCall(self: *Checker, call_node: NodeId, sig: TypeId) ?usize {
+        const call_kind = self.hir.kindOf(call_node);
+        if (call_kind != .call_expr and call_kind != .new_expr) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        const decl = self.namedFunctionDeclForCallCallee(call.callee) orelse return null;
+        if (self.hir.typeOf(decl) != sig) return null;
+
+        var min_required: usize = 0;
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, decl)) |param| {
+            if (self.hir.kindOf(param) != .parameter or self.isThisParameter(param)) continue;
+            const p = hir_mod.parameterOf(self.hir, param);
+            const omittable = p.flags.is_optional or p.flags.is_rest or
+                p.default_value != hir_mod.none_node_id or
+                self.parameterTypeAllowsVoidOmission(self.hir.typeOf(param));
+            if (!omittable) min_required = value_index + 1;
+            value_index += 1;
+        }
+        return min_required;
+    }
+
+    fn namedFunctionDeclForCallCallee(self: *Checker, callee: NodeId) ?NodeId {
+        if (callee == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(callee) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, callee).name;
+            var cur = self.hir.parentOf(callee);
+            while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                const statements: ?[]const NodeId = switch (self.hir.kindOf(cur)) {
+                    .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                    .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                    else => null,
+                };
+                if (statements) |items| {
+                    if (self.singleNamedFunctionDecl(items, name)) |decl| return decl;
+                }
+            }
+            return null;
+        }
+        if (self.hir.kindOf(callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, callee);
+        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return null;
+        const namespace_name = hir_mod.identifierOf(self.hir, member.object).name;
+        const path = [_]hir_mod.StringId{namespace_name};
+        const ns_node = self.findVisibleNamespaceByPath(callee, &path) orelse return null;
+        const decl = self.findExportedValueDeclInNamespace(ns_node, member.name) orelse return null;
+        const kind = self.hir.kindOf(decl);
+        return if (kind == .fn_decl or kind == .fn_expr) decl else null;
+    }
+
+    fn singleNamedFunctionDecl(
+        self: *Checker,
+        statements: []const NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        var found: ?NodeId = null;
+        for (statements) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            const kind = self.hir.kindOf(decl);
+            if (kind != .fn_decl and kind != .fn_expr) continue;
+            const function = hir_mod.fnDeclOf(self.hir, decl);
+            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, function.name).name != name) continue;
+            if (found != null) return null;
+            found = decl;
+        }
+        return found;
     }
 
     /// Direct IIFEs contextually type omitted unannotated parameters as
@@ -222711,8 +222858,8 @@ test "checker: skipped parser tokens retain semantic diagnostics" {
 
 test "checker: unresolved namespace-local values suggest later classes" {
     const s = try newSetup(
-        \\missingOne; missingTwo; missingThree; missingFour; missingFive;
-        \\missingSix; missingSeven; missingEight; missingNine; missingTen;
+        \\qzxvOne; qzxvTwo; qzxvThree; qzxvFour; qzxvFive;
+        \\qzxvSix; qzxvSeven; qzxvEight; qzxvNine; qzxvTen;
         \\namespace Harness {
         \\    export const path = TypeScript.filePath;
         \\    export class TypeScriptLS {}
@@ -222990,6 +223137,81 @@ test "checker: qualified forward class parameters preserve nested callback conte
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: nested namespace function values preserve callback context" {
+    const s = try newSetup(
+        \\namespace Harness {
+        \\    export namespace Compiler {
+        \\        export function compile(value: string, callback: (result: number) => void) {}
+        \\    }
+        \\    export namespace Runner {
+        \\        export function run(value: string) {
+        \\            Compiler.compile(value, function (result) { result.toFixed(); });
+        \\        }
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: named call arity follows declaration optionality across structural collisions" {
+    const s = try newSetup(
+        \\namespace Legacy {
+        \\    function optional(value?: string) {}
+        \\    function required(value: string | undefined) {}
+        \\    optional();
+        \\    required();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: conditional any branch absorbs concrete alternatives" {
+    const s = try newSetup(
+        \\declare const condition: boolean;
+        \\declare const dynamicValue: any;
+        \\declare function consume(value: string): void;
+        \\consume(condition ? dynamicValue : "fallback");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: loop-carried evolving null binding narrows on the backedge" {
+    const s = try newSetup(
+        \\interface Unit { name: string; }
+        \\function collect(values: string[]) {
+        \\    var units: Unit[] = [];
+        \\    var currentName = null;
+        \\    for (var index = 0; index < values.length; index++) {
+        \\        if (currentName) {
+        \\            var unit = { name: currentName };
+        \\            units.push(unit);
+        \\        } else {
+        \\            currentName = values[index];
+        \\        }
+        \\    }
+        \\    currentName = currentName || "fallback";
+        \\    var unit = { name: currentName };
+        \\    units.push(unit);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: exhaustive branches replace an evolving null initializer" {
