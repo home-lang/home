@@ -104076,8 +104076,8 @@ pub const Checker = struct {
         const compares_undefined = self.nodeIsUndefinedLiteralish(nullish_node);
         if (!compares_null and !compares_undefined) return false;
 
-        var current = self.hir.typeOf(assignment_node);
-        if (current == types.Primitive.none) current = try self.checkExpression(assignment_node);
+        var current = self.hir.typeOf(assignment.value);
+        if (current == types.Primitive.none) current = try self.checkExpression(assignment.value);
         const narrowed = if (positive) blk_positive: {
             if (op == .eq or op == .neq) {
                 break :blk_positive try self.nullUndefinedUnionType();
@@ -161494,6 +161494,22 @@ test "checker: nullish comparison narrows an assignment expression target" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: nullish assignment comparison replaces uninitialized target flow" {
+    const s = try newSetup(
+        \\const re = /./g;
+        \\var match;
+        \\while ((match = re.exec("xxx")) != null) {
+        \\    match[1].length + match[2].length;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
 
 test "checker: property assignment target reads object for TS2454" {
