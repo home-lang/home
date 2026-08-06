@@ -15785,6 +15785,12 @@ pub const Checker = struct {
                 var ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer ret_types.deinit(self.gpa);
                 try self.collectReturnTypes(f.body, &ret_types);
+                if (self.strict_flags.strict_null_checks and
+                    ret_types.items.len > 0 and
+                    self.fnBodyHasBareReturn(f.body))
+                {
+                    try ret_types.append(self.gpa, types.Primitive.undefined_t);
+                }
                 if (f.name != hir_mod.none_node_id and
                     self.hir.kindOf(f.name) == .identifier and
                     try self.functionBodyReturnsOnlyDirectSelfCalls(f.body, hir_mod.identifierOf(self.hir, f.name).name))
@@ -16090,6 +16096,48 @@ pub const Checker = struct {
             },
             else => return false,
         }
+    }
+
+    fn fnBodyHasBareReturn(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .return_stmt => hir_mod.returnOf(self.hir, node).value == hir_mod.none_node_id,
+            .fn_decl, .fn_expr, .arrow_fn => false,
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |statement| {
+                    if (self.fnBodyHasBareReturn(statement)) break :blk true;
+                }
+                break :blk false;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                break :blk self.fnBodyHasBareReturn(conditional.then_branch) or
+                    self.fnBodyHasBareReturn(conditional.else_branch);
+            },
+            .while_stmt => self.fnBodyHasBareReturn(hir_mod.whileOf(self.hir, node).body),
+            .do_while_stmt => self.fnBodyHasBareReturn(hir_mod.doWhileOf(self.hir, node).body),
+            .for_stmt => self.fnBodyHasBareReturn(hir_mod.forStmtOf(self.hir, node).body),
+            .for_in_stmt, .for_of_stmt => self.fnBodyHasBareReturn(hir_mod.forInOf(self.hir, node).body),
+            .try_stmt => blk: {
+                const statement = hir_mod.tryOf(self.hir, node);
+                break :blk self.fnBodyHasBareReturn(statement.block) or
+                    self.fnBodyHasBareReturn(statement.catch_block) or
+                    self.fnBodyHasBareReturn(statement.finally_block);
+            },
+            .switch_stmt => blk: {
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.fnBodyHasBareReturn(case)) break :blk true;
+                }
+                break :blk false;
+            },
+            .switch_case => blk: {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |statement| {
+                    if (self.fnBodyHasBareReturn(statement)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
     }
 
     /// TS 5.5 ÃÂ¢ÃÂÃÂ inferred type predicates.
@@ -100102,6 +100150,26 @@ pub const Checker = struct {
                 }
             }
         }
+        var nearest_annotation = hir_mod.none_node_id;
+        var nearest_start: u32 = 0;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .parameter) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start > use_start) continue;
+            const parameter = hir_mod.parameterOf(self.hir, candidate);
+            if (parameter.name == hir_mod.none_node_id or self.hir.kindOf(parameter.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, parameter.name).name != id.name) continue;
+            if (parameter.type_annotation == hir_mod.none_node_id) continue;
+            if (nearest_annotation == hir_mod.none_node_id or span.start >= nearest_start) {
+                nearest_start = span.start;
+                nearest_annotation = parameter.type_annotation;
+            }
+        }
+        if (nearest_annotation != hir_mod.none_node_id) {
+            return self.lowerActiveValueTypeAnnotation(id.name, nearest_annotation) catch types.Primitive.any;
+        }
+        if (self.recoveredSourceParameterAnnotationType(node, id.name)) |recovered_t| return recovered_t;
         if (self.module) |module| {
             if (module.root.lookup(id.name)) |sym| {
                 if (sym.decls.items.len == 0) return null;
@@ -100121,6 +100189,237 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn recoveredSourceParameterAnnotationType(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
+        const source = self.source orelse return null;
+        const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
+        const use_start = @min(raw_use_start, source.len);
+        const name_text = self.string_interner.get(name);
+        if (name_text.len == 0 or use_start < name_text.len) return null;
+        var search_end = use_start;
+        while (std.mem.lastIndexOf(u8, source[0..search_end], name_text)) |found| {
+            if (found > 0 and (std.ascii.isAlphanumeric(source[found - 1]) or source[found - 1] == '_' or source[found - 1] == '$')) {
+                search_end = found;
+                continue;
+            }
+            var cursor = found + name_text.len;
+            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            const optional = cursor < use_start and source[cursor] == '?';
+            if (optional) cursor += 1;
+            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            if (cursor >= use_start or source[cursor] != ':') {
+                search_end = found;
+                continue;
+            }
+            if (!sourceParameterDeclarationContainsUse(source, found, use_start)) {
+                search_end = found;
+                continue;
+            }
+            cursor += 1;
+            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            const type_start = cursor;
+            while (cursor < use_start and
+                (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) cursor += 1;
+            if (cursor == type_start) {
+                search_end = found;
+                continue;
+            }
+            const type_end = cursor;
+            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            if (cursor >= use_start or
+                (source[cursor] != ',' and source[cursor] != ')' and source[cursor] != '='))
+            {
+                search_end = found;
+                continue;
+            }
+            const type_name = self.string_interner.intern(source[type_start..type_end]) catch return null;
+            const base = self.contextualCallParameterTypeForRecoveredAnnotation(node, type_name) orelse
+                self.recoveredNamedTypeAt(node, type_name) orelse {
+                search_end = found;
+                continue;
+            };
+            return if (optional) self.unionWithUndefined(base) catch base else base;
+        }
+        return null;
+    }
+
+    fn contextualCallParameterTypeForRecoveredAnnotation(
+        self: *Checker,
+        argument: NodeId,
+        annotation_name: hir_mod.StringId,
+    ) ?TypeId {
+        const call_node = self.hir.parentOf(argument);
+        if (call_node == hir_mod.none_node_id) return null;
+        const call_kind = self.hir.kindOf(call_node);
+        if (call_kind != .call_expr and call_kind != .new_expr) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (self.hir.kindOf(call.callee) != .identifier) return null;
+        const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+        const checked_callee_signature = blk: {
+            const checked_t = self.hir.typeOf(call.callee);
+            break :blk if (self.interner.isSignature(checked_t)) checked_t else types.Primitive.none;
+        };
+        var argument_index: ?usize = null;
+        for (hir_mod.callArgs(self.hir, call_node), 0..) |candidate, index| {
+            if (candidate == argument) {
+                argument_index = index;
+                break;
+            }
+        }
+        const index = argument_index orelse return null;
+
+        var declaration: NodeId = 1;
+        while (declaration < self.hir.nodeCount()) : (declaration += 1) {
+            const kind = self.hir.kindOf(declaration);
+            if (kind != .fn_decl and kind != .fn_expr) continue;
+            const function = hir_mod.fnDeclOf(self.hir, declaration);
+            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, function.name).name != callee_name) continue;
+            const params = hir_mod.fnParams(self.hir, declaration);
+            if (index >= params.len or self.hir.kindOf(params[index]) != .parameter) continue;
+            const parameter = hir_mod.parameterOf(self.hir, params[index]);
+            if (parameter.type_annotation == hir_mod.none_node_id or self.hir.kindOf(parameter.type_annotation) != .type_ref) continue;
+            const reference = hir_mod.typeRefOf(self.hir, parameter.type_annotation);
+            if (reference.qualifier_len != 0 or reference.name != annotation_name) continue;
+            const annotation_t = self.lowererLowerWithTypeParams(parameter.type_annotation) catch types.Primitive.none;
+            if (checked_callee_signature != types.Primitive.none) {
+                const checked_parameter_types = self.interner.signatureParams(checked_callee_signature);
+                if (index < checked_parameter_types.len) {
+                    const checked_parameter_t = checked_parameter_types[index];
+                    if (!self.alias_display_names.contains(checked_parameter_t)) {
+                        self.alias_display_names.put(
+                            self.gpa,
+                            checked_parameter_t,
+                            self.string_interner.get(annotation_name),
+                        ) catch {};
+                    }
+                    return checked_parameter_t;
+                }
+            }
+            if (annotation_t != types.Primitive.none and
+                annotation_t != types.Primitive.unknown and
+                annotation_t != types.Primitive.any)
+            {
+                return annotation_t;
+            }
+            const signature = self.hir.typeOf(declaration);
+            if (!self.interner.isSignature(signature)) continue;
+            const parameter_types = self.interner.signatureParams(signature);
+            if (index < parameter_types.len) return parameter_types[index];
+        }
+        return null;
+    }
+
+    fn recoveredNamedTypeAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?TypeId {
+        if (self.findVisibleNamedTypeDecl(anchor, name)) |declaration| {
+            const declaration_t = self.hir.typeOf(declaration);
+            if (declaration_t != types.Primitive.none) return declaration_t;
+        }
+
+        const use_start = self.hir.spanOf(anchor).start;
+        var nearest = hir_mod.none_node_id;
+        var nearest_start: u32 = 0;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            const kind = self.hir.kindOf(candidate);
+            if (kind != .interface_decl and kind != .type_alias_decl and
+                kind != .class_decl and kind != .class_expr) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start >= use_start or span.start < nearest_start) continue;
+            if (self.declarationName(candidate) != name) continue;
+            nearest = candidate;
+            nearest_start = span.start;
+        }
+        if (nearest != hir_mod.none_node_id) {
+            const declaration_t = self.hir.typeOf(nearest);
+            if (declaration_t != types.Primitive.none) return declaration_t;
+        }
+        return self.type_names.get(name);
+    }
+
+    fn sourceParameterDeclarationContainsUse(source: []const u8, name_start: usize, use_start: usize) bool {
+        var open_search_end = name_start;
+        while (std.mem.lastIndexOfScalar(u8, source[0..open_search_end], '(')) |open_paren| {
+            open_search_end = open_paren;
+            var depth: usize = 1;
+            var cursor = open_paren + 1;
+            while (cursor < source.len and depth > 0) : (cursor += 1) {
+                if (source[cursor] == '(') depth += 1;
+                if (source[cursor] == ')') depth -= 1;
+            }
+            if (depth != 0) continue;
+            const close_paren = cursor - 1;
+            if (close_paren < name_start) continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, close_paren + 1, '{') orelse continue;
+            if (body_open >= use_start) continue;
+            if (std.mem.indexOfScalar(u8, source[close_paren + 1 .. body_open], ';') != null) continue;
+            depth = 1;
+            cursor = body_open + 1;
+            while (cursor < use_start and depth > 0) : (cursor += 1) {
+                if (source[cursor] == '{') depth += 1;
+                if (source[cursor] == '}') depth -= 1;
+            }
+            if (depth > 0) return true;
+        }
+        return false;
+    }
+
+    fn sourceUseIsInsideTruthyIdentifierGuard(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const source = self.source orelse return false;
+        const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
+        const use_start = @min(raw_use_start, source.len);
+        const name_text = self.string_interner.get(name);
+        var search_end = use_start;
+        while (std.mem.lastIndexOf(u8, source[0..search_end], "if")) |if_start| {
+            search_end = if_start;
+            if (if_start > 0 and (std.ascii.isAlphanumeric(source[if_start - 1]) or source[if_start - 1] == '_' or source[if_start - 1] == '$')) continue;
+            var cursor = if_start + 2;
+            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            if (cursor >= use_start or source[cursor] != '(') continue;
+            const close = std.mem.indexOfScalarPos(u8, source, cursor + 1, ')') orelse continue;
+            if (close >= use_start) continue;
+            const condition = std.mem.trim(u8, source[cursor + 1 .. close], " \t\r\n");
+            if (!std.mem.eql(u8, condition, name_text)) continue;
+            const open_brace = std.mem.indexOfScalarPos(u8, source, close + 1, '{') orelse continue;
+            if (open_brace >= use_start) continue;
+            var depth: usize = 1;
+            cursor = open_brace + 1;
+            while (cursor < use_start and depth > 0) : (cursor += 1) {
+                if (source[cursor] == '{') depth += 1;
+                if (source[cursor] == '}') depth -= 1;
+            }
+            if (depth > 0) return true;
+        }
+        return false;
+    }
+
+    fn sourceHasDirectSelfConditionalAssignmentBeforeUse(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const source = self.source orelse return false;
+        const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
+        const use_start = @min(raw_use_start, source.len);
+        const statement_end = std.mem.lastIndexOfScalar(u8, source[0..use_start], ';') orelse return false;
+        const prior_end = std.mem.lastIndexOfScalar(u8, source[0..statement_end], ';');
+        const statement_start = if (prior_end) |end| end + 1 else 0;
+        const statement = std.mem.trim(u8, source[statement_start..statement_end], " \t\r\n");
+        const name_text = self.string_interner.get(name);
+        var search_start: usize = 0;
+        var cursor: usize = 0;
+        while (std.mem.indexOfPos(u8, statement, search_start, name_text)) |name_start| {
+            search_start = name_start + name_text.len;
+            if (name_start > 0 and (std.ascii.isAlphanumeric(statement[name_start - 1]) or statement[name_start - 1] == '_' or statement[name_start - 1] == '$')) continue;
+            const name_end = name_start + name_text.len;
+            if (name_end < statement.len and (std.ascii.isAlphanumeric(statement[name_end]) or statement[name_end] == '_' or statement[name_end] == '$')) continue;
+            cursor = name_end;
+            while (cursor < statement.len and std.ascii.isWhitespace(statement[cursor])) cursor += 1;
+            if (cursor >= statement.len or statement[cursor] != '=') continue;
+            if (cursor + 1 < statement.len and (statement[cursor + 1] == '=' or statement[cursor + 1] == '>')) continue;
+            break;
+        } else return false;
+        const rhs = statement[cursor + 1 ..];
+        return std.mem.indexOfScalar(u8, rhs, '?') != null and
+            std.mem.indexOfScalar(u8, rhs, ':') != null and
+            std.mem.indexOf(u8, rhs, name_text) != null;
     }
 
     fn visibleAnnotatedIdentifierType(self: *Checker, node: NodeId) ?TypeId {
@@ -106750,7 +107049,45 @@ pub const Checker = struct {
                 }
             }
             if (!self.isDeclNameSlot(node)) {
-                if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| return flow_t;
+                const is_evolving_untyped = self.identifierIsUntypedUninitializedVar(node);
+                const visible_annotation_node = self.visibleAnnotatedIdentifierTypeNode(node);
+                if (self.recoveredSourceParameterAnnotationType(node, id.name)) |declared_t| {
+                    const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
+                    const narrow_t = self.lookupNarrow(id.name);
+                    const has_incompatible_weak_narrow = if (narrow_t) |flow_t|
+                        self.engine.weakTypeNoCommonProperties(flow_t, declared_t) or
+                            self.engine.weakTypeNoCommonProperties(flow_t, declared_non_null)
+                    else
+                        false;
+                    if (visible_annotation_node == null or has_incompatible_weak_narrow) {
+                        if (narrow_t) |flow_t| {
+                            if (!has_incompatible_weak_narrow and
+                                (self.checkerAssignableTo(flow_t, declared_t) catch false)) return flow_t;
+                        }
+                        return declared_t;
+                    }
+                }
+                if (is_evolving_untyped and
+                    (self.sourceUseIsInsideTruthyIdentifierGuard(node, id.name) or
+                        self.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, id.name)))
+                {
+                    return types.Primitive.any;
+                }
+                if (!is_evolving_untyped and self.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, id.name)) {
+                    if ((self.recoveredEvolvingAnyFlowTypeAt(node, id.name) catch null) != null) return types.Primitive.any;
+                }
+                if (self.visibleActiveAnnotatedIdentifierType(node) == null) {
+                    if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
+                        if (self.lookupNarrow(id.name)) |narrow_t| {
+                            if (narrow_t != types.Primitive.any and
+                                (self.checkerAssignableTo(narrow_t, flow_t) catch false))
+                            {
+                                return narrow_t;
+                            }
+                        }
+                        return flow_t;
+                    }
+                }
             }
             if (self.lookupNarrow(id.name)) |t| {
                 // Expando-function augmentation also applies to the narrowed
@@ -106769,6 +107106,9 @@ pub const Checker = struct {
                     }
                 } else if (!self.isDeclNameSlot(node)) {
                     if (self.visibleActiveAnnotatedIdentifierType(node)) |declared_t| {
+                        const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
+                        if (self.engine.weakTypeNoCommonProperties(t, declared_t) or
+                            self.engine.weakTypeNoCommonProperties(t, declared_non_null)) return declared_t;
                         if (declared_t != types.Primitive.any and
                             declared_t != types.Primitive.unknown and
                             declared_t != types.Primitive.none and
@@ -223636,6 +223976,69 @@ test "checker: exhaustive branches initialize an untyped binding" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: evolving outer variables do not shadow a same-named parameter" {
+    const s = try newSetup(
+        \\interface Options { lineEndingSensitive?: boolean; }
+        \\declare function consume(options: Options): void;
+        \\function collect() {
+        \\    var options;
+        \\    options = [];
+        \\}
+        \\function run(options?: Options) {
+        \\    consume(options);
+        \\    (() => consume(options))();
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.argument_type_mismatch) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "undefined") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "length") == null);
+    }
+}
+
+test "checker: recovered legacy parameters retain optional flow in nested callbacks" {
+    const s = try newSetup(
+        \\interface Options { lineEndingSensitive?: boolean; }
+        \\function compare(options: Options) {
+        \\    if (options.lineEndingSensitive) return;
+        \\    return { expected: "", actual: "" };
+        \\}
+        \\function collect() {
+        \\    var options = [];
+        \\    options.push("line");
+        \\}
+        \\function run(runImmediately? = false, options?: Options) {
+        \\    if (runImmediately) {
+        \\        var comparison = compare(options);
+        \\        comparison.expected;
+        \\        comparison.actual;
+        \\    } else {
+        \\        (() => {
+        \\            var comparison = compare(options);
+        \\            comparison.expected;
+        \\            comparison.actual;
+        \\        })();
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.argument_type_mismatch) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "Options | undefined") != null);
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "length") == null);
+    }
 }
 
 test "checker: evolving nullable fields keep repeated object vars compatible" {
