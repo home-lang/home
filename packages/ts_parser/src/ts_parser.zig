@@ -1037,6 +1037,7 @@ pub const Parser = struct {
         try self.validateInferTypePositions();
         self.suppressVarLetStrictGrammarWhenFileHasParseErrors();
         self.suppressOutsidePrivateBrandGrammarWhenFileHasParseErrors();
+        self.suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors();
         self.suppressWithUnsupportedWhenFileHasParseErrors();
         return root;
     }
@@ -1084,6 +1085,32 @@ pub const Parser = struct {
             const diagnostic = self.diagnostics.items[i];
             if (diagnostic.code != 1212) continue;
             if (std.mem.indexOfScalar(u32, self.pending_var_let_strict_positions.items, diagnostic.pos) != null) {
+                _ = self.diagnostics.orderedRemove(i);
+            }
+        }
+    }
+
+    /// TS1015 is produced by the checker through `grammarErrorOnNode`, so a
+    /// source-file parse diagnostic suppresses it. Home recognizes the
+    /// optional-marker/default combination while parsing; defer the same gate
+    /// until the complete file is known to be parse-clean.
+    fn suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors(self: *Parser) void {
+        var has_parse_diagnostic = false;
+        for (self.diagnostics.items) |diagnostic| {
+            switch (diagnostic.code) {
+                1015, 1036, 1101, 1163, 1451, 18016, 18028, 2410 => {},
+                else => {
+                    has_parse_diagnostic = true;
+                    break;
+                },
+            }
+        }
+        if (!has_parse_diagnostic) return;
+
+        var i = self.diagnostics.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.diagnostics.items[i].code == 1015) {
                 _ = self.diagnostics.orderedRemove(i);
             }
         }
@@ -21390,6 +21417,19 @@ test "parser: TS1015 fires for `?` and initializer on the same parameter" {
         if (d.code == 1015) saw_1015 += 1;
     }
     try T.expectEqual(@as(u32, 1), saw_1015);
+}
+
+test "parser: parse diagnostics suppress TS1015 grammar errors" {
+    var s = try newTestSetup(
+        \\class C { F(A?= 0) {} }
+        \\)
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len > 0);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1015);
+    }
 }
 
 test "parser: type member parameter initializers recover without missing close" {
