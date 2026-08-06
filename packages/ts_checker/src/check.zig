@@ -91148,8 +91148,10 @@ pub const Checker = struct {
                 if (self.hir.kindOf(m.object) == .identifier) {
                     const obj_id = hir_mod.identifierOf(self.hir, m.object);
                     const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
-                    if (self.lookupMemberNarrow(key)) |nt| {
-                        break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                    if (!self.isPlainAssignmentTarget(node)) {
+                        if (self.lookupMemberNarrow(key)) |nt| {
+                            break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                        }
                     }
                     if (self.checkjs_object_expando_narrows.get(key)) |nt| {
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
@@ -91240,8 +91242,10 @@ pub const Checker = struct {
                     }
                 }
                 if (self.identifierRootedMemberKey(node)) |flow_key| {
-                    if (self.lookupMemberNarrow(flow_key)) |narrowed_t| {
-                        break :blk try self.optionalChainResult(narrowed_t, member_is_optional_chain);
+                    if (!self.isPlainAssignmentTarget(node)) {
+                        if (self.lookupMemberNarrow(flow_key)) |narrowed_t| {
+                            break :blk try self.optionalChainResult(narrowed_t, member_is_optional_chain);
+                        }
                     }
                 }
                 if (try self.reportInstanceofFallthroughUnionMissingMember(node, m.object, obj_t, m.name)) {
@@ -152633,6 +152637,13 @@ pub const Checker = struct {
         return hir_mod.assignmentOf(self.hir, parent).target == node;
     }
 
+    fn isPlainAssignmentTarget(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return false;
+        const assignment = hir_mod.assignmentOf(self.hir, parent);
+        return assignment.target == node and assignment.op == null;
+    }
+
     fn isInAssignmentTargetChain(self: *Checker, node: NodeId) bool {
         var current = node;
         while (true) {
@@ -200132,6 +200143,25 @@ test "checker: bare truthy narrows optional member to non-undefined" {
         \\function f(obj: { x?: string }) {
         \\  if (obj.x) {
         \\    let s: string = obj.x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: plain member writes use declared types inside null guards" {
+    const s = try newSetup(
+        \\class Container {
+        \\  value: string | null = null;
+        \\  items: string[] | null = null;
+        \\  update() {
+        \\    if (this.value === null) this.value = "ready";
+        \\    if (this.items === null) this.items = ["ready"];
         \\  }
         \\}
     );
