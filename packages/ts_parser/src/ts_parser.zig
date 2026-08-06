@@ -1094,18 +1094,18 @@ pub const Parser = struct {
     /// source-file parse diagnostic suppresses it. Home recognizes the
     /// optional-marker/default combination while parsing; defer the same gate
     /// until the complete file is known to be parse-clean.
-    fn suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors(self: *Parser) void {
-        var has_parse_diagnostic = false;
+    fn hasOptionalParameterInitializerSuppressingParseDiagnostic(self: *const Parser) bool {
         for (self.diagnostics.items) |diagnostic| {
             switch (diagnostic.code) {
                 1015, 1036, 1101, 1163, 1451, 18016, 18028, 2410 => {},
-                else => {
-                    has_parse_diagnostic = true;
-                    break;
-                },
+                else => return true,
             }
         }
-        if (!has_parse_diagnostic) return;
+        return false;
+    }
+
+    fn suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors(self: *Parser) void {
+        if (!self.hasOptionalParameterInitializerSuppressingParseDiagnostic()) return;
 
         var i = self.diagnostics.items.len;
         while (i > 0) {
@@ -4830,7 +4830,7 @@ pub const Parser = struct {
                     // optional marker and an `= default` initializer.
                     // tsc anchors at the parameter's start span.
                     // Mirrors upstream `parserParameterList2`.
-                    if (flags.is_optional) {
+                    if (flags.is_optional and !self.hasOptionalParameterInitializerSuppressingParseDiagnostic()) {
                         try self.reportCodeAt(param_start.span.start, param_start.line, 1015, "Parameter cannot have question mark and initializer.");
                     }
                     // TS1048: `...rest = init` — rest parameters cannot
@@ -11852,7 +11852,7 @@ pub const Parser = struct {
                     self.param_initializer_depth += 1;
                     defer self.param_initializer_depth -= 1;
                     default_value = try self.parseAssignmentExpression();
-                    if (flags.is_optional) {
+                    if (flags.is_optional and !self.hasOptionalParameterInitializerSuppressingParseDiagnostic()) {
                         try self.reportCodeAt(ps.span.start, ps.line, 1015, "Parameter cannot have question mark and initializer.");
                     }
                     if (flags.is_rest) {
@@ -16527,10 +16527,10 @@ pub const Parser = struct {
         while (i < self.tokens.len) : (i += 1) {
             const tk = self.tokens[i].kind;
             switch (tk) {
-                .open_paren, .open_bracket, .open_brace, .less_than => depth += 1,
-                .close_paren, .close_bracket, .close_brace, .greater_than => {
+                .open_paren => depth += 1,
+                .close_paren => {
                     depth -= 1;
-                    if (depth == 0 and tk == .close_paren) return i + 1;
+                    if (depth == 0) return i + 1;
                 },
                 .eof => return null,
                 else => {},
@@ -21430,6 +21430,34 @@ test "parser: parse diagnostics suppress TS1015 grammar errors" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1015);
     }
+}
+
+test "parser: legacy optional defaults are suppressed by later parse diagnostics" {
+    var s = try newTestSetup(
+        \\class Container {
+        \\    getAliasName(alias?: AST = this.alias): string { return ""; }
+        \\}
+        \\)
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len > 0);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1015);
+    }
+}
+
+test "parser: parenthesized unary class method return stays parse-clean" {
+    var s = try newTestSetup(
+        \\class Container {
+        \\    isSignature() { return (this.flags & 1) != 0; }
+        \\    hasStaticDeclarations() { return (!this.isConstructor && (this.members.length > 0 || this.functions.length > 0)); }
+        \\    later() { if (this.start < 1 || this.end < 2) {} }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: type member parameter initializers recover without missing close" {
