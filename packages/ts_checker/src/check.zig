@@ -1995,6 +1995,7 @@ pub const TsCodes = struct {
     pub const async_iterator_required: u32 = 2504;
     pub const async_iterator_next_missing: u32 = 2519;
     pub const type_not_array_type: u32 = 2461;
+    pub const type_not_array_or_iterator_type: u32 = 2548;
     pub const type_not_array_or_string_type: u32 = 2495;
     pub const for_of_lhs_invalid: u32 = 2487;
     pub const assignment_lhs_not_variable: u32 = 2364;
@@ -7212,21 +7213,7 @@ pub const Checker = struct {
                             elem_t != types.Primitive.none and
                             !self.elemIsArrayLikeForForOfDestructure(elem_t))
                         {
-                            const name = (try self.simpleDiagnosticTypeName(elem_t)) orelse "";
-                            if (name.len != 0) {
-                                const msg = try std.fmt.allocPrint(
-                                    self.diag_arena.allocator(),
-                                    "Type '{s}' is not an array type.",
-                                    .{name},
-                                );
-                                try self.diagnostics.append(self.gpa, .{
-                                    .node = v.name,
-                                    .code = TsCodes.type_not_array_type,
-                                    .message = msg,
-                                });
-                            } else {
-                                try self.report(v.name, TsCodes.type_not_array_type, "Type is not an array type.");
-                            }
+                            try self.reportForOfDestructuredElementType(v.name, elem_t, es5_for_of);
                         }
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .object_pattern) {
                             try self.checkObjectBindingPatternAgainstType(v.name, elem_t, true);
@@ -7301,7 +7288,16 @@ pub const Checker = struct {
                             try self.reportTypeNotAssignable(fr.target, elem_t, target_t, "Type is not assignable to target type.");
                         }
                     },
-                    .array_literal => try self.checkArrayDestructuringAssignment(fr.target, elem_t, hir_mod.none_node_id, 0),
+                    .array_literal => {
+                        if (elem_t != types.Primitive.any and
+                            elem_t != types.Primitive.unknown and
+                            elem_t != types.Primitive.none and
+                            !self.elemIsArrayLikeForForOfDestructure(elem_t))
+                        {
+                            try self.reportForOfDestructuredElementType(fr.target, elem_t, es5_for_of);
+                        }
+                        try self.checkArrayDestructuringAssignment(fr.target, elem_t, hir_mod.none_node_id, 0);
+                    },
                     .object_literal => try self.checkObjectDestructuringAssignment(fr.target, elem_t, hir_mod.none_node_id),
                     .block_stmt => try self.checkForOfExcessDeclarationTarget(fr.target, elem_t),
                     else => {},
@@ -71878,6 +71874,26 @@ pub const Checker = struct {
         try self.report(target_node, TsCodes.type_not_array_type, msg);
     }
 
+    fn reportForOfDestructuredElementType(self: *Checker, target_node: NodeId, source_t: TypeId, es5_for_of: bool) CheckError!void {
+        if (!es5_for_of) {
+            try self.reportIteratorRequired(target_node, source_t);
+            return;
+        }
+        const uses_iterator_protocol = self.sourceDirectiveValueMentions("downlevelIteration", "true");
+        if (!uses_iterator_protocol) {
+            try self.reportTypeNotArrayForTarget(target_node, source_t);
+            return;
+        }
+        const name = (try self.simpleDiagnosticTypeName(source_t)) orelse
+            (try self.allocSimpleTypeName(source_t)) orelse "unknown";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not an array type or does not have a '[Symbol.iterator]()' method that returns an iterator.",
+            .{name},
+        );
+        try self.report(target_node, TsCodes.type_not_array_or_iterator_type, msg);
+    }
+
     fn reportTypeNotArrayOrStringForForOf(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId) CheckError!void {
         const name_opt: ?[]const u8 = blk: {
             if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .literal_number) {
@@ -88249,21 +88265,21 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_union) return null;
-        var has_array_or_string = false;
-        var rejected: ?TypeId = null;
+        var rejected: TypeId = types.Primitive.none;
+        var has_non_array = false;
         for (self.interner.unionMembers(t)) |member| {
             if (member == types.Primitive.string_t or
-                (member < self.interner.pool.typeCount() and self.interner.pool.flagsOf(member).is_string) or
-                (member < self.interner.pool.typeCount() and
-                    self.interner.pool.flagsOf(member).is_object_type and
-                    (self.interner.objectNumberIndex(member) != types.Primitive.none or self.isTupleShapedTarget(member))))
+                (member < self.interner.pool.typeCount() and self.interner.pool.flagsOf(member).is_string))
             {
-                has_array_or_string = true;
-            } else if (rejected == null) {
-                rejected = member;
+                continue;
             }
+            rejected = if (rejected == types.Primitive.none)
+                member
+            else
+                self.interner.internUnion(&.{ rejected, member }) catch return t;
+            if (!self.elemIsArrayLikeForForOfDestructure(member)) has_non_array = true;
         }
-        return if (has_array_or_string) rejected else null;
+        return if (has_non_array and rejected != types.Primitive.none) rejected else null;
     }
 
     fn arrayElementType(self: *Checker, obj_t: TypeId) CheckError!TypeId {
@@ -223091,6 +223107,53 @@ test "checker: ES5 for-of reports the rejected union constituent" {
     s.checker.setTargetEmitEs5(true);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_array_type));
+}
+
+test "checker: ES5 for-of preserves the rejected non-string union" {
+    const s = try newSetup(
+        \\declare let values: string | string[] | number | symbol;
+        \\for (const value of values) { value; }
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_array_type,
+        "Type 'number | symbol | string[]' is not an array type.",
+    ));
+}
+
+test "checker: ES5 downlevel for-of destructuring requires an iterable element" {
+    const s = try newSetup(
+        \\// @downlevelIteration: true
+        \\for (let [a = 0, b = 1] of [2, 3]) { a; b; }
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_array_or_iterator_type,
+        "Type 'number' is not an array type or does not have a '[Symbol.iterator]()' method that returns an iterator.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_array_type));
+}
+
+test "checker: ES5 for-of assignment destructuring checks the element container" {
+    const s = try newSetup(
+        \\var a: string, b: number;
+        \\var tuple: [number, string] = [2, "3"];
+        \\for ([a = 1, b = ""] of tuple) { a; b; }
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_array_type,
+        "Type 'string | number' is not an array type.",
+    ));
 }
 
 test "checker: for-of validates a writable member target" {
