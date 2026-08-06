@@ -72262,6 +72262,17 @@ pub const Checker = struct {
         return self.hir.kindOf(v.init) == .literal_undefined or self.hir.kindOf(v.init) == .literal_null;
     }
 
+    fn varDeclIsCapturedEvolvingAnyCandidate(self: *Checker, decl: NodeId) bool {
+        const dk = self.hir.kindOf(decl);
+        if (dk != .var_decl and dk != .let_decl) return false;
+        const v = hir_mod.varDeclOf(self.hir, decl);
+        if (v.type_annotation != hir_mod.none_node_id) return false;
+        if (self.varDeclHasJsDocTypeTag(decl)) return false;
+        if (v.init == hir_mod.none_node_id) return true;
+        return self.hir.kindOf(v.init) == .array_literal and
+            hir_mod.arrayLiteralElements(self.hir, v.init).len == 0;
+    }
+
     fn mergeDefiniteEvolvingAnyFlowTypes(self: *Checker, lhs: ?TypeId, rhs: ?TypeId) CheckError!?TypeId {
         const left = lhs orelse return null;
         const right = rhs orelse return null;
@@ -74871,16 +74882,20 @@ pub const Checker = struct {
         if (!self.strict_flags.no_implicit_any) return;
         if (declared_type != types.Primitive.none) return;
         if (!self.varDeclIsInsideFunctionLike(node)) return;
-        if (!self.varDeclIsUntypedEvolvingAnyCandidate(node)) return;
+        if (!self.varDeclIsCapturedEvolvingAnyCandidate(node)) return;
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, v.name);
-        const use_node = self.firstCapturedEvolvingAnyUseAfterDecl(node, id.name) orelse return;
+        var reads: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer reads.deinit(self.gpa);
+        if (!try self.collectCapturedEvolvingAnyReads(node, id.name, &reads)) return;
+        const is_array = v.init != hir_mod.none_node_id and self.hir.kindOf(v.init) == .array_literal;
+        const implicit_type = if (is_array) "any[]" else "any";
         const name_str = self.string_interner.get(id.name);
         const decl_msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Variable '{s}' implicitly has type 'any' in some locations where its type cannot be determined.",
-            .{name_str},
+            "Variable '{s}' implicitly has type '{s}' in some locations where its type cannot be determined.",
+            .{ name_str, implicit_type },
         );
         try self.diagnostics.append(self.gpa, .{
             .node = v.name,
@@ -74889,72 +74904,58 @@ pub const Checker = struct {
         });
         const use_msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Variable '{s}' implicitly has an 'any' type.",
-            .{name_str},
+            "Variable '{s}' implicitly has an '{s}' type.",
+            .{ name_str, implicit_type },
         );
-        try self.diagnostics.append(self.gpa, .{
-            .node = use_node,
-            .code = TsCodes.variable_implicitly_any,
-            .message = use_msg,
-        });
-    }
-
-    fn firstCapturedEvolvingAnyUseAfterDecl(self: *Checker, decl: NodeId, name: hir_mod.StringId) ?NodeId {
-        const decl_start = self.hir.spanOf(decl).start;
-        var cur = self.hir.parentOf(decl);
-        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
-            if (self.hir.kindOf(cur) != .block_stmt and self.hir.kindOf(cur) != .namespace_decl) continue;
-            const stmts = if (self.hir.kindOf(cur) == .block_stmt)
-                hir_mod.blockStmts(self.hir, cur)
-            else
-                hir_mod.namespaceBody(self.hir, cur);
-            for (stmts) |stmt| {
-                if (self.hir.spanOf(stmt).start <= decl_start) continue;
-                if (self.firstCapturedEvolvingAnyUseInNode(stmt, name)) |use_node| return use_node;
-            }
-            return null;
+        for (reads.items) |use_node| {
+            if (self.diagnosticExists(use_node, TsCodes.variable_implicitly_any)) continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = use_node,
+                .code = TsCodes.variable_implicitly_any,
+                .message = use_msg,
+            });
         }
-        return null;
     }
 
-    fn firstCapturedEvolvingAnyUseInNode(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
-        if (node == hir_mod.none_node_id) return null;
-        return switch (self.hir.kindOf(node)) {
-            .fn_decl, .fn_expr, .arrow_fn => blk: {
-                const f = hir_mod.fnDeclOf(self.hir, node);
-                break :blk self.firstIdentifierReferenceNoNested(f.body, name);
-            },
-            .var_decl, .let_decl, .const_decl => blk: {
-                const v = hir_mod.varDeclOf(self.hir, node);
-                break :blk self.firstCapturedEvolvingAnyUseInNode(v.init, name);
-            },
-            .block_stmt => blk: {
-                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
-                    if (self.firstCapturedEvolvingAnyUseInNode(stmt, name)) |use_node| break :blk use_node;
-                }
-                break :blk null;
-            },
-            .if_stmt => blk: {
-                const i = hir_mod.ifOf(self.hir, node);
-                break :blk self.firstCapturedEvolvingAnyUseInNode(i.then_branch, name) orelse
-                    self.firstCapturedEvolvingAnyUseInNode(i.else_branch, name);
-            },
-            .return_stmt => self.firstCapturedEvolvingAnyUseInNode(hir_mod.returnOf(self.hir, node).value, name),
-            .assignment => blk: {
-                const a = hir_mod.assignmentOf(self.hir, node);
-                break :blk self.firstCapturedEvolvingAnyUseInNode(a.target, name) orelse
-                    self.firstCapturedEvolvingAnyUseInNode(a.value, name);
-            },
-            .call_expr, .new_expr => blk: {
-                const c = hir_mod.callOf(self.hir, node);
-                if (self.firstCapturedEvolvingAnyUseInNode(c.callee, name)) |use_node| break :blk use_node;
-                for (hir_mod.callArgs(self.hir, node)) |arg| {
-                    if (self.firstCapturedEvolvingAnyUseInNode(arg, name)) |use_node| break :blk use_node;
-                }
-                break :blk null;
-            },
-            else => null,
-        };
+    fn collectCapturedEvolvingAnyReads(
+        self: *Checker,
+        decl: NodeId,
+        name: hir_mod.StringId,
+        reads: *std.ArrayListUnmanaged(NodeId),
+    ) CheckError!bool {
+        const owner = self.enclosingFunctionLike(decl) orelse return false;
+        const decl_end = self.hir.spanOf(decl).end;
+        const section = self.virtualSectionStartForNode(decl);
+        var has_captured_read = false;
+        var candidate: NodeId = 0;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .identifier) continue;
+            if (self.hir.spanOf(candidate).start < decl_end) continue;
+            if (self.virtualSectionStartForNode(candidate) != section) continue;
+            if (!self.nodeHasAncestor(candidate, owner)) continue;
+            if (self.isDeclNameSlot(candidate)) continue;
+            if (hir_mod.identifierOf(self.hir, candidate).name != name) continue;
+            if (self.capturedEvolvingAnyReferenceIsWrite(candidate)) continue;
+            try reads.append(self.gpa, candidate);
+            if (self.enclosingFunctionLike(candidate) != owner) has_captured_read = true;
+        }
+        return has_captured_read;
+    }
+
+    fn capturedEvolvingAnyReferenceIsWrite(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(parent) == .assignment and hir_mod.assignmentOf(self.hir, parent).target == node) {
+            return true;
+        }
+        if (self.hir.kindOf(parent) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, parent);
+        if (member.object != node) return false;
+        const method = self.string_interner.get(member.name);
+        if (!std.mem.eql(u8, method, "push") and !std.mem.eql(u8, method, "unshift")) return false;
+        const call = self.hir.parentOf(parent);
+        return call != hir_mod.none_node_id and self.hir.kindOf(call) == .call_expr and
+            hir_mod.callOf(self.hir, call).callee == parent;
     }
 
     fn shouldRecordDeclaredVariableFlowNarrow(
@@ -222852,4 +222853,65 @@ test "checker: partial branches preserve an evolving null initializer" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_null));
+}
+
+test "checker: captured null initializer is not an evolving any array" {
+    const s = try newSetup(
+        \\declare function consume(callback: () => void): void;
+        \\function inspect() {
+        \\    var errors = null;
+        \\    consume(() => { errors = []; });
+        \\    return errors.length;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: captured empty array reports every unresolved read as any array" {
+    const s = try newSetup(
+        \\declare function consume<T>(values: T[], callback: (value: T) => void): void;
+        \\function inspect(values: string[]) {
+        \\    var lines = [];
+        \\    consume(values, value => lines = lines.concat(value));
+        \\    return lines.join("\\n");
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.variable_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.variable_implicitly_any_declaration,
+        "Variable 'lines' implicitly has type 'any[]' in some locations where its type cannot be determined.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.variable_implicitly_any,
+        "Variable 'lines' implicitly has an 'any[]' type.",
+    ));
+}
+
+test "checker: array mutation evolves a capture before a later closure read" {
+    const s = try newSetup(
+        \\declare function consume(callback: () => void): void;
+        \\function inspect() {
+        \\    var addedFiles = [];
+        \\    consume(() => { addedFiles.push("a.ts"); });
+        \\    consume(() => { addedFiles.forEach(file => file.length); });
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
 }
