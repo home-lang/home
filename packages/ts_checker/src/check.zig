@@ -60973,7 +60973,10 @@ pub const Checker = struct {
         // — that perturbed overload resolution in dense namespaces
         // (regressed parserRealSource12 via an `interface_member` anchor).
         const anchor_parent_kind = self.hir.kindOf(self.hir.parentOf(anchor));
-        if (anchor_parent_kind == .parameter) {
+        const enclosing_class = self.enclosingClassNode(anchor);
+        const building_class_shape = enclosing_class != hir_mod.none_node_id and
+            self.checked_class_decls.contains(enclosing_class);
+        if (anchor_parent_kind == .parameter or building_class_shape) {
             var cur: NodeId = self.hir.parentOf(anchor);
             while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
                 if (self.hir.kindOf(cur) != .namespace_decl) continue;
@@ -65826,6 +65829,13 @@ pub const Checker = struct {
             }
             return null;
         };
+        const decl_kind = self.hir.kindOf(decl);
+        if ((decl_kind == .class_decl or decl_kind == .class_expr) and
+            self.hir.kindOf(self.hir.parentOf(type_node)) == .parameter and
+            !self.nodeHasAncestor(type_node, decl))
+        {
+            try self.preRegisterClassInstanceShape(decl);
+        }
         const params = self.typeParamNodesOfDecl(decl);
         _ = try self.reportDeclGenericInvalidTypeArgCount(type_node, r.name, params, r.args_len);
         if (self.hir.kindOf(decl) == .enum_decl) {
@@ -65836,7 +65846,7 @@ pub const Checker = struct {
             }
             return self.hir.typeOf(decl);
         }
-        if ((self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) and
+        if ((decl_kind == .class_decl or decl_kind == .class_expr) and
             self.classNameDeclaredInOtherVirtualSection(r.name, decl))
         {
             if (try self.shallowClassInstanceTypeFromDecl(decl, r.name)) |fallback_t| return fallback_t;
@@ -65845,7 +65855,7 @@ pub const Checker = struct {
         if (t != types.Primitive.none and t != types.Primitive.unknown) {
             if (self.hir.kindOf(decl) != .interface_decl or t >= types.Primitive.first_dynamic) return t;
         }
-        return switch (self.hir.kindOf(decl)) {
+        return switch (decl_kind) {
             .interface_decl => blk: {
                 try self.checkInterfaceDecl(decl);
                 const lowered = self.hir.typeOf(decl);
@@ -222813,6 +222823,33 @@ test "checker: forward class shapes include constructor parameter properties" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: qualified forward class parameters preserve nested callback context" {
+    const s = try newSetup(
+        \\namespace Harness {
+        \\    export namespace Assert {
+        \\        export function inspect(result: Compiler.CompilerResult) {
+        \\            result.errors.forEach(err => err.toString());
+        \\        }
+        \\    }
+        \\    export namespace Compiler {
+        \\        export class CompilerResult {
+        \\            public errors: CompilerError[];
+        \\        }
+        \\        export class CompilerError {
+        \\            constructor(public message: string) {}
+        \\            public toString() { return this.message; }
+        \\        }
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
