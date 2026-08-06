@@ -61000,6 +61000,15 @@ pub const Checker = struct {
     /// for subsequent declarations like `var p: typeof p` when an
     /// earlier `var p` has already established the symbol.
     fn priorVarDeclWithSameNameExists(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const hoist_scope = self.enclosingVarDeclScope(node);
+        if (hoist_scope != hir_mod.none_node_id) {
+            const key: VarDeclKey = .{
+                .scope = hoist_scope,
+                .name = name,
+                .virtual_section_start = self.repeatedVarVirtualSectionKey(node),
+            };
+            if (self.var_decl_types.contains(key)) return true;
+        }
         const scope = self.hir.parentOf(node);
         if (scope == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(scope) != .block_stmt) return false;
@@ -65885,6 +65894,15 @@ pub const Checker = struct {
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
             if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            const hoist_scope = self.enclosingVarDeclScope(cur);
+            if (hoist_scope != hir_mod.none_node_id) {
+                const key: VarDeclKey = .{
+                    .scope = hoist_scope,
+                    .name = name,
+                    .virtual_section_start = self.repeatedVarVirtualSectionKey(cur),
+                };
+                if (self.var_decl_types.get(key)) |prior_t| return prior_t;
+            }
             const scope = self.hir.parentOf(cur);
             if (scope == hir_mod.none_node_id) return null;
             return self.previousVarDeclTypeInScope(scope, cur, name);
@@ -83058,11 +83076,21 @@ pub const Checker = struct {
                     break :blk false;
                 }
                 if (current_asserted_inferred and
-                    !try self.repeatedVarAssertedInferredTypesCompatible(prior, final_type)) break :blk false;
+                    !try self.repeatedVarAssertedInferredTypesCompatible(prior, final_type) and
+                    !try self.repeatedVarObjectMembersIdentical(prior, final_type)) break :blk false;
+                if (self.repeatedVarArrayElementMismatch(prior, final_type)) break :blk false;
+                if (try self.repeatedVarObjectMembersIdentical(prior, final_type)) break :blk true;
                 if (self.engine.isIdenticalTo(prior, final_type) catch true) break :blk true;
                 if (self.exactlyOneTypeIsUnion(prior, final_type)) break :blk false;
-                break :blk (self.engine.isAssignableTo(prior, final_type) catch true) and
-                    (self.engine.isAssignableTo(final_type, prior) catch true);
+                if ((self.engine.isAssignableTo(prior, final_type) catch true) and
+                    (self.engine.isAssignableTo(final_type, prior) catch true)) break :blk true;
+                const prior_flags = self.interner.pool.flagsOf(prior);
+                const current_flags = self.interner.pool.flagsOf(final_type);
+                if (prior_flags.is_object_type and current_flags.is_object_type) {
+                    break :blk try self.checkerAssignableTo(prior, final_type) and
+                        try self.checkerAssignableTo(final_type, prior);
+                }
+                break :blk false;
             };
             const namespace_fn_static_name = self.varInitNamespaceMergedFunctionName(node);
             const forced_namespace_fn_static_mismatch = namespace_fn_static_name != null and prior_explicit;
@@ -83179,6 +83207,61 @@ pub const Checker = struct {
         const prior_sig = self.nonConstructCallSignatureOfType(prior) orelse return false;
         const current_sig = self.nonConstructCallSignatureOfType(current) orelse return false;
         return self.interner.signatureParams(prior_sig).len != self.interner.signatureParams(current_sig).len;
+    }
+
+    fn repeatedVarArrayElementMismatch(self: *Checker, prior: TypeId, current: TypeId) bool {
+        if (prior >= self.interner.pool.typeCount() or current >= self.interner.pool.typeCount()) return false;
+        const prior_element = self.interner.objectNumberIndex(prior);
+        const current_element = self.interner.objectNumberIndex(current);
+        return prior_element != types.Primitive.none and
+            current_element != types.Primitive.none and
+            prior_element != current_element and
+            !(self.engine.isIdenticalTo(prior_element, current_element) catch false);
+    }
+
+    fn repeatedVarObjectMembersIdentical(self: *Checker, prior: TypeId, current: TypeId) CheckError!bool {
+        if (prior >= self.interner.pool.typeCount() or current >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(prior).is_object_type or
+            !self.interner.pool.flagsOf(current).is_object_type)
+        {
+            return false;
+        }
+        const prior_indexes = [_]TypeId{
+            self.interner.objectStringIndex(prior),
+            self.interner.objectNumberIndex(prior),
+            self.interner.objectSymbolIndex(prior),
+        };
+        const current_indexes = [_]TypeId{
+            self.interner.objectStringIndex(current),
+            self.interner.objectNumberIndex(current),
+            self.interner.objectSymbolIndex(current),
+        };
+        for (prior_indexes, current_indexes) |prior_index, current_index| {
+            if (prior_index == types.Primitive.none or current_index == types.Primitive.none) {
+                if (prior_index != current_index) return false;
+            } else if (!(self.engine.isIdenticalTo(prior_index, current_index) catch false)) {
+                return false;
+            }
+        }
+        return try self.repeatedVarObjectMemberSetMatches(prior, current) and
+            try self.repeatedVarObjectMemberSetMatches(current, prior);
+    }
+
+    fn repeatedVarObjectMemberSetMatches(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        for (self.interner.objectMembers(source)) |source_member| {
+            if (source_member.name == 0 or self.syntheticSignatureMemberName(source_member.name)) continue;
+            const target_member = self.interner.objectMemberInfo(target, source_member.name) orelse return false;
+            if (source_member.is_optional != target_member.is_optional or
+                source_member.is_readonly != target_member.is_readonly or
+                source_member.is_method != target_member.is_method)
+            {
+                return false;
+            }
+            if (self.engine.isIdenticalTo(source_member.type, target_member.type) catch false) continue;
+            if (!try self.checkerAssignableTo(source_member.type, target_member.type) or
+                !try self.checkerAssignableTo(target_member.type, source_member.type)) return false;
+        }
+        return true;
     }
 
     fn checkGlobalSymbolConstructorVarMerge(self: *Checker, node: NodeId) CheckError!bool {
@@ -155819,8 +155902,47 @@ pub const Checker = struct {
             try self.emitConversionMayBeMistake(node, source_t, target_t);
             return;
         }
+        if (try self.objectLiteralAssertionHasNoDirectionalOverlap(node, source_t, target_t)) {
+            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            return;
+        }
         if (try self.typesHaveComparableOverlap(source_t, target_t)) return;
         try self.emitConversionMayBeMistake(node, source_t, target_t);
+    }
+
+    fn objectLiteralAssertionHasNoDirectionalOverlap(
+        self: *Checker,
+        node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        const kind = self.hir.kindOf(node);
+        if (kind != .as_expr and kind != .type_assertion) return false;
+        const expression = hir_mod.asExpressionOf(self.hir, node).expr;
+        if (expression == hir_mod.none_node_id or self.hir.kindOf(expression) != .object_literal) return false;
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_object_type or
+            !self.interner.pool.flagsOf(target_t).is_object_type)
+        {
+            return false;
+        }
+        if (try self.checkerAssignableTo(source_t, target_t) or
+            try self.checkerAssignableTo(target_t, source_t))
+        {
+            return false;
+        }
+
+        var saw_member = false;
+        for (self.interner.objectMembers(source_t)) |member| {
+            if (member.name == 0 or self.syntheticSignatureMemberName(member.name)) continue;
+            saw_member = true;
+            if (self.interner.objectMemberInfo(target_t, member.name) == null) return false;
+        }
+        for (self.interner.objectMembers(target_t)) |member| {
+            if (member.name == 0 or self.syntheticSignatureMemberName(member.name)) continue;
+            if (self.interner.objectMemberInfo(source_t, member.name) == null) return false;
+        }
+        return saw_member;
     }
 
     fn privateGenericAssertionSyntaxHasNoOverlap(self: *Checker, node: NodeId) CheckError!bool {
@@ -173900,6 +174022,21 @@ test "checker: repeated var declarations require identical annotated types" {
         if (d.code == TsCodes.subsequent_var_type_mismatch) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: repeated structural vars and for-head typeof share the hoisted type" {
+    const s = try newSetup(
+        \\interface Point { x: number; y: number; }
+        \\var p: Point;
+        \\var p: { x: number; y: number; };
+        \\for (var q: Point; ;) { }
+        \\for (var q: { x: number; y: number; }; ;) { }
+        \\for (var q: typeof q; ;) { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.self_referenced_type_annotation));
 }
 
 test "checker: repeated var declarations reject subtype-collapsed unions" {
