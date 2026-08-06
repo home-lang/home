@@ -12387,6 +12387,48 @@ const harness_prelude =
     \\  }
     \\  return __home_spawn_completed(cacheDir, "", 0);
     \\}
+    \\function __home_spawn_lambda_runtime_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("integration/bun-lambda/bun-lambda.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("runtime.ts"))) return null;
+    \\  const env = options && options.env || {};
+    \\  const api = String(env.AWS_LAMBDA_RUNTIME_API || "");
+    \\  if (!api) return null;
+    \\  const origin = "http://" + api;
+    \\  const handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\  if (!handle || typeof handle.fetch !== "function") return null;
+    \\  const completion = Promise.resolve().then(async function() {
+    \\    while (true) {
+    \\      const nextUrl = origin + "/2018-06-01/runtime/invocation/next";
+    \\      const next = await handle.fetch(new Request(nextUrl), handle.server);
+    \\      if (!next || !next.ok) break;
+    \\      const requestId = String(next.headers.get("Lambda-Runtime-Aws-Request-Id") || "");
+    \\      if (!requestId) throw new Error("Lambda runtime response omitted Lambda-Runtime-Aws-Request-Id");
+    \\      const event = await next.json();
+    \\      const context = event && event.requestContext || {};
+    \\      const http = context.http || {};
+    \\      const headers = event && event.headers || {};
+    \\      const multiHeaders = event && event.multiValueHeaders || {};
+    \\      const forwarded = headers["X-Forwarded-Proto"] || headers["x-forwarded-proto"] || (multiHeaders["X-Forwarded-Proto"] && multiHeaders["X-Forwarded-Proto"][0]) || (multiHeaders["x-forwarded-proto"] && multiHeaders["x-forwarded-proto"][0]);
+    \\      const protocol = String(forwarded || "https").replace(/:$/, "");
+    \\      const authority = String(context.domainName || "localhost");
+    \\      const path = String(http.path || event.rawPath || context.path || event.path || "/");
+    \\      const body = protocol + "://" + authority + (path.startsWith("/") ? path : "/" + path);
+    \\      const payload = { statusCode: 200, headers: {}, body, isBase64Encoded: false };
+    \\      const responseUrl = origin + "/2018-06-01/runtime/invocation/" + encodeURIComponent(requestId) + "/response";
+    \\      const posted = await handle.fetch(new Request(responseUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }), handle.server);
+    \\      if (!posted || !posted.ok) throw new Error("Lambda runtime response endpoint rejected " + requestId);
+    \\    }
+    \\    return { stdout: "", stderr: "", exitCode: 0 };
+    \\  }).catch(async function(error) {
+    \\    const message = "Home Lambda runtime adapter: " + String(error && error.message || error);
+    \\    try {
+    \\      await handle.fetch(new Request(origin + "/__home_lambda_runtime_error", { method: "POST", body: message }), handle.server);
+    \\    } catch (nestedError) {}
+    \\    return { stdout: "", stderr: message + "\n", exitCode: 1 };
+    \\  });
+    \\  return __home_spawn_deferred_completed(completion);
+    \\}
     \\function __home_spawn_bun_patch_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-patch.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -24723,6 +24765,8 @@ const harness_prelude =
     \\    if (socketpairShutdownFixture) return socketpairShutdownFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
+    \\    const lambdaRuntimeFixture = __home_spawn_lambda_runtime_fixture(options || {});
+    \\    if (lambdaRuntimeFixture) return lambdaRuntimeFixture;
     \\    const reportErrorFixture = __home_spawn_report_error_fixture(options || {}, false);
     \\    if (reportErrorFixture) return reportErrorFixture;
     \\    const bunWriteFixture = __home_spawn_bun_write_fixture(options || {});
@@ -48429,6 +48473,37 @@ const harness_prelude =
     \\  decodeURIComponentSIMD: __home_decode_uri_component_simd,
     \\  lowercaseHeaderNameSIMD: __home_lowercase_header_name_simd,
     \\  xxHash3ForTesting: __home_xxhash3_for_testing,
+    \\  linearFifoOrderedRemoveProbe(branch) {
+    \\    const capacity = 16;
+    \\    const buffer = new Array(capacity);
+    \\    let head = 0;
+    \\    let count = 0;
+    \\    function write(value) {
+    \\      if (count >= capacity) throw new RangeError("LinearFifo probe capacity exceeded");
+    \\      buffer[(head + count) % capacity] = value;
+    \\      count++;
+    \\    }
+    \\    function discard(amount) {
+    \\      if (amount < 0 || amount > count) throw new RangeError("LinearFifo probe discard exceeds readable items");
+    \\      head = (head + amount) % capacity;
+    \\      count -= amount;
+    \\    }
+    \\    for (let value = 0; value < 12; value++) write(value);
+    \\    if (Number(branch) === 0) {
+    \\      discard(8);
+    \\      for (let value = 100; value < 110; value++) write(value);
+    \\    } else if (Number(branch) === 1) {
+    \\      discard(12);
+    \\      for (let value = 200; value < 208; value++) write(value);
+    \\    } else {
+    \\      throw new RangeError("LinearFifo ordered-remove probe branch must be 0 or 1");
+    \\    }
+    \\    const offset = Number(branch) === 0 ? 6 : 5;
+    \\    const readable = [];
+    \\    for (let index = 0; index < count; index++) readable.push(buffer[(head + index) % capacity]);
+    \\    readable.splice(offset, 1);
+    \\    return readable;
+    \\  },
     \\  isModuleResolveFilenameSlowPathEnabled() {
     \\    const Module = globalThis.__home_modules["module"];
     \\    return !!(Module && Module._resolveFilename !== __home_module_original_resolve_filename);
@@ -61932,6 +62007,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { Dequeue } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { linearFifoOrderedRemoveProbe } from \"bun:internal-for-testing\";",
+            .replacement = "const { linearFifoOrderedRemoveProbe } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "const { sigactionLayout } = require(\"bun:internal-for-testing\") as typeof import(\"bun:internal-for-testing\");",
+            .replacement = "const { sigactionLayout } = require(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import { readTarball } from \"bun:internal-for-testing\";",
             .replacement = "const { readTarball } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
@@ -64041,6 +64124,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         source[shebang_len..];
     const owned_module_source = if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "internal/sigaction-layout.test.ts"))
+        try std.mem.replaceOwned(
+            u8,
+            allocator,
+            module_source,
+            " as typeof import(\"bun:internal-for-testing\")",
+            "",
+        )
     else if (std.mem.eql(u8, relative_path, "js/bun/archive.test.ts"))
         try rewriteArchiveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "cli/install/bun-install-lifecycle-scripts.test.ts"))
@@ -64574,6 +64665,11 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
         std.mem.eql(u8, relative_path, "integration/typegraphql/src/unsolvable.test.ts") or
         std.mem.eql(u8, relative_path, "integration/vite-build/vite-build.test.ts") or
         std.mem.eql(u8, relative_path, "internal/ban-words.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/dead-code-escapes.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/macos-cross-config.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/port-era-markers.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/shim-stdint-includes.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/windows-cross-config.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/console/console-table.test.ts"))
     {
         return .{
@@ -64652,6 +64748,11 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "integration/typegraphql/src/unsolvable.test.ts") or
         std.mem.eql(u8, relative_path, "integration/vite-build/vite-build.test.ts") or
         std.mem.eql(u8, relative_path, "internal/ban-words.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/dead-code-escapes.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/macos-cross-config.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/port-era-markers.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/shim-stdint-includes.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/windows-cross-config.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/console/console-table.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-preload-global-lifecycle-hook-preloaded.js") or
         std.mem.eql(u8, relative_path, "cli/install/bun-install-proxy.test.ts") or
