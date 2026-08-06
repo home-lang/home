@@ -125887,7 +125887,11 @@ pub const Checker = struct {
                 const lhs_is_private_id = self.binaryLhsIsPrivateIdentifier(b.lhs);
                 if (lhs_is_private_id) {
                     if (try self.privateIdentifierResolvesInEnclosingClass(b.lhs)) |resolved| {
-                        if (!resolved) {
+                        if (!resolved and
+                            (!self.virtualSectionIsJsLike(b.lhs) or
+                                self.check_js_enabled or
+                                self.sourceHasCheckJsDirective()))
+                        {
                             const name = hir_mod.identifierOf(self.hir, b.lhs).name;
                             try self.reportPropertyDoesNotExistOnType(b.lhs, name, rhs);
                         }
@@ -198802,6 +198806,28 @@ test "checker: private brand checks resolve names and reject for-in targets" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.for_in_left_invalid));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_instance_member));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: unresolved private brand checks are semantic errors only in checked files" {
+    const unchecked = try newSetup(
+        \\// @allowJs: true
+        \\// @filename: unchecked.js
+        \\class C { check(value) { return #missing in value; } }
+    );
+    defer destroySetup(unchecked);
+    try unchecked.checker.checkSourceFile(unchecked.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(unchecked, TsCodes.property_does_not_exist));
+
+    const checked = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: checked.js
+        \\class C { check(value) { return #missing in value; } }
+    );
+    defer destroySetup(checked);
+    checked.checker.setCheckJsEnabled(true);
+    try checked.checker.checkSourceFile(checked.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(checked, TsCodes.property_does_not_exist));
 }
 
 test "checker: private member accessed on a subclass instance reports TS2341 (inherited)" {

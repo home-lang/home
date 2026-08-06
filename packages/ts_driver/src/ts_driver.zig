@@ -2001,10 +2001,7 @@ pub fn compileSource(
     // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
     var has_syntactic_parse_diagnostics = false;
     for (parser.diagnostics.items) |d| {
-        switch (d.code) {
-            1036, 1101, 1163, 1451, 18016, 18028, 2410 => continue,
-            else => {},
-        }
+        if (!ts_parser.diagnosticIsSyntacticParseError(d)) continue;
         has_syntactic_parse_diagnostics = true;
         break;
     }
@@ -3076,6 +3073,7 @@ fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
 }
 
 fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source: []const u8) bool {
+    if (plainJsGrammarDiagnosticCode(code)) return true;
     if (code == ts_checker.check.TsCodes.private_name_not_declared) return true;
     if (code == ts_checker.check.TsCodes.property_does_not_exist and std.mem.indexOf(u8, message, "'#") != null) return true;
     if (code == ts_checker.check.TsCodes.await_only_in_async) return true;
@@ -3118,6 +3116,25 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source
         return virtualFilenameHasTs(source) and !sourceExplicitlyDisablesCheckJs(source);
     }
     return false;
+}
+
+/// Checker-side subset of tsgo's compiler.program `plainJSErrors` set.
+/// Parser diagnostics bypass this filter; these entries are grammar or
+/// binder-shape diagnostics that Home currently produces during checking and
+/// TypeScript retains even when `allowJs` is enabled without `checkJs`.
+fn plainJsGrammarDiagnosticCode(code: u32) bool {
+    return switch (code) {
+        1005, 1009, 1013, 1014, 1029, 1030, 1031, 1042, 1044, 1048,
+        1049, 1053, 1054, 1089, 1090, 1091, 1097, 1104, 1105, 1106,
+        1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1171,
+        1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191, 1193,
+        1197, 1200, 1211, 1248, 1255, 1258, 1308, 1312, 1325, 1341,
+        1358, 1368, 1450, 1451, 1473, 1474, 18006, 18013, 18016,
+        18028, 18038, 18041, 2410, 2462, 2480, 2492, 2501, 2566, 2803,
+        5076, 8009, 8012,
+        => true,
+        else => false,
+    };
 }
 
 fn diagnosticLineHasTsIgnore(source: []const u8, pos: usize) bool {
@@ -6663,4 +6680,44 @@ test "driver: @verbatimModuleSyntax + @module: system emits TS5105" {
         if (d.code == 5105) found_5105 = true;
     }
     try T.expect(found_5105);
+}
+
+test "driver: unchecked JavaScript retains tsgo plain grammar diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\// @allowJs: true
+        \\// @target: esnext
+        \\// @module: esnext
+        \\// @filename: grammar.js
+        \\class C {
+        \\    #m() { this.#m = () => {} }
+        \\    static {
+        \\        for await (const x of [1]) {}
+        \\        return null
+        \\    }
+        \\    "constructor" = 1
+        \\}
+        \\new C().#m
+        \\const obj = { [left, right]: 1 }
+        \\try {} catch (error) { const error = 1 }
+    , .{
+        .allow_js = true,
+        .no_emit = true,
+        .suppress_js_check_diagnostics = true,
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    const expected = [_]u32{ 1171, 2492, 2803, 18006, 18013, 18038, 18041 };
+    for (expected) |code| {
+        var found = false;
+        for (c.diagnostics.items) |d| {
+            if (d.code == code) {
+                found = true;
+                break;
+            }
+        }
+        try T.expectEqual(code, if (found) code else 0);
+    }
 }
