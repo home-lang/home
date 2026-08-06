@@ -82,7 +82,32 @@ pub const Diagnostic = struct {
     /// Empty by default. Borrowed from `diag_arena` (same lifetime as
     /// `message`); driver dup'd to gpa-owned at the boundary.
     related: []const RelatedInfo = &.{},
+    /// False for diagnostics produced by TypeScript's grammar checks rather
+    /// than the scanner/parser proper. Grammar diagnostics may coexist with
+    /// other grammar checks and must not set SourceFile.parseDiagnostics.
+    is_parse_error: bool = true,
 };
+
+/// Whether a parser diagnostic belongs in SourceFile.parseDiagnostics.
+/// The numeric set mirrors tsgo's `plainJSErrors` grammar entries. Home
+/// emits several of those while lowering, so code alone must not cause them
+/// to suppress checker grammar diagnostics.
+pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
+    if (!diagnostic.is_parse_error) return false;
+    return switch (diagnostic.code) {
+        1013, 1014, 1015, 1029, 1030, 1031, 1036, 1042, 1044, 1048, 1049,
+        1053, 1054, 1089, 1090, 1091, 1097, 1100, 1101, 1104, 1105, 1106,
+        1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1163,
+        1171, 1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191,
+        1193, 1197, 1200, 1210, 1211, 1212, 1213, 1214, 1215, 1248,
+        1255, 1258, 1308, 1312, 1325,
+        1341, 1358, 1368, 1450, 1451, 1473, 1474, 17012, 18006, 18013,
+        18016, 18028, 18038, 18041, 2410, 2462, 2480, 2492, 2501, 2566,
+        2803, 5076, 8009, 8012,
+        => false,
+        else => true,
+    };
+}
 
 /// One active labeled statement on the parse-time label scope stack.
 /// `function_depth` records the parser's `function_depth` at the
@@ -158,6 +183,7 @@ pub const Parser = struct {
     block_depth: u32,
     nested_statement_depth: u32,
     unbraced_statement_block_depth: ?u32,
+    labeled_declaration_statement_depth: ?u32,
     unsupported_with_body_depth: u32,
     function_depth: u32,
     async_function_depth: u32,
@@ -332,6 +358,7 @@ pub const Parser = struct {
             .block_depth = 0,
             .nested_statement_depth = 0,
             .unbraced_statement_block_depth = null,
+            .labeled_declaration_statement_depth = null,
             .unsupported_with_body_depth = 0,
             .function_depth = 0,
             .async_function_depth = 0,
@@ -738,6 +765,15 @@ pub const Parser = struct {
         try self.reportCodeAtWithSpan(pos, line, 0, code, message);
     }
 
+    fn reportGrammarCodeAt(self: *Parser, pos: u32, line: u32, code: u32, message: []const u8) ParseError!void {
+        try self.reportGrammarCodeAtWithSpan(pos, line, 0, code, message);
+    }
+
+    fn reportGrammarCodeAtWithSpan(self: *Parser, pos: u32, line: u32, span_len: u32, code: u32, message: []const u8) ParseError!void {
+        try self.reportCodeAtWithSpan(pos, line, span_len, code, message);
+        self.diagnostics.items[self.diagnostics.items.len - 1].is_parse_error = false;
+    }
+
     fn reportCodeAtWithSpan(self: *Parser, pos: u32, line: u32, span_len: u32, code: u32, message: []const u8) ParseError!void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
         try self.diagnostics.append(self.gpa, .{
@@ -1046,12 +1082,9 @@ pub const Parser = struct {
         if (self.pending_outside_private_brand_diag_indices.items.len == 0) return;
         var has_parse_diagnostic = false;
         for (self.diagnostics.items) |d| {
-            switch (d.code) {
-                1036, 1101, 1163, 1451, 18016, 18028, 2410 => {},
-                else => {
-                    has_parse_diagnostic = true;
-                    break;
-                },
+            if (diagnosticIsSyntacticParseError(d)) {
+                has_parse_diagnostic = true;
+                break;
             }
         }
         if (!has_parse_diagnostic) return;
@@ -1069,12 +1102,9 @@ pub const Parser = struct {
         if (self.pending_var_let_strict_positions.items.len == 0) return;
         var has_parse_diagnostic = false;
         for (self.diagnostics.items) |diagnostic| {
-            switch (diagnostic.code) {
-                1100, 1210, 1212, 1213, 1214, 1215 => {},
-                else => {
-                    has_parse_diagnostic = true;
-                    break;
-                },
+            if (diagnosticIsSyntacticParseError(diagnostic)) {
+                has_parse_diagnostic = true;
+                break;
             }
         }
         if (!has_parse_diagnostic) return;
@@ -1096,10 +1126,8 @@ pub const Parser = struct {
     /// until the complete file is known to be parse-clean.
     fn hasOptionalParameterInitializerSuppressingParseDiagnostic(self: *const Parser) bool {
         for (self.diagnostics.items) |diagnostic| {
-            switch (diagnostic.code) {
-                1015, 1036, 1101, 1163, 1451, 18016, 18028, 2410 => {},
-                else => return true,
-            }
+            if (diagnostic.code == 1015) continue;
+            if (diagnosticIsSyntacticParseError(diagnostic)) return true;
         }
         return false;
     }
@@ -1133,7 +1161,7 @@ pub const Parser = struct {
     fn suppressWithUnsupportedWhenFileHasParseErrors(self: *Parser) void {
         var has_other_error = false;
         for (self.diagnostics.items) |d| {
-            if (d.code != 1036 and d.code != 1101 and d.code != 2410) {
+            if (diagnosticIsSyntacticParseError(d)) {
                 has_other_error = true;
                 break;
             }
@@ -2229,6 +2257,11 @@ pub const Parser = struct {
             // Preserve the label in the AST (`L: <stmt>`) so the emitter can
             // re-render it — dropping it would orphan `break L` / `continue L`.
             const label_ident = try self.builder.addIdentifier(tokenSpan(label_tok), label_name);
+            const old_labeled_declaration_statement_depth = self.labeled_declaration_statement_depth;
+            if (label_disallowed) {
+                self.labeled_declaration_statement_depth = self.nested_statement_depth + 1;
+            }
+            defer self.labeled_declaration_statement_depth = old_labeled_declaration_statement_depth;
             const inner = try self.parseNestedStatement();
             return try self.builder.addLabeledStmt(.{ .start = label_tok.span.start, .end = self.hir.spanOf(inner).end }, label_ident, inner);
         }
@@ -2387,11 +2420,45 @@ pub const Parser = struct {
                     self.hir.markFnAsync(fd);
                     break :blk fd;
                 }
+                // Recover declaration modifiers that follow `async`. Keeping
+                // the declaration head intact is important: parsing `async`
+                // as an expression would consume the next keyword, emit a
+                // stray semicolon error, and lose every later statement.
+                if (self.peekAt(1).kind == .kw_async and self.peekAt(2).kind == .kw_function) {
+                    _ = self.advance();
+                    const duplicate = self.advance();
+                    try self.reportGrammarCodeAt(duplicate.span.start, duplicate.line, 1030, "'async' modifier already seen.");
+                    self.async_function_depth += 1;
+                    defer self.async_function_depth -= 1;
+                    const fd = try self.parseFunctionDeclaration(true, false);
+                    self.hir.markFnAsync(fd);
+                    break :blk fd;
+                }
+                if (self.peekAt(1).kind == .kw_export and self.peekAt(2).kind == .kw_function) {
+                    _ = self.advance();
+                    const export_tok = self.peek();
+                    try self.reportGrammarCodeAt(export_tok.span.start, export_tok.line, 1029, "'export' modifier must precede 'async' modifier.");
+                    self.async_function_depth += 1;
+                    defer self.async_function_depth -= 1;
+                    const exported = try self.parseExportDeclaration();
+                    if (self.hir.kindOf(exported) == .export_decl) {
+                        const decl = hir_mod.exportOf(self.hir, exported).decl;
+                        if (decl != hir_mod.none_node_id and self.hir.kindOf(decl) == .fn_decl) {
+                            self.hir.markFnAsync(decl);
+                        }
+                    }
+                    break :blk exported;
+                }
                 if (self.peekAt(1).kind == .kw_class or
                     self.peekAt(1).kind == .kw_interface or
                     self.peekAt(1).kind == .kw_namespace or
                     self.peekAt(1).kind == .kw_module or
-                    self.peekAt(1).kind == .kw_enum)
+                    self.peekAt(1).kind == .kw_enum or
+                    self.peekAt(1).kind == .kw_const or
+                    self.peekAt(1).kind == .kw_let or
+                    self.peekAt(1).kind == .kw_var or
+                    self.peekAt(1).kind == .kw_import or
+                    self.peekAt(1).kind == .kw_export)
                 {
                     // TS1042: `async` modifier cannot be used here (on
                     // class/interface/enum/namespace declarations).
@@ -2399,12 +2466,12 @@ pub const Parser = struct {
                     // different diagnostic — but `async <class…>` at
                     // top level outside ambient is always TS1042.
                     const async_tok = self.advance();
-                    try self.reportCodeAt(async_tok.span.start, async_tok.line, 1042, "'async' modifier cannot be used here.");
+                    try self.reportGrammarCodeAt(async_tok.span.start, async_tok.line, 1042, "'async' modifier cannot be used here.");
                     break :blk try self.parseStatement();
                 }
                 break :blk try self.parseExpressionStatement();
             },
-            .kw_class => try self.parseClassDeclaration(),
+            .kw_class => try self.parseClassStatement(),
             .kw_accessor => blk: {
                 const next = self.peekAt(1).kind;
                 if (next == .kw_class or
@@ -2431,7 +2498,7 @@ pub const Parser = struct {
                 // Other uses of `abstract` (member modifier inside a
                 // class body) are handled by the member-modifier loop.
                 if (self.abstractClassFollowsOnSameLine()) {
-                    break :blk try self.parseClassDeclaration();
+                    break :blk try self.parseClassStatement();
                 }
                 // A decorator cannot follow the `abstract` modifier. Recover
                 // `abstract @dec class C {}` as an identifier statement plus
@@ -2521,11 +2588,15 @@ pub const Parser = struct {
                     next == .kw_async or next == .kw_abstract or next == .kw_export)
                 {
                     const modifier = self.advance();
-                    try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "'{s}' modifier cannot appear on a module or namespace element.",
-                        .{self.source[modifier.span.start..modifier.span.end]},
-                    ));
+                    if (self.moduleElementContextIsIllegal()) {
+                        try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1184, "Modifiers cannot appear here.");
+                    } else {
+                        try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "'{s}' modifier cannot appear on a module or namespace element.",
+                            .{self.source[modifier.span.start..modifier.span.end]},
+                        ));
+                    }
                     break :blk try self.parseStatement();
                 }
                 try self.reportCodeAt(t.span.start, t.line, 1128, "Declaration or statement expected.");
@@ -4492,10 +4563,12 @@ pub const Parser = struct {
                 // Consume them here so the parameter name still parses.
                 // Mirrors `modifierOnParameter1.ts` and the `*Param`
                 // cases in `plainJSGrammarErrors.js`.
+                var first_parameter_modifier: ?Token = null;
                 while (isInvalidParameterModifier(self.peek().kind) and
                     parameterModifierIsFollowedByName(self.peekAt(1).kind))
                 {
                     const mod = self.advance();
+                    if (first_parameter_modifier == null) first_parameter_modifier = mod;
                     if (self.peek().kind == .kw_this) {
                         try self.reportCodeAt(mod.span.start, mod.line, 1433, "Neither decorators nor modifiers may be applied to 'this' parameters.");
                     } else {
@@ -4509,10 +4582,9 @@ pub const Parser = struct {
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 var saw_override_modifier = false;
                 var saw_readonly_modifier = false;
-                var first_parameter_property_modifier: ?Token = null;
                 while (isParameterPropertyModifier(self.peek().kind)) {
                     const mod = self.advance();
-                    if (first_parameter_property_modifier == null) first_parameter_property_modifier = mod;
+                    if (first_parameter_modifier == null) first_parameter_modifier = mod;
                     switch (mod.kind) {
                         .kw_readonly => {
                             if (saw_override_modifier) {
@@ -4571,7 +4643,7 @@ pub const Parser = struct {
                         else => {},
                     }
                 }
-                if (first_parameter_property_modifier) |mod| {
+                if (first_parameter_modifier) |mod| {
                     try self.reportParameterModifiersOnlyInTsIfNeeded(mod);
                 }
                 // Decorators may not legally follow an accessibility
@@ -5352,6 +5424,21 @@ pub const Parser = struct {
         };
     }
 
+    fn parseClassStatement(self: *Parser) ParseError!NodeId {
+        const class_tok = if (self.peek().kind == .kw_abstract) self.peekAt(1) else self.peek();
+        const node = try self.parseClassDeclaration();
+        if (!self.in_export_declaration and hir_mod.classOf(self.hir, node).name == hir_mod.none_node_id) {
+            try self.reportGrammarCodeAtWithSpan(
+                class_tok.span.start,
+                class_tok.line,
+                class_tok.span.end - class_tok.span.start,
+                1211,
+                "A class declaration without the 'default' modifier must have a name.",
+            );
+        }
+        return node;
+    }
+
     fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
         // `abstract class Foo { ... }` — TS allows the `abstract`
         // modifier as a leading keyword before `class`. Capture it for
@@ -5658,7 +5745,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(async_token.span.start, async_token.line, 1243, "'async' modifier cannot be used with 'abstract' modifier.");
                 }
             }
-            try self.reportClassMemberConstKeyword(mods);
+            try self.reportClassMemberConstKeyword(mods, self.peek());
             var member_start = self.peek();
             if (member_start.kind == .invalid) {
                 const bad = self.advance();
@@ -5831,6 +5918,7 @@ pub const Parser = struct {
                         try self.reportCodeAt(at.span.start, at.line, 1042, "'async' modifier cannot be used here.");
                     }
                 }
+                try self.reportJsOnlyClassMemberModifiers(mods, false);
                 try self.reportAccessorModifierOnlyOnProperty(mods);
                 try self.reportInvalidClassElementModifier(mods);
                 _ = self.advance(); // consume `get` / `set`
@@ -5886,6 +5974,12 @@ pub const Parser = struct {
                     body = try self.parseBlockStatement();
                     try self.reportAmbientClassImplementationAt(body_start.span.start, body_start.line);
                 } else {
+                    if (!self.isAmbientContextAt(member_start.span.start) and
+                        !mods.is_abstract and mods.declare_token == null)
+                    {
+                        const at = self.peek();
+                        try self.reportGrammarCodeAt(at.span.start, at.line, 1005, "'{' expected.");
+                    }
                     try self.consumeStatementTerminator();
                     try self.reportMissingClassMemberImplementation(member_start, mods);
                 }
@@ -6206,6 +6300,7 @@ pub const Parser = struct {
                     // the same helper above. Mirrors upstream
                     // `parserConstructorDeclaration{3,4}` and
                     // `parserMemberFunctionDeclaration4`.
+                    try self.reportJsOnlyClassMemberModifiers(mods, false);
                     try self.reportAccessorModifierOnlyOnProperty(mods);
                     try self.reportInvalidClassElementModifier(mods);
                     // Drop any TS2463 emitted on a body-less method
@@ -6336,6 +6431,12 @@ pub const Parser = struct {
                 // — it tells the type system the field is initialized
                 // externally. Mirrors upstream
                 // `parserMemberVariableDeclaration4`.
+                if (mods.is_async) {
+                    if (mods.async_token) |async_token| {
+                        try self.reportGrammarCodeAt(async_token.span.start, async_token.line, 1042, "'async' modifier cannot be used here.");
+                    }
+                }
+                try self.reportJsOnlyClassMemberModifiers(mods, true);
                 try self.reportInvalidClassElementModifierForProperty(mods);
                 const name_id = try self.internPropertyName(name_tok, name_span);
                 const name_node = try self.builder.addIdentifier(name_span, name_id);
@@ -6605,6 +6706,10 @@ pub const Parser = struct {
                         continue;
                     },
                     .kw_async => {
+                        if (mods.is_async) {
+                            const mod = self.peek();
+                            try self.reportGrammarCodeAt(mod.span.start, mod.line, 1030, "'async' modifier already seen.");
+                        }
                         mods.is_async = true;
                         if (mods.async_token == null) mods.async_token = self.peek();
                     },
@@ -6875,11 +6980,36 @@ pub const Parser = struct {
         }
     }
 
-    fn reportClassMemberConstKeyword(self: *Parser, mods: ClassModifiers) ParseError!void {
+    fn reportClassMemberConstKeyword(self: *Parser, mods: ClassModifiers, member_name: Token) ParseError!void {
         if (mods.const_token) |bad| {
             const mod_name = self.source[bad.span.start..bad.span.end];
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "A class member cannot have the '{s}' keyword.", .{mod_name});
-            try self.reportCodeAt(bad.span.start, bad.line, 1248, msg);
+            try self.reportGrammarCodeAt(member_name.span.start, member_name.line, 1248, msg);
+        }
+    }
+
+    fn reportJsOnlyClassMemberModifiers(self: *Parser, mods: ClassModifiers, is_property: bool) ParseError!void {
+        const anchor = mods.first_modifier_token orelse return;
+        if (!self.isJavaScriptSyntaxAt(anchor.span.start)) return;
+        const candidates = [_]?Token{
+            mods.const_token,
+            mods.accessibility_token,
+            mods.readonly_token,
+            mods.declare_token,
+            mods.abstract_token,
+            mods.override_token,
+            if (is_property) mods.invalid_class_element_modifier else null,
+            if (is_property) mods.async_token else null,
+        };
+        for (candidates) |candidate| {
+            const modifier = candidate orelse continue;
+            const name = self.source[modifier.span.start..modifier.span.end];
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "The '{s}' modifier can only be used in TypeScript files.",
+                .{name},
+            );
+            try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 8009, msg);
         }
     }
 
@@ -9300,26 +9430,16 @@ pub const Parser = struct {
         self.in_export_declaration = true;
         defer self.in_export_declaration = old_in_export_declaration;
         const decl = try self.parseStatement();
-        // TS1211: `export class { … }` without a name AND without the
-        // `default` modifier. Class expressions are exempt (statement
-        // dispatch only reaches here for declaration position). Anchor
-        // at the `export` keyword with the keyword's span (6 chars).
-        // Mirrors `exportClassWithoutName.ts(1,1)`. We can extract the
-        // class node from a wrapping export-declaration that produced
-        // `addExport`, but here the parsed `decl` IS the class itself
-        // (parseStatement returns the class declaration directly when
-        // we passed through the regular `export <decl>` path).
-        if (self.hir.kindOf(decl) == .class_decl) {
-            const class_payload = hir_mod.classOf(self.hir, decl);
-            if (class_payload.name == hir_mod.none_node_id) {
-                try self.reportCodeAtWithSpan(
-                    start.span.start,
-                    start.line,
-                    start.span.end - start.span.start,
-                    1211,
-                    "A class declaration without the 'default' modifier must have a name.",
-                );
-            }
+        if (self.hir.kindOf(decl) == .class_decl and
+            hir_mod.classOf(self.hir, decl).name == hir_mod.none_node_id)
+        {
+            try self.reportGrammarCodeAtWithSpan(
+                start.span.start,
+                start.line,
+                start.span.end - start.span.start,
+                1211,
+                "A class declaration without the 'default' modifier must have a name.",
+            );
         }
         const end_pos = self.hir.spanOf(decl).end;
         return try self.builder.addExport(
@@ -9632,6 +9752,18 @@ pub const Parser = struct {
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // let/const/var
+        if ((start.kind == .kw_let or start.kind == .kw_const) and
+            self.unbraced_statement_block_depth != null and
+            self.labeled_declaration_statement_depth != self.nested_statement_depth)
+        {
+            const name = self.source[start.span.start..start.span.end];
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' declarations can only be declared inside a block.",
+                .{name},
+            );
+            try self.reportGrammarCodeAt(start.span.start, start.line, 1156, message);
+        }
         if (self.isAmbientContextAt(start.span.start) and
             self.block_depth == 0 and
             self.namespace_depth == 0 and
@@ -9704,6 +9836,11 @@ pub const Parser = struct {
             try self.reportInvalidStrictName(name_tok);
             const diag_count_before_reserved = self.diagnostics.items.len;
             try self.reportInvalidFutureReservedName(name_tok);
+            if ((start.kind == .kw_let or start.kind == .kw_const) and
+                self.tokenTextEquals(name_tok, "let"))
+            {
+                try self.reportGrammarCodeAt(name_tok.span.start, name_tok.line, 2480, "'let' is not allowed to be used as a name in 'let' or 'const' declarations.");
+            }
             if (start.kind == .kw_var and
                 name_tok.kind == .kw_let and
                 self.diagnostics.items.len > diag_count_before_reserved and
@@ -9931,11 +10068,11 @@ pub const Parser = struct {
             } else break;
             if (comma_tok) |separator| {
                 if (self.peek().kind == .semicolon or self.peek().kind == .eof) {
-                    try self.reportCodeAt(separator.span.start, separator.line, 1009, "Trailing comma not allowed.");
+                    try self.reportGrammarCodeAt(separator.span.start, separator.line, 1009, "Trailing comma not allowed.");
                     break;
                 }
                 if (self.peek().kind == .kw_return and self.peek().flags.preceded_by_newline) {
-                    try self.reportCodeAt(separator.span.start, separator.line, 1009, "Trailing comma not allowed.");
+                    try self.reportGrammarCodeAt(separator.span.start, separator.line, 1009, "Trailing comma not allowed.");
                     break;
                 }
                 if (self.peek().kind == .string_literal or self.peek().kind == .number_literal) {
@@ -18288,6 +18425,22 @@ pub const Parser = struct {
             .kw_new => {
                 if (self.peekAt(1).kind == .dot and
                     (self.peekAt(2).kind == .identifier or self.peekAt(2).kind.isContextualKeyword()) and
+                    !self.tokenTextEquals(self.peekAt(2), "target"))
+                {
+                    const new_tok = self.advance();
+                    const prop = self.peekAt(1);
+                    const prop_text = self.source[prop.span.start..prop.span.end];
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' is not a valid meta-property for keyword 'new'. Did you mean 'target'?",
+                        .{prop_text},
+                    );
+                    try self.reportGrammarCodeAt(prop.span.start, prop.line, 17012, msg);
+                    const new_id = self.interner.intern("new") catch return error.OutOfMemory;
+                    return try self.builder.addIdentifier(tokenSpan(new_tok), new_id);
+                }
+                if (self.peekAt(1).kind == .dot and
+                    (self.peekAt(2).kind == .identifier or self.peekAt(2).kind.isContextualKeyword()) and
                     self.tokenTextEquals(self.peekAt(2), "target"))
                 {
                     const new_tok = self.advance();
@@ -19577,7 +19730,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(colon.span.start, colon.line, 1136, "Property assignment expected.");
                 continue;
             }
-            const prop_start = self.peek();
+            var prop_start = self.peek();
             // A declaration-looking `class C {}` is not an object-literal
             // method. TypeScript recovers `class` as a property name whose
             // missing value is the identifier `C`, then leaves the following
@@ -19610,6 +19763,28 @@ pub const Parser = struct {
                     );
                 }
                 continue;
+            }
+            if ((self.peek().kind == .kw_export or self.peek().kind == .kw_static) and
+                (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword()))
+            {
+                const after_name = self.peekAt(2).kind;
+                if (after_name == .colon or after_name == .equal or
+                    after_name == .open_paren or after_name == .less_than or
+                    after_name == .question or after_name == .bang)
+                {
+                    const modifier = self.advance();
+                    const name = self.source[modifier.span.start..modifier.span.end];
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier cannot be used here.",
+                        .{name},
+                    );
+                    try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1042, msg);
+                    if (modifier.kind == .kw_static) {
+                        try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1184, "Modifiers cannot appear here.");
+                    }
+                    prop_start = self.peek();
+                }
             }
             var method_is_async = false;
             if (self.peek().kind == .kw_async) {
@@ -19938,8 +20113,10 @@ pub const Parser = struct {
                 const bang_tok = self.advance();
                 try self.reportCodeAt(bang_tok.span.start, bang_tok.line, 1255, "A definite assignment assertion '!' is not permitted in this context.");
             }
+            var optional_object_member_token: ?Token = null;
             if (!is_computed and self.peek().kind == .question) {
                 const question_tok = self.advance();
+                optional_object_member_token = question_tok;
                 try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
             }
             var recovered_missing_colon_value = false;
@@ -20070,6 +20247,16 @@ pub const Parser = struct {
                     },
                 );
                 is_method = true;
+                if (optional_object_member_token) |question_tok| {
+                    if (self.isJavaScriptSyntaxAt(question_tok.span.start)) {
+                        try self.reportGrammarCodeAt(
+                            question_tok.span.start,
+                            question_tok.line,
+                            8009,
+                            "The '?' modifier can only be used in TypeScript files.",
+                        );
+                    }
+                }
             } else if (can_be_shorthand_property) {
                 // Shorthand property: `{ foo }` — value mirrors the
                 // key. With trailing `= expr` it's the
@@ -21325,7 +21512,7 @@ test "parser: TS1248 fires for const keyword on class field" {
         if (d.code == 1248) {
             count += 1;
             try T.expectEqualStrings("A class member cannot have the 'const' keyword.", d.message);
-            try T.expect(std.mem.eql(u8, s.parser.source[d.pos .. d.pos + 5], "const"));
+            try T.expect(s.parser.source[d.pos] == 'H' or s.parser.source[d.pos] == 'a');
         }
     }
     try T.expectEqual(@as(u32, 2), count);
@@ -29251,6 +29438,7 @@ test "parser: empty and trailing variable declaration lists use upstream diagnos
     try T.expectEqual(@as(usize, 1), trailing.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1009), trailing.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 5), trailing.parser.diagnostics.items[0].pos);
+    try T.expect(!diagnosticIsSyntacticParseError(trailing.parser.diagnostics.items[0]));
 }
 
 test "parser: class index signature missing separator reports TS1005" {
@@ -32837,5 +33025,86 @@ test "parser: unterminated generic recovery preserves malformed ambient signatur
     try T.expectEqual(@as(u32, 0), countDiag(s, 1434));
     for (s.parser.diagnostics.items) |d| {
         try T.expect(!std.mem.eql(u8, d.message, "'}' expected."));
+    }
+}
+
+test "parser: recovered JavaScript modifiers retain grammar diagnostics" {
+    const src =
+        \\// @filename: recovered.js
+        \\class C {
+        \\    const field = 1
+        \\    const method() {}
+        \\    export exportedField = 1
+        \\    export exportedMethod() {}
+        \\    async asyncMethodField = 1
+        \\    async async duplicateAsync() {}
+        \\    get missing();
+        \\}
+        \\class {}
+        \\function staticParam(static x) {}
+        \\function exportParam(export x) {}
+        \\async export function ordered() {}
+        \\async async function duplicateTopLevel() {}
+        \\async class InvalidClass {}
+        \\async const invalidConst = 1
+        \\async import "pkg"
+        \\async export { InvalidClass }
+        \\const objectMembers = {
+        \\    export recovered: 1,
+        \\    static method() {},
+        \\    optional?() {},
+        \\}
+        \\function nested() { static function inner() {} }
+        \\if (true) let blockOnly = 1
+        \\if (true) const blockOnlyConst = 1
+        \\let let = 1
+        \\new.targe
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 5), countDiag(s, 8009));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1248));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1031));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1030));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1090));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 8012));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1029));
+    try T.expectEqual(@as(u32, 7), countDiag(s, 1042));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1184));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1162));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1156));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2480));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 17012));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1109));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1211));
+
+    var saw_field_anchor = false;
+    var saw_method_anchor = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1248) continue;
+        if (d.pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "field =").?))) saw_field_anchor = true;
+        if (d.pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "method()").?))) saw_method_anchor = true;
+    }
+    try T.expect(saw_field_anchor);
+    try T.expect(saw_method_anchor);
+}
+
+test "parser: accessor grammar errors do not suppress outside private names" {
+    var s = try newTestSetup(
+        \\// @filename: grammar.js
+        \\class C { get missing(); }
+        \\#outside
+        \\export {};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 18016));
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(!diagnosticIsSyntacticParseError(d));
     }
 }
