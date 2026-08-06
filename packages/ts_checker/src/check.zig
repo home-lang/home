@@ -114631,9 +114631,13 @@ pub const Checker = struct {
                     const pid = hir_mod.identifierOf(self.hir, pp.name);
                     considerCandidate(name_str, self.string_interner.get(pid.name), true, false, in_type_position, &best);
                 }
-            } else if (k == .block_stmt) {
-                const stmts = hir_mod.blockStmts(self.hir, cur);
-                for (stmts) |s| {
+            } else if (k == .block_stmt or k == .namespace_decl) {
+                const stmts = if (k == .block_stmt)
+                    hir_mod.blockStmts(self.hir, cur)
+                else
+                    hir_mod.namespaceBody(self.hir, cur);
+                for (stmts) |raw| {
+                    const s = self.unwrapExportDecl(raw);
                     const sk = self.hir.kindOf(s);
                     if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, s);
@@ -114647,6 +114651,9 @@ pub const Checker = struct {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
                             considerCandidate(name_str, self.string_interner.get(fid.name), true, true, in_type_position, &best);
                         }
+                    } else if (sk == .class_decl or sk == .class_expr or sk == .enum_decl or sk == .namespace_decl) {
+                        const decl_name = self.declarationName(s) orelse continue;
+                        considerCandidate(name_str, self.string_interner.get(decl_name), false, false, in_type_position, &best);
                     }
                 }
             }
@@ -222642,6 +222649,24 @@ test "checker: skipped parser tokens retain semantic diagnostics" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_return_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: unresolved namespace-local values suggest later classes" {
+    const s = try newSetup(
+        \\namespace Harness {
+        \\    export const path = TypeScript.filePath;
+        \\    export class TypeScriptLS {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.cannot_find_name_did_you_mean,
+        "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
+    ));
 }
 
 test "checker: malformed signatures retain primitive type-only value diagnostics" {
