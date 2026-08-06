@@ -11333,6 +11333,26 @@ pub const Checker = struct {
         return src[span.start..span.end];
     }
 
+    fn nodeIsInsideUnsupportedWithBody(self: *Checker, node: NodeId) bool {
+        var child = node;
+        var parent = self.hir.parentOf(node);
+        while (parent != hir_mod.none_node_id) : ({
+            child = parent;
+            parent = self.hir.parentOf(parent);
+        }) {
+            if (self.hir.kindOf(parent) != .block_stmt) continue;
+            const text = self.nodeSourceTextOrEmpty(parent);
+            var start: usize = 0;
+            while (start < text.len and
+                (text[start] == ' ' or text[start] == '\t' or text[start] == '\r' or text[start] == '\n')) : (start += 1)
+            {}
+            if (!std.mem.startsWith(u8, text[start..], "with")) continue;
+            const stmts = hir_mod.blockStmts(self.hir, parent);
+            return stmts.len == 2 and stmts[1] == child;
+        }
+        return false;
+    }
+
     fn interfaceMembersMerge(self: *Checker, first: NodeId, current: NodeId) CheckError!bool {
         const a_members = hir_mod.interfaceMembers(self.hir, first);
         const b_members = hir_mod.interfaceMembers(self.hir, current);
@@ -115361,6 +115381,11 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) !void {
         const name_str = self.string_interner.get(name);
+        // The parser retains an unsupported `with` as a wrapper block whose
+        // second child is the body. Names in that body are dynamically looked
+        // up and therefore have type `any`, even though TS2410 is still owed
+        // for the statement itself.
+        if (self.nodeIsInsideUnsupportedWithBody(node)) return;
         if (self.hir.kindOf(node) == .identifier and
             self.jsLikeSectionIsExternalModule(node) and
             self.hasUmdNamespaceExport(name))
@@ -173396,6 +173421,20 @@ test "checker: unsupported with body suppresses redundant top-level return" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.return_outside_function);
     }
+}
+
+test "checker: unsupported with body resolves names dynamically" {
+    const s = try newSetup(
+        \\var x = 12;
+        \\with (x) {
+        \\  name = "twelve";
+        \\  id = 12;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
 }
 
 test "checker: async function with statements report TS1300 on outer lowered blocks" {
