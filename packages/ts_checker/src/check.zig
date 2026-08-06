@@ -154439,6 +154439,7 @@ pub const Checker = struct {
     /// `Object is possibly ÃÂ¢ÃÂÃÂ¦` form. Mirrors tsc's exact messages so
     /// `.errors.txt` baselines line up.
     fn reportPossiblyNullishMember(self: *Checker, obj_node: NodeId, obj_t: TypeId) !void {
+        if (self.identifierIsNonNullishByEnclosingWhileAssignment(obj_node)) return;
         const kind = self.nullishKindOf(obj_t);
         const suffix: []const u8 = switch (kind) {
             .only_null => "'null'",
@@ -154504,6 +154505,33 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    fn identifierIsNonNullishByEnclosingWhileAssignment(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .while_stmt) continue;
+            const loop = hir_mod.whileOf(self.hir, cur);
+            if (!self.nodeHasAncestor(node, loop.body)) continue;
+            if (self.hir.kindOf(loop.cond) != .binary_op) return false;
+            const comparison = hir_mod.binopOf(self.hir, loop.cond);
+            if (comparison.op != .neq) return false;
+            const assignment_node: NodeId = if (self.nodeIsNullLiteralish(comparison.rhs) or
+                self.nodeIsUndefinedLiteralish(comparison.rhs))
+                comparison.lhs
+            else if (self.nodeIsNullLiteralish(comparison.lhs) or
+                self.nodeIsUndefinedLiteralish(comparison.lhs))
+                comparison.rhs
+            else
+                return false;
+            if (self.hir.kindOf(assignment_node) != .assignment) return false;
+            const assignment = hir_mod.assignmentOf(self.hir, assignment_node);
+            if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) return false;
+            return hir_mod.identifierOf(self.hir, assignment.target).name == name;
+        }
+        return false;
     }
 
     fn possiblyNullishMemberAnchorPos(self: *Checker, obj_node: NodeId) ?u32 {
@@ -161508,6 +161536,21 @@ test "checker: nullish assignment comparison replaces uninitialized target flow"
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+}
+
+test "checker: loose assignment guard survives unresolved loop rhs recovery" {
+    const s = try newSetup(
+        \\var match;
+        \\while ((match = missing.exec("xxx")) != null) {
+        \\    match[1];
+        \\    match[2];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
 
