@@ -61058,6 +61058,7 @@ pub const Checker = struct {
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
         var has_readonly_index = false;
+        var forward_ctor_sig: ?TypeId = null;
 
         var forward_parent_t: ?TypeId = null;
         if (c.extends != hir_mod.none_node_id) {
@@ -61132,6 +61133,7 @@ pub const Checker = struct {
                 .fn_decl, .fn_expr, .arrow_fn => {
                     const fp = hir_mod.fnDeclOf(self.hir, m);
                     if (fp.flags.is_constructor) {
+                        forward_ctor_sig = try self.preRegisterFunctionSignature(m);
                         for (hir_mod.fnParams(self.hir, m)) |param_node| {
                             if (self.hir.kindOf(param_node) != .parameter) continue;
                             const parameter = hir_mod.parameterOf(self.hir, param_node);
@@ -61165,7 +61167,7 @@ pub const Checker = struct {
                         continue;
                     }
                     const member_name = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
-                    const sig = self.interner.internSignature(&.{}, types.Primitive.any, false) catch return error.OutOfMemory;
+                    const sig = try self.preRegisterFunctionSignature(m);
                     const member: types.ObjectMember = .{
                         .name = member_name,
                         .type = sig,
@@ -61199,7 +61201,19 @@ pub const Checker = struct {
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
         const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
         const name_name = self.string_interner.intern("name") catch return error.OutOfMemory;
-        const ctor_sig = self.interner.internSignature(&.{}, instance_t, true) catch return error.OutOfMemory;
+        const ctor_sig = if (forward_ctor_sig) |source_sig| blk: {
+            const signature = self.interner.internSignature(
+                self.interner.signatureParams(source_sig),
+                instance_t,
+                true,
+            ) catch return error.OutOfMemory;
+            if (self.signature_min_args.get(source_sig)) |min_required| {
+                try self.signature_min_args.put(self.gpa, signature, min_required);
+            }
+            if (self.rest_signatures.contains(source_sig)) try self.rest_signatures.put(self.gpa, signature, {});
+            try self.copySignatureParamNames(signature, source_sig);
+            break :blk signature;
+        } else self.interner.internSignature(&.{}, instance_t, true) catch return error.OutOfMemory;
         try self.appendOrReplaceObjectMember(&static_members, .{
             .name = construct_name,
             .type = ctor_sig,
@@ -61252,6 +61266,42 @@ pub const Checker = struct {
         }
         self.hir.setType(node, instance_t);
         self.hir.setType(c.name, instance_t);
+    }
+
+    fn preRegisterFunctionSignature(self: *Checker, node: NodeId) CheckError!TypeId {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer param_types.deinit(self.gpa);
+        var omittable: std.ArrayListUnmanaged(bool) = .empty;
+        defer omittable.deinit(self.gpa);
+        var has_rest = false;
+        const params = hir_mod.fnParams(self.hir, node);
+        for (params) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            const parameter = hir_mod.parameterOf(self.hir, param_node);
+            if (self.isThisParameter(param_node)) continue;
+            var param_t: TypeId = if (parameter.type_annotation != hir_mod.none_node_id)
+                (self.lowererLowerWithTypeParams(parameter.type_annotation) catch types.Primitive.any)
+            else
+                types.Primitive.any;
+            const can_omit = parameter.flags.is_optional or parameter.flags.is_rest or
+                parameter.default_value != hir_mod.none_node_id;
+            if (can_omit and !parameter.flags.is_rest) {
+                param_t = self.unionWithUndefined(param_t) catch param_t;
+            }
+            try param_types.append(self.gpa, param_t);
+            try omittable.append(self.gpa, can_omit);
+            has_rest = has_rest or parameter.flags.is_rest;
+        }
+        const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
+            (self.lowererLowerWithTypeParams(f.return_type) catch types.Primitive.any)
+        else
+            types.Primitive.any;
+        const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig, omittable.items);
+        try self.recordSignatureParamNames(sig, params);
+        if (has_rest) try self.rest_signatures.put(self.gpa, sig, {});
+        return sig;
     }
 
     fn checkAccessorPairAccessibility(self: *Checker, members: []const NodeId) CheckError!void {
@@ -222831,12 +222881,14 @@ test "checker: qualified forward class parameters preserve nested callback conte
         \\namespace Harness {
         \\    export namespace Assert {
         \\        export function inspect(result: Compiler.CompilerResult) {
+        \\            result.isErrorAt(1, 2, "message");
         \\            result.errors.forEach(err => err.toString());
         \\        }
         \\    }
         \\    export namespace Compiler {
         \\        export class CompilerResult {
         \\            public errors: CompilerError[];
+        \\            public isErrorAt(line: number, column: number, message: string): boolean { return false; }
         \\        }
         \\        export class CompilerError {
         \\            constructor(public message: string) {}
@@ -222851,6 +222903,7 @@ test "checker: qualified forward class parameters preserve nested callback conte
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
 test "checker: exhaustive branches replace an evolving null initializer" {
