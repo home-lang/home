@@ -72095,7 +72095,22 @@ pub const Checker = struct {
             }
             if (!target_has_spread) {
                 const expected_t = try self.objectBindingPatternExpectedType(target_node, true, false);
-                try self.checkExcessProperties(source_node, expected_t);
+                if (hir_mod.objectLiteralProps(self.hir, target_node).len == 0) {
+                    // An empty object *assignment pattern* is a closed
+                    // freshness target. This differs from a contextual `{}`
+                    // type, which accepts arbitrary properties. Upstream
+                    // therefore reports every RHS key in
+                    // `({} = { x: 1, y: 2 })` as excess while allowing
+                    // `const value: {} = { x: 1 }`.
+                    for (hir_mod.objectLiteralProps(self.hir, source_node)) |source_prop| {
+                        if (self.hir.kindOf(source_prop) != .object_property) continue;
+                        const op = hir_mod.objectPropertyOf(self.hir, source_prop);
+                        const prop_name = self.propertyNameFromKeyNode(op.key) orelse continue;
+                        try self.reportObjectLiteralExcessProperty(source_prop, prop_name, expected_t);
+                    }
+                } else {
+                    try self.checkExcessProperties(source_node, expected_t);
+                }
             }
         }
         var has_dynamic_computed_key = false;
@@ -90338,7 +90353,10 @@ pub const Checker = struct {
                 if (invalid_import_type_arguments) {
                     try self.report(node, TsCodes.invalid_import_call, "This use of 'import' is invalid. 'import()' calls can be written, but they must have parentheses and cannot have type arguments.");
                 }
-                if (self.isDeferredDynamicImportCall(node) and !self.moduleKindIsEsnextOrPreserve()) {
+                if (self.isDeferredDynamicImportCall(node) and
+                    !self.moduleKindIsEsnextOrPreserve() and
+                    !self.diagnosticExists(node, TsCodes.deferred_import_module_kind))
+                {
                     try self.report(node, TsCodes.deferred_import_module_kind, "Deferred imports are only supported when the '--module' flag is set to 'esnext' or 'preserve'.");
                 }
                 const raw_callee_t = try self.checkExpression(c.callee);
@@ -90622,6 +90640,18 @@ pub const Checker = struct {
                         }
                         break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
                     } else types.Primitive.any;
+                    break :blk try self.buildStructuralPromise(import_t);
+                }
+                if (self.isDeferredDynamicImportCall(node)) {
+                    const import_t = if (args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) blk_import: {
+                        const lit = hir_mod.literalStringOf(self.hir, args[0]);
+                        break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
+                    } else types.Primitive.any;
+                    // `import.defer()` has the same promise/namespace
+                    // protocol as `import()`. Preserving that shape gives
+                    // `.then(ns => ...)` a contextual callback parameter
+                    // even when the selected module kind separately owes
+                    // TS18060.
                     break :blk try self.buildStructuralPromise(import_t);
                 }
                 if (reported_possibly_undefined_call and callee_t == types.Primitive.never) {
@@ -91252,8 +91282,8 @@ pub const Checker = struct {
                 const m = hir_mod.memberOf(self.hir, node);
                 _ = try self.reportAmbientConstEnumMemberAccessIfNeeded(node);
                 if (self.memberAccessHasDirectImportKeywordObject(node)) {
-                    try self.checkImportMetaDiagnostics(node);
                     if (self.memberAccessIsImportMeta(node)) {
+                        try self.checkImportMetaDiagnostics(node);
                         break :blk try self.importMetaType(node);
                     }
                     break :blk types.Primitive.any;
@@ -115416,6 +115446,10 @@ pub const Checker = struct {
             return;
         }
         if (std.mem.eql(u8, name_str, "await") and self.nodeIsCallCallee(node)) {
+            // Recovery can temporarily shape `await [x]` as an unresolved
+            // call. At the top level of an external module it is still await
+            // syntax, so it receives no unresolved-name diagnostic.
+            if (!self.nodeIsInsideFunctionLike(node) and self.sourceFileSectionIsModule(node)) return;
             try self.diagnostics.append(self.gpa, .{
                 .node = node,
                 .code = TsCodes.cannot_find_name_async_function_hint,
@@ -160183,6 +160217,19 @@ test "checker: dynamic deferred import under module:commonjs reports TS18060" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.deferred_import_module_kind));
 }
 
+test "checker: deferred dynamic import keeps promise callback context without import-meta errors" {
+    const b = try newBoundSetup(
+        \\// @module: commonjs
+        \\// @noImplicitAny: true
+        \\import.defer("./a").then(ns => ns.foo());
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.deferred_import_module_kind));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.import_meta_bad_module));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.parameter_implicitly_any));
+}
+
 test "checker: dynamic deferred import under module:preserve stays clean of TS18060" {
     const b = try newBoundSetup(
         \\// @module: preserve
@@ -174297,6 +174344,23 @@ test "checker: object-literal excess property skips empty object target" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
+}
+
+test "checker: empty object assignment pattern reports each excess RHS property" {
+    const s = try newSetup("let x = 0; ({} = { x: 1, y: 2 });");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_literal_excess_property));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.object_literal_excess_property,
+        "Object literal may only specify known properties, and 'x' does not exist in type '{}'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.object_literal_excess_property,
+        "Object literal may only specify known properties, and 'y' does not exist in type '{}'.",
+    ));
 }
 
 test "checker: conditional intersection target suppresses object-literal excess properties" {
@@ -202478,6 +202542,8 @@ test "checker: low-target top-level await reports decorator await separately" {
     var count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.top_level_await_target_module) count += 1;
+        try T.expect(d.code != TsCodes.cannot_find_name_async_function_hint);
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
     try T.expectEqual(@as(usize, 2), count);
 }
