@@ -7177,7 +7177,10 @@ pub const Checker = struct {
                     try self.checkForOfIteratorShape(fr.source, src_t);
                     try self.checkIteratorNextSentType(fr.source, src_t, types.Primitive.undefined_t, .for_of);
                 }
-                const raw_elem_t = if (fr.is_await and !sync_iterable and self.isAsyncIterableLikeType(src_t))
+                const raw_elem_t = if (self.hir.kindOf(fr.source) == .array_literal and
+                    hir_mod.arrayLiteralElements(self.hir, fr.source).len == 0)
+                    types.Primitive.never
+                else if (fr.is_await and !sync_iterable and self.isAsyncIterableLikeType(src_t))
                     try self.asyncIterableElementType(src_t)
                 else
                     try self.iterableElementType(src_t);
@@ -17078,6 +17081,40 @@ pub const Checker = struct {
         return (try self.expandoAugmentedNarrowType(name, ref_node, base_t)) orelse base_t;
     }
 
+    const PendingVarBinding = struct {
+        name: hir_mod.StringId,
+        decl: NodeId,
+    };
+
+    fn freshForLoopVarBinding(self: *Checker, for_node: NodeId, target: NodeId) ?PendingVarBinding {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .var_decl) return null;
+        const v = hir_mod.varDeclOf(self.hir, target);
+        if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, v.name).name;
+
+        if (self.enclosingFunctionLike(for_node)) |fn_node| {
+            for (hir_mod.fnParams(self.hir, fn_node)) |param| {
+                if (self.hir.kindOf(param) != .parameter) continue;
+                const p = hir_mod.parameterOf(self.hir, param);
+                if (p.name != hir_mod.none_node_id and self.hir.kindOf(p.name) == .identifier and
+                    hir_mod.identifierOf(self.hir, p.name).name == name) return null;
+            }
+        }
+
+        const parent = self.hir.parentOf(for_node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .block_stmt) {
+            return .{ .name = name, .decl = target };
+        }
+        for (hir_mod.blockStmts(self.hir, parent)) |stmt| {
+            if (stmt == for_node or self.hir.spanOf(stmt).start >= self.hir.spanOf(for_node).start) break;
+            if (self.findVarDeclarationNodeNamed(stmt, name) != null) return null;
+            if (self.declarationName(stmt)) |decl_name| {
+                if (decl_name == name) return null;
+            }
+        }
+        return .{ .name = name, .decl = target };
+    }
+
     fn scanForUsedBeforeAssign(
         self: *Checker,
         node: NodeId,
@@ -17179,6 +17216,7 @@ pub const Checker = struct {
             // emit false positives across control-flow boundaries.
             .for_in_stmt, .for_of_stmt => {
                 const fr = hir_mod.forInOf(self.hir, node);
+                const fresh_var_target = self.freshForLoopVarBinding(node, fr.target);
                 try self.scanExprForUsedBeforeAssign(fr.source, pending);
                 var body_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
                 defer body_pending.deinit(self.gpa);
@@ -17186,6 +17224,9 @@ pub const Checker = struct {
                 self.removeForLoopTargetFromPending(fr.target, &body_pending);
                 try self.removeAssignedTargetFromPending(fr.target, &body_pending);
                 try self.scanForUsedBeforeAssign(fr.body, &body_pending);
+                if (fresh_var_target) |binding| {
+                    try pending.put(self.gpa, binding.name, binding.decl);
+                }
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
@@ -87752,6 +87793,14 @@ pub const Checker = struct {
                             if (self.moduleNamespaceTypeForLocalImport(name, at_node) catch null) |ns_t| return ns_t;
                             return types.Primitive.any;
                         }
+                    } else if (sk == .for_in_stmt or sk == .for_of_stmt) {
+                        const fr = hir_mod.forInOf(self.hir, s);
+                        if (fr.target == hir_mod.none_node_id or self.hir.kindOf(fr.target) != .var_decl) continue;
+                        const v = hir_mod.varDeclOf(self.hir, fr.target);
+                        if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                        if (hir_mod.identifierOf(self.hir, v.name).name != name) continue;
+                        const t = self.hir.typeOf(fr.target);
+                        return if (t == types.Primitive.none) types.Primitive.any else t;
                     }
                 }
             }
@@ -106982,6 +107031,17 @@ pub const Checker = struct {
                 if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
                 if (try self.programExportedClassTypeForImportBinding(decl, id.name, node)) |class_t| return class_t;
                 return types.Primitive.any;
+            }
+        } else if (sk == .for_in_stmt or sk == .for_of_stmt) {
+            const fr = hir_mod.forInOf(self.hir, decl);
+            if (fr.target != hir_mod.none_node_id and self.hir.kindOf(fr.target) == .var_decl) {
+                const v = hir_mod.varDeclOf(self.hir, fr.target);
+                if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and
+                    hir_mod.identifierOf(self.hir, v.name).name == id.name)
+                {
+                    const t = self.hir.typeOf(fr.target);
+                    return if (t == types.Primitive.none) types.Primitive.any else t;
+                }
             }
         }
         return null;
@@ -169174,6 +169234,30 @@ test "checker: for-of destructuring assignment target satisfies outer pending va
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.used_before_assignment);
     }
+}
+
+test "checker: empty for-of preserves never inference and maybe-unassigned var flow" {
+    const s = try newSetup(
+        \\for (var w of []) {
+        \\  var x = w;
+        \\}
+        \\for (var v of []) {
+        \\  var x = [w, v];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'x' must be of type 'never', but here has type 'never[]'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.used_before_assignment,
+        "Variable 'w' is used before being assigned.",
+    ));
 }
 
 test "checker: typed var used in array literal emits TS2454" {
