@@ -72449,6 +72449,75 @@ pub const Checker = struct {
                     incoming;
                 break :blk try self.mergeDefiniteEvolvingAnyFlowTypes(then_t, else_t);
             },
+            .for_stmt => try self.evolvingAnyFlowTypeAfterStatement(hir_mod.forStmtOf(self.hir, stmt).body, name, incoming),
+            .for_in_stmt, .for_of_stmt => try self.evolvingAnyFlowTypeAfterStatement(hir_mod.forInOf(self.hir, stmt).body, name, incoming),
+            .while_stmt => try self.evolvingAnyFlowTypeAfterStatement(hir_mod.whileOf(self.hir, stmt).body, name, incoming),
+            .do_while_stmt => try self.evolvingAnyFlowTypeAfterStatement(hir_mod.doWhileOf(self.hir, stmt).body, name, incoming),
+            else => incoming,
+        };
+    }
+
+    fn evolvingAnyFlowTypeBeforeNode(
+        self: *Checker,
+        container: NodeId,
+        node: NodeId,
+        name: hir_mod.StringId,
+        incoming: ?TypeId,
+    ) CheckError!?TypeId {
+        if (container == hir_mod.none_node_id or container == node) return incoming;
+        const use_span = self.hir.spanOf(node);
+        return switch (self.hir.kindOf(container)) {
+            .block_stmt => blk: {
+                var flow = incoming;
+                for (hir_mod.blockStmts(self.hir, container)) |stmt| {
+                    const span = self.hir.spanOf(stmt);
+                    if (span.start <= use_span.start and use_span.start <= span.end) {
+                        break :blk try self.evolvingAnyFlowTypeBeforeNode(stmt, node, name, flow);
+                    }
+                    if (span.end <= use_span.start) {
+                        flow = try self.evolvingAnyFlowTypeAfterStatement(stmt, name, flow);
+                    }
+                }
+                break :blk flow;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, container);
+                const then_span = self.hir.spanOf(conditional.then_branch);
+                if (then_span.start <= use_span.start and use_span.start <= then_span.end) {
+                    break :blk try self.evolvingAnyFlowTypeBeforeNode(conditional.then_branch, node, name, incoming);
+                }
+                if (conditional.else_branch != hir_mod.none_node_id) {
+                    const else_span = self.hir.spanOf(conditional.else_branch);
+                    if (else_span.start <= use_span.start and use_span.start <= else_span.end) {
+                        break :blk try self.evolvingAnyFlowTypeBeforeNode(conditional.else_branch, node, name, incoming);
+                    }
+                }
+                break :blk incoming;
+            },
+            .for_stmt => blk: {
+                const body = hir_mod.forStmtOf(self.hir, container).body;
+                const backedge = try self.evolvingAnyFlowTypeAfterStatement(body, name, incoming);
+                const loop_entry = try self.mergeDefiniteEvolvingAnyFlowTypes(incoming, backedge);
+                break :blk try self.evolvingAnyFlowTypeBeforeNode(body, node, name, loop_entry orelse backedge);
+            },
+            .for_in_stmt, .for_of_stmt => blk: {
+                const body = hir_mod.forInOf(self.hir, container).body;
+                const backedge = try self.evolvingAnyFlowTypeAfterStatement(body, name, incoming);
+                const loop_entry = try self.mergeDefiniteEvolvingAnyFlowTypes(incoming, backedge);
+                break :blk try self.evolvingAnyFlowTypeBeforeNode(body, node, name, loop_entry orelse backedge);
+            },
+            .while_stmt => blk: {
+                const body = hir_mod.whileOf(self.hir, container).body;
+                const backedge = try self.evolvingAnyFlowTypeAfterStatement(body, name, incoming);
+                const loop_entry = try self.mergeDefiniteEvolvingAnyFlowTypes(incoming, backedge);
+                break :blk try self.evolvingAnyFlowTypeBeforeNode(body, node, name, loop_entry orelse backedge);
+            },
+            .do_while_stmt => blk: {
+                const body = hir_mod.doWhileOf(self.hir, container).body;
+                const backedge = try self.evolvingAnyFlowTypeAfterStatement(body, name, incoming);
+                const loop_entry = try self.mergeDefiniteEvolvingAnyFlowTypes(incoming, backedge);
+                break :blk try self.evolvingAnyFlowTypeBeforeNode(body, node, name, loop_entry orelse backedge);
+            },
             else => incoming,
         };
     }
@@ -72460,34 +72529,166 @@ pub const Checker = struct {
             child = current;
             current = self.hir.parentOf(current);
         }) {
+            const current_kind = self.hir.kindOf(current);
+            if (current_kind == .fn_decl or current_kind == .fn_expr or current_kind == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, current)) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, param);
+                    if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, p.name).name == name) return null;
+                }
+            }
             const statements: []const NodeId = switch (self.hir.kindOf(current)) {
                 .block_stmt => hir_mod.blockStmts(self.hir, current),
                 .namespace_decl => hir_mod.namespaceBody(self.hir, current),
                 else => continue,
             };
-            var declaration_index: ?usize = null;
-            var use_index: ?usize = null;
-            for (statements, 0..) |raw, index| {
-                if (raw == child) use_index = index;
-                const declaration = self.unwrapExportDecl(raw);
-                const kind = self.hir.kindOf(declaration);
-                if (kind != .var_decl and kind != .let_decl) continue;
-                const variable = hir_mod.varDeclOf(self.hir, declaration);
-                if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
-                if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
-                if (!self.varDeclIsUntypedEvolvingAnyCandidate(declaration)) return null;
-                declaration_index = index;
-            }
-            const declaration_pos = declaration_index orelse continue;
-            const use_pos = use_index orelse continue;
-            if (declaration_pos >= use_pos) return null;
-            var flow: ?TypeId = null;
-            for (statements[declaration_pos + 1 .. use_pos]) |stmt| {
-                flow = try self.evolvingAnyFlowTypeAfterStatement(stmt, name, flow);
-            }
-            return flow;
+            if (try self.definiteEvolvingAnyFlowTypeInStatements(node, child, name, statements)) |flow| return flow;
         }
-        return null;
+
+        const use_span = self.hir.spanOf(node);
+        var best_container = hir_mod.none_node_id;
+        var best_width: u32 = std.math.maxInt(u32);
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            const kind = self.hir.kindOf(candidate);
+            if (kind != .block_stmt and kind != .namespace_decl) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start > use_span.start or use_span.end > span.end) continue;
+            const statements = if (kind == .block_stmt)
+                hir_mod.blockStmts(self.hir, candidate)
+            else
+                hir_mod.namespaceBody(self.hir, candidate);
+            if (try self.definiteEvolvingAnyFlowTypeInStatements(node, hir_mod.none_node_id, name, statements)) |_| {
+                const width = span.end - span.start;
+                if (width < best_width) {
+                    best_width = width;
+                    best_container = candidate;
+                }
+            }
+        }
+        if (best_container != hir_mod.none_node_id) {
+            const kind = self.hir.kindOf(best_container);
+            const statements = if (kind == .block_stmt)
+                hir_mod.blockStmts(self.hir, best_container)
+            else
+                hir_mod.namespaceBody(self.hir, best_container);
+            return try self.definiteEvolvingAnyFlowTypeInStatements(node, hir_mod.none_node_id, name, statements);
+        }
+        return try self.recoveredEvolvingAnyFlowTypeAt(node, name);
+    }
+
+    fn recoveredEvolvingAnyFlowTypeAt(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const use_start = self.hir.spanOf(node).start;
+        var declaration = hir_mod.none_node_id;
+        var declaration_start: u32 = 0;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            const kind = self.hir.kindOf(candidate);
+            if (kind != .var_decl and kind != .let_decl) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start >= use_start or span.start < declaration_start) continue;
+            const variable = hir_mod.varDeclOf(self.hir, candidate);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
+            if (!self.varDeclIsUntypedEvolvingAnyCandidate(candidate)) continue;
+            declaration = candidate;
+            declaration_start = span.start;
+        }
+        if (declaration == hir_mod.none_node_id) return null;
+
+        const recovered_variable = hir_mod.varDeclOf(self.hir, declaration);
+        var flow: ?TypeId = if (recovered_variable.init == hir_mod.none_node_id)
+            null
+        else switch (self.hir.kindOf(recovered_variable.init)) {
+            .literal_null => types.Primitive.null_t,
+            .literal_undefined => types.Primitive.undefined_t,
+            else => null,
+        };
+        candidate = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .assignment) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start <= declaration_start or span.start >= use_start) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .identifier or
+                hir_mod.identifierOf(self.hir, assignment.target).name != name)
+            {
+                continue;
+            }
+            if (flow != null and self.nodeContainsIdentifier(assignment.value, name)) continue;
+            const cached_value_t = self.hir.typeOf(assignment.value);
+            const value_t = if (cached_value_t == types.Primitive.none) types.Primitive.any else cached_value_t;
+            flow = if (flow == null)
+                value_t
+            else
+                try self.mergeDefiniteEvolvingAnyFlowTypes(flow, value_t);
+        }
+        if (flow == null) {
+            const source = self.source orelse return null;
+            const name_text = self.string_interner.get(name);
+            var cursor: usize = @intCast(@min(self.hir.spanOf(declaration).end, use_start));
+            const raw_end: usize = @intCast(use_start);
+            const end = @min(raw_end, source.len);
+            while (cursor < end) {
+                const relative = std.mem.indexOf(u8, source[cursor..end], name_text) orelse break;
+                const found = cursor + relative;
+                cursor = found + name_text.len;
+                if (found > 0 and (std.ascii.isAlphanumeric(source[found - 1]) or source[found - 1] == '_' or source[found - 1] == '$')) continue;
+                while (cursor < end and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+                if (cursor < end and source[cursor] == '=' and
+                    (cursor + 1 >= end or (source[cursor + 1] != '=' and source[cursor + 1] != '>')))
+                {
+                    return types.Primitive.any;
+                }
+            }
+        }
+        return flow;
+    }
+
+    fn definiteEvolvingAnyFlowTypeInStatements(
+        self: *Checker,
+        node: NodeId,
+        direct_child: NodeId,
+        name: hir_mod.StringId,
+        statements: []const NodeId,
+    ) CheckError!?TypeId {
+        const use_span = self.hir.spanOf(node);
+        var declaration_index: ?usize = null;
+        var use_index: ?usize = null;
+        for (statements, 0..) |raw, index| {
+            const span = self.hir.spanOf(raw);
+            if (raw == direct_child or
+                (span.start <= use_span.start and use_span.end <= span.end))
+            {
+                use_index = index;
+            }
+            const declaration = self.unwrapExportDecl(raw);
+            const kind = self.hir.kindOf(declaration);
+            if (kind != .var_decl and kind != .let_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, declaration);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
+            if (!self.varDeclIsUntypedEvolvingAnyCandidate(declaration)) return null;
+            declaration_index = index;
+        }
+        const declaration_pos = declaration_index orelse return null;
+        const use_pos = use_index orelse return null;
+        if (declaration_pos >= use_pos) return null;
+        const declaration = self.unwrapExportDecl(statements[declaration_pos]);
+        const variable = hir_mod.varDeclOf(self.hir, declaration);
+        var flow: ?TypeId = if (variable.init == hir_mod.none_node_id)
+            null
+        else switch (self.hir.kindOf(variable.init)) {
+            .literal_null => types.Primitive.null_t,
+            .literal_undefined => types.Primitive.undefined_t,
+            else => null,
+        };
+        for (statements[declaration_pos + 1 .. use_pos]) |stmt| {
+            flow = try self.evolvingAnyFlowTypeAfterStatement(stmt, name, flow);
+        }
+        return try self.evolvingAnyFlowTypeBeforeNode(statements[use_pos], node, name, flow);
     }
 
     fn untypedVarHasLaterDirectAssignment(self: *Checker, decl: NodeId, name: hir_mod.StringId) bool {
