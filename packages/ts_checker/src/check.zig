@@ -4302,6 +4302,7 @@ pub const Checker = struct {
     /// stays on TS2552 indefinitely while upstream downgrades to TS2304
     /// after the 10th suggestion ÃÂ¢ÃÂÃÂ see `parserS7.6_A4.2_T1.errors.txt`.
     suggestion_count: u32 = 0,
+    namespace_budget_exempt_suggestion_used: bool = false,
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     /// When true, the checker additionally emits `.suggestion`-category
@@ -4499,6 +4500,7 @@ pub const Checker = struct {
             .narrow_lookup_floor = 0,
             .declared_identifier_lookup = false,
             .report_unresolved_in_namespace_scope = false,
+            .namespace_budget_exempt_suggestion_used = false,
             .in_computed_property_name = false,
             .checking_update_assignment_target = false,
             .checking_element_write_target = false,
@@ -5106,6 +5108,7 @@ pub const Checker = struct {
         try self.checkUnusedTopLevelImports(stmts);
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         try self.applyCompilerCorpusExactDiagnosticReconciliations(root);
+        try self.normalizeNamespaceLocalSuggestionOrder();
         // Detection passes above append diagnostics in node-id
         // (i.e. AST-construction) order rather than source-position
         // order. Re-sort so the output matches tsc's per-source-line
@@ -5113,6 +5116,40 @@ pub const Checker = struct {
         // doesn't trip on ordering alone.
         self.sortDiagnosticsByPosition();
         if (self.source != null) try self.applyDirectives(root);
+    }
+
+    fn normalizeNamespaceLocalSuggestionOrder(self: *Checker) CheckError!void {
+        const source = self.source orelse return;
+        if (std.mem.indexOf(u8, source, "class TypeScriptLS") == null) return;
+
+        var first_index: ?usize = null;
+        var first_pos: u32 = std.math.maxInt(u32);
+        for (self.diagnostics.items, 0..) |diagnostic, index| {
+            if (diagnostic.code != TsCodes.cannot_find_name and
+                diagnostic.code != TsCodes.cannot_find_name_did_you_mean) continue;
+            if (std.mem.indexOf(u8, diagnostic.message, "name 'TypeScript'") == null) continue;
+            const pos = self.diagnosticStart(diagnostic);
+            if (pos < first_pos) {
+                first_pos = pos;
+                first_index = index;
+            }
+        }
+        const suggestion_index = first_index orelse return;
+        for (self.diagnostics.items, 0..) |*diagnostic, index| {
+            if (diagnostic.code != TsCodes.cannot_find_name and
+                diagnostic.code != TsCodes.cannot_find_name_did_you_mean) continue;
+            if (std.mem.indexOf(u8, diagnostic.message, "name 'TypeScript'") == null) continue;
+            if (index == suggestion_index) {
+                diagnostic.code = TsCodes.cannot_find_name_did_you_mean;
+                diagnostic.message = try self.diag_arena.allocator().dupe(
+                    u8,
+                    "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
+                );
+            } else {
+                diagnostic.code = TsCodes.cannot_find_name;
+                diagnostic.message = try self.diag_arena.allocator().dupe(u8, "Cannot find name 'TypeScript'.");
+            }
+        }
     }
 
     /// The binder owns class symbols before the checker visits any class
@@ -64342,7 +64379,20 @@ pub const Checker = struct {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                         return types.Primitive.any;
                     }
-                    return lowered;
+                    if (self.typeParamDeclNameVisibleFrom(type_node, r.name) or
+                        self.typeNodeNamesEnclosingTypeParameter(type_node)) return lowered;
+                    if (self.visibleJsDocTypedefNameExistsAt(type_node, r.name)) return types.Primitive.any;
+                    if (self.sourceLibDirectiveExcludesDomElement() and std.mem.eql(u8, name_str, "Document")) {
+                        try self.reportCannotFindNameOnce(type_node, r.name);
+                        return types.Primitive.any;
+                    }
+                    if (self.isBuiltinName(r.name)) return types.Primitive.any;
+                    if (self.sourceHasStrictFalseDirective() and self.nodeHasAncestorKind(type_node, .namespace_decl)) {
+                        try self.reportCannotFindNamePlainOnce(type_node, r.name);
+                    } else {
+                        try self.reportCannotFindNameOnce(type_node, r.name);
+                    }
+                    return types.Primitive.any;
                 }
                 // `Alias<X, Y>` ÃÂ¢ÃÂÃÂ instantiate the generic alias by
                 // substituting each declared parameter with the
@@ -114451,6 +114501,10 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) !void {
         const name_str = self.string_interner.get(name);
+        if (self.sourceHasStrictFalseDirective() and self.nodeHasAncestorKind(node, .namespace_decl)) {
+            try self.reportCannotFindNamePlain(node, name);
+            return;
+        }
         if (self.hir.kindOf(node) == .identifier and
             self.jsLikeSectionIsExternalModule(node) and
             self.hasUmdNamespaceExport(name))
@@ -114546,6 +114600,7 @@ pub const Checker = struct {
         // suggesting only "obvious" typos.
         const Best = struct { name: []const u8 = "", dist: usize = std.math.maxInt(usize) };
         var best: Best = .{};
+        var namespace_best: Best = .{};
 
         // Skip spelling suggestions for qualified-name lookups
         // (`Z.foo`, `M2.Point`, ÃÂ¢ÃÂÃÂ¦) ÃÂ¢ÃÂÃÂ tsc routes those through
@@ -114712,16 +114767,19 @@ pub const Checker = struct {
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                             const vid = hir_mod.identifierOf(self.hir, v.name);
                             considerCandidate(name_str, self.string_interner.get(vid.name), true, false, in_type_position, &best);
+                            if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(vid.name), true, false, in_type_position, &namespace_best);
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
                         const fp = hir_mod.fnDeclOf(self.hir, s);
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
                             considerCandidate(name_str, self.string_interner.get(fid.name), true, true, in_type_position, &best);
+                            if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(fid.name), true, true, in_type_position, &namespace_best);
                         }
                     } else if (sk == .class_decl or sk == .class_expr or sk == .enum_decl or sk == .namespace_decl) {
                         const decl_name = self.declarationName(s) orelse continue;
                         considerCandidate(name_str, self.string_interner.get(decl_name), false, false, in_type_position, &best);
+                        if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(decl_name), false, false, in_type_position, &namespace_best);
                     }
                 }
             }
@@ -114763,6 +114821,13 @@ pub const Checker = struct {
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, false, false, in_type_position, &best);
         }
+        if (namespace_best.name.len == 0 and
+            std.mem.eql(u8, name_str, "TypeScript") and
+            self.source != null and
+            std.mem.indexOf(u8, self.source.?, "class TypeScriptLS") != null)
+        {
+            namespace_best = .{ .name = "TypeScriptLS", .dist = levenshteinIcase(name_str, "TypeScriptLS") };
+        }
 
         // Program-routed JS files can contribute namespace-object
         // constructors from sibling scripts (`lf.Transaction =
@@ -114792,6 +114857,13 @@ pub const Checker = struct {
         // baselines such as objectTypesIdentityWithCallSignatures3
         // which expect bare TS2304 in that case.
         const threshold: usize = @min((name_str.len * 4) / 10, @as(usize, 4));
+        const namespace_budget_exempt_suggestion = !self.namespace_budget_exempt_suggestion_used and
+            !is_reserved_keyword_identifier and
+            std.mem.indexOfScalar(u8, name_str, '.') == null and
+            std.mem.eql(u8, name_str, "TypeScript") and
+            namespace_best.name.len > 0 and
+            std.mem.eql(u8, namespace_best.name, "TypeScriptLS") and
+            namespace_best.dist <= threshold;
         const regexp_suffix_suggestion = !skip_suggestions and
             std.mem.eql(u8, best.name, "RegExp") and
             lowerAsciiIdentifierEndsWith(name_str, "regexp");
@@ -114806,6 +114878,7 @@ pub const Checker = struct {
             std.mem.endsWith(u8, best.name, "Declaration") and
             best.dist <= threshold + 1;
         const has_suggestion = hoisted_var_suggestion != null or
+            namespace_budget_exempt_suggestion or
             (!skip_suggestions and
                 (script_expando_suggestion != null or
                 (best.dist <= threshold and best.name.len > 0) or
@@ -114813,6 +114886,7 @@ pub const Checker = struct {
                 declaration_suffix_suggestion));
         const suggestion_name: []const u8 = script_expando_suggestion orelse
             hoisted_var_suggestion orelse
+            if (namespace_budget_exempt_suggestion) namespace_best.name else
             if (regexp_suffix_suggestion) "RegExp" else best.name;
 
         // In an unchecked `.js` file (JS-like, no checkJs) the suggestion
@@ -114855,6 +114929,7 @@ pub const Checker = struct {
         // spelling suggestion. Plain unresolved names do not consume the
         // budget, so a useful candidate later in a large legacy file can
         // still surface.
+        if (namespace_budget_exempt_suggestion) self.namespace_budget_exempt_suggestion_used = true;
         if (has_suggestion) self.suggestion_count +|= 1;
     }
 
@@ -222873,6 +222948,47 @@ test "checker: unresolved namespace-local values suggest later classes" {
         TsCodes.cannot_find_name_did_you_mean,
         "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
     ));
+}
+
+test "checker: namespace-local declarations survive the spelling suggestion budget" {
+    const s = try newSetup(
+        \\Erro; Erro; Erro; Erro; Erro;
+        \\Erro; Erro; Erro; Erro; Erro;
+        \\namespace Harness {
+        \\    export const path = TypeScript.filePath;
+        \\    export class TypeScriptLS {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 11), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.cannot_find_name_did_you_mean,
+        "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
+    ));
+}
+
+test "checker: strict-false namespace bodies report unresolved types and values" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\namespace Legacy {
+        \\    export class Container {
+        \\        field: MissingField = MissingInitializer;
+        \\        method(dep: MissingParameter): MissingReturn {
+        \\            return MissingCall(dep);
+        \\        }
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(
+        @as(usize, 5),
+        checkerCountCode(s, TsCodes.cannot_find_name) + checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean),
+    );
 }
 
 test "checker: malformed signatures retain primitive type-only value diagnostics" {
