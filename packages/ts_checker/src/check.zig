@@ -4293,14 +4293,14 @@ pub const Checker = struct {
     /// in their member types; those nested lookups should see the base
     /// lib shape instead of recursively expanding the same augmentation.
     symbol_global_building: bool = false,
-    /// Per-checker count of spelling-suggestion attempts for unresolved
+    /// Per-checker count of emitted spelling suggestions for unresolved
     /// names. Mirrors tsc's `suggestionCount` / `maximumSuggestionCount`
-    /// gate (`checker.ts`): after 10 attempts, `reportCannotFindName`
+    /// gate (`checker.ts`): after 10 suggestions, `reportCannotFindName`
     /// stops emitting TS2552 ("Did you mean ...?") and falls back to
     /// the plain TS2304 form. Without this cap a fixture with many
     /// references to the same unresolved identifier (e.g. `$ERROR`)
     /// stays on TS2552 indefinitely while upstream downgrades to TS2304
-    /// after the 10th attempt ÃÂ¢ÃÂÃÂ see `parserS7.6_A4.2_T1.errors.txt`.
+    /// after the 10th suggestion ÃÂ¢ÃÂÃÂ see `parserS7.6_A4.2_T1.errors.txt`.
     suggestion_count: u32 = 0,
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
@@ -114485,7 +114485,7 @@ pub const Checker = struct {
         // 'foo'?" hint that crosses the dot. Mirrors fixtures like
         // `typeofAnExportedType` and `typeofANonExportedType`.
         //
-        // Also skip once we've already attempted 10 spelling
+        // Also skip once we've already emitted 10 spelling
         // suggestions in this checker run, matching tsc's
         // `maximumSuggestionCount = 10` cap in `checker.ts`. Without
         // this gate a fixture that references the same unresolved
@@ -114783,12 +114783,11 @@ pub const Checker = struct {
             .message = msg,
             .category = if (unchecked_js) .suggestion else .error_,
         });
-        // Match tsc's `suggestionCount++` at the tail of the
-        // unresolved-name reporting path. Increment regardless of
-        // whether a suggestion was found this time ÃÂ¢ÃÂÃÂ the counter
-        // governs how many spelling-suggestion *attempts* the
-        // checker is willing to make per file.
-        self.suggestion_count +|= 1;
+        // `suggestionCount` limits diagnostics that actually carry a
+        // spelling suggestion. Plain unresolved names do not consume the
+        // budget, so a useful candidate later in a large legacy file can
+        // still surface.
+        if (has_suggestion) self.suggestion_count +|= 1;
     }
 
     fn reportUmdGlobalInExternalModule(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -222669,6 +222668,8 @@ test "checker: skipped parser tokens retain semantic diagnostics" {
 
 test "checker: unresolved namespace-local values suggest later classes" {
     const s = try newSetup(
+        \\missingOne; missingTwo; missingThree; missingFour; missingFive;
+        \\missingSix; missingSeven; missingEight; missingNine; missingTen;
         \\namespace Harness {
         \\    export const path = TypeScript.filePath;
         \\    export class TypeScriptLS {}
@@ -222678,6 +222679,7 @@ test "checker: unresolved namespace-local values suggest later classes" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 10), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.cannot_find_name_did_you_mean,
