@@ -7003,6 +7003,7 @@ pub const Checker = struct {
                     try self.applyTypeGuard(i.cond, false);
                     try self.checkStatement(i.else_branch);
                     self.popNarrowScope();
+                    try self.applyExhaustiveBranchAssignmentFlow(i.then_branch, i.else_branch);
                 } else if (self.statementDefinitelyExits(i.then_branch)) {
                     try self.applyTypeGuard(i.cond, false);
                 } else {
@@ -34218,6 +34219,9 @@ pub const Checker = struct {
         }
 
         for (members, 0..) |m, member_idx| {
+            // Upstream checks every class member through `checkSourceElement`,
+            // which gives each member an independent instantiation budget.
+            self.instantiation_count = 0;
             try self.checkStaticMemberTypeParameterUse(m, type_params);
             switch (self.hir.kindOf(m)) {
                 .index_signature => {
@@ -63701,6 +63705,17 @@ pub const Checker = struct {
         if (self.instantiation_depth >= max_instantiation_depth or
             self.instantiation_count >= max_instantiation_count)
         {
+            // An unresolved symbol has already become tsc's error type and
+            // therefore never enters `instantiateTypeWithAlias`. Home's eager
+            // lowering can encounter that leaf inside a deep class-shape walk;
+            // preserve the name-resolution diagnostic without adding TS2589.
+            if (self.typeNodeHasResolutionError(type_node)) {
+                if (outermost) {
+                    self.type_instantiation_overflow = false;
+                    self.instantiation_anchor_node = hir_mod.none_node_id;
+                }
+                return types.Primitive.any;
+            }
             try self.reportExcessivelyDeepTypeInstantiation();
             if (outermost) {
                 self.instantiation_depth = 0;
@@ -63728,6 +63743,14 @@ pub const Checker = struct {
             try self.array_origin_types.put(self.gpa, result, {});
         }
         return result;
+    }
+
+    fn typeNodeHasResolutionError(self: *Checker, type_node: NodeId) bool {
+        return self.diagnosticExists(type_node, TsCodes.cannot_find_name) or
+            self.diagnosticExists(type_node, TsCodes.cannot_find_name_did_you_mean) or
+            self.diagnosticExists(type_node, TsCodes.cannot_find_namespace) or
+            self.diagnosticExists(type_node, TsCodes.cannot_find_namespace_did_you_mean) or
+            self.diagnosticExists(type_node, TsCodes.namespace_used_as_type);
     }
 
     fn typeNodeHasArraySyntax(self: *Checker, type_node: NodeId) bool {
@@ -88892,6 +88915,11 @@ pub const Checker = struct {
 
     /// in the HIR's types column.
     pub fn checkExpression(self: *Checker, node: NodeId) CheckError!TypeId {
+        // tsc starts a fresh instantiation-work budget for each expression.
+        // Depth remains independent, so recursive type expansion still trips
+        // the TS2589 depth guard while unrelated expressions cannot exhaust
+        // one another's count budget.
+        self.instantiation_count = 0;
         // The native stack overflows around ~290 nested `checkExpression`
         // frames (this function has a very large frame; deeply-nested call
         // chains `f()()()…`, cast chains `(x as T)…`, and object-literal
@@ -103529,6 +103557,119 @@ pub const Checker = struct {
         }
     }
 
+    fn applyExhaustiveBranchAssignmentFlow(
+        self: *Checker,
+        then_branch: NodeId,
+        else_branch: NodeId,
+    ) !void {
+        const name = self.lastExhaustiveAssignmentCandidate(then_branch) orelse return;
+        const then_t = (try self.definiteNonNullAssignmentType(then_branch, name)) orelse return;
+        const else_t = (try self.definiteNonNullAssignmentType(else_branch, name)) orelse return;
+        const joined = if (then_t == else_t)
+            then_t
+        else if (then_t == types.Primitive.any or else_t == types.Primitive.any)
+            types.Primitive.any
+        else if (then_t == types.Primitive.unknown or else_t == types.Primitive.unknown)
+            types.Primitive.unknown
+        else
+            try self.interner.internUnion(&.{ then_t, else_t });
+        try self.recordNarrow(name, joined);
+    }
+
+    fn lastExhaustiveAssignmentCandidate(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        return switch (self.hir.kindOf(node)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (self.hir.kindOf(assignment.target) != .identifier) break :blk null;
+                break :blk hir_mod.identifierOf(self.hir, assignment.target).name;
+            },
+            .block_stmt => blk: {
+                const statements = hir_mod.blockStmts(self.hir, node);
+                var index = statements.len;
+                while (index > 0) {
+                    index -= 1;
+                    if (self.lastExhaustiveAssignmentCandidate(statements[index])) |name| break :blk name;
+                }
+                break :blk null;
+            },
+            .if_stmt => blk: {
+                const statement = hir_mod.ifOf(self.hir, node);
+                if (statement.else_branch == hir_mod.none_node_id) break :blk null;
+                const then_name = self.lastExhaustiveAssignmentCandidate(statement.then_branch) orelse break :blk null;
+                const else_name = self.lastExhaustiveAssignmentCandidate(statement.else_branch) orelse break :blk null;
+                break :blk if (then_name == else_name) then_name else null;
+            },
+            else => null,
+        };
+    }
+
+    fn statementMayAssignIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                break :blk self.hir.kindOf(assignment.target) == .identifier and
+                    hir_mod.identifierOf(self.hir, assignment.target).name == name;
+            },
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |statement| {
+                    if (self.statementMayAssignIdentifier(statement, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .if_stmt => blk: {
+                const statement = hir_mod.ifOf(self.hir, node);
+                break :blk self.statementMayAssignIdentifier(statement.then_branch, name) or
+                    (statement.else_branch != hir_mod.none_node_id and
+                        self.statementMayAssignIdentifier(statement.else_branch, name));
+            },
+            else => false,
+        };
+    }
+
+    fn definiteNonNullAssignmentType(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) !?TypeId {
+        return switch (self.hir.kindOf(node)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (self.hir.kindOf(assignment.target) != .identifier or
+                    hir_mod.identifierOf(self.hir, assignment.target).name != name)
+                {
+                    break :blk null;
+                }
+                const value_kind = self.hir.kindOf(assignment.value);
+                if (value_kind == .literal_null or value_kind == .literal_undefined) break :blk null;
+                const value_t = self.hir.typeOf(assignment.value);
+                if (value_t == types.Primitive.none or self.typeIsPossiblyNullishStrict(value_t)) break :blk null;
+                break :blk value_t;
+            },
+            .block_stmt => blk: {
+                const statements = hir_mod.blockStmts(self.hir, node);
+                var index = statements.len;
+                while (index > 0) {
+                    index -= 1;
+                    const statement = statements[index];
+                    if (!self.statementMayAssignIdentifier(statement, name)) continue;
+                    break :blk try self.definiteNonNullAssignmentType(statement, name);
+                }
+                break :blk null;
+            },
+            .if_stmt => blk: {
+                const statement = hir_mod.ifOf(self.hir, node);
+                if (statement.else_branch == hir_mod.none_node_id) break :blk null;
+                const then_t = (try self.definiteNonNullAssignmentType(statement.then_branch, name)) orelse break :blk null;
+                const else_t = (try self.definiteNonNullAssignmentType(statement.else_branch, name)) orelse break :blk null;
+                if (then_t == else_t) break :blk then_t;
+                if (then_t == types.Primitive.any or else_t == types.Primitive.any) break :blk types.Primitive.any;
+                if (then_t == types.Primitive.unknown or else_t == types.Primitive.unknown) break :blk types.Primitive.unknown;
+                break :blk try self.interner.internUnion(&.{ then_t, else_t });
+            },
+            else => null,
+        };
+    }
+
     const NullishGuardKind = enum { null_only, undefined_only, null_or_undefined };
 
     const NullishGuard = struct {
@@ -115102,10 +115243,6 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) !void {
         const name_str = self.string_interner.get(name);
-        if (self.sourceHasStrictFalseDirective() and self.nodeHasAncestorKind(node, .namespace_decl)) {
-            try self.reportCannotFindNamePlain(node, name);
-            return;
-        }
         if (self.hir.kindOf(node) == .identifier and
             self.jsLikeSectionIsExternalModule(node) and
             self.hasUmdNamespaceExport(name))
@@ -115159,6 +115296,11 @@ pub const Checker = struct {
                 .code = TsCodes.type_only_used_as_value,
                 .message = msg,
             });
+            return;
+        }
+        if (self.sourceHasStrictFalseDirective() and self.nodeHasAncestorKind(node, .namespace_decl)) {
+            try self.reportCannotFindNamePlain(node, name);
+            self.suggestion_count +|= 1;
             return;
         }
         // tsc's spelling-suggestion pass DOES surface `await` ÃÂ¢ÃÂÃÂ
@@ -115526,12 +115668,11 @@ pub const Checker = struct {
             .message = msg,
             .category = if (unchecked_js) .suggestion else .error_,
         });
-        // `suggestionCount` limits diagnostics that actually carry a
-        // spelling suggestion. Plain unresolved names do not consume the
-        // budget, so a useful candidate later in a large legacy file can
-        // still surface.
+        // Upstream increments `suggestionCount` after every unresolved-name
+        // report, including the plain TS2304 fallback. Once ten misses have
+        // been considered, later names skip spelling lookup entirely.
         if (namespace_budget_exempt_suggestion) self.namespace_budget_exempt_suggestion_used = true;
-        if (has_suggestion) self.suggestion_count +|= 1;
+        self.suggestion_count +|= 1;
     }
 
     fn reportUmdGlobalInExternalModule(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -218655,6 +218796,33 @@ test "checker: legitimately deep finite generic does not emit spurious TS2589" {
     try T.expect(checkerCountCode(s, TsCodes.type_instantiation_excessively_deep) == 0);
 }
 
+test "checker: independent expressions reset the instantiation count budget" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const decl = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const init = hir_mod.varDeclOf(&s.hir, decl).init;
+
+    s.checker.instantiation_count = Checker.max_instantiation_count;
+    try T.expectEqual(types.Primitive.number_t, try s.checker.checkExpression(init));
+    try T.expectEqual(@as(u32, 0), s.checker.instantiation_count);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+}
+
+test "checker: unresolved type leaves do not add TS2589 at the depth limit" {
+    const s = try newSetup("function f(value: MissingType) {}");
+    defer destroySetup(s);
+    const fn_node = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const param_node = hir_mod.fnParams(&s.hir, fn_node)[0];
+    const type_node = hir_mod.parameterOf(&s.hir, param_node).type_annotation;
+
+    try s.checker.reportUnresolvedBodylessSignatureTypeRefs(type_node, &.{});
+    s.checker.instantiation_depth = Checker.max_instantiation_depth;
+    _ = try s.checker.lowererLowerWithTypeParams(type_node);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+}
+
 test "checker: TS2589 code constant matches upstream diagnostic number" {
     try T.expectEqual(@as(u32, 2589), TsCodes.type_instantiation_excessively_deep);
 }
@@ -223621,6 +223789,43 @@ test "checker: namespace-local declarations survive the spelling suggestion budg
         TsCodes.cannot_find_name_did_you_mean,
         "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
     ));
+}
+
+test "checker: plain unresolved names consume the spelling suggestion budget" {
+    const s = try newSetup(
+        \\qzxvOne; qzxvTwo; qzxvThree; qzxvFour; qzxvFive;
+        \\qzxvSix; qzxvSeven; qzxvEight; qzxvNine; qzxvTen;
+        \\$ERROR();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 11), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+}
+
+test "checker: exhaustive branch assignments remove an initial null flow type" {
+    const s = try newSetup(
+        \\function findScope(primary: boolean, nested: boolean) {
+        \\    var scope = null;
+        \\    if (primary) {
+        \\        scope = { findLocal() { return 1; } };
+        \\    } else {
+        \\        if (nested) {
+        \\            scope = { findLocal() { return 2; } };
+        \\        } else {
+        \\            scope = { findLocal() { return 3; } };
+        \\        }
+        \\    }
+        \\    return scope.findLocal();
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_nullish));
 }
 
 test "checker: strict-false namespace bodies report unresolved types and values" {
