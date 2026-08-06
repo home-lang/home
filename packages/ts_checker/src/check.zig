@@ -7091,6 +7091,13 @@ pub const Checker = struct {
                     }
                 }
                 const loop_target_t = try self.forInLoopTargetBindingType(fr.target, src_t, types.Primitive.string_t);
+                // A `var` in a for-in head is a real variable
+                // declaration. Its inferred type participates in hoisted
+                // declaration merging, including the `Extract<keyof T,
+                // string>` specialization used for type-parameter sources.
+                if (self.hir.kindOf(fr.target) == .var_decl) {
+                    try self.checkRepeatedVarDeclaration(fr.target, loop_target_t);
+                }
                 try self.bindForLoopTarget(fr.target, loop_target_t);
                 try self.pushNarrowScope();
                 defer self.popNarrowScope();
@@ -7220,6 +7227,9 @@ pub const Checker = struct {
                             } else {
                                 try self.report(v.name, TsCodes.type_not_array_type, "Type is not an array type.");
                             }
+                        }
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .object_pattern) {
+                            try self.checkObjectBindingPatternAgainstType(v.name, elem_t, true);
                         }
                         if ((self.hir.kindOf(fr.target) == .let_decl or self.hir.kindOf(fr.target) == .const_decl) and
                             v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
@@ -21988,6 +21998,38 @@ pub const Checker = struct {
             // type parameter constrained to an object) stay silent.
             if (!try self.objectSpreadSourceIsValid(container_t)) {
                 _ = try self.reportObjectRestBindingFromNonObject(pattern_node);
+            }
+            const wrapper_name: ?[]const u8 = if (flags.is_number)
+                "Number"
+            else if (flags.is_string)
+                "String"
+            else if (flags.is_boolean)
+                "Boolean"
+            else if (flags.is_bigint)
+                "BigInt"
+            else if (flags.is_symbol)
+                "Symbol"
+            else
+                null;
+            if (wrapper_name) |target_text| {
+                for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+                    if (self.hir.kindOf(e) != .parameter) continue;
+                    const ep = hir_mod.parameterOf(self.hir, e);
+                    if (ep.flags.is_rest or ep.name == hir_mod.none_node_id) continue;
+                    const key_name = (try self.objectBindingElementKeyName(e, ep.name)) orelse continue;
+                    if ((try self.primitivePrototypeMember(container_t, key_name)) != null) continue;
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Property '{s}' does not exist on type '{s}'.",
+                        .{ self.string_interner.get(key_name), target_text },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = ep.name,
+                        .pos = self.objectBindingElementPropertyPosition(e, ep.name),
+                        .code = TsCodes.property_does_not_exist,
+                        .message = msg,
+                    });
+                }
             }
             return;
         }
@@ -92147,6 +92189,21 @@ pub const Checker = struct {
                 }
                 if (try self.maybeReportGenericIndexedWrite(node, obj_t, idx_t)) {
                     break :blk types.Primitive.any;
+                }
+                // Primitive strings expose a numeric indexer whose element
+                // type is `string`. Keep string-key access on the property /
+                // implicit-any path below, but type `text[0]` and
+                // `text[number]` like upstream (including unchecked-index
+                // widening when enabled). An `any` index stays on the
+                // implicit-any path.
+                if (self.typeIsPureStringLike(obj_t) and
+                    !self.typeIsAnyLike(idx_t) and
+                    self.typeMaybeNumberIndexLike(idx_t))
+                {
+                    break :blk try self.optionalChainResult(
+                        self.maybeWidenWithUndefined(types.Primitive.string_t),
+                        element_is_optional_chain,
+                    );
                 }
                 if (self.hir.kindOf(e.index) == .literal_string) {
                     const lit = hir_mod.literalStringOf(self.hir, e.index);
@@ -175334,6 +175391,20 @@ test "checker: for-of element references a typed identifier" {
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
+test "checker: for-of object binding reports missing primitive wrapper properties" {
+    const s = try newSetup(
+        \\for (const { x: a = 0, y: b = 1 } of [2, 3]) {
+        \\  a;
+        \\  b;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'x' does not exist on type 'Number'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'y' does not exist on type 'Number'."));
+}
+
 test "checker: for-of assignment validates existing target against declared type" {
     const s = try newSetup(
         \\let obj: number[];
@@ -175362,6 +175433,47 @@ test "checker: for-in binds the key variable to string" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: for-in var declarations participate in hoisted TS2403 merging" {
+    const s = try newSetup(
+        \\var i: number;
+        \\for (var i in []) {}
+        \\class A {
+        \\  f(): any {
+        \\    for (var x in this.f()) {}
+        \\    for (var x in this) {}
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'i' must be of type 'number', but here has type 'string'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'x' must be of type 'string', but here has type 'Extract<keyof this, string>'.",
+    ));
+}
+
+test "checker: numeric primitive-string indexing remains string in for-in source checks" {
+    const s = try newSetup(
+        \\declare let text: string;
+        \\for (var key in text[23]) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.for_in_right_type));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.for_in_right_type,
+        "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter, but here has type 'string'.",
+    ));
 }
 
 test "checker: for loop initializer variable is visible to condition and update" {
