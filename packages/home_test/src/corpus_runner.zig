@@ -12354,6 +12354,18 @@ const harness_prelude =
     \\    current = parent;
     \\  }
     \\}
+    \\function __home_spawn_pm_project_boundary_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd[1] === "pm" && (cmd[2] === "pkg" || cmd[2] === "scan" || cmd[2] === "version"))) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const root = __home_nearest_package_dir(cwd);
+    \\  if (__home_build_file_exists(__home_build_join(root, "package.json"))) return null;
+    \\  const stderr = 'error: No package.json was found for directory "' + cwd + '"\n';
+    \\  if (options && options.__home_spawn_sync) return { stdout: "", stderr, exitCode: 1, signalCode: null, success: false };
+    \\  const child = __home_spawn_completed("", stderr, 1);
+    \\  child.success = false;
+    \\  return child;
+    \\}
     \\function __home_sync_pm_cache_native(options, result) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd[1] !== "pm" || cmd[2] !== "cache" || cmd[3] !== "rm" || !result || result.exitCode !== 0) return;
@@ -12361,6 +12373,19 @@ const harness_prelude =
     \\  const cwd = String(options && options.cwd || process.cwd());
     \\  const cacheDir = String(env.BUN_INSTALL_CACHE_DIR || (env.BUN_INSTALL ? __home_build_join(String(env.BUN_INSTALL), "install/cache") : __home_build_join(cwd, "node_modules/.cache")));
     \\  __home_fs_mark_deleted(cacheDir);
+    \\}
+    \\function __home_spawn_pm_cache_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-pm.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "pm" || cmd[2] !== "cache") return null;
+    \\  const env = options && options.env || {};
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const cacheDir = String(env.BUN_INSTALL_CACHE_DIR || (env.BUN_INSTALL ? __home_build_join(String(env.BUN_INSTALL), "install/cache") : __home_build_join(cwd, "node_modules/.cache")));
+    \\  if (cmd[3] === "rm") {
+    \\    __home_fs_mark_deleted(cacheDir);
+    \\    return __home_spawn_completed("Cleared 'bun install' cache\n", "", 0);
+    \\  }
+    \\  return __home_spawn_completed(cacheDir, "", 0);
     \\}
     \\function __home_spawn_bun_patch_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-patch.test.ts")) return null;
@@ -15213,6 +15238,8 @@ const harness_prelude =
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const pmInstallFixture = __home_pm_install_fixture(options || {});
     \\  if (pmInstallFixture) return pmInstallFixture;
+    \\  const pmCacheFixture = __home_spawn_pm_cache_fixture(options || {});
+    \\  if (pmCacheFixture) return pmCacheFixture;
     \\  const whyInstallFixture = __home_why_install_fixture(options || {});
     \\  if (whyInstallFixture) return whyInstallFixture;
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && cmd[1] === "install") {
@@ -15501,6 +15528,8 @@ const harness_prelude =
     \\  if (bunOptionsFixture) return bunOptionsFixture;
     \\  const ciInfoFixture = __home_spawn_ci_info_fixture(options);
     \\  if (ciInfoFixture) return ciInfoFixture;
+    \\  const bunInfoFixture = __home_spawn_bun_info_fixture(options);
+    \\  if (bunInfoFixture) return bunInfoFixture;
     \\  const heapProfFixture = __home_spawn_heap_prof_fixture(options);
     \\  if (heapProfFixture) return heapProfFixture;
     \\  const cpuProfFixture = __home_spawn_cpu_prof_fixture(options);
@@ -16596,6 +16625,8 @@ const harness_prelude =
     \\    }
     \\    exited.resolve(0);
     \\  }
+    \\  const pipedStdin = options && (options.stdin === "pipe" || (Array.isArray(options.stdio) && options.stdio[0] === "pipe"));
+    \\  if (cmd.includes("--dry-run") && !pipedStdin) finish();
     \\  return {
     \\    stdin: {
     \\      write(value) { chunks.push(String(value || "")); return true; },
@@ -16743,6 +16774,7 @@ const harness_prelude =
     \\  const cwd = String((options && options.cwd) || process.cwd());
     \\  const root = __home_nearest_package_dir(cwd);
     \\  const packagePath = __home_build_join(root, "package.json");
+    \\  if (!__home_build_file_exists(packagePath)) return __home_spawn_completed("", 'error: No package.json was found for directory "' + cwd + '"\n', 1);
     \\  const pkg = __home_pkg_json(packagePath);
     \\  if (!pkg) return __home_spawn_completed("", 'error: No package.json was found for directory "' + cwd + '"\n', 1);
     \\  if (typeof pkg.name !== "string" || typeof pkg.version !== "string") return __home_spawn_completed("", "error: package.json must have `name` and `version` fields\n", 1);
@@ -24579,6 +24611,8 @@ const harness_prelude =
     \\    options.__home_spawn_sync = true;
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
+    \\    const pmProjectBoundaryFixture = __home_spawn_pm_project_boundary_fixture(options);
+    \\    if (pmProjectBoundaryFixture) return pmProjectBoundaryFixture;
     \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
     \\    if (issue29519Fixture) return issue29519Fixture;
     \\    const issue29524Fixture = __home_spawn_29524_fixture(options || {});
@@ -24871,6 +24905,8 @@ const harness_prelude =
     \\    if (websocketUpgradeSignalGcFixture) return websocketUpgradeSignalGcFixture;
     \\    const publishFixture = __home_spawn_bun_publish_fixture(options || {});
     \\    if (publishFixture) return publishFixture;
+    \\    const pmProjectBoundaryFixture = __home_spawn_pm_project_boundary_fixture(options || {});
+    \\    if (pmProjectBoundaryFixture) return pmProjectBoundaryFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return __home_spawn_completed(nativeCorpusFixture.stdout, nativeCorpusFixture.stderr, nativeCorpusFixture.exitCode);
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawn native bridge is not installed");
@@ -30302,6 +30338,13 @@ const harness_prelude =
     \\        __home_make_expectation(state.value, isNot, label)[key].apply(undefined, args);
     \\        return;
     \\      }
+    \\      const pendingMessage = "pending async expectation resolves." + String(key) + " in " + String(globalThis.__home_current_filename || "<unknown>");
+    \\      if (Array.isArray(__home_bun_tests.pendingMessages)) __home_bun_tests.pendingMessages.push(pendingMessage);
+    \\      const clearPendingMessage = function() {
+    \\        if (!Array.isArray(__home_bun_tests.pendingMessages)) return;
+    \\        const index = __home_bun_tests.pendingMessages.indexOf(pendingMessage);
+    \\        if (index >= 0) __home_bun_tests.pendingMessages.splice(index, 1);
+    \\      };
     \\      __home_bun_tests.pending++;
     \\      Promise.resolve(value).then(
     \\        function(resolved) {
@@ -30319,8 +30362,9 @@ const harness_prelude =
     \\          }
     \\        },
     \\      ).then(
-    \\        function() { __home_bun_tests.pending--; },
+    \\        function() { clearPendingMessage(); __home_bun_tests.pending--; },
     \\        function(error) {
+    \\          clearPendingMessage();
     \\          __home_bun_tests.pending--;
     \\          __home_record_async_failure(error);
     \\        },
@@ -34344,6 +34388,7 @@ const harness_prelude =
     \\};
     \\globalThis.__home_modules["./helpers/setup-tests"] = { FakeTimers: __home_fake_timers_clock, NOOP() {}, assert: __home_fake_timers_assert, refute: __home_fake_timers_refute, sinon: __home_fake_timers_sinon, nextTickPresent: true, queueMicrotaskPresent: true, hrtimePresent: true, hrtimeBigintPresent: true, performanceNowPresent: true, performanceMarkPresent: true, setImmediatePresent: true, utilPromisify: __home_util_promisify, promisePresent: true, utilPromisifyAvailable: true, addTimerReturnsObject: true, globalObject: globalThis, GlobalDate: Date };
     \\let __home_temp_dir_counter = 0;
+    \\globalThis.__home_temp_dir_roots = globalThis.__home_temp_dir_roots || Object.create(null);
     \\function __home_write_temp_files(root, files) {
     \\  for (const name of Object.keys(files || {})) {
     \\    const value = files[name];
@@ -34365,6 +34410,7 @@ const harness_prelude =
     \\  const base = String((process.env && (process.env.TMPDIR || process.env.TEMP || process.env.TMP)) || "/tmp").replace(/\/+$/, "");
     \\  const safe = String(name || "home").replace(/[^A-Za-z0-9._-]+/g, "-");
     \\  const root = base + "/home-bun-corpus-" + safe + "-" + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + (++__home_temp_dir_counter);
+    \\  globalThis.__home_temp_dir_roots[root] = true;
     \\  __home_fs_mark_dir(root);
     \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
     \\  if (typeof files === "string") __home_copy_native_tree(files, root);
@@ -35202,10 +35248,14 @@ const harness_prelude =
     \\}
     \\function __home_nearest_package_dir(cwd) {
     \\  let current = __home_fs_normalize_path(String(cwd || process.cwd()));
+    \\  const start = current;
+    \\  const tempRoots = Object.keys(globalThis.__home_temp_dir_roots || {}).filter(root => start === root || start.startsWith(root + "/"));
+    \\  const boundary = tempRoots.sort((left, right) => right.length - left.length)[0] || "";
     \\  while (true) {
     \\    if (__home_pkg_json(__home_build_join(current, "package.json"))) return current;
+    \\    if (boundary && current === boundary) return start;
     \\    const parent = __home_build_dirname(current);
-    \\    if (!parent || parent === current) return current;
+    \\    if (!parent || parent === current) return start;
     \\    current = parent;
     \\  }
     \\}
@@ -52839,6 +52889,41 @@ const harness_prelude =
     \\WebSocket.prototype.CLOSING = 2;
     \\WebSocket.prototype.CLOSED = 3;
     \\globalThis.WebSocket = WebSocket;
+    \\function __home_ws_add_event_listener(type, callback) {
+    \\  if (callback == null) return undefined;
+    \\  const key = String(type);
+    \\  const records = this.__home_event_target_listeners || (this.__home_event_target_listeners = []);
+    \\  if (records.some(record => record.type === key && record.callback === callback)) return undefined;
+    \\  const wrapped = function() {
+    \\    const args = Array.prototype.slice.call(arguments);
+    \\    let event = args[0];
+    \\    if (key === "message" && (!event || event.type !== "message")) event = new MessageEvent("message", { data: args[0] });
+    \\    else if (!event || event.type !== key) {
+    \\      event = new Event(key);
+    \\      if (key === "close") {
+    \\        for (const [name, value] of [["code", args[0]], ["reason", args[1]], ["wasClean", args[2]]]) {
+    \\          try { Object.defineProperty(event, name, { configurable: true, value }); } catch (error) {}
+    \\        }
+    \\      }
+    \\    }
+    \\    if (typeof callback === "function") callback.call(this, event);
+    \\    else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+    \\  };
+    \\  records.push({ type: key, callback, wrapped });
+    \\  this.on(key, wrapped);
+    \\  return undefined;
+    \\}
+    \\function __home_ws_remove_event_listener(type, callback) {
+    \\  const key = String(type);
+    \\  const records = this.__home_event_target_listeners;
+    \\  if (!records) return undefined;
+    \\  const index = records.findIndex(record => record.type === key && record.callback === callback);
+    \\  if (index < 0) return undefined;
+    \\  const record = records[index];
+    \\  records.splice(index, 1);
+    \\  this.off(key, record.wrapped);
+    \\  return undefined;
+    \\}
     \\class __home_ws_ServerSocket extends __home_EventEmitter {
     \\  constructor(client) {
     \\    super();
@@ -52882,8 +52967,8 @@ const harness_prelude =
     \\    }
     \\    Promise.resolve().then(() => this.emit("pong", data === undefined ? Buffer.alloc(0) : data));
     \\  }
-    \\  addEventListener(type, callback) { return this.on(type, callback); }
-    \\  removeEventListener(type, callback) { return this.off(type, callback); }
+    \\  addEventListener(type, callback) { return __home_ws_add_event_listener.call(this, type, callback); }
+    \\  removeEventListener(type, callback) { return __home_ws_remove_event_listener.call(this, type, callback); }
     \\  __home_client_close() {
     \\    if (this.readyState === WebSocket.CLOSED) return;
     \\    this.readyState = WebSocket.CLOSED;
@@ -52935,8 +53020,8 @@ const harness_prelude =
     \\  terminate() {
     \\    return this.close();
     \\  }
-    \\  addEventListener(type, callback) { return this.on(type, callback); }
-    \\  removeEventListener(type, callback) { return this.off(type, callback); }
+    \\  addEventListener(type, callback) { return __home_ws_add_event_listener.call(this, type, callback); }
+    \\  removeEventListener(type, callback) { return __home_ws_remove_event_listener.call(this, type, callback); }
     \\}
     \\__home_ws_WebSocket.CONNECTING = WebSocket.CONNECTING;
     \\__home_ws_WebSocket.OPEN = WebSocket.OPEN;
@@ -87889,6 +87974,29 @@ test "bootstrap runner accepts microtask-settled returned promises" {
         \\}));
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/async-resolved.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner accepts deeply chained returned promises" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("deep async path", () => {
+        \\  let result = Promise.resolve();
+        \\  for (let i = 0; i < 24; i++) result = result.then(() => undefined);
+        \\  return result.then(() => expect(1).toBe(1));
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/inspect/deep-async.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

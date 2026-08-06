@@ -85,6 +85,7 @@ const NativeBeforeParseContext = struct {
 const NativeBeforeParseArgs = NativePluginABI.OnBeforeParseArguments(NativeBeforeParseContext);
 const NativeBeforeParseResult = NativePluginABI.OnBeforeParseResult(NativeBeforeParseArgs);
 const NativeBeforeParseFn = *const fn (*const NativeBeforeParseArgs, *NativeBeforeParseResult) callconv(.c) void;
+const max_microtask_drain_rounds = 64;
 
 var home_eval_counter: usize = 0;
 var native_parser_log: home_rt.logger.Log = undefined;
@@ -462,7 +463,7 @@ pub const Runtime = struct {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
         var drain_rounds: usize = 0;
-        while (counters.pending != 0 and drain_rounds < 8) : (drain_rounds += 1) {
+        while (counters.pending != 0 and drain_rounds < max_microtask_drain_rounds) : (drain_rounds += 1) {
             const drain_evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
                 allocator,
                 self.engine.currentContext(),
