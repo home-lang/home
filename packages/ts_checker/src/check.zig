@@ -61000,8 +61000,12 @@ pub const Checker = struct {
     /// for subsequent declarations like `var p: typeof p` when an
     /// earlier `var p` has already established the symbol.
     fn priorVarDeclWithSameNameExists(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const direct_scope = self.hir.parentOf(node);
         const hoist_scope = self.enclosingVarDeclScope(node);
-        if (hoist_scope != hir_mod.none_node_id) {
+        if (direct_scope != hir_mod.none_node_id and
+            self.hir.kindOf(direct_scope) != .block_stmt and
+            hoist_scope != hir_mod.none_node_id)
+        {
             const key: VarDeclKey = .{
                 .scope = hoist_scope,
                 .name = name,
@@ -65894,8 +65898,12 @@ pub const Checker = struct {
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
             if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            const direct_scope = self.hir.parentOf(cur);
             const hoist_scope = self.enclosingVarDeclScope(cur);
-            if (hoist_scope != hir_mod.none_node_id) {
+            if (direct_scope != hir_mod.none_node_id and
+                self.hir.kindOf(direct_scope) != .block_stmt and
+                hoist_scope != hir_mod.none_node_id)
+            {
                 const key: VarDeclKey = .{
                     .scope = hoist_scope,
                     .name = name,
@@ -83079,9 +83087,9 @@ pub const Checker = struct {
                     !try self.repeatedVarAssertedInferredTypesCompatible(prior, final_type) and
                     !try self.repeatedVarObjectMembersIdentical(prior, final_type)) break :blk false;
                 if (self.repeatedVarArrayElementMismatch(prior, final_type)) break :blk false;
+                if (self.exactlyOneTypeIsUnion(prior, final_type)) break :blk false;
                 if (try self.repeatedVarObjectMembersIdentical(prior, final_type)) break :blk true;
                 if (self.engine.isIdenticalTo(prior, final_type) catch true) break :blk true;
-                if (self.exactlyOneTypeIsUnion(prior, final_type)) break :blk false;
                 if ((self.engine.isAssignableTo(prior, final_type) catch true) and
                     (self.engine.isAssignableTo(final_type, prior) catch true)) break :blk true;
                 const prior_flags = self.interner.pool.flagsOf(prior);
@@ -83104,6 +83112,8 @@ pub const Checker = struct {
                 // like `var f: typeof g; var g: typeof f;`. See
                 // `recursiveTypesWithTypeof.ts`.
                 if (self.varNameHasSelfReferencedTypeAnnotation(name)) return;
+                const initializer_display = try self.repeatedVarInitializerDisplay(node);
+                const prior_annotation_display = try self.repeatedVarPriorAnnotationDisplay(prior_explicit, prior_annotation, prior);
                 const msg = if (annotation_text_mismatch) |texts|
                     try self.formatSubsequentVarTypeMismatchWithTexts(name, texts.prior, texts.current)
                 else if (self.repeatedVarThisArrayNullishMismatch(prior, final_type))
@@ -83114,7 +83124,12 @@ pub const Checker = struct {
                     )
                 else if (try self.mappedAnnotationDisplayPair(prior_annotation, v.type_annotation)) |texts|
                     try self.formatSubsequentVarTypeMismatchWithTexts(name, texts.prior, texts.current)
-                else if (try self.repeatedVarPriorAnnotationDisplay(prior_explicit, prior_annotation, prior)) |prior_text|
+                else if (initializer_display) |current_text|
+                    if (prior_annotation_display) |prior_text|
+                        try self.formatSubsequentVarTypeMismatchWithTexts(name, prior_text, current_text)
+                    else
+                        try self.formatSubsequentVarTypeMismatchWithCurrentText(name, prior, current_text)
+                else if (prior_annotation_display) |prior_text|
                     if (try self.subsequentVarTypeText(final_type)) |current_text|
                         try self.formatSubsequentVarTypeMismatchWithTexts(name, prior_text, current_text)
                     else
@@ -83211,6 +83226,8 @@ pub const Checker = struct {
 
     fn repeatedVarArrayElementMismatch(self: *Checker, prior: TypeId, current: TypeId) bool {
         if (prior >= self.interner.pool.typeCount() or current >= self.interner.pool.typeCount()) return false;
+        if (self.interner.pool.flagsOf(prior).is_union or self.interner.pool.flagsOf(current).is_union) return false;
+        if (!self.typeIsArrayLikeObject(prior) or !self.typeIsArrayLikeObject(current)) return false;
         const prior_element = self.interner.objectNumberIndex(prior);
         const current_element = self.interner.objectNumberIndex(current);
         return prior_element != types.Primitive.none and
@@ -83487,7 +83504,8 @@ pub const Checker = struct {
         const prior_text_opt = (try self.simpleDiagnosticTypeName(prior)) orelse
             (try self.allocSimpleTypeName(prior)) orelse
             (try self.allocObjectTypeShape(prior));
-        const current_text_opt = (try self.simpleDiagnosticTypeName(current)) orelse
+        const current_text_opt = (try self.reducedRepeatedVarArrayTypeText(current)) orelse
+            (try self.simpleDiagnosticTypeName(current)) orelse
             (try self.allocSimpleTypeName(current)) orelse
             (try self.allocObjectTypeShape(current));
         if (prior_text_opt) |prior_text| {
@@ -83507,12 +83525,82 @@ pub const Checker = struct {
     }
 
     fn subsequentVarTypeText(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (try self.reducedRepeatedVarArrayTypeText(t)) |text| return text;
         if (t >= types.Primitive.first_dynamic and t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_object_type) {
             if (try self.allocObjectTypeShapeForRepeatedVar(t)) |shape| return shape;
         }
         return (try self.simpleDiagnosticTypeName(t)) orelse
             (try self.allocSimpleTypeName(t)) orelse
             (try self.allocObjectTypeShapeForRepeatedVar(t));
+    }
+
+    fn reducedRepeatedVarArrayTypeText(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (!self.typeIsArrayLikeObject(t) or self.actualTupleLength(t) != null) return null;
+        const element = self.interner.objectNumberIndex(t);
+        if (element >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(element).is_union) return null;
+        const reduced = try self.reduceRepeatedVarArrayElementUnion(element);
+        if (reduced == element) return null;
+        const element_text = (try self.allocSimpleTypeName(reduced)) orelse
+            (try self.allocObjectTypeShapeForRepeatedVar(reduced)) orelse return null;
+        const wrap = reduced < self.interner.pool.typeCount() and self.interner.pool.flagsOf(reduced).is_union;
+        return if (wrap)
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "({s})[]", .{element_text})
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}[]", .{element_text});
+    }
+
+    fn reduceRepeatedVarArrayElementUnion(self: *Checker, element: TypeId) CheckError!TypeId {
+        const members = self.interner.unionMembers(element);
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        try kept.appendSlice(self.gpa, members);
+
+        var index = kept.items.len;
+        while (index > 0) {
+            index -= 1;
+            const source = kept.items[index];
+            for (kept.items, 0..) |target, target_index| {
+                if (target_index == index) continue;
+                if (!try self.checkerAssignableTo(source, target)) continue;
+                if (try self.checkerAssignableTo(target, source)) continue;
+                _ = kept.orderedRemove(index);
+                break;
+            }
+        }
+        if (kept.items.len == members.len) return element;
+        if (kept.items.len == 1) return kept.items[0];
+        return self.interner.internUnion(kept.items) catch error.OutOfMemory;
+    }
+
+    fn repeatedVarInitializerDisplay(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        if (self.hir.kindOf(node) != .var_decl) return null;
+        const variable = hir_mod.varDeclOf(self.hir, node);
+        if (variable.init == hir_mod.none_node_id) return null;
+        const name = switch (self.hir.kindOf(variable.init)) {
+            .identifier => blk: {
+                const identifier_name = hir_mod.identifierOf(self.hir, variable.init).name;
+                const path = [_]hir_mod.StringId{identifier_name};
+                if (self.findVisibleNamespaceByPath(variable.init, &path) == null) return null;
+                break :blk identifier_name;
+            },
+            .member_access => blk: {
+                const member = hir_mod.memberOf(self.hir, variable.init);
+                if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return null;
+                const namespace_name = hir_mod.identifierOf(self.hir, member.object).name;
+                const path = [_]hir_mod.StringId{namespace_name};
+                const namespace = self.findVisibleNamespaceByPath(variable.init, &path) orelse return null;
+                const declaration = self.findExportedValueDeclInNamespace(namespace, member.name) orelse return null;
+                const declaration_kind = self.hir.kindOf(declaration);
+                if (declaration_kind != .class_decl and declaration_kind != .class_expr) return null;
+                break :blk member.name;
+            },
+            else => return null,
+        };
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "typeof {s}",
+            .{self.string_interner.get(name)},
+        );
     }
 
     fn repeatedVarPriorAnnotationDisplay(
@@ -83538,7 +83626,7 @@ pub const Checker = struct {
                 }
                 break :blk try self.allocTypeAnnotationDiagnosticName(prior_node, false);
             },
-            .object_type => try self.allocTypeAnnotationDiagnosticName(prior_node, false),
+            .object_type, .typeof_type => try self.allocTypeAnnotationDiagnosticName(prior_node, false),
             else => null,
         };
     }
@@ -174037,6 +174125,36 @@ test "checker: repeated structural vars and for-head typeof share the hoisted ty
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.self_referenced_type_annotation));
+}
+
+test "checker: repeated var diagnostics preserve namespace and reduced array names" {
+    const s = try newSetup(
+        \\class C { id: number = 0; }
+        \\class C2 extends C { name: string = ""; }
+        \\class D<T> { source: T; }
+        \\namespace M { export class A { } }
+        \\var a: any;
+        \\var a = M;
+        \\var values: string[];
+        \\var values = [new C(), new C2(), new D<string>()];
+        \\var member: typeof M;
+        \\var member = M.A;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_namespace = false;
+    var saw_reduced_array = false;
+    var saw_namespace_member = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.subsequent_var_type_mismatch) continue;
+        if (std.mem.indexOf(u8, diagnostic.message, "Variable 'a' must be of type 'any', but here has type 'typeof M'.") != null) saw_namespace = true;
+        if (std.mem.indexOf(u8, diagnostic.message, "Variable 'values' must be of type 'string[]', but here has type '(C | D<string>)[]'.") != null) saw_reduced_array = true;
+        if (std.mem.indexOf(u8, diagnostic.message, "Variable 'member' must be of type 'typeof M', but here has type 'typeof A'.") != null) saw_namespace_member = true;
+    }
+    try T.expect(saw_namespace);
+    try T.expect(saw_reduced_array);
+    try T.expect(saw_namespace_member);
 }
 
 test "checker: repeated var declarations reject subtype-collapsed unions" {
