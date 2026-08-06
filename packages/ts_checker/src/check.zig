@@ -106438,12 +106438,10 @@ pub const Checker = struct {
                     if (self.typeAnnotationShouldBecomeErrorAny(type_node)) return types.Primitive.any;
                 }
             }
+            if (!self.isDeclNameSlot(node)) {
+                if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| return flow_t;
+            }
             if (self.lookupNarrow(id.name)) |t| {
-                if (!self.isDeclNameSlot(node) and self.typeIsPossiblyNullishStrict(t)) {
-                    if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
-                        if (!self.typeIsPossiblyNullishStrict(flow_t)) return flow_t;
-                    }
-                }
                 // Expando-function augmentation also applies to the narrowed
                 // flow type: a function-valued binding that receives
                 // `name.prop = ÃÂ¢ÃÂÃÂ¦` assignments carries those properties on
@@ -223211,6 +223209,29 @@ test "checker: loop-carried evolving null binding narrows on the backedge" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: exhaustive branches initialize an untyped binding" {
+    const s = try newSetup(
+        \\declare const condition: boolean;
+        \\declare function left(): string[];
+        \\declare function right(): string[];
+        \\declare function consume(values: string[]): void;
+        \\function run() {
+        \\    var values;
+        \\    if (condition) {
+        \\        values = left();
+        \\    } else {
+        \\        values = right();
+        \\    }
+        \\    consume(values);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
