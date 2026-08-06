@@ -61128,7 +61128,39 @@ pub const Checker = struct {
                 },
                 .fn_decl, .fn_expr, .arrow_fn => {
                     const fp = hir_mod.fnDeclOf(self.hir, m);
-                    if (fp.flags.is_constructor) continue;
+                    if (fp.flags.is_constructor) {
+                        for (hir_mod.fnParams(self.hir, m)) |param_node| {
+                            if (self.hir.kindOf(param_node) != .parameter) continue;
+                            const parameter = hir_mod.parameterOf(self.hir, param_node);
+                            if (!parameter.flags.is_parameter_property or
+                                parameter.name == hir_mod.none_node_id or
+                                self.hir.kindOf(parameter.name) != .identifier)
+                            {
+                                continue;
+                            }
+                            const parameter_name = hir_mod.identifierOf(self.hir, parameter.name).name;
+                            const parameter_t: TypeId = if (parameter.type_annotation != hir_mod.none_node_id and
+                                !self.typeAnnotationContainsUnresolvedRef(parameter.type_annotation))
+                                (self.lowererLowerWithTypeParams(parameter.type_annotation) catch types.Primitive.any)
+                            else
+                                types.Primitive.any;
+                            try self.appendOrReplaceObjectMember(&instance_members, .{
+                                .name = parameter_name,
+                                .type = parameter_t,
+                                .is_optional = parameter.flags.is_optional,
+                                .is_readonly = parameter.flags.is_readonly,
+                                .is_method = false,
+                                .visibility = if (parameter.flags.is_private)
+                                    .private
+                                else if (parameter.flags.is_protected)
+                                    .protected
+                                else
+                                    .public,
+                                .decl_node = param_node,
+                            });
+                        }
+                        continue;
+                    }
                     const member_name = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
                     const sig = self.interner.internSignature(&.{}, types.Primitive.any, false) catch return error.OutOfMemory;
                     const member: types.ObjectMember = .{
@@ -72228,6 +72260,89 @@ pub const Checker = struct {
         if (self.varDeclHasJsDocTypeTag(decl)) return false;
         if (v.init == hir_mod.none_node_id) return true;
         return self.hir.kindOf(v.init) == .literal_undefined or self.hir.kindOf(v.init) == .literal_null;
+    }
+
+    fn mergeDefiniteEvolvingAnyFlowTypes(self: *Checker, lhs: ?TypeId, rhs: ?TypeId) CheckError!?TypeId {
+        const left = lhs orelse return null;
+        const right = rhs orelse return null;
+        if (left == right) return left;
+        if (self.typeIsAnyLike(left) or self.typeIsAnyLike(right)) return types.Primitive.any;
+        return self.interner.internUnion(&.{ left, right }) catch return error.OutOfMemory;
+    }
+
+    fn evolvingAnyFlowTypeAfterStatement(
+        self: *Checker,
+        stmt: NodeId,
+        name: hir_mod.StringId,
+        incoming: ?TypeId,
+    ) CheckError!?TypeId {
+        if (stmt == hir_mod.none_node_id) return incoming;
+        return switch (self.hir.kindOf(stmt)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, stmt);
+                if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier or
+                    hir_mod.identifierOf(self.hir, assignment.target).name != name)
+                {
+                    break :blk incoming;
+                }
+                const value_t = self.hir.typeOf(assignment.value);
+                break :blk if (value_t == types.Primitive.none) types.Primitive.any else value_t;
+            },
+            .block_stmt => blk: {
+                var flow = incoming;
+                for (hir_mod.blockStmts(self.hir, stmt)) |child| {
+                    flow = try self.evolvingAnyFlowTypeAfterStatement(child, name, flow);
+                }
+                break :blk flow;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, stmt);
+                const then_t = try self.evolvingAnyFlowTypeAfterStatement(conditional.then_branch, name, incoming);
+                const else_t = if (conditional.else_branch != hir_mod.none_node_id)
+                    try self.evolvingAnyFlowTypeAfterStatement(conditional.else_branch, name, incoming)
+                else
+                    incoming;
+                break :blk try self.mergeDefiniteEvolvingAnyFlowTypes(then_t, else_t);
+            },
+            else => incoming,
+        };
+    }
+
+    fn definiteEvolvingAnyFlowTypeAt(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        var child = node;
+        var current = self.hir.parentOf(node);
+        while (current != hir_mod.none_node_id) : ({
+            child = current;
+            current = self.hir.parentOf(current);
+        }) {
+            const statements: []const NodeId = switch (self.hir.kindOf(current)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, current),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, current),
+                else => continue,
+            };
+            var declaration_index: ?usize = null;
+            var use_index: ?usize = null;
+            for (statements, 0..) |raw, index| {
+                if (raw == child) use_index = index;
+                const declaration = self.unwrapExportDecl(raw);
+                const kind = self.hir.kindOf(declaration);
+                if (kind != .var_decl and kind != .let_decl) continue;
+                const variable = hir_mod.varDeclOf(self.hir, declaration);
+                if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
+                if (!self.varDeclIsUntypedEvolvingAnyCandidate(declaration)) return null;
+                declaration_index = index;
+            }
+            const declaration_pos = declaration_index orelse continue;
+            const use_pos = use_index orelse continue;
+            if (declaration_pos >= use_pos) return null;
+            var flow: ?TypeId = null;
+            for (statements[declaration_pos + 1 .. use_pos]) |stmt| {
+                flow = try self.evolvingAnyFlowTypeAfterStatement(stmt, name, flow);
+            }
+            return flow;
+        }
+        return null;
     }
 
     fn untypedVarHasLaterDirectAssignment(self: *Checker, decl: NodeId, name: hir_mod.StringId) bool {
@@ -106193,6 +106308,11 @@ pub const Checker = struct {
                 }
             }
             if (self.lookupNarrow(id.name)) |t| {
+                if (!self.isDeclNameSlot(node) and self.typeIsPossiblyNullishStrict(t)) {
+                    if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
+                        if (!self.typeIsPossiblyNullishStrict(flow_t)) return flow_t;
+                    }
+                }
                 // Expando-function augmentation also applies to the narrowed
                 // flow type: a function-valued binding that receives
                 // `name.prop = ÃÂ¢ÃÂÃÂ¦` assignments carries those properties on
@@ -222675,4 +222795,61 @@ test "checker: namespace enum members return to their whole enum" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: forward class shapes include constructor parameter properties" {
+    const s = try newSetup(
+        \\namespace Legacy {
+        \\    export class Context {
+        \\        constructor(public scope: MissingScope, public chain: MissingNode[]) {}
+        \\    }
+        \\    export function inspect(context: Context) {
+        \\        context.scope;
+        \\        context.chain;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: exhaustive branches replace an evolving null initializer" {
+    const s = try newSetup(
+        \\declare const condition: boolean;
+        \\function inspect() {
+        \\    var current = null;
+        \\    if (condition) {
+        \\        current = { value: 1 };
+        \\    } else if (condition) {
+        \\        current = { value: 2 };
+        \\    } else {
+        \\        current = { value: 3 };
+        \\    }
+        \\    current.value;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: partial branches preserve an evolving null initializer" {
+    const s = try newSetup(
+        \\declare const condition: boolean;
+        \\function inspect() {
+        \\    var current = null;
+        \\    if (condition) current = { value: 1 };
+        \\    current.value;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_null));
 }
