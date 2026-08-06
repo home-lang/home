@@ -75475,6 +75475,18 @@ pub const Checker = struct {
             .code = TsCodes.variable_implicitly_any_declaration,
             .message = decl_msg,
         });
+        if (is_array) {
+            for (reads.items) |use_node| {
+                const assignment = self.evolvingAnyYieldFeedbackAssignment(use_node, id.name) orelse continue;
+                const target = hir_mod.assignmentOf(self.hir, assignment).target;
+                if (self.diagnosticExists(target, TsCodes.type_not_assignable)) continue;
+                try self.report(
+                    target,
+                    TsCodes.type_not_assignable,
+                    "Type 'undefined' is not assignable to type 'any[]'.",
+                );
+            }
+        }
         const use_msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Variable '{s}' implicitly has an '{s}' type.",
@@ -75510,9 +75522,40 @@ pub const Checker = struct {
             if (hir_mod.identifierOf(self.hir, candidate).name != name) continue;
             if (self.capturedEvolvingAnyReferenceIsWrite(candidate)) continue;
             try reads.append(self.gpa, candidate);
-            if (self.enclosingFunctionLike(candidate) != owner) has_captured_read = true;
+            if (self.enclosingFunctionLike(candidate) != owner or
+                self.evolvingAnyYieldFeedbackAssignment(candidate, name) != null)
+            {
+                has_captured_read = true;
+            }
         }
         return has_captured_read;
+    }
+
+    fn evolvingAnyYieldFeedbackAssignment(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        var cur = self.hir.parentOf(node);
+        var yield_node = hir_mod.none_node_id;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .yield_expr => {
+                    if (hir_mod.yieldExprOf(self.hir, cur).type_node == hir_mod.none_node_id) return null;
+                    yield_node = cur;
+                },
+                .assignment => {
+                    if (yield_node == hir_mod.none_node_id) return null;
+                    const assignment = hir_mod.assignmentOf(self.hir, cur);
+                    if (assignment.value != yield_node or
+                        assignment.target == hir_mod.none_node_id or
+                        self.hir.kindOf(assignment.target) != .identifier)
+                    {
+                        return null;
+                    }
+                    return if (hir_mod.identifierOf(self.hir, assignment.target).name == name) cur else null;
+                },
+                .fn_decl, .fn_expr, .arrow_fn => return null,
+                else => {},
+            }
+        }
+        return null;
     }
 
     fn capturedEvolvingAnyReferenceIsWrite(self: *Checker, node: NodeId) bool {
@@ -94074,6 +94117,8 @@ pub const Checker = struct {
                     }
                     const delegated_return = if (self.generator_type_info.get(inner_t)) |delegated|
                         delegated.return_type
+                    else if (self.typeIsArrayLikeObject(inner_t))
+                        types.Primitive.undefined_t
                     else
                         types.Primitive.any;
                     const delegated_yield_raw = if (self.generator_type_info.get(inner_t)) |delegated|
@@ -224814,6 +224859,35 @@ test "checker: captured empty array reports every unresolved read as any array" 
         s,
         TsCodes.variable_implicitly_any,
         "Variable 'lines' implicitly has an 'any[]' type.",
+    ));
+}
+
+test "checker: yield-star array feedback reports evolving any flow" {
+    const s = try newSetup(
+        \\function* g() {
+        \\    var o = [];
+        \\    while (true) {
+        \\        o = yield* o;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.variable_implicitly_any_declaration,
+        "Variable 'o' implicitly has type 'any[]' in some locations where its type cannot be determined.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'undefined' is not assignable to type 'any[]'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.variable_implicitly_any,
+        "Variable 'o' implicitly has an 'any[]' type.",
     ));
 }
 
