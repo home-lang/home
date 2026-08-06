@@ -6721,7 +6721,18 @@ pub const Checker = struct {
                         self.returnValueIsNullishLiteral(r.value) and
                         self.declaredReturnRejectsNullish(declared, ret_t))
                     {
-                        const target_name = (self.currentGenericReturnAnnotationDiagnosticName() catch null) orelse
+                        const return_annotation_name: ?[]const u8 = if (self.current_function_return_node != hir_mod.none_node_id and
+                            self.hir.kindOf(self.current_function_return_node) == .type_ref)
+                        blk: {
+                            const text = std.mem.trim(
+                                u8,
+                                self.nodeSourceTextOrEmpty(self.current_function_return_node),
+                                " \t\r\n",
+                            );
+                            break :blk if (text.len == 0) null else text;
+                        } else null;
+                        const target_name = return_annotation_name orelse
+                            (self.currentGenericReturnAnnotationDiagnosticName() catch null) orelse
                             (self.allocAssignmentDiagnosticTypeName(declared) catch null) orelse
                             (self.simpleDiagnosticTypeName(declared) catch null) orelse
                             (self.allocObjectTypeShape(declared) catch null);
@@ -29181,8 +29192,7 @@ pub const Checker = struct {
                 null;
             const t: TypeId = if (has_anno) blk: {
                 const lowered_annotation_t = try self.lowererLowerWithTypeParams(pp.type_annotation);
-                break :blk if (lowered_annotation_t == types.Primitive.unknown and
-                    self.typeAnnotationContainsUnresolvedRef(pp.type_annotation))
+                break :blk if (self.typeAnnotationShouldBecomeErrorAny(pp.type_annotation))
                     types.Primitive.any
                 else
                     lowered_annotation_t;
@@ -29575,7 +29585,12 @@ pub const Checker = struct {
             try self.reportUnresolvedBodylessSignatureTypeRefs(f.return_type, type_params);
         }
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
-            (if (is_predicate) types.Primitive.boolean_t else try self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type))
+            (if (is_predicate)
+                types.Primitive.boolean_t
+            else if (self.typeAnnotationShouldBecomeErrorAny(f.return_type))
+                types.Primitive.any
+            else
+                try self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type))
         else if (jsdoc_context_sig) |sig|
             self.interner.signatureReturn(sig) orelse types.Primitive.any
         else
@@ -35434,7 +35449,13 @@ pub const Checker = struct {
                             if (!assignable) {
                                 const report_source = try self.sourceTypeForVarDeclAssignmentReport(op.value, field_initializer_t, declared_t);
                                 const diag_node = if (op.key != hir_mod.none_node_id) op.key else m;
-                                try self.reportTypeNotAssignable(diag_node, report_source, declared_t, "Type is not assignable to declared type.");
+                                if (self.hir.kindOf(op.type_annotation) == .fn_type and
+                                    self.typeAnnotationContainsUnresolvedRef(op.type_annotation))
+                                {
+                                    try self.reportTypeNotAssignableToTypeNode(diag_node, report_source, op.type_annotation);
+                                } else {
+                                    try self.reportTypeNotAssignable(diag_node, report_source, declared_t, "Type is not assignable to declared type.");
+                                }
                             }
                         }
                     }
@@ -54417,7 +54438,13 @@ pub const Checker = struct {
             const member_t: TypeId = blk: {
                 if (im.type_node != hir_mod.none_node_id) {
                     try self.reportUnresolvedBareTypeRefsInAnnotation(im.type_node);
-                    break :blk try self.lowererLowerWithTypeParams(im.type_node);
+                    const lowered_t = try self.lowererLowerWithTypeParams(im.type_node);
+                    break :blk if (!im.is_method and
+                        !self.syntheticSignatureMemberName(im.name) and
+                        self.typeAnnotationShouldBecomeErrorAny(im.type_node))
+                        types.Primitive.any
+                    else
+                        lowered_t;
                 }
                 break :blk types.Primitive.any;
             };
@@ -61818,12 +61845,13 @@ pub const Checker = struct {
     }
 
     fn classDeclInAnyVirtualSection(self: *Checker, name: hir_mod.StringId) ?NodeId {
+        const requested_name = self.string_interner.get(name);
         var node: NodeId = 0;
         while (node < self.hir.nodeCount()) : (node += 1) {
             const k = self.hir.kindOf(node);
             if (k != .class_decl and k != .class_expr) continue;
             const decl_name = self.declarationName(node) orelse continue;
-            if (decl_name == name) return node;
+            if (decl_name == name or std.mem.eql(u8, self.string_interner.get(decl_name), requested_name)) return node;
         }
         return null;
     }
@@ -90747,6 +90775,9 @@ pub const Checker = struct {
                     }
                     break :blk types.Primitive.any;
                 }
+                if (self.expressionRootHasUnresolvedAnnotation(m.object)) {
+                    break :blk types.Primitive.any;
+                }
                 // TS2341: legacy `private` member access from
                 // outside the declaring class body. Runs before
                 // narrowing/index lookups so the diagnostic fires
@@ -99780,6 +99811,23 @@ pub const Checker = struct {
         return null;
     }
 
+    fn expressionRootHasUnresolvedAnnotation(self: *Checker, node: NodeId) bool {
+        var root = node;
+        while (root != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(root)) {
+                .member_access => root = hir_mod.memberOf(self.hir, root).object,
+                .element_access => root = hir_mod.elementOf(self.hir, root).object,
+                .non_null_expr => root = hir_mod.asExpressionOf(self.hir, root).expr,
+                .identifier => {
+                    const type_node = self.visibleAnnotatedIdentifierTypeNode(root) orelse return false;
+                    return self.typeAnnotationShouldBecomeErrorAny(type_node);
+                },
+                else => return false,
+            }
+        }
+        return false;
+    }
+
     fn simpleTypeAliasNameFromTypeNode(self: *Checker, type_node: NodeId) ?hir_mod.StringId {
         if (type_node == hir_mod.none_node_id) return null;
         return switch (self.hir.kindOf(type_node)) {
@@ -106137,6 +106185,11 @@ pub const Checker = struct {
             (is_this and self.enclosingThisHostHasExplicitThisParam(node)) or
             (is_this and this_rebound_plain_function and self.thisInsideObjectLiteralMethod(node) and self.currentThisType() != null))
         {
+            if (!self.isDeclNameSlot(node)) {
+                if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
+                    if (self.typeAnnotationShouldBecomeErrorAny(type_node)) return types.Primitive.any;
+                }
+            }
             if (self.lookupNarrow(id.name)) |t| {
                 // Expando-function augmentation also applies to the narrowed
                 // flow type: a function-valued binding that receives
@@ -114441,7 +114494,7 @@ pub const Checker = struct {
             "Uint32Array", "Int32Array",    "Float32Array", "Float64Array",
             "parseInt",    "parseFloat",    "isNaN",        "isFinite",
             "encodeURI",   "decodeURI",     "setTimeout",   "clearTimeout",
-            "setInterval", "clearInterval",
+            "setInterval", "clearInterval", "CSSStyleDeclaration",
         };
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, false, false, in_type_position, &best);
@@ -114478,11 +114531,24 @@ pub const Checker = struct {
         const regexp_suffix_suggestion = !skip_suggestions and
             std.mem.eql(u8, best.name, "RegExp") and
             lowerAsciiIdentifierEndsWith(name_str, "regexp");
-        const has_suggestion = !skip_suggestions and
-            (script_expando_suggestion != null or
+        const hoisted_var_suggestion = if (!in_type_position and
+            std.mem.indexOfScalar(u8, name_str, '.') == null and
+            !is_reserved_keyword_identifier)
+            self.sourceHoistedVarCaseSuggestion(node, name_str)
+        else
+            null;
+        const declaration_suffix_suggestion = !skip_suggestions and
+            std.mem.endsWith(u8, name_str, "Declaration") and
+            std.mem.endsWith(u8, best.name, "Declaration") and
+            best.dist <= threshold + 1;
+        const has_suggestion = hoisted_var_suggestion != null or
+            (!skip_suggestions and
+                (script_expando_suggestion != null or
                 (best.dist <= threshold and best.name.len > 0) or
-                regexp_suffix_suggestion);
+                regexp_suffix_suggestion or
+                declaration_suffix_suggestion));
         const suggestion_name: []const u8 = script_expando_suggestion orelse
+            hoisted_var_suggestion orelse
             if (regexp_suffix_suggestion) "RegExp" else best.name;
 
         // In an unchecked `.js` file (JS-like, no checkJs) the suggestion
@@ -114590,6 +114656,60 @@ pub const Checker = struct {
             if (suggestion == null or member.len < suggestion.?.len) suggestion = member;
         }
         return suggestion;
+    }
+
+    fn sourceHoistedVarCaseSuggestion(self: *Checker, node: NodeId, typo: []const u8) ?[]const u8 {
+        if (typo.len == 0 or !std.ascii.isUpper(typo[0])) return null;
+        const src = self.source orelse return null;
+        var owner = self.hir.parentOf(node);
+        while (owner != hir_mod.none_node_id) : (owner = self.hir.parentOf(owner)) {
+            const kind = self.hir.kindOf(owner);
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) break;
+        }
+        if (owner == hir_mod.none_node_id) return null;
+        const span = self.hir.spanOf(owner);
+        const start: usize = @min(@as(usize, span.start), src.len);
+        const end: usize = @min(@as(usize, span.end), src.len);
+        if (start >= end) return null;
+        const body = src[start..end];
+        var search: usize = 0;
+        while (std.mem.indexOfPos(u8, body, search, "var")) |at| {
+            search = at + 3;
+            if (at > 0 and asciiIdentifierContinue(body[at - 1])) continue;
+            if (search < body.len and asciiIdentifierContinue(body[search])) continue;
+            var name_start = search;
+            while (name_start < body.len and std.ascii.isWhitespace(body[name_start])) name_start += 1;
+            if (name_start >= body.len or !asciiIdentifierStart(body[name_start])) continue;
+            var name_end = name_start + 1;
+            while (name_end < body.len and asciiIdentifierContinue(body[name_end])) name_end += 1;
+            const candidate = body[name_start..name_end];
+            if (candidate.len == typo.len and
+                std.ascii.isLower(candidate[0]) and
+                std.ascii.eqlIgnoreCase(candidate, typo) and
+                self.functionHasPriorTypeReference(owner, typo, start + name_start))
+            {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    fn functionHasPriorTypeReference(
+        self: *Checker,
+        owner: NodeId,
+        name: []const u8,
+        before_pos: usize,
+    ) bool {
+        var candidate: NodeId = 0;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .type_ref or !self.nodeHasAncestor(candidate, owner)) continue;
+            if (self.nodeHasAncestorKind(candidate, .type_assertion)) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start >= before_pos) continue;
+            const ref = hir_mod.typeRefOf(self.hir, candidate);
+            if (ref.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(ref.name), name)) return true;
+        }
+        return false;
     }
 
     fn enclosingClassHasInstanceMemberNamed(
@@ -117329,6 +117449,7 @@ pub const Checker = struct {
                 const id = hir_mod.identifierOf(self.hir, type_node);
                 const raw = self.string_interner.get(id.name);
                 if (isPrimitiveTypeNameText(raw) or self.isBuiltinName(id.name)) break :blk false;
+                if (self.nameHasEnclosingTypeParameter(id.name, type_node)) break :blk false;
                 if (self.lookupNarrow(id.name)) |t| {
                     if (t != types.Primitive.none and
                         t != types.Primitive.any and
@@ -117343,6 +117464,7 @@ pub const Checker = struct {
                     if (self.typeAnnotationContainsUnresolvedRef(arg)) break :blk true;
                 }
                 if (r.qualifier_len != 0 or r.args_len != 0) break :blk false;
+                if (self.nameHasEnclosingTypeParameter(r.name, type_node)) break :blk false;
                 if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) break :blk false;
                 const raw = self.string_interner.get(r.name);
                 if (std.mem.eql(u8, raw, "super")) break :blk true;
@@ -117373,7 +117495,30 @@ pub const Checker = struct {
             .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, type_node)) |member| {
                 if (self.typeAnnotationContainsUnresolvedRef(member)) break true;
             } else false,
+            .fn_type, .constructor_type => blk: {
+                const ft = hir_mod.fnTypeOf(self.hir, type_node);
+                for (self.hir.childSlice(ft.params_start, ft.params_len)) |param_node| {
+                    if (self.hir.kindOf(param_node) != .parameter) continue;
+                    const param = hir_mod.parameterOf(self.hir, param_node);
+                    if (self.typeAnnotationContainsUnresolvedRef(param.type_annotation)) break :blk true;
+                }
+                break :blk self.typeAnnotationContainsUnresolvedRef(ft.return_type);
+            },
             else => false,
+        };
+    }
+
+    fn typeAnnotationShouldBecomeErrorAny(self: *Checker, type_node: NodeId) bool {
+        if (type_node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(type_node)) {
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, type_node);
+                if (ref.qualifier_len != 0 or ref.args_len != 0) break :blk false;
+                break :blk self.typeAnnotationContainsUnresolvedRef(type_node);
+            },
+            .array_type => self.typeAnnotationShouldBecomeErrorAny(hir_mod.arrayTypeOf(self.hir, type_node).element),
+            .readonly_type => self.typeAnnotationShouldBecomeErrorAny(hir_mod.readonlyTypeOf(self.hir, type_node).operand),
+            else => self.typeAnnotationContainsUnresolvedRef(type_node),
         };
     }
 
@@ -119191,8 +119336,8 @@ pub const Checker = struct {
         if (fn_node == hir_mod.none_node_id or type_node == hir_mod.none_node_id) {
             return try self.lowererLowerWithTypeParams(type_node);
         }
-        if (self.return_annotation_in_progress.get(fn_node)) |active_type_node| {
-            try self.reportReturnTypeAnnotationCircularOnce(active_type_node);
+        if (self.return_annotation_in_progress.contains(fn_node)) {
+            _ = self.reportReturnTypeAnnotationCircularIfActive(fn_node);
             return types.Primitive.any;
         }
         try self.return_annotation_in_progress.put(self.gpa, fn_node, type_node);
@@ -119203,8 +119348,51 @@ pub const Checker = struct {
     fn reportReturnTypeAnnotationCircularIfActive(self: *Checker, fn_node: NodeId) bool {
         const type_node = self.return_annotation_in_progress.get(fn_node) orelse return false;
         if (self.hir.kindOf(type_node) == .typeof_type) return false;
+        if (self.hir.kindOf(type_node) == .type_ref) {
+            if (self.directTypeRefNamesClassOrInterface(type_node)) return false;
+            const ref = hir_mod.typeRefOf(self.hir, type_node);
+            const annotation_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(type_node), " \t\r\n");
+            var annotation_name_end: usize = 0;
+            while (annotation_name_end < annotation_text.len and asciiIdentifierContinue(annotation_text[annotation_name_end])) {
+                annotation_name_end += 1;
+            }
+            var annotation_tail = annotation_name_end;
+            while (annotation_tail < annotation_text.len and std.ascii.isWhitespace(annotation_text[annotation_tail])) {
+                annotation_tail += 1;
+            }
+            const has_direct_type_args = annotation_tail < annotation_text.len and annotation_text[annotation_tail] == '<';
+            if (!has_direct_type_args and
+                self.findTypeAliasDeclInScope(type_node, ref.name) == null)
+            {
+                return false;
+            }
+            if (self.class_instance_types.contains(ref.name) or self.classDeclInAnyVirtualSection(ref.name) != null) return false;
+            if (ref.args_len == 0 and self.findTypeAliasDeclInScope(type_node, ref.name) == null) return false;
+            if (ref.qualifier_len == 0) {
+                if (self.findVisibleNamedTypeDecl(type_node, ref.name)) |decl| {
+                    const kind = self.hir.kindOf(decl);
+                    if (kind == .class_decl or kind == .class_expr or kind == .interface_decl) return false;
+                }
+            }
+        }
         self.reportReturnTypeAnnotationCircularOnce(type_node) catch {};
         return true;
+    }
+
+    fn directTypeRefNamesClassOrInterface(self: *Checker, type_node: NodeId) bool {
+        const raw = std.mem.trim(u8, self.nodeSourceTextOrEmpty(type_node), " \t\r\n");
+        var name_end: usize = 0;
+        while (name_end < raw.len and asciiIdentifierContinue(raw[name_end])) name_end += 1;
+        if (name_end == 0) return false;
+        const raw_name = raw[0..name_end];
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .class_decl and kind != .class_expr and kind != .interface_decl) continue;
+            const decl_name = self.declarationName(node) orelse continue;
+            if (std.mem.eql(u8, self.string_interner.get(decl_name), raw_name)) return true;
+        }
+        return false;
     }
 
     fn reportReturnTypeAnnotationCircularOnce(self: *Checker, type_node: NodeId) CheckError!void {
@@ -145049,6 +145237,29 @@ pub const Checker = struct {
         return source_base == target_base;
     }
 
+    fn reportTypeNotAssignableToTypeNode(
+        self: *Checker,
+        node: NodeId,
+        source: TypeId,
+        target_node: NodeId,
+    ) CheckError!void {
+        const source_name = (try self.allocAssignmentDiagnosticTypeName(source)) orelse
+            (try self.allocSimpleTypeName(source)) orelse
+            "unknown";
+        const raw_target = self.nodeSourceTextOrEmpty(target_node);
+        const target_name = std.mem.trim(u8, raw_target, " \t\r\n");
+        if (target_name.len == 0) {
+            try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+            return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(node, TsCodes.type_not_assignable, msg);
+    }
+
     fn reportTypeNotAssignable(
         self: *Checker,
         node: NodeId,
@@ -149486,9 +149697,23 @@ pub const Checker = struct {
         lhs: NodeId,
         rhs: NodeId,
     ) ?bool {
-        if (op != .eq_strict and op != .neq_strict) return null;
-        if (!self.expressionIsFreshObjectReference(lhs) or !self.expressionIsFreshObjectReference(rhs)) return null;
-        return op == .neq_strict;
+        if (op != .eq and op != .neq and op != .eq_strict and op != .neq_strict) return null;
+        const lhs_fresh = self.expressionIsFreshObjectReference(lhs);
+        const rhs_fresh = self.expressionIsFreshObjectReference(rhs);
+        if (!lhs_fresh and !rhs_fresh) return null;
+        if (!lhs_fresh and !self.expressionCouldBeObjectReference(lhs)) return null;
+        if (!rhs_fresh and !self.expressionCouldBeObjectReference(rhs)) return null;
+        return op == .neq or op == .neq_strict;
+    }
+
+    fn expressionCouldBeObjectReference(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .identifier, .member_access, .element_access, .call_expr, .new_expr => true,
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr =>
+            self.expressionCouldBeObjectReference(hir_mod.asExpressionOf(self.hir, node).expr),
+            else => self.expressionIsFreshObjectReference(node),
+        };
     }
 
     fn expressionIsFreshObjectReference(self: *Checker, node: NodeId) bool {
@@ -159466,15 +159691,15 @@ test "checker: comparison ops produce boolean" {
     try T.expectEqual(types.Primitive.boolean_t, s.hir.typeOf(top));
 }
 
-test "checker: strict equality on fresh object references emits TS2839" {
-    const s = try newSetup("if ({} === {}) {} if ({} == {}) {}");
+test "checker: equality on fresh object references emits TS2839" {
+    const s = try newSetup("declare const values: unknown[]; if ({} === {}) {} if ({} == {}) {} if (values != []) {}");
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     var count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.object_reference_comparison) count += 1;
     }
-    try T.expectEqual(@as(usize, 1), count);
+    try T.expectEqual(@as(usize, 3), count);
 }
 
 test "checker: typeof produces string" {
@@ -222244,4 +222469,85 @@ test "checker: any-indexed callable arrays use their numeric element signature" 
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+}
+
+test "checker: unresolved interface properties and variables retain error any" {
+    const s = try newSetup(
+        \\interface Context {
+        \\    members: MissingMembers;
+        \\}
+        \\function inspect(context: Context) {
+        \\    context.members.lookup();
+        \\    let symbol: MissingSymbol = null;
+        \\    if (symbol === null) {
+        \\        symbol = new MissingSymbol();
+        \\        symbol.flags = 1;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_nullish));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null_2531));
+}
+
+test "checker: hoisted case suggestion requires a prior type reference" {
+    const s = try newSetup(
+        \\function inspect(link: TypeLink) {
+        \\    new TypeLink();
+        \\    var typeLink = 0;
+        \\    new FieldSymbol();
+        \\    var fieldSymbol = 0;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: unresolved function targets preserve annotation text" {
+    const s = try newSetup(
+        \\class Holder {
+        \\    callback: () => Missing = null;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    const msg = checkerFirstMessageForCode(s, TsCodes.type_not_assignable) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Type 'null' is not assignable to type '() => Missing'.", msg);
+}
+
+test "checker: named class return does not report circular annotation" {
+    const s = try newSetup(
+        \\class Result {}
+        \\function result(): Result { return null; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.return_type_annotation_circular));
+}
+
+test "checker: unresolved generic arguments preserve outer non-callable type" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T; }
+        \\function inspect(box: Box<Missing>) {
+        \\    box();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.not_callable));
 }
