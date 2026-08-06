@@ -82540,6 +82540,9 @@ pub const Checker = struct {
                     {
                         break :blk true;
                     }
+                    if (try self.repeatedObjectLiteralEvolvingNullCompatible(node, prior, final_type)) {
+                        break :blk true;
+                    }
                 }
                 if (self.repeatedVarCallableParameterCountMismatch(prior, final_type)) break :blk false;
                 if ((self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) and
@@ -82635,6 +82638,59 @@ pub const Checker = struct {
         try self.var_decl_js_like.put(self.gpa, key, self.virtualSectionIsJsLike(node));
         if (current_jsdoc_type_name) |name| try self.var_decl_jsdoc_type_names.put(self.gpa, key, name);
         if (has_annotation) try self.var_decl_annotation_nodes.put(self.gpa, key, v.type_annotation);
+    }
+
+    fn repeatedObjectLiteralEvolvingNullCompatible(
+        self: *Checker,
+        node: NodeId,
+        prior: TypeId,
+        current: TypeId,
+    ) CheckError!bool {
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.init == hir_mod.none_node_id or self.hir.kindOf(v.init) != .object_literal) return false;
+        if (prior >= self.interner.pool.typeCount() or current >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(prior).is_object_type or !self.interner.pool.flagsOf(current).is_object_type) return false;
+
+        var reads_evolving_null = false;
+        for (hir_mod.objectLiteralProps(self.hir, v.init)) |prop_node| {
+            if (self.hir.kindOf(prop_node) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, prop_node);
+            if (prop.value != hir_mod.none_node_id and
+                self.hir.kindOf(prop.value) == .identifier and
+                self.identifierIsUntypedUninitializedVar(prop.value))
+            {
+                reads_evolving_null = true;
+                break;
+            }
+        }
+        if (!reads_evolving_null) return false;
+
+        const prior_members = self.interner.objectMembers(prior);
+        const current_members = self.interner.objectMembers(current);
+        if (prior_members.len != current_members.len) return false;
+        for (prior_members) |prior_member| {
+            var current_member: ?types.ObjectMember = null;
+            for (current_members) |candidate| {
+                if (candidate.name == prior_member.name) {
+                    current_member = candidate;
+                    break;
+                }
+            }
+            const candidate = current_member orelse return false;
+            if (candidate.is_optional != prior_member.is_optional or
+                candidate.is_readonly != prior_member.is_readonly or
+                candidate.is_method != prior_member.is_method)
+            {
+                return false;
+            }
+            if (candidate.type == prior_member.type) continue;
+            const prior_non_null = self.widenLiteralType(try self.subtractNullUndefined(prior_member.type));
+            const current_non_null = self.widenLiteralType(try self.subtractNullUndefined(candidate.type));
+            if (prior_non_null == types.Primitive.never or current_non_null == types.Primitive.never) return false;
+            if (prior_non_null == current_non_null) continue;
+            if (!(self.engine.isIdenticalTo(prior_non_null, current_non_null) catch false)) return false;
+        }
+        return true;
     }
 
     fn repeatedVarCallableParameterCountMismatch(self: *Checker, prior: TypeId, current: TypeId) bool {
@@ -223378,6 +223434,37 @@ test "checker: exhaustive branches initialize an untyped binding" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: evolving nullable fields keep repeated object vars compatible" {
+    const s = try newSetup(
+        \\interface Unit { content: string; name: string; }
+        \\declare const condition: boolean;
+        \\function collect(lines: string[]) {
+        \\    var files: Unit[] = [];
+        \\    var content: string = null;
+        \\    var name = null;
+        \\    for (var i = 0; i < lines.length; i++) {
+        \\        content = lines[i];
+        \\        name = lines[i];
+        \\        if (name) {
+        \\            var unit = { content: content, name: name };
+        \\            files.push(unit);
+        \\            content = null;
+        \\            name = lines[i];
+        \\        }
+        \\    }
+        \\    name = files.length > 0 ? name : "0.ts";
+        \\    var unit = { content: content || "", name: name };
+        \\    files.push(unit);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
