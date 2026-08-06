@@ -26846,6 +26846,8 @@ pub const Checker = struct {
             if (std.mem.startsWith(u8, display, "Iterable<") or
                 std.mem.startsWith(u8, display, "AsyncIterable<")) return null;
         }
+        const next_name = self.string_interner.intern("next") catch return null;
+        if (self.interner.objectMember(contextual_return, next_name) == null) return null;
         const info = self.generator_type_info.get(contextual_return) orelse return null;
         return info.next_type;
     }
@@ -184648,6 +184650,38 @@ test "checker: `yield expr` value defaults to sent any while operand drives gene
     try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(ret_t));
     const info = s.checker.generator_type_info.get(ret_t) orelse return error.TestExpectedEqual;
     try T.expectEqual(types.Primitive.unknown, info.next_type);
+}
+
+test "checker: iterable contextual generators retain an unknown next channel" {
+    const s = try newSetup(
+        \\class Foo { x: number }
+        \\class Bar extends Foo { y: string }
+        \\class Baz { z: number }
+        \\var g3: () => Iterable<Foo> = function* () {
+        \\    yield;
+        \\    yield new Bar;
+        \\    yield new Baz;
+        \\    yield *[new Bar];
+        \\    yield *[new Baz];
+        \\}
+        \\function* g2(): Iterator<() => Iterable<(x: string) => number>> {
+        \\    yield function* () {
+        \\        yield x => x.length;
+        \\    } ()
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '() => Generator<Bar | Baz | undefined, void, unknown>' is not assignable to type '() => Iterable<Foo>'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'Generator<(x: any) => any, void, unknown>' is not assignable to type '() => Iterable<(x: string) => number>'.",
+    ));
 }
 
 test "checker: generator fn return type infers a Generator<T> shape" {
