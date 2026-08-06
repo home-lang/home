@@ -265,8 +265,17 @@ pub fn stringProto(
     // `replace(pattern: string | RegExp, replacement): string`. The
     // pattern accepts both `string` and `RegExp`; modeled as `any` so
     // `s.replace(/re/, "x")` and `s.replace("a", "b")` both resolve.
-    // Replacement may be a string or a replacer function — modeled `any`.
-    const sig_replace = try ti.internSignature(&[_]TypeId{ any_t, any_t }, string_t, false);
+    // A replacer callback receives the full match, capture slots, offset,
+    // and source string. Keep the capture slots loose while preserving a
+    // callable contextual type so unannotated callback parameters do not
+    // spuriously report TS7006.
+    const replace_callback = try ti.internSignature(
+        &[_]TypeId{ string_t, any_t, any_t, any_t, number_t, string_t },
+        string_t,
+        false,
+    );
+    const replace_value = try ti.internUnion(&[_]TypeId{ string_t, replace_callback });
+    const sig_replace = try ti.internSignature(&[_]TypeId{ any_t, replace_value }, string_t, false);
     // `match(regexp: string | RegExp): RegExpMatchArray | null`.
     const regexp_match_array = try internRegExpMatchArray(ti, sint);
     const regexp_match_result = try ti.internUnion(&[_]TypeId{ regexp_match_array, types.Primitive.null_t });

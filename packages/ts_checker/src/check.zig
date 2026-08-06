@@ -6863,6 +6863,8 @@ pub const Checker = struct {
                                 declaredReturnPrimitiveNeedsAssignabilityCheck(declared)) or
                             ((self.current_function_return_from_jsdoc or self.current_function_return_from_paired_setter) and
                                 declaredReturnPrimitiveNeedsAssignabilityCheck(declared))) and
+                        !self.enumMemberExpressionMatchesReturnAnnotation(r.value, self.current_function_return_node) and
+                        !self.enumLiteralAssignableToEnumUnion(ret_t, declared) and
                         !(try self.literalExpressionAssignableToTarget(r.value, declared)) and
                         !(self.engine.isAssignableTo(ret_t, declared) catch true))
                     {
@@ -83345,7 +83347,7 @@ pub const Checker = struct {
             return true;
         }
         if (self.enumNameFromNominal(target_t)) |target_enum| {
-            return target_enum == enum_name;
+            return self.stringIdsHaveSameText(target_enum, enum_name);
         }
         if (self.namedTypeForId(target_t)) |target_name| {
             const raw = self.string_interner.get(target_name);
@@ -108353,6 +108355,12 @@ pub const Checker = struct {
 
     fn isBuiltinName(self: *const Checker, name: hir_mod.StringId) bool {
         const s = self.string_interner.get(name);
+        if (std.mem.eql(u8, s, "ITextWriter")) {
+            const src = self.source orelse return true;
+            const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return true;
+            const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
+            return std.mem.indexOf(u8, src[lib_pos..line_end], "scripthost") != null;
+        }
         if (std.mem.eql(u8, s, "Iterator") or
             std.mem.eql(u8, s, "fetch") or
             std.mem.eql(u8, s, "Image")) return true;
@@ -144629,18 +144637,71 @@ pub const Checker = struct {
     }
 
     fn enumMemberExpressionAssignableToEnumTarget(self: *Checker, value_node: NodeId, target_t: TypeId) CheckError!bool {
-        const target_enum = self.enumNameFromNominal(target_t) orelse return false;
+        const target_member = if (target_t < self.interner.pool.typeCount()) self.interner.enumLiteralInfo(target_t) else null;
+        const target_enum = self.enumNameFromNominal(target_t) orelse
+            if (target_member) |info| info.enum_name else return false;
         if (self.hir.kindOf(value_node) != .member_access) return false;
         const m = hir_mod.memberOf(self.hir, value_node);
         if (self.hir.kindOf(m.object) != .identifier) return false;
         const obj = hir_mod.identifierOf(self.hir, m.object);
         if (try self.enumMemberAccessType(obj.name, m.name, value_node)) |source_t| {
-            if (self.enumNameFromNominal(source_t)) |source_enum| return source_enum == target_enum;
+            if (self.enumNameFromNominal(source_t)) |source_enum| {
+                return target_member == null and self.stringIdsHaveSameText(source_enum, target_enum);
+            }
             if (source_t >= types.Primitive.first_dynamic and source_t < self.interner.pool.typeCount()) {
-                if (self.interner.enumLiteralInfo(source_t)) |info| return info.enum_name == target_enum;
+                if (self.interner.enumLiteralInfo(source_t)) |info| {
+                    if (!self.stringIdsHaveSameText(info.enum_name, target_enum)) return false;
+                    return if (target_member) |target_info|
+                        self.stringIdsHaveSameText(info.member_name, target_info.member_name)
+                    else
+                        true;
+                }
             }
         }
-        return obj.name == target_enum and self.enumHasMemberAt(obj.name, m.name, value_node);
+        if (!self.stringIdsHaveSameText(obj.name, target_enum) or !self.enumHasMemberAt(obj.name, m.name, value_node)) return false;
+        return if (target_member) |target_info|
+            self.stringIdsHaveSameText(m.name, target_info.member_name)
+        else
+            true;
+    }
+
+    fn enumLiteralAssignableToEnumUnion(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source = self.interner.enumLiteralInfo(source_t) orelse return false;
+        if (self.enumNameFromNominal(target_t)) |target_enum| {
+            return self.stringIdsHaveSameText(source.enum_name, target_enum);
+        }
+        if (!self.interner.pool.flagsOf(target_t).is_union) return false;
+        for (self.interner.unionMembers(target_t)) |member| {
+            if (member >= self.interner.pool.typeCount()) continue;
+            const target = self.interner.enumLiteralInfo(member) orelse continue;
+            if (self.stringIdsHaveSameText(source.enum_name, target.enum_name) and
+                self.stringIdsHaveSameText(source.member_name, target.member_name))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn enumMemberExpressionMatchesReturnAnnotation(
+        self: *Checker,
+        value_node: NodeId,
+        return_type_node: NodeId,
+    ) bool {
+        if (value_node == hir_mod.none_node_id or return_type_node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(value_node) != .member_access or self.hir.kindOf(return_type_node) != .type_ref) return false;
+        const value = hir_mod.memberOf(self.hir, value_node);
+        if (self.hir.kindOf(value.object) != .identifier) return false;
+        const target = hir_mod.typeRefOf(self.hir, return_type_node);
+        if (target.qualifier_len != 0 or target.args_len != 0) return false;
+        const source_name = hir_mod.identifierOf(self.hir, value.object).name;
+        return self.stringIdsHaveSameText(source_name, target.name) and
+            self.enumHasMemberAt(source_name, value.name, value_node);
+    }
+
+    fn stringIdsHaveSameText(self: *Checker, a: hir_mod.StringId, b: hir_mod.StringId) bool {
+        return a == b or std.mem.eql(u8, self.string_interner.get(a), self.string_interner.get(b));
     }
 
     fn expressionIsNumericLiteral(self: *Checker, node: NodeId) bool {
@@ -145237,6 +145298,20 @@ pub const Checker = struct {
         return source_base == target_base;
     }
 
+    fn assignmentNodeIsMatchingEnumReturn(self: *Checker, node: NodeId) bool {
+        var return_node = node;
+        while (return_node != hir_mod.none_node_id and self.hir.kindOf(return_node) != .return_stmt) {
+            const parent = self.hir.parentOf(return_node);
+            if (parent == hir_mod.none_node_id) return false;
+            const parent_kind = self.hir.kindOf(parent);
+            if (parent_kind == .fn_decl or parent_kind == .fn_expr or parent_kind == .arrow_fn) return false;
+            return_node = parent;
+        }
+        if (return_node == hir_mod.none_node_id) return false;
+        const value = hir_mod.returnOf(self.hir, return_node).value;
+        return self.enumMemberExpressionMatchesReturnAnnotation(value, self.current_function_return_node);
+    }
+
     fn reportTypeNotAssignableToTypeNode(
         self: *Checker,
         node: NodeId,
@@ -145267,6 +145342,7 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
+        if (self.assignmentNodeIsMatchingEnumReturn(node)) return;
         // Never-intersection target (TS18031 / TS18032). When the target
         // is an intersection tsc reduces to `never`, the header reads
         // `Type '<source>' is not assignable to type 'never'.` and the
@@ -222550,4 +222626,53 @@ test "checker: unresolved generic arguments preserve outer non-callable type" {
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.not_callable));
+}
+
+test "checker: default scripthost exposes ITextWriter unless lib is explicit" {
+    const default_lib = try newSetup(
+        \\class PrintContext {
+        \\    constructor(public writer: ITextWriter, public parser: MissingParser) {}
+        \\}
+    );
+    defer destroySetup(default_lib);
+    try default_lib.checker.checkSourceFile(default_lib.root);
+    try T.expect(!hasDiagnosticCodeMessage(default_lib, TsCodes.cannot_find_name, "Cannot find name 'ITextWriter'."));
+
+    const es5_only = try newSetup(
+        \\// @lib: es5
+        \\class PrintContext {
+        \\    constructor(public writer: ITextWriter, public parser: MissingParser) {}
+        \\}
+    );
+    defer destroySetup(es5_only);
+    try es5_only.checker.checkSourceFile(es5_only.root);
+    try T.expect(hasDiagnosticCodeMessage(es5_only, TsCodes.cannot_find_name, "Cannot find name 'ITextWriter'."));
+}
+
+test "checker: String replace contextually types replacer parameters" {
+    const s = try newSetup(
+        \\declare const text: string;
+        \\text.replace(/(a)(b)(c)/, function (match, a, b, c) {
+        \\    return match + a + b + c;
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: namespace enum members return to their whole enum" {
+    const s = try newSetup(
+        \\namespace Tokens {
+        \\    export enum Kind { Keyword, Literal }
+        \\    export function classify(): Kind {
+        \\        return Kind.Keyword;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
