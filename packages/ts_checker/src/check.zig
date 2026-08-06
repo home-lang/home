@@ -26774,6 +26774,25 @@ pub const Checker = struct {
         }
     }
 
+    fn contextualNextTypeForYield(self: *Checker, yield_node: NodeId) ?TypeId {
+        const fn_node = self.enclosingFunctionLike(yield_node) orelse return null;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (!f.flags.is_generator) return null;
+        // Async generators are contextually typed by AsyncIterator /
+        // AsyncGenerator directly, not by Promise<...> like ordinary async
+        // functions, so use the unwrapped function return target here.
+        const contextual_return = self.contextualReturnTypeForFunction(fn_node) orelse return null;
+        if (self.alias_display_names.get(contextual_return)) |display| {
+            // Iterable<T> / AsyncIterable<T> describe only yielded values;
+            // unlike Iterator/Generator, they have no caller-sent TNext
+            // channel to contribute to inference.
+            if (std.mem.startsWith(u8, display, "Iterable<") or
+                std.mem.startsWith(u8, display, "AsyncIterable<")) return null;
+        }
+        const info = self.generator_type_info.get(contextual_return) orelse return null;
+        return info.next_type;
+    }
+
     /// Walk a node tree collecting the operand types of every
     /// `yield expr` reachable from `node`, but stop at any nested
     /// function boundary so inner-fn yields don't leak into the
@@ -26811,8 +26830,17 @@ pub const Checker = struct {
                     else
                         expr_t;
                     try yield_types.append(self.gpa, yield_t);
+                    // Upstream only aggregates a direct yield's contextual
+                    // type into the generator's TNext slot. `checkExpression`
+                    // still gives an uncontextualized `yield` the value type
+                    // `any` (and may report TS7057), but that fallback must not
+                    // turn the inferred generator from `Generator<..., unknown>`
+                    // into `Generator<..., any>`.
                     const next_t = if (y.type_node == hir_mod.none_node_id)
-                        self.hir.typeOf(node)
+                        if (self.hir.typeOf(node) == types.Primitive.any)
+                            self.contextualNextTypeForYield(node) orelse types.Primitive.none
+                        else
+                            self.hir.typeOf(node)
                     else if (self.generator_type_info.get(expr_t)) |delegated|
                         delegated.next_type
                     else
@@ -26822,7 +26850,10 @@ pub const Checker = struct {
                     }
                 } else {
                     try yield_types.append(self.gpa, types.Primitive.undefined_t);
-                    const next_t = self.hir.typeOf(node);
+                    const next_t = if (self.hir.typeOf(node) == types.Primitive.any)
+                        self.contextualNextTypeForYield(node) orelse types.Primitive.none
+                    else
+                        self.hir.typeOf(node);
                     if (next_t != types.Primitive.none) {
                         try next_types.append(self.gpa, next_t);
                     }
@@ -184412,6 +184443,8 @@ test "checker: `yield expr` value defaults to sent any while operand drives gene
     const sig = s.hir.typeOf(fn_node);
     const ret_t = s.ti.signatureReturn(sig) orelse return error.TestExpectedEqual;
     try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(ret_t));
+    const info = s.checker.generator_type_info.get(ret_t) orelse return error.TestExpectedEqual;
+    try T.expectEqual(types.Primitive.unknown, info.next_type);
 }
 
 test "checker: generator fn return type infers a Generator<T> shape" {
