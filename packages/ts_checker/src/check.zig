@@ -37129,9 +37129,47 @@ pub const Checker = struct {
                 continue;
             }
             if (!(self.classImplementsAssignable(instance_t, target_t) catch true)) {
+                if (try self.reportJsDocImplementsMemberMismatch(class_node, instance_t, target_t)) {
+                    continue;
+                }
                 try self.reportClassIncorrectlyImplements(class_node, class_node, target_t, class_name);
             }
         }
+    }
+
+    fn reportJsDocImplementsMemberMismatch(
+        self: *Checker,
+        class_node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!source_flags.is_object_type or !target_flags.is_object_type) return false;
+
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            if (target_member.visibility != .public) continue;
+            const source_member = self.interner.objectMemberInfo(source_t, target_member.name) orelse continue;
+            if (source_member.visibility != .public) continue;
+            const assignable = if (!target_member.is_optional and source_member.is_optional)
+                false
+            else if (source_member.is_method and target_member.is_method)
+                try self.methodOverrideAssignable(source_member.type, target_member.type)
+            else
+                try self.heritageMemberAssignable(source_member.type, target_member.type);
+            if (assignable) continue;
+
+            const prop_str = self.classOrInterfaceMemberDisplayName(class_node, target_member.name);
+            const msg = try self.allocPropertyNotAssignableToBaseMessage(class_node, prop_str, target_t);
+            try self.diagnostics.append(self.gpa, .{
+                .node = self.classOrInterfaceMemberDiagnosticNode(class_node, target_member.name),
+                .code = TsCodes.property_not_assignable_to_base,
+                .message = msg,
+            });
+            return true;
+        }
+        return false;
     }
 
     fn jsDocImplementsTypeText(line: []const u8) ?[]const u8 {
@@ -72976,6 +73014,28 @@ pub const Checker = struct {
         return false;
     }
 
+    fn untypedVarHasLaterClassFallbackRead(self: *Checker, decl: NodeId, name: hir_mod.StringId) bool {
+        const decl_end = self.hir.spanOf(decl).end;
+        const section = self.virtualSectionStartForNode(decl);
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .identifier or self.hir.spanOf(node).start < decl_end) continue;
+            if (self.virtualSectionStartForNode(node) != section) continue;
+            if (hir_mod.identifierOf(self.hir, node).name != name) continue;
+
+            const logical_node = self.hir.parentOf(node);
+            if (logical_node == hir_mod.none_node_id or self.hir.kindOf(logical_node) != .logical_op) continue;
+            const logical = hir_mod.logicalOf(self.hir, logical_node);
+            if (logical.op != .@"or" or logical.lhs != node) continue;
+            if (self.hir.kindOf(logical.rhs) != .class_expr) continue;
+
+            const assignment_node = self.hir.parentOf(logical_node);
+            if (assignment_node == hir_mod.none_node_id or self.hir.kindOf(assignment_node) != .assignment) continue;
+            if (hir_mod.assignmentOf(self.hir, assignment_node).value == logical_node) return true;
+        }
+        return false;
+    }
+
     /// A direct JSX spread read of an uninitialized evolving-any binding owns
     /// the error as TS2698 at the spread operand. When that is the binding's
     /// only later reference, tsc does not also emit TS7034 at the declaration.
@@ -75222,6 +75282,7 @@ pub const Checker = struct {
             v.name != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier and
             !self.untypedVarHasLaterDirectAssignment(node, hir_mod.identifierOf(self.hir, v.name).name) and
+            !self.untypedVarHasLaterClassFallbackRead(node, hir_mod.identifierOf(self.hir, v.name).name) and
             !self.untypedVarIsReadOnlyByJsxSpread(node, hir_mod.identifierOf(self.hir, v.name).name) and
             (!self.varDeclHasMalformedListSyntax(node, v.name) or recovered_private_indexed_access) and
             !self.varDeclSharesLineWithDestructuringWithoutInitializer(node) and
@@ -79722,6 +79783,9 @@ pub const Checker = struct {
         if (anchor != hir_mod.none_node_id) {
             if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
             if (try self.jsConstructorInstanceTypeForHeritage(anchor, name)) |t| return t;
+            if (self.type_names.get(name)) |t| {
+                if (self.genericTypeAliasVisibleAt(anchor, name)) return t;
+            }
         }
         if (self.jsDocBareBuiltinGenericType(base)) |t| return t;
         if (anchor != hir_mod.none_node_id) {
@@ -198410,6 +198474,54 @@ test "checker: checkjs virtual JSDoc typedef is visible to TS type refs" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: checkjs implements resolves global interfaces from declaration sections" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /defs.d.ts
+        \\interface Drawable { draw(): number; }
+        \\interface Sizable { size(): number; }
+        \\// @Filename: /a.js
+        \\/** @implements {Drawable} */
+        \\class Good { draw() { return 1; } }
+        \\/** @implements {Drawable} */
+        \\class Wrong { draw() { return ""; } }
+        \\/**
+        \\ * @implements {Drawable}
+        \\ * @implements {Sizable}
+        \\ */
+        \\class Bad { size() { return 1; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+}
+
+test "checker: checkjs implements class reports member mismatches and preserves fallbacks" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /a.js
+        \\class A { /** @return {number} */ method() { return 0; } }
+        \\/** @implements A */
+        \\class Wrong { /** @return {string} */ method() { return ""; } }
+        \\/** @implements {A} */
+        \\class Missing {}
+        \\var Ns = {};
+        \\var C5;
+        \\/** @implements {A} */
+        \\Ns.C5 = C5 || class { method() { return 1; } };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_incorrectly_implements_class));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
 }
 
 test "checker: checkjs export default expression consumes leading JSDoc type" {
