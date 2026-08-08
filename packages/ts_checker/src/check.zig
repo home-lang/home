@@ -126225,6 +126225,12 @@ pub const Checker = struct {
         return switch (b.op) {
             // Arithmetic ÃÂ¢ÃÂÃÂ number unless either side is string (matches JS).
             .add => blk: {
+                // tsgo propagates its silent-never operand before checking
+                // addition compatibility, so unreachable values never
+                // produce a secondary TS2365.
+                if (lhs == types.Primitive.never or rhs == types.Primitive.never) {
+                    break :blk types.Primitive.never;
+                }
                 // tsc only emits TS2469 for symbol-typed operands when
                 // the OTHER operand is string-like or any-like (the
                 // mixed-with-string/any case where string concat is
@@ -207870,6 +207876,19 @@ test "checker: TS2365 not emitted for '+' on constraint-typed type parameters" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.operator_cannot_be_applied);
     }
+}
+
+test "checker: addition propagates never operands without TS2365" {
+    const s = try newSetup(
+        \\const values: never[] = [];
+        \\const left = values[0];
+        \\const right = values[1];
+        \\left + right;
+        \\left + 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.operator_cannot_be_applied));
 }
 
 test "checker: TS2365 still fires for '+' on non-arithmetic constrained type parameters" {
