@@ -33640,19 +33640,17 @@ pub const Checker = struct {
         // Reuses the function-signature `@template` machinery (both
         // helpers key off the node's span). Only when the class has no
         // syntactic `<T>` params. Mirrors `genericSetterInClassTypeJsDoc`.
+        var class_param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+        var class_param_ids_moved = false;
+        defer if (!class_param_ids_moved) class_param_ids.deinit(self.gpa);
         const class_jsdoc_template_scope = self.check_js_enabled and
             type_params.len == 0 and self.fnHasJsDocTemplateTags(node);
         if (class_jsdoc_template_scope) try self.pushNarrowScope();
         defer if (class_jsdoc_template_scope) self.popNarrowScope();
         if (class_jsdoc_template_scope) {
-            var jsdoc_tp_ids: std.ArrayListUnmanaged(TypeId) = .empty;
-            defer jsdoc_tp_ids.deinit(self.gpa);
-            try self.recordJsDocTemplateTypeParams(node, &jsdoc_tp_ids);
+            try self.recordJsDocTemplateTypeParams(node, &class_param_ids);
         }
 
-        var class_param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
-        var class_param_ids_moved = false;
-        defer if (!class_param_ids_moved) class_param_ids.deinit(self.gpa);
         // Two-pass type-parameter binding so `class C<T extends List<T>>`
         // sees `T` while lowering its own constraint. Mirrors the
         // function-signature path above and fixes parserGenericConstraint2-7
@@ -197312,6 +197310,40 @@ test "checker: checkjs JSDoc constructor typed this member substitutes template"
         }
     }
     try T.expect(saw_mismatch);
+}
+
+test "checker: checkjs class template parameters drive constructor inference" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: templateTagOnClasses.js
+        \\/**
+        \\ * @template T
+        \\ * @typedef {(t: T) => T} Id
+        \\ */
+        \\/** @template T */
+        \\class Foo {
+        \\  /** @typedef {(t: T) => T} Id2 */
+        \\  /** @param {T} x */
+        \\  constructor(x) { this.a = x; }
+        \\  /**
+        \\   * @param {T} x
+        \\   * @param {Id<T>} y
+        \\   * @param {Id2} alpha
+        \\   * @return {T}
+        \\   */
+        \\  foo(x, y, alpha) { return alpha(y(x)); }
+        \\}
+        \\var f = new Foo(1);
+        \\var g = new Foo(false);
+        \\f.a = g.a;
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setAllowJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: checkjs JSDoc @overload declares overload signatures" {
