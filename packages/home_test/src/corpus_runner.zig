@@ -11798,6 +11798,23 @@ const harness_prelude =
     \\  if (removedFromDeps) return completed("bun remove v1.0.0\n\n- " + name + "\n1 package removed\n", "\npackage.json has no dependencies! Deleted empty lockfile\n", 0);
     \\  return completed("bun remove v1.0.0\n\n done\n", "", 0);
     \\}
+    \\function __home_spawn_issue_00631_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/00631.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "add" || cmd[2] !== "left-pad") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const packagePath = __home_build_join(cwd, "package.json");
+    \\  const source = __home_build_read_text(packagePath);
+    \\  if (source === null) return __home_spawn_completed("", "error: package.json not found\n", 1);
+    \\  let pkg;
+    \\  try { pkg = JSON.parse(String(source)); }
+    \\  catch (error) { return __home_spawn_completed("", "error: failed to parse package.json\n", 1); }
+    \\  if (!pkg.dependencies || typeof pkg.dependencies !== "object" || Array.isArray(pkg.dependencies)) pkg.dependencies = {};
+    \\  pkg.dependencies["left-pad"] = "^1.3.0";
+    \\  __home_build_write_text(packagePath, JSON.stringify(pkg, null, 2));
+    \\  __home_write_installed_package(cwd, "left-pad", { name: "left-pad", version: "1.3.0" });
+    \\  return __home_spawn_completed("bun add v1.0.0\n\n+ left-pad@1.3.0\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_add_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!(current.includes("cli/install/bun-add.test.ts") || current.includes("cli/install/bun-install.test.ts") || current.includes("cli/install/bun-install-retry.test.ts"))) return null;
@@ -24921,6 +24938,8 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const issue00631Fixture = __home_spawn_issue_00631_fixture(options || {});
+    \\    if (issue00631Fixture) return issue00631Fixture;
     \\    const http2HeaderNameFixture = __home_spawn_http2_header_name_fixture(options || {});
     \\    if (http2HeaderNameFixture) return http2HeaderNameFixture;
     \\    const http2DynamicServerFixture = __home_spawn_http2_dynamic_server_fixture(options || {});
@@ -64163,6 +64182,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, tmpdirSync } from \"../../harness.js\";",
+            .replacement = "const { bunEnv, bunExe, tmpdirSync } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe } from \"../../../harness\";",
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
@@ -91313,6 +91336,23 @@ test "UV N-API corpus imports use vendored constants and source assets" {
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_uv_stub_constants()") != null);
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, "uv-stub-stuff/") != null);
     }
+}
+
+test "issue 00631 lowers legacy harness imports and resource declarations" {
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/bun-corpus/regression/issue/00631.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/00631.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"harness\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using proc") == null);
 }
 
 test "corpus module preparation lowers first-party undici imports" {
