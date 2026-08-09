@@ -37636,6 +37636,16 @@ const harness_prelude =
     \\        },
     \\        validateDeleteBeforeFinalize(object) { return object; },
     \\      };
+    \\    } else if (targetName === "test_reference_double_free") {
+    \\      class MyObject {
+    \\        constructor(deleteReference) { this.__home_delete_reference = Boolean(deleteReference); }
+    \\      }
+    \\      addon = {
+    \\        MyObject,
+    \\        deleteImmediately(object) {
+    \\          if ((typeof object !== "object" && typeof object !== "function") || object === null) throw new Error("Expected object parameter");
+    \\        },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
