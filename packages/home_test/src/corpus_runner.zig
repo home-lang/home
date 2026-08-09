@@ -45635,7 +45635,7 @@ const harness_prelude =
     \\    this.fingerprint256 = "C1:22:19:60:AF:DC:88:3E:39:A8:93:4A:A0:F6:D9:C2:5D:F7:61:94:8E:D7:69:06:34:74:22:48:77:ED:2B:C0";
     \\    this.fingerprint512 = "21:63:68:1D:1D:C8:1D:94:9A:B4:F7:E6:B6:CD:D1:1B:C5:46:2B:12:C9:DC:C3:BD:DF:F2:74:16:E8:DB:D7:82:16:9F:DF:D8:36:B7:AB:91:AF:EF:D4:D2:08:BD:09:88:FF:3A:52:D7:99:A9:D6:17:CD:FB:B9:F2:B8:0E:FD:CC";
     \\    this.keyUsage = ["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"];
-    \\    this.serialNumber = this.__home_x509_kind === "agent1" ? "147D36C1C2F74206DE9FAB5F2226D78ADB00A426" : "522e670fd3b3fbac0e19337e2137b493";
+    \\    this.serialNumber = this.__home_x509_kind === "agent1" ? "147D36C1C2F74206DE9FAB5F2226D78ADB00A426" : "522E670FD3B3FBAC0E19337E2137B493";
     \\    this.ca = false;
     \\  }
     \\  checkHost(hostname) {
@@ -99083,7 +99083,7 @@ test "bootstrap runner supports node crypto X509Certificate fields" {
         \\  expect(cert.validFromDate).toEqual(new Date("2024-11-20T07:24:46.000Z"));
         \\  expect(cert.validToDate).toEqual(new Date("2025-02-18T07:24:45.000Z"));
         \\  expect(cert.keyUsage).toEqual(["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"]);
-        \\  expect(cert.serialNumber).toEqual("522e670fd3b3fbac0e19337e2137b493");
+        \\  expect(cert.serialNumber).toEqual("522E670FD3B3FBAC0E19337E2137B493");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21274.test.ts");
