@@ -219,6 +219,8 @@ pub fn HTMLProcessor(
         }
 
         pub fn run(this: *T, input: []const u8) !void {
+            if (!build_options.have_lolhtml) return error.LolHtmlUnavailable;
+
             var builder = lol.HTMLRewriter.Builder.init();
             defer builder.deinit();
 
@@ -299,6 +301,7 @@ pub fn HTMLProcessor(
 
 const lol = @import("../lolhtml_sys/lol_html.zig");
 const std = @import("std");
+const build_options = @import("build_options");
 
 const ImportKind = @import("../options_types/import_record.zig").ImportKind;
 const ImportRecord = @import("../options_types/import_record.zig").ImportRecord;

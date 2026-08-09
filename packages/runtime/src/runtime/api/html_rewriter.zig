@@ -42,7 +42,10 @@ pub const HTMLRewriter = struct {
     pub const fromJS = js.fromJS;
     pub const fromJSDirect = js.fromJSDirect;
 
-    pub fn constructor(_: *JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*HTMLRewriter {
+    pub fn constructor(global: *JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*HTMLRewriter {
+        if (!build_options.have_lolhtml) {
+            return global.throw("HTMLRewriter is unavailable because Home was built without lol-html support", .{});
+        }
         const rewriter = bun.handleOom(bun.default_allocator.create(HTMLRewriter));
         rewriter.* = HTMLRewriter{
             .builder = LOLHTML.HTMLRewriter.Builder.init(),
@@ -2018,6 +2021,7 @@ pub const Element = struct {
 const string = []const u8;
 
 const std = @import("std");
+const build_options = @import("build_options");
 
 const bun = @import("bun");
 const JSError = bun.JSError;

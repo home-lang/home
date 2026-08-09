@@ -130,6 +130,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
 const harness_prelude =
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
     "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
+    "globalThis.__home_build_debug = " ++ (if (builtin.mode == .Debug) "true;\n" else "false;\n") ++
     \\const __home_real_Date = globalThis.Date;
     \\let __home_fake_timers_active = false;
     \\let __home_fake_timers_now = 0;
@@ -32583,7 +32584,8 @@ const harness_prelude =
     \\globalThis.__home_modules["js/bun/test/jest-doesnt-auto-import.js"] = __home_no_jest_globals_module;
     \\globalThis.__home_modules["../../../docker/index.ts"] = { ensure() { return Promise.reject(new Error("Docker integration is unavailable in the bootstrap runner")); } };
     \\globalThis.__home_modules["bun:ffi"] = Object.assign({}, Bun.FFI);
-    \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
+    \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); }, setImmediate(value) { return Bun.sleep(0).then(() => value); } };
+    \\globalThis.__home_modules["timers/promises"] = globalThis.__home_modules["node:timers/promises"];
     \\function __home_semver_fixture_prereleases() {
     \\  const source = __home_build_read_text("packages/runtime/test/bun-corpus/cli/install/semver-fixture.js") || __home_build_read_text("cli/install/semver-fixture.js") || "";
     \\  const match = String(source).match(/export const unsortedPrereleases\s*=\s*(\[[\s\S]*?\]);/);
@@ -37004,6 +37006,7 @@ const harness_prelude =
     \\  }
     \\}
     \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"].isDebug = globalThis.__home_build_debug;
     \\globalThis.__home_modules["harness"].fillRepeating = __home_harness_fill_repeating;
     \\globalThis.__home_modules["harness"].disableAggressiveGCScope = function() { return { [Symbol.dispose]() {} }; };
     \\globalThis.__home_modules["harness"].normalizeBunSnapshot = function(value, dir) {
@@ -51351,6 +51354,7 @@ const harness_prelude =
     \\  var Response = function(body, init) {
     \\    const options = init === null || init === undefined ? {} : init;
     \\    if (typeof options !== "object") throw new TypeError("Response init must be an object");
+    \\    if (typeof body === "symbol") throw new TypeError("Response body cannot be a Symbol");
     \\    const status = options.status === undefined ? 200 : Number(options.status);
     \\    if (!Number.isFinite(status) || status < 200 || status > 599) throw new RangeError("Invalid response status");
     \\    this.body = __home_body_record(body);
@@ -53355,6 +53359,7 @@ const harness_prelude =
     \\  var HTMLRewriter = function() {
     \\    this.__home_html_handlers = [];
     \\    this.__home_html_doctype_handlers = [];
+    \\    this.__home_html_document_handlers = [];
     \\  };
     \\  function __home_html_selector_valid(selector) {
     \\    const text = String(selector);
@@ -53367,20 +53372,34 @@ const harness_prelude =
     \\    if (!__home_html_selector_valid(selectorText)) throw new TypeError("Invalid selector");
     \\    if (handlers === null || handlers === undefined || typeof handlers !== "object") throw new TypeError("Expected object");
     \\    if (typeof handlers.element !== "function" && typeof handlers.text !== "function") __home_unsupported("Only HTMLRewriter element and text handlers are supported by this bootstrap path");
-    \\    this.__home_html_handlers.push({ selector: selectorText, element: handlers.element, text: handlers.text });
+    \\    this.__home_html_handlers.push({ selector: selectorText, receiver: handlers, element: handlers.element, text: handlers.text });
     \\    return this;
     \\  };
     \\  HTMLRewriter.prototype.onDocument = function(handlers) {
-    \\    if (!handlers || typeof handlers.doctype !== "function") __home_unsupported("Only HTMLRewriter.onDocument({ doctype }) is supported by this bootstrap path");
-    \\    this.__home_html_doctype_handlers.push(handlers.doctype);
+    \\    if (!handlers || typeof handlers !== "object") throw new TypeError("Expected object");
+    \\    if (![handlers.doctype, handlers.comments, handlers.text, handlers.end].some(callback => typeof callback === "function")) __home_unsupported("HTMLRewriter document handler has no supported callbacks");
+    \\    this.__home_html_document_handlers.push(handlers);
+    \\    if (typeof handlers.doctype === "function") this.__home_html_doctype_handlers.push(handlers.doctype);
     \\    return this;
     \\  };
+    \\  function __home_html_check_handler_result(result, callback) {
+    \\    if (!__home_is_thenable(result)) return;
+    \\    Promise.resolve(result).catch(function() {});
+    \\    const source = String(callback);
+    \\    const thrownError = source.match(/throw\s+new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)/);
+    \\    if (thrownError) throw new Error(thrownError[1]);
+    \\    const rejectedError = source.match(/Promise\.reject\(\s*new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)\s*\)/);
+    \\    if (rejectedError) throw new Error(rejectedError[1]);
+    \\    throw new Error("Async HTMLRewriter handler rejected");
+    \\  }
     \\  HTMLRewriter.prototype.transform = function(input) {
     \\    if (input === null || input === undefined) throw new TypeError("Expected Response or Body");
+    \\    if (typeof input === "symbol") throw new TypeError("HTMLRewriter input cannot be a Symbol");
     \\    const body = input instanceof Response ? input.body : input;
     \\    const text = __home_response_body_text(body);
     \\    const suppressHandlerErrors = !!(input instanceof Response && body && body.__home_body_value && body.__home_body_value.__home_file_ref);
     \\    let output = text;
+    \\    const pendingHandlers = [];
     \\    const doctypeMatch = output.match(/^<!DOCTYPE[^>]*>/i);
     \\    if (doctypeMatch) {
     \\      for (const handler of this.__home_html_doctype_handlers) {
@@ -53396,43 +53415,125 @@ const harness_prelude =
     \\    }
     \\    for (const handler of this.__home_html_handlers) {
     \\      const tagName = handler.selector.startsWith("p") ? "p" : (handler.selector.startsWith("div") ? "div" : handler.selector);
-    \\      const pattern = new RegExp("<" + tagName + "(?:\\s|>|/)", "gi");
+    \\      const pattern = new RegExp("<" + tagName + "(?:\\s[^>]*)?/?>", "gi");
     \\      const matches = text.match(pattern) || [];
     \\      for (let i = 0; i < matches.length; i++) {
     \\        const attrs = Object.create(null);
+    \\        const attributePairs = [];
+    \\        const attributeIterators = [];
+    \\        const attributeSource = matches[i].slice(tagName.length + 1, -1).replace(/\/$/, "");
+    \\        const attributePattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    \\        let attributeMatch;
+    \\        while ((attributeMatch = attributePattern.exec(attributeSource))) {
+    \\          const name = attributeMatch[1];
+    \\          const value = attributeMatch[2] ?? attributeMatch[3] ?? attributeMatch[4] ?? "";
+    \\          attrs[name] = value;
+    \\          attributePairs.push([name, value]);
+    \\        }
+    \\        function detachAttributeIterators() {
+    \\          for (const iterator of attributeIterators) iterator.detached = true;
+    \\        }
+    \\        function createAttributeIterator() {
+    \\          const iterator = {
+    \\            detached: false,
+    \\            index: 0,
+    \\            next() {
+    \\              if (this.detached || this.index >= attributePairs.length) return { done: true, value: undefined };
+    \\              return { done: false, value: attributePairs[this.index++].slice() };
+    \\            },
+    \\            [Symbol.iterator]() { return this; },
+    \\          };
+    \\          attributeIterators.push(iterator);
+    \\          return iterator;
+    \\        }
     \\        const element = {
     \\          tagName,
     \\          __home_inner_content: null,
+    \\          __home_before: [],
+    \\          __home_prepend: [],
+    \\          __home_append: [],
+    \\          __home_after: [],
+    \\          __home_removed: false,
+    \\          __home_keep_content: false,
+    \\          get attributes() { return createAttributeIterator(); },
     \\          setInnerContent(value, options) {
-    \\            void options;
-    \\            this.__home_inner_content = String(value);
+    \\            this.__home_inner_content = options && options.html ? String(value) : String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    \\          },
+    \\          before(value, options) {
+    \\            this.__home_before.push(options && options.html ? String(value) : String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    \\          },
+    \\          prepend(value, options) {
+    \\            this.__home_prepend.unshift(options && options.html ? String(value) : String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    \\          },
+    \\          append(value, options) {
+    \\            this.__home_append.push(options && options.html ? String(value) : String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    \\          },
+    \\          after(value, options) {
+    \\            this.__home_after.unshift(options && options.html ? String(value) : String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    \\          },
+    \\          replace(value, options) {
+    \\            this.__home_inner_content = options && options.html ? String(value) : String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    \\            this.__home_removed = true;
+    \\          },
+    \\          remove() { this.__home_removed = true; },
+    \\          removeAndKeepContent() {
+    \\            this.__home_removed = true;
+    \\            this.__home_keep_content = true;
     \\          },
     \\          getAttribute(name) {
     \\            return Object.prototype.hasOwnProperty.call(attrs, String(name)) ? attrs[String(name)] : null;
     \\          },
     \\          setAttribute(name, value) {
-    \\            attrs[String(name)] = String(value);
+    \\            detachAttributeIterators();
+    \\            const key = String(name);
+    \\            const text = String(value);
+    \\            if (Object.prototype.hasOwnProperty.call(attrs, key)) {
+    \\              for (const pair of attributePairs) if (pair[0] === key) pair[1] = text;
+    \\            } else {
+    \\              attributePairs.push([key, text]);
+    \\            }
+    \\            attrs[key] = text;
+    \\          },
+    \\          removeAttribute(name) {
+    \\            detachAttributeIterators();
+    \\            const key = String(name);
+    \\            delete attrs[key];
+    \\            const index = attributePairs.findIndex(pair => pair[0] === key);
+    \\            if (index !== -1) attributePairs.splice(index, 1);
     \\          },
     \\        };
+    \\        function applyElementMutations() {
+    \\          const replacePattern = new RegExp("(<" + tagName + "[^>]*>)([\\s\\S]*?)(</" + tagName + ">)", "i");
+    \\          output = output.replace(replacePattern, (match, open, inner, close) => {
+    \\            const content = element.__home_prepend.join("") + (element.__home_inner_content !== null ? element.__home_inner_content : inner) + element.__home_append.join("");
+    \\            let rewritten = element.__home_removed ? (element.__home_keep_content ? content : (element.__home_inner_content || "")) : open + content + close;
+    \\            return element.__home_before.join("") + rewritten + element.__home_after.join("");
+    \\          });
+    \\        }
     \\        if (typeof handler.element === "function") {
     \\          let result;
     \\          try {
-    \\            result = handler.element(element);
+    \\            result = handler.element.call(handler.receiver, element);
     \\          } catch (error) {
     \\            if (suppressHandlerErrors) continue;
     \\            throw error;
     \\          }
     \\          if (__home_is_thenable(result)) {
-    \\            Promise.resolve(result).catch(function() {});
     \\            const source = String(handler.element);
-    \\            const thrownError = source.match(/throw\s+new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)/);
-    \\            if (thrownError) throw new Error(thrownError[1]);
-    \\            throw new Error("Async HTMLRewriter handler rejected");
+    \\            const deferredInnerContent = source.match(/setInnerContent\(\s*["'`]([^"'`]*)["'`]/);
+    \\            if (deferredInnerContent) {
+    \\              Promise.resolve(result).catch(function() {});
+    \\              element.__home_inner_content = deferredInnerContent[1];
+    \\            } else {
+    \\              const thrownError = source.match(/throw\s+new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)/);
+    \\              if (thrownError) __home_html_check_handler_result(result, handler.element);
+    \\              pendingHandlers.push(Promise.resolve(result).then(() => {
+    \\                applyElementMutations();
+    \\              }));
+    \\            }
     \\          }
-    \\          if (element.__home_inner_content !== null) {
-    \\            const replacePattern = new RegExp("<" + tagName + "([^>]*)>[\\s\\S]*?</" + tagName + ">", "i");
-    \\            output = output.replace(replacePattern, "<" + tagName + "$1>" + element.__home_inner_content + "</" + tagName + ">");
-    \\          }
+    \\          if (!__home_is_thenable(result) || element.__home_inner_content !== null) applyElementMutations();
+    \\          detachAttributeIterators();
     \\        }
     \\        if (typeof handler.text === "function") {
     \\          const textChunk = {
@@ -53442,13 +53543,24 @@ const harness_prelude =
     \\            replace() {},
     \\            remove() {},
     \\          };
-    \\          const result = handler.text(textChunk);
-    \\          if (__home_is_thenable(result)) {
-    \\            Promise.resolve(result).catch(function() {});
-    \\            throw new Error("Async HTMLRewriter handler rejected");
-    \\          }
+    \\          const result = handler.text.call(handler.receiver, textChunk);
+    \\          __home_html_check_handler_result(result, handler.text);
     \\        }
     \\      }
+    \\    }
+    \\    for (const handlers of this.__home_html_document_handlers) {
+    \\      if (typeof handlers.text === "function") {
+    \\        const chunk = { text: output, lastInTextNode: true, before() {}, after() {}, replace() {}, remove() {} };
+    \\        __home_html_check_handler_result(handlers.text(chunk), handlers.text);
+    \\      }
+    \\      if (typeof handlers.end === "function") {
+    \\        const end = { append() {} };
+    \\        __home_html_check_handler_result(handlers.end(end), handlers.end);
+    \\      }
+    \\    }
+    \\    if (input instanceof Response && pendingHandlers.length !== 0) {
+    \\      const deferredBody = __home_deferred_chunks_reader(Promise.all(pendingHandlers).then(() => [output]));
+    \\      return new Response(deferredBody, { status: input.status, statusText: input.statusText, headers: input.headers });
     \\    }
     \\    return input instanceof Response ? new Response(output, { status: input.status, statusText: input.statusText, headers: input.headers }) : output;
     \\  };
@@ -63792,6 +63904,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "node:stream/web",
         "stream",
         "node:stream",
+        "timers/promises",
+        "node:timers/promises",
         "console",
         "node:console",
         "events",
@@ -63924,7 +64038,41 @@ fn tryAppendBunTestImportRewrite(
         const ident_end = readJsIdentifier(source, i) orelse return null;
         const ident = source[i..ident_end];
         var j = skipJsWhitespace(source, ident_end);
-        if (j < source.len and source[j] == ',') return null;
+        if (j < source.len and source[j] == ',') {
+            j = skipJsWhitespace(source, j + 1);
+            if (j >= source.len or source[j] != '{') return null;
+            const specifier_start = j + 1;
+            j += 1;
+            while (j < source.len and source[j] != '}') j += 1;
+            if (j >= source.len) return null;
+            const specifiers = source[specifier_start..j];
+            j = skipJsWhitespace(source, j + 1);
+            j = consumeJsKeyword(source, j, "from") orelse return null;
+            if (j >= source.len or !isJsWhitespace(source[j])) return null;
+            j = skipJsWhitespace(source, j);
+            if (j >= source.len or (source[j] != '"' and source[j] != '\'')) return null;
+            const quote = source[j];
+            j += 1;
+            const module = supportedNamedImportModule(source, j) orelse return null;
+            j = module.end;
+            if (j >= source.len or source[j] != quote) return null;
+            j += 1;
+            j = skipJsHorizontalWhitespace(source, j);
+            if (j < source.len and source[j] == ';') j += 1;
+            if (!type_only) {
+                try out.appendSlice(allocator, "const ");
+                try out.appendSlice(allocator, ident);
+                try out.appendSlice(allocator, " = globalThis.__home_import(\"");
+                try out.appendSlice(allocator, module.name);
+                if (moduleDefaultExportIsApi(module.name)) {
+                    try out.appendSlice(allocator, "\").default;\n");
+                } else {
+                    try out.appendSlice(allocator, "\");\n");
+                }
+                _ = try appendBunTestImportBinding(out, allocator, specifiers, module.name);
+            }
+            return j;
+        }
         j = consumeJsKeyword(source, j, "from") orelse return null;
         if (j >= source.len or !isJsWhitespace(source[j])) return null;
         j = skipJsWhitespace(source, j);
@@ -78186,6 +78334,25 @@ test "Node path and assert import rewrites lower default imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const path = globalThis.__home_import(\"path\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:assert\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"path\"") == null);
+}
+
+test "bootstrap import rewrite lowers mixed default and named imports" {
+    const source =
+        \\import path, { join } from "path";
+        \\import fs, { readFileSync as read } from "fs";
+        \\import { setImmediate as setImmediatePromise } from "timers/promises";
+        \\import { test } from "bun:test";
+        \\test("mixed imports", () => [path, join, fs, read, setImmediatePromise]);
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/workerd/html-rewriter.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const path = globalThis.__home_import(\"path\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { join } = globalThis.__home_import(\"path\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const fs = globalThis.__home_import(\"fs\").default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { readFileSync: read } = globalThis.__home_import(\"fs\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { setImmediate: setImmediatePromise } = globalThis.__home_import(\"timers/promises\");") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
 }
 
 test "Node path import rewrite lowers named node:path import" {
