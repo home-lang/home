@@ -204,6 +204,7 @@ const CheckerResolverAdapter = struct {
             .export_pos = effective_type_only_pos orelse 0,
             .export_assignment_type_only = resolved_facts.export_assignment_type_only,
             .default_export_member_readonly = resolved_facts.default_export_member_readonly,
+            .module_is_external = if (resolved != null) resolved_facts.module_is_external else true,
             .ambient_module = ambient != null,
             .ambient_module_exports_known = ambient != null,
         };

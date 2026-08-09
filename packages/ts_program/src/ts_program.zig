@@ -3582,6 +3582,7 @@ pub const ModuleExportFacts = struct {
     type_only_pos: ?u32 = null,
     export_assignment_type_only: bool = false,
     default_export_member_readonly: bool = false,
+    module_is_external: bool = false,
 };
 
 /// Resolve direct and export-star-projected facts for `name` from an already
@@ -3626,6 +3627,11 @@ fn moduleExportFactsFromResolvedModuleDepth(
         gpa.destroy(compilation);
     }
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return facts;
+    facts.module_is_external = moduleRootIsExternalOrCommonJsModule(
+        &compilation.hir,
+        &compilation.interner,
+        compilation.root,
+    );
     if (name.len == 0) {
         for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
             if (compilation.hir.kindOf(stmt) != .export_decl) continue;
@@ -3672,6 +3678,39 @@ fn moduleExportFactsFromResolvedModuleDepth(
         facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
     }
     return facts;
+}
+
+fn moduleRootIsExternalOrCommonJsModule(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
+        switch (hir.kindOf(stmt)) {
+            .import_decl, .export_decl => return true,
+            .assignment => {
+                const assignment = hir_mod_ns.assignmentOf(hir, stmt);
+                if (assignment.op != null) continue;
+                if (commonJsExportAssignmentName(hir, interner, assignment.target) != null or
+                    commonJsModuleExportsAccess(hir, interner, assignment.target)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn commonJsModuleExportsAccess(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    node: hir_mod_ns.NodeId,
+) bool {
+    const name = commonJsPropertyAccessName(hir, node) orelse return false;
+    if (!std.mem.eql(u8, interner.get(name), "exports")) return false;
+    const object = commonJsPropertyAccessObject(hir, node) orelse return false;
+    return hir.kindOf(object) == .identifier and
+        std.mem.eql(u8, interner.get(hir_mod_ns.identifierOf(hir, object).name), "module");
 }
 
 fn moduleDefaultExportMemberIsReadonly(
@@ -5875,6 +5914,23 @@ test "module export facts expose non-void CommonJS properties" {
     );
     try T.expect(exported.exported_value);
     try T.expect(!absent.exported_value);
+}
+
+test "module export facts distinguish scripts from external modules" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/script.js", "/** @typedef {string} A */\n");
+    try vfs.addFile("/esm.js", "export const value = 1;\n");
+    try vfs.addFile("/commonjs.js", "module.exports = {};\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const script = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/script.js", "");
+    const esm = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/esm.js", "");
+    const commonjs = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/commonjs.js", "");
+    try T.expect(!script.module_is_external);
+    try T.expect(esm.module_is_external);
+    try T.expect(commonjs.module_is_external);
 }
 
 test "Program: collects only non-void CommonJS exports" {

@@ -295,6 +295,11 @@ pub const ExternalResolver = struct {
         /// TypeScript rejects value imports/re-exports of these symbols with
         /// TS2748 even though they are value-space exports.
         ambient_const_enum: bool = false,
+        /// Whether the resolved source is an external module. Null means
+        /// the resolver does not expose module-shape facts. JSDoc import
+        /// types use a known-false value to distinguish a resolved script
+        /// from a module (TS2306).
+        module_is_external: ?bool = null,
     };
     pub const InferredExportUnsafeReference = struct {
         /// Type name that makes the inferred exported value non-portable.
@@ -5122,6 +5127,7 @@ pub const Checker = struct {
         try self.checkAmbientModuleExportAssignments(stmts);
         try self.checkJSDocMalformedImportAttributes(root);
         try self.checkJSDocImportRequireSyntax(root);
+        try self.checkJSDocImportTypeModuleTargets(root);
         try self.reportLargeControlFlowBodyIfNeeded(stmts);
         try self.checkCircularBaseExpressions();
         try self.preRegisterTopLevelClassAccessibility(stmts);
@@ -5769,6 +5775,37 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn checkJSDocImportTypeModuleTargets(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const tags = ts_parser.jsdoc.parse(self.gpa, src[body_start..comment_end]) catch continue;
+            defer self.gpa.free(tags);
+            const anchor = self.jsDocCommentAnchor(root, comment_start);
+            for (tags) |tag| {
+                const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+                if (!std.mem.startsWith(u8, type_text, "import(") and
+                    !std.mem.startsWith(u8, type_text, "typeof import(")) continue;
+                _ = try self.jsDocTypeTextToTypeAt(src, type_text, anchor);
+            }
+        }
+    }
+
+    fn jsDocCommentAnchor(self: *Checker, root: NodeId, comment_start: usize) NodeId {
+        if (self.hir.kindOf(root) != .block_stmt) return root;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const span = self.hir.spanOf(stmt);
+            if (span.start <= comment_start and comment_start < span.end) return stmt;
+        }
+        return root;
     }
 
     fn checkJsDocTemplateDeclarations(self: *Checker, root: NodeId) CheckError!void {
@@ -82504,6 +82541,7 @@ pub const Checker = struct {
         spec_text = spec_text[1 .. spec_text.len - 1];
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id) return null;
+        if (try self.reportJsDocImportFileIsNotModule(src, anchor, spec_text)) return types.Primitive.any;
         var rest = std.mem.trim(u8, text[close + 1 ..], " \t\r\n");
         if (rest.len == 0) {
             const spec_id = self.string_interner.intern(spec_text) catch return error.OutOfMemory;
@@ -82526,6 +82564,72 @@ pub const Checker = struct {
         const member_id = self.string_interner.intern(member_text) catch return error.OutOfMemory;
         const member_pos = self.sliceStartPos(src, member_text);
         return try self.virtualCommonJsImportMemberByName(anchor, spec_text, member_id, space, member_pos);
+    }
+
+    fn reportJsDocImportFileIsNotModule(
+        self: *Checker,
+        src: []const u8,
+        anchor: NodeId,
+        spec: []const u8,
+    ) CheckError!bool {
+        if (!std.mem.startsWith(u8, spec, ".")) return false;
+        const resolver = self.external_resolver orelse
+            return try self.reportVirtualJsDocImportFileIsNotModule(src, anchor, spec);
+        const info = resolver.moduleExport(spec, self.importer_path, "") orelse return false;
+        if (info.module_is_external != false) return false;
+        const resolution = resolver.resolve(spec, self.importer_path) orelse return false;
+        var display = resolution.path;
+        while (std.mem.startsWith(u8, display, "/")) display = display[1..];
+        return try self.appendJsDocFileIsNotModuleDiagnostic(src, anchor, spec, display);
+    }
+
+    fn reportVirtualJsDocImportFileIsNotModule(
+        self: *Checker,
+        src: []const u8,
+        anchor: NodeId,
+        spec: []const u8,
+    ) CheckError!bool {
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        if (try self.resolveVirtualRelativeModule(anchor, spec) == .none) return false;
+        const from = self.virtualSectionFilenameForNode(anchor) orelse return false;
+        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec)) continue;
+            const kind = self.hir.kindOf(stmt);
+            if (kind == .import_decl or kind == .export_decl) return false;
+            if (kind == .assignment and self.assignmentMarksCommonJsModuleBoundary(stmt)) return false;
+        }
+        const display = self.virtualResolvedDisplayFilename(resolved, spec) orelse return false;
+        return try self.appendJsDocFileIsNotModuleDiagnostic(src, anchor, spec, display);
+    }
+
+    fn appendJsDocFileIsNotModuleDiagnostic(
+        self: *Checker,
+        src: []const u8,
+        anchor: NodeId,
+        spec: []const u8,
+        display: []const u8,
+    ) CheckError!bool {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "File '{s}' is not a module.",
+            .{display},
+        );
+        const spec_start = self.sliceStartPos(src, spec);
+        if (spec_start) |pos| {
+            const quote_pos = if (pos > 0) pos - 1 else pos;
+            if (self.hasDiagnosticAtPosition(TsCodes.file_is_not_a_module, quote_pos)) return true;
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = if (spec_start) |pos| if (pos > 0) pos - 1 else pos else null,
+            .code = TsCodes.file_is_not_a_module,
+            .message = msg,
+        });
+        return true;
     }
 
     fn jsDocImportedNamespaceMemberType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
@@ -197877,6 +197981,44 @@ test "checker: checkjs JSDoc import-type resolves a type from another module" {
     // a confused "cannot find name 'import'".
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: checkjs JSDoc import type distinguishes scripts from CommonJS modules" {
+    {
+        const s = try newSetup(
+            \\// @checkJs: true
+            \\// @filename: a.js
+            \\/** @typedef {string} A */
+            \\// @filename: b.js
+            \\module.exports = {
+            \\  create() {
+            \\    /** @param {import("./a").A} x */
+            \\    function f(x) {}
+            \\  }
+            \\};
+        );
+        defer destroySetup(s);
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.file_is_not_a_module));
+        for (s.checker.diagnostics.items) |d| {
+            if (d.code == TsCodes.file_is_not_a_module) {
+                try T.expectEqualStrings("File 'a.js' is not a module.", d.message);
+            }
+        }
+    }
+    {
+        const s = try newSetup(
+            \\// @checkJs: true
+            \\// @filename: module.js
+            \\module.exports = {};
+            \\// @filename: consumer.js
+            \\/** @param {import("./module").Missing} x */
+            \\function f(x) {}
+        );
+        defer destroySetup(s);
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.file_is_not_a_module));
     }
 }
 
