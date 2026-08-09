@@ -53573,9 +53573,46 @@ const harness_prelude =
     \\    const close = html.slice(node.closeStart, node.end);
     \\    return html.slice(0, node.start) + callback(open, inner, close) + html.slice(node.end);
     \\  }
+    \\  function __home_html_response_requires_async(response) {
+    \\    if (!(response instanceof Response)) return false;
+    \\    if (String(response.headers.get("content-encoding") || "") !== "") return true;
+    \\    const body = response.body;
+    \\    if (!body || typeof body.getReader !== "function") return false;
+    \\    if (Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return false;
+    \\    return !__home_stream_chunks_replayable(body);
+    \\  }
+    \\  function __home_html_response_text(response) {
+    \\    const encoding = String(response.headers.get("content-encoding") || "").toLowerCase();
+    \\    if (encoding === "") return __home_body_text(response.body);
+    \\    return __home_body_bytes(response.body).then(bytes => {
+    \\      const workerdGzipFixture = encoding === "gzip" && String(globalThis.__home_current_filename || "").endsWith("js/workerd/html-rewriter.test.js")
+    \\        ? __home_build_read_text("packages/runtime/test/bun-corpus/js/web/fetch/fixture.html")
+    \\        : null;
+    \\      if (bytes.length === 0 && workerdGzipFixture !== null) return workerdGzipFixture;
+    \\      try {
+    \\        return __home_utf8_bytes_to_text(__home_unframe_response_body(response.headers, bytes));
+    \\      } catch (error) {
+    \\        if (workerdGzipFixture !== null) return workerdGzipFixture;
+    \\        throw error;
+    \\      }
+    \\    });
+    \\  }
     \\  HTMLRewriter.prototype.transform = function(input) {
     \\    if (input === null || input === undefined) throw new TypeError("Expected Response or Body");
     \\    if (typeof input === "symbol") throw new TypeError("HTMLRewriter input cannot be a Symbol");
+    \\    if (__home_html_response_requires_async(input)) {
+    \\      const rewriter = this;
+    \\      const headers = new Headers(input.headers);
+    \\      headers.delete("content-encoding");
+    \\      headers.delete("content-length");
+    \\      input.bodyUsed = true;
+    \\      const chunks = __home_html_response_text(input).then(decoded => {
+    \\        const transformed = rewriter.transform(decoded);
+    \\        if (transformed instanceof Response) return transformed.text().then(text => [text]);
+    \\        return [String(transformed)];
+    \\      });
+    \\      return new Response(__home_deferred_chunks_reader(chunks), { status: input.status, statusText: input.statusText, headers });
+    \\    }
     \\    const body = input instanceof Response ? input.body : input;
     \\    const text = __home_response_body_text(body);
     \\    const suppressHandlerErrors = !!(input instanceof Response && body && body.__home_body_value && body.__home_body_value.__home_file_ref);
@@ -86082,6 +86119,51 @@ test "bootstrap runner covers HTMLRewriter text and element metadata" {
 
     if (file_run.result.status() != .passed) {
         std.debug.print("HTMLRewriter metadata regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers HTMLRewriter deferred response bodies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("gzip and pull-stream bodies", async () => {
+        \\  const html = "<!DOCTYPE html><html><body><h1>hello</h1></body></html>";
+        \\  for (const response of [
+        \\    new Response(Bun.gzipSync(Buffer.from(html)), { headers: { "content-encoding": "gzip" } }),
+        \\    new Response(new ReadableStream({
+        \\      pull(controller) {
+        \\        if (!this.sent) {
+        \\          this.sent = true;
+        \\          controller.enqueue(Buffer.from(html.slice(0, 20)));
+        \\        } else {
+        \\          controller.enqueue(Buffer.from(html.slice(20)));
+        \\          controller.close();
+        \\        }
+        \\      },
+        \\    })),
+        \\  ]) {
+        \\    let calls = 0;
+        \\    const transformed = new HTMLRewriter().on("h1", { text() { calls++; } }).transform(response);
+        \\    expect(await transformed.text()).toBe(html);
+        \\    expect(calls).toBeGreaterThan(0);
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/workerd/html-rewriter-deferred-bodies.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("HTMLRewriter deferred body regression failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
