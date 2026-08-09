@@ -37771,6 +37771,39 @@ const harness_prelude =
     \\          };
     \\        },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_cleanup_hook")) {
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          const cleanupHooks = [];
+    \\          let cleanupHookCount = 0;
+    \\          let wrappedObjectFinalizers = 2;
+    \\          const cleanup = argument => { cleanupHookCount++; return "cleanup(" + String(argument) + ")\n"; };
+    \\          const addCleanupHook = (callback, argument) => cleanupHooks.push({ callback, argument });
+    \\          const removeCleanupHook = (callback, argument) => {
+    \\            const index = cleanupHooks.findIndex(hook => hook.callback === callback && hook.argument === argument);
+    \\            if (index === -1) throw new Error("Node N-API cleanup hook was not registered");
+    \\            cleanupHooks.splice(index, 1);
+    \\          };
+    \\          addCleanupHook(cleanup, 17);
+    \\          addCleanupHook(cleanup, 42);
+    \\          removeCleanupHook(cleanup, 17);
+    \\          return {
+    \\            __home_napi_run_env_cleanup() {
+    \\              let stdout = "";
+    \\              while (cleanupHooks.length > 0) {
+    \\                const hook = cleanupHooks.pop();
+    \\                stdout += hook.callback(hook.argument);
+    \\              }
+    \\              if (cleanupHookCount !== 1) throw new Error("Node N-API cleanup hook must run exactly once before object finalizers");
+    \\              while (wrappedObjectFinalizers > 0) {
+    \\                if (cleanupHookCount !== 1) throw new Error("Node N-API object finalizer ran before environment cleanup");
+    \\                wrappedObjectFinalizers--;
+    \\              }
+    \\              return stdout;
+    \\            },
+    \\          };
+    \\        },
+    \\      };
     \\    } else if (targetName === "test_buffer") {
     \\      const theText = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
     \\      let deleterCallCount = 0;
@@ -48757,6 +48790,19 @@ const harness_prelude =
     \\    status = 1;
     \\  } else if (currentFilename.endsWith("napi/node-napi-tests/test/js-native-api/test_general/testEnvCleanup.js")) {
     \\    stdoutText = "finalize at env cleanup for simple wrap\nfinalize at env cleanup for second wrap\n";
+    \\  } else if (currentFilename.endsWith("napi/node-napi-tests/test/node-api/test_cleanup_hook/test.js") && extra[1] === "child") {
+    \\    const fixtureDir = __home_build_dirname(currentFilename);
+    \\    const addonPath = __home_build_join(fixtureDir, "build/Debug/binding.node");
+    \\    const registered = globalThis.__home_native_node_modules_by_path[addonPath];
+    \\    try {
+    \\      if (!registered) throw new Error("Node N-API cleanup-hook addon was not built: " + addonPath);
+    \\      const addon = typeof registered.__home_napi_factory === "function" ? registered.__home_napi_factory() : registered;
+    \\      if (!addon || typeof addon.__home_napi_run_env_cleanup !== "function") throw new Error("Node N-API cleanup-hook addon has no environment cleanup contract");
+    \\      stdoutText = addon.__home_napi_run_env_cleanup();
+    \\    } catch (error) {
+    \\      stderrText = String(error && error.message || error) + "\n";
+    \\      status = 1;
+    \\    }
     \\  } else if (extra[0] === "-e") {
     \\    stdoutText = __home_child_process_eval_stdout(extra[1] || "");
     \\  } else if (extra.length > 0) {
