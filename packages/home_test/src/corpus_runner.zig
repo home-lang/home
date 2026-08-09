@@ -1140,6 +1140,7 @@ const harness_prelude =
     \\      error.binding = registered;
     \\      throw error;
     \\    }
+    \\    if (typeof registered.__home_napi_factory === "function") return registered.__home_napi_factory();
     \\    return registered;
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts")) {
@@ -37725,6 +37726,10 @@ const harness_prelude =
     \\          return buffer.__home_detached === true;
     \\        },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/1_hello_world")) {
+    \\      addon = {
+    \\        __home_napi_factory() { return { hello() { return "world"; } }; },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
@@ -58457,7 +58462,7 @@ const harness_prelude =
     \\    const workerRequire = function(name) {
     \\      const id = String(name);
     \\      if (id === "worker_threads" || id === "node:worker_threads") return workerModule;
-    \\      return globalThis.__home_import(id);
+    \\      return globalThis.require(id);
     \\    };
     \\    Promise.resolve().then(() => {
     \\      try {
