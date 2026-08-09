@@ -41,6 +41,13 @@ pub const TagKind = enum {
     other,
 };
 
+pub const TemplateVariance = enum {
+    none,
+    in,
+    out,
+    in_out,
+};
+
 pub const Tag = struct {
     kind: TagKind,
     /// Raw text of the type expression between `{` and `}`. May be
@@ -65,8 +72,15 @@ pub const Tag = struct {
     /// bracket-name optionality.
     optional_from_type_suffix: bool = false,
     /// Captured default-value expression when the source used the
-    /// `@param {T} [name=DEFAULT]` form. Empty otherwise.
+    /// `@param {T} [name=DEFAULT]` or `@template [T=DEFAULT]` form.
+    /// Empty when no default was supplied or the default was malformed.
     default_text: []const u8 = "",
+    /// True when bracket syntax contained `=`, including malformed `[T=]`.
+    has_default: bool = false,
+    /// Template-only `const` modifier.
+    is_const: bool = false,
+    /// Template-only declaration-site variance modifier.
+    template_variance: TemplateVariance = .none,
     /// True when the tag used Closure's name-first spelling
     /// (`@param name {T}`). Upstream suppresses unmatched-name
     /// TS8024 for that spelling.
@@ -152,12 +166,25 @@ fn parseLine(line: []const u8) ?Tag {
     // parameters.
     var name_text: []const u8 = "";
     var default_text: []const u8 = "";
+    var has_default = false;
+    var is_const = false;
+    var template_variance: TemplateVariance = .none;
     if (kind == .param_tag or kind == .template_tag or kind == .typedef_tag) {
-        if (kind == .param_tag and rest.len > 0 and rest[0] == '[') {
+        if (kind == .template_tag) {
+            if (consumeWordPrefix(&rest, "const")) is_const = true;
+            if (consumeWordPrefix(&rest, "in")) {
+                template_variance = if (consumeWordPrefix(&rest, "out")) .in_out else .in;
+            } else if (consumeWordPrefix(&rest, "out")) {
+                template_variance = .out;
+            }
+            if (consumeWordPrefix(&rest, "const")) is_const = true;
+        }
+        if ((kind == .param_tag or kind == .template_tag) and rest.len > 0 and rest[0] == '[') {
             const close = std.mem.indexOfScalar(u8, rest, ']') orelse return null;
             const inner = rest[1..close];
             optional = true;
             if (std.mem.indexOfScalar(u8, inner, '=')) |eq| {
+                has_default = true;
                 name_text = std.mem.trim(u8, inner[0..eq], " \t");
                 default_text = std.mem.trim(u8, inner[eq + 1 ..], " \t");
             } else {
@@ -169,14 +196,6 @@ fn parseLine(line: []const u8) ?Tag {
             name_text = rest[1..close];
             rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
         } else {
-            // `@template const T` — `const` is a const-type-parameter
-            // modifier, not the parameter name. Skip it so the real name
-            // (`T`) is read (jsdocTemplateTag6).
-            if (kind == .template_tag and std.mem.startsWith(u8, rest, "const") and
-                rest.len > 5 and (rest[5] == ' ' or rest[5] == '\t'))
-            {
-                rest = std.mem.trimStart(u8, rest[5..], " \t");
-            }
             var m: usize = 0;
             while (m < rest.len and isIdentChar(rest[m])) m += 1;
             name_text = rest[0..m];
@@ -201,8 +220,18 @@ fn parseLine(line: []const u8) ?Tag {
         .optional = optional,
         .optional_from_type_suffix = optional_from_type_suffix,
         .default_text = default_text,
+        .has_default = has_default,
+        .is_const = is_const,
+        .template_variance = template_variance,
         .is_name_first = is_name_first,
     };
+}
+
+fn consumeWordPrefix(rest: *[]const u8, word: []const u8) bool {
+    if (!std.mem.startsWith(u8, rest.*, word)) return false;
+    if (rest.*.len == word.len or (rest.*[word.len] != ' ' and rest.*[word.len] != '\t')) return false;
+    rest.* = std.mem.trimStart(u8, rest.*[word.len..], " \t");
+    return true;
 }
 
 fn isTagNameChar(c: u8) bool {
@@ -389,6 +418,24 @@ test "jsdoc: template" {
     defer T.allocator.free(tags);
     try T.expectEqual(TagKind.template_tag, tags[0].kind);
     try T.expectEqualStrings("T", tags[0].name);
+}
+
+test "jsdoc: template defaults and modifiers" {
+    const body =
+        \\ * @template {string | number} [T=string]
+        \\ * @template const in out U
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqualStrings("T", tags[0].name);
+    try T.expectEqualStrings("string", tags[0].default_text);
+    try T.expect(tags[0].optional);
+    try T.expect(tags[0].has_default);
+    try T.expectEqualStrings("string | number", tags[0].type_text);
+    try T.expectEqualStrings("U", tags[1].name);
+    try T.expect(tags[1].is_const);
+    try T.expectEqual(TemplateVariance.in_out, tags[1].template_variance);
 }
 
 test "jsdoc: nested braces in type" {
