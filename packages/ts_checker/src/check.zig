@@ -90969,6 +90969,11 @@ pub const Checker = struct {
                     try self.commonJsExportMemberKey(a.target)
                 else
                     null;
+                const commonjs_export_declared_t = if (commonjs_export_key) |key|
+                    try self.commonJsExportDeclaredType(node, key)
+                else
+                    null;
+                if (commonjs_export_declared_t) |declared_t| target_t = declared_t;
                 const checkjs_object_expando_key = if (a.op == null and
                     (target_kind == .member_access or target_kind == .element_access))
                     try self.checkJsObjectLiteralExpandoMemberKey(a.target)
@@ -90980,7 +90985,7 @@ pub const Checker = struct {
                 // Home otherwise resolves module.exports to a cross-file-conflated type
                 // and spuriously diagnoses. Mirrors moduleExportsTypeNoExcessProperty
                 // CheckFromContainedLiteral (#57460).
-                const target_is_commonjs_export_assignment = commonjs_export_key != null or
+                const target_is_commonjs_export_assignment = (commonjs_export_key != null and commonjs_export_declared_t == null) or
                     (target_kind == .member_access and
                         self.memberAccessIsModuleExports(a.target) and
                         !target_has_explicit_jsdoc_module_exports_type);
@@ -101344,6 +101349,28 @@ pub const Checker = struct {
         if (self.nodeIsModuleExportsAccess(object)) {
             const module_exports = self.string_interner.intern("module.exports") catch return error.OutOfMemory;
             return .{ .obj_name = module_exports, .prop_name = prop_name };
+        }
+        return null;
+    }
+
+    fn commonJsExportDeclaredType(self: *Checker, anchor: NodeId, key: MemberKey) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != section) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null) continue;
+            const candidate = (try self.commonJsExportMemberKey(assignment.target)) orelse continue;
+            if (candidate.obj_name != key.obj_name or candidate.prop_name != key.prop_name) continue;
+            const parent = self.hir.parentOf(stmt);
+            const jsdoc_anchor = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt)
+                parent
+            else
+                stmt;
+            if (try self.jsDocTypeForLeadingNode(jsdoc_anchor)) |declared_t| return declared_t;
         }
         return null;
     }
@@ -201237,6 +201264,24 @@ test "checker: checkjs CommonJS export property assignment flow reports possibly
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
     try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: checkjs CommonJS export JSDoc declares the slot across all writes" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: file.js
+        \\exports.foo = 42;
+        \\/** @type {string} */
+        \\exports.foo = "hello";
+        \\/** @type {boolean} */
+        \\exports.foo = true;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'string'."));
 }
 
 test "checker: checkjs CommonJS chained void export declarations use later literal export types" {
