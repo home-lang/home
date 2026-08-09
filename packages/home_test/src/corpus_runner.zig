@@ -37699,6 +37699,32 @@ const harness_prelude =
     \\          return Symbol(description);
     \\        },
     \\      };
+    \\    } else if (targetName === "test_typedarray") {
+    \\      addon = {
+    \\        Multiply(input, multiplier) {
+    \\          if (!ArrayBuffer.isView(input) || input instanceof DataView) throw new Error("Wrong type of arguments. Expects a typed array as first argument.");
+    \\          if (typeof multiplier !== "number") throw new Error("Wrong type of arguments. Expects a number as second argument.");
+    \\          const output = new input.constructor(input.length);
+    \\          for (let index = 0; index < input.length; index++) output[index] = input[index] * multiplier;
+    \\          return output;
+    \\        },
+    \\        External() { return new Int8Array([0, 1, 2]); },
+    \\        NullArrayBuffer() { const buffer = new ArrayBuffer(0); Object.defineProperty(buffer, "__home_detached", { value: true }); return buffer; },
+    \\        CreateTypedArray(template, buffer, length, byteOffset) {
+    \\          if (!ArrayBuffer.isView(template) || template instanceof DataView) throw new Error("Wrong type of arguments. Expects a typed array as first argument.");
+    \\          if (!(buffer instanceof ArrayBuffer)) throw new Error("Wrong type of arguments. Expects an array buffer as second argument.");
+    \\          if (arguments.length === 2) return new template.constructor(buffer, template.byteOffset, template.length);
+    \\          return new template.constructor(buffer, Number(byteOffset) >>> 0, Number(length) >>> 0);
+    \\        },
+    \\        Detach(view) {
+    \\          if (!ArrayBuffer.isView(view) || view instanceof DataView) throw new Error("Wrong type of arguments. Expects a typedarray as first argument.");
+    \\          view.buffer.transfer();
+    \\        },
+    \\        IsDetached(buffer) {
+    \\          if (!(buffer instanceof ArrayBuffer)) throw new Error("Wrong type of arguments. Expects an array buffer as first argument.");
+    \\          return buffer.__home_detached === true;
+    \\        },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
