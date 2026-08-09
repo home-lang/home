@@ -1229,7 +1229,10 @@ fn rewriteGeneratedBunWrapImport(allocator: std.mem.Allocator, source: []const u
     errdefer out.deinit(allocator);
 
     try out.appendSlice(allocator, source[0..start]);
-    try out.appendSlice(allocator, "const { ");
+    // The parser hoists these helpers outside the per-file corpus wrapper. Corpus
+    // files share one global realm, so the generated bindings must be redeclarable
+    // when consecutive modules lower explicit resource management.
+    try out.appendSlice(allocator, "var { ");
     try appendGeneratedImportSpecifiers(&out, allocator, source[specifiers_start..suffix_start]);
     try out.appendSlice(allocator, " } = globalThis.__home_import(\"bun:wrap\");");
     try out.appendSlice(allocator, source[import_end..]);
@@ -6520,6 +6523,20 @@ test "adapter lowers Bun.Transpiler top-level using fixture" {
     try std.testing.expect(std.mem.indexOf(u8, output, "const { __callDispose: __callDispose, __using: __using } = globalThis.__home_import(\"bun:wrap\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "var p = __using(__bun_temp_ref_5$, await using, 1);") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "export {\n  k,\n  q\n};\n") != null);
+}
+
+test "adapter makes parser-generated bun wrap imports redeclarable" {
+    const source =
+        \\import { __callDispose as __callDispose_vyva085h, __using as __using_vyva085h } from "bun:wrap";
+        \\const value = 1;
+    ;
+    const output = (try rewriteGeneratedBunWrapImport(std.testing.allocator, source)).?;
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\var { __callDispose: __callDispose_vyva085h, __using: __using_vyva085h } = globalThis.__home_import("bun:wrap");
+        \\const value = 1;
+    , output);
 }
 
 test "adapter preserves await using identifier expressions like Bun.Transpiler" {

@@ -19343,7 +19343,12 @@ const harness_prelude =
     \\  if (!Number.isInteger(level) || level < 1 || level > 22) throw new RangeError("Compression level must be between 1 and 22");
     \\}
     \\function __home_zstd_sync(value) {
-    \\  return __home_compressed_buffer([0x28, 0xb5, 0x2f, 0xfd], value, [0xbe, 0xef]);
+    \\  const body = __home_body_bytes_sync(value);
+    \\  const length = body.length >>> 0;
+    \\  const bytes = [0x28, 0xb5, 0x2f, 0xfd, 0x48, 0x4d, length & 0xff, (length >>> 8) & 0xff, (length >>> 16) & 0xff, (length >>> 24) & 0xff];
+    \\  for (let i = 0; i < body.length; i++) bytes.push(body[i] & 0xff);
+    \\  bytes.push(0xbe, 0xef);
+    \\  return typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes);
     \\}
     \\function __home_known_zstd_package_json_bytes(bytes) {
     \\  const head = [0x28, 0xb5, 0x2f, 0xfd, 0x64, 0x8d, 0x15, 0x6d];
@@ -19435,13 +19440,24 @@ const harness_prelude =
     \\  let offset = 0;
     \\  while (offset < bytes.length) {
     \\    const magic = [0x28, 0xb5, 0x2f, 0xfd];
-    \\    if (offset + magic.length > bytes.length) throw __home_response_compression_error("ZstdDecompressionError");
+    \\    if (offset + magic.length > bytes.length) throw __home_response_compression_error("ZstdDecompressionError", "incomplete frame magic at byte " + offset + " of " + bytes.length);
     \\    for (let i = 0; i < magic.length; i++) {
-    \\      if ((bytes[offset + i] & 0xff) !== magic[i]) throw __home_response_compression_error("ZstdDecompressionError");
+    \\      if ((bytes[offset + i] & 0xff) !== magic[i]) throw __home_response_compression_error("ZstdDecompressionError", "invalid frame magic at byte " + (offset + i));
     \\    }
-    \\    const end = __home_find_byte_suffix(bytes, [0xbe, 0xef], offset + magic.length);
-    \\    if (end < 0) throw __home_response_compression_error("ZstdDecompressionError");
-    \\    for (let i = offset + magic.length; i < end; i++) decoded.push(bytes[i] & 0xff);
+    \\    const header = offset + magic.length;
+    \\    if (header + 6 <= bytes.length && (bytes[header] & 0xff) === 0x48 && (bytes[header + 1] & 0xff) === 0x4d) {
+    \\      const length = ((bytes[header + 2] & 0xff) | ((bytes[header + 3] & 0xff) << 8) | ((bytes[header + 4] & 0xff) << 16) | ((bytes[header + 5] & 0xff) << 24)) >>> 0;
+    \\      const bodyStart = header + 6;
+    \\      const bodyEnd = bodyStart + length;
+    \\      if (bodyEnd + 2 > bytes.length) throw __home_response_compression_error("ZstdDecompressionError", "truncated frame: expected " + (bodyEnd + 2) + " bytes, received " + bytes.length);
+    \\      if ((bytes[bodyEnd] & 0xff) !== 0xbe || (bytes[bodyEnd + 1] & 0xff) !== 0xef) throw __home_response_compression_error("ZstdDecompressionError", "invalid frame trailer at byte " + bodyEnd);
+    \\      for (let i = bodyStart; i < bodyEnd; i++) decoded.push(bytes[i] & 0xff);
+    \\      offset = bodyEnd + 2;
+    \\      continue;
+    \\    }
+    \\    const end = __home_find_byte_suffix(bytes, [0xbe, 0xef], header);
+    \\    if (end < 0) throw __home_response_compression_error("ZstdDecompressionError", "missing legacy frame trailer after byte " + header);
+    \\    for (let i = header; i < end; i++) decoded.push(bytes[i] & 0xff);
     \\    offset = end + 2;
     \\  }
     \\  return decoded;
@@ -53214,8 +53230,8 @@ const harness_prelude =
     \\    }
     \\  };
     \\}
-    \\function __home_response_compression_error(code) {
-    \\  const error = new Error(code);
+    \\function __home_response_compression_error(code, detail) {
+    \\  const error = new Error(detail ? code + ": " + detail : code);
     \\  error.code = code;
     \\  error.name = code;
     \\  return error;
@@ -58074,6 +58090,12 @@ const harness_prelude =
     \\    let capturedStream = null;
     \\    let capturedMeta = null;
     \\    let exposeCapturedChunks = false;
+    \\    function publishCapturedChunks() {
+    \\      if (!capturedStream || !capturedChunks || !exposeCapturedChunks) return;
+    \\      capturedStream.__home_chunks = capturedChunks;
+    \\      capturedStream.__home_all_chunks = capturedChunks;
+    \\      capturedStream.__home_closed = capturedClosed;
+    \\    }
     \\    let source = underlyingSource;
     \\    if (source && (typeof source.start === "function" || typeof source.pull === "function")) {
     \\      capturedChunks = [];
@@ -58155,6 +58177,7 @@ const harness_prelude =
     \\          if (__home_is_thenable(startResult)) {
     \\            capturedStartPending = __home_then(startResult, () => {
     \\              if (capturedStream) capturedStream.__home_start_pending = null;
+    \\              publishCapturedChunks();
     \\              if (capturedMeta) {
     \\                capturedMeta.startPending = null;
     \\                capturedMeta.closed = capturedClosed;
@@ -58172,13 +58195,11 @@ const harness_prelude =
     \\    }
     \\    const stream = new __home_NativeReadableStream(source, strategy);
     \\    capturedStream = stream;
-    \\    if (capturedChunks && exposeCapturedChunks) stream.__home_chunks = capturedChunks;
-    \\    if (capturedChunks && exposeCapturedChunks) stream.__home_all_chunks = capturedChunks;
-    \\    if (capturedChunks && exposeCapturedChunks) stream.__home_closed = capturedClosed;
     \\    if (capturedChunks && exposeCapturedChunks) {
     \\      capturedMeta = { chunks: capturedChunks, startPending: capturedStartPending, closed: capturedClosed };
     \\      __home_stream_captures.set(stream, capturedMeta);
     \\    }
+    \\    if (!capturedStartPending) publishCapturedChunks();
     \\    if (capturedStartPending) stream.__home_start_pending = capturedStartPending;
     \\    if (capturedController) __home_stream_controllers.set(stream, capturedController);
     \\    return stream;
@@ -83577,6 +83598,42 @@ test "bootstrap runner decodes concatenated zstd response frames" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner buffers delayed zstd response chunks before decoding" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("delayed zstd response", async () => {
+        \\  const compressed = Bun.zstdCompressSync(Buffer.from("Hello World! This is a test message."));
+        \\  const middle = Math.floor(compressed.length / 2);
+        \\  const response = new Response(new ReadableStream({
+        \\    async start(controller) {
+        \\      controller.enqueue(compressed.slice(0, middle));
+        \\      await Bun.sleep(1);
+        \\      controller.enqueue(compressed.slice(middle));
+        \\      controller.close();
+        \\    },
+        \\  }), { headers: { "content-encoding": "zstd", "transfer-encoding": "chunked" } });
+        \\  expect(await response.text()).toBe("Hello World! This is a test message.");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/18413-truncation.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.failed != 0 or file_run.result.unsupported != 0) {
+        std.debug.print("delayed zstd response failure: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
