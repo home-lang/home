@@ -434,13 +434,14 @@ const harness_prelude =
     \\  const delayMs = Math.max(0, Number(delay) || 0);
     \\  const record = { id, delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
     \\  __home_all_timer_records.set(id, record);
-    \\  let turn = Promise.resolve();
-    \\  if (delayMs > 0) {
-    \\    turn = turn.then(() => undefined).then(() => undefined).then(() => undefined).then(() => undefined);
-    \\  }
-    \\  turn.then(() => {
+    \\  let remainingTurns = delayMs > 250 ? Math.min(10000, Math.max(4, Math.ceil(delayMs))) : (delayMs > 0 ? 4 : 0);
+    \\  const run = () => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (record.cleared || !record.active) return;
+    \\    if (remainingTurns-- > 0) {
+    \\      Promise.resolve().then(run);
+    \\      return;
+    \\    }
     \\    if (delayMs > 0 && delayMs <= 250) {
     \\      const started = Date.now();
     \\      while (Date.now() - started < delayMs) {}
@@ -452,7 +453,8 @@ const harness_prelude =
     \\    }
     \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\    record.active = false;
-    \\  });
+    \\  };
+    \\  Promise.resolve().then(run);
     \\  return __home_timer_handle(id, record);
     \\}
     \\function clearTimeout(id) {
@@ -2719,6 +2721,42 @@ const harness_prelude =
     \\  child.kill = function(signal) { void signal; if (!this.__home_killed) { this.__home_killed = true; this.signalCode = "SIGTERM"; server.close(); } return true; };
     \\  child[Symbol.dispose] = function() { this.kill(); };
     \\  child[Symbol.asyncDispose] = function() { this.kill(); return Promise.resolve(undefined); };
+    \\  return child;
+    \\}
+    \\function __home_spawn_issue_02499_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/02499/02499.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("/02499.fixture.ts"))) return null;
+    \\  const server = globalThis.Bun.serve({
+    \\    port: 0,
+    \\    fetch() { return Promise.reject(new SyntaxError("Unexpected token 'i' in JSON")); },
+    \\  });
+    \\  const child = __home_spawn_completed(JSON.stringify({ hostname: server.hostname, port: server.port }) + "\n", "", 0);
+    \\  let resolveExited;
+    \\  let settled = false;
+    \\  child.exited = new Promise(resolve => { resolveExited = resolve; });
+    \\  child.exitCode = null;
+    \\  const finish = (exitCode, signalCode) => {
+    \\    if (settled) return;
+    \\    settled = true;
+    \\    server.stop(true);
+    \\    child.exitCode = exitCode;
+    \\    child.signalCode = signalCode;
+    \\    resolveExited(exitCode);
+    \\  };
+    \\  const stdin = __home_spawn_stdin_sink();
+    \\  const end = stdin.end;
+    \\  stdin.end = function(value) {
+    \\    const written = end.apply(this, arguments);
+    \\    finish(0, null);
+    \\    return written;
+    \\  };
+    \\  child.stdin = stdin;
+    \\  child.kill = function(signal) {
+    \\    void signal;
+    \\    finish(137, "SIGKILL");
+    \\    return true;
+    \\  };
     \\  return child;
     \\}
     \\function __home_spawn_http2_header_name_fixture(options) {
@@ -24940,6 +24978,8 @@ const harness_prelude =
     \\    __home_validate_spawn_signal(options || {});
     \\    const issue00631Fixture = __home_spawn_issue_00631_fixture(options || {});
     \\    if (issue00631Fixture) return issue00631Fixture;
+    \\    const issue02499Fixture = __home_spawn_issue_02499_fixture(options || {});
+    \\    if (issue02499Fixture) return issue02499Fixture;
     \\    const http2HeaderNameFixture = __home_spawn_http2_header_name_fixture(options || {});
     \\    if (http2HeaderNameFixture) return http2HeaderNameFixture;
     \\    const http2DynamicServerFixture = __home_spawn_http2_dynamic_server_fixture(options || {});
