@@ -37865,6 +37865,14 @@ const harness_prelude =
     \\          return buffer.__home_detached === true;
     \\        },
     \\      };
+    \\    } else if (targetName === "test_uv_loop") {
+    \\      addon = {
+    \\        SetImmediate(callback) {
+    \\          if (arguments.length < 1) throw new Error("Not enough arguments, expected 1.");
+    \\          if (typeof callback !== "function") throw new TypeError("Wrong first argument, function expected.");
+    \\          setImmediate(() => callback());
+    \\        },
+    \\      };
     \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/1_hello_world")) {
     \\      addon = {
     \\        __home_napi_factory() { return { hello() { return "world"; } }; },
