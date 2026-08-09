@@ -61278,9 +61278,7 @@ fn rewriteBunWriteCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8
 }
 
 fn rewriteArchiveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_sparse = try std.mem.replaceOwned(u8, allocator, source, "describe(\"sparse files\", () => {", "describe.skip(\"sparse files\", () => {");
-    defer allocator.free(without_sparse);
-    const without_await_using = try std.mem.replaceOwned(u8, allocator, without_sparse, "await using ", "const ");
+    const without_await_using = try std.mem.replaceOwned(u8, allocator, source, "await using ", "const ");
     defer allocator.free(without_await_using);
     return try std.mem.replaceOwned(u8, allocator, without_await_using, "using ", "const ");
 }
@@ -86265,6 +86263,30 @@ test "bootstrap runner mirrors readable stream helper spawn corpus" {
     try std.testing.expectEqual(@as(usize, 30), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors sparse archive extraction corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/archive.test.ts";
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 100 or summary.todo != 1) {
+        std.debug.print(
+            "archive corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 100), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 100), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
