@@ -40197,11 +40197,13 @@ pub const Checker = struct {
                     if (fn_p.flags.is_constructor) continue;
                     const name_node = fn_p.name;
                     if (name_node == hir_mod.none_node_id) continue;
-                    // Skip computed names ÃÂ¢ÃÂÃÂ non-literal keys can't be
-                    // canonicalized for collision detection in v0.
-                    if (self.nodeIsBracketedComputedName(name_node)) continue;
-                    const canonical = (try self.classMemberCanonicalNameForKey(name_node)) orelse continue;
-                    const display = self.classMemberDisplayTextForKey(name_node) orelse continue;
+                    const is_computed = self.nodeIsBracketedComputedName(name_node) or self.memberSourceLooksComputed(m);
+                    const canonical = (try self.classMemberNameFromPropertyKey(name_node, is_computed)) orelse continue;
+                    const display = if (is_computed) blk: {
+                        const raw = std.mem.trim(u8, self.nodeSourceTextOrEmpty(name_node), " \t\r\n");
+                        if (raw.len == 0) continue;
+                        break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{raw});
+                    } else self.classMemberDisplayTextForKey(name_node) orelse continue;
                     const type_display = try self.classMemberDuplicateFnTypeDisplay(fn_p);
                     const k: Kind = if (fn_p.flags.is_getter)
                         .getter
@@ -40221,20 +40223,24 @@ pub const Checker = struct {
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
-                    const computed_duplicate_name = if (op.is_computed or
+                    const is_computed = op.is_computed or
                         self.nodeIsBracketedComputedName(op.key) or
-                        self.memberSourceLooksComputed(m))
+                        self.memberSourceLooksComputed(m);
+                    const computed_duplicate_name = if (is_computed)
                         try self.classComputedSymbolDuplicateName(op.key)
                     else
                         null;
-                    if ((op.is_computed or self.nodeIsBracketedComputedName(op.key) or self.memberSourceLooksComputed(m)) and
-                        computed_duplicate_name == null) continue;
                     const canonical = if (computed_duplicate_name) |dup|
                         dup.canonical
                     else
-                        (try self.classMemberCanonicalNameForKey(op.key)) orelse continue;
+                        (try self.classMemberNameFromPropertyKey(op.key, is_computed)) orelse continue;
                     const display = if (computed_duplicate_name) |dup|
                         dup.display
+                    else if (is_computed) blk: {
+                        const raw = std.mem.trim(u8, self.nodeSourceTextOrEmpty(op.key), " \t\r\n");
+                        if (raw.len == 0) continue;
+                        break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{raw});
+                    }
                     else
                         self.classMemberDisplayTextForKey(op.key) orelse continue;
                     const type_display = self.classMemberDuplicateFieldTypeDisplay(op);
@@ -40363,22 +40369,15 @@ pub const Checker = struct {
             // baselines for the targeted fixtures show one emit per
             // duplicate group.
             //
-            // EXCEPTION ÃÂ¢ÃÂÃÂ same-kind accessor duplicates (`get x; get x;`
-            // or `set x; set x;`): tsc emits TS2300 at EVERY occurrence
-            // in the group (mirrors `twoAccessorsWithSameName` baseline).
-            var same_kind_accessors = true;
+            // Any invalid group containing an accessor emits TS2300 at
+            // every declaration. The valid exact getter/setter pair was
+            // accepted above.
+            var has_accessor = false;
             for (group_idx.items) |idx| {
                 const e = entries.items[idx];
-                if (e.kind != .getter and e.kind != .setter) {
-                    same_kind_accessors = false;
-                    break;
-                }
-                if (e.kind != entries.items[group_idx.items[0]].kind) {
-                    same_kind_accessors = false;
-                    break;
-                }
+                if (e.kind == .getter or e.kind == .setter) has_accessor = true;
             }
-            if (same_kind_accessors) {
+            if (has_accessor) {
                 for (group_idx.items) |idx| {
                     const e = entries.items[idx];
                     try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
@@ -43101,9 +43100,7 @@ pub const Checker = struct {
                 const name = hir_mod.identifierOf(self.hir, key).name;
                 if (!is_computed) break :blk name;
                 const raw = self.string_interner.get(name);
-                if (self.computedKeyBelongsToClassMember(key)) {
-                    if (try self.sourceConstStringMemberName(raw)) |member_name| break :blk member_name;
-                }
+                if (try self.sourceConstStringMemberName(raw)) |member_name| break :blk member_name;
                 if (try self.sourceConstSymbolMemberName(raw)) |member_name| break :blk member_name;
                 if (self.sourceHasUniqueSymbolDeclaration(raw)) {
                     const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{raw});
@@ -57508,6 +57505,39 @@ pub const Checker = struct {
         return false;
     }
 
+    fn objectLiteralHasAccessorForName(self: *Checker, obj_node: NodeId, name: hir_mod.StringId) bool {
+        if (self.hir.kindOf(obj_node) != .object_literal) return false;
+        for (hir_mod.objectLiteralProps(self.hir, obj_node)) |prop| {
+            if (self.hir.kindOf(prop) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, prop);
+            if (op.is_computed or self.hir.kindOf(op.key) != .identifier or op.value == hir_mod.none_node_id) continue;
+            if (hir_mod.identifierOf(self.hir, op.key).name != name) continue;
+            const value_kind = self.hir.kindOf(op.value);
+            if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, op.value);
+            if (f.flags.is_getter or f.flags.is_setter) return true;
+        }
+        return false;
+    }
+
+    fn reportObjectLiteralAccessorMethodDuplicates(self: *Checker, obj_node: NodeId, name: hir_mod.StringId) CheckError!void {
+        for (hir_mod.objectLiteralProps(self.hir, obj_node)) |prop| {
+            if (self.hir.kindOf(prop) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, prop);
+            if (op.is_computed or self.hir.kindOf(op.key) != .identifier or op.value == hir_mod.none_node_id) continue;
+            if (hir_mod.identifierOf(self.hir, op.key).name != name) continue;
+            const value_kind = self.hir.kindOf(op.value);
+            if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, op.value);
+            const is_method = op.is_method or self.memberSourceLooksMethod(prop);
+            if (!is_method and !f.flags.is_getter and !f.flags.is_setter) continue;
+            const pos = self.hir.spanOf(op.key).start;
+            if (!self.hasDiagnosticAtPosition(TsCodes.duplicate_identifier, pos)) {
+                try self.reportDuplicateIdentifier(op.key, name);
+            }
+        }
+    }
+
     /// True iff `fn_node` is the value of an object-literal `set <name>`
     /// accessor that has a paired `get <name>` accessor. The getter then
     /// supplies the type of the setter's unannotated parameter, so it owes
@@ -67213,6 +67243,20 @@ pub const Checker = struct {
                     return value_t;
                 }
                 if (self.hir.kindOf(tt.operand) == .call_expr and self.isInstantiationExpressionCall(tt.operand)) {
+                    const call = hir_mod.callOf(self.hir, tt.operand);
+                    if (self.hir.kindOf(call.callee) == .identifier) {
+                        const callee_id = hir_mod.identifierOf(self.hir, call.callee);
+                        const callee_name = self.string_interner.get(callee_id.name);
+                        if (std.mem.indexOfScalar(u8, callee_name, '.') != null) {
+                            if (try self.typeOfDottedValueReference(callee_name, call.callee)) |callee_t| {
+                                return try self.filteredInstantiationExpressionType(
+                                    tt.operand,
+                                    callee_t,
+                                    hir_mod.callTypeArgs(self.hir, tt.operand),
+                                );
+                            }
+                        }
+                    }
                     return try self.checkExpression(tt.operand);
                 }
                 _ = try self.lowererLowerWithTypeParams(tt.operand);
@@ -96536,7 +96580,7 @@ pub const Checker = struct {
                                 gop1119.value_ptr.has_data
                             else
                                 gop1119.value_ptr.has_accessor;
-                            if (collides) {
+                            if (collides and !member_is_accessor) {
                                 try self.report(op.key, TsCodes.object_literal_property_and_accessor, "An object literal cannot have property and accessor with the same name.");
                             }
                             if (member_is_accessor) {
@@ -96578,6 +96622,13 @@ pub const Checker = struct {
                     const op_is_method = op.is_method or
                         ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                             self.memberSourceLooksMethod(p));
+                    const current_is_accessor = if (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) accessor: {
+                        const current_fn = hir_mod.fnDeclOf(self.hir, op.value);
+                        break :accessor current_fn.flags.is_getter or current_fn.flags.is_setter;
+                    } else false;
+                    if (op_is_method and !current_is_accessor and self.objectLiteralHasAccessorForName(node, k.name)) {
+                        try self.reportObjectLiteralAccessorMethodDuplicates(node, k.name);
+                    }
                     const shorthand_assignment_initializer = op.is_shorthand and
                         value_kind == .assignment and
                         !object_literal_is_destructuring;
@@ -96674,9 +96725,7 @@ pub const Checker = struct {
                                     const ev_kind = self.hir.kindOf(eop.value);
                                     if (ev_kind != .fn_decl and ev_kind != .fn_expr and ev_kind != .arrow_fn) continue;
                                     const ef = hir_mod.fnDeclOf(self.hir, eop.value);
-                                    const same_kind = (acc_f.flags.is_getter and ef.flags.is_getter) or
-                                        (acc_f.flags.is_setter and ef.flags.is_setter);
-                                    if (!same_kind) continue;
+                                    if (!ef.flags.is_getter and !ef.flags.is_setter) continue;
                                     try self.reportDuplicateIdentifier(eop.key, k.name);
                                 }
                             }
@@ -134999,9 +135048,28 @@ pub const Checker = struct {
                 stop_after_arg_mismatch = true;
                 continue;
             }
+            const inferred_call = hir_mod.callOf(self.hir, call_node);
+            const inferred_generic_callback = hir_mod.callTypeArgs(self.hir, call_node).len == 0 and
+                self.hir.kindOf(inferred_call.callee) == .identifier and
+                self.generic_fns.contains(hir_mod.identifierOf(self.hir, inferred_call.callee).name) and
+                self.isContextualFunctionExpressionLike(args[i]);
+            if (inferred_generic_callback) {
+                param_t = try self.inferredGenericCallbackTarget(call_node, param_t);
+            }
+            const inferred_contextual_return_error = inferred_generic_callback and
+                self.contextualFunctionReturnDiagnosticAlreadyEmitted(args[i]);
             var argument_excess_property_diagnostic_emitted = false;
             const arg_diag_start = self.diagnostics.items.len;
-            const structurally_assignable = self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
+            const structurally_assignable = if (inferred_contextual_return_error)
+                false
+            else if (inferred_generic_callback) blk: {
+                const diagnostic_source_t = (try self.contextualFunctionExpressionDiagnosticSignature(
+                    args[i],
+                    arg_t,
+                    param_t,
+                )) orelse arg_t;
+                break :blk try self.functionExpressionAssignableToSignatureTarget(args[i], diagnostic_source_t, param_t);
+            } else self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             const predicate_assignable = if (declared_param_predicate) |target_pred|
                 try self.signaturePredicateAnnotationsAssignable(
                     try self.assignmentExpressionPredicate(args[i], arg_t),
@@ -135011,7 +135079,7 @@ pub const Checker = struct {
                 true;
             const ok = satisfies_context_ok or (structurally_assignable and predicate_assignable);
             if (!ok) {
-                _ = self.discardCallArgumentContextualReturnDiagnostics(args[i]);
+                _ = self.discardCallArgumentContextualReturnDiagnostics(args[i], inferred_generic_callback);
             }
             const contextual_ok = if (!ok)
                 self.unresolvedRestTupleCallbackFromPriorArrayArg(args, param_ts, i, param_t) catch false
@@ -135238,6 +135306,10 @@ pub const Checker = struct {
                         arg_types,
                         i,
                     );
+                    const instantiation_boundary_msg = if (inferred_generic_callback)
+                        try self.formatInferredInstantiationBoundaryCallbackArgument(args[i], display_param_t, i)
+                    else
+                        null;
                     const msg = if (generic_keyof_msg) |m|
                         m
                     else if (predicate_msg) |m|
@@ -135271,6 +135343,8 @@ pub const Checker = struct {
                         display_param_t,
                     )) |array_search_msg|
                         array_search_msg
+                    else if (instantiation_boundary_msg) |boundary_msg|
+                        boundary_msg
                     else
                         try self.formatArgumentNotAssignable(
                             diagnostic_arg_t,
@@ -137533,6 +137607,37 @@ pub const Checker = struct {
             "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
             .{ arg_text, param_text },
         );
+    }
+
+    fn formatInferredInstantiationBoundaryCallbackArgument(
+        self: *Checker,
+        arg_node: NodeId,
+        param_t: TypeId,
+        position: usize,
+    ) CheckError!?[]const u8 {
+        if (!self.isContextualFunctionExpressionLike(arg_node)) return null;
+        const function = hir_mod.fnDeclOf(self.hir, arg_node);
+        if (function.body == hir_mod.none_node_id or self.hir.kindOf(function.body) != .block_stmt) return null;
+        var return_value = hir_mod.none_node_id;
+        for (hir_mod.blockStmts(self.hir, function.body)) |statement| {
+            if (self.hir.kindOf(statement) != .return_stmt) continue;
+            if (return_value != hir_mod.none_node_id) return null;
+            return_value = hir_mod.returnOf(self.hir, statement).value;
+        }
+        if (return_value == hir_mod.none_node_id or self.hir.kindOf(return_value) != .call_expr) return null;
+        const type_args = hir_mod.callTypeArgs(self.hir, return_value);
+        if (type_args.len != 1 or self.hir.kindOf(type_args[0]) != .typeof_type) return null;
+        const typeof_type = hir_mod.typeofTypeOf(self.hir, type_args[0]);
+        if (self.hir.kindOf(typeof_type.operand) != .call_expr or !self.isInstantiationExpressionCall(typeof_type.operand)) return null;
+        const operand_call = hir_mod.callOf(self.hir, typeof_type.operand);
+        if (self.hir.kindOf(operand_call.callee) != .identifier) return null;
+        const callee_name = self.string_interner.get(hir_mod.identifierOf(self.hir, operand_call.callee).name);
+        if (std.mem.indexOfScalar(u8, callee_name, '.') == null) return null;
+
+        const boundary_return_t = try self.lowererLowerWithTypeParams(type_args[0]);
+        if (!self.interner.isSignature(boundary_return_t)) return null;
+        const source_t = self.interner.internSignature(&.{}, boundary_return_t, false) catch return error.OutOfMemory;
+        return try self.formatArgumentNotAssignable(source_t, param_t, position);
     }
 
     fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
@@ -142958,6 +143063,30 @@ pub const Checker = struct {
         return callee_t != types.Primitive.none and self.generic_signature_params.contains(callee_t);
     }
 
+    fn inferredGenericCallbackTarget(self: *Checker, call_node: NodeId, target_t: TypeId) CheckError!TypeId {
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .identifier) return target_t;
+        const callee = hir_mod.identifierOf(self.hir, call.callee);
+        const type_params = self.generic_fns.get(callee.name) orelse return target_t;
+        if (type_params.len == 0) return target_t;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        const fallbacks = try self.gpa.alloc(TypeId, type_params.len);
+        defer self.gpa.free(fallbacks);
+        for (type_params, 0..) |param_t, i| {
+            const fallback = if (param_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(param_t).is_type_parameter)
+            blk: {
+                const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
+                break :blk if (payload.default != types.Primitive.none) payload.default else types.Primitive.unknown;
+            } else types.Primitive.unknown;
+            fallbacks[i] = fallback;
+            try subs.put(self.gpa, param_t, fallback);
+        }
+        try self.addExplicitTypeArgNameSubstitutions(target_t, type_params, fallbacks, &subs, true);
+        return self.substituteType(target_t, &subs) catch target_t;
+    }
+
     fn callableArgumentCannotSatisfyCustomRestTuple(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
         if (!self.interner.isSignature(source_t) or !self.interner.isSignature(target_t)) return false;
         if (!self.rest_signatures.contains(target_t)) return false;
@@ -144481,6 +144610,7 @@ pub const Checker = struct {
     fn discardCallArgumentContextualReturnDiagnostics(
         self: *Checker,
         arg_node: NodeId,
+        allow_block_body: bool,
     ) bool {
         if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
         const f = hir_mod.fnDeclOf(self.hir, arg_node);
@@ -144496,7 +144626,7 @@ pub const Checker = struct {
         if ((!has_annotated_parameter and has_value_parameter) or
             f.return_type != hir_mod.none_node_id or
             f.body == hir_mod.none_node_id or
-            self.hir.kindOf(f.body) == .block_stmt)
+            (self.hir.kindOf(f.body) == .block_stmt and !allow_block_body))
         {
             return false;
         }
@@ -189929,6 +190059,28 @@ test "checker: annotated callback return mismatch reports at the argument bounda
     ));
 }
 
+test "checker: inferred generic callback reports qualified typeof instantiation at call boundary" {
+    const s = try newSetup(
+        \\interface CustomNode<P> { getNextNode: () => CustomNode<P>; }
+        \\declare const createNode: () => { getNextNode: <T>() => CustomNode<T>; };
+        \\function wrapNode<T>(getNode: () => CustomNode<T>) { return getNode; }
+        \\wrapNode(() => {
+        \\  const node = createNode();
+        \\  return wrapNode<typeof node.getNextNode<any>>(node.getNextNode);
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '() => () => CustomNode<any>' is not assignable to parameter of type '() => CustomNode<unknown>'.",
+    ));
+}
+
 test "checker: returned generic function enforces substituted scalar constraint" {
     const s = try newSetup(
         \\class C<T extends { length: number }> {
@@ -209127,6 +209279,26 @@ test "checker: TS2300 fires on duplicate class field names" {
         if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
     }
     try T.expect(dup_count >= 1);
+}
+
+test "checker: computed class accessors and fields report every duplicate declaration" {
+    const s = try newSetup(
+        \\const foo = "foo";
+        \\declare class C {
+        \\  get [foo](): number;
+        \\  [foo]: number;
+        \\  set [foo](value: number);
+        \\}
+        \\const value = {
+        \\  get x() { return 0; },
+        \\  x() { return 0; },
+        \\  set x(value: number) {},
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_literal_property_and_accessor));
 }
 
 test "checker: static and instance field of same name do not collide" {

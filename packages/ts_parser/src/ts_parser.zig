@@ -12582,16 +12582,18 @@ pub const Parser = struct {
             optional: bool,
             span: Span,
         };
-        const AccessorPair = struct {
-            getter: ?Span = null,
-            setter: ?Span = null,
+        const DuplicateMemberKind = enum { getter, setter, property, method };
+        const DuplicateMember = struct {
+            name: hir_mod.StringId,
+            display_name: hir_mod.StringId,
+            span: Span,
+            kind: DuplicateMemberKind,
+            is_computed: bool,
         };
-        var seen = std.AutoHashMapUnmanaged(hir_mod.StringId, Span){};
-        defer seen.deinit(self.gpa);
+        var duplicate_members: std.ArrayListUnmanaged(DuplicateMember) = .empty;
+        defer duplicate_members.deinit(self.gpa);
         var method_optionality = std.AutoHashMapUnmanaged(hir_mod.StringId, MethodOptionality){};
         defer method_optionality.deinit(self.gpa);
-        var accessor_pairs = std.AutoHashMapUnmanaged(hir_mod.StringId, AccessorPair){};
-        defer accessor_pairs.deinit(self.gpa);
         var first_member_token: ?Token = null;
         var reported_mapped_member = false;
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -12675,7 +12677,23 @@ pub const Parser = struct {
                     try self.reportCodeAt(anchor.span.start, anchor.line, 7061, "A mapped type may not declare properties or methods.");
                     reported_mapped_member = true;
                 }
-                if (try self.tryParseComputedTypeMember(out, false)) continue;
+                const before_len = out.items.len;
+                if (try self.tryParseComputedTypeMember(out, false)) {
+                    if (out.items.len > before_len) {
+                        const member_node = out.items[out.items.len - 1];
+                        const member = hir_mod.interfaceMemberOf(self.hir, member_node);
+                        const key_expr = hir_mod.interfaceMemberKeyExpr(self.hir, member_node);
+                        const display_name = (try self.computedTypeMemberDisplayName(key_expr)) orelse member.name;
+                        try duplicate_members.append(self.gpa, .{
+                            .name = member.name,
+                            .display_name = display_name,
+                            .span = self.hir.spanOf(member_node),
+                            .kind = if (member.is_method) .method else .property,
+                            .is_computed = true,
+                        });
+                    }
+                    continue;
+                }
                 // Not an index signature or supported computed key.
                 try self.reportMalformedTypeMemberBracket(t);
                 try self.skipUntilTypeMemberSeparator();
@@ -12708,9 +12726,24 @@ pub const Parser = struct {
             if ((t.kind == .kw_get or t.kind == .kw_set) and self.isTypeAccessorSignatureStart()) {
                 const accessor_tok = self.advance();
                 const is_getter = accessor_tok.kind == .kw_get;
-                const name_tok = self.advance();
-                const name_span = tokenSpan(name_tok);
-                const name_id = try self.internPropertyName(name_tok, name_span);
+                var key_expr: NodeId = hir_mod.none_node_id;
+                const name_span: Span = if (self.peek().kind == .open_bracket) blk: {
+                    const open = self.advance();
+                    key_expr = try self.parseExpression();
+                    const close = try self.expectClosingMatch(.close_bracket, "']' to close computed accessor name", open.span.start, "[", "]");
+                    break :blk .{ .start = open.span.start, .end = close.span.end };
+                } else blk: {
+                    const name_tok = self.advance();
+                    break :blk tokenSpan(name_tok);
+                };
+                const name_id = if (key_expr != hir_mod.none_node_id)
+                    (try self.computedTypeMemberNameFromKey(key_expr)) orelse 0
+                else
+                    self.interner.intern(self.source[name_span.start..name_span.end]) catch return error.OutOfMemory;
+                const display_name = if (key_expr != hir_mod.none_node_id)
+                    self.interner.intern(self.source[name_span.start..name_span.end]) catch return error.OutOfMemory
+                else
+                    name_id;
                 const params = try self.parseTypeParameterList();
                 defer self.gpa.free(params);
                 var type_node: NodeId = hir_mod.none_node_id;
@@ -12741,21 +12774,14 @@ pub const Parser = struct {
                     false,
                     false,
                 );
-                var pair = accessor_pairs.get(name_id) orelse AccessorPair{};
-                if (is_getter) {
-                    if (pair.getter) |prev| {
-                        try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
-                        try self.reportDuplicateIdentifierNamed(name_span.start, name_tok.line, name_id);
-                    }
-                    pair.getter = name_span;
-                } else {
-                    if (pair.setter) |prev| {
-                        try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
-                        try self.reportDuplicateIdentifierNamed(name_span.start, name_tok.line, name_id);
-                    }
-                    pair.setter = name_span;
-                }
-                try accessor_pairs.put(self.gpa, name_id, pair);
+                if (key_expr != hir_mod.none_node_id) try self.builder.setInterfaceMemberKeyExpr(member, key_expr);
+                try duplicate_members.append(self.gpa, .{
+                    .name = name_id,
+                    .display_name = display_name,
+                    .span = name_span,
+                    .kind = if (is_getter) .getter else .setter,
+                    .is_computed = key_expr != hir_mod.none_node_id,
+                });
                 try out.append(self.gpa, member);
                 continue;
             }
@@ -12955,6 +12981,13 @@ pub const Parser = struct {
                         .span = name_span,
                     });
                 }
+                try duplicate_members.append(self.gpa, .{
+                    .name = name_id,
+                    .display_name = name_id,
+                    .span = name_span,
+                    .kind = .method,
+                    .is_computed = false,
+                });
                 try out.append(self.gpa, member);
                 continue;
             }
@@ -12999,13 +13032,61 @@ pub const Parser = struct {
                 false,
                 is_override,
             );
-            if (seen.get(name_id)) |prev| {
-                try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
-                try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), name_id);
-            } else {
-                try seen.put(self.gpa, name_id, name_span);
-            }
+            try duplicate_members.append(self.gpa, .{
+                .name = name_id,
+                .display_name = name_id,
+                .span = name_span,
+                .kind = .property,
+                .is_computed = false,
+            });
             try out.append(self.gpa, member);
+        }
+        for (duplicate_members.items, 0..) |candidate, candidate_index| {
+            var getter_count: usize = 0;
+            var setter_count: usize = 0;
+            var property_count: usize = 0;
+            var method_count: usize = 0;
+            var computed_display_name: ?hir_mod.StringId = null;
+            var has_plain_property = false;
+            for (duplicate_members.items) |member| {
+                if (member.name != candidate.name) continue;
+                switch (member.kind) {
+                    .getter => getter_count += 1,
+                    .setter => setter_count += 1,
+                    .property => {
+                        property_count += 1;
+                        if (!member.is_computed) has_plain_property = true;
+                    },
+                    .method => method_count += 1,
+                }
+                if (member.is_computed and computed_display_name == null) {
+                    computed_display_name = member.display_name;
+                }
+            }
+            const accessor_count = getter_count + setter_count;
+            const invalid_group = getter_count > 1 or setter_count > 1 or
+                property_count > 1 or
+                (accessor_count > 0 and property_count + method_count > 0) or
+                (property_count > 0 and method_count > 0);
+            if (!invalid_group) continue;
+            var already_reported = false;
+            for (duplicate_members.items[0..candidate_index]) |prior| {
+                if (prior.name == candidate.name and prior.span.start == candidate.span.start) {
+                    already_reported = true;
+                    break;
+                }
+            }
+            if (!already_reported) {
+                const display_name = if (!has_plain_property)
+                    computed_display_name orelse candidate.display_name
+                else
+                    candidate.name;
+                try self.reportDuplicateIdentifierNamed(
+                    candidate.span.start,
+                    self.lineAt(candidate.span.start),
+                    display_name,
+                );
+            }
         }
         return false;
     }
@@ -13060,6 +13141,7 @@ pub const Parser = struct {
 
     fn isTypeAccessorSignatureStart(self: *const Parser) bool {
         const name_kind = self.peekAt(1).kind;
+        if (name_kind == .open_bracket) return true;
         return (name_kind == .identifier or
             name_kind == .string_literal or
             name_kind == .number_literal or
@@ -13318,6 +13400,20 @@ pub const Parser = struct {
             },
             else => null,
         };
+    }
+
+    fn computedTypeMemberDisplayName(self: *Parser, key_expr: NodeId) ParseError!?hir_mod.StringId {
+        if (key_expr == hir_mod.none_node_id) return null;
+        const key_span = self.hir.spanOf(key_expr);
+        if (key_span.start > self.source.len or key_span.end > self.source.len) return null;
+        var start: usize = key_span.start;
+        while (start > 0 and std.ascii.isWhitespace(self.source[start - 1])) : (start -= 1) {}
+        if (start == 0 or self.source[start - 1] != '[') return null;
+        start -= 1;
+        var end: usize = key_span.end;
+        while (end < self.source.len and std.ascii.isWhitespace(self.source[end])) : (end += 1) {}
+        if (end >= self.source.len or self.source[end] != ']') return null;
+        return self.interner.intern(self.source[start .. end + 1]) catch return error.OutOfMemory;
     }
 
     fn literalTypeMemberName(self: *Parser, type_node: NodeId) ParseError!?hir_mod.StringId {
@@ -23586,6 +23682,33 @@ test "parser: TS2300 duplicate identifier emits include the name" {
     try T.expectEqual(@as(usize, 2), foo_named);
     try T.expectEqual(@as(usize, 2), a_named);
     try T.expectEqual(@as(usize, 2), p_named);
+}
+
+test "parser: computed accessor duplicate groups preserve bracket display names" {
+    var s = try newTestSetup(
+        \\const foo = "foo";
+        \\interface I {
+        \\  get [foo](): number;
+        \\  [foo]: number;
+        \\  set [foo](value: number);
+        \\}
+        \\interface J {
+        \\  get [foo](): number;
+        \\  foo: number;
+        \\  set [foo](value: number);
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var bracketed: usize = 0;
+    var plain: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 2300) continue;
+        if (std.mem.eql(u8, d.message, "Duplicate identifier '[foo]'.")) bracketed += 1;
+        if (std.mem.eql(u8, d.message, "Duplicate identifier 'foo'.")) plain += 1;
+    }
+    try T.expectEqual(@as(usize, 3), bracketed);
+    try T.expectEqual(@as(usize, 3), plain);
 }
 
 test "parser: same-line object type members require separator" {
