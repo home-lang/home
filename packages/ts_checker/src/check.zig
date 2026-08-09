@@ -38941,6 +38941,7 @@ pub const Checker = struct {
             const body_start = comment_start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return;
             search_start = end + 2;
+            if (self.sourceFunctionContainingPos(comment_start) != null) continue;
             const section = self.virtualSectionStartForPos(comment_start);
             if (!self.virtualSectionStartIsJsLike(section)) continue;
             const body = src[body_start..end];
@@ -82484,21 +82485,32 @@ pub const Checker = struct {
         try self.resolving_jsdoc_typedef_aliases.put(self.gpa, wanted_id, {});
         defer _ = self.resolving_jsdoc_typedef_aliases.remove(wanted_id);
 
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
-            const body_start = start + 3;
-            const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
-            defer search_start = end + 2;
-            const body = src[body_start..end];
-            if (jsDocTypedefTypeText(body, wanted_name)) |type_text| {
-                return try self.jsDocTypeTextToType(src, type_text);
-            }
-            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
-            defer self.gpa.free(tags);
-            for (tags) |tag| {
-                if (tag.kind != .typedef_tag) continue;
-                if (!std.mem.eql(u8, tag.name, wanted_name)) continue;
-                return try self.jsDocTypeTextToType(src, tag.type_text);
+        const use_function = self.enclosingFunctionLike(self.jsdoc_diagnostic_anchor);
+        const pass_count: usize = if (use_function != null) 2 else 1;
+        var pass: usize = 0;
+        while (pass < pass_count) : (pass += 1) {
+            var search_start: usize = 0;
+            while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
+                const body_start = start + 3;
+                const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
+                search_start = end + 2;
+                const declaration_function = self.sourceSliceFunctionContainingPos(src, start);
+                const scope_matches = if (use_function) |owner|
+                    (if (pass == 0) declaration_function == owner else declaration_function == null)
+                else
+                    declaration_function == null;
+                if (!scope_matches) continue;
+                const body = src[body_start..end];
+                if (jsDocTypedefTypeText(body, wanted_name)) |type_text| {
+                    return try self.jsDocTypeTextToType(src, type_text);
+                }
+                const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
+                defer self.gpa.free(tags);
+                for (tags) |tag| {
+                    if (tag.kind != .typedef_tag) continue;
+                    if (!std.mem.eql(u8, tag.name, wanted_name)) continue;
+                    return try self.jsDocTypeTextToType(src, tag.type_text);
+                }
             }
         }
         return null;
@@ -82527,7 +82539,7 @@ pub const Checker = struct {
 
         if (!self.sourceHasVirtualFilenameSections()) {
             if (!self.virtualSectionIsJsLike(anchor) and !self.pathIsJsLike(self.importer_path)) return false;
-            return jsDocTypedefNameExistsInSlice(self.gpa, src, wanted);
+            return self.jsDocTypedefNameExistsInSliceAt(anchor, src, wanted);
         }
 
         var section_start: usize = 0;
@@ -82538,7 +82550,7 @@ pub const Checker = struct {
             const marker = std.mem.indexOf(u8, line, "@filename:") orelse
                 (std.mem.indexOf(u8, line, "@Filename:") orelse null);
             if (marker) |m| {
-                if (section_start < line_start and self.jsDocTypedefNameExistsInJsLikeSection(src, section_start, line_start, wanted)) return true;
+                if (section_start < line_start and self.jsDocTypedefNameExistsInJsLikeSection(anchor, src, section_start, line_start, wanted)) return true;
                 section_start = line_start;
                 const filename = std.mem.trim(u8, line[m + "@filename:".len ..], " \t\r");
                 if (self.pathIsJsLike(filename)) {
@@ -82558,17 +82570,17 @@ pub const Checker = struct {
                         }
                         scan = next_end + 1;
                     }
-                    if (jsDocTypedefNameExistsInSlice(self.gpa, src[line_start..scan], wanted)) return true;
+                    if (self.jsDocTypedefNameExistsInSliceAt(anchor, src[line_start..scan], wanted)) return true;
                 }
             }
             if (line_end == src.len) break;
             line_start = line_end + 1;
         }
-        if (section_start < src.len and self.jsDocTypedefNameExistsInJsLikeSection(src, section_start, src.len, wanted)) return true;
+        if (section_start < src.len and self.jsDocTypedefNameExistsInJsLikeSection(anchor, src, section_start, src.len, wanted)) return true;
         return false;
     }
 
-    fn jsDocTypedefNameExistsInJsLikeSection(self: *Checker, src: []const u8, start: usize, end: usize, wanted: []const u8) bool {
+    fn jsDocTypedefNameExistsInJsLikeSection(self: *Checker, anchor: NodeId, src: []const u8, start: usize, end: usize, wanted: []const u8) bool {
         if (start >= end or end > src.len) return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, start, '\n') orelse end;
         const line = src[start..@min(line_end, end)];
@@ -82576,24 +82588,53 @@ pub const Checker = struct {
             (std.mem.indexOf(u8, line, "@Filename:") orelse return false);
         const filename = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
         if (!self.pathIsJsLike(filename)) return false;
-        return jsDocTypedefNameExistsInSlice(self.gpa, src[start..end], wanted);
+        return self.jsDocTypedefNameExistsInSliceAt(anchor, src[start..end], wanted);
     }
 
-    fn jsDocTypedefNameExistsInSlice(gpa: std.mem.Allocator, src: []const u8, wanted: []const u8) bool {
+    fn jsDocTypedefNameExistsInSliceAt(self: *Checker, anchor: NodeId, src: []const u8, wanted: []const u8) bool {
+        const use_function = self.enclosingFunctionLike(anchor);
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return false;
             search_start = end + 2;
+            const declaration_function = self.sourceSliceFunctionContainingPos(src, start);
+            if (declaration_function != null and declaration_function != use_function) continue;
             const body = src[body_start..end];
             if (jsDocTypedefTypeText(body, wanted) != null) return true;
-            const tags = ts_parser.jsdoc.parse(gpa, body) catch continue;
-            defer gpa.free(tags);
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
+            defer self.gpa.free(tags);
             for (tags) |tag| {
                 if (tag.kind == .typedef_tag and std.mem.eql(u8, tag.name, wanted)) return true;
             }
         }
         return false;
+    }
+
+    fn sourceSliceFunctionContainingPos(self: *Checker, src: []const u8, relative_pos: usize) ?NodeId {
+        const full_source = self.source orelse return null;
+        const base = self.sliceStartPos(full_source, src) orelse return null;
+        return self.sourceFunctionContainingPos(@as(usize, base) + relative_pos);
+    }
+
+    fn sourceFunctionContainingPos(self: *Checker, pos: usize) ?NodeId {
+        const source_pos: u32 = @intCast(@min(pos, std.math.maxInt(u32)));
+        var best: ?NodeId = null;
+        var best_len: u32 = std.math.maxInt(u32);
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            switch (self.hir.kindOf(node)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const span = self.hir.spanOf(node);
+            if (source_pos < span.start or source_pos >= span.end) continue;
+            const span_len = span.end - span.start;
+            if (span_len >= best_len) continue;
+            best = node;
+            best_len = span_len;
+        }
+        return best;
     }
 
     fn jsDocTypedefNamePosInSlice(gpa: std.mem.Allocator, src: []const u8, wanted: []const u8) ?usize {
@@ -197565,6 +197606,32 @@ test "checker: checkjs JSDoc typedef supports comma templates across virtual fil
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.generic_type_requires_args));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: checkjs function-local JSDoc typedefs are lexically scoped" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: typedefScope.js
+        \\function first() {
+        \\    /** @typedef {number} Local */
+        \\    /** @type {Local} */
+        \\    var value = 0;
+        \\}
+        \\function second() {
+        \\    /** @typedef {string} Local */
+        \\    /** @type {Local} */
+        \\    var value = "ok";
+        \\}
+        \\/** @type {Local} */
+        \\var outside = 0;
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: checkjs JSDoc typedef indexed access template instantiates" {
