@@ -65230,9 +65230,129 @@ pub const Checker = struct {
         return false;
     }
 
+    fn typeNodeProvablyString(self: *Checker, node: NodeId, depth: u8) bool {
+        if (node == hir_mod.none_node_id or depth >= 16) return false;
+        if (self.bareTypeNodeName(node)) |name| {
+            if (std.mem.eql(u8, self.string_interner.get(name), "string")) return true;
+            var current = self.hir.parentOf(node);
+            while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+                for (self.typeParamNodesOfDecl(current)) |param_node| {
+                    if (self.hir.kindOf(param_node) != .type_parameter) continue;
+                    const param = hir_mod.typeParameterOf(self.hir, param_node);
+                    if (param.name != name or param.constraint == hir_mod.none_node_id) continue;
+                    return self.typeNodeProvablyString(param.constraint, depth + 1);
+                }
+            }
+        }
+        return switch (self.hir.kindOf(node)) {
+            .template_literal_type => true,
+            .union_type => blk: {
+                const members = hir_mod.unionTypeMembers(self.hir, node);
+                if (members.len == 0) break :blk false;
+                for (members) |member| {
+                    if (!self.typeNodeProvablyString(member, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            .intersection_type => blk: {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeProvablyString(member, depth + 1)) break :blk true;
+                }
+                break :blk false;
+            },
+            .conditional_type => blk: {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, node);
+                break :blk self.typeNodeProvablyString(conditional.true_branch, depth + 1) and
+                    self.typeNodeProvablyString(conditional.false_branch, depth + 1);
+            },
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, node);
+                if (ref.qualifier_len != 0) break :blk false;
+                const raw_name = self.string_interner.get(ref.name);
+                const args = hir_mod.typeRefArgs(self.hir, node);
+                if ((std.mem.eql(u8, raw_name, "Uppercase") or
+                    std.mem.eql(u8, raw_name, "Lowercase") or
+                    std.mem.eql(u8, raw_name, "Capitalize") or
+                    std.mem.eql(u8, raw_name, "Uncapitalize")) and
+                    args.len == 1)
+                {
+                    break :blk self.typeNodeProvablyString(args[0], depth + 1) or
+                        self.conditionalTrueBranchConstrainsTypeToString(args[0]);
+                }
+                const decl = self.typeAliasDeclForNameAt(ref.name, node) orelse break :blk false;
+                break :blk self.typeNodeProvablyString(hir_mod.typeAliasOf(self.hir, decl).aliased, depth + 1);
+            },
+            else => false,
+        };
+    }
+
+    fn conditionalTrueBranchConstrainsTypeToString(self: *Checker, node: NodeId) bool {
+        const name = self.bareTypeNodeName(node) orelse return false;
+        var current = self.hir.parentOf(node);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            if (self.hir.kindOf(current) != .conditional_type) continue;
+            const conditional = hir_mod.conditionalTypeOf(self.hir, current);
+            if (!self.nodeIsAncestorOf(conditional.true_branch, node)) continue;
+            if ((self.bareTypeNodeName(conditional.check) orelse continue) != name) continue;
+            if (self.typeNodeProvablyString(conditional.extends, 0)) return true;
+        }
+        return false;
+    }
+
+    fn typeNodeDerivesFromPropertyKey(self: *Checker, node: NodeId, depth: u8) bool {
+        if (node == hir_mod.none_node_id or depth >= 16) return false;
+        return switch (self.hir.kindOf(node)) {
+            .keyof_type => true,
+            .indexed_access_type => blk: {
+                const indexed = hir_mod.indexedAccessTypeOf(self.hir, node);
+                if (self.hir.kindOf(indexed.object) != .mapped_type) break :blk false;
+                const mapped = hir_mod.mappedTypeOf(self.hir, indexed.object);
+                if (mapped.type_param == hir_mod.none_node_id or
+                    self.hir.kindOf(mapped.type_param) != .type_parameter) break :blk false;
+                const key_name = hir_mod.typeParameterOf(self.hir, mapped.type_param).name;
+                break :blk self.typeNodeYieldsMappedKeyOrNever(mapped.value, key_name, depth + 1);
+            },
+            .conditional_type => blk: {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, node);
+                const true_is_key = self.typeNodeIsNever(conditional.true_branch) or
+                    self.typeNodeDerivesFromPropertyKey(conditional.true_branch, depth + 1);
+                const false_is_key = self.typeNodeIsNever(conditional.false_branch) or
+                    self.typeNodeDerivesFromPropertyKey(conditional.false_branch, depth + 1);
+                break :blk true_is_key and false_is_key;
+            },
+            .union_type => blk: {
+                const members = hir_mod.unionTypeMembers(self.hir, node);
+                if (members.len == 0) break :blk false;
+                for (members) |member| {
+                    if (!self.typeNodeIsNever(member) and
+                        !self.typeNodeDerivesFromPropertyKey(member, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, node);
+                if (ref.qualifier_len != 0) break :blk false;
+                const args = hir_mod.typeRefArgs(self.hir, node);
+                const raw_name = self.string_interner.get(ref.name);
+                if ((std.mem.eql(u8, raw_name, "Exclude") or
+                    std.mem.eql(u8, raw_name, "Extract") or
+                    std.mem.eql(u8, raw_name, "NonNullable")) and
+                    args.len >= 1)
+                {
+                    break :blk self.typeNodeDerivesFromPropertyKey(args[0], depth + 1);
+                }
+                const decl = self.typeAliasDeclForNameAt(ref.name, node) orelse break :blk false;
+                break :blk self.typeNodeDerivesFromPropertyKey(hir_mod.typeAliasOf(self.hir, decl).aliased, depth + 1);
+            },
+            else => false,
+        };
+    }
+
     fn reportStringMappingTypeArgConstraint(self: *Checker, arg_node: NodeId, arg_t: TypeId) CheckError!void {
         if (arg_node == hir_mod.none_node_id) return;
-        if (self.stringMappingArgSatisfiesStringConstraint(arg_t)) return;
+        if (self.stringMappingArgSatisfiesStringConstraint(arg_t) or
+            self.typeNodeProvablyString(arg_node, 0) or
+            self.conditionalTrueBranchConstrainsTypeToString(arg_node)) return;
         const arg_text: []const u8 = blk: {
             if (arg_t < self.interner.pool.typeCount()) {
                 const flags = self.interner.pool.flagsOf(arg_t);
@@ -80129,7 +80249,9 @@ pub const Checker = struct {
         if (branch_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(branch_t).is_type_parameter)
         {
-            return false;
+            return source_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(source_t).is_type_parameter and
+                self.sameTypeParameterName(source_t, branch_t);
         }
         return try self.checkerAssignableTo(source_t, branch_t);
     }
@@ -83113,6 +83235,7 @@ pub const Checker = struct {
     fn checkBuiltinPropertyKeyConstraint(self: *Checker, arg_node: NodeId, arg_t: TypeId) CheckError!void {
         if (self.typeIsAnyLike(arg_t) or self.typeIsPropertyKeyDomain(arg_t, 0)) return;
         if (self.infer_type_parameters.contains(arg_t)) return;
+        if (self.typeNodeDerivesFromPropertyKey(arg_node, 0)) return;
         if (try self.indexedAccessSyntaxBaseConstraint(arg_node, 0)) |constraint| {
             if (self.typeIsPropertyKeyDomain(constraint, 0)) return;
         }
@@ -120975,6 +121098,9 @@ pub const Checker = struct {
         if (constraint == types.Primitive.any or constraint == types.Primitive.unknown) return;
         if (constraint == arg_t) return;
         if (self.containsFreeTypeParameter(constraint)) return;
+        if (self.typeIsPropertyKeyTarget(constraint) and
+            (self.typeNodeKeyofBaseName(arg_node, 0) != null or
+                self.typeNodeDerivesFromPropertyKey(arg_node, 0))) return;
         // Free type parameters as type-arguments (e.g. `infer U`,
         // a generic alias body referring to its own outer
         // parameters) need full inference machinery to classify;
@@ -143364,7 +143490,10 @@ pub const Checker = struct {
                 if (try self.genericObjectTypeParameterMismatch(source_elem, target_elem, 0)) return false;
             }
         }
-        if (try self.genericObjectTypeParameterMismatch(source_ret, target_ret, 0)) return false;
+        const conditional_returns = self.typeIsDeferredConditional(source_ret) and
+            self.typeIsDeferredConditional(target_ret);
+        if (!conditional_returns and
+            try self.genericObjectTypeParameterMismatch(source_ret, target_ret, 0)) return false;
         const ret_ok = self.engine.isAssignableTo(source_ret, target_ret) catch false;
         const indexed_ok = try self.genericIndexedAccessReturnsMatch(source_ret, target_ret);
         const narrowed_union_ok = try self.genericNarrowedReturnUnionMatches(source_ret, target_ret);
@@ -146575,7 +146704,27 @@ pub const Checker = struct {
         return if (call_sig != types.Primitive.none) call_sig else null;
     }
 
+    fn contextualGenericFunctionSignatureDisplayEquivalent(
+        self: *Checker,
+        fn_node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (hir_mod.fnTypeParams(self.hir, fn_node).len == 0) return false;
+        const source_sig = self.firstSignatureType(source_t) orelse return false;
+        const target_sig = self.firstSignatureType(target_t) orelse return false;
+        if (self.generic_signature_params.get(target_sig) == null) return false;
+        const source_name = (try self.allocCallableSignatureName(source_sig)) orelse return false;
+        const target_name = (try self.allocCallableSignatureName(target_sig)) orelse return false;
+        return std.mem.eql(u8, source_name, target_name);
+    }
+
     fn functionExpressionAssignableToTarget(self: *Checker, fn_node: NodeId, target_t: TypeId) CheckError!bool {
+        if (try self.contextualGenericFunctionSignatureDisplayEquivalent(
+            fn_node,
+            self.hir.typeOf(fn_node),
+            target_t,
+        )) return true;
         return switch (try self.functionExpressionTargetResult(fn_node, target_t)) {
             .assignable => true,
             .not_contextual => blk: {
@@ -147950,6 +148099,20 @@ pub const Checker = struct {
             const return_t = (try self.reduceDisplayedAliasInstance(raw_return_t)) orelse raw_return_t;
             const source_sig = self.firstSignatureType(self.hir.typeOf(property.value)) orelse continue;
             const source_return_t = self.interner.signatureReturn(source_sig) orelse continue;
+            if (try self.contextualGenericFunctionSignatureDisplayEquivalent(
+                property.value,
+                source_sig,
+                target_sig,
+            )) continue;
+            if (self.generic_signature_params.get(source_sig) != null and
+                self.generic_signature_params.get(target_sig) != null and
+                try self.genericSignaturesAlphaAssignable(
+                    source_sig,
+                    target_sig,
+                    false,
+                    self.strict_flags.strict_function_types,
+                    false,
+                )) continue;
             if (try self.checkerAssignableTo(source_return_t, return_t)) continue;
 
             const anchor = if (property.key != hir_mod.none_node_id) property.key else property.value;
@@ -226848,6 +227011,39 @@ test "checker: alpha-equivalent generic signatures relate through nested unions"
     b.base.checker.strict_flags.strict_null_checks = true;
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+}
+
+test "checker: contextual generic conditional returns reuse alpha substitutions" {
+    const s = try newSetup(
+        \\export function cast<T>(value: T): {
+        \\  as: <K extends T>() => null extends T ? K | null : undefined extends T ? K | undefined : K;
+        \\} {
+        \\  return {
+        \\    as: <K extends T>(): null extends T ? K | null : undefined extends T ? K | undefined : K => {
+        \\      return value as K;
+        \\    },
+        \\  };
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_null_checks = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: generic constraint checks preserve branch and keyof provenance" {
+    const s = try newSetup(
+        \\type Keys<T extends object> = Exclude<{ [K in keyof T]: K }[keyof T], undefined>;
+        \\type AcceptKey<K extends string | number | symbol> = K;
+        \\type CheckedKeys<T extends object> = AcceptKey<Keys<T>>;
+        \\type StringResult<T extends string, Out extends string = ''> = T extends '' ? `${T}${Out}` : Out;
+        \\type CheckedString<T> = T extends string
+        \\  ? Uncapitalize<StringResult<T extends Uppercase<T> ? T : Lowercase<T>>>
+        \\  : T;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: signature diagnostics terminate on recursive array aliases" {
