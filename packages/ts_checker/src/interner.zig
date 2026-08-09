@@ -460,9 +460,10 @@ pub const Interner = struct {
     /// the same `TypeId`.
     pub fn internEnumNumberLiteral(self: *Interner, value: f64, enum_name: StringId, member_name: StringId) !TypeId {
         const bits: u64 = @bitCast(value);
+        const identity = if (std.math.isNan(value)) enum_name else member_name;
         const key: TypeKey = .{ .enum_lit = .{
             .enum_name = enum_name,
-            .member_name = member_name,
+            .member_name = identity,
             .value = .{ .number_lit = bits },
         } };
         return try self.internKey(key, .{ .is_number = true, .is_literal = true, .is_enum_literal = true });

@@ -1252,6 +1252,7 @@ pub const TsCodes = struct {
     pub const no_default_export_named_import_suggestion: u32 = 2613;
     pub const export_star_does_not_reexport_default: u32 = 1195;
     pub const import_assignment_es_module: u32 = 1202;
+    pub const erasable_syntax_only: u32 = 1294;
     pub const await_reserved_top_level_module: u32 = 1262;
     pub const index_signature_parameter_type: u32 = 1268;
     pub const await_operand_must_be_valid_promise_or_no_callable_then: u32 = 1320;
@@ -3114,6 +3115,9 @@ pub const StrictFlags = struct {
     /// references to ambient `const enum`s, etc. v0 emits TS1205
     /// for the exported-const-enum case.
     isolated_modules: bool = false,
+    /// `erasableSyntaxOnly`. Rejects syntax whose removal would require a
+    /// runtime transform instead of pure type erasure.
+    erasable_syntax_only: bool = false,
     /// `isolatedDeclarations`. Declaration emit must not rely on
     /// inference that another file cannot reproduce.
     isolated_declarations: bool = false,
@@ -48395,7 +48399,8 @@ pub const Checker = struct {
         // CommonJS-style `import = require(...)` form is rejected.
         // Mirrors `es6modulekindWithES5Target10` /
         // `verbatimModuleSyntaxRestrictionsESM`.
-        const module_is_esm = self.sourceDirectiveValueMentions("module", "esnext") or
+        const module_is_esm = self.strict_flags.erasable_syntax_only or
+            self.sourceDirectiveValueMentions("module", "esnext") or
             self.sourceDirectiveValueMentions("module", "es2015") or
             self.sourceDirectiveValueMentions("module", "es2020") or
             self.sourceDirectiveValueMentions("module", "es2022") or
@@ -48404,6 +48409,12 @@ pub const Checker = struct {
             !self.hasAmbientModuleDeclarationAncestor(node))
         {
             try self.report(node, TsCodes.import_assignment_es_module, "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"', 'import {a} from \"mod\"', 'import d from \"mod\"', or another module format instead.");
+        }
+        if (self.importDeclIsRequireAssignment(node) and
+            self.strict_flags.erasable_syntax_only and
+            !self.virtualSectionIsJsLike(node))
+        {
+            try self.report(node, TsCodes.erasable_syntax_only, "This syntax is not allowed when 'erasableSyntaxOnly' is enabled.");
         }
         // TS8002: import-equals in a JavaScript file (here a .cjs section
         // under module: preserve) is reported as "'import ... =' can only
@@ -86185,6 +86196,11 @@ pub const Checker = struct {
     fn enumLiteralDisplayName(self: *Checker, t: TypeId) !?[]const u8 {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
         const info = self.interner.enumLiteralInfo(t) orelse return null;
+        if (self.interner.pool.flagsOf(t).is_number) {
+            if (self.numberLiteralValueFromType(t)) |value| {
+                if (std.math.isNan(value)) return self.string_interner.get(info.enum_name);
+            }
+        }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "{s}.{s}",
@@ -193118,6 +193134,21 @@ test "checker: enum auto-increment ÃÂ¢ÃÂÃÂ `enum E { A, B, C }`
     try T.expectEqual(@as(f64, 2), c_v.?);
 }
 
+test "checker: tsgo parity batch shares NaN enum identity" {
+    const s = try newSetup(
+        \\enum E { A = NaN, B = NaN }
+        \\const a: E.A = E.B;
+        \\const b: E.B = E.A;
+        \\enum F { X = NaN }
+        \\const c: E.A = F.X;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'F' is not assignable to type 'E'."));
+}
+
 test "checker: enum auto-increment ÃÂ¢ÃÂÃÂ explicit start `enum E { A = 5, B, C }` assigns A=5, B=6, C=7" {
     const s = try newSetup(
         \\enum E { A = 5, B, C }
@@ -212066,6 +212097,15 @@ test "checker: import = require emits TS1202 under module=es2015" {
         if (d.code == TsCodes.import_assignment_es_module) found_1202 = true;
     }
     try T.expect(found_1202);
+}
+
+test "checker: tsgo parity batch rejects erasableSyntaxOnly import assignments" {
+    const s = try newSetup("import value = require(\"mod\");");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .erasable_syntax_only = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.import_assignment_es_module));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.erasable_syntax_only));
 }
 
 test "checker: for-of array-literal element with non-LHS member emits TS2364" {

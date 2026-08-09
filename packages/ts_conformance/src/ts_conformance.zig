@@ -8113,6 +8113,7 @@ const StrictDirectiveState = struct {
     isolated_declarations: ?bool = null,
     verbatim_module_syntax: ?bool = null,
     declaration: ?bool = null,
+    erasable_syntax_only: ?bool = null,
 };
 
 fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
@@ -8639,6 +8640,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .isolated_declarations = state.isolated_declarations orelse false,
         .verbatim_module_syntax = state.verbatim_module_syntax orelse false,
         .declaration = state.declaration orelse false,
+        .erasable_syntax_only = state.erasable_syntax_only orelse false,
     };
 }
 
@@ -8692,6 +8694,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.verbatim_module_syntax = value;
     } else if (std.ascii.eqlIgnoreCase(name, "declaration")) {
         state.declaration = value;
+    } else if (std.ascii.eqlIgnoreCase(name, "erasableSyntaxOnly")) {
+        state.erasable_syntax_only = value;
     } else {
         return false;
     }
