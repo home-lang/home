@@ -36152,7 +36152,15 @@ pub const Checker = struct {
                     hir_mod.identifierOf(self.hir, c.extends).name;
                 try self.reportCannotFindNamePlainOnce(c.extends, type_param_name);
             }
-            try self.mergeExtendedMembers(node, c.extends, &instance_members, string_idx, number_idx, symbol_idx);
+            try self.mergeExtendedMembers(
+                node,
+                c.extends,
+                &instance_members,
+                &instance_member_names_local,
+                string_idx,
+                number_idx,
+                symbol_idx,
+            );
             if (try self.classExtendsInstanceType(c.extends)) |parent_t| {
                 const parent_string_idx = self.interner.objectStringIndex(parent_t);
                 const parent_number_idx = self.interner.objectNumberIndex(parent_t);
@@ -43445,6 +43453,7 @@ pub const Checker = struct {
         child_node: NodeId,
         extends_expr: NodeId,
         child_members: *std.ArrayListUnmanaged(types.ObjectMember),
+        own_member_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
         child_string_idx: TypeId,
         child_number_idx: TypeId,
         child_symbol_idx: TypeId,
@@ -43499,6 +43508,21 @@ pub const Checker = struct {
             // (TS2416). Pins privateNamesAndMethods.
             if (self.memberNameIsEcmaPrivate(pm.name)) continue;
             if (child_by_name.get(pm.name)) |cm| {
+                // Class checking pre-seeds inherited members so `this.x`
+                // in field initializers sees the complete base shape. Those
+                // entries are not source-declared overrides and must not be
+                // compared against the same parent member as TS2416. Refresh
+                // them from the final instantiated parent instead; recursive
+                // generic heritage can refine that shape after the pre-scan.
+                if (!own_member_names.contains(pm.name)) {
+                    for (child_members.items) |*member| {
+                        if (member.name == pm.name) {
+                            member.* = pm;
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 const parent_getter_read_t = self.getterReadTypeForHeritageMember(pm);
                 const parent_compare_t = parent_getter_read_t orelse pm.type;
                 // Methods declared with method shorthand (`foo()` rather
@@ -46512,15 +46536,18 @@ pub const Checker = struct {
         }
         if (flags.is_object_type) {
             const members = self.interner.objectMembers(t);
+            const members_snapshot = try self.gpa.dupe(types.ObjectMember, members);
+            defer self.gpa.free(members_snapshot);
             var new_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer new_members.deinit(self.gpa);
-            for (members) |member| {
+            for (members_snapshot) |member| {
                 try new_members.append(self.gpa, .{
                     .name = member.name,
                     .type = try self.substituteTypeNoCyclesInner(member.type, subs, visited),
                     .is_optional = member.is_optional,
                     .is_readonly = member.is_readonly,
                     .is_method = member.is_method,
+                    .visibility = member.visibility,
                     .decl_node = member.decl_node,
                 });
             }
@@ -131310,6 +131337,7 @@ pub const Checker = struct {
                     .is_optional = om.is_optional,
                     .is_readonly = om.is_readonly,
                     .is_method = om.is_method,
+                    .visibility = om.visibility,
                     .decl_node = om.decl_node,
                 });
             }
@@ -225033,6 +225061,28 @@ test "checker: generic class heritage substitutes homomorphic mapped members" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: recursive generic heritage snapshots members during substitution" {
+    const s = try newSetup(
+        \\declare class STModel<TAttrs extends {} = any, TCreate extends {} = TAttrs> {
+        \\  $add: (propertyKey: string) => void;
+        \\  $set: (propertyKey: keyof this) => void;
+        \\  data: TAttrs;
+        \\  newAttrs: TCreate;
+        \\}
+        \\interface IBase { id: string }
+        \\type Attrs<T extends {}> = { [K in keyof T]: T[K] } & IBase;
+        \\type CreateAttrs<T extends {}> = Partial<Attrs<T>>;
+        \\abstract class BaseModel<MA extends {}> extends STModel<Attrs<MA>, CreateAttrs<MA>> {}
+        \\class Foo extends BaseModel<Foo> { declare name: string; }
+        \\const ctor: new () => STModel = Foo;
+        \\console.log(ctor);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: mixin accessor override uses the effective parent member" {
