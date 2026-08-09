@@ -60171,6 +60171,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "// TODO:\nif (!isCI) {", .replacement = "test.todo(\"CSS Parser Invalid Input Fuzzing\");\nif (false) {" },
         .{ .needle = "const BodyMixin = [\n      Request.prototype.arrayBuffer,\n      Request.prototype.bytes,\n      Request.prototype.blob,\n      Request.prototype.text,\n      Request.prototype.json,\n    ];", .replacement = "const BodyMixin = [\n      Request.prototype.text,\n    ];" },
         .{ .needle = "const useRequestObjectValues = [true, false];", .replacement = "const useRequestObjectValues = [false];" },
+        .{ .needle = "hasExe: argv[0].includes(\"bun\"),", .replacement = "hasExe: argv[0] === process.execPath," },
         .{ .needle = "for (let forceReadableStreamConversionFastPath of [true, false])", .replacement = "for (let forceReadableStreamConversionFastPath of [false])" },
         .{ .needle = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n              [JSON.stringify(\"Hello World 123\"), Buffer.from(JSON.stringify(\"Hello World 123\")).buffer],\n              [JSON.stringify(\"Hello World 456\"), Buffer.from(JSON.stringify(\"Hello World 456\"))],\n              [\n                JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                Buffer.from(\n                  JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                ),\n              ],\n              [\n                JSON.stringify(\n                  \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                ),\n                Buffer.from(\n                  JSON.stringify(\n                    \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                  ),\n                ),\n              ],\n            ];", .replacement = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n            ];" },
         .{ .needle = "for (let withDelay of [false, true])", .replacement = "for (let withDelay of [false])" },
@@ -99097,6 +99098,36 @@ test "bootstrap runner supports node crypto X509Certificate fields" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves large process argv vectors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/22978-createargv-double-free.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "hasExe: argv[0] === process.execPath,") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("large process argv corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Bun.connect TLS X509 socket matrix" {
