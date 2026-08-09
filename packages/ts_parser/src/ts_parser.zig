@@ -5328,6 +5328,13 @@ pub const Parser = struct {
                     // follows — treats it as a rename whose binding name
                     // is `node.Name()` and flags TS2566 anchored at that
                     // binding name. Mirrors `checkGrammarBindingElement`.
+                    // Object rest properties only accept a binding identifier.
+                    // Continue through a nested pattern for recovery after
+                    // matching tsgo's TS1003 at the invalid target.
+                    if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
+                        const invalid = self.peek();
+                        try self.reportCodeAt(invalid.span.start, invalid.line, 1003, "Identifier expected.");
+                    }
                     const first = try self.parseBindingTarget();
                     if (self.peek().kind == .colon) {
                         _ = self.advance(); // ':'
@@ -10008,6 +10015,21 @@ pub const Parser = struct {
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         try self.reportVariableDefiniteAssignment(definite_assignment_token, type_annotation, init_node, is_ambient_decl);
         try self.recoverRegexVariableDeclarationTail(init_node);
+        if (init_node != hir_mod.none_node_id and
+            (self.hir.kindOf(init_node) == .as_expr or self.hir.kindOf(init_node) == .satisfies_expr) and
+            !self.peek().flags.preceded_by_newline and
+            prec_mod.binaryPrec(self.peek().kind) != null)
+        {
+            const operator = self.peek();
+            try self.reportCodeAt(operator.span.start, operator.line, 1005, "',' expected.");
+            recovered_variable_list_boundary = true;
+            while (self.peek().kind != .semicolon and
+                self.peek().kind != .eof and
+                !self.peek().flags.preceded_by_newline)
+            {
+                _ = self.advance();
+            }
+        }
         if (init_node != hir_mod.none_node_id and self.peek().kind == .colon) {
             const colon_tok = self.advance();
             try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1005, "',' expected.");
@@ -17007,6 +17029,7 @@ pub const Parser = struct {
 
     fn parseBinaryExpressionWithIn(self: *Parser, min_prec: prec_mod.Prec, allow_in: bool) ParseError!NodeId {
         var left = try self.parseUnaryExpression();
+        var last_binary_prec: ?prec_mod.Prec = null;
         while (true) {
             const t = self.peek();
             if (!allow_in and t.kind == .kw_in) break;
@@ -17056,6 +17079,7 @@ pub const Parser = struct {
                     );
                     const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = const_tok.span.end };
                     left = try self.builder.addAsExpression(.as_expr, sp, left, type_node);
+                    if (self.assertionMustStopBeforeNextOperator(last_binary_prec)) break;
                     continue;
                 }
                 const type_node = try self.parseTypeAnnotation();
@@ -17065,6 +17089,10 @@ pub const Parser = struct {
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(type_node).end };
                 const kind: hir_mod.NodeKind = if (t.kind == .kw_as) .as_expr else .satisfies_expr;
                 left = try self.builder.addAsExpression(kind, sp, left, type_node);
+                // Stop at a following operator that binds more tightly than
+                // the binary expression to the assertion's left. Consuming
+                // it would make erasing `as` / `satisfies` change meaning.
+                if (self.assertionMustStopBeforeNextOperator(last_binary_prec)) break;
                 continue;
             }
             // Right-associative operators recurse with `prec`,
@@ -17159,8 +17187,15 @@ pub const Parser = struct {
             } else {
                 left = right;
             }
+            last_binary_prec = prec;
         }
         return left;
+    }
+
+    fn assertionMustStopBeforeNextOperator(self: *Parser, last_binary_prec: ?prec_mod.Prec) bool {
+        const last_prec = last_binary_prec orelse return false;
+        const next_prec = prec_mod.binaryPrec(self.peek().kind) orelse return false;
+        return @intFromEnum(next_prec) > @intFromEnum(last_prec);
     }
 
     fn tokenCanStartTypeAssertionType(kind: TokenKind) bool {
@@ -33241,4 +33276,51 @@ test "parser: accessor grammar errors do not suppress outside private names" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(!diagnosticIsSyntacticParseError(d));
     }
+}
+
+test "parser: object rest binding requires an identifier" {
+    const src = "export var {...{ }} = x;";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1003));
+    const diagnostic = findDiag(s, 1003) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Identifier expected.", diagnostic.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.lastIndexOfScalar(u8, src, '{').?)), diagnostic.pos);
+}
+
+test "parser: assertions stop before operators that cannot be erased" {
+    const src =
+        \\export const x03 = 1 + 1 as number * 2;
+        \\export const x04 = 1 + 1 as any as number * 2;
+        \\export const x23 = 1 >> 1 as number + 2;
+        \\export const x24 = 1 >> 1 as any as number + 2;
+        \\export const y03 = 1 + 1 satisfies number * 2;
+        \\export const y04 = 1 + 1 satisfies any satisfies number * 2;
+        \\export const y23 = 1 >> 1 satisfies number + 2;
+        \\export const y24 = 1 >> 1 satisfies any satisfies number + 2;
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 8), countDiag(s, 1005));
+    var expected_positions = [_]u32{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    const markers = [_][]const u8{ "* 2", "* 2", "+ 2", "+ 2", "* 2", "* 2", "+ 2", "+ 2" };
+    var search_start: usize = 0;
+    for (&expected_positions, markers) |*position, marker| {
+        const found = std.mem.indexOfPos(u8, src, search_start, marker) orelse return error.MissingDiagnostic;
+        position.* = @intCast(found);
+        search_start = found + marker.len;
+    }
+    var found_positions = [_]bool{ false, false, false, false, false, false, false, false };
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 1005) continue;
+        try T.expectEqualStrings("',' expected.", diagnostic.message);
+        for (expected_positions, 0..) |position, i| {
+            if (diagnostic.pos == position) found_positions[i] = true;
+        }
+    }
+    for (found_positions) |found| try T.expect(found);
 }

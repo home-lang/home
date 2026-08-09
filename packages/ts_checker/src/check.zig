@@ -1618,10 +1618,9 @@ pub const TsCodes = struct {
     /// TS2441 ÃÂ¢ÃÂÃÂ `Duplicate identifier '<name>'. Compiler reserves name
     /// '<name>' in top level scope of a module.` Fires when a top-level
     /// declaration in an external module (a file with top-level
-    /// `import`/`export`) is named `require` or `exports`, which the
-    /// module system reserves when emitting CommonJS/AMD/UMD/System
-    /// (i.e. emit module format < ES2015). Mirrors tsc's
-    /// `checkCollisionWithRequireExportsInGeneratedCode`.
+    /// `import`/`export`) uses a generated-wrapper binding. This covers
+    /// `require` / `exports` for pre-ES2015 wrappers and `Object` for
+    /// CommonJS specifically.
     pub const duplicate_identifier_reserves_name: u32 = 2441;
     /// TS2529 - `Duplicate identifier '<name>'. Compiler reserves name
     /// '<name>' in top level scope of a module containing async
@@ -6541,6 +6540,7 @@ pub const Checker = struct {
     const JsDocExtendsOrAugmentsType = struct {
         tag: []const u8,
         name: []const u8,
+        type_text: []const u8,
         pos: u32,
     };
 
@@ -6552,7 +6552,7 @@ pub const Checker = struct {
         const jsdoc_extends = jsDocFirstExtendsOrAugmentsType(jsdoc.body, jsdoc.start) orelse return;
         if (std.mem.eql(u8, jsdoc_extends.name, extends_name)) return;
         if (self.source) |src| {
-            _ = try self.jsDocTypeTextToTypeAt(src, jsdoc_extends.name, class_node);
+            _ = try self.jsDocTypeTextToTypeAt(src, jsdoc_extends.type_text, class_node);
         }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -6605,6 +6605,7 @@ pub const Checker = struct {
             return .{
                 .tag = tag,
                 .name = name,
+                .type_text = raw_name,
                 .pos = @intCast(pos),
             };
         }
@@ -19320,23 +19321,31 @@ pub const Checker = struct {
         return true;
     }
 
-    /// TS2441 ÃÂ¢ÃÂÃÂ a top-level declaration named `require` or `exports` in
-    /// an external module collides with the bindings the module system
-    /// reserves in the generated CommonJS/AMD/UMD/System wrapper.
+    fn sourceEmitFormatIsCommonJs(self: *Checker) bool {
+        if (self.sourceDirectiveValueMentions("module", "commonjs")) return true;
+        if (self.module_kind.len != 0 or self.sourceHasDirective("module")) return false;
+        return self.sourceEmitFormatIsCommonJsFamily();
+    }
+
+    /// TS2441 for names reserved by generated module wrappers. `require`
+    /// and `exports` apply to every pre-ES2015 wrapper; `Object` is reserved
+    /// only by the CommonJS transform.
     /// `name_node` is the declaration's name identifier and is used as
     /// the diagnostic anchor (mirroring tsc, which underlines the name).
     /// Only fires for top-level declarations (caller guarantees the
     /// declaration is directly in the source file's top-level scope),
     /// in an external module, with a CommonJS-family emit format.
-    fn checkCollisionWithRequireExportsInGeneratedCode(
+    fn checkCollisionWithGeneratedModuleNames(
         self: *Checker,
         name_node: NodeId,
         name: hir_mod.StringId,
     ) CheckError!void {
         const text = self.string_interner.get(name);
-        if (!std.mem.eql(u8, text, "require") and !std.mem.eql(u8, text, "exports")) return;
-        // ES6+ module emit reserves nothing; only CommonJS-family does.
-        if (!self.sourceEmitFormatIsCommonJsFamily()) return;
+        const is_require_or_exports = std.mem.eql(u8, text, "require") or std.mem.eql(u8, text, "exports");
+        const is_object = std.mem.eql(u8, text, "Object");
+        if (!is_require_or_exports and !is_object) return;
+        if (is_require_or_exports and !self.sourceEmitFormatIsCommonJsFamily()) return;
+        if (is_object and !self.sourceEmitFormatIsCommonJs()) return;
         // Only external modules (files with top-level import/export)
         // get the generated module wrapper.
         if (!self.sourceFileSectionIsModule(name_node)) return;
@@ -44213,12 +44222,14 @@ pub const Checker = struct {
                     // mirrors `subtypingWithObjectMembers.ts(34,5)`.
                     const prop_str = self.classOrInterfaceMemberDisplayName(child_node, pm.name);
                     const msg = try self.allocPropertyNotAssignableToBaseMessage(child_node, prop_str, parent_t);
+                    const diagnostic_node = self.classOrInterfaceMemberDiagnosticNode(child_node, pm.name);
                     // Anchor at the *child's* property declaration so
                     // TS2416 matches the upstream column (the property
                     // name in the derived class), not the `extends`
                     // clause. Mirrors `apparentTypeSupertype.ts(10,5)`.
                     try self.diagnostics.append(self.gpa, .{
-                        .node = self.classOrInterfaceMemberDiagnosticNode(child_node, pm.name),
+                        .node = diagnostic_node,
+                        .pos = self.computedMemberDiagnosticPos(diagnostic_node, prop_str),
                         .code = TsCodes.property_not_assignable_to_base,
                         .message = msg,
                     });
@@ -58188,6 +58199,14 @@ pub const Checker = struct {
         return if (key != hir_mod.none_node_id) key else member;
     }
 
+    fn computedMemberDiagnosticPos(self: *Checker, node: NodeId, display_name: []const u8) ?u32 {
+        if (display_name.len == 0 or display_name[0] != '[') return null;
+        const src = self.source orelse return null;
+        const start = self.hir.spanOf(node).start;
+        if (start == 0 or start > src.len or src[start - 1] != '[') return null;
+        return start - 1;
+    }
+
     /// Render a class/interface property's *source-text* name for use
     /// inside TS2411 prose. tsc preserves the original written form
     /// (`'2.0'` for `2.0:`, `'"e"'` for `"e":`), but our parser
@@ -59318,7 +59337,7 @@ pub const Checker = struct {
             !self.declarationSourceHasLeadingDeclare(node) and
             !self.virtualSectionIsDeclarationFile(node))
         {
-            try self.checkCollisionWithRequireExportsInGeneratedCode(e.name, enum_name);
+            try self.checkCollisionWithGeneratedModuleNames(e.name, enum_name);
         }
         // TS2431 ÃÂ¢ÃÂÃÂ `enum any { }` (and `number`/`string`/`boolean`/
         // `symbol`/`bigint`) shadow built-in primitive type names and
@@ -75719,7 +75738,7 @@ pub const Checker = struct {
                 !v.is_ambient and
                 !self.virtualSectionIsDeclarationFile(node))
             {
-                try self.checkCollisionWithRequireExportsInGeneratedCode(v.name, id.name);
+                try self.checkCollisionWithGeneratedModuleNames(v.name, id.name);
             }
             if (!v.is_ambient and std.mem.eql(u8, name_str, "globalThis")) {
                 try self.report(
@@ -109170,6 +109189,13 @@ pub const Checker = struct {
                         }
                     }
                     if (t != types.Primitive.none) return t;
+                    // A binding declared in an outer scope is visible from a
+                    // nested function even when its declaration appears later.
+                    // Its initializer will be checked in declaration order;
+                    // use `any` provisionally instead of misreporting TS2304.
+                    if (self.enclosingFunctionLike(node) != self.enclosingFunctionLike(decl)) {
+                        return types.Primitive.any;
+                    }
                 }
             } else if (v.name != hir_mod.none_node_id) {
                 const vk = self.hir.kindOf(v.name);
@@ -119149,6 +119175,13 @@ pub const Checker = struct {
         const af = self.interner.pool.flagsOf(a);
         const bf = self.interner.pool.flagsOf(b);
         if (self.classPrivateComparableMismatch(a, b)) return false;
+        // Type-parameter flags can also carry the union/intersection shape
+        // of their constraints. Compare the parameters themselves before
+        // descending into those derived flags, or unrelated A/T pairs can
+        // appear to overlap through an arbitrary constraint constituent.
+        if (af.is_type_parameter and bf.is_type_parameter and a != b) {
+            if (!self.typeParameterConstraintsRelate(a, b)) return false;
+        }
         if (af.is_union) {
             for (self.interner.unionMembers(a)) |member| {
                 if (try self.typesHaveComparableOverlapLimit(member, b, depth + 1)) return true;
@@ -119224,13 +119257,6 @@ pub const Checker = struct {
         }
         if (self.isObjectLikeType(a) or self.isObjectLikeType(b)) {
             return self.engine.isComparableTo(a, b) catch true;
-        }
-        // Two distinct type parameters with no relating constraint
-        // have no provable overlap ÃÂ¢ÃÂÃÂ tsc emits TS2367 for `t == u`
-        // where T and U are sibling type parameters. Mirrors fixtures
-        // like comparisonOperatorWithTypeParameter.ts.
-        if (af.is_type_parameter and bf.is_type_parameter and a != b) {
-            if (!self.typeParameterConstraintsRelate(a, b)) return false;
         }
         return true;
     }
@@ -158525,7 +158551,8 @@ pub const Checker = struct {
         if (self.assertionTargetHasGenericArityDiagnostic(node)) return;
         if (self.typeIsAnyLike(source_t) or self.typeIsAnyLike(target_t)) return;
         if (self.assertionTargetIsFunctionObject(target_t)) return;
-        if (self.nullAssertionTargetIsPermissive(target_t)) return;
+        if ((source_t == types.Primitive.null_t or source_t == types.Primitive.undefined_t) and
+            self.nullAssertionTargetIsPermissive(target_t)) return;
         // Casting a primitive to its wrapper object type (e.g.
         // `"" as String`, `<String>""`, `<Number>0`, `0 as Number`) is
         // structurally fine in TS ÃÂ¢ÃÂÃÂ the wrapper is a supertype of the
@@ -158748,6 +158775,10 @@ pub const Checker = struct {
     /// form including the "convert to 'unknown' first" hint; otherwise
     /// fall back to the bare message that pre-dated the helper.
     fn emitConversionMayBeMistake(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
+        var chain: []const DiagnosticChainEntry = &.{};
+        if (try self.assignmentTypeParameterInstantiationChainEntry(source_t, target_t)) |entry| {
+            chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{entry});
+        }
         const source_name = try self.assertionDiagnosticTypeName(node, source_t);
         if (source_name) |source_display| {
             const target_name = try self.assertionDiagnosticTypeName(node, target_t);
@@ -158762,6 +158793,7 @@ pub const Checker = struct {
                     .pos = self.typeAssertionDiagnosticPos(node),
                     .code = TsCodes.conversion_may_be_mistake,
                     .message = msg,
+                    .chain = chain,
                 });
                 return;
             }
@@ -158771,6 +158803,7 @@ pub const Checker = struct {
             .pos = self.typeAssertionDiagnosticPos(node),
             .code = TsCodes.conversion_may_be_mistake,
             .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
+            .chain = chain,
         });
     }
 
@@ -229010,4 +229043,110 @@ test "checker: JSDoc typedef variance controls generic assignment" {
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, 1274));
+}
+
+test "checker: parity batch computed override diagnostics anchor at the opening bracket" {
+    const src =
+        \\declare const s: unique symbol;
+        \\class A { [s]: number = 1; }
+        \\class B extends A { [s]: string = "x"; }
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_not_assignable_to_base) continue;
+        try T.expectEqual(
+            @as(u32, @intCast(std.mem.lastIndexOf(u8, src, "[s]").?)),
+            s.checker.diagnosticStart(diagnostic),
+        );
+    }
+}
+
+test "checker: parity batch CommonJS reserves Object only for its own transform" {
+    const commonjs = try newBoundSetup(
+        \\// @module: commonjs
+        \\let Object = 0;
+        \\export const x = 1;
+    );
+    defer destroyBoundSetup(commonjs);
+    try commonjs.base.checker.checkSourceFile(commonjs.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(commonjs.base, TsCodes.duplicate_identifier_reserves_name));
+    try T.expect(checkerHasCodeAndMessage(
+        commonjs.base,
+        TsCodes.duplicate_identifier_reserves_name,
+        "Duplicate identifier 'Object'. Compiler reserves name 'Object' in top level scope of a module.",
+    ));
+
+    const esnext = try newBoundSetup(
+        \\// @module: esnext
+        \\let Object = 0;
+        \\export const x = 1;
+    );
+    defer destroyBoundSetup(esnext);
+    try esnext.base.checker.checkSourceFile(esnext.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(esnext.base, TsCodes.duplicate_identifier_reserves_name));
+}
+
+test "checker: parity batch qualified JSDoc extends mismatches resolve the full type name" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\declare namespace React {
+        \\    class Component {}
+        \\    class PureComponent {}
+        \\}
+        \\/** @extends {React.Component} */
+        \\class C extends React.PureComponent {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsdoc_extends_clause_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: parity batch nested closures resolve later outer lexical bindings" {
+    const s = try newSetup(
+        \\export function foo() {
+        \\  const fn = () => {
+        \\    ;(() => numFilesSelected)()
+        \\  }
+        \\  const numFilesSelected = 1
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: parity batch unrelated type parameters fail assertion overlap with elaboration" {
+    const b = try newBoundSetup(
+        \\type StringOrT<T> = T | string;
+        \\function func<A, B, T extends StringOrT<B>>(thing: T): void {
+        \\    thing as A;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .strict_function_types = true,
+        .strict_null_checks = true,
+        .strict_property_initialization = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.conversion_may_be_mistake));
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.conversion_may_be_mistake) continue;
+        try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+        try T.expectEqualStrings(
+            "'A' could be instantiated with an arbitrary type which could be unrelated to 'T'.",
+            diagnostic.chain[0].message,
+        );
+    }
 }
