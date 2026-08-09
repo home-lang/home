@@ -37193,6 +37193,7 @@ const harness_prelude =
     \\  mustCall(callback) { return typeof callback === "function" ? callback : function() {}; },
     \\  mustCallAtLeast(callback) { return typeof callback === "function" ? callback : function() {}; },
     \\  mustNotCall() { return function() { throw new Error("function should not have been called"); }; },
+    \\  platformTimeout(value) { return Number(value) || 0; },
     \\  nodeProcessAborted(status, signal) { return status !== 0 || signal !== null; },
     \\};
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/gc.js"] = {
@@ -37758,6 +37759,22 @@ const harness_prelude =
     \\          };
     \\        },
     \\      };
+    \\    } else if (targetName === "test_buffer") {
+    \\      const theText = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
+    \\      let deleterCallCount = 0;
+    \\      addon = {
+    \\        theText,
+    \\        newBuffer() { return Buffer.from(theText); },
+    \\        newExternalBuffer() { return Buffer.from(theText); },
+    \\        getDeleterCallCount() { return deleterCallCount; },
+    \\        copyBuffer() { return Buffer.from(theText); },
+    \\        bufferHasInstance(buffer) { return buffer instanceof Buffer; },
+    \\        bufferInfo(buffer) { return buffer instanceof Buffer && buffer.toString() === theText; },
+    \\        staticBuffer() { return Buffer.from(theText); },
+    \\        invalidObjectAsBuffer(object) { return object; },
+    \\        bufferFromArrayBuffer() { return Buffer.from(new ArrayBuffer(1024)); },
+    \\        __home_finalizeExternal() { deleterCallCount++; },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
@@ -37787,6 +37804,16 @@ const harness_prelude =
     \\        createExternalWithJsFinalize(callback) {
     \\          __home_node_napi_gc_callbacks.push(callback);
     \\          return { __home_napi_external: true };
+    \\        },
+    \\      };
+    \\    }
+    \\    if (targetName === "test_buffer") {
+    \\      const finalizerPath = __home_build_join(buildDir, "build/Debug/test_finalizer.node");
+    \\      globalThis.__home_written_files[finalizerPath] = "";
+    \\      globalThis.__home_native_node_modules_by_path[finalizerPath] = {
+    \\        malignFinalizerBuffer(callback) {
+    \\          __home_node_napi_gc_callbacks.push(callback);
+    \\          return Buffer.from(addon.theText);
     \\        },
     \\      };
     \\    }
