@@ -110314,7 +110314,8 @@ pub const Checker = struct {
 
     fn domGatedGlobalName(self: *const Checker, name_str: []const u8) bool {
         _ = self;
-        return std.mem.eql(u8, name_str, "console");
+        return std.mem.eql(u8, name_str, "console") or
+            std.mem.eql(u8, name_str, "name");
     }
 
     /// True when the source-file lib directive (e.g. `// @lib: es5`)
@@ -110473,7 +110474,7 @@ pub const Checker = struct {
             "console",                "undefined",                    "NaN",
             "Infinity",               "globalThis",                   "this",
             "new.target",             "window",                       "self",
-            "top",                    "document",
+            "top",                    "document",                     "name",
             "Element",                "Node",                         "HTMLElement",
             "HTMLBodyElement",        "HTMLDivElement",               "HTMLAnchorElement",
             "HTMLImageElement",       "HTMLInputElement",             "HTMLSpanElement",
@@ -159799,6 +159800,22 @@ test "checker: console under lib ES5 emits TS2584" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: DOM name global is available by default and gated by lib" {
+    const available = try newBoundSetup("name;");
+    defer destroyBoundSetup(available);
+    try available.base.checker.checkSourceFile(available.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(available.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(available.base, TsCodes.cannot_find_name_dom_library));
+
+    const excluded = try newBoundSetup(
+        \\// @lib: es5
+        \\name;
+    );
+    defer destroyBoundSetup(excluded);
+    try excluded.base.checker.checkSourceFile(excluded.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(excluded.base, TsCodes.cannot_find_name_dom_library));
 }
 
 test "checker: eval is available under lib ES5" {
