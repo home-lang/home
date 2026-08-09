@@ -55,7 +55,7 @@ leaving the nested TypeScript pin unchanged. The tsgo-native compiler corpus
 grew from 300 to 321 source files and from 299 to 320 expanded cases. With
 family-aware native baseline discovery, Home initially passed 192/320 exactly,
 with 128 failures. A fresh-cache survey on 2026-08-09 after the native-parity
-porting waves passes 263/320 exactly, with 57 remaining failures. The former
+porting waves passes 275/320 exactly, with 45 remaining failures. The former
 299/299 claim was measured while the
 harness searched one directory above `testdata/baselines/reference/compiler`,
 so native error baselines were treated as absent; it was not a valid parity
