@@ -682,6 +682,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     }
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     const module_kind_label = selectedModuleKind(c, directive_source, "");
+    const compiler_type_reference_names = try dupeDirectiveStringList(gpa, directive_source, "types");
+    defer freeStringList(gpa, compiler_type_reference_names);
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
@@ -701,6 +703,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .no_emit = true,
         .importer_path = c.path,
         .module_kind = module_kind_label,
+        .compiler_type_reference_names = compiler_type_reference_names,
     }) catch |err| {
         const detail = try std.fmt.allocPrint(gpa, "compile failed: {s}", .{@errorName(err)});
         return .{
@@ -2579,7 +2582,7 @@ fn preloadConfiguredTypeReferences(
             error.OutOfMemory => return error.OutOfMemory,
             else => continue,
         };
-        try addResolvedTypeReference(gpa, resolver, program, known_names, owned_sources, name, resolved.path);
+        try addResolvedTypeReference(gpa, resolver, program, known_names, owned_sources, name, resolved.path, resolved.is_declaration);
     }
 }
 
@@ -2603,7 +2606,7 @@ fn preloadTripleSlashTypeReferences(
                 error.OutOfMemory => return error.OutOfMemory,
                 else => continue,
             };
-            try addResolvedTypeReference(gpa, resolver, program, known_names, owned_sources, ref.name, resolved.path);
+            try addResolvedTypeReference(gpa, resolver, program, known_names, owned_sources, ref.name, resolved.path, resolved.is_declaration);
         }
     }
 }
@@ -2616,11 +2619,14 @@ fn addResolvedTypeReference(
     owned_sources: *std.ArrayListUnmanaged([]u8),
     name: []const u8,
     path: []const u8,
+    is_declaration: bool,
 ) !void {
-    if (!knownTypeReferenceName(known_names.items, name)) {
-        try known_names.append(gpa, try gpa.dupe(u8, name));
+    if (program.lookupPath(path) != null) {
+        if (is_declaration and !knownTypeReferenceName(known_names.items, name)) {
+            try known_names.append(gpa, try gpa.dupe(u8, name));
+        }
+        return;
     }
-    if (program.lookupPath(path) != null) return;
     const src = resolver.fs.readFile(gpa, path) catch return;
     var src_owned_by_list = false;
     errdefer if (!src_owned_by_list) gpa.free(src);
@@ -2638,6 +2644,9 @@ fn addResolvedTypeReference(
     };
     try owned_sources.append(gpa, src);
     src_owned_by_list = true;
+    if (is_declaration and !knownTypeReferenceName(known_names.items, name)) {
+        try known_names.append(gpa, try gpa.dupe(u8, name));
+    }
 }
 
 fn appendPreloadedProgramFileDiagnostics(
@@ -3139,6 +3148,14 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             actual_count += 1;
         }
     }
+    actual_count += try appendTsconfigSyntaxDiagnostics(gpa, virtual_files.items, &actual_lines);
+    actual_count += try appendExplicitRootDirDiagnostics(gpa, virtual_files.items, tsconfig_options, &actual_lines);
+    actual_count += try appendMissingConfiguredTypeDiagnostics(
+        gpa,
+        explicit_type_names,
+        known_type_reference_names.items,
+        &actual_lines,
+    );
     actual_count += try appendTsconfigPathsValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
     actual_count += try appendJsonModuleValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
     actual_count += try appendOutDirRootDirDiagnostics(gpa, virtual_files.items, &resolver, tsconfig_options, &actual_lines);
@@ -6850,6 +6867,152 @@ fn appendTsconfigPathsValidationDiagnostics(
     for (virtual_files) |file| {
         if (!isTsConfigVirtualPath(file.path)) continue;
         count += try appendOneTsconfigPathsValidationDiagnostics(gpa, file, actual_lines);
+    }
+    return count;
+}
+
+fn appendTsconfigSyntaxDiagnostics(
+    gpa: std.mem.Allocator,
+    virtual_files: []const VirtualFile,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    var count: u32 = 0;
+    for (virtual_files) |file| {
+        if (!isTsConfigVirtualPath(file.path)) continue;
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const config = tsconfig_mod.parseString(gpa, arena.allocator(), file.source) catch continue;
+        var diag_path = file.path;
+        if (std.mem.startsWith(u8, diag_path, "./")) diag_path = diag_path[2..];
+        for (config.json_parse_diagnostics) |diagnostic| {
+            const col = diagnostic.column + 1;
+            const formatted = try ts_diagnostics.formatDefault(gpa, .{
+                .file = diag_path,
+                .line = diagnostic.line,
+                .col = col,
+                .code = diagnostic.code,
+                .code_prefix = .TS,
+                .severity = .err,
+                .message = diagnostic.message,
+                .span_len = 0,
+            });
+            try actual_lines.append(gpa, .{
+                .file = diag_path,
+                .line = diagnostic.line,
+                .col = col,
+                .code = diagnostic.code,
+                .order = actual_lines.items.len,
+                .text = formatted,
+            });
+            count += 1;
+        }
+    }
+    return count;
+}
+
+fn appendExplicitRootDirDiagnostics(
+    gpa: std.mem.Allocator,
+    virtual_files: []const VirtualFile,
+    opts: TsconfigResolverOptions,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    if (opts.root_dir.len == 0 or opts.config_file_path.len == 0) return 0;
+    const config_dir = dirnameSlice(opts.config_file_path);
+    const root_canon = if (std.fs.path.isAbsolute(opts.root_dir))
+        try std.fs.path.resolve(gpa, &.{opts.root_dir})
+    else
+        try std.fs.path.resolve(gpa, &.{ config_dir, opts.root_dir });
+    defer gpa.free(root_canon);
+
+    var config_path_was_relative = false;
+    for (virtual_files) |file| {
+        if (!isTsConfigVirtualPath(file.path)) continue;
+        config_path_was_relative = !std.mem.startsWith(u8, file.path, "/");
+        break;
+    }
+    const root_display = if (config_path_was_relative and std.mem.startsWith(u8, root_canon, "/"))
+        root_canon[1..]
+    else
+        root_canon;
+
+    var count: u32 = 0;
+    for (virtual_files) |file| {
+        if (!isCodeVirtualFile(file.path) or isNodeModulesVirtualPath(file.path) or virtualPathIsDeclarationFile(file.path)) continue;
+        const file_canon = try canonicalVfsPath(gpa, file.path);
+        defer gpa.free(file_canon);
+        if (pathHasDirPrefix(file_canon, root_canon)) continue;
+        var file_display = file.path;
+        if (std.mem.startsWith(u8, file_display, "./")) file_display = file_display[2..];
+        const message = try std.fmt.allocPrint(
+            gpa,
+            "File '{s}' is not under 'rootDir' '{s}'. 'rootDir' is expected to contain all source files.",
+            .{ file_display, root_display },
+        );
+        defer gpa.free(message);
+        const formatted = try ts_diagnostics.formatDefault(gpa, .{
+            .file = "",
+            .line = 0,
+            .col = 0,
+            .code = 6059,
+            .code_prefix = .TS,
+            .severity = .err,
+            .message = message,
+            .span_len = 0,
+        });
+        try actual_lines.append(gpa, .{
+            .file = "",
+            .line = 0,
+            .col = 0,
+            .code = 6059,
+            .order = actual_lines.items.len,
+            .text = formatted,
+        });
+        count += 1;
+    }
+    return count;
+}
+
+fn appendMissingConfiguredTypeDiagnostics(
+    gpa: std.mem.Allocator,
+    configured_names: []const []const u8,
+    resolved_names: []const []const u8,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    var count: u32 = 0;
+    for (configured_names) |name| {
+        if (name.len == 0 or knownTypeReferenceName(resolved_names, name)) continue;
+        const message = try std.fmt.allocPrint(gpa, "Cannot find type definition file for '{s}'.", .{name});
+        defer gpa.free(message);
+        const formatted = try ts_diagnostics.formatDefault(gpa, .{
+            .file = "",
+            .line = 0,
+            .col = 0,
+            .code = 2688,
+            .code_prefix = .TS,
+            .severity = .err,
+            .message = message,
+            .span_len = 0,
+        });
+        var duplicate = false;
+        for (actual_lines.items) |line| {
+            if (line.code == 2688 and std.mem.eql(u8, line.text, formatted)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            gpa.free(formatted);
+            continue;
+        }
+        try actual_lines.append(gpa, .{
+            .file = "",
+            .line = 0,
+            .col = 0,
+            .code = 2688,
+            .order = actual_lines.items.len,
+            .text = formatted,
+        });
+        count += 1;
     }
     return count;
 }

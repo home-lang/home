@@ -880,6 +880,51 @@ fn reportMissingReferenceTypesDiagnostics(
     }
 }
 
+fn reportMissingCompilerTypeReferenceDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    options: CompileOptions,
+) CompileError!void {
+    if (options.compiler_type_reference_names.len == 0) return;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    for (options.compiler_type_reference_names) |name| {
+        if (name.len == 0 or knownTypeReferenceName(options, name)) continue;
+        if (try compilerTypeReferenceExists(gpa, io, source, name)) continue;
+        const message = try std.fmt.allocPrint(gpa, "Cannot find type definition file for '{s}'.", .{name});
+        try c.diagnostics.append(gpa, .{
+            .phase = .bind,
+            .pos = 0,
+            .line = 1,
+            .code = 2688,
+            .is_global = true,
+            .message = message,
+        });
+        c.has_errors = true;
+    }
+}
+
+fn compilerTypeReferenceExists(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    name: []const u8,
+) CompileError!bool {
+    if (sourceDirectiveValue(source, "typeRoots")) |raw_roots| {
+        var roots = std.mem.splitScalar(u8, raw_roots, ',');
+        while (roots.next()) |raw_root| {
+            const root = trimReferenceRoot(raw_root);
+            if (root.len == 0) continue;
+            if (try virtualReferenceTypesRootExists(gpa, source, root, name)) return true;
+            if (try physicalReferenceTypesRootExists(gpa, io, root, name)) return true;
+        }
+        return false;
+    }
+    return try referenceTypesDirectiveExists(gpa, io, source, name);
+}
+
 fn knownTypeReferenceName(options: CompileOptions, name: []const u8) bool {
     for (options.known_type_reference_names) |known| {
         if (std.mem.eql(u8, known, name)) return true;
@@ -1794,6 +1839,7 @@ pub fn compileSource(
     try reportSelfReferencePathDiagnostics(gpa, c, source, options);
     try reportMissingReferencePathDiagnostics(gpa, c, source, options);
     try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
+    try reportMissingCompilerTypeReferenceDiagnostics(gpa, c, source, options);
     try extractReferenceDirectives(gpa, c, source);
     try appendJsonModuleValidationDiagnostics(gpa, c, source, options.importer_path);
 
@@ -6330,6 +6376,30 @@ test "driver: missing triple-slash types reference reports TS2688" {
             try T.expectEqual(expected_pos, d.pos);
             try T.expectEqualStrings("Cannot find type definition file for 'definitely-missing'.", d.message);
         }
+    }
+    try T.expect(found);
+}
+
+test "driver: missing compiler type library under custom typeRoots reports global TS2688" {
+    const source =
+        \\// @typeRoots: t
+        \\let x = 1;
+    ;
+    const configured = [_][]const u8{"n"};
+    var c = try compileSource(T.allocator, source, .{
+        .no_emit = true,
+        .compiler_type_reference_names = &configured,
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2688) continue;
+        try T.expect(d.is_global);
+        try T.expectEqualStrings("Cannot find type definition file for 'n'.", d.message);
+        found = true;
     }
     try T.expect(found);
 }

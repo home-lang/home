@@ -1624,7 +1624,7 @@ pub fn parseString(
     const json_parse_diagnostics = try arena.alloc(JsonParseDiagnostic, doc.diagnostics.len);
     for (doc.diagnostics, 0..) |diag, i| {
         json_parse_diagnostics[i] = .{
-            .code = 1012,
+            .code = if (std.mem.eql(u8, diag.message, "',' expected.")) 1005 else 1012,
             .pos = diag.pos,
             .line = diag.line,
             .column = diag.column,
@@ -2773,6 +2773,21 @@ test "tsconfig.validate: trailing top-level JSON reports TS1012 and recovers con
     defer freeValidationDiagnostics(t.allocator, diags);
     const d = findCode(diags, 1012) orelse return error.TestExpectedDiagnostic;
     try t.expectEqualStrings("Unexpected token.", d.message);
+}
+
+test "tsconfig: missing root property comma reports TS1005 and preserves compiler options" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": { "rootDir": "./src2" }
+        \\  "include": ["src1/*"]
+        \\}
+    );
+    try t.expectEqualStrings("./src2", cfg.compiler_options.root_dir.?);
+    try t.expectEqual(@as(usize, 1), cfg.json_parse_diagnostics.len);
+    try t.expectEqual(@as(u32, 1005), cfg.json_parse_diagnostics[0].code);
+    try t.expectEqualStrings("',' expected.", cfg.json_parse_diagnostics[0].message);
 }
 
 test "tsconfig.validate: composite without declaration reports TS6304-shaped diagnostic" {

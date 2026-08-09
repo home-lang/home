@@ -316,6 +316,10 @@ const Parser = struct {
                 self.pos += 1;
                 break;
             }
+            if (self.peek() == '"') {
+                self.report("',' expected.");
+                continue;
+            }
             self.report("expected ',' or '}' in object");
             return error.UnexpectedCharacter;
         }
@@ -618,6 +622,22 @@ test "jsonc: trailing commas in objects and arrays" {
     try t.expectEqual(@as(usize, 3), arr.len);
     try t.expectApproxEqRel(@as(f64, 1), arr[0].asNumber().?, 1e-9);
     try t.expectApproxEqRel(@as(f64, 3), arr[2].asNumber().?, 1e-9);
+}
+
+test "jsonc: missing object comma reports and recovers the next property" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const r = try parse(t.allocator, arena.allocator(),
+        \\{
+        \\  "a": 1
+        \\  "b": 2
+        \\}
+    );
+    defer t.allocator.free(r.diagnostics);
+    try t.expectEqual(@as(usize, 1), r.diagnostics.len);
+    try t.expectEqualStrings("',' expected.", r.diagnostics[0].message);
+    try t.expectEqual(@as(u32, 3), r.diagnostics[0].line);
+    try t.expectApproxEqRel(@as(f64, 2), r.value.asObject().?.get("b").?.asNumber().?, 1e-9);
 }
 
 test "jsonc: trailing top-level content records TS1012-shaped diagnostic" {

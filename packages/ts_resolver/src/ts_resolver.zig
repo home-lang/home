@@ -882,15 +882,13 @@ pub const Resolver = struct {
     ) ResolveError!TypeReferenceLookup {
         if (self.config.type_roots.len > 0) {
             self.traceMsg(6121, "Resolving with primary search path '{s}'.", .{self.typeRootsTraceText()});
-            var saw_existing_root = false;
             for (self.config.type_roots) |root| {
                 if (root.len == 0) continue;
-                if (self.fs.directoryExists(root)) saw_existing_root = true;
                 if (try self.tryTypeReferenceRoot(root, directive)) |r| {
                     return .{ .resolution = r, .primary = true };
                 }
             }
-            if (saw_existing_root and isInferredTypesContainingFile(containing_file)) {
+            if (isInferredTypesContainingFile(containing_file)) {
                 self.traceMsg(6265, "Resolving type reference directive for program that specifies custom typeRoots, skipping lookup in 'node_modules' folder.", .{});
                 return error.NotFound;
             }
@@ -3849,6 +3847,20 @@ test "Resolver: explicit type references fall back from custom typeRoots to node
     const explicit = try r.resolveTypeReferenceDirective("foo", "/src/root.ts");
     try T.expectEqualStrings("/node_modules/foo/index.d.ts", explicit.path);
     try T.expectError(error.NotFound, r.resolveTypeReferenceDirective("foo", "/src/__inferred type names__.ts"));
+}
+
+test "Resolver: inferred type names honor a configured missing typeRoots directory" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/index.d.ts", "declare const foo: unknown;");
+
+    const roots = [_][]const u8{"/missing-types"};
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .type_roots = &roots });
+    defer r.deinit();
+
+    try T.expectError(error.NotFound, r.resolveTypeReferenceDirective("foo", "/src/__inferred type names__.ts"));
+    const explicit = try r.resolveTypeReferenceDirective("foo", "/src/root.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.d.ts", explicit.path);
 }
 
 test "Resolver: wildcard type names expand visible packages in place" {
