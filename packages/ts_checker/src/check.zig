@@ -6986,7 +6986,7 @@ pub const Checker = struct {
                 if (self.current_async_function_return_check and r.value != hir_mod.none_node_id) {
                     switch (self.awaitedChainIssue(raw_ret_t)) {
                         .none => {},
-                        .malformed_then => try self.reportAsyncReturnInvalidThenable(self.asyncReturnDiagnosticAnchor(node)),
+                        .malformed_then => try self.reportAsyncReturnInvalidThenable(self.asyncReturnStatementDiagnosticAnchor(node)),
                         .recursive_then => try self.reportTypeReferencedInOwnThenCallback(self.asyncReturnDiagnosticAnchor(node)),
                     }
                 }
@@ -23442,6 +23442,16 @@ pub const Checker = struct {
         try self.checkIteratorNextSentType(pattern_node, container_t, types.Primitive.undefined_t, .array_destructuring);
         const elem_t = try self.iterableElementType(container_t);
         const rest_array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+        if (self.array_origin_types.contains(container_t) and try self.noLibGlobalArrayLacksNumberIndex(pattern_node)) {
+            for (hir_mod.patternElements(self.hir, pattern_node), 0..) |elem, i| {
+                if (self.hir.kindOf(elem) != .parameter) continue;
+                const ep = hir_mod.parameterOf(self.hir, elem);
+                if (ep.flags.is_rest or ep.default_value != hir_mod.none_node_id) continue;
+                const anchor = if (ep.name != hir_mod.none_node_id) ep.name else elem;
+                const key = try self.numericStringIdForIndex(i);
+                try self.reportIndexedPropertyDoesNotExistOnType(anchor, key, container_t);
+            }
+        }
         // TS2493 ÃÂ¢ÃÂÃÂ array-binding pattern with more positions than the
         // source tuple has elements (`var [c2] = []`, `var [c0, c1] = [...temp]`).
         // Mirrors upstream baselines for `destructuringArrayBindingPatternAndAssignment1*`.
@@ -23487,6 +23497,32 @@ pub const Checker = struct {
                 try self.checkObjectBindingPatternAgainstType(ep.name, rest_array_t, false);
             }
         }
+    }
+
+    fn noLibGlobalArrayLacksNumberIndex(self: *Checker, anchor: NodeId) CheckError!bool {
+        if (!self.sourceHasNoLibTrueDirective()) return false;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const global = self.topLevelGlobalTypeDecl(hir_mod.blockStmts(self.hir, root), "Array") orelse return false;
+        const decl = global.node;
+        if (self.hir.kindOf(decl) != .interface_decl) return false;
+        return !self.interfaceDeclHasNumberIndex(decl, 0);
+    }
+
+    fn interfaceDeclHasNumberIndex(self: *Checker, decl: NodeId, depth: usize) bool {
+        if (depth >= 32 or self.hir.kindOf(decl) != .interface_decl) return false;
+        for (hir_mod.interfaceMembers(self.hir, decl)) |member| {
+            if (self.hir.kindOf(member) != .index_signature) continue;
+            const index = hir_mod.indexSignatureOf(self.hir, member);
+            if (self.typeNodeIsBareName(index.key_type, "number")) return true;
+        }
+        for (hir_mod.interfaceExtends(self.hir, decl)) |base| {
+            const base_name = self.bareTypeNodeName(base) orelse continue;
+            const base_decl = self.findVisibleNamedTypeDecl(base, base_name) orelse continue;
+            if (base_decl == decl) continue;
+            if (self.interfaceDeclHasNumberIndex(base_decl, depth + 1)) return true;
+        }
+        return false;
     }
 
     fn checkArrayBindingPatternAgainstArrayLiteral(self: *Checker, pattern_node: NodeId, source_node: NodeId) CheckError!void {
@@ -24303,6 +24339,20 @@ pub const Checker = struct {
         while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
             switch (self.hir.kindOf(current)) {
                 .fn_decl, .fn_expr, .arrow_fn => return self.functionNameOrNode(current),
+                else => {},
+            }
+        }
+        return node;
+    }
+
+    fn asyncReturnStatementDiagnosticAnchor(self: *Checker, node: NodeId) NodeId {
+        var current = node;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            switch (self.hir.kindOf(current)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const function = hir_mod.fnDeclOf(self.hir, current);
+                    return if (function.return_type != hir_mod.none_node_id) node else self.functionNameOrNode(current);
+                },
                 else => {},
             }
         }
@@ -75968,6 +76018,7 @@ pub const Checker = struct {
                 self.hir.kindOf(v.name) == .identifier)
             {
                 const id = hir_mod.identifierOf(self.hir, v.name);
+                try self.reportVariableFunctionReturnSelfReference(v.name, v.init, id.name);
                 try self.reportAnonymousFunctionReturnSelfReferenceInInitializer(v.init, id.name, true);
             }
         }
@@ -94990,7 +95041,8 @@ pub const Checker = struct {
                     try self.report(a.type_node, TsCodes.ts_only_satisfies_in_js, "Type satisfaction expressions can only be used in TypeScript files.");
                 }
                 if (a.type_node == hir_mod.none_node_id) break :blk inner_t;
-                const target_t = try self.lowererLowerWithTypeParams(a.type_node);
+                const lowered_target_t = try self.lowererLowerWithTypeParams(a.type_node);
+                const target_t = (try self.selfReferentialSatisfiesFunctionTarget(node, a.type_node)) orelse lowered_target_t;
                 const diag_start = self.diagnostics.items.len;
                 try self.checkSatisfiesExpressionAgainstTarget(a.expr, inner_t, target_t);
                 if (self.diagnostics.items.len == diag_start and self.hir.kindOf(a.expr) == .object_literal) {
@@ -146580,6 +146632,35 @@ pub const Checker = struct {
         return expr_span.end + @as(u32, @intCast(off));
     }
 
+    fn selfReferentialSatisfiesFunctionTarget(self: *Checker, node: NodeId, type_node: NodeId) CheckError!?TypeId {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .typeof_type) return null;
+        const operand = hir_mod.typeofTypeOf(self.hir, type_node).operand;
+        if (operand == hir_mod.none_node_id or self.hir.kindOf(operand) != .identifier) return null;
+        const queried_name = hir_mod.identifierOf(self.hir, operand).name;
+
+        var function_node = self.hir.parentOf(node);
+        while (function_node != hir_mod.none_node_id) : (function_node = self.hir.parentOf(function_node)) {
+            const kind = self.hir.kindOf(function_node);
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) break;
+        }
+        if (function_node == hir_mod.none_node_id) return null;
+        const function = hir_mod.fnDeclOf(self.hir, function_node);
+        if (function.return_type != hir_mod.none_node_id) return null;
+
+        const parent = self.hir.parentOf(function_node);
+        if (parent == hir_mod.none_node_id) return null;
+        const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind != .var_decl and parent_kind != .let_decl and parent_kind != .const_decl) return null;
+        const variable = hir_mod.varDeclOf(self.hir, parent);
+        if (variable.init != function_node or variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) return null;
+        if (hir_mod.identifierOf(self.hir, variable.name).name != queried_name) return null;
+
+        const function_t = self.hir.typeOf(function_node);
+        if (function_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(function_t).is_signature) return null;
+        const params = self.interner.signatureParams(function_t);
+        return self.interner.internSignature(params, types.Primitive.any, false) catch return error.OutOfMemory;
+    }
+
     const SatisfiesContext = enum { assignment, argument };
 
     fn satisfiesInnerExpression(self: *Checker, expr: NodeId) ?NodeId {
@@ -157441,6 +157522,26 @@ pub const Checker = struct {
         });
     }
 
+    fn reportVariableFunctionReturnSelfReference(
+        self: *Checker,
+        name_node: NodeId,
+        initializer: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        if (initializer == hir_mod.none_node_id) return;
+        const kind = self.hir.kindOf(initializer);
+        if (kind != .fn_expr and kind != .arrow_fn) return;
+        const function = hir_mod.fnDeclOf(self.hir, initializer);
+        if (function.return_type != hir_mod.none_node_id or function.body == hir_mod.none_node_id) return;
+        if (self.firstIdentifierReferenceNoNested(function.body, name) == null) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions.",
+            .{self.string_interner.get(name)},
+        );
+        try self.report(name_node, TsCodes.function_return_self_reference_implicitly_any, msg);
+    }
+
     fn reportIteratorMethodSelfReference(self: *Checker, from_node: NodeId, class_name: hir_mod.StringId, loop_name: hir_mod.StringId, method_name: []const u8) CheckError!bool {
         const class_node = self.findTopLevelClassDecl(from_node, class_name) orelse return false;
         const method_node = try self.findIteratorSelfReferenceMethod(class_node, loop_name, method_name) orelse return false;
@@ -157566,7 +157667,12 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, node);
                 break :blk self.firstIdentifierReferenceNoNested(a.target, name) orelse self.firstIdentifierReferenceNoNested(a.value, name);
             },
-            .as_expr, .satisfies_expr, .type_assertion => self.firstIdentifierReferenceNoNested(hir_mod.asExpressionOf(self.hir, node).expr, name),
+            .as_expr, .satisfies_expr, .type_assertion => blk: {
+                const assertion = hir_mod.asExpressionOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(assertion.expr, name) orelse
+                    self.firstIdentifierReferenceNoNested(assertion.type_node, name);
+            },
+            .typeof_type => self.firstIdentifierReferenceNoNested(hir_mod.typeofTypeOf(self.hir, node).operand, name),
             .var_decl, .let_decl, .const_decl => blk: {
                 const v = hir_mod.varDeclOf(self.hir, node);
                 break :blk self.firstIdentifierReferenceNoNested(v.init, name);
@@ -198175,6 +198281,69 @@ test "checker: async bodies validate promised returns and anchor malformed thena
         }
     }
     try T.expect(saw_name_anchor);
+}
+
+test "checker: parity helper cycle batch explicitly typed async malformed thenable anchors TS1058 at return" {
+    const source =
+        \\interface MyThenable { then(): void; }
+        \\async function foo(): MyThenable {
+        \\    return { then() {} };
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "return") orelse return error.TestUnexpectedResult);
+    var found = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.async_return_must_be_valid_promise_or_no_callable_then) continue;
+        try T.expectEqual(expected_pos, diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: parity helper cycle batch noLib array destructuring honors the global Array index surface" {
+    const source =
+        \\// @noLib: true
+        \\// @filename: globals.ts
+        \\interface Array<T> {}
+        \\interface Boolean {}
+        \\interface Function {}
+        \\interface CallableFunction {}
+        \\interface NewableFunction {}
+        \\interface IArguments {}
+        \\interface Number {}
+        \\interface Object {}
+        \\interface RegExp {}
+        \\interface String {}
+        \\// @filename: input.ts
+        \\declare var x: string[];
+        \\var [a] = x;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property '0' does not exist on type 'string[]'."));
+}
+
+test "checker: parity helper cycle batch self-referential satisfies preserves callable target during return inference" {
+    const source = "const f = () => 42 satisfies typeof f;";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_return_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.satisfies_constraint));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.satisfies_constraint,
+        "Type 'number' does not satisfy the expected type '() => any'.",
+    ));
 }
 
 test "checker: checked-JS async returns enforce direct and contextual Promise contracts" {
