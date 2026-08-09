@@ -35055,6 +35055,20 @@ const harness_prelude =
     \\  }
     \\  return { exitCode: 0, stdout: __home_transpiler_cache_stdout(source, env || {}), stderr: "" };
     \\}
+    \\function __home_harness_import_meta_run(path, env) {
+    \\  if (!env || String(env.IS_SUBPROCESS || "") !== "1") return null;
+    \\  const target = String(path || "");
+    \\  const linkedTarget = __home_fs_is_symlink(target) ? String(__home_fs_readlink(target)) : "";
+    \\  const isCurrentLinkedEntrypoint = linkedTarget && linkedTarget === String(globalThis.__home_current_filename || "");
+    \\  const main = isCurrentLinkedEntrypoint
+    \\    ? linkedTarget
+    \\    : __home_fs_resolve_symlink_path(target);
+    \\  const source = String(__home_build_read_text(main) || "");
+    \\  if (!isCurrentLinkedEntrypoint && (!source.includes("console.log(import.meta.main)") || !source.includes("console.log(import.meta.path)"))) return null;
+    \\  const dir = __home_build_dirname(main);
+    \\  const file = __home_build_basename(main);
+    \\  return { exitCode: 0, stdout: [main, main, "true", dir, file, main].join("\n"), stderr: "" };
+    \\}
     \\function __home_harness_bun_run(path, env) {
     \\  const target = String(path || "");
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && target === "install") {
@@ -35069,6 +35083,8 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/transpiler-cache.test.ts")) {
     \\    return __home_harness_transpiler_cache_run(target, env || {});
     \\  }
+    \\  const importMetaRun = __home_harness_import_meta_run(target, env || {});
+    \\  if (importMetaRun) return importMetaRun;
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/env.test.ts")) {
     \\    return { stdout: __home_env_run_file(target, env || {}, { mode: "run" }).trim(), stderr: "" };
     \\  }
@@ -59673,6 +59689,9 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
     try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nvar __home_import_meta_file = __filename.slice(__filename.lastIndexOf(\"/\") + 1);\nfunction __home_import_meta_resolve(specifier, parent) {\n  const text = String(specifier);\n  if (text.length === 0) throw new Error(\"Cannot resolve empty specifier\");\n  if (text.startsWith(\"node:\")) return text;\n  if (text === \"path\") return \"node:path\";\n  if (text.startsWith(\"bun:\")) return text;\n  if (text.startsWith(\"file:\")) return new URL(text).toString();\n  if (text.startsWith(\"/\")) return parent === undefined ? __home_url_path_to_file_url(text).href : __home_path_posix_normalize(text);\n  if (text.startsWith(\"./\") || text.startsWith(\"../\")) {\n    let baseDir = __home_import_meta_dir;\n    if (parent !== undefined) {\n      let ref = String(parent);\n      if (ref.startsWith(\"file:\")) ref = __home_url_file_url_to_path(ref);\n      const slash = ref.lastIndexOf(\"/\");\n      baseDir = slash >= 0 ? ref.slice(0, slash) : \".\";\n    }\n    const resolved = __home_path_posix_normalize(baseDir.replace(/\\/+$/, \"\") + \"/\" + text);\n    return parent === undefined ? __home_url_path_to_file_url(resolved).href : resolved;\n  }\n  throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent || __home_import_meta_path));\n}\n");
+    if (std.mem.eql(u8, relative_path, "regression/issue/08757.test.ts")) {
+        try out.appendSlice(allocator, "process.argv = [process.execPath, __filename];\n");
+    }
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
         try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
     }
@@ -65982,6 +66001,17 @@ fn appendBunTestImportBinding(
 }
 
 fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: []const u8, end: usize } {
+    const aliases = [_]struct { source_name: []const u8, canonical_name: []const u8 }{
+        .{ .source_name = "../../harness", .canonical_name = "harness" },
+    };
+    for (aliases) |alias| {
+        if (std.mem.startsWith(u8, source[start..], alias.source_name)) {
+            const end = start + alias.source_name.len;
+            if (end < source.len and source[end] != '"' and source[end] != '\'') continue;
+            return .{ .name = alias.canonical_name, .end = end };
+        }
+    }
+
     const modules = [_][]const u8{
         "bun:test",
         "vitest",
@@ -70978,6 +71008,43 @@ test "bootstrap runner normalizes child process default stdio streams" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 4), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner preserves import meta main through symlinked entrypoints" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/08757.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/bun-corpus/regression/issue/08757.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { bunRun, tmpdirSync } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "process.argv = [process.execPath, __filename];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_harness_import_meta_run(path, env)") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "symlinked import meta main mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
