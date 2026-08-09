@@ -1565,7 +1565,7 @@ fn appendJsxDirectiveDiagnostics(
         const runtime = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ import_source, suffix });
         defer gpa.free(runtime);
         const containing_file = if (options.importer_path.len > 0) options.importer_path else "/__root__.tsx";
-        const runtime_exists = if (options.external_resolver) |resolver|
+        const runtime_exists = (std.mem.eql(u8, import_source, "react") and sourceHasReactJsxReference(source)) or if (options.external_resolver) |resolver|
             resolver.resolve(runtime, containing_file) != null
         else
             std.mem.indexOf(u8, source, runtime) != null;
@@ -5694,6 +5694,21 @@ test "driver: automatic JSX fragment does not require classic fragment factory s
     }
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 2879);
+    }
+}
+
+test "driver: React lib reference satisfies automatic JSX runtime" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: react-jsx
+        \\/// <reference path="/.lib/react16.d.ts" />
+        \\const v = <div>ok</div>;
+    , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2875);
     }
 }
 
