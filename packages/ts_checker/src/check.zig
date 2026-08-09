@@ -5177,6 +5177,7 @@ pub const Checker = struct {
         try self.detectBigIntLiteralTargetDiagnostics();
         try self.checkUnusedTopLevelImports(stmts);
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
+        self.removeTypeArgumentCountDiagnosticsInJs();
         try self.applyCompilerCorpusExactDiagnosticReconciliations(root);
         try self.normalizeNamespaceLocalSuggestionOrder();
         // Detection passes above append diagnostics in node-id
@@ -11139,7 +11140,10 @@ pub const Checker = struct {
                 if (is_block_scoped) gop.value_ptr.is_block_scoped = true;
             }
             if (gop.value_ptr.is_function and is_fn) {
-                if (gop.value_ptr.has_body and has_body and !gop.value_ptr.is_ambient and !is_ambient) {
+                if (gop.value_ptr.has_body and has_body and
+                    !gop.value_ptr.is_ambient and !is_ambient and
+                    !self.virtualSectionIsJsLike(node))
+                {
                     if (!gop.value_ptr.duplicate_function_body_reported) {
                         try self.reportDuplicateFunctionImplementation(gop.value_ptr.node);
                         gop.value_ptr.duplicate_function_body_reported = true;
@@ -29873,7 +29877,7 @@ pub const Checker = struct {
         }
         for (params, 0..) |p, param_index| {
             const pp = hir_mod.parameterOf(self.hir, p);
-            const is_this_param = self.isThisParameter(p);
+            const is_this_param = self.isThisParameter(p) and !self.virtualSectionIsJsLike(node);
             try self.checkParameterDecoratorDiagnostics(p, node, param_index, is_this_param);
             if (f.body == hir_mod.none_node_id and pp.default_value != hir_mod.none_node_id) {
                 try self.report(p, TsCodes.parameter_initializer_implementation_only, "A parameter initializer is only allowed in a function or constructor implementation.");
@@ -105152,6 +105156,17 @@ pub const Checker = struct {
         }
     }
 
+    fn removeTypeArgumentCountDiagnosticsInJs(self: *Checker) void {
+        var write: usize = 0;
+        for (self.diagnostics.items) |diagnostic| {
+            const pos: usize = @intCast(diagnostic.pos orelse self.hir.spanOf(diagnostic.node).start);
+            if (diagnostic.code == TsCodes.expected_n_type_arguments and self.sourcePositionIsJsLike(pos)) continue;
+            self.diagnostics.items[write] = diagnostic;
+            write += 1;
+        }
+        self.diagnostics.shrinkRetainingCapacity(write);
+    }
+
     fn calleeRootIdentifier(self: *Checker, callee: NodeId) ?NodeId {
         var cur = callee;
         while (true) {
@@ -176163,6 +176178,20 @@ test "checker: duplicate function implementations report on both bodies" {
     try T.expectEqual(@as(usize, 2), count);
 }
 
+test "checker: checked JavaScript allows duplicate function implementations" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\function foo() {}
+        \\function foo(value) {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_function_implementation));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
 test "checker: duplicate function implementations report after var collision" {
     const s = try newSetup(
         \\var foo: string;
@@ -192543,6 +192572,19 @@ test "checker: explicit class heritage type argument mismatch emits TS2508" {
     try T.expect(found_2508);
 }
 
+test "checker: JavaScript heritage type arguments do not cascade to TS2558" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: base.ts
+        \\class Base<T> {}
+        \\// @filename: main.js
+        \\class Derived extends Base<string, number> {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+}
+
 test "checker: class heritage with too few generic type args keeps TS2314 only" {
     const s = try newSetup(
         \\class Base<T1, T2> {}
@@ -200869,6 +200911,19 @@ test "checker: checkjs function JSDoc @this tag suppresses implicit this" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
     }
+}
+
+test "checker: checked JavaScript parameter named this remains an ordinary parameter" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: bug.js
+        \\/** @this {object} */
+        \\function f(this) {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: checkjs arrow JSDoc @this tag is rejected" {
