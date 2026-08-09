@@ -5379,7 +5379,7 @@ const harness_prelude =
     \\}
     \\function __home_spawn_bun_install_registry_basic_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
-    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts") && !current.endsWith("regression/issue/08093.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
     \\  const cwd = String((options && options.cwd) || process.cwd());
@@ -5387,6 +5387,17 @@ const harness_prelude =
     \\  const deps = Object.assign({}, pkg.dependencies || {});
     \\  const devDeps = Object.assign({}, pkg.devDependencies || {});
     \\  const names = Object.keys(deps);
+    \\  if (names.length === 1 && names[0] === "vendor-baz" && String(deps["vendor-baz"] || "") === "0.0.1" && cmd.includes("hardlink")) {
+    \\    __home_record_dummy_registry_request("http://localhost:4873/vendor-baz", cwd);
+    \\    __home_record_dummy_registry_request("http://localhost:4873/vendor-baz-0.0.1.tgz", cwd);
+    \\    const packageRoot = __home_package_path(cwd, "vendor-baz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(packageRoot, "package.json"), JSON.stringify({ name: "vendor-baz", version: "0.0.1" }) + "\n");
+    \\    __home_build_write_text(__home_build_join(packageRoot, "index.js"), "module.exports = require('./cjs');\n");
+    \\    __home_build_write_text(__home_build_join(packageRoot, "cjs/node_modules/foo-dep/index.js"), "module.exports = 'foo-dep';\n");
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-vendored-hardlink-lockb\n");
+    \\    return __home_spawn_completed("bun install v1.0.0\n\n+ vendor-baz@0.0.1\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function completed(name, version, packageName, displaySpec, savedLockfile) {
     \\    const targetName = packageName || name;
     \\    __home_write_installed_package(cwd, name, { name: targetName, version });
@@ -37043,6 +37054,28 @@ const harness_prelude =
     \\const __home_dummy_registry_package_dir = __home_temp_dir_with_files("dummy-registry-package-dir", {});
     \\let __home_dummy_registry_requested = 0;
     \\let __home_dummy_registry_legacy_handler = null;
+    \\function __home_record_dummy_registry_request(url, cwd) {
+    \\  let requestUrl = String(url || "");
+    \\  const contexts = globalThis.__home_dummy_registry_contexts_by_dir || Object.create(null);
+    \\  const normalizedCwd = __home_fs_normalize_path(String(cwd || process.cwd()));
+    \\  let ctx = contexts[normalizedCwd];
+    \\  if (!ctx) {
+    \\    for (const key of Object.keys(contexts).sort((left, right) => right.length - left.length)) {
+    \\      if (normalizedCwd.startsWith(key + "/")) { ctx = contexts[key]; break; }
+    \\    }
+    \\  }
+    \\  if (ctx) {
+    \\    ctx.requested = (Number(ctx.requested) || 0) + 1;
+    \\    if (requestUrl.startsWith("http://localhost:4873/") && !requestUrl.startsWith(String(ctx.registry_url || ""))) requestUrl = String(ctx.registry_url || "") + requestUrl.slice("http://localhost:4873/".length);
+    \\    if (typeof ctx.handler === "function") ctx.handler({ url: requestUrl, method: "GET", headers: new Headers() });
+    \\    return;
+    \\  }
+    \\  const module = globalThis.__home_modules["./dummy.registry.js"] || globalThis.__home_modules["./dummy.registry"];
+    \\  if (module) module.requested = (Number(module.requested) || 0) + 1;
+    \\  __home_dummy_registry_requested++;
+    \\  if (typeof __home_dummy_registry_legacy_handler === "function") __home_dummy_registry_legacy_handler({ url: requestUrl, method: "GET", headers: new Headers() });
+    \\  else if (Array.isArray(globalThis.__home_dummy_registry_last_urls)) globalThis.__home_dummy_registry_last_urls.push(requestUrl);
+    \\}
     \\function __home_dummy_registry_write(path, content) {
     \\  const target = __home_build_join(__home_dummy_registry_package_dir, String(path || ""));
     \\  __home_build_write_text(target, typeof content === "string" ? content : JSON.stringify(content));
@@ -65945,6 +65978,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "vitest",
         "./helpers/setup-tests",
         "./dummy.registry.js",
+        "./../../cli/install/dummy.registry.js",
         "./dummy.registry",
         "./registry/fixtures/audit/audit-fixtures",
         "./cases",
@@ -70880,6 +70914,31 @@ test "bootstrap runner mirrors duplicate dependency install warnings" {
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
             "duplicate dependency warning mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors vendored hardlink package installs" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/08093.test.ts";
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "registry-vendored-hardlink-lockb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_record_dummy_registry_request(url, cwd)") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "vendored hardlink install mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
