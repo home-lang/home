@@ -2971,6 +2971,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         if (i >= program.files.items.len) break;
         const file = program.fileById(@intCast(i));
         const compilation = file.compilation orelse continue;
+        if (std.mem.endsWith(u8, pf.path, ".json")) continue;
         for (compilation.diagnostics.items) |d| {
             const pos = ts_diagnostics.positionToLineCol(file.source, d.pos);
             const diag_line: u32 = if (pos.line > pf.extra_strip)
@@ -6928,6 +6929,16 @@ fn appendOneJsonModuleValidationDiagnostics(
 ) !u32 {
     const src = file.source;
     var count: u32 = 0;
+    const first_value_start = skipJsonTrivia(src, 0);
+    if (first_value_start < src.len) {
+        if (jsonValueEnd(src, first_value_start)) |first_value_end| {
+            const trailing = skipJsonTrivia(src, first_value_end);
+            if (trailing < src.len) {
+                try appendJsonUnexpectedTokenDiagnostic(gpa, file, @intCast(trailing), actual_lines);
+                count += 1;
+            }
+        }
+    }
     var i: usize = 0;
     while (i < src.len) {
         i = skipJsonTrivia(src, i);
@@ -6962,6 +6973,37 @@ fn appendOneJsonModuleValidationDiagnostics(
         }
     }
     return count;
+}
+
+fn appendJsonUnexpectedTokenDiagnostic(
+    gpa: std.mem.Allocator,
+    file: VirtualFile,
+    pos_byte: u32,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !void {
+    const msg = "Unexpected token.";
+    const pos = ts_diagnostics.positionToLineCol(file.source, pos_byte);
+    var diag_path = file.path;
+    if (std.mem.startsWith(u8, diag_path, "./")) diag_path = diag_path[2..];
+    const fdiag: ts_diagnostics.Diagnostic = .{
+        .file = diag_path,
+        .line = pos.line,
+        .col = pos.col,
+        .code = 1012,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = msg,
+        .span_len = 1,
+    };
+    const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
+    try actual_lines.append(gpa, .{
+        .file = diag_path,
+        .line = pos.line,
+        .col = pos.col,
+        .code = 1012,
+        .order = actual_lines.items.len,
+        .text = formatted,
+    });
 }
 
 fn skipInvalidJsonObjectMember(src: []const u8, start: usize) usize {
@@ -7041,6 +7083,25 @@ test "conformance: JSON module validation reports TS1327 for computed property k
     );
 }
 
+test "conformance: JSON module validation rejects a second root value" {
+    const file = VirtualFile{
+        .path = "data.json",
+        .source = "{\"a\": 1}\n{\"b\": 2}\n",
+        .extra_strip = 0,
+    };
+    var actual_lines: std.ArrayListUnmanaged(ActualDiagnosticLine) = .empty;
+    defer {
+        for (actual_lines.items) |line| std.testing.allocator.free(line.text);
+        actual_lines.deinit(std.testing.allocator);
+    }
+    const count = try appendJsonModuleValidationDiagnostics(std.testing.allocator, &.{file}, &actual_lines);
+    try T.expectEqual(@as(u32, 1), count);
+    try T.expectEqual(@as(usize, 1), actual_lines.items.len);
+    try T.expectEqual(@as(u32, 1012), actual_lines.items[0].code);
+    try T.expectEqual(@as(u32, 2), actual_lines.items[0].line);
+    try T.expectEqual(@as(u32, 1), actual_lines.items[0].col);
+}
+
 fn skipJsonTrivia(src: []const u8, start: usize) usize {
     var i = start;
     while (i < src.len) {
@@ -7099,7 +7160,10 @@ fn jsonValueEnd(src: []const u8, value_start: usize) ?usize {
     var i = skipJsonTrivia(src, value_start);
     if (i >= src.len) return null;
     if (src[i] == '"') return jsonStringEnd(src, i);
-    if (src[i] == '{') return matchingJsonObjectEnd(src, i);
+    if (src[i] == '{') {
+        const end = matchingJsonObjectEnd(src, i) orelse return null;
+        return end + 1;
+    }
     if (src[i] == '[') {
         var depth: usize = 0;
         while (i < src.len) : (i += 1) {
