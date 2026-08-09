@@ -32,6 +32,7 @@ const interner = @import("interner.zig");
 const relation = @import("relation.zig");
 const lower = @import("lower.zig");
 const lib = @import("lib.zig");
+const unicode_case = @import("unicode_case.zig");
 const string_interner = @import("string_interner");
 const binder_mod = @import("binder");
 
@@ -65126,12 +65127,7 @@ pub const Checker = struct {
         if (try self.applyStringMappingToTemplateLiteral(kind, inner)) |mapped| return mapped;
         const sid = self.stringLiteralValueFromType(inner) orelse
             return self.interner.internStringMapping(kind, inner) catch return error.OutOfMemory;
-        const raw = self.string_interner.get(sid);
-        const buf = try self.gpa.alloc(u8, raw.len);
-        defer self.gpa.free(buf);
-        @memcpy(buf, raw);
-        applyStringMappingToBuffer(kind, buf);
-        const mapped_sid = self.string_interner.intern(buf) catch return error.OutOfMemory;
+        const mapped_sid = try self.mappedStringId(kind, sid);
         return self.interner.internStringLiteral(mapped_sid) catch return error.OutOfMemory;
     }
 
@@ -65255,11 +65251,22 @@ pub const Checker = struct {
 
     fn mappedStringId(self: *Checker, kind: types.StringMappingKind, sid: hir_mod.StringId) CheckError!hir_mod.StringId {
         const raw = self.string_interner.get(sid);
-        const buf = try self.gpa.alloc(u8, raw.len);
-        defer self.gpa.free(buf);
-        @memcpy(buf, raw);
-        applyStringMappingToBuffer(kind, buf);
-        return self.string_interner.intern(buf) catch return error.OutOfMemory;
+        const mapped = try self.mappedString(kind, raw);
+        defer self.gpa.free(mapped);
+        return self.string_interner.intern(mapped) catch return error.OutOfMemory;
+    }
+
+    fn mappedString(self: *Checker, kind: types.StringMappingKind, raw: []const u8) CheckError![]u8 {
+        return unicode_case.map(self.gpa, @enumFromInt(@intFromEnum(kind)), raw) catch return error.OutOfMemory;
+    }
+
+    fn inverseStringMappingKind(kind: types.StringMappingKind) types.StringMappingKind {
+        return switch (kind) {
+            .lowercase => .uppercase,
+            .uppercase => .lowercase,
+            .capitalize => .uncapitalize,
+            .uncapitalize => .capitalize,
+        };
     }
 
     fn templatePlaceholderStringForm(self: *Checker, part: TypeId) CheckError!TypeId {
@@ -65280,23 +65287,6 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name, "Capitalize")) return .capitalize;
         if (std.mem.eql(u8, name, "Uncapitalize")) return .uncapitalize;
         return null;
-    }
-
-    fn applyStringMappingToBuffer(kind: types.StringMappingKind, buf: []u8) void {
-        switch (kind) {
-            .lowercase => {
-                for (buf) |*c| c.* = std.ascii.toLower(c.*);
-            },
-            .uppercase => {
-                for (buf) |*c| c.* = std.ascii.toUpper(c.*);
-            },
-            .capitalize => {
-                if (buf.len > 0) buf[0] = std.ascii.toUpper(buf[0]);
-            },
-            .uncapitalize => {
-                if (buf.len > 0) buf[0] = std.ascii.toLower(buf[0]);
-            },
-        }
     }
 
     fn lowerTemplateLiteralTypeWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
@@ -125883,13 +125873,7 @@ pub const Checker = struct {
             if (!try self.expandFiniteStringLikeType(payload.inner, &inner, limit)) return false;
             for (inner.items) |sid| {
                 if (out.items.len >= limit) return false;
-                const raw = self.string_interner.get(sid);
-                const mapped = try self.gpa.alloc(u8, raw.len);
-                defer self.gpa.free(mapped);
-                @memcpy(mapped, raw);
-                applyStringMappingToBuffer(payload.kind, mapped);
-                const mapped_sid = self.string_interner.intern(mapped) catch return error.OutOfMemory;
-                try out.append(self.gpa, mapped_sid);
+                try out.append(self.gpa, try self.mappedStringId(payload.kind, sid));
             }
             return true;
         }
@@ -149124,27 +149108,10 @@ pub const Checker = struct {
     fn stringMappingTypeMatchesString(self: *Checker, target_t: TypeId, sid: hir_mod.StringId) CheckError!bool {
         const payload = self.interner.stringMappingPayload(target_t);
         const raw = self.string_interner.get(sid);
-        var candidate = try self.gpa.alloc(u8, raw.len);
+        const candidate = try self.mappedString(inverseStringMappingKind(payload.kind), raw);
         defer self.gpa.free(candidate);
-        @memcpy(candidate, raw);
-        switch (payload.kind) {
-            .lowercase => {
-                for (candidate) |*c| c.* = std.ascii.toUpper(c.*);
-            },
-            .uppercase => {
-                for (candidate) |*c| c.* = std.ascii.toLower(c.*);
-            },
-            .capitalize => {
-                if (candidate.len > 0) candidate[0] = std.ascii.toLower(candidate[0]);
-            },
-            .uncapitalize => {
-                if (candidate.len > 0) candidate[0] = std.ascii.toUpper(candidate[0]);
-            },
-        }
-        const remapped = try self.gpa.alloc(u8, candidate.len);
+        const remapped = try self.mappedString(payload.kind, candidate);
         defer self.gpa.free(remapped);
-        @memcpy(remapped, candidate);
-        applyStringMappingToBuffer(payload.kind, remapped);
         if (!std.mem.eql(u8, remapped, raw)) return false;
         const candidate_sid = self.string_interner.intern(candidate) catch return error.OutOfMemory;
         return try self.stringLiteralAssignableToType(candidate_sid, payload.inner);
