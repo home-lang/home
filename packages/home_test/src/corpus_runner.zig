@@ -28376,6 +28376,10 @@ const harness_prelude =
     \\var global = globalThis;
     \\globalThis.global = globalThis;
     \\if (!process.versions) process.versions = {};
+    \\if (!process.version) process.version = "v0.0.0-home";
+    \\if (!process.release) process.release = { name: "home" };
+    \\if (!process.versions.node) process.versions.node = process.version.replace(/^v/, "").split("-")[0];
+    \\if (!process.versions.home) process.versions.home = process.version.replace(/^v/, "");
     \\if (!process.env) process.env = {};
     \\if (globalThis.__home_bun_executable) process.execPath = globalThis.__home_bun_executable;
     \\else if (!process.execPath) process.execPath = "home";
@@ -37213,6 +37217,20 @@ const harness_prelude =
     \\    return condition() ? Promise.resolve() : Promise.reject(new Error("GC condition was not satisfied"));
     \\  },
     \\};
+    \\const __home_node_napi_tmp_path = "/__home_node_napi_tests/.tmp.0";
+    \\globalThis.__home_modules["napi/node-napi-tests/test/common/tmpdir.js"] = {
+    \\  path: __home_node_napi_tmp_path,
+    \\  refresh() {
+    \\    __home_node_fs.rmSync(__home_node_napi_tmp_path, { recursive: true, force: true });
+    \\    __home_node_fs.mkdirSync(__home_node_napi_tmp_path, { recursive: true });
+    \\  },
+    \\  resolve() { return __home_build_join.apply(undefined, [__home_node_napi_tmp_path].concat(Array.from(arguments).map(String))); },
+    \\  hasEnoughSpace(size) { void size; return true; },
+    \\  fileURL() {
+    \\    const path = arguments.length === 0 ? __home_node_napi_tmp_path + "/" : __home_build_join.apply(undefined, [__home_node_napi_tmp_path].concat(Array.from(arguments).map(String)));
+    \\    return __home_url_path_to_file_url(path);
+    \\  },
+    \\};
     \\globalThis.__home_modules["napi/node-napi-tests/harness.ts"] = {
     \\  async build(dir) {
     \\    const buildDir = String(dir || "");
@@ -37443,7 +37461,7 @@ const harness_prelude =
     \\        TestCreateFunctionParameters() { return { envIsNull: "Invalid argument", nameIsNull: "napi_ok", cbIsNull: "Invalid argument", resultIsNull: "Invalid argument" }; },
     \\        TestBadReturnExceptionPending() { const error = new Error("pending exception"); error.code = "throwing exception"; throw error; },
     \\      };
-    \\    } else if (targetName === "test_general") {
+    \\    } else if (targetName === "test_general" && buildDir.endsWith("/test/js-native-api/test_general")) {
     \\      const wrapped = new WeakSet();
     \\      const finalizerOnly = new WeakSet();
     \\      let derefCalled = false;
@@ -37469,6 +37487,13 @@ const harness_prelude =
     \\        createNapiError() {},
     \\        testNapiErrorCleanup() { return true; },
     \\      };
+    \\    } else if (targetName === "test_general" && buildDir.endsWith("/test/node-api/test_general")) {
+    \\      const versionMatch = String(process.version || "v0.0.0").match(/^v?(\d+)\.(\d+)\.(\d+)/);
+    \\      const version = versionMatch ? versionMatch.slice(1).map(Number) : [0, 0, 0];
+    \\      addon = {
+    \\        testGetNodeVersion() { return [version[0], version[1], version[2], String(process.release && process.release.name || "node")]; },
+    \\      };
+    \\      Object.defineProperty(addon, "filename", { enumerable: true, get() { return __home_url_path_to_file_url(addonPath).href; } });
     \\    } else if (targetName === "test_handle_scope") {
     \\      addon = {
     \\        NewScope() {},
@@ -48907,6 +48932,15 @@ const harness_prelude =
     \\    } catch (error) {
     \\      stderrText = String(error && error.message || error) + "\n";
     \\      status = 1;
+    \\    }
+    \\  } else if (currentFilename.endsWith("napi/node-napi-tests/test/node-api/test_general/test.js") && extra[0] === "-p") {
+    \\    const match = String(extra[1] || "").match(/^require\((.*)\)\.filename$/);
+    \\    if (!match) {
+    \\      stderrText = "Unsupported Node N-API filename expression: " + String(extra[1] || "") + "\n";
+    \\      status = 1;
+    \\    } else {
+    \\      try { stdoutText = __home_url_path_to_file_url(JSON.parse(match[1])).href + "\n"; }
+    \\      catch (error) { stderrText = String(error && error.message || error) + "\n"; status = 1; }
     \\    }
     \\  } else if (extra[0] === "-e") {
     \\    stdoutText = __home_child_process_eval_stdout(extra[1] || "");
