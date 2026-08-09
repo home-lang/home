@@ -290,6 +290,8 @@ pub const CompileOptions = struct {
     /// Treat the source as a declaration file. Declaration files allow
     /// ambient forms such as `export const x: T;` without initializers.
     is_declaration_file: bool = false,
+    /// Skip semantic diagnostics originating in declaration files.
+    skip_lib_check: bool = false,
     /// Compiler option `alwaysStrict`: parse the file under strict-mode
     /// early-error rules even when it has no `"use strict"` prologue.
     always_strict: bool = false,
@@ -374,6 +376,10 @@ pub const CompileOptions = struct {
     /// package.json `exports` (for example to `index.d.mts`) rather than
     /// a direct `index.d.ts` probe visible to the single-file driver.
     known_type_reference_names: []const []const u8 = &.{},
+    /// Explicit type-library entry points requested through compilerOptions
+    /// `types` (or the equivalent conformance directive). Program compilation
+    /// resolves these once and reports a global TS2688 for each missing name.
+    compiler_type_reference_names: []const []const u8 = &.{},
     /// Effective `--moduleResolution` value as a normalized
     /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
     /// `"nodenext"`, `"bundler"`). The conformance harness derives
@@ -819,6 +825,7 @@ fn reportMissingReferenceTypesDiagnostics(
     source: []const u8,
     options: CompileOptions,
 ) CompileError!void {
+    if (options.skip_lib_check and options.is_declaration_file) return;
     if (std.mem.indexOf(u8, source, "<reference") == null or
         std.mem.indexOf(u8, source, "types") == null)
     {
@@ -855,13 +862,15 @@ fn reportMissingReferenceTypesDiagnostics(
         if (name.len == 0) continue;
         if (knownTypeReferenceName(options, name)) continue;
         if (try referenceTypesDirectiveExists(gpa, io, source, name)) continue;
+        const pos = offset + leading + types_start;
+        if (diagnosticLineHasTsIgnore(source, pos)) continue;
 
         const message = try std.fmt.allocPrint(gpa, "Cannot find type definition file for '{s}'.", .{name});
         defer gpa.free(message);
         try appendDriverDiagnostic(
             gpa,
             c,
-            @intCast(offset + leading + types_start),
+            @intCast(pos),
             2688,
             message,
         );
@@ -1641,6 +1650,12 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     }
     if (cfg.compiler_options.use_define_for_class_fields) |on| {
         opts.emit.use_define_for_class_fields = on;
+    }
+    if (cfg.compiler_options.skip_lib_check) |on| {
+        opts.skip_lib_check = on;
+    }
+    if (cfg.compiler_options.types) |names| {
+        opts.compiler_type_reference_names = names;
     }
     return opts;
 }
@@ -6140,6 +6155,30 @@ test "driver: missing triple-slash types reference reports TS2688" {
         }
     }
     try T.expect(found);
+}
+
+test "driver: triple-slash type diagnostics honor suppression" {
+    const sources = [_]struct {
+        source: []const u8,
+        options: CompileOptions,
+    }{
+        .{
+            .source = "// @ts-ignore\n/// <reference types=\"definitely-missing\" />\nexport {};",
+            .options = .{ .no_emit = true, .is_declaration_file = true },
+        },
+        .{
+            .source = "/// <reference types=\"definitely-missing\" />\nexport {};",
+            .options = .{ .no_emit = true, .is_declaration_file = true, .skip_lib_check = true },
+        },
+    };
+    for (sources) |fixture| {
+        var c = try compileSource(T.allocator, fixture.source, fixture.options);
+        defer {
+            c.deinit();
+            T.allocator.destroy(c);
+        }
+        for (c.diagnostics.items) |diagnostic| try T.expect(diagnostic.code != 2688);
+    }
 }
 
 test "driver: virtual triple-slash types reference resolves through node_modules @types" {

@@ -1817,6 +1817,7 @@ const TsconfigResolverOptions = struct {
     module: []const u8 = "",
     module_resolution: []const u8 = "",
     type_roots: []const []const u8 = &.{},
+    types: []const []const u8 = &.{},
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
         if (self.out_dir.len != 0) gpa.free(self.out_dir);
@@ -1827,6 +1828,7 @@ const TsconfigResolverOptions = struct {
         if (self.module.len != 0) gpa.free(self.module);
         if (self.module_resolution.len != 0) gpa.free(self.module_resolution);
         freeStringList(gpa, self.type_roots);
+        freeStringList(gpa, self.types);
     }
 };
 
@@ -1840,8 +1842,12 @@ fn resolverConfigOptionsFromVirtualTsconfig(
             !std.mem.endsWith(u8, f.path, "/tsconfig.json")) continue;
         var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch return .{};
         defer parsed.deinit();
-        if (parsed.value != .object) return .{};
-        const compiler_options = parsed.value.object.get("compilerOptions") orelse return .{};
+        const config = if (parsed.value == .array and parsed.value.array.items.len > 0)
+            parsed.value.array.items[0]
+        else
+            parsed.value;
+        if (config != .object) return .{};
+        const compiler_options = config.object.get("compilerOptions") orelse return .{};
         if (compiler_options != .object) return .{};
         const obj = compiler_options.object;
         return .{
@@ -1852,6 +1858,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
             .module = try dupeJsonStringField(gpa, obj, "module"),
             .module_resolution = try dupeJsonStringField(gpa, obj, "moduleResolution"),
             .type_roots = try dupeJsonStringArrayField(gpa, obj, "typeRoots"),
+            .types = try dupeJsonStringArrayField(gpa, obj, "types"),
             .config_file_path = try canonicalVfsPath(gpa, f.path),
         };
     }
@@ -1948,6 +1955,20 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
     try T.expectEqual(@as(usize, 1), opts.type_roots.len);
     try T.expectEqualStrings("/a/types", opts.type_roots[0]);
     try T.expectEqualStrings("/tsconfig.json", opts.config_file_path);
+}
+
+test "conformance: array-wrapped tsconfig preserves explicit type libraries" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "tsconfig.json",
+            .source = "[{\"compilerOptions\":{\"types\":[\"nonexistent\"]}}]",
+            .extra_strip = 0,
+        },
+    };
+    const opts = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &files);
+    defer opts.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 1), opts.types.len);
+    try T.expectEqualStrings("nonexistent", opts.types[0]);
 }
 
 test "conformance: resolver config resolves package self-name through declarationDir output" {
@@ -2679,6 +2700,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     const raw_configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, raw_configured_type_names);
+    const explicit_type_names = if (raw_configured_type_names.len > 0)
+        raw_configured_type_names
+    else
+        tsconfig_options.types;
     const module_kind_label = selectedModuleKind(c, directive_source, tsconfig_options.module);
     const resolver_strategy = if (tsconfig_options.module_resolution.len > 0)
         (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, module_kind_label))
@@ -2843,6 +2868,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .resource_management_helpers_required = selectedResourceManagementHelpersRequired(directive_source, c.target_emit_es5),
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
         .allow_js = allow_js_project,
+        .skip_lib_check = directiveBool(directive_source, "skipLibCheck") orelse
+            commentedJsonBoolValue(directive_source, "skipLibCheck", true),
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
@@ -2851,6 +2878,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .module_kind = module_kind_label,
         .known_reference_paths = known_reference_paths.items,
         .known_type_reference_names = known_type_reference_names.items,
+        .compiler_type_reference_names = explicit_type_names,
         .program_umd_globals = known_umd_globals.items,
     };
     compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse false;
@@ -2861,10 +2889,11 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     {
         compile_options.emit.module_kind = .commonjs;
     }
-    program.compileAll(compile_options) catch |err| switch (err) {
+    _ = program.loadImportClosure(compile_options) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
+    try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files);
 
     var script_globals: ScriptGlobalSpaces = .{};
     defer script_globals.deinit(gpa);

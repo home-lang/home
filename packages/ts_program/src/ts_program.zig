@@ -404,11 +404,65 @@ pub const Program = struct {
             f.compilation = c;
         }
 
+        try self.appendMissingCompilerTypeReferenceDiagnostics(options);
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
         try self.appendProgramGlobalDeclareVarDiagnostics();
 
         try self.resolveImports();
+    }
+
+    fn appendMissingCompilerTypeReferenceDiagnostics(
+        self: *Program,
+        options: ts_driver.CompileOptions,
+    ) ProgramError!void {
+        if (options.compiler_type_reference_names.len == 0) return;
+        var host: ?*ts_driver.Compilation = null;
+        var containing_file: []const u8 = "";
+        for (self.files.items) |file| {
+            if (file.compilation) |compilation| {
+                host = compilation;
+                containing_file = file.path;
+                break;
+            }
+        }
+        const compilation = host orelse return;
+        for (options.compiler_type_reference_names) |name| {
+            if (name.len == 0) continue;
+            _ = self.resolver.resolveTypeReferenceDirective(name, containing_file) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    const message = try std.fmt.allocPrint(
+                        self.gpa,
+                        "Cannot find type definition file for '{s}'.",
+                        .{name},
+                    );
+                    var duplicate = false;
+                    for (compilation.diagnostics.items) |diagnostic| {
+                        if (diagnostic.code == 2688 and std.mem.eql(u8, diagnostic.message, message)) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (duplicate) {
+                        self.gpa.free(message);
+                        continue;
+                    }
+                    compilation.diagnostics.append(self.gpa, .{
+                        .phase = .bind,
+                        .pos = 0,
+                        .line = 1,
+                        .code = 2688,
+                        .is_global = true,
+                        .message = message,
+                    }) catch |append_err| {
+                        self.gpa.free(message);
+                        return append_err;
+                    };
+                    compilation.has_errors = true;
+                },
+            };
+        }
     }
 
     /// Streaming variant of `compileAll`. Each file's diagnostics are
@@ -6015,4 +6069,30 @@ test "moduleInferredExportUnsafeReference: portable return type stays clean" {
         "bar",
         false,
     ) == null);
+}
+
+test "Program: missing compiler type reference reports global TS2688" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const file_id = try program.add("/index.ts", "export {};");
+    try program.compileAll(.{
+        .no_emit = true,
+        .compiler_type_reference_names = &.{"definitely-missing"},
+    });
+    const compilation = program.fileById(file_id).compilation orelse return error.TestExpectedEqual;
+    var found = false;
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 2688) continue;
+        found = true;
+        try T.expect(diagnostic.is_global);
+        try T.expectEqualStrings(
+            "Cannot find type definition file for 'definitely-missing'.",
+            diagnostic.message,
+        );
+    }
+    try T.expect(found);
 }
