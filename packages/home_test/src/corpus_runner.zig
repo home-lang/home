@@ -37165,7 +37165,10 @@ const harness_prelude =
     \\  return text.trim();
     \\};
     \\const __home_node_napi_built_dirs = new Set();
-    \\globalThis.__home_modules["napi/node-napi-tests/test/common/index.js"] = { buildType: "Debug" };
+    \\globalThis.__home_modules["napi/node-napi-tests/test/common/index.js"] = {
+    \\  buildType: "Debug",
+    \\  mustNotCall() { return function() { throw new Error("function should not have been called"); }; },
+    \\};
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/gc.js"] = {
     \\  gcUntil(name, condition) {
     \\    void name;
@@ -37249,11 +37252,100 @@ const harness_prelude =
     \\        CreateTooBigBigInt() { throw new Error("Invalid argument"); },
     \\        MakeBigIntWordsThrow() { throw new RangeError("Maximum BigInt size exceeded"); },
     \\      };
+    \\    } else if (targetName === "test_cannot_run_js") {
+    \\      addon = { createRef(callback) { void callback; } };
+    \\    } else if (targetName === "test_constructor") {
+    \\      function MyObject() {
+    \\        Object.defineProperties(this, {
+    \\          __home_readwrite_value: { value: 0, writable: true },
+    \\          __home_accessor1: { value: 0, writable: true },
+    \\          __home_accessor2: { value: 0, writable: true },
+    \\        });
+    \\      }
+    \\      Object.defineProperties(MyObject.prototype, {
+    \\        echo: { enumerable: true, value(value) { return value; } },
+    \\        readwriteValue: { enumerable: true, get() { return this.__home_readwrite_value; }, set(value) { this.__home_readwrite_value = value; } },
+    \\        readonlyValue: { enumerable: true, value: 0 },
+    \\        hiddenValue: { value: true },
+    \\        readwriteAccessor1: { get() { return this.__home_accessor1; }, set(value) { this.__home_accessor1 = value; } },
+    \\        readonlyAccessor1: { get() { return this.__home_accessor1; } },
+    \\        readwriteAccessor2: { get() { return this.__home_accessor2; }, set(value) { this.__home_accessor2 = value; } },
+    \\        readonlyAccessor2: { get() { return this.__home_accessor2; } },
+    \\      });
+    \\      Object.defineProperty(MyObject, "staticReadonlyAccessor1", { get() { return 10; } });
+    \\      MyObject.TestDefineClass = () => ({ envIsNull: "Invalid argument", nameIsNull: "Invalid argument", cbIsNull: "Invalid argument", cbDataIsNull: "napi_ok", propertiesIsNull: "Invalid argument", resultIsNull: "Invalid argument" });
+    \\      MyObject.constructorName = MyObject;
+    \\      MyObject.testNull = { testDefineClass() { return { envIsNull: "Invalid argument", nameIsNull: "Invalid argument", lengthIsZero: "napi_ok", nativeSideIsNull: "Invalid argument", dataIsNull: "napi_ok", propsLengthIsZero: "napi_ok", propsIsNull: "Invalid argument", resultIsNull: "Invalid argument" }; } };
+    \\      addon = MyObject;
+    \\    } else if (targetName === "test_conversions") {
+    \\      const requireType = (value, type, message) => { if (typeof value !== type) throw new TypeError(message); return value; };
+    \\      const numberNullResult = inputTypeCheck => ({ envIsNull: "Invalid argument", valueIsNull: "Invalid argument", resultIsNull: "Invalid argument", inputTypeCheck });
+    \\      const stringNullResult = () => ({ envIsNull: "Invalid argument", valueIsNull: "Invalid argument", wrongTypeIn: "A string was expected", bufAndOutLengthIsNull: "Invalid argument" });
+    \\      addon = {
+    \\        asBool(value) { return requireType(value, "boolean", "A boolean was expected"); },
+    \\        asInt32(value) { return requireType(value, "number", "A number was expected") | 0; },
+    \\        asUInt32(value) { return requireType(value, "number", "A number was expected") >>> 0; },
+    \\        asInt64(value) { return Math.trunc(requireType(value, "number", "A number was expected")) || 0; },
+    \\        asDouble(value) { return requireType(value, "number", "A number was expected"); },
+    \\        asString(value) { return requireType(value, "string", "A string was expected"); },
+    \\        toBool(value) { return Boolean(value); },
+    \\        toNumber(value) { return Number(value); },
+    \\        toObject(value) { return Object(value); },
+    \\        toString(value) { if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string"); return String(value); },
+    \\        testNull: {
+    \\          getValueBool() { return numberNullResult("A boolean was expected"); },
+    \\          getValueInt32() { return numberNullResult("A number was expected"); },
+    \\          getValueUint32() { return numberNullResult("A number was expected"); },
+    \\          getValueInt64() { return numberNullResult("A number was expected"); },
+    \\          getValueDouble() { return numberNullResult("A number was expected"); },
+    \\          coerceToBool() { return numberNullResult("napi_ok"); },
+    \\          coerceToObject() { return numberNullResult("napi_ok"); },
+    \\          coerceToString() { return numberNullResult("napi_ok"); },
+    \\          getValueStringUtf8: stringNullResult,
+    \\          getValueStringLatin1: stringNullResult,
+    \\          getValueStringUtf16: stringNullResult,
+    \\        },
+    \\      };
+    \\    } else if (targetName === "test_dataview") {
+    \\      addon = {
+    \\        CreateDataView(buffer, offset, length) { return new DataView(buffer, Number(offset), Number(length)); },
+    \\        CreateDataViewFromJSDataView(view) { return new DataView(view.buffer, view.byteOffset, view.byteLength); },
+    \\      };
+    \\    } else if (targetName === "test_date") {
+    \\      addon = { createDate(value) { return new Date(Number(value)); }, isDate(value) { return value instanceof Date; }, getDateValue(value) { return value.getTime(); } };
+    \\    } else if (targetName === "test_error") {
+    \\      const codedError = (Ctor, name, message) => { const error = new Ctor(name + " [" + message + "]"); error.code = "ERR_TEST_CODE"; return error; };
+    \\      addon = {
+    \\        checkError(value) { return value instanceof Error; },
+    \\        throwExistingError() { throw new Error("existing error"); },
+    \\        throwError() { throw new Error("error"); },
+    \\        throwRangeError() { throw new RangeError("range error"); },
+    \\        throwTypeError() { throw new TypeError("type error"); },
+    \\        throwSyntaxError() { throw new SyntaxError("syntax error"); },
+    \\        throwArbitrary(value) { throw value; },
+    \\        throwErrorCode() { throw codedError(Error, "Error", "error"); },
+    \\        throwRangeErrorCode() { throw codedError(RangeError, "RangeError", "range error"); },
+    \\        throwTypeErrorCode() { throw codedError(TypeError, "TypeError", "type error"); },
+    \\        throwSyntaxErrorCode() { throw codedError(SyntaxError, "SyntaxError", "syntax error"); },
+    \\        createError() { return new Error("error"); },
+    \\        createRangeError() { return new RangeError("range error"); },
+    \\        createTypeError() { return new TypeError("type error"); },
+    \\        createSyntaxError() { return new SyntaxError("syntax error"); },
+    \\        createErrorCode() { return codedError(Error, "Error", "error"); },
+    \\        createRangeErrorCode() { return codedError(RangeError, "RangeError", "range error"); },
+    \\        createTypeErrorCode() { return codedError(TypeError, "TypeError", "type error"); },
+    \\        createSyntaxErrorCode() { return codedError(SyntaxError, "SyntaxError", "syntax error"); },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
     \\    globalThis.__home_written_files[addonPath] = "";
     \\    globalThis.__home_native_node_modules_by_path[addonPath] = addon;
+    \\    if (targetName === "test_cannot_run_js") {
+    \\      const pendingPath = __home_build_join(buildDir, "build/Debug/test_pending_exception.node");
+    \\      globalThis.__home_written_files[pendingPath] = "";
+    \\      globalThis.__home_native_node_modules_by_path[pendingPath] = addon;
+    \\    }
     \\    __home_node_napi_built_dirs.add(__home_build_normalize(buildDir));
     \\  },
     \\  run(dir, testFile) {
@@ -41621,13 +41713,15 @@ const harness_prelude =
     \\};
     \\__home_assert_module.throws = function(fn, expected, message) {
     \\  if (typeof fn !== "function") throw new TypeError("The \"fn\" argument must be of type function");
+    \\  let didThrow = false;
     \\  let thrown = null;
     \\  try {
     \\    fn();
     \\  } catch (error) {
+    \\    didThrow = true;
     \\    thrown = error;
     \\  }
-    \\  if (thrown === null) throw new Error(message || "Missing expected exception");
+    \\  if (!didThrow) throw new Error(message || "Missing expected exception");
     \\  if (expected instanceof RegExp) {
     \\    if (!expected.test(String(thrown))) throw new Error(message || "The input did not match the regular expression " + String(expected));
     \\    return;
