@@ -1120,6 +1120,19 @@ const harness_prelude =
     \\  return { default: RuntimeError, RuntimeError, StackFrame };
     \\}
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
+    \\globalThis.__home_register_esm_exports = function(filename, getters) {
+    \\  const namespace = Object.create(null);
+    \\  for (const name of Object.keys(getters || {})) {
+    \\    Object.defineProperty(namespace, name, {
+    \\      configurable: false,
+    \\      enumerable: true,
+    \\      get: getters[name],
+    \\    });
+    \\  }
+    \\  Object.defineProperty(namespace, Symbol.toStringTag, { value: "Module" });
+    \\  globalThis.__home_modules[String(filename)] = namespace;
+    \\  return namespace;
+    \\};
     \\globalThis.__home_modules["packages/bun-error/runtime-error"] = __home_bun_error_runtime_error_module();
     \\globalThis.__home_modules["packages/bun-error/runtime-error.ts"] = globalThis.__home_modules["packages/bun-error/runtime-error"];
     \\globalThis.__home_modules["packages/runtime/upstream/packages/bun-error/runtime-error.ts"] = globalThis.__home_modules["packages/bun-error/runtime-error"];
@@ -66149,27 +66162,23 @@ fn tryAppendDynamicImportRewrite(
     i = skipJsWhitespace(source, i);
     if (i >= source.len or source[i] != '(') return null;
     const open_paren = i;
-    i = skipJsWhitespace(source, i + 1);
-    if (i >= source.len or (source[i] != '"' and source[i] != '\'')) return null;
-    const specifier_end = skipQuotedForModuleSyntax(source, i, source[i]);
-    if (specifier_end > source.len) return null;
     const close_paren = skipDynamicImportArguments(source, open_paren) orelse return null;
-    const after_specifier = skipJsWhitespace(source, specifier_end);
-    if (after_specifier < close_paren and source[after_specifier] != ',') return null;
+    if (std.mem.trim(u8, source[open_paren + 1 .. close_paren], " \t\r\n").len == 0) return null;
     const after_call = skipJsWhitespace(source, close_paren + 1);
     if (after_call < source.len and source[after_call] == '.') return null;
 
     try out.appendSlice(allocator, "globalThis.__home_dynamic_import(");
-    try out.appendSlice(allocator, source[i..specifier_end]);
-    if (after_specifier < close_paren and source[after_specifier] == ',') {
-        try out.appendSlice(allocator, ", ");
-        try out.appendSlice(allocator, std.mem.trim(u8, source[after_specifier + 1 .. close_paren], " \t\r\n"));
-    }
+    try out.appendSlice(allocator, source[open_paren + 1 .. close_paren]);
     try out.append(allocator, ')');
     return close_paren + 1;
 }
 
-fn exportedDeclarationStart(source: []const u8, start: usize) ?usize {
+const ExportedDeclaration = struct {
+    declaration_start: usize,
+    name: []const u8,
+};
+
+fn exportedDeclaration(source: []const u8, start: usize) ?ExportedDeclaration {
     if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
     var declaration_start = consumeJsKeyword(source, start, "export") orelse return null;
     if (declaration_start >= source.len or !isJsWhitespace(source[declaration_start])) return null;
@@ -66179,12 +66188,18 @@ fn exportedDeclarationStart(source: []const u8, start: usize) ?usize {
     if (consumeJsKeyword(source, keyword_start, "async")) |after_async| {
         if (after_async >= source.len or !isJsWhitespace(source[after_async])) return null;
         keyword_start = skipJsWhitespace(source, after_async);
-        if (consumeJsKeyword(source, keyword_start, "function") == null) return null;
-        return declaration_start;
+        const after_function = consumeJsKeyword(source, keyword_start, "function") orelse return null;
+        const name_start = skipJsWhitespace(source, after_function);
+        const name_end = readJsIdentifier(source, name_start) orelse return null;
+        return .{ .declaration_start = declaration_start, .name = source[name_start..name_end] };
     }
 
     inline for (.{ "function", "class", "const", "let", "var" }) |keyword| {
-        if (consumeJsKeyword(source, keyword_start, keyword) != null) return declaration_start;
+        if (consumeJsKeyword(source, keyword_start, keyword)) |after_keyword| {
+            const name_start = skipJsWhitespace(source, after_keyword);
+            const name_end = readJsIdentifier(source, name_start) orelse return null;
+            return .{ .declaration_start = declaration_start, .name = source[name_start..name_end] };
+        }
     }
     return null;
 }
@@ -66196,6 +66211,8 @@ fn appendSourceWithBunTestImportRewrites(
 ) !void {
     const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
     var mode: Mode = .code;
+    var exported_names: std.ArrayList([]const u8) = .empty;
+    defer exported_names.deinit(allocator);
     var segment_start: usize = 0;
     var i: usize = 0;
     while (i < source.len) {
@@ -66203,9 +66220,17 @@ fn appendSourceWithBunTestImportRewrites(
         switch (mode) {
             .code => {
                 if (std.mem.startsWith(u8, source[i..], "export")) {
-                    if (exportedDeclarationStart(source, i)) |declaration_start| {
+                    if (exportedDeclaration(source, i)) |declaration| {
                         try out.appendSlice(allocator, source[segment_start..i]);
-                        i = declaration_start;
+                        var known = false;
+                        for (exported_names.items) |name| {
+                            if (std.mem.eql(u8, name, declaration.name)) {
+                                known = true;
+                                break;
+                            }
+                        }
+                        if (!known) try exported_names.append(allocator, declaration.name);
+                        i = declaration.declaration_start;
                         segment_start = i;
                         continue;
                     }
@@ -66268,6 +66293,16 @@ fn appendSourceWithBunTestImportRewrites(
         }
     }
     try out.appendSlice(allocator, source[segment_start..]);
+    if (exported_names.items.len != 0) {
+        try out.appendSlice(allocator, "\nglobalThis.__home_register_esm_exports(__home_import_meta_path, {");
+        for (exported_names.items, 0..) |name, index| {
+            if (index != 0) try out.append(allocator, ',');
+            try out.appendSlice(allocator, name);
+            try out.appendSlice(allocator, ": () => ");
+            try out.appendSlice(allocator, name);
+        }
+        try out.appendSlice(allocator, "});\n");
+    }
 }
 
 fn rewriteNodeNapiDoCorpus(
@@ -112851,6 +112886,34 @@ test "Bun test import rewrite lowers import.meta metadata" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dirname").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_path").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new URL(\"./fixture.js\", \"file:///\" + __home_import_meta_path)") != null);
+}
+
+test "bootstrap runner preserves named exports for expression dynamic self imports" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\export const answer = 42;
+        \\test("dynamic self import", async () => {
+        \\  const namespace = await import(import.meta.path);
+        \\  expect(namespace.answer).toBe(answer);
+        \\  expect(namespace[Symbol.toStringTag]).toBe("Module");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/dynamic-self-import.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(__home_import_meta_path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_register_esm_exports(__home_import_meta_path, {answer: () => answer})") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun test import rewrite lowers import.meta in template expressions" {
