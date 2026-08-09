@@ -1135,6 +1135,7 @@ const harness_prelude =
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) {
     \\    const registered = globalThis.__home_native_node_modules_by_path[resolved];
+    \\    if (registered.__home_napi_no_entrypoint) throw new Error("Module has no declared entry point.");
     \\    if (registered.__home_napi_init_error) {
     \\      const error = new Error("Error during Init");
     \\      error.binding = registered;
@@ -37496,6 +37497,8 @@ const harness_prelude =
     \\      Object.defineProperty(addon, "filename", { enumerable: true, get() { return __home_url_path_to_file_url(addonPath).href; } });
     \\    } else if (targetName === "test_init_order") {
     \\      addon = { cppIntValue: 42, cppStringValue: "123" };
+    \\    } else if (targetName === "test_null_init") {
+    \\      addon = { __home_napi_no_entrypoint: true };
     \\    } else if (targetName === "test_handle_scope") {
     \\      addon = {
     \\        NewScope() {},
