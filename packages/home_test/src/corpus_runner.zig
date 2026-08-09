@@ -63189,16 +63189,6 @@ fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []cons
     );
 }
 
-fn rewriteBunServeCookiesCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "  it(\"correctly handles toJSON methods\", () => {",
-        "  it.todo(\"Cookie and CookieMap toJSON snapshot serialization\");\n  it.skip(\"correctly handles toJSON methods\", () => {",
-    );
-}
-
 fn rewriteJsonlParseCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const replacements = [_]struct {
         needle: []const u8,
@@ -66689,7 +66679,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
-        try rewriteBunServeCookiesCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-file.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-file-upload.test.ts"))
@@ -82436,6 +82426,43 @@ test "bootstrap Bun.serve request clones preserve cookies and route params" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun Cookie and CookieMap JSON corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/bun-serve-cookies.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/js/bun/http/bun-serve-cookies.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Cookie and CookieMap toJSON snapshot serialization") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed or file_run.result.passed != 25 or file_run.result.todo != 0) {
+        std.debug.print(
+            "Bun Cookie JSON corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ file_run.result.passed, file_run.result.failed, file_run.result.todo, file_run.result.unsupported, file_run.result.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 25), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
 test "bootstrap Bun.connect sees websocket upgrade response cookies" {
