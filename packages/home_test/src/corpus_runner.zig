@@ -38003,6 +38003,16 @@ const harness_prelude =
     \\        globalThis.__home_written_files[uncaughtPath] = "";
     \\        globalThis.__home_native_node_modules_by_path[uncaughtPath] = { __home_napi_factory: makeUncaughtExceptionAddon };
     \\      }
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_worker_buffer_callback")) {
+    \\      let freeCallCount = 0;
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          const buffer = new ArrayBuffer(1);
+    \\          Object.defineProperty(buffer, "__home_napi_external_arraybuffer", { value: true });
+    \\          return { buffer, getFreeCallCount() { return freeCallCount; } };
+    \\        },
+    \\        __home_napi_worker_exit() { freeCallCount++; },
+    \\      };
     \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_cleanup_hook")) {
     \\      addon = {
     \\        __home_napi_factory() {
@@ -58859,7 +58869,13 @@ const harness_prelude =
     \\}
     \\function __home_message_port() {
     \\  const port = __home_http_event_target();
-    \\  port.postMessage = function(data) {
+    \\  port.postMessage = function(data, transferList) {
+    \\    if (Array.isArray(transferList) && transferList.some(value => value && value.__home_napi_external_arraybuffer)) {
+    \\      const error = new Error("An ArrayBuffer with an external finalizer cannot be transferred");
+    \\      error.name = "DataCloneError";
+    \\      error.code = 25;
+    \\      throw error;
+    \\    }
     \\    const peer = this.__home_peer;
     \\    if (!peer) return;
     \\    const payload = __home_message_clone(data);
@@ -58882,6 +58898,7 @@ const harness_prelude =
     \\}
     \\function __home_Worker(code, options) {
     \\  const worker = __home_http_event_target();
+    \\  const environmentFinalizers = [];
     \\  const parentPort = __home_http_event_target();
     \\  parentPort.postMessage = function(data) {
     \\    Promise.resolve().then(() => worker.emit("message", __home_message_clone(data)));
@@ -58899,12 +58916,20 @@ const harness_prelude =
     \\    const workerRequire = function(name) {
     \\      const id = String(name);
     \\      if (id === "worker_threads" || id === "node:worker_threads") return workerModule;
-    \\      return globalThis.require(id);
+    \\      const resolved = __home_resolve_require(id);
+    \\      const registered = globalThis.__home_native_node_modules_by_path[resolved];
+    \\      const value = globalThis.require(id);
+    \\      if (registered && typeof registered.__home_napi_worker_exit === "function") environmentFinalizers.push(() => registered.__home_napi_worker_exit());
+    \\      return value;
     \\    };
     \\    Promise.resolve().then(() => {
     \\      try {
     \\        new Function("require", String(code))(workerRequire);
     \\        worker.emit("online");
+    \\        if (environmentFinalizers.length > 0) {
+    \\          for (const finalize of environmentFinalizers.splice(0)) finalize();
+    \\          worker.emit("exit", 0);
+    \\        }
     \\      } catch (error) {
     \\        worker.emit("error", error);
     \\      }
