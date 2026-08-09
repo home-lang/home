@@ -5165,6 +5165,7 @@ pub const Checker = struct {
         try self.checkUnreachableCode(stmts);
         try self.checkUsedBeforeAssignment(stmts);
         try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
+        try self.checkExpandoPropertyCircularInference(stmts);
         try self.checkIsolatedDeclarationsExpandoFunctions(stmts);
         try self.checkClassUsedBeforeDeclaration(stmts);
         try self.checkWeakMapSetPrivateIdentifierDownlevelCollisions();
@@ -16134,6 +16135,7 @@ pub const Checker = struct {
             }
             try self.checkUsedBeforeAssignment(stmts);
             try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
+            try self.checkExpandoPropertyCircularInference(stmts);
             try self.checkClassUsedBeforeDeclaration(stmts);
         } else {
             // Arrow with expression body ÃÂ¢ÃÂÃÂ its expression IS the
@@ -17067,6 +17069,65 @@ pub const Checker = struct {
         for (stmts) |s| try self.scanExpandoPropertyUseBeforeAssign(s, &states);
     }
 
+    fn checkExpandoPropertyCircularInference(self: *Checker, stmts: []const NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        for (stmts) |stmt| try self.scanExpandoPropertyCircularInference(stmt);
+    }
+
+    fn scanExpandoPropertyCircularInference(self: *Checker, node: NodeId) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op != null or self.hir.kindOf(assignment.target) != .member_access) return;
+                const member = hir_mod.memberOf(self.hir, assignment.target);
+                if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return;
+                const object_id = hir_mod.identifierOf(self.hir, member.object);
+                if (!self.identifierNamesUntypedObjectLiteralBindingInScope(object_id.name, assignment.target)) return;
+                if (!try self.expressionReferencesWholeIdentifier(assignment.value, object_id.name)) return;
+                if (self.diagnosticExists(node, TsCodes.variable_self_reference_implicitly_any)) return;
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+                    .{self.string_interner.get(member.name)},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .pos = self.hir.spanOf(node).start,
+                    .code = TsCodes.variable_self_reference_implicitly_any,
+                    .message = msg,
+                });
+            },
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                try self.scanExpandoPropertyCircularInference(stmt);
+            },
+            .if_stmt => {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                try self.scanExpandoPropertyCircularInference(conditional.then_branch);
+                try self.scanExpandoPropertyCircularInference(conditional.else_branch);
+            },
+            .for_stmt => try self.scanExpandoPropertyCircularInference(hir_mod.forStmtOf(self.hir, node).body),
+            .for_in_stmt, .for_of_stmt => try self.scanExpandoPropertyCircularInference(hir_mod.forInOf(self.hir, node).body),
+            .while_stmt => try self.scanExpandoPropertyCircularInference(hir_mod.whileOf(self.hir, node).body),
+            .do_while_stmt => try self.scanExpandoPropertyCircularInference(hir_mod.doWhileOf(self.hir, node).body),
+            .switch_stmt => for (hir_mod.switchCases(self.hir, node)) |case| {
+                try self.scanExpandoPropertyCircularInference(case);
+            },
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| {
+                try self.scanExpandoPropertyCircularInference(stmt);
+            },
+            .try_stmt => {
+                const statement = hir_mod.tryOf(self.hir, node);
+                try self.scanExpandoPropertyCircularInference(statement.block);
+                try self.scanExpandoPropertyCircularInference(statement.catch_block);
+                try self.scanExpandoPropertyCircularInference(statement.finally_block);
+            },
+            .export_decl => try self.scanExpandoPropertyCircularInference(hir_mod.exportOf(self.hir, node).decl),
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return,
+            else => {},
+        }
+    }
+
     fn scanExpandoPropertyUseBeforeAssign(
         self: *Checker,
         node: NodeId,
@@ -17473,6 +17534,85 @@ pub const Checker = struct {
         }
         const value_t = self.hir.typeOf(a.value);
         return if (value_t == types.Primitive.none) types.Primitive.any else value_t;
+    }
+
+    fn reportExpandoAssignmentInferenceErrors(
+        self: *Checker,
+        assignment_node: NodeId,
+        assignment: hir_mod.AssignmentPayload,
+        target_t: TypeId,
+    ) CheckError!void {
+        if (assignment.op != null or !self.strict_flags.no_implicit_any) return;
+
+        if (self.hir.kindOf(assignment.value) == .array_literal and
+            hir_mod.arrayLiteralElements(self.hir, assignment.value).len == 0)
+        {
+            if (try self.expandoFunctionMemberKey(assignment.target)) |key| {
+                if (self.expandoReceiverHasExplicitType(assignment_node, assignment.target)) return;
+                const target_element_t = try self.arrayElementType(target_t);
+                if (target_t == types.Primitive.none or
+                    target_t == types.Primitive.any or
+                    target_t == types.Primitive.unknown or
+                    target_element_t == types.Primitive.none or
+                    target_element_t == types.Primitive.any or
+                    target_element_t == types.Primitive.unknown)
+                {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Member '{s}' implicitly has an 'any[]' type.",
+                        .{self.string_interner.get(key.prop_name)},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = assignment_node,
+                        .pos = self.hir.spanOf(assignment_node).start,
+                        .code = TsCodes.member_implicitly_any,
+                        .message = msg,
+                    });
+                }
+            }
+        }
+    }
+
+    fn expandoReceiverHasExplicitType(self: *Checker, assignment_node: NodeId, target: NodeId) bool {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, target);
+        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return false;
+        const object_id = hir_mod.identifierOf(self.hir, member.object);
+        const decl = self.findLocalValueDeclBeforeExpression(member.object, object_id.name) orelse return false;
+        const kind = self.hir.kindOf(decl);
+        if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+            const binding = hir_mod.varDeclOf(self.hir, decl);
+            if (binding.type_annotation != hir_mod.none_node_id or self.varDeclHasJsDocTypeTag(decl)) return true;
+        }
+        const parent = self.hir.parentOf(assignment_node);
+        const anchor = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt)
+            parent
+        else
+            assignment_node;
+        return (self.jsDocTypeForLeadingNode(anchor) catch null) != null;
+    }
+
+    fn expressionReferencesWholeIdentifier(
+        self: *Checker,
+        expression: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefsWithNodes(expression, &refs);
+        for (refs.items) |ref| {
+            if (ref.name != name) continue;
+            const parent = self.hir.parentOf(ref.node);
+            if (parent != hir_mod.none_node_id) {
+                switch (self.hir.kindOf(parent)) {
+                    .member_access => if (hir_mod.memberOf(self.hir, parent).object == ref.node) continue,
+                    .element_access => if (hir_mod.elementOf(self.hir, parent).object == ref.node) continue,
+                    else => {},
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     /// Apply expando-function augmentation (see `expandoAugmentedFunctionType`)
@@ -90963,6 +91103,7 @@ pub const Checker = struct {
                     if (truthy != types.Primitive.never) try self.recordNarrow(target_id.name, truthy);
                     break :logical_rhs try self.checkExpression(a.value);
                 } else try self.checkExpression(a.value);
+                try self.reportExpandoAssignmentInferenceErrors(node, a, target_t);
                 if (a.op == null) {
                     try self.checkJsImportedPrototypeFunctionThisAssignments(a.target, a.value);
                 }
@@ -122707,6 +122848,7 @@ pub const Checker = struct {
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             switch (self.hir.kindOf(cur)) {
                 .arrow_fn => continue,
+                .decorator => return false,
                 .fn_decl, .fn_expr => {
                     const f = hir_mod.fnDeclOf(self.hir, cur);
                     return f.flags.is_method or f.flags.is_constructor;
@@ -201184,6 +201326,45 @@ test "checker: checkjs expando property assignment target does not report TS2339
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: checked JS whole-object expando inference reports TS7022" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\const outer = {};
+        \\outer.x = 1;
+        \\outer.y = Object.values(outer);
+        \\function f() {
+        \\  const inner = {};
+        \\  inner.x = 1;
+        \\  inner.y = inner.x;
+        \\  inner.z = Object.values(inner);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.variable_self_reference_implicitly_any, "'y' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.variable_self_reference_implicitly_any, "'z' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer."));
+}
+
+test "checker: empty-array function expandos report TS7008 unless contextually typed" {
+    const s = try newSetup(
+        \\function f1() {}
+        \\f1.a = [];
+        \\const f2 = function() {};
+        \\f2.a = [];
+        \\const f3 = () => {};
+        \\f3.a = [];
+        \\const typed: { (): void, a: string[] } = () => {};
+        \\typed.a = [];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'a' implicitly has an 'any[]' type."));
 }
 
 test "checker: checkjs expando JSDoc property type participates in parent assignment" {
