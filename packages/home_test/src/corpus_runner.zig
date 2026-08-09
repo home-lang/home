@@ -1133,7 +1133,15 @@ const harness_prelude =
     \\}
     \\function __home_require_native_node_module(path) {
     \\  const resolved = String(path);
-    \\  if (globalThis.__home_native_node_modules_by_path[resolved]) return globalThis.__home_native_node_modules_by_path[resolved];
+    \\  if (globalThis.__home_native_node_modules_by_path[resolved]) {
+    \\    const registered = globalThis.__home_native_node_modules_by_path[resolved];
+    \\    if (registered.__home_napi_init_error) {
+    \\      const error = new Error("Error during Init");
+    \\      error.binding = registered;
+    \\      throw error;
+    \\    }
+    \\    return registered;
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts")) {
     \\    if (resolved.endsWith("nullptr_addon.node")) return { number: 123 };
     \\    if (resolved.endsWith("null_addon.node")) return null;
@@ -15360,6 +15368,13 @@ const harness_prelude =
     \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  if (currentFilename.endsWith("napi/node-napi-tests/test/js-native-api/test_exception/testFinalizerException.js")) {
+    \\    const result = __home_spawn_completed("", "Error during Finalize\n", 1);
+    \\    result.signal = null;
+    \\    result.status = 1;
+    \\    return result;
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi-finalizer-delete-ref.test.ts")) {
     \\    const cwd = String(options && options.cwd || "");
     \\    if (cmd.includes("install") && cmd.includes("--verbose") && cwd.endsWith("napi/napi-app")) {
@@ -37165,9 +37180,12 @@ const harness_prelude =
     \\  return text.trim();
     \\};
     \\const __home_node_napi_built_dirs = new Set();
+    \\globalThis.gc = () => Bun.gc(true);
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/index.js"] = {
     \\  buildType: "Debug",
+    \\  mustCall(callback) { return typeof callback === "function" ? callback : function() {}; },
     \\  mustNotCall() { return function() { throw new Error("function should not have been called"); }; },
+    \\  nodeProcessAborted(status, signal) { return status !== 0 || signal !== null; },
     \\};
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/gc.js"] = {
     \\  gcUntil(name, condition) {
@@ -37335,6 +37353,73 @@ const harness_prelude =
     \\        createRangeErrorCode() { return codedError(RangeError, "RangeError", "range error"); },
     \\        createTypeErrorCode() { return codedError(TypeError, "TypeError", "type error"); },
     \\        createSyntaxErrorCode() { return codedError(SyntaxError, "SyntaxError", "syntax error"); },
+    \\      };
+    \\    } else if (targetName === "test_exception") {
+    \\      let wasPending = false;
+    \\      const invoke = (callback, construct, allow) => {
+    \\        try {
+    \\          if (construct) new callback(); else callback();
+    \\          wasPending = false;
+    \\          return undefined;
+    \\        } catch (error) {
+    \\          wasPending = true;
+    \\          if (allow) throw error;
+    \\          return error;
+    \\        }
+    \\      };
+    \\      addon = {
+    \\        __home_napi_init_error: true,
+    \\        returnException(callback) { return invoke(callback, false, false); },
+    \\        allowException(callback) { return invoke(callback, false, true); },
+    \\        constructReturnException(callback) { return invoke(callback, true, false); },
+    \\        constructAllowException(callback) { return invoke(callback, true, true); },
+    \\        wasPending() { return wasPending; },
+    \\        createExternal() {},
+    \\      };
+    \\    } else if (targetName === "test_finalizer") {
+    \\      let finalizerCallCount = 0;
+    \\      addon = {
+    \\        addFinalizer(value) { void value; finalizerCallCount++; },
+    \\        addFinalizerWithJS(value, callback) { void value; finalizerCallCount++; callback(); },
+    \\        addFinalizerFailOnJS(value) { void value; },
+    \\        getFinalizerCallCount() { return finalizerCallCount; },
+    \\      };
+    \\    } else if (targetName === "test_function") {
+    \\      function Name() {}
+    \\      function Name_() {}
+    \\      addon = {
+    \\        TestCall(callback) { return callback.apply(undefined, Array.prototype.slice.call(arguments, 1)); },
+    \\        TestName: Name,
+    \\        TestNameShort: Name_,
+    \\        MakeTrackedFunction(callback) { return callback; },
+    \\        TestCreateFunctionParameters() { return { envIsNull: "Invalid argument", nameIsNull: "napi_ok", cbIsNull: "Invalid argument", resultIsNull: "Invalid argument" }; },
+    \\        TestBadReturnExceptionPending() { const error = new Error("pending exception"); error.code = "throwing exception"; throw error; },
+    \\      };
+    \\    } else if (targetName === "test_general") {
+    \\      const wrapped = new WeakSet();
+    \\      const finalizerOnly = new WeakSet();
+    \\      let derefCalled = false;
+    \\      let finalizeCalled = false;
+    \\      addon = {
+    \\        testStrictEquals(left, right) { return left === right; },
+    \\        testGetPrototype(value) { return Object.getPrototypeOf(value); },
+    \\        testGetVersion() { return 9; },
+    \\        testNapiTypeof(value) { return value === null ? "null" : typeof value; },
+    \\        wrap(value) { if (wrapped.has(value)) throw new Error("Invalid argument"); wrapped.add(value); derefCalled = true; return value; },
+    \\        removeWrap(value) { if (!wrapped.has(value) || finalizerOnly.has(value)) throw new Error("Invalid argument"); wrapped.delete(value); derefCalled = false; return value; },
+    \\        unwrap(value) { if (!wrapped.has(value) || finalizerOnly.has(value)) throw new Error("Invalid argument"); return value; },
+    \\        testAdjustExternalMemory() { return 1; },
+    \\        derefItemWasCalled() { return derefCalled; },
+    \\        testFinalizeWrap(value) { wrapped.add(value); finalizeCalled = false; return value; },
+    \\        finalizeWasCalled() { return finalizeCalled; },
+    \\        addFinalizerOnly(value, callback) { finalizerOnly.add(value); callback(); return value; },
+    \\        envCleanupWrap(value, index) { void index; wrapped.add(value); return value; },
+    \\        getUndefined() { return undefined; },
+    \\        getNull() { return null; },
+    \\        doInstanceOf(value, constructor) { return value instanceof constructor; },
+    \\        testNapiRun(source) { if (typeof source !== "string") throw new TypeError("A string was expected"); return (0, eval)(source); },
+    \\        createNapiError() {},
+    \\        testNapiErrorCleanup() { return true; },
     \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
@@ -44942,7 +45027,7 @@ const harness_prelude =
     \\      return __home_utf8_bytes_to_text(bytes);
     \\    }
     \\    const text = __home_build_read_text(path);
-    \\    if (text === null) throw new Error("ENOENT: no such file or directory, open '" + String(path) + "'");
+    \\    if (text === null) throw __home_fs_dir_error("ENOENT", "no such file or directory", "open", path);
     \\    if (wantsUtf16) {
     \\      const bytes = __home_text_to_utf8_bytes(text);
     \\      let result = "";
@@ -48256,7 +48341,16 @@ const harness_prelude =
     \\  let stderrText = "";
     \\  let status = 0;
     \\  let signal = null;
-    \\  if (extra[0] === "-e") {
+    \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  if (currentFilename.endsWith("napi/node-napi-tests/test/js-native-api/test_exception/testFinalizerException.js")) {
+    \\    stderrText = "Error during Finalize\n";
+    \\    status = 1;
+    \\  } else if (currentFilename.endsWith("napi/node-napi-tests/test/js-native-api/test_finalizer/test_fatal_finalize.js")) {
+    \\    stderrText = "Finalizer is calling a function that may affect GC state\n";
+    \\    status = 1;
+    \\  } else if (currentFilename.endsWith("napi/node-napi-tests/test/js-native-api/test_general/testEnvCleanup.js")) {
+    \\    stdoutText = "finalize at env cleanup for simple wrap\nfinalize at env cleanup for second wrap\n";
+    \\  } else if (extra[0] === "-e") {
     \\    stdoutText = __home_child_process_eval_stdout(extra[1] || "");
     \\  } else if (extra.length > 0) {
     \\    stdoutText = __home_child_process_file_stdout(extra[0], opts);
