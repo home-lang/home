@@ -2037,6 +2037,7 @@ const CheckerResolverAdapter = struct {
     pub const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
+        .commonJsExportPrivateName = commonJsExportPrivateNameImpl,
         .ambiguousProjectRoot = ambiguousProjectRootImpl,
     };
 
@@ -2107,6 +2108,25 @@ const CheckerResolverAdapter = struct {
             .export_assignment_type_only = facts.export_assignment_type_only,
             .default_export_member_readonly = facts.default_export_member_readonly,
             .module_is_external = facts.module_is_external,
+        };
+    }
+
+    fn commonJsExportPrivateNameImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ts_driver.ExternalResolver.CommonJsExportPrivateName {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const resolved = self.resolver.resolve(specifier, containing_file) catch return null;
+        const source = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
+        defer self.resolver.gpa.free(source);
+        const is_tsx = std.mem.endsWith(u8, resolved.path, ".tsx") or std.mem.endsWith(u8, resolved.path, ".jsx");
+        const private_name = ts_program.moduleExportAssignmentPrivateTypeName(self.resolver.gpa, source, is_tsx) orelse return null;
+        defer self.resolver.gpa.free(private_name);
+        const arena = self.resolver.arena.allocator();
+        return .{
+            .symbol_name = arena.dupe(u8, private_name) catch return null,
+            .module_name = ts_program.renderExternalModulePathDisplayName(arena, resolved.path) catch return null,
         };
     }
 };

@@ -656,7 +656,24 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged(ts_driver.ProgramCommonJsExport) = .empty;
         errdefer freeProgramCommonJsExports(self.gpa, out.items);
         for (self.files.items) |f| {
-            if (f.redirect_target != null or f.is_declaration) continue;
+            if (f.redirect_target != null) continue;
+            if (f.is_declaration) {
+                const private_name = moduleExportAssignmentPrivateTypeName(self.gpa, f.source, f.is_tsx) orelse continue;
+                errdefer self.gpa.free(private_name);
+                const module_path = try self.gpa.dupe(u8, f.path);
+                errdefer self.gpa.free(module_path);
+                const module_name = try renderExternalModulePathDisplayName(self.gpa, f.path);
+                errdefer self.gpa.free(module_name);
+                const export_name = try self.gpa.dupe(u8, "");
+                errdefer self.gpa.free(export_name);
+                try out.append(self.gpa, .{
+                    .module_path = module_path,
+                    .name = export_name,
+                    .private_type_name = private_name,
+                    .private_module_name = module_name,
+                });
+                continue;
+            }
             if (std.mem.indexOf(u8, f.source, "exports") == null) continue;
             var compilation = ts_driver.compileSource(self.gpa, f.source, .{
                 .is_tsx = f.is_tsx,
@@ -1796,6 +1813,8 @@ pub const Program = struct {
         for (items) |item| {
             gpa.free(item.module_path);
             gpa.free(item.name);
+            if (item.private_type_name.len > 0) gpa.free(item.private_type_name);
+            if (item.private_module_name.len > 0) gpa.free(item.private_module_name);
         }
         gpa.free(items);
     }
@@ -3772,6 +3791,95 @@ pub const ModuleExportFacts = struct {
     module_is_external: bool = false,
 };
 
+/// Return the first private top-level type referenced by a module's
+/// `export =` value annotation. The returned name is owned by `gpa`.
+pub fn moduleExportAssignmentPrivateTypeName(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    is_tsx: bool,
+) ?[]u8 {
+    var compilation = ts_driver.compileSource(gpa, source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+        .is_declaration_file = true,
+    }) catch return null;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return null;
+    const stmts = hir_mod_ns.blockStmts(&compilation.hir, compilation.root);
+
+    var export_target: hir_mod_ns.StringId = 0;
+    for (stmts) |stmt| {
+        if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+        if (!ex.is_export_equals or ex.decl == hir_mod_ns.none_node_id or
+            compilation.hir.kindOf(ex.decl) != .identifier) continue;
+        export_target = hir_mod_ns.identifierOf(&compilation.hir, ex.decl).name;
+        break;
+    }
+    if (export_target == 0) return null;
+
+    var annotation: hir_mod_ns.NodeId = hir_mod_ns.none_node_id;
+    for (stmts) |raw| {
+        const stmt = if (compilation.hir.kindOf(raw) == .export_decl)
+            hir_mod_ns.exportOf(&compilation.hir, raw).decl
+        else
+            raw;
+        if (stmt == hir_mod_ns.none_node_id or declarationName(&compilation.hir, stmt) != export_target) continue;
+        switch (compilation.hir.kindOf(stmt)) {
+            .var_decl, .let_decl, .const_decl => annotation = hir_mod_ns.varDeclOf(&compilation.hir, stmt).type_annotation,
+            else => {},
+        }
+        break;
+    }
+    if (annotation == hir_mod_ns.none_node_id) return null;
+
+    var node: hir_mod_ns.NodeId = 1;
+    while (node < compilation.hir.nodeCount()) : (node += 1) {
+        if (compilation.hir.kindOf(node) != .type_ref or
+            !hirNodeDescendsFrom(&compilation.hir, node, annotation)) continue;
+        const ref = hir_mod_ns.typeRefOf(&compilation.hir, node);
+        if (ref.qualifier_len != 0 or ref.name == 0) continue;
+        if (!moduleRootTypeNameIsPrivate(&compilation.hir, stmts, ref.name)) continue;
+        return gpa.dupe(u8, compilation.interner.get(ref.name)) catch null;
+    }
+    return null;
+}
+
+fn hirNodeDescendsFrom(
+    hir: *const hir_mod_ns.Hir,
+    node: hir_mod_ns.NodeId,
+    ancestor: hir_mod_ns.NodeId,
+) bool {
+    var current = node;
+    var remaining = hir.nodeCount();
+    while (current != hir_mod_ns.none_node_id and remaining > 0) : (remaining -= 1) {
+        if (current == ancestor) return true;
+        current = hir.parentOf(current);
+    }
+    return false;
+}
+
+fn moduleRootTypeNameIsPrivate(
+    hir: *const hir_mod_ns.Hir,
+    stmts: []const hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+) bool {
+    var found_private = false;
+    for (stmts) |raw| {
+        const exported = hir.kindOf(raw) == .export_decl;
+        const stmt = if (exported) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (stmt == hir_mod_ns.none_node_id or !declCreatesTypeSpaceName(hir, stmt)) continue;
+        if (declarationName(hir, stmt) != name) continue;
+        if (exported) return false;
+        found_private = true;
+    }
+    return found_private;
+}
+
 /// Resolve direct and export-star-projected facts for `name` from an already
 /// resolved module. Explicit relative subpaths are followed recursively;
 /// directory/index back-references are not, because a `typesVersions` package
@@ -4643,6 +4751,12 @@ pub fn renderModuleDisplayName(gpa: std.mem.Allocator, resolved_path: []const u8
     return std.fmt.allocPrint(gpa, "\"{s}\"", .{stem});
 }
 
+/// Render the full extensionless module path used by TS4023 for an
+/// inaccessible type reached through a CommonJS export value.
+pub fn renderExternalModulePathDisplayName(gpa: std.mem.Allocator, resolved_path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "\"{s}\"", .{Program.stripProgramModuleExtension(resolved_path)});
+}
+
 /// Basename of `path` with all trailing extensions stripped (so
 /// `a.d.ts` -> `a`, `dir/type.ts` -> `type`). Pure slice, no alloc.
 pub fn moduleStem(path: []const u8) []const u8 {
@@ -4675,6 +4789,17 @@ fn expectCompilationLacksDiagnosticCode(c: *const ts_driver.Compilation, code: u
 
 fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32) !void {
     try T.expect(compilationHasDiagnosticCode(c, code));
+}
+
+test "module export assignment private type query follows object signatures" {
+    const source =
+        \\interface Private {}
+        \\declare const obj: { fn(x: Private): void };
+        \\export = obj;
+    ;
+    const name = moduleExportAssignmentPrivateTypeName(T.allocator, source, false) orelse return error.TestUnexpectedResult;
+    defer T.allocator.free(name);
+    try T.expectEqualStrings("Private", name);
 }
 
 test "Program: add returns stable FileId, dedups on path" {
@@ -6394,6 +6519,29 @@ test "Program: collects only non-void CommonJS exports" {
     }
     try T.expect(saw_j);
     try T.expect(!saw_k);
+}
+
+test "Program: collects private export-assignment declaration types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/node_modules/@types/pkg/index.d.ts",
+        "interface Private {}\ndeclare const obj: { fn(x: Private): void };\nexport = obj;\n",
+    );
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add(
+        "/node_modules/@types/pkg/index.d.ts",
+        "interface Private {}\ndeclare const obj: { fn(x: Private): void };\nexport = obj;\n",
+    );
+
+    const exports = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, exports);
+    try T.expectEqual(@as(usize, 1), exports.len);
+    try T.expectEqualStrings("Private", exports[0].private_type_name);
+    try T.expectEqualStrings("\"/node_modules/@types/pkg/index\"", exports[0].private_module_name);
 }
 
 test "Program: checked JS classifies ambient interface imports and re-exports as types" {

@@ -317,6 +317,13 @@ pub const ExternalResolver = struct {
         /// Borrowed; lives in the resolver's arena.
         module_specifier: []const u8,
     };
+    pub const CommonJsExportPrivateName = struct {
+        /// First private type name reachable from the required module's
+        /// `export =` value.
+        symbol_name: []const u8,
+        /// Rendered external-module symbol name, including quotes.
+        module_name: []const u8,
+    };
     pub const VTable = struct {
         /// Resolve `specifier` from `containing_file`. Returns
         /// `null` when the specifier did not resolve.
@@ -347,6 +354,13 @@ pub const ExternalResolver = struct {
             containing_file: []const u8,
             exported_name: []const u8,
         ) ?InferredExportUnsafeReference = null,
+        // Declaration-emit accessibility query for CommonJS exports whose
+        // value is a bare `require()` call.
+        commonJsExportPrivateName: ?*const fn (
+            self: *anyopaque,
+            specifier: []const u8,
+            containing_file: []const u8,
+        ) ?CommonJsExportPrivateName = null,
         // TS2209/TS2210: project-root-ambiguous state from the most recent
         // `resolve`. Takes no args — reads the resolver's last-stashed
         // record. Optional; null when the resolver can't report it.
@@ -379,6 +393,15 @@ pub const ExternalResolver = struct {
     ) ?InferredExportUnsafeReference {
         const f = self.vtable.inferredExportUnsafeReference orelse return null;
         return f(self.ptr, specifier, containing_file, exported_name);
+    }
+
+    pub fn commonJsExportPrivateName(
+        self: ExternalResolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?CommonJsExportPrivateName {
+        const f = self.vtable.commonJsExportPrivateName orelse return null;
+        return f(self.ptr, specifier, containing_file);
     }
 
     /// TS2209/TS2210 project-root-ambiguous record from the most recent
@@ -437,6 +460,8 @@ pub const ProgramAmbientModuleInterfaceExport = struct {
 pub const ProgramCommonJsExport = struct {
     module_path: []const u8,
     name: []const u8,
+    private_type_name: []const u8 = "",
+    private_module_name: []const u8 = "",
 };
 
 pub const ProgramAmbientInterfaceMember = struct {
@@ -1194,6 +1219,9 @@ pub const TsCodes = struct {
     pub const base_constructor_type_arg_count: u32 = 2508;
     pub const base_constructor_return_not_object: u32 = 2509;
     pub const base_constructor_returns_mismatch: u32 = 2510;
+    /// TS6424 — declaration emit cannot serialize more than one whole-object
+    /// `module.exports = ...` declaration from a JavaScript source file.
+    pub const multiple_module_exports_declaration_emit: u32 = 6424;
     pub const computed_property_name_type: u32 = 2464;
     pub const this_in_computed_property_name: u32 = 2465;
     pub const super_in_computed_property_name: u32 = 2466;
@@ -5145,6 +5173,7 @@ pub const Checker = struct {
         try self.checkExportStarDiagnostics(stmts);
         try self.checkModuleNoneImportsExports(stmts);
         try self.checkExportAssignmentExclusivity(stmts);
+        try self.checkCommonJsDefinePropertyDeclarationPrivacy();
         try self.checkAmbientModuleExportAssignments(stmts);
         try self.checkJSDocMalformedImportAttributes(root);
         try self.checkJSDocImportRequireSyntax(root);
@@ -12866,13 +12895,35 @@ pub const Checker = struct {
     fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
         var by_section: std.AutoHashMapUnmanaged(usize, ExportAssignmentSection) = .empty;
         var commonjs_export_assignments: std.AutoHashMapUnmanaged(usize, NodeId) = .empty;
+        var commonjs_whole_exports: std.AutoHashMapUnmanaged(usize, std.ArrayListUnmanaged(NodeId)) = .empty;
         var commonjs_typedef_property_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
         defer {
             var it = by_section.valueIterator();
             while (it.next()) |v| v.all_export_assignments.deinit(self.gpa);
             by_section.deinit(self.gpa);
             commonjs_export_assignments.deinit(self.gpa);
+            var commonjs_it = commonjs_whole_exports.valueIterator();
+            while (commonjs_it.next()) |nodes| nodes.deinit(self.gpa);
+            commonjs_whole_exports.deinit(self.gpa);
             commonjs_typedef_property_sections.deinit(self.gpa);
+        }
+
+        // The declaration transformer collects nested CommonJS assignments,
+        // including writes inside control-flow branches. Scan the flat HIR so
+        // those declarations are not lost merely because they are not direct
+        // source-file statements.
+        if (self.strict_flags.declaration) {
+            var node: NodeId = 1;
+            while (node < self.hir.nodeCount()) : (node += 1) {
+                if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node)) continue;
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op != null or !self.nodeIsModuleExportsAccess(assignment.target)) continue;
+                const section = self.virtualSectionStartForNode(node);
+                const gop = try commonjs_whole_exports.getOrPut(self.gpa, section);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(self.gpa, node);
+                try commonjs_export_assignments.put(self.gpa, section, node);
+            }
         }
 
         for (stmts) |stmt| {
@@ -12902,6 +12953,17 @@ pub const Checker = struct {
             } else {
                 if (try self.exportDeclCreatesRuntimeValue(stmt)) gop.value_ptr.has_runtime_export = true;
                 if (try self.exportDeclContributesTypeOrNamespace(stmt)) gop.value_ptr.has_type_or_namespace_export = true;
+            }
+        }
+        var whole_export_it = commonjs_whole_exports.valueIterator();
+        while (whole_export_it.next()) |nodes| {
+            if (nodes.items.len < 2) continue;
+            for (nodes.items) |node| {
+                try self.report(
+                    node,
+                    TsCodes.multiple_module_exports_declaration_emit,
+                    "Multiple 'module.exports' assignments cannot be serialized for declaration emit.",
+                );
             }
         }
         var commonjs_it = commonjs_typedef_property_sections.keyIterator();
@@ -12961,6 +13023,113 @@ pub const Checker = struct {
                 try self.report(info.export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
             }
         }
+    }
+
+    fn checkCommonJsDefinePropertyDeclarationPrivacy(self: *Checker) CheckError!void {
+        if (!self.strict_flags.declaration) return;
+        if (self.importer_path.len == 0) return;
+
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .call_expr or !self.virtualSectionIsJsLike(node)) continue;
+            const defined = (try self.commonJsDefinePropertyCall(node)) orelse continue;
+            if (!self.nodeIsCommonJsExportsObject(defined.target)) continue;
+            const specifier = self.requireCallSpecifier(defined.value) orelse continue;
+            var leaked: ?ExternalResolver.CommonJsExportPrivateName = null;
+            if (self.external_resolver) |resolver| {
+                leaked = resolver.commonJsExportPrivateName(specifier, self.importer_path);
+            }
+            if (leaked == null) leaked = try self.programCommonJsExportPrivateName(node, specifier);
+            if (leaked == null) leaked = try self.virtualCommonJsExportPrivateName(node, specifier);
+            const private_name = leaked orelse continue;
+            const export_name = self.string_interner.get(defined.name);
+            const rendered_export_name = try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{export_name});
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Exported variable '{s}' has or is using name '{s}' from external module {s} but cannot be named.",
+                .{ rendered_export_name, private_name.symbol_name, private_name.module_name },
+            );
+            const args = hir_mod.callArgs(self.hir, node);
+            const anchor = if (args.len > 1) args[1] else node;
+            try self.report(anchor, TsCodes.exported_variable_cannot_be_named, msg);
+        }
+    }
+
+    fn virtualCommonJsExportPrivateName(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+    ) CheckError!?ExternalResolver.CommonJsExportPrivateName {
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        const declaration_path = if (std.mem.startsWith(u8, spec, "."))
+            (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null
+        else
+            (try self.virtualBareModuleDeclarationFilename(spec)) orelse return null;
+        defer self.gpa.free(declaration_path);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        var target: NodeId = hir_mod.none_node_id;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            const filename = self.virtualSectionFilenameForNode(statement) orelse continue;
+            if (!virtualPathEquals(filename, declaration_path)) continue;
+            if (!self.isExportAssignmentDecl(statement) and !self.exportDeclIsExportEquals(statement)) continue;
+            const exported = hir_mod.exportOf(self.hir, statement).decl;
+            if (exported == hir_mod.none_node_id or self.hir.kindOf(exported) != .identifier) continue;
+            target = self.findNamedDeclInVirtualSection(statement, hir_mod.identifierOf(self.hir, exported).name) orelse continue;
+            break;
+        }
+        if (target == hir_mod.none_node_id) return null;
+        const annotation = switch (self.hir.kindOf(target)) {
+            .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, target).type_annotation,
+            else => hir_mod.none_node_id,
+        };
+        if (annotation == hir_mod.none_node_id) return null;
+
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .type_ref or !self.nodeDescendsFrom(node, annotation)) continue;
+            const ref = hir_mod.typeRefOf(self.hir, node);
+            if (ref.qualifier_len != 0 or ref.name == 0) continue;
+            if (!self.virtualSectionTypeNameIsPrivate(target, ref.name)) continue;
+            const filename = self.virtualSectionFilenameForNode(target) orelse return null;
+            const module_path = stripProgramModuleExtension(filename);
+            return .{
+                .symbol_name = self.string_interner.get(ref.name),
+                .module_name = try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{module_path}),
+            };
+        }
+        return null;
+    }
+
+    fn nodeDescendsFrom(self: *Checker, node: NodeId, ancestor: NodeId) bool {
+        var current = node;
+        var depth: usize = 0;
+        while (current != hir_mod.none_node_id and depth < 256) : (depth += 1) {
+            if (current == ancestor) return true;
+            current = self.hir.parentOf(current);
+        }
+        return false;
+    }
+
+    fn virtualSectionTypeNameIsPrivate(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (self.virtualSectionStartForNode(raw) != section) continue;
+            const declaration = self.unwrapExportDecl(raw);
+            if (self.declarationName(declaration) != name) continue;
+            switch (self.hir.kindOf(declaration)) {
+                .interface_decl, .type_alias_decl, .class_decl, .enum_decl => {},
+                else => continue,
+            }
+            return self.hir.kindOf(raw) != .export_decl;
+        }
+        return false;
     }
 
     /// TS2309 for `export = X` inside an ambient external module body
@@ -36859,6 +37028,9 @@ pub const Checker = struct {
         }
         var static_t = self.interner.internObjectTypeWithIndexAndSymbol(static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
         if (has_static_readonly_index) try self.readonly_index_types.put(self.gpa, static_t, {});
+        if (parent_static_t) |pst| {
+            try self.checkIntersectionFactoryClassStaticSide(node, c.extends, instance_t, pst);
+        }
         try self.class_static_type_by_node.put(self.gpa, node, static_t);
         try self.recordMemberPredicatesForReceiver(instance_t, &instance_member_predicates);
         try self.recordMemberPredicatesForReceiver(static_t, &static_member_predicates);
@@ -44410,6 +44582,141 @@ pub const Checker = struct {
         );
     }
 
+    fn checkIntersectionFactoryClassStaticSide(
+        self: *Checker,
+        class_node: NodeId,
+        extends_expr: NodeId,
+        child_instance_t: TypeId,
+        parent_static_t: TypeId,
+    ) CheckError!void {
+        if (extends_expr == hir_mod.none_node_id or self.hir.kindOf(extends_expr) != .call_expr) return;
+        if (self.diagnosticExists(class_node, TsCodes.class_static_side_incorrectly_extends_base)) return;
+        const parent_instance_t = (try self.constructReturnType(parent_static_t)) orelse return;
+        if (parent_instance_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(parent_instance_t).is_intersection) return;
+        if (try self.intersectionFactoryPrototypeAssignable(class_node, child_instance_t, parent_static_t, parent_instance_t)) return;
+
+        const child_name = (try self.classDisplayNameFromNode(class_node)) orelse return;
+        defer self.gpa.free(child_name);
+        const parent_name = (try self.allocSimpleTypeName(parent_static_t)) orelse "base class";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Class static side 'typeof {s}' incorrectly extends base class static side '{s}'.",
+            .{ child_name, parent_name },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = class_node,
+            .pos = self.classNameSpanStart(class_node),
+            .code = TsCodes.class_static_side_incorrectly_extends_base,
+            .message = msg,
+            .chain = self.buildAssignabilityElaborationChain(child_instance_t, parent_instance_t) catch &.{},
+        });
+    }
+
+    fn intersectionFactoryPrototypeAssignable(
+        self: *Checker,
+        class_node: NodeId,
+        child_instance_t: TypeId,
+        parent_static_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(parent_static_t, &construct_sigs);
+        if (construct_sigs.items.len == 0) return true;
+        const primary_t = self.interner.signatureReturn(construct_sigs.items[0]) orelse types.Primitive.any;
+        return self.intersectionFactoryObjectShapeAssignable(class_node, child_instance_t, primary_t, target_t);
+    }
+
+    fn intersectionFactoryObjectShapeAssignable(
+        self: *Checker,
+        class_node: NodeId,
+        child_instance_t: TypeId,
+        primary_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (!try self.intersectionFactoryObjectShapeAssignable(class_node, child_instance_t, primary_t, member)) return false;
+            }
+            return true;
+        }
+        if (!target_flags.is_object_type or primary_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(primary_t).is_object_type)
+        {
+            return try self.checkerAssignableTo(primary_t, target_t);
+        }
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            var source_member = self.interner.objectMemberInfo(primary_t, target_member.name);
+            if (source_member == null and try self.classDeclaresOwnInstanceMemberName(class_node, target_member.name)) {
+                source_member = self.interner.objectMemberInfo(child_instance_t, target_member.name);
+            }
+            const member = source_member orelse {
+                if (target_member.is_optional) continue;
+                return false;
+            };
+            if (!target_member.is_optional and member.is_optional) return false;
+            if (!try self.checkerAssignableTo(member.type, target_member.type)) return false;
+        }
+        return true;
+    }
+
+    fn classDeclaresOwnInstanceMemberName(
+        self: *Checker,
+        class_node: NodeId,
+        target_name: hir_mod.StringId,
+    ) CheckError!bool {
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            switch (self.hir.kindOf(member)) {
+                .fn_decl, .fn_expr => {
+                    const function = hir_mod.fnDeclOf(self.hir, member);
+                    if (function.flags.is_static or function.flags.is_constructor) continue;
+                    if ((try self.classMemberNameFromFunctionName(function.name)) == target_name) return true;
+                },
+                .object_property => {
+                    const property = hir_mod.objectPropertyOf(self.hir, member);
+                    if (property.is_static) continue;
+                    if ((try self.classMemberNameFromPropertyKey(property.key, property.is_computed)) == target_name) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn collectIntersectionObjectMembers(
+        self: *Checker,
+        source_t: TypeId,
+        out: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (source_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(source_t);
+        if (flags.is_intersection) {
+            const constituents = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source_t));
+            defer self.gpa.free(constituents);
+            for (constituents) |constituent| try self.collectIntersectionObjectMembers(constituent, out);
+            return;
+        }
+        if (!flags.is_object_type) return;
+        const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source_t));
+        defer self.gpa.free(source_members);
+        for (source_members) |member| {
+            var merged = false;
+            for (out.items) |*existing| {
+                if (existing.name != member.name) continue;
+                existing.type = self.interner.internIntersection(&.{ existing.type, member.type }) catch return error.OutOfMemory;
+                existing.is_optional = existing.is_optional and member.is_optional;
+                existing.is_readonly = existing.is_readonly and member.is_readonly;
+                existing.is_method = existing.is_method and member.is_method;
+                merged = true;
+                break;
+            }
+            if (!merged) try out.append(self.gpa, member);
+        }
+    }
+
     fn mergeInheritedStaticMembers(
         self: *Checker,
         child_node: NodeId,
@@ -44423,9 +44730,12 @@ pub const Checker = struct {
         defer child_by_name.deinit(self.gpa);
         for (child_members.items) |m| try child_by_name.put(self.gpa, m.name, m);
 
+        var parent_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer parent_members.deinit(self.gpa);
+        try self.collectIntersectionObjectMembers(parent_static_t, &parent_members);
         var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer inherited.deinit(self.gpa);
-        for (self.interner.objectMembers(parent_static_t)) |pm| {
+        for (parent_members.items) |pm| {
             // Every derived constructor has its own Function.name and
             // prototype. Home materializes both properties after inheritance,
             // so carrying the parent's synthetic copies forward would make a
@@ -46915,18 +47225,6 @@ pub const Checker = struct {
         try self.collectConstructSignatures(static_t, &construct_sigs);
         if (construct_sigs.items.len == 0) return;
 
-        // When the base is an INTERSECTION of constructors (the canonical
-        // mixin pattern, e.g. `Base & (abstract new (...args) => Mixin)`),
-        // tsc combines the construct signatures into one whose return is the
-        // intersection of the constituent returns — so the per-constituent
-        // returns differing is expected and TS2510 must NOT fire. tsc only
-        // checks `every(ctorReturn === baseType)` for a single class-like
-        // constructor value, never for an intersection. The TS2510 unit case
-        // (single interface with two `new(...)` signatures) is NOT an
-        // intersection, so it still reports.
-        const base_is_intersection = static_t < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(static_t).is_intersection;
-
         if (try self.constructReturnType(static_t)) |combined_ret| {
             if (combined_ret < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(combined_ret).is_intersection and
@@ -46972,7 +47270,7 @@ pub const Checker = struct {
             if (self.generic_signature_params.get(sig) != null) continue;
             if (first_ret == types.Primitive.none) {
                 first_ret = ret;
-            } else if (!base_is_intersection and !self.baseConstructorReturnTypesMatch(first_ret, ret)) {
+            } else if (!self.baseConstructorReturnTypesMatch(first_ret, ret)) {
                 try self.report(
                     extends_expr,
                     TsCodes.base_constructor_returns_mismatch,
@@ -53949,6 +54247,22 @@ pub const Checker = struct {
         return false;
     }
 
+    fn programCommonJsExportPrivateName(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+    ) CheckError!?ExternalResolver.CommonJsExportPrivateName {
+        for (self.program_commonjs_exports) |exported| {
+            if (exported.private_type_name.len == 0 or exported.private_module_name.len == 0) continue;
+            if (!try self.programImportTargetsPath(node, spec, exported.module_path)) continue;
+            return .{
+                .symbol_name = exported.private_type_name,
+                .module_name = exported.private_module_name,
+            };
+        }
+        return null;
+    }
+
     fn programAmbientInterfaceMemberType(self: *Checker, type_name: []const u8) CheckError!TypeId {
         _ = self;
         if (std.mem.eql(u8, type_name, "string")) return types.Primitive.string_t;
@@ -54265,7 +54579,8 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const stmts = hir_mod.blockStmts(self.hir, root);
         var export_alias: ?hir_mod.StringId = null;
-        var direct_export_t: TypeId = types.Primitive.none;
+        var direct_export_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer direct_export_types.deinit(self.gpa);
         var found_section = false;
         var has_runtime_esm_export = false;
         for (stmts) |raw| {
@@ -54275,22 +54590,25 @@ pub const Checker = struct {
                 if (try self.exportDeclCreatesRuntimeValue(raw)) has_runtime_esm_export = true;
                 continue;
             }
-            if (self.hir.kindOf(raw) != .assignment) continue;
-            const a = hir_mod.assignmentOf(self.hir, raw);
-            if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
-            if (!self.memberAccessIsModuleExports(a.target)) continue;
-            if (self.hir.kindOf(a.value) == .identifier) {
-                export_alias = hir_mod.identifierOf(self.hir, a.value).name;
-                direct_export_t = try self.commonJsExportAssignmentValueType(a.value);
-                continue;
-            }
-            direct_export_t = try self.commonJsExportAssignmentValueType(a.value);
         }
         if (!found_section) return null;
         // Once a JavaScript section contains a real ESM value export, an
         // unresolved `module.exports = ...` write is an error expression, not
         // the module's public shape. Require callers see the ESM namespace.
         if (has_runtime_esm_export) return null;
+
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (!self.virtualSectionMatchesSpecifier(src, candidate, spec) or self.hir.kindOf(candidate) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id or
+                !self.nodeIsModuleExportsAccess(assignment.target)) continue;
+            if (self.hir.kindOf(assignment.value) == .identifier) {
+                export_alias = hir_mod.identifierOf(self.hir, assignment.value).name;
+            }
+            try direct_export_types.append(self.gpa, try self.commonJsExportAssignmentValueType(assignment.value));
+        }
+        const direct_export_t = try self.mergeCommonJsWholeExportTypes(direct_export_types.items);
 
         const target_resolved = try self.resolveVirtualModuleSpecifierPath(anchor, spec);
         defer if (target_resolved) |resolved| self.gpa.free(resolved);
@@ -54417,6 +54735,53 @@ pub const Checker = struct {
         while (std.mem.startsWith(u8, display_spec, "../")) display_spec = display_spec[3..];
         try self.registerModuleNamespaceDisplayName(module_t, display_spec);
         return module_t;
+    }
+
+    fn mergeCommonJsWholeExportTypes(self: *Checker, candidates: []const TypeId) CheckError!TypeId {
+        if (candidates.len == 0) return types.Primitive.none;
+        if (candidates.len == 1) return candidates[0];
+
+        for (candidates) |candidate| {
+            if (candidate >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(candidate).is_object_type)
+            {
+                return self.interner.internUnion(candidates) catch return error.OutOfMemory;
+            }
+        }
+
+        const MergedMember = struct {
+            member: types.ObjectMember,
+            present_in: usize = 1,
+        };
+        var merged: std.ArrayListUnmanaged(MergedMember) = .empty;
+        defer merged.deinit(self.gpa);
+        for (candidates) |candidate| {
+            const object_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(candidate));
+            defer self.gpa.free(object_members);
+            for (object_members) |member| {
+                var found = false;
+                for (merged.items) |*existing| {
+                    if (existing.member.name != member.name) continue;
+                    existing.member.type = self.interner.internUnion(&.{ existing.member.type, member.type }) catch return error.OutOfMemory;
+                    existing.member.is_optional = existing.member.is_optional or member.is_optional;
+                    existing.member.is_readonly = existing.member.is_readonly and member.is_readonly;
+                    existing.member.is_method = existing.member.is_method and member.is_method;
+                    existing.present_in += 1;
+                    found = true;
+                    break;
+                }
+                if (!found) try merged.append(self.gpa, .{ .member = member });
+            }
+        }
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (merged.items) |entry| {
+            var member = entry.member;
+            member.is_optional = member.is_optional or entry.present_in < candidates.len;
+            try members.append(self.gpa, member);
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn upsertObjectMember(
@@ -193312,6 +193677,36 @@ test "checker: class heritage constructors with different returns emit TS2510" {
     try T.expect(found_2510);
 }
 
+test "checker: intersected mixin constructors validate static prototype and returns" {
+    const s = try newSetup(
+        \\function mix<T extends new (...args: any[]) => any, U extends new (...args: any[]) => any>(
+        \\    base1: T, base2: U
+        \\): T & U {
+        \\    return null as any;
+        \\}
+        \\class A {
+        \\    static get shared(): number { return 1; }
+        \\    static set shared(v: number) {}
+        \\    x: string = "";
+        \\}
+        \\class B {
+        \\    static get shared(): number { return 2; }
+        \\    static set shared(v: number) {}
+        \\    y: number = 0;
+        \\}
+        \\function make() {
+        \\    class C extends mix(A, B) { z: boolean = true; }
+        \\    return C;
+        \\}
+        \\export const MixedClass = make();
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.declaration = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_static_side_incorrectly_extends_base));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.base_constructor_returns_mismatch));
+}
+
 test "checker: class-like expression heritage validates constructor type args and returns" {
     const s = try newSetup(
         \\interface Base<T, U> { x: T; y: U; }
@@ -222381,11 +222776,13 @@ const CrossModuleStubResolver = struct {
     ambient_module_exports_known: bool = false,
     unsafe_symbol_name: []const u8 = "",
     unsafe_module_specifier: []const u8 = "",
+    commonjs_private_name: []const u8 = "",
 
     pub const vtable = ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
         .inferredExportUnsafeReference = inferredExportUnsafeReferenceImpl,
+        .commonJsExportPrivateName = commonJsExportPrivateNameImpl,
     };
 
     fn resolveImpl(
@@ -222437,6 +222834,21 @@ const CrossModuleStubResolver = struct {
         return .{
             .symbol_name = self.unsafe_symbol_name,
             .module_specifier = self.unsafe_module_specifier,
+        };
+    }
+
+    fn commonJsExportPrivateNameImpl(
+        ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ExternalResolver.CommonJsExportPrivateName {
+        const self: *CrossModuleStubResolver = @ptrCast(@alignCast(ptr));
+        _ = specifier;
+        _ = containing_file;
+        if (self.commonjs_private_name.len == 0) return null;
+        return .{
+            .symbol_name = self.commonjs_private_name,
+            .module_name = self.canned_module_name,
         };
     }
 };
@@ -227198,6 +227610,53 @@ test "checker: CommonJS typedef export property conflicts with export assignment
         s,
         TsCodes.property_does_not_exist,
         "Property 'T' does not exist on type 'typeof ModuleGraphConnection'.",
+    ));
+}
+
+test "checker: declaration emit rejects repeated whole CommonJS exports and merges branch members" {
+    const s = try newSetup(
+        \\// @declaration: true
+        \\// @emitDeclarationOnly: true
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @module: commonjs
+        \\// @filename: x.js
+        \\if (!!true) {
+        \\    module.exports = { a: 1 };
+        \\} else {
+        \\    module.exports = { b: "hello" };
+        \\}
+        \\// @filename: y.js
+        \\const x = require("./x");
+        \\const a = x.a;
+        \\const b = x.b;
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.declaration = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.multiple_module_exports_declaration_emit));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: CommonJS defineProperty require reports private export-assignment types" {
+    const s = try newSetup(
+        \\Object.defineProperty(exports, "api", { value: require("pkg") });
+    );
+    defer destroySetup(s);
+    var stub = CrossModuleStubResolver{
+        .canned_module_name = "\"/node_modules/@types/pkg/index\"",
+        .exported_name = "",
+        .exported_type = false,
+        .commonjs_private_name = "Private",
+    };
+    s.checker.setStrictFlags(.{ .declaration = true });
+    s.checker.setImporterPath("/index.cjs");
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &CrossModuleStubResolver.vtable });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.exported_variable_cannot_be_named,
+        "Exported variable '\"api\"' has or is using name 'Private' from external module \"/node_modules/@types/pkg/index\" but cannot be named.",
     ));
 }
 
