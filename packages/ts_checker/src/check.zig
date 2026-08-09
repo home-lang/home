@@ -25822,6 +25822,11 @@ pub const Checker = struct {
         return false;
     }
 
+    fn functionHasContextualCallableType(self: *Checker, fn_node: NodeId) bool {
+        const target_t = self.contextualTargetTypeForFunction(fn_node) orelse return false;
+        return self.firstSignatureType(target_t) != null;
+    }
+
     fn callCalleeRootHasInvalidContextualType(self: *Checker, callee: NodeId) bool {
         var root = callee;
         while (root != hir_mod.none_node_id and self.hir.kindOf(root) == .member_access) {
@@ -29585,11 +29590,12 @@ pub const Checker = struct {
     ///   * TS1230 ÃÂ¢ÃÂÃÂ the named parameter is an element of a binding
     ///     pattern parameter (`function f({a, p1}): p1 is A`).
     ///   * TS1225 ÃÂ¢ÃÂÃÂ the named parameter does not exist at all.
-    /// All three anchor on the predicate node, whose span begins at
-    /// the parameter-name position. `this`-based predicates carry no
-    /// positional parameter and are skipped.
+    /// All three anchor on the parameter-name token. Plain predicate spans
+    /// begin there; `asserts` predicates advance past the keyword and trivia.
+    /// `this`-based predicates carry no positional parameter and are skipped.
     fn checkTypePredicateConstraints(self: *Checker, pred_node: NodeId, params: []const NodeId) CheckError!void {
         const pred = hir_mod.typePredicateOf(self.hir, pred_node);
+        const param_anchor = self.typePredicateParameterAnchor(pred_node, pred.is_asserts);
         try self.checkTypeNodeGenericArgumentConstraints(pred.target_type);
         // `this is T` ÃÂ¢ÃÂÃÂ no parameter to validate.
         const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
@@ -29611,8 +29617,9 @@ pub const Checker = struct {
             if (idx < params.len and self.hir.kindOf(params[idx]) == .parameter) {
                 const pp = hir_mod.parameterOf(self.hir, params[idx]);
                 if (pp.flags.is_rest) {
-                    try self.report(
+                    try self.reportAt(
                         pred_node,
+                        param_anchor,
                         TsCodes.type_predicate_references_rest_parameter,
                         "A type predicate cannot reference a rest parameter.",
                     );
@@ -29668,7 +29675,7 @@ pub const Checker = struct {
                     "A type predicate cannot reference element '{s}' in a binding pattern.",
                     .{name},
                 );
-                try self.report(pred_node, TsCodes.type_predicate_references_binding_element, msg);
+                try self.reportAt(pred_node, param_anchor, TsCodes.type_predicate_references_binding_element, msg);
                 return;
             }
         }
@@ -29677,7 +29684,23 @@ pub const Checker = struct {
             "Cannot find parameter '{s}'.",
             .{name},
         );
-        try self.report(pred_node, TsCodes.cannot_find_parameter, msg);
+        try self.reportAt(pred_node, param_anchor, TsCodes.cannot_find_parameter, msg);
+    }
+
+    fn typePredicateParameterAnchor(self: *Checker, pred_node: NodeId, is_asserts: bool) u32 {
+        const span = self.hir.spanOf(pred_node);
+        if (!is_asserts) return span.start;
+        const source = self.source orelse return span.start;
+        var pos: usize = @intCast(span.start);
+        const end: usize = @min(@as(usize, @intCast(span.end)), source.len);
+        if (pos + "asserts".len > end or
+            !std.mem.eql(u8, source[pos .. pos + "asserts".len], "asserts"))
+        {
+            return span.start;
+        }
+        pos += "asserts".len;
+        while (pos < end and std.ascii.isWhitespace(source[pos])) : (pos += 1) {}
+        return @intCast(pos);
     }
 
     fn checkTypeNodeGenericArgumentConstraints(self: *Checker, node: NodeId) CheckError!void {
@@ -30219,6 +30242,8 @@ pub const Checker = struct {
             const constructor_default_infers_this = f.flags.is_constructor and
                 pp.default_value != hir_mod.none_node_id and
                 self.expressionContainsThis(pp.default_value);
+            const rest_has_contextual_signature = pp.flags.is_rest and
+                self.functionHasContextualCallableType(node);
             if (!has_anno and !has_jsdoc_param_type and jsdoc_context_param_t == null and
                 !inferred_from_default and param_implicit_any_report and
                 !default_is_await_error_placeholder and
@@ -30229,6 +30254,7 @@ pub const Checker = struct {
                 !(self.functionOrOwnerHasLeadingJsDocParamOrTypeTag(node) and
                     !self.fnIsJsDocConstructorOverloadImplementation(node)) and
                 !self.functionIsPrivateAmbientClassMember(node) and
+                !rest_has_contextual_signature and
                 !self.parameterHasContextualType(node, p))
             {
                 // Binding-pattern parameters (`function f([a, b]) {}` /
@@ -163641,6 +163667,15 @@ test "checker: excess required parameters disable contextual implicit any" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
+test "checker: contextually typed excess rest parameter suppresses TS7019" {
+    const s = try newSetup("const f: () => void = (a?, ...b) => {};");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.rest_parameter_implicitly_any));
+}
+
 test "checker: TS2454 is suppressed after parse diagnostics" {
     const clean = try newSetup("let value: number; value;");
     defer destroySetup(clean);
@@ -163685,6 +163720,21 @@ test "checker: TS1225 type predicate names a missing parameter" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(hasDiagnosticCodeMessage(s, 1225, "Cannot find parameter 'x'."));
+}
+
+test "checker: TS1225 asserts predicate anchors at parameter name" {
+    const source = "function f(y: any): asserts condition {}";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "condition").?);
+    var found = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.cannot_find_parameter) continue;
+        try T.expectEqual(expected_pos, diagnostic.pos);
+        found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: TS1225 not emitted for a valid type predicate" {
