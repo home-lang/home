@@ -37744,6 +37744,10 @@ const harness_prelude =
     \\        TestCancel(callback) { complete(callback); },
     \\        DoRepeatedWork(callback) { complete(() => callback(0)); },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_async_cleanup_hook")) {
+    \\      addon = {
+    \\        __home_napi_factory() { return {}; },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
