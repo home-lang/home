@@ -22947,6 +22947,28 @@ pub const Checker = struct {
         }
         const flags = self.interner.pool.flagsOf(container_t);
         if (flags.is_union) {
+            var all_members_are_primitive = true;
+            var saw_primitive_member = false;
+            for (self.interner.unionMembers(container_t)) |member| {
+                if (member == types.Primitive.undefined_t or member == types.Primitive.null_t) continue;
+                if (member >= self.interner.pool.typeCount()) {
+                    all_members_are_primitive = false;
+                    break;
+                }
+                const member_flags = self.interner.pool.flagsOf(member);
+                if (!(member_flags.is_string or member_flags.is_number or member_flags.is_boolean or
+                    member_flags.is_bigint or member_flags.is_symbol))
+                {
+                    all_members_are_primitive = false;
+                    break;
+                }
+                saw_primitive_member = true;
+            }
+            if (all_members_are_primitive and saw_primitive_member) {
+                const target_text = (try self.allocPropertyMissingTargetTypeName(container_t)) orelse "unknown";
+                try self.reportObjectBindingPropertiesMissingOnType(pattern_node, target_text);
+                return;
+            }
             for (self.interner.unionMembers(container_t)) |member| {
                 if (member < self.interner.pool.typeCount() and self.interner.pool.flagsOf(member).is_object_type and
                     self.interner.objectMembers(member).len == 0 and
@@ -76022,6 +76044,168 @@ pub const Checker = struct {
         }
     }
 
+    fn nodeReferencesAnyName(
+        self: *Checker,
+        node: NodeId,
+        names: []const hir_mod.StringId,
+    ) CheckError!bool {
+        var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefsWithNodes(node, &refs);
+        for (refs.items) |ref| {
+            for (names) |name| {
+                if (ref.name == name) return true;
+            }
+        }
+        return false;
+    }
+
+    fn destructuringLoopFeedsBackToSource(
+        self: *Checker,
+        decl_node: NodeId,
+        source_name: hir_mod.StringId,
+        occurrences: []const DestructuringBindingOccurrence,
+    ) CheckError!bool {
+        const block = self.hir.parentOf(decl_node);
+        if (block == hir_mod.none_node_id or self.hir.kindOf(block) != .block_stmt) return false;
+        const loop_node = self.hir.parentOf(block);
+        if (loop_node == hir_mod.none_node_id or self.hir.kindOf(loop_node) != .while_stmt) return false;
+        const loop = hir_mod.whileOf(self.hir, loop_node);
+        if (loop.body != block or !self.nodeContainsIdentifier(loop.cond, source_name)) return false;
+
+        var dependencies: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer dependencies.deinit(self.gpa);
+        for (occurrences) |occurrence| try dependencies.append(self.gpa, occurrence.name);
+
+        var after_decl = false;
+        for (hir_mod.blockStmts(self.hir, block)) |raw_stmt| {
+            const stmt = self.unwrapExportDecl(raw_stmt);
+            if (stmt == decl_node) {
+                after_decl = true;
+                continue;
+            }
+            if (!after_decl) continue;
+            const kind = self.hir.kindOf(stmt);
+            if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                const variable = hir_mod.varDeclOf(self.hir, stmt);
+                if (variable.name == hir_mod.none_node_id or
+                    self.hir.kindOf(variable.name) != .identifier or
+                    variable.init == hir_mod.none_node_id or
+                    !try self.nodeReferencesAnyName(variable.init, dependencies.items)) continue;
+                const dependency_name = hir_mod.identifierOf(self.hir, variable.name).name;
+                var seen = false;
+                for (dependencies.items) |existing| {
+                    if (existing == dependency_name) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) try dependencies.append(self.gpa, dependency_name);
+                continue;
+            }
+            if (kind != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .identifier or
+                hir_mod.identifierOf(self.hir, assignment.target).name != source_name) continue;
+            if (try self.nodeReferencesAnyName(assignment.value, dependencies.items)) return true;
+        }
+        return false;
+    }
+
+    fn reportCircularDestructuringBindings(
+        self: *Checker,
+        decl_node: NodeId,
+        variable: hir_mod.VarDeclPayload,
+    ) CheckError!void {
+        if (variable.name == hir_mod.none_node_id or variable.init == hir_mod.none_node_id) return;
+        const name_kind = self.hir.kindOf(variable.name);
+        if (name_kind != .object_pattern and name_kind != .array_pattern) return;
+
+        var occurrences: std.ArrayListUnmanaged(DestructuringBindingOccurrence) = .empty;
+        defer occurrences.deinit(self.gpa);
+        try self.collectDestructuringBindingOccurrences(variable.name, &occurrences);
+        if (occurrences.items.len == 0) return;
+
+        var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefsWithNodes(variable.init, &refs);
+
+        var loop_cycle = false;
+        if (self.hir.kindOf(variable.init) == .identifier) {
+            loop_cycle = try self.destructuringLoopFeedsBackToSource(
+                decl_node,
+                hir_mod.identifierOf(self.hir, variable.init).name,
+                occurrences.items,
+            );
+        }
+        if (loop_cycle) {
+            self.removePriorDiagnosticsInNodeSpan(variable.name, TsCodes.property_does_not_exist);
+        }
+
+        for (occurrences.items) |occurrence| {
+            var direct_ref: ?NameRef = null;
+            for (refs.items) |ref| {
+                if (ref.name == occurrence.name) {
+                    direct_ref = ref;
+                    break;
+                }
+            }
+            if (direct_ref == null and !loop_cycle) continue;
+            const name_text = self.string_interner.get(occurrence.name);
+            if (!self.diagnosticExists(occurrence.node, TsCodes.variable_self_reference_implicitly_any)) {
+                const message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+                    .{name_text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = occurrence.node,
+                    .pos = occurrence.pos,
+                    .code = TsCodes.variable_self_reference_implicitly_any,
+                    .message = message,
+                });
+            }
+            if (direct_ref) |ref| {
+                if (!self.diagnosticExists(ref.node, TsCodes.block_scoped_used_before_decl)) {
+                    const message = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Block-scoped variable '{s}' used before its declaration.",
+                        .{name_text},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = ref.node,
+                        .pos = ref.pos,
+                        .code = TsCodes.block_scoped_used_before_decl,
+                        .message = message,
+                        .related = try self.declaredHereRelated(occurrence.node, name_text),
+                    });
+                }
+            }
+        }
+    }
+
+    fn narrowWhileConditionedDestructuringSource(
+        self: *Checker,
+        decl_node: NodeId,
+        variable: hir_mod.VarDeclPayload,
+        source_t: TypeId,
+    ) CheckError!TypeId {
+        if (variable.name == hir_mod.none_node_id or
+            self.hir.kindOf(variable.name) != .object_pattern or
+            variable.init == hir_mod.none_node_id or
+            self.hir.kindOf(variable.init) != .identifier) return source_t;
+        const block = self.hir.parentOf(decl_node);
+        if (block == hir_mod.none_node_id or self.hir.kindOf(block) != .block_stmt) return source_t;
+        const loop_node = self.hir.parentOf(block);
+        if (loop_node == hir_mod.none_node_id or self.hir.kindOf(loop_node) != .while_stmt) return source_t;
+        const loop = hir_mod.whileOf(self.hir, loop_node);
+        const source_name = hir_mod.identifierOf(self.hir, variable.init).name;
+        if (loop.body != block or !self.nodeContainsIdentifier(loop.cond, source_name)) return source_t;
+        const narrowed = try self.subtractNullUndefined(source_t);
+        return if (narrowed == types.Primitive.none or narrowed == types.Primitive.never) source_t else narrowed;
+    }
+
     /// True when `annot` is the HIR for a `unique symbol` type annotation.
     /// The parser folds `unique symbol` into a type_ref whose name interns
     /// to "symbol" and whose span starts at the `unique` keyword, so we
@@ -76515,6 +76699,7 @@ pub const Checker = struct {
                 }
             } else {
                 init_type = try self.checkExpression(v.init);
+                init_type = try self.narrowWhileConditionedDestructuringSource(node, v, init_type);
             }
             if (declared_type == types.Primitive.none and
                 init_type == types.Primitive.undefined_t and
@@ -77097,6 +77282,9 @@ pub const Checker = struct {
                 if (declared_type == types.Primitive.none and !self.strict_flags.strict_null_checks) {
                     try self.reportImplicitAnyNullishArrayBinding(v.name, v.init);
                 }
+            }
+            if (nk == .object_pattern or nk == .array_pattern) {
+                try self.reportCircularDestructuringBindings(node, v);
             }
             if ((nk == .object_pattern or nk == .array_pattern) and
                 v.init != hir_mod.none_node_id and
@@ -78699,6 +78887,40 @@ pub const Checker = struct {
         return source_t == types.Primitive.number_t or self.numericEnumUnionIncludesNumber(source_t);
     }
 
+    fn namedObjectIsTargetUnionMember(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection or
+            !target_flags.is_union)
+        {
+            return false;
+        }
+        const source_name = self.namedTypeForId(source_t);
+        const source_display = self.alias_display_names.get(source_t);
+        for (self.interner.unionMembers(target_t)) |member| {
+            if (source_t == member or self.sameNonGenericClassInstanceDeclaration(source_t, member)) return true;
+            if (member >= self.interner.pool.typeCount()) continue;
+            const member_flags = self.interner.pool.flagsOf(member);
+            if (!member_flags.is_object_type or member_flags.is_union or member_flags.is_intersection) continue;
+            if (source_name) |name| {
+                if (self.namedTypeForId(member)) |member_name| {
+                    if (name == member_name) return true;
+                }
+            }
+            if (source_display) |display| {
+                if (std.mem.indexOfScalar(u8, display, '<') != null) continue;
+                if (self.namedTypeForId(member)) |member_name| {
+                    if (std.mem.eql(u8, display, self.string_interner.get(member_name))) return true;
+                }
+                if (self.alias_display_names.get(member)) |member_display| {
+                    if (std.mem.eql(u8, display, member_display)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn checkerAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (self.noInferInnerType(source_t)) |inner| return self.checkerAssignableTo(inner, target_t);
         if (self.noInferInnerType(target_t)) |inner| return self.checkerAssignableTo(source_t, inner);
@@ -78706,6 +78928,7 @@ pub const Checker = struct {
             if (!ok) return false;
         }
         if (self.sameNonGenericClassInstanceDeclaration(source_t, target_t)) return true;
+        if (self.namedObjectIsTargetUnionMember(source_t, target_t)) return true;
         const normalized_source_t = try self.normalizeKeyofAlgebra(source_t);
         if (normalized_source_t != source_t) return self.checkerAssignableTo(normalized_source_t, target_t);
         const normalized_target_t = try self.normalizeKeyofAlgebra(target_t);
@@ -230499,4 +230722,52 @@ test "checker: parity batch unrelated type parameters fail assertion overlap wit
             diagnostic.chain[0].message,
         );
     }
+}
+
+test "checker: primitive union destructuring reports union properties and circular binding" {
+    const s = try newSetup(
+        \\const { c, f }: string | number = { c: 0, f };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.block_scoped_used_before_decl));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'c' does not exist on type 'string | number'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'f' does not exist on type 'string | number'.",
+    ));
+}
+
+test "checker: destructuring loop feedback through temporary reports circular bindings" {
+    const s = try newSetup(
+        \\interface LoopNode {
+        \\    children?: readonly LoopNode[];
+        \\    index?: number;
+        \\}
+        \\function iterate(data: { node: LoopNode }) {
+        \\    let node: LoopNode | undefined = data.node;
+        \\    while (node) {
+        \\        const { children, index = -1 } = node;
+        \\        const activeNode: LoopNode | undefined = index != -1 && children ? children[index] : undefined;
+        \\        node = activeNode;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
