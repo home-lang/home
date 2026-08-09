@@ -37730,6 +37730,20 @@ const harness_prelude =
     \\      addon = {
     \\        __home_napi_factory() { return { hello() { return "world"; } }; },
     \\      };
+    \\    } else if (targetName === "test_async") {
+    \\      const complete = callback => {
+    \\        setImmediate(() => {
+    \\          try { callback(); } catch (error) { process.emit("uncaughtException", error); }
+    \\        });
+    \\      };
+    \\      addon = {
+    \\        Test(value, resource, callback) {
+    \\          void resource;
+    \\          complete(() => callback(null, (Number(value) | 0) * 2));
+    \\        },
+    \\        TestCancel(callback) { complete(callback); },
+    \\        DoRepeatedWork(callback) { complete(() => callback(0)); },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
