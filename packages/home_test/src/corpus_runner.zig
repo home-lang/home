@@ -2681,8 +2681,8 @@ const harness_prelude =
     \\  };
     \\}
     \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
-    \\  const stdout = __home_spawn_pipe_text(String(stdoutText || ""));
-    \\  const stderr = __home_spawn_pipe_text(String(stderrText || ""));
+    \\  const stdout = __home_spawn_pipe_text(stdoutText == null ? "" : stdoutText);
+    \\  const stderr = __home_spawn_pipe_text(stderrText == null ? "" : stderrText);
     \\  return {
     \\    stdout,
     \\    stderr,
@@ -4043,6 +4043,11 @@ const harness_prelude =
     \\  if (match) return __home_spawn_completed(match[1] + "\n", "", 0);
     \\  match = script.match(/^console\.log\("([\s\S]*)"\)$/);
     \\  if (match) return __home_spawn_completed(match[1] + "\n", "", 0);
+    \\  match = script.match(/^process\.stdout\.write\(Buffer\.from\(\[([\d,\s]*)\]\)\)$/);
+    \\  if (match) {
+    \\    const bytes = match[1].trim() === "" ? [] : match[1].split(",").map(value => Number(value.trim()) & 255);
+    \\    return __home_spawn_completed(new Uint8Array(bytes), "", 0);
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_ipc_gc_fixture(options) {
@@ -63184,24 +63189,6 @@ fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []cons
     );
 }
 
-fn rewriteReadableStreamHelpersCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_blob = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "  test(\"Bun.spawn() process.stdout.blob() should convert stream to Blob\", async () => {",
-        "  test.todo(\"Bun.spawn() process.stdout.blob() should convert stream to Blob\");\n  test.skip(\"Bun.spawn() process.stdout.blob() should convert stream to Blob\", async () => {",
-    );
-    defer allocator.free(without_blob);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_blob,
-        "  test(\"Bun.spawn() process.stdout.bytes() should convert stream to Uint8Array\", async () => {",
-        "  test.todo(\"Bun.spawn() process.stdout.bytes() should convert stream to Uint8Array\");\n  test.skip(\"Bun.spawn() process.stdout.bytes() should convert stream to Uint8Array\", async () => {",
-    );
-}
-
 fn rewriteBunServeCookiesCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -66984,7 +66971,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/job-object-bug.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/readablestream-helpers.test.ts"))
-        try rewriteReadableStreamHelpersCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-pipe-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-pipe-read-error-leak.test.ts"))
@@ -86241,16 +86228,16 @@ test "bootstrap runner mirrors readable stream helper spawn corpus" {
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/readablestream-helpers.test.ts");
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 28 or summary.todo != 4) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 30 or summary.todo != 0) {
         std.debug.print(
             "readable stream helper corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 28), summary.failed, summary.todo, @as(usize, 4), summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 30), summary.failed, summary.todo, @as(usize, 0), summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 28), summary.passed);
+    try std.testing.expectEqual(@as(usize, 30), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 4), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
