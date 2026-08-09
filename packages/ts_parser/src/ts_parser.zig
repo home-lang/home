@@ -1024,6 +1024,7 @@ pub const Parser = struct {
 
     fn internPropertyName(self: *Parser, tok: Token, span_: Span) ParseError!hir_mod.StringId {
         if (tok.kind == .string_literal) return self.internStringLiteral(tok);
+        if (tok.kind == .identifier) return self.internToken(tok);
         const slice = self.source[span_.start..span_.end];
         if (tok.kind != .number_literal) {
             return self.interner.intern(slice) catch error.OutOfMemory;
@@ -24140,6 +24141,18 @@ test "parser: enum declaration" {
     try T.expectEqual(hir_mod.NodeKind.enum_decl, s.hir.kindOf(top));
     const members = hir_mod.enumMembers(&s.hir, top);
     try T.expectEqual(@as(usize, 3), members.len);
+}
+
+test "parser: enum member identifier names decode Unicode escapes" {
+    var s = try newTestSetup("enum E { \\u0041 = 1 }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const enum_decl = hir_mod.blockStmts(&s.hir, root)[0];
+    const member = hir_mod.enumMembers(&s.hir, enum_decl)[0];
+    const property = hir_mod.objectPropertyOf(&s.hir, member);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(property.key));
+    const name = hir_mod.identifierOf(&s.hir, property.key).name;
+    try T.expectEqualStrings("A", s.interner.get(name));
 }
 
 test "parser: namespace declaration" {
