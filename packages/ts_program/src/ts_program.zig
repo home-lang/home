@@ -3526,6 +3526,8 @@ pub const ModuleExportFacts = struct {
     exported_value: bool = false,
     ambient_const_enum: bool = false,
     type_only_pos: ?u32 = null,
+    export_assignment_type_only: bool = false,
+    default_export_member_readonly: bool = false,
 };
 
 /// Resolve direct and export-star-projected facts for `name` from an already
@@ -3570,6 +3572,31 @@ fn moduleExportFactsFromResolvedModuleDepth(
         gpa.destroy(compilation);
     }
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return facts;
+    if (name.len == 0) {
+        for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+            if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+            if (!ex.is_export_equals or ex.decl == hir_mod_ns.none_node_id) continue;
+            if (compilation.hir.kindOf(ex.decl) != .identifier) {
+                facts.exported_value = true;
+                return facts;
+            }
+            const target = hir_mod_ns.identifierOf(&compilation.hir, ex.decl).name;
+            const type_symbol = compilation.module.root.types.get(target);
+            const value_symbol = compilation.module.root.values.get(target);
+            facts.exported_type = type_symbol != null;
+            facts.exported_value = value_symbol != null and !value_symbol.?.flags.is_type;
+            facts.export_assignment_type_only = facts.exported_type and !facts.exported_value;
+            return facts;
+        }
+        return facts;
+    }
+    facts.default_export_member_readonly = moduleDefaultExportMemberIsReadonly(
+        &compilation.hir,
+        &compilation.interner,
+        compilation.root,
+        name,
+    );
     for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
         if (compilation.hir.kindOf(stmt) != .export_decl) continue;
         const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
@@ -3591,6 +3618,81 @@ fn moduleExportFactsFromResolvedModuleDepth(
         facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
     }
     return facts;
+}
+
+fn moduleDefaultExportMemberIsReadonly(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    member_name: []const u8,
+) bool {
+    for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
+        if (hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(hir, stmt);
+        if (!ex.is_default or ex.decl == hir_mod_ns.none_node_id) continue;
+        const expression = ex.decl;
+        const kind = hir.kindOf(expression);
+        if (kind != .as_expr and kind != .type_assertion) continue;
+        const assertion = hir_mod_ns.asExpressionOf(hir, expression);
+        if (assertion.type_node == hir_mod_ns.none_node_id or hir.kindOf(assertion.type_node) != .type_ref) continue;
+        const ref = hir_mod_ns.typeRefOf(hir, assertion.type_node);
+        if (!std.mem.eql(u8, interner.get(ref.name), "Readonly")) continue;
+        const args = hir_mod_ns.typeRefArgs(hir, assertion.type_node);
+        if (args.len != 1) continue;
+        if (moduleReadonlyProjectionContainsMember(hir, interner, root, assertion.expr, args[0], member_name)) return true;
+    }
+    return false;
+}
+
+fn moduleReadonlyProjectionContainsMember(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    expression: hir_mod_ns.NodeId,
+    type_arg: hir_mod_ns.NodeId,
+    member_name: []const u8,
+) bool {
+    if (moduleObjectLiteralContainsMember(hir, interner, expression, member_name)) return true;
+    var source_name: ?hir_mod_ns.StringId = if (hir.kindOf(expression) == .identifier)
+        hir_mod_ns.identifierOf(hir, expression).name
+    else
+        null;
+    if (hir.kindOf(type_arg) == .typeof_type) {
+        const operand = hir_mod_ns.typeofTypeOf(hir, type_arg).operand;
+        if (hir.kindOf(operand) == .identifier) source_name = hir_mod_ns.identifierOf(hir, operand).name;
+    }
+    const wanted = source_name orelse return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        const decl = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (decl == hir_mod_ns.none_node_id) continue;
+        const kind = hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+        const variable = hir_mod_ns.varDeclOf(hir, decl);
+        if (variable.name == hir_mod_ns.none_node_id or hir.kindOf(variable.name) != .identifier) continue;
+        if (hir_mod_ns.identifierOf(hir, variable.name).name != wanted) continue;
+        return moduleObjectLiteralContainsMember(hir, interner, variable.init, member_name);
+    }
+    return false;
+}
+
+fn moduleObjectLiteralContainsMember(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    node: hir_mod_ns.NodeId,
+    member_name: []const u8,
+) bool {
+    if (node == hir_mod_ns.none_node_id or hir.kindOf(node) != .object_literal) return false;
+    for (hir_mod_ns.objectLiteralProps(hir, node)) |prop| {
+        if (hir.kindOf(prop) != .object_property) continue;
+        const key = hir_mod_ns.objectPropertyOf(hir, prop).key;
+        const key_name = switch (hir.kindOf(key)) {
+            .identifier => hir_mod_ns.identifierOf(hir, key).name,
+            .literal_string => hir_mod_ns.literalStringOf(hir, key).value,
+            else => continue,
+        };
+        if (std.mem.eql(u8, interner.get(key_name), member_name)) return true;
+    }
+    return false;
 }
 
 fn exportStarTargetPrefersIndex(specifier: []const u8) bool {
@@ -3878,16 +3980,16 @@ pub fn moduleExportIsTypeOnly(
     for (hir_mod_ns.blockStmts(&compilation.hir, root)) |stmt| {
         if (compilation.hir.kindOf(stmt) != .export_decl) continue;
         const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
-        if (!ex.is_type_only) continue;
         // `export type * from "…"` re-exports every name type-only.
-        if (ex.is_namespace) return compilation.hir.spanOf(stmt).start;
+        if (ex.is_namespace and ex.is_type_only) return compilation.hir.spanOf(stmt).start;
         // `export type { name }` / `export type { x as name }`.
         if (name_id) |nid| {
             for (hir_mod_ns.exportNamed(&compilation.hir, stmt)) |spec_node| {
                 if (compilation.hir.kindOf(spec_node) != .export_specifier and
                     compilation.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
-                if (sp.local == nid or sp.imported == nid) return compilation.hir.spanOf(spec_node).start;
+                if ((ex.is_type_only or sp.is_type_only) and
+                    (sp.local == nid or sp.imported == nid)) return compilation.hir.spanOf(spec_node).start;
             }
         }
     }

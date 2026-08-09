@@ -2104,6 +2104,8 @@ const CheckerResolverAdapter = struct {
             .type_only_export = type_only_pos != null,
             .export_path = export_path,
             .export_pos = type_only_pos orelse 0,
+            .export_assignment_type_only = facts.export_assignment_type_only,
+            .default_export_member_readonly = facts.default_export_member_readonly,
         };
     }
 };

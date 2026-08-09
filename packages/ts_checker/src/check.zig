@@ -282,6 +282,14 @@ pub const ExternalResolver = struct {
         /// specifier was inspected for this name. A false export result is a
         /// trusted missing member only when this bit is set.
         ambient_module_exports_known: bool = false,
+        /// True when the module's `export =` target exists only in type
+        /// space. Queried with an empty `name` for checked-JavaScript
+        /// `require()` bindings (TS18042).
+        export_assignment_type_only: bool = false,
+        /// True when `name` is a readonly member of the module's default
+        /// export. This lets cross-file default imports retain mapped
+        /// `Readonly<T>` member flags for assignment checks (TS2540).
+        default_export_member_readonly: bool = false,
         /// True when the exported value is an ambient const enum. Under
         /// isolatedModules-like flags (including verbatimModuleSyntax),
         /// TypeScript rejects value imports/re-exports of these symbols with
@@ -7575,6 +7583,9 @@ pub const Checker = struct {
                         );
                     } else if (ck == .object_pattern or ck == .array_pattern) {
                         self.hir.setType(ts.catch_param, types.Primitive.any);
+                        if (ck == .object_pattern and self.objectBindingPatternHasRest(ts.catch_param)) {
+                            _ = try self.reportObjectRestBindingFromNonObject(ts.catch_param);
+                        }
                     }
                 }
                 if (ts.catch_block != hir_mod.none_node_id) try self.checkStatement(ts.catch_block);
@@ -41409,6 +41420,10 @@ pub const Checker = struct {
     fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!bool {
         if (self.hir.kindOf(target) != .member_access) return false;
         const m = hir_mod.memberOf(self.hir, target);
+        if (try self.importedDefaultMemberIsReadonly(m.object, m.name)) {
+            try self.reportReadonlyMemberAssignment(target, m.name);
+            return true;
+        }
         var obj_t = self.hir.typeOf(m.object);
         if (obj_t == types.Primitive.none) return false;
         if (obj_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(obj_t).is_type_parameter) {
@@ -41430,17 +41445,60 @@ pub const Checker = struct {
         if (self.nodeIsThisReference(m.object) and self.enclosingConstructorDeclaresReadonlyMember(target, m.name)) {
             return false;
         }
-        const prop_str = self.string_interner.get(m.name);
+        try self.reportReadonlyMemberAssignment(target, m.name);
+        return true;
+    }
+
+    fn importedDefaultMemberIsReadonly(
+        self: *Checker,
+        object: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return false;
+        const local_name = hir_mod.identifierOf(self.hir, object).name;
+        const root = self.rootBlockFor(object);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const section = if (has_sections) self.virtualSectionStartForNode(object) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.is_type_only or imp.import_equals != hir_mod.none_node_id) continue;
+            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, imp.default_binding).name != local_name) continue;
+            const spec = self.string_interner.get(imp.module);
+            if (self.external_resolver) |resolver| {
+                if (resolver.moduleExport(spec, self.importer_path, self.string_interner.get(member_name))) |info| {
+                    return info.default_export_member_readonly;
+                }
+                return false;
+            }
+            const src = self.source orelse return false;
+            if (!has_sections) return false;
+            for (hir_mod.blockStmts(self.hir, root)) |raw| {
+                if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+                if (self.hir.kindOf(raw) != .export_decl) continue;
+                const ex = hir_mod.exportOf(self.hir, raw);
+                if (!ex.is_default or ex.decl == hir_mod.none_node_id) continue;
+                const exported_t = try self.checkExpression(ex.decl);
+                if (exported_t >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(exported_t).is_object_type) return false;
+                const info = self.interner.objectMemberInfo(exported_t, member_name) orelse return false;
+                return info.is_readonly;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    fn reportReadonlyMemberAssignment(self: *Checker, target: NodeId, member_name: hir_mod.StringId) CheckError!void {
+        const prop_str = self.string_interner.get(member_name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot assign to '{s}' because it is a read-only property.",
             .{prop_str},
         );
-        // Anchor at the property-name token (the `x` of `obj.x`)
-        // rather than the start of the member-access expression
-        // (`obj`). Matches tsc which prints the column of the
-        // accessed property ÃÂ¢ÃÂÃÂ see baseline `jsdocReadonly.errors.txt`
-        // expecting `(23,3)` for `l.y = 12`.
         const span = self.hir.spanOf(target);
         const name_pos: ?u32 = if (span.end >= prop_str.len) span.end - @as(u32, @intCast(prop_str.len)) else null;
         try self.diagnostics.append(self.gpa, .{
@@ -41449,7 +41507,6 @@ pub const Checker = struct {
             .code = TsCodes.readonly_property,
             .message = msg,
         });
-        return true;
     }
 
     /// Same TS2540 surface as `checkReadonlyAssignment`, but for
@@ -51601,6 +51658,28 @@ pub const Checker = struct {
                     }
                 }
             }
+            if (self.moduleSpecifierForLocalAlias(root_name, node)) |mod_spec_id| {
+                if (try self.virtualTypeOnlyExportOrigin(node, mod_spec_id, r.name)) |origin| {
+                    const member_text = self.string_interner.get(r.name);
+                    const related_msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' was exported here.",
+                        .{member_text},
+                    );
+                    const related = try self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
+                        .node = origin,
+                        .code = TsCodes.name_was_exported_here,
+                        .message = related_msg,
+                    }});
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = imp.import_equals,
+                        .code = TsCodes.import_alias_references_export_type,
+                        .message = "An import alias cannot reference a declaration that was exported using 'export type'.",
+                        .related = related,
+                    });
+                    return;
+                }
+            }
             if (try self.virtualImportEqualsTargetTypeOnlyImportOrigin(node, root_name, qualifiers, r.name)) |origin| {
                 const related_msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -52572,6 +52651,41 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .code = TsCodes.js_type_import_in_js,
+            .message = msg,
+        });
+    }
+
+    fn checkJsTypeOnlyRequireBinding(
+        self: *Checker,
+        node: NodeId,
+        variable: hir_mod.VarDeclPayload,
+    ) CheckError!void {
+        if (!self.virtualSectionIsJsLike(node)) return;
+        if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) return;
+        const spec = self.requireCallSpecifier(variable.init) orelse return;
+        const type_only = if (self.external_resolver) |resolver|
+            if (resolver.moduleExport(spec, self.importer_path, "")) |info|
+                info.export_assignment_type_only
+            else
+                false
+        else
+            try self.importTypeModuleExportAssignmentTargetsTypeOnly(node, spec);
+        if (!type_only) return;
+        const local_name = hir_mod.identifierOf(self.hir, variable.name).name;
+        const local_text = self.string_interner.get(local_name);
+        const import_text = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "import(\"{s}\")",
+            .{stripJsOutputExtension(spec)},
+        );
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' is a type and cannot be imported in JavaScript files. Use '{s}' in a JSDoc type annotation.",
+            .{ local_text, import_text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = variable.name,
             .code = TsCodes.js_type_import_in_js,
             .message = msg,
         });
@@ -54209,6 +54323,31 @@ pub const Checker = struct {
         node: NodeId,
         name: hir_mod.StringId,
     };
+
+    fn virtualTypeOnlyExportOrigin(
+        self: *Checker,
+        anchor: NodeId,
+        specifier: hir_mod.StringId,
+        name: hir_mod.StringId,
+    ) CheckError!?NodeId {
+        const spec = self.string_interner.get(specifier);
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec)) continue;
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, raw);
+            for (hir_mod.exportNamed(self.hir, raw)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const export_spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (self.exportSpecifierExportedName(spec_node, export_spec) != name) continue;
+                if (ex.is_type_only or export_spec.is_type_only) return spec_node;
+            }
+        }
+        return null;
+    }
 
     fn virtualImportEqualsTargetTypeOnlyImportOrigin(
         self: *Checker,
@@ -72022,8 +72161,26 @@ pub const Checker = struct {
                 is_optional = true;
                 elem = hir_mod.optionalTypeOf(self.hir, elem).operand;
             }
-            if (self.hir.kindOf(elem) == .rest_type) continue;
+            if (self.hir.kindOf(elem) == .rest_type) {
+                continue;
+            }
             if (!is_optional) count += 1;
+        }
+        return count;
+    }
+
+    fn tupleAnnotationMinRequiredCountForSignature(
+        self: *Checker,
+        sig: TypeId,
+        tuple_node: NodeId,
+    ) CheckError!usize {
+        var count = self.tupleAnnotationMinRequiredCount(tuple_node);
+        for (hir_mod.tupleTypeElements(self.hir, tuple_node)) |elem| {
+            if (self.hir.kindOf(elem) != .rest_type) continue;
+            const operand = hir_mod.restTypeOf(self.hir, elem).operand;
+            if (try self.restTupleAnnotationRestOperandConstraintFromSignature(sig, operand)) |constraint| {
+                count += self.tupleRestMinRequiredCount(constraint);
+            }
         }
         return count;
     }
@@ -75049,6 +75206,7 @@ pub const Checker = struct {
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
 
+        try self.checkJsTypeOnlyRequireBinding(node, v);
         try self.checkJsDocDuplicateSatisfies(node);
         try self.checkExportedVariablePrivateName(node);
         try self.checkExportedAnonymousClassPrivateMembers(node);
@@ -127960,7 +128118,7 @@ pub const Checker = struct {
                 }
                 break :blk types.Primitive.boolean_t;
             },
-            .typeof => types.Primitive.string_t,
+            .typeof => try self.typeofExpressionType(),
             .void_ => types.Primitive.undefined_t,
             .delete => blk: {
                 const operand_kind = self.hir.kindOf(u.operand);
@@ -128004,6 +128162,27 @@ pub const Checker = struct {
                 break :blk types.Primitive.boolean_t;
             },
         };
+    }
+
+    fn typeofExpressionType(self: *Checker) CheckError!TypeId {
+        const names = [_][]const u8{
+            "bigint",
+            "boolean",
+            "function",
+            "number",
+            "object",
+            "string",
+            "symbol",
+            "undefined",
+        };
+        var members: [names.len]TypeId = undefined;
+        for (names, 0..) |name, i| {
+            const sid = self.string_interner.intern(name) catch return error.OutOfMemory;
+            members[i] = self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
+        }
+        const result = self.interner.internUnion(&members) catch return error.OutOfMemory;
+        try self.registerStringLiteralUnionDisplayText(result);
+        return result;
     }
 
     fn checkLogical(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -136157,12 +136336,15 @@ pub const Checker = struct {
         {
             return true;
         }
-        const target_required = self.tupleAnnotationMinRequiredCount(tuple_node);
+        const target_required = try self.tupleAnnotationMinRequiredCountForSignature(sig, tuple_node);
         const chain = try self.tupleWidthChainForArity(elements.len, elements.len, target_required, null);
         if (chain.len == 0) return false;
 
         const source_name = try self.arrayLiteralTupleDisplayName(arg_node, param_t);
-        const target_name = (try self.tupleAnnotationDiagnosticDisplayText(tuple_node)) orelse return false;
+        const target_name = (try self.tupleAnnotationDiagnosticDisplayTextForSignature(sig, tuple_node)) orelse
+            (try self.tupleArgumentWidthTargetDisplayName(param_t)) orelse
+            (try self.tupleAnnotationDiagnosticDisplayText(tuple_node)) orelse
+            return false;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -136266,6 +136448,47 @@ pub const Checker = struct {
                 continue;
             }
             try buf.appendSlice(arena, (try self.tupleAnnotationElementDisplayName(raw_elem)) orelse "unknown");
+        }
+        try buf.append(arena, ']');
+        return buf.items;
+    }
+
+    fn tupleAnnotationDiagnosticDisplayTextForSignature(
+        self: *Checker,
+        sig: TypeId,
+        tuple_node: NodeId,
+    ) CheckError!?[]const u8 {
+        if (tuple_node == hir_mod.none_node_id or self.hir.kindOf(tuple_node) != .tuple_type) return null;
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.append(arena, '[');
+        var wrote = false;
+        for (hir_mod.tupleTypeElements(self.hir, tuple_node)) |raw_elem| {
+            if (self.hir.kindOf(raw_elem) == .rest_type) {
+                const operand = hir_mod.restTypeOf(self.hir, raw_elem).operand;
+                if (try self.restTupleAnnotationRestOperandConstraintFromSignature(sig, operand)) |constraint| {
+                    const constraint_name = (try self.allocSimpleTypeName(constraint)) orelse
+                        (try self.simpleDiagnosticTypeName(constraint)) orelse
+                        return null;
+                    if (constraint_name.len >= 2 and constraint_name[0] == '[' and constraint_name[constraint_name.len - 1] == ']') {
+                        const inner = constraint_name[1 .. constraint_name.len - 1];
+                        if (inner.len > 0) {
+                            if (wrote) try buf.appendSlice(arena, ", ");
+                            try buf.appendSlice(arena, inner);
+                            wrote = true;
+                        }
+                        continue;
+                    }
+                }
+                if (wrote) try buf.appendSlice(arena, ", ");
+                try buf.appendSlice(arena, "...");
+                try buf.appendSlice(arena, (try self.tupleRestAnnotationDisplayName(operand)) orelse "unknown[]");
+                wrote = true;
+                continue;
+            }
+            if (wrote) try buf.appendSlice(arena, ", ");
+            try buf.appendSlice(arena, (try self.tupleAnnotationElementDisplayName(raw_elem)) orelse "unknown");
+            wrote = true;
         }
         try buf.append(arena, ']');
         return buf.items;
@@ -136437,9 +136660,9 @@ pub const Checker = struct {
         if (self.hir.kindOf(arg_node) != .array_literal) return null;
         if (!self.isTupleShapedTarget(param_t)) return null;
         const source_count = hir_mod.arrayLiteralElements(self.hir, arg_node).len;
-        const fixed_prefix = self.tupleFixedPrefixCount(param_t);
+        const min_required = self.tupleRestMinRequiredCount(param_t);
         const fixed_len = self.fixedTupleLength(param_t);
-        const too_few = source_count < fixed_prefix;
+        const too_few = source_count < min_required;
         const too_many = if (fixed_len) |len| source_count > len else false;
         if (!too_few and !too_many) return null;
         const source_name = try self.arrayLiteralTupleDisplayName(arg_node, param_t);
@@ -136611,6 +136834,21 @@ pub const Checker = struct {
         if (tuple_t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(tuple_t).is_object_type) return null;
         if (!self.isTupleShapedTarget(tuple_t)) return null;
+        if (self.symbolic_tuple_layouts.get(tuple_t)) |layout| {
+            var symbolic: std.ArrayListUnmanaged(u8) = .empty;
+            const arena = self.diag_arena.allocator();
+            try symbolic.append(arena, '[');
+            for (layout, 0..) |segment, index| {
+                if (index > 0) try symbolic.appendSlice(arena, ", ");
+                if (segment.is_variadic) try symbolic.appendSlice(arena, "...");
+                const name = (try self.allocSimpleTypeName(segment.type)) orelse
+                    (try self.simpleDiagnosticTypeName(segment.type)) orelse
+                    "unknown";
+                try symbolic.appendSlice(arena, name);
+            }
+            try symbolic.append(arena, ']');
+            return symbolic.items;
+        }
         const fixed_prefix = self.tupleFixedPrefixCount(tuple_t);
         const fixed_len = self.fixedTupleLength(tuple_t);
         const number_index = self.interner.objectNumberIndex(tuple_t);
@@ -163032,12 +163270,23 @@ test "checker: equality on fresh object references emits TS2839" {
     try T.expectEqual(@as(usize, 3), count);
 }
 
-test "checker: typeof produces string" {
+test "checker: typeof produces the finite string literal result union" {
     const s = try newSetup("typeof x;");
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     const top = firstStatement(s);
-    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(top));
+    const t = s.hir.typeOf(top);
+    try T.expectEqual(@as(usize, 8), s.ti.unionMembers(t).len);
+    try expectStringLiteralUnion(s, t, &.{
+        "bigint",
+        "boolean",
+        "function",
+        "number",
+        "object",
+        "string",
+        "symbol",
+        "undefined",
+    });
 }
 
 test "checker: logical or drops unreachable rhs for truthy literal" {
@@ -225281,6 +225530,83 @@ test "checker: JavaScript string cooking preserves and combines surrogate escape
         TsCodes.type_not_assignable,
         "Type '\"\\uDC00\"' is not assignable to type '\"\\uD800\"'.",
     ));
+}
+
+test "checker: typeof expressions retain the finite JavaScript result union" {
+    const s = try newSetup(
+        \\function f(value: string | number) {
+        \\  switch (typeof value) {
+        \\    case "": break;
+        \\    case "string": break;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.switch_case_not_comparable,
+        "Type '\"\"' is not comparable to type '\"bigint\" | \"boolean\" | \"function\" | \"number\" | \"object\" | \"string\" | \"symbol\" | \"undefined\"'.",
+    ));
+}
+
+test "checker: catch object rest rejects the unconstrained thrown value" {
+    const s = try newSetup(
+        \\try {} catch ({ ...rest }) { rest; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.rest_types_object_only));
+}
+
+test "checker: required tuple suffix after variadic segment contributes minimum arity" {
+    const s = try newSetup(
+        \\function f<T extends [string]>(args: [...string[], ...T]) {}
+        \\f([]);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.source_tuple_too_short));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '[]' is not assignable to parameter of type '[...string[], string]'.",
+    ));
+}
+
+test "checker: checked JavaScript require rejects a type-only export assignment" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: /t.ts
+        \\type Strings = string[];
+        \\export = Strings;
+        \\// @filename: /main.js
+        \\const t = require("./t");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.js_type_import_in_js,
+        "'t' is a type and cannot be imported in JavaScript files. Use 'import(\"./t\")' in a JSDoc type annotation.",
+    ));
+}
+
+test "checker: readonly mapped default exports preserve member immutability" {
+    const s = try newSetup(
+        \\// @filename: /a.ts
+        \\const foo = { a: 1 };
+        \\export default foo as Readonly<typeof foo>;
+        \\// @filename: /b.ts
+        \\import foo from "./a";
+        \\foo.a = 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_property));
 }
 
 test "checker: intrinsic string mappings retain lone surrogate code units" {
