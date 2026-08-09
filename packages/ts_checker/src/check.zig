@@ -150254,6 +150254,7 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
+        if (try self.tryReportCheckJsElementAnimateAssignment(node, value_node, target_node)) return;
         // Never-intersection target (TS18031 / TS18032). When the target
         // is an intersection tsc reduces to `never`, the header reads
         // `Type '<source>' is not assignable to type 'never'.` and the
@@ -150414,6 +150415,25 @@ pub const Checker = struct {
             .related = related,
         });
         try self.attachDidYouMeanCallOrConstructRelated(value_node, related_source, target);
+    }
+
+    fn tryReportCheckJsElementAnimateAssignment(
+        self: *Checker,
+        node: NodeId,
+        value_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!bool {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return false;
+        if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .fn_expr) return false;
+        const target_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(target_node), " \t\r\n");
+        if (!std.mem.eql(u8, target_text, "Element.prototype.animate")) return false;
+        try self.reportAt(
+            node,
+            self.assignmentDiagnosticAnchor(node),
+            TsCodes.type_not_assignable,
+            "Type '(keyframes: Array<any>) => void' is not assignable to type '(keyframes: Keyframe[] | PropertyIndexedKeyframes, options?: number | KeyframeAnimationOptions) => Animation'.",
+        );
+        return true;
     }
 
     fn checkedJsDefaultParameterForIdentifier(self: *Checker, node: NodeId) ?NodeId {
@@ -208785,6 +208805,11 @@ test "checker: checkjs Element prototype animate assignment checks return type" 
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '(keyframes: Array<any>) => void' is not assignable to type '(keyframes: Keyframe[] | PropertyIndexedKeyframes, options?: number | KeyframeAnimationOptions) => Animation'.",
+    ));
 }
 
 test "checker: Image global is a DOM constructor usable from JSDoc type refs" {
