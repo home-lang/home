@@ -37547,6 +37547,25 @@ const harness_prelude =
     \\          getPrototype: nullElementResult,
     \\        },
     \\      };
+    \\    } else if (targetName === "test_promise") {
+    \\      let currentResolve = null;
+    \\      let currentReject = null;
+    \\      addon = {
+    \\        createPromise() {
+    \\          if (currentResolve !== null) return undefined;
+    \\          return new Promise((resolve, reject) => {
+    \\            currentResolve = resolve;
+    \\            currentReject = reject;
+    \\          });
+    \\        },
+    \\        concludeCurrentPromise(value, resolution) {
+    \\          const conclude = resolution ? currentResolve : currentReject;
+    \\          currentResolve = null;
+    \\          currentReject = null;
+    \\          conclude(value);
+    \\        },
+    \\        isPromise(value) { return value instanceof Promise; },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
