@@ -38013,6 +38013,61 @@ const harness_prelude =
     \\        },
     \\        __home_napi_worker_exit() { freeCallCount++; },
     \\      };
+    \\    } else if (targetName === "test_worker_terminate") {
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          return {
+    \\            Test(callback) {
+    \\              if (arguments.length < 1) throw new Error("Not enough arguments, expected 1.");
+    \\              if (typeof callback !== "function") throw new TypeError("Wrong first argument, function expected.");
+    \\              try {
+    \\                callback();
+    \\              } catch (error) {
+    \\                if (error && error.__home_worker_termination) return undefined;
+    \\                throw error;
+    \\              }
+    \\              return undefined;
+    \\            },
+    \\          };
+    \\        },
+    \\      };
+    \\    } else if (targetName === "test_worker_terminate_finalization") {
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          const environment = {
+    \\            bufferFinalized: false,
+    \\            referenceCount: 0,
+    \\            referenceDeleted: false,
+    \\            shuttingDown: false,
+    \\            wrapFinalized: false,
+    \\            wrappedObject: null,
+    \\          };
+    \\          return {
+    \\            Test(value) {
+    \\              if (!value || (typeof value !== "object" && typeof value !== "function")) throw new TypeError("Wrong first argument, object expected.");
+    \\              if (environment.wrappedObject !== null) throw new Error("Worker finalization fixture already has wrapped native data");
+    \\              const buffer = new ArrayBuffer(4);
+    \\              Object.defineProperty(buffer, "__home_napi_external_arraybuffer", { value: true });
+    \\              environment.wrappedObject = value;
+    \\              environment.referenceCount = 1;
+    \\              environment.externalBuffer = buffer;
+    \\            },
+    \\            __home_napi_worker_exit() {
+    \\              if (environment.shuttingDown || environment.wrapFinalized || environment.bufferFinalized) throw new Error("Worker N-API finalizers ran more than once");
+    \\              environment.shuttingDown = true;
+    \\              if (environment.wrappedObject === null || environment.referenceCount !== 1) throw new Error("Worker N-API finalization state is incomplete");
+    \\              environment.referenceCount--;
+    \\              environment.referenceDeleted = true;
+    \\              environment.wrapFinalized = true;
+    \\              environment.wrappedObject = null;
+    \\              if (environment.referenceCount !== 0 || !environment.referenceDeleted) throw new Error("Worker N-API reference was not safely released during shutdown");
+    \\              environment.externalBuffer = null;
+    \\              environment.bufferFinalized = true;
+    \\              environment.shuttingDown = false;
+    \\            },
+    \\          };
+    \\        },
+    \\      };
     \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_cleanup_hook")) {
     \\      addon = {
     \\        __home_napi_factory() {
@@ -58908,33 +58963,66 @@ const harness_prelude =
     \\    Promise.resolve().then(() => parentPort.emit("message", data));
     \\  };
     \\  worker.terminate = function() {
+    \\    worker.__home_terminated = true;
     \\    this.emit("exit", 0);
     \\    return Promise.resolve(0);
     \\  };
-    \\  if (options && options.eval) {
-    \\    const workerModule = Object.assign({}, globalThis.__home_modules["worker_threads"] || {}, { isMainThread: false, parentPort, workerData: options.workerData });
-    \\    const workerRequire = function(name) {
-    \\      const id = String(name);
-    \\      if (id === "worker_threads" || id === "node:worker_threads") return workerModule;
-    \\      const resolved = __home_resolve_require(id);
-    \\      const registered = globalThis.__home_native_node_modules_by_path[resolved];
-    \\      const value = globalThis.require(id);
-    \\      if (registered && typeof registered.__home_napi_worker_exit === "function") environmentFinalizers.push(() => registered.__home_napi_worker_exit());
-    \\      return value;
-    \\    };
-    \\    Promise.resolve().then(() => {
-    \\      try {
-    \\        new Function("require", String(code))(workerRequire);
-    \\        worker.emit("online");
-    \\        if (environmentFinalizers.length > 0) {
-    \\          for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\          worker.emit("exit", 0);
-    \\        }
-    \\      } catch (error) {
+    \\  const workerModule = Object.assign({}, globalThis.__home_modules["worker_threads"] || {}, { isMainThread: false, parentPort, workerData: options && options.workerData });
+    \\  const workerProcess = Object.create(process);
+    \\  workerProcess.exit = function(code) {
+    \\    worker.__home_terminated = true;
+    \\    worker.exitCode = code === undefined ? 0 : Number(code) | 0;
+    \\    const termination = new Error("Worker terminated");
+    \\    termination.__home_worker_termination = true;
+    \\    throw termination;
+    \\  };
+    \\  const workerRequire = function(name) {
+    \\    const id = String(name);
+    \\    if (id === "worker_threads" || id === "node:worker_threads") return workerModule;
+    \\    if (id === "process" || id === "node:process") return workerProcess;
+    \\    const resolved = __home_resolve_require(id);
+    \\    const registered = globalThis.__home_native_node_modules_by_path[resolved];
+    \\    const value = registered && /\\.node$/i.test(resolved) ? __home_require_native_node_module(resolved) : globalThis.require(id);
+    \\    const finalizerOwner = value && typeof value.__home_napi_worker_exit === "function" ? value : registered;
+    \\    if (finalizerOwner && typeof finalizerOwner.__home_napi_worker_exit === "function") environmentFinalizers.push(() => finalizerOwner.__home_napi_worker_exit());
+    \\    return value;
+    \\  };
+    \\  workerRequire.cache = globalThis.require.cache;
+    \\  workerRequire.resolve = globalThis.require.resolve;
+    \\  Promise.resolve().then(() => {
+    \\    const previousFilename = globalThis.__home_current_filename;
+    \\    const previousDirname = globalThis.__home_current_dirname;
+    \\    const previousProcess = globalThis.process;
+    \\    try {
+    \\      globalThis.process = workerProcess;
+    \\      if (options && options.eval) {
+    \\        new Function("require", "process", String(code))(workerRequire, workerProcess);
+    \\      } else {
+    \\        const filename = String(code);
+    \\        const source = __home_build_read_text(filename);
+    \\        if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND");
+    \\        globalThis.__home_current_filename = filename;
+    \\        globalThis.__home_current_dirname = __home_build_dirname(filename);
+    \\        const module = __home_make_cjs_module(filename, globalThis.__home_current_dirname);
+    \\        new Function("module", "exports", "require", "__filename", "__dirname", "process", String(source) + "\n//# sourceURL=" + filename)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess);
+    \\        module.loaded = true;
+    \\      }
+    \\      worker.emit("online");
+    \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
+    \\      worker.emit("exit", worker.exitCode || 0);
+    \\    } catch (error) {
+    \\      if (error && error.__home_worker_termination) {
+    \\        for (const finalize of environmentFinalizers.splice(0)) finalize();
+    \\        worker.emit("exit", worker.exitCode || 0);
+    \\      } else {
     \\        worker.emit("error", error);
     \\      }
-    \\    });
-    \\  }
+    \\    } finally {
+    \\      globalThis.__home_current_filename = previousFilename;
+    \\      globalThis.__home_current_dirname = previousDirname;
+    \\      globalThis.process = previousProcess;
+    \\    }
+    \\  });
     \\  return worker;
     \\}
     \\const __home_worker_threads_module = { MessageChannel: __home_MessageChannel, MessagePort: typeof MessagePort === "function" ? MessagePort : function MessagePort() {}, Worker: __home_Worker, isMainThread: true, parentPort: null, threadId: 0, workerData: undefined };
