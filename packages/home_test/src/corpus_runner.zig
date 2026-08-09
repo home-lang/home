@@ -60583,6 +60583,8 @@ fn appendBootstrapTypeScriptReplacement(
 
     for (replacements) |entry| {
         if (entry.needle.len == 0 or source[idx] != entry.needle[0]) continue;
+        if (std.mem.startsWith(u8, entry.needle, "import(") and idx > 0 and
+            (isJsIdentifierContinue(source[idx - 1]) or source[idx - 1] == '.')) continue;
         if (std.mem.startsWith(u8, source[idx..], entry.needle)) {
             if (bootstrapReplacementWouldEraseTernaryFalseBranch(source, idx, entry.needle)) return null;
             try out.appendSlice(allocator, entry.replacement);
@@ -71110,6 +71112,42 @@ test "bootstrap runner fails unexpectedly passing todo tests and suites" {
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
             "unexpectedly passing todo mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner lowers expression dynamic imports exactly once" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/09563/09563.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/bun-corpus/regression/issue/09563/09563.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./empty.ts\" + \"?i\" + i)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_dynamic_globalThis") == null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "expression dynamic import mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
