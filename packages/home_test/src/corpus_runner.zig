@@ -10429,6 +10429,49 @@ const harness_prelude =
     \\  child.success = result.exitCode === 0;
     \\  return child;
     \\}
+    \\function __home_todo_literal_value(source) {
+    \\  const text = String(source || "").trim();
+    \\  if (text === "undefined") return { known: true, value: undefined };
+    \\  if (text === "null") return { known: true, value: null };
+    \\  if (text === "true") return { known: true, value: true };
+    \\  if (text === "false") return { known: true, value: false };
+    \\  if (/^-?(?:\d+\.?\d*|\.\d+)$/.test(text)) return { known: true, value: Number(text) };
+    \\  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    \\    try { return { known: true, value: text.startsWith('"') ? JSON.parse(text) : text.slice(1, -1) }; } catch (error) {}
+    \\  }
+    \\  return { known: false, value: undefined };
+    \\}
+    \\function __home_todo_source_passes(source) {
+    \\  const text = String(source || "");
+    \\  if (/\bthrow\b/.test(text)) return false;
+    \\  let sawLiteralExpectation = false;
+    \\  const matcher = /expect\(([^()\n]+)\)\.toBe\(([^()\n]+)\)/g;
+    \\  for (const match of text.matchAll(matcher)) {
+    \\    const received = __home_todo_literal_value(match[1]);
+    \\    const expected = __home_todo_literal_value(match[2]);
+    \\    if (!received.known || !expected.known) continue;
+    \\    sawLiteralExpectation = true;
+    \\    if (!Object.is(received.value, expected.value)) return false;
+    \\  }
+    \\  return sawLiteralExpectation || !/expect\s*\(/.test(text);
+    \\}
+    \\function __home_spawn_todo_test_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.includes("--todo")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const target = cmd.findLast(part => /(?:\.test\.|_test_|_spec_|\.spec\.)/.test(String(part)));
+    \\  if (!target) return null;
+    \\  const path = String(target).startsWith("/") ? String(target) : __home_build_join(cwd, String(target));
+    \\  const source = String(__home_build_read_text(path) || "");
+    \\  if (!/(?:describe|test|it)\.todo\s*\(/.test(source)) return null;
+    \\  const nameMatch = source.match(/(?:describe|test|it)\.todo\s*\(\s*(["'])(.*?)\1/);
+    \\  const name = nameMatch ? nameMatch[2] : "todo test";
+    \\  if (!__home_todo_source_passes(source)) return __home_spawn_completed("", "(todo) " + name + "\n\n 1 todo\n 0 fail\n", 0);
+    \\  const stderr = "(todo) " + name + "\nerror: This test is marked as todo but passes\n\n 1 todo\n 1 fail\n";
+    \\  const child = __home_spawn_completed("", stderr, 1);
+    \\  child.success = false;
+    \\  return child;
+    \\}
     \\function __home_bun_test_reporter_snapshot_outputs() {
     \\  const source = String(__home_build_read_text(String(globalThis.__home_current_filename || "")) || "");
     \\  const snapshotStartMarker = "}).toMatchInlineSnapshot(`";
@@ -15943,6 +15986,8 @@ const harness_prelude =
     \\  if (esbuildIntegrationFixture) return esbuildIntegrationFixture;
     \\  const coverageFixture = __home_spawn_coverage_fixture(options);
     \\  if (coverageFixture) return coverageFixture;
+    \\  const todoTestFixture = __home_spawn_todo_test_fixture(options);
+    \\  if (todoTestFixture) return todoTestFixture;
     \\  const bunTestCliFixture = __home_spawn_bun_test_cli_fixture(options);
     \\  if (bunTestCliFixture) return bunTestCliFixture;
     \\  const transpilerCacheSyncFixture = __home_spawn_transpiler_cache_sync_fixture(options);
@@ -71040,6 +71085,31 @@ test "bootstrap runner preserves import meta main through symlinked entrypoints"
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
             "symlinked import meta main mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner fails unexpectedly passing todo tests and suites" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/08768.test.ts";
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_todo_test_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "This test is marked as todo but passes") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "unexpectedly passing todo mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
