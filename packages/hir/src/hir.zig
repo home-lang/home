@@ -831,6 +831,7 @@ pub const ArrayTypePayload = struct {
 pub const TupleTypePayload = struct {
     elements_start: u32,
     elements_len: u32,
+    labels_start: u32,
 };
 
 /// `T?` optional element inside a tuple type. Only valid as a
@@ -1251,6 +1252,9 @@ pub const Hir = struct {
     /// slices into this with `(start: u32, len: u32)`.
     child_pool: std.ArrayListUnmanaged(NodeId),
 
+    /// Source-level labels aligned with tuple element child slices.
+    tuple_label_pool: std.ArrayListUnmanaged(StringId),
+
     /// Cold data — never read on the hot path.
     cold: ColdData,
 
@@ -1335,6 +1339,7 @@ pub const Hir = struct {
             .object_type_payloads = .empty,
             .pattern_payloads = .empty,
             .child_pool = .empty,
+            .tuple_label_pool = .empty,
             .cold = ColdData.empty(),
         };
 
@@ -1430,6 +1435,7 @@ pub const Hir = struct {
         self.object_type_payloads.deinit(self.gpa);
         self.pattern_payloads.deinit(self.gpa);
         self.child_pool.deinit(self.gpa);
+        self.tuple_label_pool.deinit(self.gpa);
         self.cold.deinit(self.gpa);
     }
 
@@ -2574,13 +2580,17 @@ pub const Builder = struct {
         return id;
     }
 
-    pub fn addTupleType(self: *Builder, span: Span, elements: []const NodeId) !NodeId {
+    pub fn addTupleType(self: *Builder, span: Span, elements: []const NodeId, labels: []const StringId) !NodeId {
+        std.debug.assert(elements.len == labels.len);
         const start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, elements);
+        const labels_start: u32 = @intCast(self.hir.tuple_label_pool.items.len);
+        try self.hir.tuple_label_pool.appendSlice(self.hir.gpa, labels);
         const payload_idx: u32 = @intCast(self.hir.tuple_type_payloads.items.len);
         try self.hir.tuple_type_payloads.append(self.hir.gpa, .{
             .elements_start = start,
             .elements_len = @intCast(elements.len),
+            .labels_start = labels_start,
         });
         const id = try self.newNode(.tuple_type, span, payload_idx);
         for (elements) |e| self.hir.setParent(e, id);
@@ -3427,6 +3437,11 @@ pub fn optionalTypeOf(hir: *const Hir, id: NodeId) OptionalTypePayload {
 pub fn tupleTypeElements(hir: *const Hir, id: NodeId) []const NodeId {
     const p = tupleTypeOf(hir, id);
     return hir.childSlice(p.elements_start, p.elements_len);
+}
+
+pub fn tupleTypeLabels(hir: *const Hir, id: NodeId) []const StringId {
+    const p = tupleTypeOf(hir, id);
+    return hir.tuple_label_pool.items[p.labels_start .. p.labels_start + p.elements_len];
 }
 
 pub fn fnTypeOf(hir: *const Hir, id: NodeId) FnTypePayload {

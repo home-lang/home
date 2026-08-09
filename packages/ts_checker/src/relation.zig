@@ -2261,6 +2261,27 @@ pub const Engine = struct {
             }
             if (!target_has_required and source_has_named_member and !has_common_member) return false;
         }
+        // Explicit index signatures remain covariant when null checking is
+        // disabled. Nullability only changes the effective member types; it
+        // does not make `B[]` assignable to `A[]` when B is unrelated to A.
+        if (!self.strict_null_checks) {
+            if (target_str_idx != Primitive.none and source_str_idx != Primitive.none and
+                !try self.isAssignableTo(source_str_idx, target_str_idx))
+            {
+                return false;
+            }
+            const source_num_idx_alt = if (source_num_idx != Primitive.none) source_num_idx else source_str_idx;
+            if (target_num_idx != Primitive.none and source_num_idx_alt != Primitive.none and
+                !try self.isAssignableTo(source_num_idx_alt, target_num_idx))
+            {
+                return false;
+            }
+            if (target_sym_idx != Primitive.none and source_sym_idx != Primitive.none and
+                !try self.isAssignableTo(source_sym_idx, target_sym_idx))
+            {
+                return false;
+            }
+        }
         if (self.strict_null_checks) {
             const source_members_for_index = self.interner.objectMembers(source);
             const target_has_any_string_index = target_str_idx == Primitive.any;

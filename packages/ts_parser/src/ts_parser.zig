@@ -12234,6 +12234,8 @@ pub const Parser = struct {
         defer self.tuple_type_depth -= 1;
         var elems: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elems.deinit(self.gpa);
+        var labels: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer labels.deinit(self.gpa);
         var saw_optional = false;
         var saw_definite_rest = false;
         var reported_tuple_order_error = false;
@@ -12242,12 +12244,13 @@ pub const Parser = struct {
             // elements: `[x: number, y?: number]`.
             var labeled_optional = false;
             var saw_label_before_type = false;
+            var element_label = string_interner.empty_string_id;
             if (self.peek().kind == .identifier and
                 (self.peekAt(1).kind == .colon or
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon)))
             {
                 saw_label_before_type = true;
-                _ = self.advance();
+                element_label = try self.internToken(self.advance());
                 if (self.match(.question)) labeled_optional = true;
                 _ = self.advance();
             }
@@ -12267,7 +12270,7 @@ pub const Parser = struct {
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon))
                 {
                     saw_label_after_rest = true;
-                    _ = self.advance();
+                    element_label = try self.internToken(self.advance());
                     if (self.match(.question)) rest_label_optional = true;
                     _ = self.advance();
                 }
@@ -12285,6 +12288,7 @@ pub const Parser = struct {
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
                 const synth = try self.builder.addTypeRef(.{ .start = elem_start, .end = elem_start }, id, &.{}, &.{});
                 try elems.append(self.gpa, synth);
+                try labels.append(self.gpa, element_label);
                 if (!self.match(.comma)) break;
                 continue;
             }
@@ -12340,6 +12344,7 @@ pub const Parser = struct {
                 e = try self.builder.addRestType(.{ .start = rest_tok.span.start, .end = end }, e);
             }
             try elems.append(self.gpa, e);
+            try labels.append(self.gpa, element_label);
             if (!self.match(.comma)) break;
         }
         const end_pos = if (self.peek().kind == .close_bracket) blk: {
@@ -12358,7 +12363,7 @@ pub const Parser = struct {
             );
             break :blk pos;
         };
-        return try self.builder.addTupleType(.{ .start = open.span.start, .end = end_pos }, elems.items);
+        return try self.builder.addTupleType(.{ .start = open.span.start, .end = end_pos }, elems.items, labels.items);
     }
 
     fn tupleRestOperandIsDefiniteArray(self: *Parser, node: NodeId) bool {
@@ -23526,7 +23531,11 @@ test "parser: labeled tuple elements allow optional marker" {
     const alias = hir_mod.typeAliasOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(alias.aliased));
     const elems = hir_mod.tupleTypeElements(&s.hir, alias.aliased);
+    const labels = hir_mod.tupleTypeLabels(&s.hir, alias.aliased);
     try T.expectEqual(@as(usize, 3), elems.len);
+    try T.expectEqualStrings("first", s.interner.get(labels[0]));
+    try T.expectEqualStrings("second", s.interner.get(labels[1]));
+    try T.expectEqualStrings("rest", s.interner.get(labels[2]));
     try T.expectEqual(hir_mod.NodeKind.optional_type, s.hir.kindOf(elems[1]));
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(hir_mod.optionalTypeOf(&s.hir, elems[1]).operand));
 }

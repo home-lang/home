@@ -4068,6 +4068,11 @@ pub const Checker = struct {
     /// a check pass. Empty type-args are skipped to avoid registering
     /// non-generic identity aliases.
     alias_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    /// Namespace-qualified names for non-generic aliases, used only while
+    /// rendering diagnostics. Keeping these separate from
+    /// `alias_display_names` prevents a qualified display name from becoming
+    /// part of alias identity during assignability checks.
+    qualified_alias_diagnostic_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
     /// Source alias name -> lowered alias body. Kept even for
     /// non-generic aliases so diagnostics on structural tuple members can
     /// recover that a displayed tuple branch came from a union alias.
@@ -4627,6 +4632,7 @@ pub const Checker = struct {
             .dependent_bindings = .empty,
             .exhaustive_switches = .empty,
             .alias_display_names = .empty,
+            .qualified_alias_diagnostic_names = .empty,
             .type_alias_bodies = .empty,
             .alias_type_args = .empty,
             .unknown_empty_object_types = .empty,
@@ -5021,6 +5027,7 @@ pub const Checker = struct {
         self.dependent_bindings.deinit(self.gpa);
         self.exhaustive_switches.deinit(self.gpa);
         self.alias_display_names.deinit(self.gpa);
+        self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
         self.unknown_empty_object_types.deinit(self.gpa);
@@ -56453,6 +56460,13 @@ pub const Checker = struct {
         }
     }
 
+    fn qualifiedTypeDeclarationName(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!hir_mod.StringId {
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        self.collectEnclosingNamespacePathNoFail(node, &path);
+        return try self.internQualifiedNameFromPath(path.items, name);
+    }
+
     /// Walk the body of `iface_decl`'s nearest declaration scope and
     /// every sibling namespace with the same enclosing path,
     /// re-tagging every interface_decl whose name matches `name` with
@@ -61180,8 +61194,15 @@ pub const Checker = struct {
                 const id = hir_mod.identifierOf(self.hir, ta.name);
                 try self.type_names.put(self.gpa, id.name, aliased_t);
                 if (aliased_t >= types.Primitive.first_dynamic and aliased_t < self.interner.pool.typeCount()) {
-                    const display = try self.diag_arena.allocator().dupe(u8, self.string_interner.get(id.name));
+                    const bare_name = self.string_interner.get(id.name);
+                    const display = try self.diag_arena.allocator().dupe(u8, bare_name);
                     try self.alias_display_names.put(self.gpa, aliased_t, display);
+                    const qualified_name = try self.qualifiedTypeDeclarationName(node, id.name);
+                    const qualified_text = self.string_interner.get(qualified_name);
+                    if (!std.mem.eql(u8, qualified_text, bare_name)) {
+                        const qualified_display = try self.diag_arena.allocator().dupe(u8, qualified_text);
+                        try self.qualified_alias_diagnostic_names.put(self.gpa, aliased_t, qualified_display);
+                    }
                 }
                 self.hir.setType(ta.name, aliased_t);
             }
@@ -86361,6 +86382,30 @@ pub const Checker = struct {
 
     fn visibleAnnotatedSignatureIdentifierDiagnosticName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
         const source_display = (try self.visibleAnnotatedSignatureIdentifierTypeName(node)) orelse return null;
+        if (self.interner.isSignature(t) and std.mem.indexOf(u8, source_display, "...") != null)
+        {
+            if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
+                const kind = self.hir.kindOf(type_node);
+                if (kind == .fn_type or kind == .constructor_type) {
+                    const fn_type = hir_mod.fnTypeOf(self.hir, type_node);
+                    const param_nodes = self.hir.childSlice(fn_type.params_start, fn_type.params_len);
+                    if (param_nodes.len > 0) {
+                        const last = param_nodes[param_nodes.len - 1];
+                        if (self.hir.kindOf(last) == .parameter) {
+                            const param = hir_mod.parameterOf(self.hir, last);
+                            if (param.flags.is_rest and
+                                param.type_annotation != hir_mod.none_node_id and
+                                self.hir.kindOf(param.type_annotation) == .tuple_type)
+                            {
+                                try self.recordSignatureParamNames(t, param_nodes);
+                                try self.rest_signatures.put(self.gpa, t, {});
+                            }
+                        }
+                    }
+                }
+            }
+            if (try self.allocCallableSignatureNameExpandingSignatureParams(t)) |expanded| return expanded;
+        }
         const params: []const TypeId = if (self.interner.isSignature(t)) self.interner.signatureParams(t) else &.{};
         const has_strict_optional_params = self.strict_flags.strict_null_checks and
             params.len > 0 and
@@ -136884,9 +136929,15 @@ pub const Checker = struct {
         const arg_text = (try self.allocSimpleTypeName(arg_t)) orelse
             (try self.allocObjectTypeShapeWithUndefined(arg_t)) orelse
             (try self.allocObjectTypeShape(arg_t)) orelse return null;
-        const param_text = (try self.allocSimpleTypeName(param_t)) orelse
-            (try self.allocObjectTypeShapeWithUndefined(param_t)) orelse
-            (try self.allocObjectTypeShape(param_t)) orelse return null;
+        // Exact optional diagnostics describe the declared target shape.
+        // General anonymous-object rendering widens optionals with
+        // `| undefined`, which would contradict this diagnostic's premise.
+        const param_is_named = self.namedTypeForId(param_t) != null or self.alias_display_names.get(param_t) != null;
+        const param_text = if (param_is_named)
+            (try self.allocSimpleTypeName(param_t)) orelse return null
+        else
+            (try self.allocObjectTypeShape(param_t)) orelse
+                (try self.allocSimpleTypeName(param_t)) orelse return null;
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Argument of type '{s}' is not assignable to parameter of type '{s}' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.",
@@ -151688,8 +151739,13 @@ pub const Checker = struct {
         const sf = self.interner.pool.flagsOf(source);
         const tf = self.interner.pool.flagsOf(target);
         if (!sf.is_union or !tf.is_union) return false;
-        const source_name = (try self.allocSimpleTypeName(source)) orelse return false;
-        const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
+        // Alias identity is intentionally bare here. Diagnostic rendering may
+        // qualify the same aliases by namespace, but that spelling must not
+        // make two structurally equivalent recursive aliases unrelated.
+        const source_name = self.alias_display_names.get(source) orelse
+            (try self.allocSimpleTypeName(source)) orelse return false;
+        const target_name = self.alias_display_names.get(target) orelse
+            (try self.allocSimpleTypeName(target)) orelse return false;
         if (try self.recursiveGenericAliasBodiesAssignable(source, target, source_name, target_name)) return true;
         if (!std.mem.eql(u8, source_name, target_name)) return false;
         const source_info = try self.recursiveGenericUnionAliasInfo(source, source_name);
@@ -152444,6 +152500,7 @@ pub const Checker = struct {
         else
             target;
         const target_name_raw = (try self.assignmentExpressionPredicateTypeName(target_node, diagnostic_target)) orelse
+            (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, diagnostic_target)) orelse
             (if (target_reduces_to_never) @as(?[]const u8, "never") else null) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(target_node)) orelse
             self.keyofAnnotationNameForIdentifier(target_node) orelse
@@ -152455,7 +152512,6 @@ pub const Checker = struct {
             (try self.visibleSimpleAliasAnnotationNameForIdentifier(target_node, diagnostic_target)) orelse
             (try self.overloadedSignatureObjectAssignmentName(target_node, diagnostic_target)) orelse
             (try self.visibleGenericAssignmentAnnotationName(target_node, diagnostic_target)) orelse
-            (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, diagnostic_target)) orelse
             (try self.allocAssignmentDiagnosticTypeName(diagnostic_target)) orelse
             (try self.allocObjectTypeShape(diagnostic_target)) orelse
             return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
@@ -153078,7 +153134,12 @@ pub const Checker = struct {
     fn allocAssignmentDiagnosticTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         const normalized = try self.normalizeKeyofAlgebra(t);
         if (normalized != t) return try self.allocSimpleTypeName(normalized);
-        if (self.interner.isSignature(t) and !self.alias_display_names.contains(t)) {
+        const signature_alias = self.alias_display_names.get(t);
+        const signature_alias_is_syntax = if (signature_alias) |display|
+            std.mem.startsWith(u8, display, "(") or std.mem.startsWith(u8, display, "new (")
+        else
+            false;
+        if (self.interner.isSignature(t) and (signature_alias == null or signature_alias_is_syntax)) {
             if (self.generic_signature_params.get(t) != null) {
                 if (try self.allocCallableSignatureName(t)) |name| return name;
             }
@@ -153212,10 +153273,13 @@ pub const Checker = struct {
             wrote_param = true;
         }
         for (params, 0..) |p, i| {
-            if (wrote_param) try sig_buf.appendSlice(arena, ", ");
             const is_last = i == params.len - 1;
             const is_rest = has_rest and is_last;
             const is_optional = !is_rest and i >= min_required;
+            if (is_rest and try self.appendExpandedLabeledTupleParams(t, i, &sig_buf, &wrote_param)) {
+                continue;
+            }
+            if (wrote_param) try sig_buf.appendSlice(arena, ", ");
             if (is_rest) try sig_buf.appendSlice(arena, "...");
             const name_text: []const u8 = blk: {
                 if (recorded_names) |names| if (i < names.len) {
@@ -153246,6 +153310,55 @@ pub const Checker = struct {
             (try self.allocSignatureConstituentDisplayName(ret)) orelse "any";
         try sig_buf.appendSlice(arena, ret_name);
         return sig_buf.items;
+    }
+
+    fn appendExpandedLabeledTupleParams(
+        self: *Checker,
+        sig: TypeId,
+        param_index: usize,
+        buf: *std.ArrayListUnmanaged(u8),
+        wrote_param: *bool,
+    ) CheckError!bool {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return false;
+        if (param_index >= param_nodes.len) return false;
+        const param_node = param_nodes[param_index];
+        if (self.hir.kindOf(param_node) != .parameter) return false;
+        const param = hir_mod.parameterOf(self.hir, param_node);
+        if (param.type_annotation == hir_mod.none_node_id or self.hir.kindOf(param.type_annotation) != .tuple_type) return false;
+        const elements = hir_mod.tupleTypeElements(self.hir, param.type_annotation);
+        const labels = hir_mod.tupleTypeLabels(self.hir, param.type_annotation);
+        if (labels.len != elements.len) return false;
+        for (elements) |element| {
+            if (self.hir.kindOf(element) == .rest_type) return false;
+        }
+
+        const arena = self.diag_arena.allocator();
+        const recorded_names = self.signature_param_names.get(sig);
+        const rest_name = if (recorded_names) |names|
+            if (param_index < names.len) self.string_interner.get(names[param_index]) else "args"
+        else
+            "args";
+        for (elements, labels, 0..) |raw_element, label, tuple_index| {
+            if (wrote_param.*) try buf.appendSlice(arena, ", ");
+            if (label != string_interner.empty_string_id) {
+                try buf.appendSlice(arena, self.string_interner.get(label));
+            } else {
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "{s}_{d}", .{ rest_name, tuple_index }));
+            }
+            const optional = self.hir.kindOf(raw_element) == .optional_type;
+            if (optional) try buf.append(arena, '?');
+            try buf.appendSlice(arena, ": ");
+            const element_node = if (optional) hir_mod.optionalTypeOf(self.hir, raw_element).operand else raw_element;
+            var element_t = try self.lowererLowerWithTypeParams(element_node);
+            if (optional and self.typeIncludesUndefined(element_t)) {
+                const reduced = try self.subtractUndefined(element_t);
+                if (reduced != types.Primitive.never) element_t = reduced;
+            }
+            const element_name = (try self.allocSignatureConstituentDisplayName(element_t)) orelse "any";
+            try buf.appendSlice(arena, element_name);
+            wrote_param.* = true;
+        }
+        return true;
     }
 
     /// Computes the source position to anchor a TS2322 assignment
@@ -154999,6 +155112,9 @@ pub const Checker = struct {
                         if (try self.allocStringMappingTypeName(t)) |display| break :blk display;
                     }
                 }
+                if (self.qualified_alias_diagnostic_names.get(t)) |display| {
+                    break :blk display;
+                }
                 if (self.namedTypeForId(t)) |type_name| {
                     // An `alias_display_names` entry (registered for
                     // generic-alias instantiations or partial class
@@ -155342,6 +155458,7 @@ pub const Checker = struct {
                     defer entries.deinit(self.gpa);
                     var all_template_display_members = true;
                     var all_string_literal_members = true;
+                    var all_anonymous_object_members = true;
                     const union_members = self.interner.unionMembers(t);
                     for (union_members) |member| {
                         if (member == types.Primitive.null_t) {
@@ -155360,6 +155477,10 @@ pub const Checker = struct {
                         const is_string_literal = member_flags.is_literal and member_flags.is_string and
                             !member_flags.is_union and !member_flags.is_intersection;
                         all_string_literal_members = all_string_literal_members and is_string_literal;
+                        const is_anonymous_object = member_flags.is_object_type and
+                            self.namedTypeForId(member) == null and
+                            self.alias_display_names.get(member) == null;
+                        all_anonymous_object_members = all_anonymous_object_members and is_anonymous_object;
                         // Skip if we've already emitted this exact label.
                         var duplicate = false;
                         if (!(union_members.len > 1024 and is_string_literal)) {
@@ -155411,7 +155532,26 @@ pub const Checker = struct {
                     const truncate_large_literal_union = all_string_literal_members and
                         entries.items.len > 22 and
                         !self.sourceDirectiveValueMentions("noErrorTruncation", "true");
-                    if (truncate_large_literal_union) {
+                    const truncate_large_object_union = all_anonymous_object_members and
+                        entries.items.len > 18 and
+                        !self.sourceDirectiveValueMentions("noErrorTruncation", "true");
+                    if (truncate_large_object_union) {
+                        const full_count: usize = 15;
+                        for (entries.items[0..full_count]) |entry| {
+                            if (!first) try union_buf.appendSlice(arena_u, " | ");
+                            first = false;
+                            try union_buf.appendSlice(arena_u, entry.name);
+                        }
+                        if (entries.items.len == 19) {
+                            for (entries.items[full_count..]) |_| {
+                                try union_buf.appendSlice(arena_u, " | { ...; }");
+                            }
+                        } else {
+                            const omitted = entries.items.len - full_count - 1;
+                            const summary = try std.fmt.allocPrint(arena_u, " | ... {d} more ... | {{ ...; }}", .{omitted});
+                            try union_buf.appendSlice(arena_u, summary);
+                        }
+                    } else if (truncate_large_literal_union) {
                         for (entries.items[0..21]) |entry| {
                             if (!first) try union_buf.appendSlice(arena_u, " | ");
                             first = false;
@@ -159018,6 +159158,13 @@ pub const Checker = struct {
     }
 
     fn logicalOrTruthyType(self: *Checker, t: TypeId) !TypeId {
+        // The truthy facts of `unknown` are TypeScript's non-nullish top
+        // type `{}`. In `unknown || rhs`, only the falsy part reaches `rhs`,
+        // so this lets `{}` absorb another empty-object branch.
+        if (t == types.Primitive.unknown) {
+            return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        }
+        if (t == types.Primitive.any) return t;
         if (t >= self.interner.pool.typeCount()) return t;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_type_parameter) {
@@ -179521,6 +179668,82 @@ test "checker: labeled tuple still flags element-type mismatch as TS2322" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: fixed tuple rest labels become function parameter names" {
+    const s = try newSetup(
+        \\declare let f: (...args: [x: number]) => void;
+        \\declare let g: (a: string) => void;
+        \\f = g;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.indexOf(u8, diag.message, "Type '(a: string) => void' is not assignable to type '(x: number) => void'.") != null) {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: namespace type aliases retain qualified diagnostic names" {
+    const s = try newBoundSetup(
+        \\namespace A {
+        \\  export type Outer = { inners: Inner[] };
+        \\  export type Inner = { id: string };
+        \\}
+        \\namespace B {
+        \\  export type Outer = { inners: Inner[] };
+        \\  export type Inner = { id: number };
+        \\}
+        \\declare let a: A.Outer;
+        \\declare let b: B.Outer;
+        \\a = b;
+    );
+    defer destroyBoundSetup(s);
+    try s.base.checker.checkSourceFile(s.base.root);
+    const stmts = hir_mod.blockStmts(&s.base.hir, s.base.root);
+    const a_decl = hir_mod.varDeclOf(&s.base.hir, stmts[2]);
+    const b_decl = hir_mod.varDeclOf(&s.base.hir, stmts[3]);
+    const a_t = s.base.hir.typeOf(a_decl.name);
+    const b_t = s.base.hir.typeOf(b_decl.name);
+    try T.expect(a_t != b_t);
+    const a_inners = s.base.checker.interner.objectMembers(a_t)[0].type;
+    const b_inners = s.base.checker.interner.objectMembers(b_t)[0].type;
+    try T.expect(a_inners != b_inners);
+    const a_inner = s.base.checker.interner.objectNumberIndex(a_inners);
+    const b_inner = s.base.checker.interner.objectNumberIndex(b_inners);
+    try T.expect(a_inner != b_inner);
+    try T.expectEqual(false, try s.base.checker.engine.isAssignableTo(b_inner, a_inner));
+    try T.expectEqual(false, try s.base.checker.engine.isAssignableTo(b_inners, a_inners));
+    try T.expectEqual(false, try s.base.checker.engine.isAssignableTo(b_t, a_t));
+    try T.expectEqual(@as(usize, 1), s.base.checker.diagnostics.items.len);
+    const diag = s.base.checker.diagnostics.items[0];
+    try T.expectEqual(TsCodes.type_not_assignable, diag.code);
+    try T.expectEqualStrings("Type 'B.Outer' is not assignable to type 'A.Outer'.", diag.message);
+}
+
+test "checker: logical or narrows truthy unknown to empty object" {
+    const s = try newSetup(
+        \\function f(v: unknown) {
+        \\  const acceptsRecord = (record: Record<string, string>) => {};
+        \\  acceptsRecord(v || {});
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.argument_type_mismatch) continue;
+        if (std.mem.indexOf(u8, diag.message, "Argument of type '{}' is not assignable") != null) {
+            found = true;
+        }
     }
     try T.expect(found);
 }
@@ -207173,6 +207396,7 @@ test "checker: exactOptionalPropertyTypes uses TS2379 for argument mismatch" {
         if (diag.code == TsCodes.exact_optional_argument_type_mismatch) {
             saw_2379 = true;
             try T.expect(std.mem.indexOf(u8, diag.message, "with 'exactOptionalPropertyTypes: true'") != null);
+            try T.expect(std.mem.indexOf(u8, diag.message, "parameter of type 'Options'") != null);
         }
     }
     try T.expect(saw_2379);
