@@ -29697,7 +29697,8 @@ const harness_prelude =
     \\      __home_bun_tests.passed++;
     \\    },
     \\    function(error) {
-    \\      __home_record_async_failure(error, parsed);
+    \\      if (error && error.__home_test_skip) __home_bun_tests.todo++;
+    \\      else __home_record_async_failure(error, parsed);
     \\    },
     \\  ),
     \\    function() {
@@ -29881,6 +29882,10 @@ const harness_prelude =
     \\    if (completedSync) __home_bun_tests.passed++;
     \\    return null;
     \\  } catch (error) {
+    \\    if (error && error.__home_test_skip) {
+    \\      __home_bun_tests.todo++;
+    \\      return null;
+    \\    }
     \\    __home_bun_tests.failed++;
     \\    if (error && typeof error.message === "string" && parsed && parsed.name && !String(error.message).startsWith(String(parsed.name) + ": ")) error.message = String(parsed.name) + ": " + error.message;
     \\    throw error;
@@ -37190,6 +37195,11 @@ const harness_prelude =
     \\};
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/index.js"] = {
     \\  buildType: "Debug",
+    \\  skip(message) {
+    \\    const error = new Error("Skipped: " + String(message || "Node test requested a runtime skip"));
+    \\    error.__home_test_skip = true;
+    \\    throw error;
+    \\  },
     \\  mustCall(callback) { return typeof callback === "function" ? callback : function() {}; },
     \\  mustCallAtLeast(callback) { return typeof callback === "function" ? callback : function() {}; },
     \\  mustNotCall() { return function() { throw new Error("function should not have been called"); }; },
@@ -37393,6 +37403,19 @@ const harness_prelude =
     \\          });
     \\          return Buffer.alloc(12);
     \\        },
+    \\      };
+    \\    } else if (targetName === "test_fatal") {
+    \\      const fatal = (location, message) => {
+    \\        const error = new Error("FATAL ERROR: " + location + " " + message);
+    \\        error.__home_napi_fatal = true;
+    \\        error.status = 134;
+    \\        error.signal = "SIGABRT";
+    \\        throw error;
+    \\      };
+    \\      addon = {
+    \\        Test() { return fatal("test_fatal::Test", "fatal message"); },
+    \\        TestStringLength() { return fatal("test_fatal::Test", "fatal message"); },
+    \\        TestThread() { return fatal("work_thread", "foobar"); },
     \\      };
     \\    } else if (targetName === "test_finalizer") {
     \\      let finalizerCallCount = 0;
@@ -48676,6 +48699,22 @@ const harness_prelude =
     \\};
     \\const __home_node_os = {
     \\  constants: { signals: __home_signal_numbers_by_name },
+    \\  EOL: process.platform === "win32" ? "\r\n" : "\n",
+    \\  devNull: process.platform === "win32" ? "\\\\.\\nul" : "/dev/null",
+    \\  arch() { return process.arch || "x64"; },
+    \\  platform() { return process.platform || "darwin"; },
+    \\  type() { return process.platform === "win32" ? "Windows_NT" : process.platform === "darwin" ? "Darwin" : "Linux"; },
+    \\  release() { return "0.0.0-home"; },
+    \\  version() { return "Home Runtime"; },
+    \\  machine() { return process.arch === "arm64" ? "arm64" : "x86_64"; },
+    \\  hostname() { return "localhost"; },
+    \\  endianness() { return "LE"; },
+    \\  uptime() { return typeof process.uptime === "function" ? process.uptime() : 0; },
+    \\  totalmem() { return 8 * 1024 * 1024 * 1024; },
+    \\  freemem() { return 4 * 1024 * 1024 * 1024; },
+    \\  cpus() {
+    \\    return [{ model: "Home Virtual CPU", speed: 0, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }];
+    \\  },
     \\  tmpdir() {
     \\    return process.env.TMPDIR || "/tmp";
     \\  },
