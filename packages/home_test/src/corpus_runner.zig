@@ -66067,15 +66067,35 @@ fn appendBunTestImportBinding(
     return true;
 }
 
-fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: []const u8, end: usize } {
-    const aliases = [_]struct { source_name: []const u8, canonical_name: []const u8 }{
-        .{ .source_name = "../../harness", .canonical_name = "harness" },
+fn relativeHarnessImportTargetsCorpusRoot(relative_path: []const u8, module_name: []const u8) bool {
+    var remaining = module_name;
+    var parent_count: usize = 0;
+    while (std.mem.startsWith(u8, remaining, "../")) {
+        parent_count += 1;
+        remaining = remaining[3..];
+    }
+    if (!std.mem.eql(u8, remaining, "harness")) return false;
+
+    const relative_dir = std.fs.path.dirname(relative_path) orelse return parent_count == 0;
+    var directory_count: usize = 0;
+    var components = std.mem.splitScalar(u8, relative_dir, '/');
+    while (components.next()) |component| {
+        if (component.len != 0 and !std.mem.eql(u8, component, ".")) directory_count += 1;
+    }
+    return parent_count == directory_count;
+}
+
+fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: []const u8) ?struct { name: []const u8, end: usize } {
+    const relative_harnesses = [_][]const u8{
+        "../../harness",
+        "../../../harness",
     };
-    for (aliases) |alias| {
-        if (std.mem.startsWith(u8, source[start..], alias.source_name)) {
-            const end = start + alias.source_name.len;
+    for (relative_harnesses) |source_name| {
+        if (std.mem.startsWith(u8, source[start..], source_name)) {
+            const end = start + source_name.len;
             if (end < source.len and source[end] != '"' and source[end] != '\'') continue;
-            return .{ .name = alias.canonical_name, .end = end };
+            const canonical_name = if (relativeHarnessImportTargetsCorpusRoot(relative_path, source_name)) "harness" else source_name;
+            return .{ .name = canonical_name, .end = end };
         }
     }
 
@@ -66094,7 +66114,6 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "./fixtures/sign.fixture.ts",
         "./chooses-ts",
         "harness",
-        "../../../harness",
         "../test/common/fixtures",
         "./expectBundled",
         "../expectBundled",
@@ -66173,6 +66192,7 @@ fn tryAppendBunTestImportRewrite(
     allocator: std.mem.Allocator,
     source: []const u8,
     start: usize,
+    relative_path: []const u8,
 ) !?usize {
     if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
     var i = consumeJsKeyword(source, start, "import") orelse return null;
@@ -66202,7 +66222,7 @@ fn tryAppendBunTestImportRewrite(
         if (i >= source.len or (source[i] != '"' and source[i] != '\'')) return null;
         const quote = source[i];
         i += 1;
-        const module = supportedNamedImportModule(source, i) orelse return null;
+        const module = supportedNamedImportModule(source, i, relative_path) orelse return null;
         i = module.end;
         if (i >= source.len or source[i] != quote) return null;
         i += 1;
@@ -66223,7 +66243,7 @@ fn tryAppendBunTestImportRewrite(
     if (i < source.len and (source[i] == '"' or source[i] == '\'')) {
         const quote = source[i];
         i += 1;
-        const module = supportedNamedImportModule(source, i) orelse return null;
+        const module = supportedNamedImportModule(source, i, relative_path) orelse return null;
         i = module.end;
         if (i >= source.len or source[i] != quote) return null;
         i += 1;
@@ -66266,7 +66286,7 @@ fn tryAppendBunTestImportRewrite(
             if (j >= source.len or (source[j] != '"' and source[j] != '\'')) return null;
             const quote = source[j];
             j += 1;
-            const module = supportedNamedImportModule(source, j) orelse return null;
+            const module = supportedNamedImportModule(source, j, relative_path) orelse return null;
             j = module.end;
             if (j >= source.len or source[j] != quote) return null;
             j += 1;
@@ -66292,7 +66312,7 @@ fn tryAppendBunTestImportRewrite(
         if (j >= source.len or (source[j] != '"' and source[j] != '\'')) return null;
         const quote = source[j];
         j += 1;
-        const module = supportedNamedImportModule(source, j) orelse return null;
+        const module = supportedNamedImportModule(source, j, relative_path) orelse return null;
         j = module.end;
         if (j >= source.len or source[j] != quote) return null;
         j += 1;
@@ -66328,7 +66348,7 @@ fn tryAppendBunTestImportRewrite(
     if (i >= source.len or (source[i] != '"' and source[i] != '\'')) return null;
     const quote = source[i];
     i += 1;
-    const module = supportedNamedImportModule(source, i) orelse return null;
+    const module = supportedNamedImportModule(source, i, relative_path) orelse return null;
     i = module.end;
     if (i >= source.len or source[i] != quote) return null;
     i += 1;
@@ -66398,6 +66418,7 @@ fn appendSourceWithBunTestImportRewrites(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     source: []const u8,
+    relative_path: []const u8,
 ) !void {
     const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
     var mode: Mode = .code;
@@ -66428,7 +66449,7 @@ fn appendSourceWithBunTestImportRewrites(
                 if (std.mem.startsWith(u8, source[i..], "import")) {
                     var replacement = std.ArrayList(u8).empty;
                     defer replacement.deinit(allocator);
-                    if (try tryAppendBunTestImportRewrite(&replacement, allocator, source, i)) |end| {
+                    if (try tryAppendBunTestImportRewrite(&replacement, allocator, source, i, relative_path)) |end| {
                         try out.appendSlice(allocator, source[segment_start..i]);
                         try out.appendSlice(allocator, replacement.items);
                         i = end;
@@ -67076,7 +67097,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     try out.appendSlice(allocator, "(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
     try appendSnapshotPrelude(&out, allocator, relative_path);
-    try appendSourceWithBunTestImportRewrites(&out, allocator, rewritten_module_source);
+    try appendSourceWithBunTestImportRewrites(&out, allocator, rewritten_module_source, relative_path);
     try out.appendSlice(allocator, "\n})();\n");
     try out.appendSlice(allocator, "\n//# sourceURL=");
     try out.appendSlice(allocator, relative_path);
@@ -75655,6 +75676,8 @@ test "bootstrap runner mirrors commander fixture spawn output" {
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14982/14982.test.ts");
     defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"harness\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"../../../harness\")") == null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
