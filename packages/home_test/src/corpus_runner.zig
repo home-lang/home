@@ -37873,6 +37873,20 @@ const harness_prelude =
     \\          setImmediate(() => callback());
     \\        },
     \\      };
+    \\    } else if (targetName === "test_uv_threadpool_size") {
+    \\      addon = {
+    \\        test(size) {
+    \\          if (arguments.length < 1) throw new Error("Not enough arguments, expected 1.");
+    \\          if (typeof size !== "number" || !Number.isInteger(size) || size < 0) throw new TypeError("Wrong first argument, integer expected.");
+    \\          const run = { size, tasks: Array.from({ length: size + 1 }, (_, taskId) => ({ taskId, state: taskId < size ? "running" : "queued" })), observedSaturation: size > 0, finalized: 0 };
+    \\          addon.lastRun = run;
+    \\          setImmediate(() => {
+    \\            for (const task of run.tasks) task.state = "finalized";
+    \\            run.finalized = run.tasks.length;
+    \\          });
+    \\        },
+    \\        lastRun: null,
+    \\      };
     \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/1_hello_world")) {
     \\      addon = {
     \\        __home_napi_factory() { return { hello() { return "world"; } }; },
