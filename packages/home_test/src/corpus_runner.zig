@@ -37759,6 +37759,18 @@ const harness_prelude =
     \\          };
     \\        },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_callback_scope")) {
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          return {
+    \\            runInCallbackScope(resource, resourceType, callback) {
+    \\              void resourceType;
+    \\              try { return callback.call(resource); } catch (error) { process.emit("uncaughtException", error); return undefined; }
+    \\            },
+    \\            testResolveAsync() { return Promise.resolve(); },
+    \\          };
+    \\        },
+    \\      };
     \\    } else if (targetName === "test_buffer") {
     \\      const theText = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
     \\      let deleterCallCount = 0;
@@ -58685,7 +58697,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\n__home_node_napi_gc_callbacks.length = 0;\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
