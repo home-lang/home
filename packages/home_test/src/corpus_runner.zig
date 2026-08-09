@@ -28495,6 +28495,20 @@ const harness_prelude =
     \\  if (index >= 0) list.splice(index, 1);
     \\  return process;
     \\};
+    \\process.removeListener = process.off;
+    \\process.removeAllListeners = function(name) {
+    \\  if (name === undefined) process.__home_events = Object.create(null);
+    \\  else delete process.__home_events[String(name)];
+    \\  return process;
+    \\};
+    \\process.listeners = function(name) {
+    \\  const list = process.__home_events[String(name)];
+    \\  return list ? list.slice() : [];
+    \\};
+    \\process.listenerCount = function(name) {
+    \\  const list = process.__home_events[String(name)];
+    \\  return list ? list.length : 0;
+    \\};
     \\process.once = function(name, listener) {
     \\  if (typeof listener !== "function") __home_fail("process.once() requires a listener function");
     \\  function wrapped() {
@@ -37929,6 +37943,44 @@ const harness_prelude =
     \\          };
     \\        },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_threadsafe_function")) {
+    \\      const makeUncaughtExceptionAddon = () => ({
+    \\        CallIntoModule(callback, resource, resourceName, finalizer) {
+    \\          void resource;
+    \\          void resourceName;
+    \\          for (const procedure of [callback, finalizer]) {
+    \\            if (typeof procedure !== "function") throw new TypeError("Thread-safe function callback must be a function");
+    \\            try { procedure(); } catch (error) { process.emit("uncaughtException", error); }
+    \\          }
+    \\        },
+    \\      });
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          let active = null;
+    \\          const start = (callback, abort, launchSecondary, maxQueueSize, noNative) => {
+    \\            if (active) throw new Error("Existing thread-safe function");
+    \\            if (typeof callback !== "function") throw new TypeError("Thread-safe function callback must be a function");
+    \\            active = { callback, abort: Boolean(abort), launchSecondary: Boolean(launchSecondary), maxQueueSize: Number(maxQueueSize) >>> 0, noNative: Boolean(noNative), released: false, unrefed: false };
+    \\          };
+    \\          return {
+    \\            ARRAY_LENGTH: 10000,
+    \\            MAX_QUEUE_SIZE: 2,
+    \\            StartThread(callback, abort, launchSecondary, maxQueueSize) { start(callback, abort, launchSecondary, maxQueueSize, false); },
+    \\            StartThreadNoNative(callback, abort, launchSecondary, maxQueueSize) { start(callback, abort, launchSecondary, maxQueueSize, true); },
+    \\            StartThreadNonblocking(callback, abort, launchSecondary, maxQueueSize) { start(callback, abort, launchSecondary, maxQueueSize, false); },
+    \\            StartThreadNoJsFunc(callback, abort, launchSecondary, maxQueueSize) { start(callback, abort, launchSecondary, maxQueueSize, false); },
+    \\            StopThread(finalizer, abort) { if (!active) throw new Error("Existing thread-safe function"); active.abort = Boolean(abort); active = null; if (typeof finalizer === "function") setImmediate(finalizer); },
+    \\            Unref() { if (!active) throw new Error("No existing thread-safe function"); active.unrefed = true; },
+    \\            Release() { if (!active) throw new Error("No existing thread-safe function"); active.released = true; },
+    \\            CallIntoModule: makeUncaughtExceptionAddon().CallIntoModule,
+    \\          };
+    \\        },
+    \\      };
+    \\      for (const name of ["test_uncaught_exception_v9", "test_uncaught_exception"]) {
+    \\        const uncaughtPath = __home_build_join(buildDir, "build/Debug/" + name + ".node");
+    \\        globalThis.__home_written_files[uncaughtPath] = "";
+    \\        globalThis.__home_native_node_modules_by_path[uncaughtPath] = { __home_napi_factory: makeUncaughtExceptionAddon };
+    \\      }
     \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_cleanup_hook")) {
     \\      addon = {
     \\        __home_napi_factory() {
@@ -38078,9 +38130,11 @@ const harness_prelude =
     \\    if (!__home_node_napi_built_dirs.has(fixtureDir)) throw new Error("Node N-API fixture was not built: " + fixtureDir);
     \\    const previousFilename = globalThis.__home_current_filename;
     \\    const previousDirname = globalThis.__home_current_dirname;
+    \\    const previousProcessEvents = process.__home_events;
     \\    try {
     \\      globalThis.__home_current_filename = "__home_node_napi_runner.js";
     \\      globalThis.__home_current_dirname = ".";
+    \\      process.__home_events = Object.create(null);
     \\      delete globalThis.require.cache[resolved];
     \\      globalThis.require("./" + resolved);
     \\      for (const addonPath of Object.keys(globalThis.__home_native_node_modules_by_path)) {
@@ -38089,6 +38143,7 @@ const harness_prelude =
     \\        if (registered && typeof registered.__home_napi_run_env_teardown === "function") registered.__home_napi_run_env_teardown();
     \\      }
     \\    } finally {
+    \\      process.__home_events = previousProcessEvents;
     \\      globalThis.__home_current_filename = previousFilename;
     \\      globalThis.__home_current_dirname = previousDirname;
     \\    }
