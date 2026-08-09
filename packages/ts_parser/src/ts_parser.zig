@@ -13289,6 +13289,7 @@ pub const Parser = struct {
         if (self.hir.kindOf(m.object) != .identifier) return null;
         const obj = hir_mod.identifierOf(self.hir, m.object);
         if (!std.mem.eql(u8, self.interner.get(obj.name), "Symbol")) {
+            if (try self.enumMemberLiteralName(obj.name, m.name)) |name| return name;
             const sp = self.hir.spanOf(key_expr);
             if (sp.end > self.source.len or sp.start >= sp.end) return null;
             const raw = std.mem.trim(u8, self.source[sp.start..sp.end], " \t\r\n");
@@ -13301,6 +13302,54 @@ pub const Parser = struct {
         const synthetic = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{prop});
         defer self.gpa.free(synthetic);
         return self.interner.intern(synthetic) catch return error.OutOfMemory;
+    }
+
+    fn enumMemberLiteralName(
+        self: *Parser,
+        enum_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) ParseError!?hir_mod.StringId {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .enum_decl) continue;
+            const decl = hir_mod.enumOf(self.hir, node);
+            if (decl.name == hir_mod.none_node_id or self.hir.kindOf(decl.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, decl.name).name != enum_name) continue;
+
+            var next_numeric: ?f64 = 0;
+            for (hir_mod.enumMembers(self.hir, node)) |member| {
+                if (self.hir.kindOf(member) != .object_property) continue;
+                const prop = hir_mod.objectPropertyOf(self.hir, member);
+                if (prop.key == hir_mod.none_node_id or self.hir.kindOf(prop.key) != .identifier) continue;
+                const current_name = hir_mod.identifierOf(self.hir, prop.key).name;
+                if (current_name == member_name) {
+                    if (prop.value == hir_mod.none_node_id) {
+                        const value = next_numeric orelse return null;
+                        if (@floor(value) != value) return null;
+                        const text = try std.fmt.allocPrint(self.gpa, "{d}", .{@as(i64, @intFromFloat(value))});
+                        defer self.gpa.free(text);
+                        return self.interner.intern(text) catch return error.OutOfMemory;
+                    }
+                    return switch (self.hir.kindOf(prop.value)) {
+                        .literal_string => hir_mod.literalStringOf(self.hir, prop.value).value,
+                        .literal_number => blk: {
+                            const value_span = self.hir.spanOf(prop.value);
+                            if (value_span.start >= value_span.end or value_span.end > self.source.len) break :blk null;
+                            break :blk self.interner.intern(self.source[value_span.start..value_span.end]) catch return error.OutOfMemory;
+                        },
+                        else => null,
+                    };
+                }
+                if (prop.value == hir_mod.none_node_id) {
+                    if (next_numeric) |value| next_numeric = value + 1;
+                } else if (self.hir.kindOf(prop.value) == .literal_number) {
+                    next_numeric = hir_mod.literalNumberOf(self.hir, prop.value) + 1;
+                } else {
+                    next_numeric = null;
+                }
+            }
+        }
+        return null;
     }
 
     fn sourceConstLiteralMemberName(self: *Parser, name: []const u8) ParseError!?hir_mod.StringId {
@@ -28943,6 +28992,22 @@ test "parser: unique symbol computed type members parse without TS1169" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1169);
     }
+}
+
+test "parser: string enum members are valid computed interface keys" {
+    var s = try newTestSetup(
+        \\export enum WWMF { AAR = 'AAR' }
+        \\interface WWMFMap { [WWMF.AAR]?: any; }
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1169));
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const iface = stmts[1];
+    const member = hir_mod.interfaceMembers(&s.hir, iface)[0];
+    const payload = hir_mod.interfaceMemberOf(&s.hir, member);
+    try T.expectEqualStrings("AAR", s.interner.get(payload.name));
 }
 
 test "parser: unresolved qualified computed type member reports name lookup before TS1170" {

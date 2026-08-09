@@ -9614,7 +9614,9 @@ pub const Checker = struct {
         // parserFunctionDeclaration7 (fires) vs. parserFunctionDeclaration8
         // (suppressed by the parent `declare`).
         const ns_declare = self.declarationSourceHasLeadingDeclare(node) or
-            self.virtualSectionIsDeclarationFile(node);
+            self.virtualSectionIsDeclarationFile(node) or
+            self.namespaceNameIsStringLiteral(ns.name) or
+            self.hasAmbientModuleDeclarationAncestor(node);
         if (ns_declare) {
             try self.checkDeclarationSpaceDiagnosticsInAmbient(hir_mod.namespaceBody(self.hir, node));
         } else {
@@ -13498,7 +13500,8 @@ pub const Checker = struct {
             // `exportSpecifierReferencingOuterDeclaration1.ts`.
             const enclosing_module = self.enclosingModuleBodyFor(node);
             const is_local = if (enclosing_module != hir_mod.none_node_id)
-                self.exportNameHasModuleLocalBinding(enclosing_module, local_name)
+                self.exportNameHasModuleLocalBinding(enclosing_module, local_name) or
+                    self.declarationNamespaceCanExportSectionLocal(enclosing_module, node, local_name)
             else if (self.sourceHasVirtualFilenameSections())
                 self.exportNameHasSectionLocalBinding(node, local_name)
             else blk: {
@@ -13966,6 +13969,23 @@ pub const Checker = struct {
             if (self.statementBindsNameLocally(stmt, name)) return true;
         }
         return false;
+    }
+
+    /// Declaration namespaces inside external modules may create an export
+    /// alias for a declaration in their enclosing source-file scope. Ambient
+    /// string-literal modules remain isolated: their exports must bind inside
+    /// the module body and still receive TS2661 for an outer declaration.
+    fn declarationNamespaceCanExportSectionLocal(
+        self: *Checker,
+        module_node: NodeId,
+        export_node: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        if (!self.virtualSectionIsDeclarationFile(module_node)) return false;
+        const ns = hir_mod.namespaceOf(self.hir, module_node);
+        if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return false;
+        if (!self.rootHasTopLevelExternalModuleMarker(module_node)) return false;
+        return self.exportNameHasSectionLocalBinding(export_node, name);
     }
 
     /// True when a single top-level statement introduces a binding for
@@ -62372,6 +62392,7 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(node)) {
             .type_ref => blk: {
                 const ref = hir_mod.typeRefOf(self.hir, node);
+                if (self.importTypeModuleSpecifier(node) != null) break :blk false;
                 if (ref.qualifier_len != 0 or ref.args_len != 0) break :blk false;
                 if (ref.name == target_name) break :blk true;
                 if (ref.name == current_name and depth != 0) break :blk false;
@@ -68163,15 +68184,21 @@ pub const Checker = struct {
             if (self.hir.kindOf(decl) != .interface_decl or t >= types.Primitive.first_dynamic) return t;
         }
         if (self.resolving_exported_type_decls.contains(decl)) {
-            var resolving_it = self.resolving_exported_type_decls.keyIterator();
-            while (resolving_it.next()) |active_decl| {
-                if (self.hir.kindOf(active_decl.*) != .type_alias_decl) continue;
-                const active_ta = hir_mod.typeAliasOf(self.hir, active_decl.*);
-                if (active_ta.name != hir_mod.none_node_id and self.hir.kindOf(active_ta.name) == .identifier) {
-                    try self.reportTypeAliasCircularOnce(active_ta.name, hir_mod.identifierOf(self.hir, active_ta.name).name);
-                }
-            }
+            // Only an alias re-entering the exported-type stack establishes
+            // an alias cycle. Interfaces/classes can re-enter while their
+            // lazy shape is being assembled; reporting every active alias in
+            // that case incorrectly marks unrelated import-type aliases as
+            // TS2456 (for example an alias to an external interface with the
+            // same exported name).
             if (self.hir.kindOf(decl) == .type_alias_decl) {
+                var resolving_it = self.resolving_exported_type_decls.keyIterator();
+                while (resolving_it.next()) |active_decl| {
+                    if (self.hir.kindOf(active_decl.*) != .type_alias_decl) continue;
+                    const active_ta = hir_mod.typeAliasOf(self.hir, active_decl.*);
+                    if (active_ta.name != hir_mod.none_node_id and self.hir.kindOf(active_ta.name) == .identifier) {
+                        try self.reportTypeAliasCircularOnce(active_ta.name, hir_mod.identifierOf(self.hir, active_ta.name).name);
+                    }
+                }
                 const ta = hir_mod.typeAliasOf(self.hir, decl);
                 if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
                     try self.reportTypeAliasCircularOnce(ta.name, hir_mod.identifierOf(self.hir, ta.name).name);
@@ -162966,6 +162993,20 @@ test "checker: export specifier referencing a module-local declaration stays cle
     }
 }
 
+test "checker: declaration namespace may export an enclosing module-local declaration" {
+    const b = try newBoundSetup(
+        \\// @filename: /node_modules/pkg/index.d.ts
+        \\declare namespace Config {
+        \\    export { InitialOptions };
+        \\}
+        \\export { Config };
+        \\type InitialOptions = { value?: unknown };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.export_non_local_declaration));
+}
+
 test "checker: top-level class re-export stays clean" {
     // Negative guard: a genuine top-level local re-export must not fire.
     const b = try newBoundSetup(
@@ -176080,6 +176121,33 @@ test "checker: direct circular type aliases report TS2456 without rejecting cont
         if (d.code == TsCodes.type_alias_circular) circular_count += 1;
     }
     try T.expectEqual(@as(usize, 5), circular_count);
+}
+
+test "checker: import type alias to same-named external interface is not circular" {
+    const b = try newBoundSetup(
+        \\// @filename: /node_modules/external/types/index.d.ts
+        \\export type SchemaElement = import('../src/types.d.ts').SchemaElement;
+        \\// @filename: /node_modules/external/src/types.d.ts
+        \\export interface SchemaElement { name: string; }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_alias_circular));
+}
+
+test "checker: functions nested in ambient string modules do not require implementations" {
+    const b = try newBoundSetup(
+        \\// @filename: /index.ts
+        \\import "knex";
+        \\declare module "knex" {
+        \\    namespace Knex {
+        \\        function newFunc(): any;
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.implementation_missing));
 }
 
 test "checker: type aliases with mixed export status report TS2395" {
