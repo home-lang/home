@@ -1857,6 +1857,7 @@ const TsconfigResolverOptions = struct {
     config_file_path: []const u8 = "",
     module: []const u8 = "",
     module_resolution: []const u8 = "",
+    import_helpers: ?bool = null,
     type_roots: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
 
@@ -1895,6 +1896,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         result.root_dirs = try dupeOptionalStringList(gpa, options.root_dirs);
         if (options.module) |value| result.module = try gpa.dupe(u8, @tagName(value));
         if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
+        result.import_helpers = options.import_helpers;
         result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
         result.types = try dupeOptionalStringList(gpa, options.types);
         return result;
@@ -1963,6 +1965,7 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
             \\    "outDir": "./dist",
             \\    "declarationDir": "./types",
             \\    "typeRoots": ["/a/types"],
+            \\    "importHelpers": true,
             \\    // JSONC comments and trailing commas are accepted by tsconfig.
             \\    "composite": true,
             \\  }
@@ -1977,6 +1980,7 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
     try T.expectEqualStrings("./types", opts.declaration_dir);
     try T.expectEqualStrings("nodenext", opts.module);
     try T.expectEqualStrings("node16", opts.module_resolution);
+    try T.expectEqual(@as(?bool, true), opts.import_helpers);
     try T.expectEqual(@as(usize, 1), opts.type_roots.len);
     try T.expectEqualStrings("/a/types", opts.type_roots[0]);
     try T.expectEqualStrings("/tsconfig.json", opts.config_file_path);
@@ -2926,7 +2930,9 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .compiler_type_reference_names = explicit_type_names,
         .program_umd_globals = known_umd_globals.items,
     };
-    compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse false;
+    compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse
+        tsconfig_options.import_helpers orelse
+        false;
     if (std.ascii.eqlIgnoreCase(module_kind_label, "commonjs") or
         std.ascii.eqlIgnoreCase(module_kind_label, "amd") or
         std.ascii.eqlIgnoreCase(module_kind_label, "system") or

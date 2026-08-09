@@ -2816,11 +2816,12 @@ pub const Program = struct {
         if (f.is_declaration) return;
         if (legacyDecoratorsEnabled(f.source, options)) return;
         const c = f.compilation orelse return;
+        const commonjs_module = importedHelpersUseCommonJs(options);
         const tslib = self.findTslibDeclaration() orelse {
             if (sourceExternalEmitHelperPosition(
                 c,
                 f.source,
-                options.emit.module_kind == .commonjs,
+                commonjs_module,
                 options.emit.es_target != .esnext or
                     options.resource_management_helpers_required or
                     sourceTargetNeedsResourceLowering(f.source),
@@ -2839,6 +2840,9 @@ pub const Program = struct {
         };
 
         try appendImportedPrivateHelperArityDiagnostics(self.gpa, c, f.source, tslib.source);
+        if (commonjs_module) {
+            try appendMissingCommonJsInteropHelperDiagnostics(self.gpa, c, tslib.source);
+        }
 
         var search_from: usize = 0;
         while (findStage3DecoratedClassExpression(f.source, search_from)) |decorated| {
@@ -2892,6 +2896,26 @@ pub const Program = struct {
         sortDiagnosticsBySourceOrder(c.diagnostics.items);
     }
 
+    fn importedHelpersUseCommonJs(options: ts_driver.CompileOptions) bool {
+        if (options.emit.module_kind == .commonjs) return true;
+        if (std.ascii.eqlIgnoreCase(options.module_kind, "commonjs") or
+            std.ascii.eqlIgnoreCase(options.module_kind, "amd") or
+            std.ascii.eqlIgnoreCase(options.module_kind, "umd") or
+            std.ascii.eqlIgnoreCase(options.module_kind, "system"))
+        {
+            return true;
+        }
+        if (options.pub_tsconfig) |config| {
+            if (config.compiler_options.module) |module| {
+                return switch (module) {
+                    .commonjs, .amd, .umd, .system => true,
+                    else => false,
+                };
+            }
+        }
+        return false;
+    }
+
     fn appendImportedPrivateHelperArityDiagnostics(
         gpa: std.mem.Allocator,
         c: *ts_driver.Compilation,
@@ -2899,12 +2923,16 @@ pub const Program = struct {
         tslib_source: []const u8,
     ) ProgramError!void {
         const hash_pos = firstPrivateIdentifierHash(source) orelse return;
-        const checks = [_]struct { name: []const u8, required: usize }{
-            .{ .name = "__classPrivateFieldGet", .required = 4 },
-            .{ .name = "__classPrivateFieldSet", .required = 5 },
+        const uses = privateHelperUses(source);
+        const checks = [_]struct { name: []const u8, required: usize, use: ?HelperUse }{
+            .{ .name = "__classPrivateFieldGet", .required = 4, .use = uses.get },
+            .{ .name = "__classPrivateFieldSet", .required = 5, .use = uses.set },
         };
         for (checks) |check| {
-            const actual = helperParameterCount(tslib_source, check.name) orelse continue;
+            const actual = helperParameterCount(tslib_source, check.name) orelse {
+                if (check.use) |use| try appendMissingNamedHelperDiagnostic(gpa, c, check.name, use);
+                continue;
+            };
             if (actual >= check.required) continue;
             const msg = try std.fmt.allocPrint(
                 gpa,
@@ -2913,7 +2941,7 @@ pub const Program = struct {
             );
             try c.diagnostics.append(gpa, .{
                 .phase = .bind,
-                .pos = @intCast(hash_pos),
+                .pos = @intCast(if (check.use) |use| use.pos else hash_pos),
                 .line = 0,
                 .span_len = @intCast(check.name.len),
                 .code = 2807,
@@ -2921,6 +2949,141 @@ pub const Program = struct {
             });
             c.has_errors = true;
         }
+    }
+
+    fn appendMissingCommonJsInteropHelperDiagnostics(
+        gpa: std.mem.Allocator,
+        c: *ts_driver.Compilation,
+        tslib_source: []const u8,
+    ) ProgramError!void {
+        var node: hir_mod_ns.NodeId = 1;
+        while (node < c.hir.nodeCount()) : (node += 1) {
+            if (c.hir.kindOf(node) != .import_decl) continue;
+            const import = hir_mod_ns.importOf(&c.hir, node);
+            if (import.is_type_only or import.is_require_equals or import.import_equals != hir_mod_ns.none_node_id) continue;
+            const helper: []const u8 = if (import.namespace_binding != hir_mod_ns.none_node_id)
+                "__importStar"
+            else if (import.default_binding != hir_mod_ns.none_node_id)
+                "__importDefault"
+            else
+                continue;
+            if (std.mem.indexOf(u8, tslib_source, helper) != null) continue;
+            const span = c.hir.spanOf(node);
+            try appendMissingNamedHelperDiagnostic(gpa, c, helper, .{
+                .pos = span.start,
+                .span_len = span.end - span.start,
+            });
+        }
+    }
+
+    fn appendMissingNamedHelperDiagnostic(
+        gpa: std.mem.Allocator,
+        c: *ts_driver.Compilation,
+        helper: []const u8,
+        use: HelperUse,
+    ) ProgramError!void {
+        for (c.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 2343 and
+                diagnostic.pos == @as(u32, @intCast(use.pos)) and
+                std.mem.indexOf(u8, diagnostic.message, helper) != null)
+            {
+                return;
+            }
+        }
+        const msg = try std.fmt.allocPrint(
+            gpa,
+            "This syntax requires an imported helper named '{s}' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.",
+            .{helper},
+        );
+        try c.diagnostics.append(gpa, .{
+            .phase = .bind,
+            .pos = @intCast(use.pos),
+            .line = 0,
+            .span_len = @intCast(use.span_len),
+            .code = 2343,
+            .message = msg,
+        });
+        c.has_errors = true;
+    }
+
+    const HelperUse = struct {
+        pos: usize,
+        span_len: usize,
+    };
+
+    const PrivateHelperUses = struct {
+        get: ?HelperUse = null,
+        set: ?HelperUse = null,
+    };
+
+    fn privateHelperUses(source: []const u8) PrivateHelperUses {
+        var uses: PrivateHelperUses = .{};
+        var search_from: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, source, search_from, '#')) |hash| {
+            search_from = hash + 1;
+            if (positionInLineComment(source, hash) or positionInBlockComment(source, hash)) continue;
+            if (hash == 0 or source[hash - 1] != '.') continue;
+            if (hash + 1 >= source.len or !isIdentifierStart(source[hash + 1])) continue;
+            var after_name = hash + 2;
+            while (after_name < source.len and isIdentifierContinue(source[after_name])) after_name += 1;
+            const op = skipTrivia(source, after_name);
+            const simple_write = op < source.len and source[op] == '=' and
+                (op + 1 >= source.len or (source[op + 1] != '=' and source[op + 1] != '>'));
+            const compound_write = op + 1 < source.len and source[op + 1] == '=' and
+                std.mem.indexOfScalar(u8, "+-*/%&|^", source[op]) != null;
+            const update = op + 1 < source.len and
+                ((source[op] == '+' and source[op + 1] == '+') or
+                    (source[op] == '-' and source[op + 1] == '-'));
+            const destructuring_write = privateAccessIsInDestructuringAssignment(source, hash - 1);
+            var access_start = hash - 1;
+            while (access_start > 0 and isIdentifierContinue(source[access_start - 1])) access_start -= 1;
+            const use: HelperUse = .{ .pos = access_start, .span_len = after_name - access_start };
+            const writes = simple_write or compound_write or update or destructuring_write;
+            if (writes and uses.set == null) uses.set = use;
+            if ((!simple_write or compound_write or update) and !destructuring_write and uses.get == null) uses.get = use;
+            if (uses.get != null and uses.set != null) break;
+        }
+        return uses;
+    }
+
+    fn privateAccessIsInDestructuringAssignment(source: []const u8, access_start: usize) bool {
+        var depth: usize = 0;
+        var open_brace: ?usize = null;
+        var cursor = access_start;
+        while (cursor > 0) {
+            cursor -= 1;
+            switch (source[cursor]) {
+                '}' => depth += 1,
+                '{' => {
+                    if (depth == 0) {
+                        open_brace = cursor;
+                        break;
+                    }
+                    depth -= 1;
+                },
+                ';' => if (depth == 0) break,
+                else => {},
+            }
+        }
+        const open = open_brace orelse return false;
+        depth = 0;
+        cursor = open;
+        while (cursor < source.len) : (cursor += 1) {
+            switch (source[cursor]) {
+                '{' => depth += 1,
+                '}' => {
+                    if (depth == 0) return false;
+                    depth -= 1;
+                    if (depth != 0) continue;
+                    var after = skipTrivia(source, cursor + 1);
+                    while (after < source.len and source[after] == ')') after = skipTrivia(source, after + 1);
+                    return after < source.len and source[after] == '=' and
+                        (after + 1 >= source.len or (source[after + 1] != '=' and source[after + 1] != '>'));
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn sourceExternalEmitHelperPosition(
@@ -2937,6 +3100,20 @@ pub const Program = struct {
         }
         if (commonjs_module) {
             if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
+            if (firstCommonJsInteropImportPosition(c)) |import_pos| best = minOptionalPos(best, import_pos);
+        }
+        return best;
+    }
+
+    fn firstCommonJsInteropImportPosition(c: *const ts_driver.Compilation) ?usize {
+        var best: ?usize = null;
+        var node: hir_mod_ns.NodeId = 1;
+        while (node < c.hir.nodeCount()) : (node += 1) {
+            if (c.hir.kindOf(node) != .import_decl) continue;
+            const import = hir_mod_ns.importOf(&c.hir, node);
+            if (import.is_type_only or import.is_require_equals or import.import_equals != hir_mod_ns.none_node_id) continue;
+            if (import.default_binding == hir_mod_ns.none_node_id and import.namespace_binding == hir_mod_ns.none_node_id) continue;
+            best = minOptionalPos(best, c.hir.spanOf(node).start);
         }
         return best;
     }
@@ -5626,6 +5803,80 @@ test "Program: importHelpers reports incompatible private field helper arity" {
     }
     try T.expect(saw_get);
     try T.expect(saw_set);
+}
+
+test "Program: parity helper cycle batch reports a missing private setter for destructuring writes" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const source =
+        \\export {};
+        \\class Example {
+        \\    #state = { value: 0 };
+        \\    update(source: { value: { value: number } }) {
+        \\        ({ value: this.#state } = source);
+        \\    }
+        \\}
+    ;
+    const main_id = try p.add("/main.ts", source);
+    _ = try p.add("/tslib.d.ts", "export declare function __classPrivateFieldGet(a: any, b: any, c: any, d: any): any;\n");
+    try p.compileAll(.{ .emit = .{ .import_helpers = true, .es_target = .es2015 } });
+
+    const c = p.fileById(main_id).compilation.?;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "this.#state") orelse return error.TestUnexpectedResult);
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2343 or std.mem.indexOf(u8, d.message, "'__classPrivateFieldSet'") == null) continue;
+        try T.expectEqual(expected_pos, d.pos);
+        try T.expectEqual(@as(u32, "this.#state".len), d.span_len);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "Program: parity helper cycle batch reports missing CommonJS default and namespace interop helpers" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const default_source = "import greet from \"./dependency\";";
+    const namespace_source = "import greet, * as dependency from \"./dependency\";";
+    const default_id = try p.add("/main.ts", default_source);
+    const namespace_id = try p.add("/combined.ts", namespace_source);
+    _ = try p.add("/dependency.ts", "export default function greet(name: string) { return name; }");
+    _ = try p.add("/tslib.d.ts", "export const notAHelper: any;\n");
+    try p.compileAll(.{
+        .module_kind = "commonjs",
+        .emit = .{ .import_helpers = true, .es_target = .es2015 },
+    });
+    try p.compileAll(.{
+        .module_kind = "commonjs",
+        .emit = .{ .import_helpers = true, .es_target = .es2015 },
+    });
+
+    const cases = [_]struct { id: FileId, helper: []const u8, span_len: u32 }{
+        .{ .id = default_id, .helper = "__importDefault", .span_len = default_source.len },
+        .{ .id = namespace_id, .helper = "__importStar", .span_len = namespace_source.len },
+    };
+    for (cases) |case| {
+        const c = p.fileById(case.id).compilation.?;
+        var found = false;
+        var count: usize = 0;
+        for (c.diagnostics.items) |d| {
+            if (d.code != 2343 or std.mem.indexOf(u8, d.message, case.helper) == null) continue;
+            try T.expectEqual(@as(u32, 0), d.pos);
+            try T.expectEqual(case.span_len, d.span_len);
+            found = true;
+            count += 1;
+        }
+        try T.expect(found);
+        try T.expectEqual(@as(usize, 1), count);
+    }
 }
 
 test "Program: collectGlobalAugmentations finds none for plain files" {

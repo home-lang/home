@@ -2358,6 +2358,7 @@ fn appendMissingImportedHelperDiagnostics(
         return;
     };
     try appendImportedPrivateHelperArityDiagnostics(gpa, c, source, tslib_source);
+    if (commonjs_module) try appendMissingCommonJsInteropHelperDiagnostics(gpa, c, tslib_source);
     var search_from: usize = 0;
     while (findStage3DecoratedClassExpression(source, search_from)) |decorated| {
         const helpers = [_][]const u8{ "__esDecorate", "__propKey", "__runInitializers", "__setFunctionName" };
@@ -2588,13 +2589,16 @@ fn appendImportedPrivateHelperArityDiagnostics(
     tslib_source: []const u8,
 ) CompileError!void {
     const hash_pos = firstPrivateIdentifierHash(source) orelse return;
-    const use_positions = privateHelperUsePositions(source);
-    const checks = [_]struct { name: []const u8, required: usize, pos: ?usize }{
-        .{ .name = "__classPrivateFieldGet", .required = 4, .pos = use_positions.get },
-        .{ .name = "__classPrivateFieldSet", .required = 5, .pos = use_positions.set },
+    const uses = privateHelperUses(source);
+    const checks = [_]struct { name: []const u8, required: usize, use: ?HelperUse }{
+        .{ .name = "__classPrivateFieldGet", .required = 4, .use = uses.get },
+        .{ .name = "__classPrivateFieldSet", .required = 5, .use = uses.set },
     };
     for (checks) |check| {
-        const actual = helperParameterCount(tslib_source, check.name) orelse continue;
+        const actual = helperParameterCount(tslib_source, check.name) orelse {
+            if (check.use) |use| try appendMissingNamedHelperDiagnostic(gpa, c, check.name, use);
+            continue;
+        };
         if (actual >= check.required) continue;
         const msg = try std.fmt.allocPrint(
             gpa,
@@ -2603,7 +2607,7 @@ fn appendImportedPrivateHelperArityDiagnostics(
         );
         try c.diagnostics.append(gpa, .{
             .phase = .bind,
-            .pos = @intCast(check.pos orelse hash_pos),
+            .pos = @intCast(if (check.use) |use| use.pos else hash_pos),
             .line = 0,
             .span_len = @intCast(check.name.len),
             .code = 2807,
@@ -2613,13 +2617,73 @@ fn appendImportedPrivateHelperArityDiagnostics(
     }
 }
 
-const PrivateHelperUsePositions = struct {
-    get: ?usize = null,
-    set: ?usize = null,
+fn appendMissingCommonJsInteropHelperDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    tslib_source: []const u8,
+) CompileError!void {
+    var node: NodeId = 1;
+    while (node < c.hir.nodeCount()) : (node += 1) {
+        if (c.hir.kindOf(node) != .import_decl) continue;
+        const import = hir_mod.importOf(&c.hir, node);
+        if (import.is_type_only or import.is_require_equals or import.import_equals != hir_mod.none_node_id) continue;
+        const helper: []const u8 = if (import.namespace_binding != hir_mod.none_node_id)
+            "__importStar"
+        else if (import.default_binding != hir_mod.none_node_id)
+            "__importDefault"
+        else
+            continue;
+        if (std.mem.indexOf(u8, tslib_source, helper) != null) continue;
+        const span = c.hir.spanOf(node);
+        try appendMissingNamedHelperDiagnostic(gpa, c, helper, .{
+            .pos = span.start,
+            .span_len = span.end - span.start,
+        });
+    }
+}
+
+fn appendMissingNamedHelperDiagnostic(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    helper: []const u8,
+    use: HelperUse,
+) CompileError!void {
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2343 and
+            diagnostic.pos == @as(u32, @intCast(use.pos)) and
+            std.mem.indexOf(u8, diagnostic.message, helper) != null)
+        {
+            return;
+        }
+    }
+    const msg = try std.fmt.allocPrint(
+        gpa,
+        "This syntax requires an imported helper named '{s}' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.",
+        .{helper},
+    );
+    try c.diagnostics.append(gpa, .{
+        .phase = .bind,
+        .pos = @intCast(use.pos),
+        .line = 0,
+        .span_len = @intCast(use.span_len),
+        .code = 2343,
+        .message = msg,
+    });
+    c.has_errors = true;
+}
+
+const HelperUse = struct {
+    pos: usize,
+    span_len: usize,
 };
 
-fn privateHelperUsePositions(source: []const u8) PrivateHelperUsePositions {
-    var positions: PrivateHelperUsePositions = .{};
+const PrivateHelperUses = struct {
+    get: ?HelperUse = null,
+    set: ?HelperUse = null,
+};
+
+fn privateHelperUses(source: []const u8) PrivateHelperUses {
+    var uses: PrivateHelperUses = .{};
     var search_from: usize = 0;
     while (std.mem.indexOfScalarPos(u8, source, search_from, '#')) |hash| {
         search_from = hash + 1;
@@ -2636,13 +2700,56 @@ fn privateHelperUsePositions(source: []const u8) PrivateHelperUsePositions {
         const update = op + 1 < source.len and
             ((source[op] == '+' and source[op + 1] == '+') or
                 (source[op] == '-' and source[op + 1] == '-'));
+        const destructuring_write = privateAccessIsInDestructuringAssignment(source, hash - 1);
         var access_start = hash - 1;
         while (access_start > 0 and isIdentifierContinue(source[access_start - 1])) access_start -= 1;
-        if ((simple_write or compound_write or update) and positions.set == null) positions.set = access_start;
-        if ((!simple_write or compound_write or update) and positions.get == null) positions.get = access_start;
-        if (positions.get != null and positions.set != null) break;
+        const use: HelperUse = .{ .pos = access_start, .span_len = after_name - access_start };
+        const writes = simple_write or compound_write or update or destructuring_write;
+        if (writes and uses.set == null) uses.set = use;
+        if ((!simple_write or compound_write or update) and !destructuring_write and uses.get == null) uses.get = use;
+        if (uses.get != null and uses.set != null) break;
     }
-    return positions;
+    return uses;
+}
+
+fn privateAccessIsInDestructuringAssignment(source: []const u8, access_start: usize) bool {
+    var depth: usize = 0;
+    var open_brace: ?usize = null;
+    var cursor = access_start;
+    while (cursor > 0) {
+        cursor -= 1;
+        switch (source[cursor]) {
+            '}' => depth += 1,
+            '{' => {
+                if (depth == 0) {
+                    open_brace = cursor;
+                    break;
+                }
+                depth -= 1;
+            },
+            ';' => if (depth == 0) break,
+            else => {},
+        }
+    }
+    const open = open_brace orelse return false;
+    depth = 0;
+    cursor = open;
+    while (cursor < source.len) : (cursor += 1) {
+        switch (source[cursor]) {
+            '{' => depth += 1,
+            '}' => {
+                if (depth == 0) return false;
+                depth -= 1;
+                if (depth != 0) continue;
+                var after = skipTrivia(source, cursor + 1);
+                while (after < source.len and source[after] == ')') after = skipTrivia(source, after + 1);
+                return after < source.len and source[after] == '=' and
+                    (after + 1 >= source.len or (source[after + 1] != '=' and source[after + 1] != '>'));
+            },
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn sourceExternalEmitHelperPosition(
@@ -2659,6 +2766,20 @@ fn sourceExternalEmitHelperPosition(
     }
     if (commonjs_module) {
         if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
+        if (firstCommonJsInteropImportPosition(c)) |import_pos| best = minOptionalPos(best, import_pos);
+    }
+    return best;
+}
+
+fn firstCommonJsInteropImportPosition(c: *const Compilation) ?usize {
+    var best: ?usize = null;
+    var node: NodeId = 1;
+    while (node < c.hir.nodeCount()) : (node += 1) {
+        if (c.hir.kindOf(node) != .import_decl) continue;
+        const import = hir_mod.importOf(&c.hir, node);
+        if (import.is_type_only or import.is_require_equals or import.import_equals != hir_mod.none_node_id) continue;
+        if (import.default_binding == hir_mod.none_node_id and import.namespace_binding == hir_mod.none_node_id) continue;
+        best = minOptionalPos(best, c.hir.spanOf(node).start);
     }
     return best;
 }
