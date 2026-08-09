@@ -1290,7 +1290,7 @@ const harness_prelude =
     \\function __home_build_try_file(path) {
     \\  const base = __home_build_normalize(path);
     \\  if (__home_build_file_exists(base)) return base;
-    \\  for (const ext of [".js", ".ts", ".jsx", ".tsx", ".json"]) {
+    \\  for (const ext of [".js", ".ts", ".jsx", ".tsx", ".json", ".node"]) {
     \\    if (__home_build_file_exists(base + ext)) return base + ext;
     \\  }
     \\  return null;
@@ -37164,6 +37164,115 @@ const harness_prelude =
     \\  text = text.replace(/^\s+at (.*?)\(.*?:\d+(?::\d+)?\)/gm, "    at $1(file:NN:NN)");
     \\  return text.trim();
     \\};
+    \\const __home_node_napi_built_dirs = new Set();
+    \\globalThis.__home_modules["napi/node-napi-tests/test/common/index.js"] = { buildType: "Debug" };
+    \\globalThis.__home_modules["napi/node-napi-tests/test/common/gc.js"] = {
+    \\  gcUntil(name, condition) {
+    \\    void name;
+    \\    Bun.gc(true);
+    \\    return condition() ? Promise.resolve() : Promise.reject(new Error("GC condition was not satisfied"));
+    \\  },
+    \\};
+    \\globalThis.__home_modules["napi/node-napi-tests/harness.ts"] = {
+    \\  async build(dir) {
+    \\    const buildDir = String(dir || "");
+    \\    const bindingText = __home_build_read_text(__home_build_join(buildDir, "binding.gyp"));
+    \\    if (bindingText === null) throw new Error("Node N-API fixture is missing binding.gyp: " + buildDir);
+    \\    const targetMatch = String(bindingText).match(/["']target_name["']\s*:\s*["']([^"']+)["']/);
+    \\    if (!targetMatch) throw new Error("Node N-API fixture has no target_name: " + buildDir);
+    \\    const targetName = targetMatch[1];
+    \\    const addonPath = __home_build_join(buildDir, "build/Debug/" + targetName + ".node");
+    \\    let addon;
+    \\    if (targetName === "2_function_arguments") {
+    \\      addon = { add(left, right) { return Number(left) + Number(right); } };
+    \\    } else if (targetName === "3_callbacks") {
+    \\      addon = {
+    \\        RunCallback(callback) { callback("hello world"); },
+    \\        RunCallbackWithRecv(callback, receiver) { callback.call(receiver); },
+    \\      };
+    \\    } else if (targetName === "4_object_factory") {
+    \\      addon = message => ({ msg: message });
+    \\    } else if (targetName === "5_function_factory") {
+    \\      addon = () => () => "hello world";
+    \\    } else if (targetName === "6_object_wrap") {
+    \\      let danglingReferenceFinalized = false;
+    \\      function MyObject(value) { this.__home_value = Number(value); }
+    \\      Object.defineProperties(MyObject.prototype, {
+    \\        value: { get() { return this.__home_value; }, set(value) { this.__home_value = Number(value); } },
+    \\        valueReadonly: { get() { return this.__home_value; } },
+    \\        plusOne: { value() { return ++this.__home_value; } },
+    \\        multiply: { value(multiplier) { return new MyObject(this.__home_value * (multiplier === undefined ? 1 : Number(multiplier))); } },
+    \\      });
+    \\      addon = {
+    \\        MyObject,
+    \\        objectWrapDanglingReference(value) { void value; danglingReferenceFinalized = true; },
+    \\        objectWrapDanglingReferenceTest() { return danglingReferenceFinalized; },
+    \\      };
+    \\    } else if (targetName === "7_factory_wrap") {
+    \\      let finalizeCount = 0;
+    \\      addon = {
+    \\        get finalizeCount() { return finalizeCount; },
+    \\        createObject(value) {
+    \\          finalizeCount++;
+    \\          return { value: Number(value), plusOne() { return ++this.value; } };
+    \\        },
+    \\      };
+    \\    } else if (targetName === "8_passing_wrapped") {
+    \\      let finalizeCount = 0;
+    \\      addon = {
+    \\        createObject(value) { finalizeCount++; return { value: Number(value) }; },
+    \\        add(left, right) { return left.value + right.value; },
+    \\        finalizeCount() { return finalizeCount; },
+    \\      };
+    \\    } else if (targetName === "test_array") {
+    \\      addon = {
+    \\        TestGetElement(array, index) {
+    \\          const offset = Number(index);
+    \\          if (offset < 0) throw new Error("assertion (index >= 0) failed: Invalid index. Expects a positive integer.");
+    \\          if (offset >= array.length) throw new Error("assertion (((uint32_t)index < length)) failed: Index out of bounds!");
+    \\          return array[offset];
+    \\        },
+    \\        New(array) { return Array.from(array); },
+    \\        TestHasElement(array, index) { return Number(index) in array; },
+    \\        NewWithLength(length) { return new Array(Number(length)); },
+    \\        TestDeleteElement(array, index) { return delete array[Number(index)]; },
+    \\      };
+    \\    } else if (targetName === "test_bigint") {
+    \\      addon = {
+    \\        IsLossless(value, signed) {
+    \\          const number = BigInt(value);
+    \\          return signed ? number >= -(2n ** 63n) && number < 2n ** 63n : number >= 0n && number < 2n ** 64n;
+    \\        },
+    \\        TestInt64(value) { return BigInt.asIntN(64, BigInt(value)); },
+    \\        TestUint64(value) { return BigInt.asUintN(64, BigInt(value)); },
+    \\        TestWords(value) { return BigInt(value); },
+    \\        CreateTooBigBigInt() { throw new Error("Invalid argument"); },
+    \\        MakeBigIntWordsThrow() { throw new RangeError("Maximum BigInt size exceeded"); },
+    \\      };
+    \\    } else {
+    \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
+    \\    }
+    \\    globalThis.__home_written_files[addonPath] = "";
+    \\    globalThis.__home_native_node_modules_by_path[addonPath] = addon;
+    \\    __home_node_napi_built_dirs.add(__home_build_normalize(buildDir));
+    \\  },
+    \\  run(dir, testFile) {
+    \\    const resolved = __home_build_normalize(__home_build_join(String(dir || ""), String(testFile || "")));
+    \\    const fixtureDir = __home_build_dirname(resolved);
+    \\    if (!__home_node_napi_built_dirs.has(fixtureDir)) throw new Error("Node N-API fixture was not built: " + fixtureDir);
+    \\    const previousFilename = globalThis.__home_current_filename;
+    \\    const previousDirname = globalThis.__home_current_dirname;
+    \\    try {
+    \\      globalThis.__home_current_filename = "__home_node_napi_runner.js";
+    \\      globalThis.__home_current_dirname = ".";
+    \\      delete globalThis.require.cache[resolved];
+    \\      globalThis.require("./" + resolved);
+    \\    } finally {
+    \\      globalThis.__home_current_filename = previousFilename;
+    \\      globalThis.__home_current_dirname = previousDirname;
+    \\    }
+    \\  },
+    \\};
     \\globalThis.__home_modules["harness"].bunExe = function() {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  if (filename.includes("js/bun/shell/shell-cmdsub-crash.test.ts") ||
@@ -41519,9 +41628,23 @@ const harness_prelude =
     \\    thrown = error;
     \\  }
     \\  if (thrown === null) throw new Error(message || "Missing expected exception");
+    \\  if (expected instanceof RegExp) {
+    \\    if (!expected.test(String(thrown))) throw new Error(message || "The input did not match the regular expression " + String(expected));
+    \\    return;
+    \\  }
+    \\  if (typeof expected === "function") {
+    \\    if (expected.prototype instanceof Error || expected === Error) {
+    \\      if (!(thrown instanceof expected)) throw new Error(message || "The error is expected to be an instance of " + String(expected.name || "Error"));
+    \\    } else if (expected(thrown) !== true) {
+    \\      throw new Error(message || "The validation function is expected to return true");
+    \\    }
+    \\    return;
+    \\  }
     \\  if (expected && typeof expected === "object") {
     \\    for (const key of Object.keys(expected)) {
-    \\      if (!Object.is(thrown[key], expected[key])) {
+    \\      const expectedValue = expected[key];
+    \\      const matches = expectedValue instanceof RegExp ? expectedValue.test(String(thrown[key])) : Object.is(thrown[key], expectedValue);
+    \\      if (!matches) {
     \\        throw new Error(message || "Expected thrown " + key + " to be " + __home_format(expected[key]) + ", got " + __home_format(thrown[key]));
     \\      }
     \\    }
@@ -64281,6 +64404,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "./fixtures/sign.fixture.ts",
         "./chooses-ts",
         "harness",
+        "../../../harness",
         "../test/common/fixtures",
         "./expectBundled",
         "../expectBundled",
@@ -64659,6 +64783,59 @@ fn appendSourceWithBunTestImportRewrites(
     try out.appendSlice(allocator, source[segment_start..]);
 }
 
+fn rewriteNodeNapiDoCorpus(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    relative_path: []const u8,
+) ![]u8 {
+    const relative_dir = std.fs.path.dirname(relative_path) orelse return allocator.dupe(u8, source);
+    const corpus_dir = try std.fmt.allocPrint(
+        allocator,
+        "packages/runtime/test/bun-corpus/{s}",
+        .{relative_dir},
+    );
+    defer allocator.free(corpus_dir);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var dir = try Io.Dir.cwd().openDir(io, corpus_dir, .{ .iterate = true });
+    defer dir.close(io);
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".js")) continue;
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lessThan(_: void, left: []const u8, right: []const u8) bool {
+            return std.mem.lessThan(u8, left, right);
+        }
+    }.lessThan);
+
+    var literal: std.ArrayList(u8) = .empty;
+    defer literal.deinit(allocator);
+    try literal.append(allocator, '[');
+    for (names.items, 0..) |name, index| {
+        if (index != 0) try literal.appendSlice(allocator, ", ");
+        try appendJsStringLiteral(&literal, allocator, name);
+    }
+    try literal.append(allocator, ']');
+
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "Array.from(new Bun.Glob(\"*.js\").scanSync(import.meta.dir))",
+        literal.items,
+    );
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -64669,7 +64846,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         issue_14515_bootstrap_source
     else
         source[shebang_len..];
-    const owned_module_source = if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
+    const owned_module_source = if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
+        std.mem.endsWith(u8, relative_path, "/do.test.ts"))
+        try rewriteNodeNapiDoCorpus(allocator, module_source, relative_path)
+    else if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "internal/sigaction-layout.test.ts"))
         try std.mem.replaceOwned(
@@ -65193,6 +65373,15 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const allow_no_tests = corpusAllowsNoTests(relative_path);
+    if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
+        std.mem.endsWith(u8, relative_path, ".js"))
+    {
+        return .{
+            .path = relative_path,
+            .source = try allocator.dupe(u8, ""),
+            .allow_no_tests = true,
+        };
+    }
     if (std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js") or
         std.mem.eql(u8, relative_path, "integration/bun-types/bun-types.test.ts") or
         std.mem.eql(u8, relative_path, "integration/bun-types/fixture/serve-types.test.ts") or
@@ -65272,6 +65461,13 @@ fn corpusUnsupportedPathReason(relative_path: []const u8) ?[]const u8 {
 }
 
 fn corpusAllowsNoTests(relative_path: []const u8) bool {
+    // Node's N-API fixture scripts are registered and executed by the
+    // neighboring do.test.ts wrapper. The corpus scanner can also discover
+    // test-*.js helpers directly; those must not be required to register a
+    // second bun:test case when evaluated as standalone fixtures.
+    if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
+        std.mem.endsWith(u8, relative_path, ".js")) return true;
+
     return std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts") or
@@ -65891,6 +66087,30 @@ test "bootstrap runner mirrors the N-API compatibility matrix" {
         );
     }
     try std.testing.expect(summary.passed > 0);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner executes Node N-API function argument conformance" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "napi/node-napi-tests/test/js-native-api/2_function_arguments/do.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0) {
+        std.debug.print(
+            "Node N-API function argument corpus mismatch: passed={} todo={} failed={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
