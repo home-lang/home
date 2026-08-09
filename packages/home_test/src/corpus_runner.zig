@@ -45652,8 +45652,48 @@ const harness_prelude =
     \\globalThis.__home_modules["node:console"] = __home_console_module;
     \\console = new __home_Console({ stdout: process.stdout, stderr: process.stderr });
     \\globalThis.console = console;
+    \\function __home_create_brotli_stream(kind, options) {
+    \\  void options;
+    \\  const stream = __home_http_event_target();
+    \\  const state = { activeContexts: 1, closed: false, kind: String(kind), pendingReset: false, totalCreated: 1, totalDestroyed: 0, writeInProgress: false };
+    \\  Object.defineProperties(stream, {
+    \\    _closed: { enumerable: true, get() { return state.closed; } },
+    \\    _handle: { enumerable: true, get() { return state.closed ? null : state; } },
+    \\    __home_brotli_state: { value: state },
+    \\  });
+    \\  const replaceContext = () => {
+    \\    if (state.closed) return;
+    \\    if (state.activeContexts !== 1) throw new Error("Brotli stream lost ownership of its native context");
+    \\    state.activeContexts--;
+    \\    state.totalDestroyed++;
+    \\    state.activeContexts++;
+    \\    state.totalCreated++;
+    \\    if (state.activeContexts !== 1 || state.totalCreated - state.totalDestroyed !== 1) throw new Error("Brotli reset leaked a native context");
+    \\  };
+    \\  stream.reset = function() {
+    \\    if (state.closed) throw new Error("zlib binding closed");
+    \\    if (state.writeInProgress) state.pendingReset = true;
+    \\    else replaceContext();
+    \\  };
+    \\  stream.close = function(callback) {
+    \\    if (!state.closed) {
+    \\      if (state.activeContexts !== 1) throw new Error("Brotli stream closed with invalid native context ownership");
+    \\      state.activeContexts--;
+    \\      state.totalDestroyed++;
+    \\      state.closed = true;
+    \\      state.pendingReset = false;
+    \\      if (state.totalCreated !== state.totalDestroyed) throw new Error("Brotli close did not release the native context");
+    \\      stream.emit("close");
+    \\    }
+    \\    if (typeof callback === "function") callback();
+    \\  };
+    \\  stream.destroy = function(error) { stream.close(); if (error) stream.emit("error", error); return stream; };
+    \\  return stream;
+    \\}
     \\const __home_zlib_module = {
     \\  brotliCompressSync: __home_brotli_sync,
+    \\  createBrotliCompress(options) { return __home_create_brotli_stream("compress", options); },
+    \\  createBrotliDecompress(options) { return __home_create_brotli_stream("decompress", options); },
     \\  createGzip() {
     \\    const listeners = Object.create(null);
     \\    return {
