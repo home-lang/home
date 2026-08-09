@@ -55686,7 +55686,7 @@ fn resolveTsgoTestdataCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8
     const root_slice = tsSuiteRootSlice();
     const cases = try std.fmt.allocPrint(gpa, "{s}/testdata/tests/cases/{s}", .{ root_slice, family });
     errdefer gpa.free(cases);
-    const baselines = try std.fmt.allocPrint(gpa, "{s}/testdata/baselines/reference", .{root_slice});
+    const baselines = try std.fmt.allocPrint(gpa, "{s}/testdata/baselines/reference/{s}", .{ root_slice, family });
     errdefer gpa.free(baselines);
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -55702,6 +55702,17 @@ fn resolveTsgoTestdataCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8
         return null;
     };
     return .{ .cases = cases, .baselines = baselines };
+}
+
+test "conformance: tsgo testdata paths include the case family" {
+    const paths = (try resolveTsgoTestdataCaseFamilyPaths(T.allocator, "compiler")) orelse return;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+
+    try T.expect(std.mem.endsWith(u8, paths.cases, "/testdata/tests/cases/compiler"));
+    try T.expect(std.mem.endsWith(u8, paths.baselines, "/testdata/baselines/reference/compiler"));
 }
 
 fn tsSuiteRootSlice() []const u8 {
@@ -55836,7 +55847,11 @@ fn runOptInTsSuiteFamily(
     if (name_filter != null) {
         try T.expect(stats.total() > 0);
     } else if (requested_start == 0 and requested_limit == null) {
-        try T.expect(stats.total() > 1000);
+        if (envBoolOne(env_prefix ++ "_TESTDATA")) {
+            try T.expect(stats.total() > 0);
+        } else {
+            try T.expect(stats.total() > 1000);
+        }
     } else {
         try T.expectEqual(@as(u32, @intCast(corpus.len)), stats.total());
     }
