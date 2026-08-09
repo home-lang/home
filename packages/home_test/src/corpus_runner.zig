@@ -48787,10 +48787,12 @@ const harness_prelude =
     \\  const server = Object.assign(__home_http_event_target(), {
     \\    __home_handler: typeof handler === "function" ? handler : function() {},
     \\    __home_port: 0,
+    \\    __home_ws_servers: [],
     \\    listen(port, host, callback) {
     \\      if (typeof host === "function") callback = host;
     \\      this.__home_port = Number(port) || (__home_http_next_port++);
     \\      __home_http_servers[this.__home_port] = this;
+    \\      for (const websocketServer of this.__home_ws_servers) websocketServer.__home_bind_port(this.__home_port);
     \\      const origin = "http://localhost:" + String(this.__home_port);
     \\      const self = this;
     \\      globalThis.__home_serve_handles_by_origin[origin] = {
@@ -48836,6 +48838,7 @@ const harness_prelude =
     \\      return { address: "127.0.0.1", family: "IPv4", port: this.__home_port };
     \\    },
     \\    close(callback) {
+    \\      for (const websocketServer of this.__home_ws_servers) websocketServer.__home_unbind_port(this.__home_port);
     \\      delete __home_http_servers[this.__home_port];
     \\      delete globalThis.__home_serve_handles_by_origin["http://localhost:" + String(this.__home_port)];
     \\      if (typeof callback === "function") this.once("close", callback);
@@ -52945,6 +52948,7 @@ const harness_prelude =
     \\  return __home_consume_body_text(this).then(text => __home_strip_utf8_bom_text(text));
     \\};
     \\Response.prototype.json = function() {
+    \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
     \\  if (this.body && Object.prototype.hasOwnProperty.call(this.body, "__home_body_value") && typeof this.body.__home_body_value === "string") return Promise.resolve(__home_parse_json_body_text(this.body.__home_body_value));
     \\  return this.text().then(text => __home_parse_json_body_text(text));
     \\};
@@ -54474,7 +54478,8 @@ const harness_prelude =
     \\    this.readyState = WebSocket.OPEN;
     \\    this.binaryType = "nodebuffer";
     \\  }
-    \\  send(data, callback) {
+    \\  send(data, options, callback) {
+    \\    if (typeof options === "function") callback = options;
     \\    const client = this.__home_client;
     \\    if (!client || client.readyState === WebSocket.CLOSED) return 0;
     \\    Promise.resolve().then(() => {
@@ -54577,15 +54582,40 @@ const harness_prelude =
     \\class __home_ws_WebSocketServer extends __home_EventEmitter {
     \\  constructor(options) {
     \\    super();
+    \\    const httpServer = options && options.server;
     \\    const requested = Number(options && options.port || 0);
-    \\    this.__home_port = requested > 0 ? requested : __home_ws_next_server_port++;
+    \\    this.__home_http_server = httpServer || null;
+    \\    this.__home_port = 0;
     \\    this.__home_closed = false;
-    \\    __home_ws_servers_by_port[this.__home_port] = this;
+    \\    if (httpServer) {
+    \\      if (!Array.isArray(httpServer.__home_ws_servers)) httpServer.__home_ws_servers = [];
+    \\      httpServer.__home_ws_servers.push(this);
+    \\      if (Number(httpServer.__home_port) > 0) this.__home_bind_port(httpServer.__home_port);
+    \\    } else {
+    \\      this.__home_bind_port(requested > 0 ? requested : __home_ws_next_server_port++);
+    \\    }
     \\  }
-    \\  address() { return { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; }
+    \\  __home_bind_port(port) {
+    \\    if (this.__home_port > 0 && __home_ws_servers_by_port[this.__home_port] === this) delete __home_ws_servers_by_port[this.__home_port];
+    \\    this.__home_port = Number(port) || 0;
+    \\    if (this.__home_port > 0 && !this.__home_closed) __home_ws_servers_by_port[this.__home_port] = this;
+    \\  }
+    \\  __home_unbind_port(port) {
+    \\    if (Number(port) !== this.__home_port) return;
+    \\    if (__home_ws_servers_by_port[this.__home_port] === this) delete __home_ws_servers_by_port[this.__home_port];
+    \\    this.__home_port = 0;
+    \\  }
+    \\  address() {
+    \\    if (this.__home_http_server && typeof this.__home_http_server.address === "function") return this.__home_http_server.address();
+    \\    return { address: "127.0.0.1", family: "IPv4", port: this.__home_port };
+    \\  }
     \\  close(callback) {
     \\    this.__home_closed = true;
-    \\    delete __home_ws_servers_by_port[this.__home_port];
+    \\    this.__home_unbind_port(this.__home_port);
+    \\    if (this.__home_http_server && Array.isArray(this.__home_http_server.__home_ws_servers)) {
+    \\      const index = this.__home_http_server.__home_ws_servers.indexOf(this);
+    \\      if (index >= 0) this.__home_http_server.__home_ws_servers.splice(index, 1);
+    \\    }
     \\    if (typeof callback === "function") Promise.resolve().then(callback);
     \\  }
     \\  handleUpgrade(request, socket, head, callback) {
@@ -55431,6 +55461,7 @@ const harness_prelude =
     \\  };
     \\}
     \\Request.prototype.json = function() {
+    \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
     \\  if (typeof this.__home_text === "string" && this.__home_text.length > 0) return Promise.resolve(__home_parse_json_body_text(this.__home_text));
     \\  return Promise.resolve(this.text()).then(text => __home_parse_json_body_text(text));
     \\};
