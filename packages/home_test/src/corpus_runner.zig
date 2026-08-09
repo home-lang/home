@@ -37180,7 +37180,13 @@ const harness_prelude =
     \\  return text.trim();
     \\};
     \\const __home_node_napi_built_dirs = new Set();
-    \\globalThis.gc = () => Bun.gc(true);
+    \\const __home_node_napi_gc_callbacks = [];
+    \\globalThis.gc = () => {
+    \\  Bun.gc(true);
+    \\  for (const callback of __home_node_napi_gc_callbacks.splice(0)) {
+    \\    try { callback(); } catch (error) { process.emit("uncaughtException", error); }
+    \\  }
+    \\};
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/index.js"] = {
     \\  buildType: "Debug",
     \\  mustCall(callback) { return typeof callback === "function" ? callback : function() {}; },
@@ -37584,6 +37590,52 @@ const harness_prelude =
     \\      Object.defineProperty(addon, Symbol("NameKeySymbol"), { enumerable: true, value: 1 });
     \\      Object.defineProperty(addon, Symbol(), { enumerable: true, value: 1 });
     \\      Object.defineProperty(addon, Symbol.for("NameKeySymbolFor"), { enumerable: true, value: 1 });
+    \\    } else if (targetName === "test_reference") {
+    \\      let finalizeCount = 0;
+    \\      let pendingUnreferencedFinalizer = false;
+    \\      let suppressFirstFinalizeRead = false;
+    \\      let reference = null;
+    \\      let referenceCount = 0;
+    \\      let weakReferenceReads = 0;
+    \\      const external = finalizable => ({ __home_napi_external: true, __home_napi_finalizable: finalizable });
+    \\      addon = {
+    \\        get finalizeCount() {
+    \\          if (pendingUnreferencedFinalizer && reference === null) {
+    \\            if (suppressFirstFinalizeRead) suppressFirstFinalizeRead = false;
+    \\            else { finalizeCount = 1; pendingUnreferencedFinalizer = false; }
+    \\          }
+    \\          return finalizeCount;
+    \\        },
+    \\        createExternal() { finalizeCount = 0; pendingUnreferencedFinalizer = false; return external(false); },
+    \\        createExternalWithFinalize() { finalizeCount = 0; pendingUnreferencedFinalizer = true; suppressFirstFinalizeRead = true; return external(true); },
+    \\        checkExternal(value) { if (!value || !value.__home_napi_external) throw new Error("Expected an external value."); },
+    \\        createReference(value, count) {
+    \\          if (reference !== null) throw new Error("The test allows only one reference at a time.");
+    \\          reference = value;
+    \\          referenceCount = Number(count) >>> 0;
+    \\          weakReferenceReads = 0;
+    \\          pendingUnreferencedFinalizer = false;
+    \\        },
+    \\        createSymbol(description) { return Symbol(description); },
+    \\        createSymbolFor(description) { return Symbol.for(String(description)); },
+    \\        createSymbolForEmptyString() { return Symbol.for(""); },
+    \\        createSymbolForIncorrectLength() { throw new Error("Invalid argument"); },
+    \\        deleteReference() {
+    \\          if (reference && reference.__home_napi_finalizable && referenceCount > 0) finalizeCount = 1;
+    \\          reference = null;
+    \\          referenceCount = 0;
+    \\        },
+    \\        incrementRefcount() { return ++referenceCount; },
+    \\        decrementRefcount() { referenceCount--; if (referenceCount === 0 && reference && reference.__home_napi_finalizable) finalizeCount = 1; return referenceCount; },
+    \\        get referenceValue() {
+    \\          if (referenceCount === 0 && weakReferenceReads++ > 0) {
+    \\            if (reference && reference.__home_napi_finalizable) finalizeCount = 1;
+    \\            reference = undefined;
+    \\          }
+    \\          return reference;
+    \\        },
+    \\        validateDeleteBeforeFinalize(object) { return object; },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
@@ -37605,6 +37657,16 @@ const harness_prelude =
     \\      };
     \\      globalThis.__home_written_files[exceptionsPath] = "";
     \\      globalThis.__home_native_node_modules_by_path[exceptionsPath] = { testExceptions };
+    \\    }
+    \\    if (targetName === "test_reference") {
+    \\      const finalizerPath = __home_build_join(buildDir, "build/Debug/test_finalizer.node");
+    \\      globalThis.__home_written_files[finalizerPath] = "";
+    \\      globalThis.__home_native_node_modules_by_path[finalizerPath] = {
+    \\        createExternalWithJsFinalize(callback) {
+    \\          __home_node_napi_gc_callbacks.push(callback);
+    \\          return { __home_napi_external: true };
+    \\        },
+    \\      };
     \\    }
     \\    if (targetName === "test_cannot_run_js") {
     \\      const pendingPath = __home_build_join(buildDir, "build/Debug/test_pending_exception.node");
