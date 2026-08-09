@@ -5686,6 +5686,23 @@ pub const Checker = struct {
                         false,
                     ) catch return error.OutOfMemory;
                     try self.recordNarrow(template_name, tp_id);
+                    var comma_names = std.mem.trimStart(u8, template_tag.description, " \t\r\n");
+                    while (comma_names.len > 0 and comma_names[0] == ',') {
+                        comma_names = std.mem.trimStart(u8, comma_names[1..], " \t\r\n");
+                        if (comma_names.len == 0 or !isJsDocIdentStart(comma_names[0])) break;
+                        var name_len: usize = 1;
+                        while (name_len < comma_names.len and isJsDocIdentChar(comma_names[name_len])) : (name_len += 1) {}
+                        const comma_name = self.string_interner.intern(comma_names[0..name_len]) catch return error.OutOfMemory;
+                        const comma_tp = self.interner.internFreshTypeParameterWithFlags(
+                            comma_name,
+                            types.Primitive.unknown,
+                            types.Primitive.none,
+                            .invariant,
+                            false,
+                        ) catch return error.OutOfMemory;
+                        try self.recordNarrow(comma_name, comma_tp);
+                        comma_names = std.mem.trimStart(u8, comma_names[name_len..], " \t\r\n");
+                    }
                 }
                 _ = try self.jsDocTypeTextToTypeAt(src, tag.type_text, root);
                 if (!has_template) {
@@ -63415,6 +63432,7 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) bool {
         if (!self.sourceHasVirtualFilenameSections()) return true;
+        if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) return true;
         if (self.lookupNarrow(name)) |t| {
             if (t != types.Primitive.none and t != types.Primitive.any and t != types.Primitive.unknown) return true;
         }
@@ -80977,6 +80995,7 @@ pub const Checker = struct {
             var formal_params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer formal_params.deinit(self.gpa);
             var template_index: usize = 0;
+            const template_diagnostic_start = self.diagnostics.items.len;
             for (tags) |tag| {
                 if (tag.kind == .typedef_tag and std.mem.eql(u8, tag.name, name)) break;
                 if (tag.kind != .template_tag or tag.name.len == 0) continue;
@@ -80994,11 +81013,53 @@ pub const Checker = struct {
                     &formal_params,
                     &template_index,
                 );
+                try self.recordJsDocGenericTypedefCommaTemplates(
+                    src,
+                    body,
+                    tag.description,
+                    arg_types.items,
+                    arg_positions.items,
+                    &subs,
+                    &formal_params,
+                    &template_index,
+                );
             }
             if (template_index == 0) {
                 try self.recordJsDocInlineTemplatesBeforeTypedef(src, body, arg_types.items, arg_positions.items, &subs, &formal_params, &template_index);
             }
             if (template_index == 0) return null;
+            var missing_required_arg = false;
+            const first_unsupplied = @min(arg_types.items.len, formal_params.items.len);
+            for (formal_params.items[first_unsupplied..]) |param_t| {
+                if (param_t >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(param_t).is_type_parameter)
+                {
+                    missing_required_arg = true;
+                    break;
+                }
+                const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
+                if (payload.default == types.Primitive.none) {
+                    missing_required_arg = true;
+                    break;
+                }
+            }
+            if (missing_required_arg) {
+                self.diagnostics.shrinkRetainingCapacity(template_diagnostic_start);
+                const pos = self.sliceStartPos(src, name);
+                if (pos != null and self.hasDiagnosticAtPosition(TsCodes.generic_type_requires_args, pos.?)) return types.Primitive.any;
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Generic type '{s}' requires {d} type argument(s).",
+                    .{ name, formal_params.items.len },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = self.jsdoc_diagnostic_anchor,
+                    .pos = pos,
+                    .code = TsCodes.generic_type_requires_args,
+                    .message = msg,
+                });
+                return types.Primitive.any;
+            }
 
             var typedef_t = (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) orelse
                 ((try self.jsDocTypeTextToType(src, body_type_text)) orelse types.Primitive.any);
@@ -81045,7 +81106,7 @@ pub const Checker = struct {
     ) CheckError!void {
         if (name_text.len == 0) return;
         const template_name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
-        const constraint = if (constraint_text.len > 0)
+        const constraint = if (template_index.* == 0 and constraint_text.len > 0)
             (try self.jsDocTypeTextToType(src, constraint_text)) orelse types.Primitive.unknown
         else
             types.Primitive.unknown;
@@ -81070,6 +81131,41 @@ pub const Checker = struct {
         try self.recordNarrow(template_name, formal_t);
         try formal_params.append(self.gpa, formal_t);
         template_index.* += 1;
+    }
+
+    fn recordJsDocGenericTypedefCommaTemplates(
+        self: *Checker,
+        src: []const u8,
+        body: []const u8,
+        description: []const u8,
+        arg_types: []const TypeId,
+        arg_positions: []const ?u32,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        formal_params: *std.ArrayListUnmanaged(TypeId),
+        template_index: *usize,
+    ) CheckError!void {
+        var rest = std.mem.trimStart(u8, description, " \t\r\n");
+        while (rest.len > 0 and rest[0] == ',') {
+            rest = std.mem.trimStart(u8, rest[1..], " \t\r\n");
+            if (rest.len == 0 or !isJsDocIdentStart(rest[0])) return;
+            var name_len: usize = 1;
+            while (name_len < rest.len and isJsDocIdentChar(rest[name_len])) : (name_len += 1) {}
+            try self.recordJsDocGenericTypedefTemplate(
+                src,
+                body,
+                rest[0..name_len],
+                "",
+                "",
+                .none,
+                false,
+                arg_types,
+                arg_positions,
+                subs,
+                formal_params,
+                template_index,
+            );
+            rest = std.mem.trimStart(u8, rest[name_len..], " \t\r\n");
+        }
     }
 
     fn recordJsDocInlineTemplatesBeforeTypedef(
@@ -118667,6 +118763,13 @@ pub const Checker = struct {
             }
             return out.items;
         }
+        if (node != hir_mod.none_node_id and
+            self.hir.kindOf(node) == .object_type and
+            t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(t).is_object_type)
+        {
+            return try self.allocObjectTypeShape(t);
+        }
         return self.typeArgConstraintTypeName(t, allow_signature_display);
     }
 
@@ -118817,6 +118920,14 @@ pub const Checker = struct {
             chain = try self.typeArgSignatureConstraintChain(arg_t, info);
         } else if (!constraint_is_object) {
             chain = try self.typeArgTupleConstraintChain(arg_t, constraint);
+            if (chain.len == 0 and
+                arg_t < self.interner.pool.typeCount() and
+                constraint < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(arg_t).is_object_type and
+                self.interner.pool.flagsOf(constraint).is_object_type)
+            {
+                chain = try self.buildAssignabilityElaborationChain(arg_t, constraint);
+            }
             if (!broad_function_to_call and
                 chain.len == 0 and
                 (self.engine.isAssignableTo(arg_t, constraint) catch true))
@@ -197425,6 +197536,35 @@ test "checker: checkjs JSDoc @typedef with template parameters" {
             try T.expect(std.mem.indexOf(u8, d.message, "'T'") == null);
         }
     }
+}
+
+test "checker: checkjs JSDoc typedef supports comma templates across virtual files" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: a.js
+        \\/**
+        \\ * @template {{ a: number, b: string }} T,U
+        \\ * @template {{ c: boolean }} V
+        \\ * @template W
+        \\ * @template X
+        \\ * @typedef {{ t: T, u: U, v: V, w: W, x: X }} Everything
+        \\ */
+        \\/** @type {Everything<{ a: number }, undefined, { c: 1 }, number, string>} */
+        \\var wrong;
+        \\/** @type {Everything<{ a: number }>} */
+        \\var insufficient;
+        \\// @Filename: test.ts
+        \\declare var cross: Everything<{ a: number }, undefined, { c: 1 }, number, string>;
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setAllowJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.generic_type_requires_args));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: checkjs JSDoc typedef indexed access template instantiates" {
