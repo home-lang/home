@@ -53371,8 +53371,8 @@ const harness_prelude =
     \\    const selectorText = String(selector);
     \\    if (!__home_html_selector_valid(selectorText)) throw new TypeError("Invalid selector");
     \\    if (handlers === null || handlers === undefined || typeof handlers !== "object") throw new TypeError("Expected object");
-    \\    if (typeof handlers.element !== "function" && typeof handlers.text !== "function") __home_unsupported("Only HTMLRewriter element and text handlers are supported by this bootstrap path");
-    \\    this.__home_html_handlers.push({ selector: selectorText, receiver: handlers, element: handlers.element, text: handlers.text });
+    \\    if (typeof handlers.element !== "function" && typeof handlers.comments !== "function" && typeof handlers.text !== "function") __home_unsupported("HTMLRewriter handler has no supported callbacks");
+    \\    this.__home_html_handlers.push({ selector: selectorText, receiver: handlers, element: handlers.element, comments: handlers.comments, text: handlers.text });
     \\    return this;
     \\  };
     \\  HTMLRewriter.prototype.onDocument = function(handlers) {
@@ -53391,6 +53391,39 @@ const harness_prelude =
     \\    const rejectedError = source.match(/Promise\.reject\(\s*new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)\s*\)/);
     \\    if (rejectedError) throw new Error(rejectedError[1]);
     \\    throw new Error("Async HTMLRewriter handler rejected");
+    \\  }
+    \\  function __home_html_escape(value) {
+    \\    return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    \\  }
+    \\  function __home_html_apply_comments(html, callback, receiver) {
+    \\    return String(html).replace(/<!--([\s\S]*?)-->/g, function(_match, initialText) {
+    \\      const before = [];
+    \\      const after = [];
+    \\      let text = initialText;
+    \\      let removed = false;
+    \\      let replacement = null;
+    \\      function content(value, options) {
+    \\        return options && options.html ? String(value) : __home_html_escape(value);
+    \\      }
+    \\      const comment = {
+    \\        get removed() { return removed; },
+    \\        get text() { return text; },
+    \\        set text(value) { text = String(value); },
+    \\        before(value, options) { before.push(content(value, options)); },
+    \\        after(value, options) { after.unshift(content(value, options)); },
+    \\        replace(value, options) {
+    \\          replacement = content(value, options);
+    \\          removed = true;
+    \\        },
+    \\        remove() {
+    \\          replacement = null;
+    \\          removed = true;
+    \\        },
+    \\      };
+    \\      __home_html_check_handler_result(callback.call(receiver, comment), callback);
+    \\      const rewritten = removed ? (replacement || "") : "<!--" + text + "-->";
+    \\      return before.join("") + rewritten + after.join("");
+    \\    });
     \\  }
     \\  HTMLRewriter.prototype.transform = function(input) {
     \\    if (input === null || input === undefined) throw new TypeError("Expected Response or Body");
@@ -53510,6 +53543,10 @@ const harness_prelude =
     \\            return element.__home_before.join("") + rewritten + element.__home_after.join("");
     \\          });
     \\        }
+    \\        function applyCommentMutations() {
+    \\          const replacePattern = new RegExp("(<" + tagName + "[^>]*>)([\\s\\S]*?)(</" + tagName + ">)", "i");
+    \\          output = output.replace(replacePattern, (match, open, inner, close) => open + __home_html_apply_comments(inner, handler.comments, handler.receiver) + close);
+    \\        }
     \\        if (typeof handler.element === "function") {
     \\          let result;
     \\          try {
@@ -53535,6 +53572,7 @@ const harness_prelude =
     \\          if (!__home_is_thenable(result) || element.__home_inner_content !== null) applyElementMutations();
     \\          detachAttributeIterators();
     \\        }
+    \\        if (typeof handler.comments === "function") applyCommentMutations();
     \\        if (typeof handler.text === "function") {
     \\          const textChunk = {
     \\            text: "",
@@ -53549,6 +53587,7 @@ const harness_prelude =
     \\      }
     \\    }
     \\    for (const handlers of this.__home_html_document_handlers) {
+    \\      if (typeof handlers.comments === "function") output = __home_html_apply_comments(output, handlers.comments, handlers);
     \\      if (typeof handlers.text === "function") {
     \\        const chunk = { text: output, lastInTextNode: true, before() {}, after() {}, replace() {}, remove() {} };
     \\        __home_html_check_handler_result(handlers.text(chunk), handlers.text);
@@ -85769,6 +85808,48 @@ test "bootstrap runner propagates HTMLRewriter async handler errors" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/19219.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers HTMLRewriter comment callbacks and mutations" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("element and document comment handlers", async () => {
+        \\  const elementResult = new HTMLRewriter().on("p", {
+        \\    comments(comment) {
+        \\      expect(comment.removed).toBe(false);
+        \\      expect(comment.text).toBe("old");
+        \\      comment.before("<b>before</b>");
+        \\      comment.before("<b>before html</b>", { html: true });
+        \\      comment.text = "new";
+        \\      comment.after("<i>after</i>");
+        \\      comment.after("<i>after html</i>", { html: true });
+        \\    },
+        \\  }).transform(new Response("<p><!--old--></p>"));
+        \\  expect(await elementResult.text()).toBe("<p>&lt;b&gt;before&lt;/b&gt;<b>before html</b><!--new--><i>after html</i>&lt;i&gt;after&lt;/i&gt;</p>");
+        \\
+        \\  const documentResult = new HTMLRewriter().onDocument({
+        \\    comments(comment) {
+        \\      comment.replace("<em>document</em>", { html: true });
+        \\      expect(comment.removed).toBe(true);
+        \\    },
+        \\  }).transform(new Response("<main><!--old--></main>"));
+        \\  expect(await documentResult.text()).toBe("<main><em>document</em></main>");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/workerd/html-rewriter-comments.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
