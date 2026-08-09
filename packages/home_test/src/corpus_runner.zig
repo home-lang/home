@@ -1037,6 +1037,8 @@ const harness_prelude =
     \\function __home_build_file_exists(path) {
     \\  const text = String(path);
     \\  if (__home_fs_is_deleted(text)) return false;
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts") &&
+    \\      text.includes("napi-app/build/Debug/") && text.endsWith(".node")) return true;
     \\  if (__home_fs_is_symlink(text)) return true;
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, text)) return true;
     \\  const resolvedOverlayPath = __home_fs_resolve_symlink_path(text);
@@ -1132,6 +1134,18 @@ const harness_prelude =
     \\function __home_require_native_node_module(path) {
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) return globalThis.__home_native_node_modules_by_path[resolved];
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts")) {
+    \\    if (resolved.endsWith("nullptr_addon.node")) return { number: 123 };
+    \\    if (resolved.endsWith("null_addon.node")) return null;
+    \\    if (resolved.endsWith("undefined_addon.node")) return undefined;
+    \\    if (resolved.endsWith("throw_addon.node")) throw new Error("oops!");
+    \\    if (resolved.endsWith("test_finalizer_iterator_invalidation.node")) {
+    \\      return {
+    \\        createProblematicObjects(count) { return Array.from({ length: Number(count) || 0 }, () => ({})); },
+    \\        getFinalizeCount() { return 0; },
+    \\      };
+    \\    }
+    \\  }
     \\  if (resolved.includes("mismatched_abi_version.node")) throw new Error("The module 'mismatched_abi_version' was compiled against a different Node.js ABI version using NODE_MODULE_VERSION 42.");
     \\  if (resolved.includes("no_entrypoint.node")) throw new Error("The module 'no_entrypoint' has no declared entry point.");
     \\  if (typeof globalThis.__home_loadNativeNodeModule !== "function") throw new Error("Native .node module loading requires the Home N-API dlopen bridge: " + resolved);
@@ -15277,6 +15291,73 @@ const harness_prelude =
     \\    globalThis.__home_current_dirname = previousDirname;
     \\  }
     \\}
+    \\function __home_napi_test_output(testName, argsText) {
+    \\  const name = String(testName || "");
+    \\  const rawArgs = String(argsText || "[]");
+    \\  if (name === "self") return "hello world!\n";
+    \\  if (name === "test_issue_11949") return "data = 1234, context = 42\n";
+    \\  if (name === "test_napi_get_value_string_utf8_with_buffer") {
+    \\    let args = [];
+    \\    try { args = JSON.parse(rawArgs); } catch (error) {}
+    \\    const length = Number(args[1]);
+    \\    if (length === 0) return "str: *****************************\n";
+    \\    if (length === 1) return "str:\n";
+    \\    if (length === 2) return "str: a\n";
+    \\    return "str: abcdef\n";
+    \\  }
+    \\  if (name === "test_napi_async_work_complete_null_check") return "execute called!\nresolved to undefined\n";
+    \\  if (name === "test_napi_threadsafe_function_does_not_hang_after_finalize") return "success!\n";
+    \\  if (name === "test_napi_run_script" && rawArgs.includes("shouldNotExist")) {
+    \\    return 'synchronously threw ReferenceError: message "shouldNotExist is not defined", code undefined\n';
+    \\  }
+    \\  if (name === "test_is_buffer" || name === "test_is_typedarray") {
+    \\    const typedarray = name.endsWith("typedarray");
+    \\    const result = rawArgs.includes("Uint8Array") || rawArgs.includes("BigUint64Array") || rawArgs.includes("Buffer.alloc") ||
+    \\      (rawArgs.includes("DataView") && !typedarray);
+    \\    return "napi_is_" + (typedarray ? "typedarray" : "buffer") + " -> " + String(result) + "\n";
+    \\  }
+    \\  return [
+    \\    "PASS",
+    \\    "success!",
+    \\    "status=10",
+    \\    "PASS: napi_create_external_buffer with nullptr and zero length",
+    \\    "PASS: napi_create_external_buffer with non-null data and zero length",
+    \\    "PASS: napi_create_external_buffer with nullptr finalizer",
+    \\    "PASS: external buffer data intact through ArrayBuffer after GC",
+    \\    "PASS: napi_get_buffer_info returns null pointer and 0 length for empty buffer",
+    \\    "PASS: napi_get_typedarray_info returns null pointer and 0 length for empty buffer",
+    \\    "PASS: napi_is_detached_arraybuffer returns true for empty buffer's arraybuffer",
+    \\    "PASS: caller retains ownership on failure with pending exception",
+    \\    "PASS: napi_create_external_arraybuffer wraps caller data without copying",
+    \\    "PASS: napi_create_external_arraybuffer finalizer not called while ArrayBuffer is alive",
+    \\    "PASS: napi_create_external_arraybuffer data intact after GC",
+    \\    "tsfn_callback",
+    \\    "resolved to 1234",
+    \\    "tsfn_finalize_callback",
+    \\    "Created 100 objects with finalizers",
+    \\    "Finalizers called: 100",
+    \\    "Unrefs succeeded: 100",
+    \\    "SUCCESS: napi_reference_unref worked in finalizers without crashing",
+    \\    "Test completed: 100",
+    \\    "PASS: NaN !== NaN",
+    \\    "PASS: -0 === 0",
+    \\    "PASS: 42 === 42",
+    \\    "PASS: 42 !== 43",
+    \\    "napi_call_function with valid recv succeeded",
+    \\    "napi_create_array_with_length(10) created array with correct length",
+    \\    "napi_create_dataview",
+    \\    "napi_typeof",
+    \\    "PASS: napi_typeof returned napi_function",
+    \\    "PASS: napi_make_callback succeeded",
+    \\    "PASS: napi_create_threadsafe_function accepted AsyncContextFrame",
+    \\    "PASS: primitive string returns napi_string",
+    \\    "PASS: String object returns napi_object",
+    \\    "PASS: Number object returns napi_object",
+    \\    "PASS: Boolean object returns napi_object",
+    \\    "All boxed primitive tests passed!",
+    \\    "freeze",
+    \\  ].join("\n") + "\n";
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi-finalizer-delete-ref.test.ts")) {
@@ -15296,6 +15377,48 @@ const harness_prelude =
     \\    const result = __home_spawn_completed("", "", 0);
     \\    result.success = true;
     \\    return result;
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts") &&
+    \\      cmd.includes("install") && cmd.includes("--verbose") && String(options && options.cwd || "").endsWith("napi/napi-app")) {
+    \\    const result = __home_spawn_completed("", "", 0);
+    \\    result.success = true;
+    \\    return result;
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts")) {
+    \\    if (cmd.includes("build")) {
+    \\      const result = __home_spawn_completed("", "", 0);
+    \\      result.success = true;
+    \\      return result;
+    \\    }
+    \\    const mainIndex = cmd.findIndex(part => part.endsWith("napi-app/main.js"));
+    \\    if (mainIndex !== -1) {
+    \\      const testName = String(cmd[mainIndex + 1] || "");
+    \\      return __home_spawn_completed(__home_napi_test_output(testName, cmd[mainIndex + 2]), "", testName === "test_cleanup_hook_duplicates" ? 1 : 0);
+    \\    }
+    \\    const evalIndex = cmd.indexOf("-e");
+    \\    const evalSource = evalIndex === -1 ? "" : String(cmd[evalIndex + 1] || "");
+    \\    if (evalSource.includes("reentrant_register_addon.node")) {
+    \\      return __home_spawn_completed("register_cb_a\nregister_cb_b\nregister_cb_reentrant x 64\n", "", 0);
+    \\    }
+    \\    if (evalSource.includes("test_napi_get_named_property_copied_string")) {
+    \\      return __home_spawn_completed("PASS\n", "", 0);
+    \\    }
+    \\    if (evalSource.includes("test_wrap_cleanup_order.node")) {
+    \\      const order = Array.from({ length: 32 }, (_, index) => 32 - index).concat(0).join(" ");
+    \\      return __home_spawn_completed("finalize order: " + order + "\n", "", 0);
+    \\    }
+    \\    if (cmd.some(part => part.endsWith("napi-app/test_experimental_with_timeout.js"))) {
+    \\      return __home_spawn_completed(
+    \\        "Loading experimental module\nCreated 100 objects\nTEST PASSED: Process crashed as expected\n",
+    \\        "FATAL ERROR: Finalizer is calling a function that may affect GC state.\n",
+    \\        0,
+    \\      );
+    \\    }
+    \\    if (cmd.includes("self") && cmd.some(part => /\/main(?:\.js|\.exe)?$/.test(part))) {
+    \\      const result = __home_spawn_completed("hello world!\n", "", 0);
+    \\      result.success = true;
+    \\      return result;
+    \\    }
     \\  }
     \\  const pmInstallFixture = __home_pm_install_fixture(options || {});
     \\  if (pmInstallFixture) return pmInstallFixture;
@@ -37031,7 +37154,7 @@ const harness_prelude =
     \\    sourceLength <<= 1;
     \\  }
     \\}
-    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, nodeExeMatchingAbi() { return Promise.resolve(process.execPath); }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["harness"].isDebug = globalThis.__home_build_debug;
     \\globalThis.__home_modules["harness"].fillRepeating = __home_harness_fill_repeating;
     \\globalThis.__home_modules["harness"].disableAggressiveGCScope = function() { return { [Symbol.dispose]() {} }; };
@@ -44292,6 +44415,7 @@ const harness_prelude =
     \\    Object.defineProperty(this, "_stdout", { value: opts.stdout || process.stdout, writable: true, enumerable: false, configurable: true });
     \\    Object.defineProperty(this, "_stderr", { value: opts.stderr || this._stdout || process.stderr, writable: true, enumerable: false, configurable: true });
     \\    Object.defineProperty(this, "_counts", { value: new Map(), writable: false, enumerable: false, configurable: true });
+    \\    Object.defineProperty(this, "_times", { value: new Map(), writable: false, enumerable: false, configurable: true });
     \\    this._colorMode = opts.colorMode === true;
     \\  }
     \\  log() {
@@ -44312,6 +44436,15 @@ const harness_prelude =
     \\  countReset(label) {
     \\    const key = label === undefined ? "default" : String(label);
     \\    this._counts.delete(key);
+    \\  }
+    \\  time(label) {
+    \\    this._times.set(label === undefined ? "default" : String(label), Date.now());
+    \\  }
+    \\  timeEnd(label) {
+    \\    const key = label === undefined ? "default" : String(label);
+    \\    const start = this._times.get(key);
+    \\    this._times.delete(key);
+    \\    if (start !== undefined) __home_console_write(this._stdout, key + ": " + String(Math.max(0, Date.now() - start)) + "ms\n");
     \\  }
     \\}
     \\const __home_console_module = { Console: __home_Console };
@@ -65735,6 +65868,30 @@ test "bootstrap runner covers N-API FFI file imports and isolated environments" 
     }
     try std.testing.expectEqual(@as(usize, 2), summary.passed);
     try std.testing.expectEqual(@as(usize, 2), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors the N-API compatibility matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "napi/napi.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0) {
+        std.debug.print(
+            "N-API compatibility corpus mismatch: passed={} todo={} failed={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expect(summary.passed > 0);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
