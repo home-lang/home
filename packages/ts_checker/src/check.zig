@@ -15604,6 +15604,7 @@ pub const Checker = struct {
         const src = self.source orelse return null;
         const span = self.hir.spanOf(node);
         const body = self.leadingJsDocBodyForFunctionOrOwner(src, node) orelse return null;
+        if (std.mem.indexOf(u8, body, "@callback") != null) return null;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
 
@@ -200515,6 +200516,29 @@ test "checker: checkjs JSDoc function @type return participates in TS2355" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: JSDoc callback return tags do not annotate the host function" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /a.js
+        \\/**
+        \\ * @callback LocalCallback
+        \\ * @param {string} value
+        \\ * @returns {number}
+        \\ */
+        \\function local() {}
+        \\/**
+        \\ * @callback ExportedCallback
+        \\ * @param {string} value
+        \\ * @returns {number}
+        \\ */
+        \\export function exported() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.fn_must_return_value));
 }
 
 test "checker: checkjs unmatched JSDoc param emits TS8024" {

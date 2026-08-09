@@ -6146,7 +6146,7 @@ pub fn loadDirectoryWithOptions(
         const raw_source: []u8 = if (stripped != null) src else &.{};
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
-        const baseline_path = try errorBaselinePath(gpa, options.baseline_root, stem);
+        const baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.baseline_root, stem, src);
         defer if (baseline_path) |p| gpa.free(p);
         const baseline_only_option_deprecation = if (baseline_path) |bp|
             try baselineHasOnlyOptionDeprecation(gpa, bp)
@@ -7067,6 +7067,40 @@ fn hasErrorBaseline(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []
     const path = errorBaselinePath(gpa, baseline_root, stem) catch return false;
     defer if (path) |p| gpa.free(p);
     return path != null;
+}
+
+fn sourceSelectedErrorBaselinePath(
+    gpa: std.mem.Allocator,
+    baseline_root: ?[]const u8,
+    stem: []const u8,
+    source: []const u8,
+) !?[]u8 {
+    const root = baseline_root orelse return null;
+    const direct = try std.fmt.allocPrint(gpa, "{s}/{s}.errors.txt", .{ root, stem });
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().access(io, direct, .{}) catch {
+        gpa.free(direct);
+        if (directiveValue(source, "checkJs")) |raw| {
+            const selected = firstCommaSeparatedValue(raw);
+            if (std.ascii.eqlIgnoreCase(selected, "true") or std.ascii.eqlIgnoreCase(selected, "false")) {
+                const value = if (std.ascii.eqlIgnoreCase(selected, "true")) "true" else "false";
+                const variant = try std.fmt.allocPrint(
+                    gpa,
+                    "{s}/{s}(checkjs={s}).errors.txt",
+                    .{ root, stem, value },
+                );
+                std.Io.Dir.cwd().access(io, variant, .{}) catch {
+                    gpa.free(variant);
+                    return try variantErrorBaselinePath(gpa, root, stem);
+                };
+                return variant;
+            }
+        }
+        return try variantErrorBaselinePath(gpa, root, stem);
+    };
+    return direct;
 }
 
 fn errorBaselinePath(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) !?[]u8 {
@@ -8190,7 +8224,10 @@ pub const StrictInferenceInput = struct {
 ///      TS2564 diagnostic, upstream had `strictPropertyInitialization`
 ///      off — return false so we don't synthesise spurious TS2564s.
 ///      This is the targeted fix for Agent #25's TS2564 over-fire.
-///   4. Default `true`. Empirically, defaulting strict OFF
+///   4. A checked-JavaScript fixture defaults `strict` to false because
+///      `checkJs` enables diagnostics but does not enable the strict family.
+///      Baseline diagnostics still opt individual strict flags back in below.
+///   5. Default `true`. Empirically, defaulting strict OFF
 ///      net-regressed the assignmentCompatibility / typeRelationships
 ///      categories — many of those fixtures rely on
 ///      `strictFunctionTypes` to surface inheritance / call-signature
@@ -8207,6 +8244,8 @@ pub fn inferFixtureStrictOn(input: StrictInferenceInput) bool {
     {
         return false;
     }
+    const directive_source = if (input.raw_src.len > 0) input.raw_src else input.case_src;
+    if (directiveBool(directive_source, "checkJs") orelse false) return false;
     return true;
 }
 
@@ -8979,6 +9018,37 @@ test "conformance: parseStrictDirectiveState distinguishes sub-strict overrides"
         \\let x;
     ).?;
     try T.expect(explicit_strict.strict_explicit);
+}
+
+test "conformance: checkJs does not imply strict mode" {
+    try T.expect(!inferFixtureStrictOn(.{
+        .case_src =
+        \\// @checkJs: true
+        \\// @filename: main.js
+        \\new Promise((resolve) => resolve());
+        ,
+        .gpa = T.allocator,
+    }));
+    try T.expect(inferFixtureStrictOn(.{
+        .case_src =
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @filename: main.js
+        \\function f(value) {}
+        ,
+        .gpa = T.allocator,
+    }));
+}
+
+test "conformance: checkJs matrix selects the executed variant baseline" {
+    const path = (try sourceSelectedErrorBaselinePath(
+        T.allocator,
+        "_submodules/typescript-go/testdata/baselines/reference/compiler",
+        "parameterDecoratorInJsFile",
+        "// @checkJs: true,false",
+    )) orelse return error.TestExpectedEqual;
+    defer T.allocator.free(path);
+    try T.expect(std.mem.endsWith(u8, path, "parameterDecoratorInJsFile(checkjs=true).errors.txt"));
 }
 
 test "conformance: strict false directive leaves strict family disabled" {
