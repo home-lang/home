@@ -48813,11 +48813,16 @@ const harness_prelude =
     \\globalThis.__home_modules["node:diagnostics_channel"] = __home_diagnostics_module;
     \\let __home_tls_next_port = 44100;
     \\const __home_tls_servers = Object.create(null);
-    \\function __home_tls_create_socket() {
+    \\function __home_tls_create_socket(rawSocket) {
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
     \\  socket.alpnProtocol = "http/1.1";
     \\  socket.__home_has_handle = true;
+    \\  socket.__home_has_pending_activity = true;
+    \\  socket.__home_raw_socket = rawSocket || null;
+    \\  socket.__home_close_scheduled = false;
+    \\  socket.__home_close_emitted = false;
+    \\  if (rawSocket) rawSocket.__home_has_pending_activity = true;
     \\  socket.__home_session_reused = false;
     \\  socket.__home_session = Buffer.from("home-tls-session");
     \\  socket._handle = { fd: __home_alloc_virtual_fd("tls-socket", "r") };
@@ -48850,14 +48855,29 @@ const harness_prelude =
     \\    if (this.destroyed) return this;
     \\    this.destroyed = true;
     \\    this.__home_has_handle = false;
+    \\    this.__home_has_pending_activity = false;
+    \\    this._handle = null;
+    \\    const raw = this.__home_raw_socket;
+    \\    if (raw) {
+    \\      raw.__home_has_pending_activity = false;
+    \\      if (!raw.destroyed && typeof raw.destroy === "function") raw.destroy(error);
+    \\      raw._handle = null;
+    \\    }
     \\    if (error) this.emit("error", error);
-    \\    Promise.resolve().then(() => this.emit("close"));
+    \\    if (!this.__home_close_scheduled) {
+    \\      this.__home_close_scheduled = true;
+    \\      Promise.resolve().then(() => Promise.resolve().then(() => {
+    \\        if (this.__home_close_emitted) return;
+    \\        this.__home_close_emitted = true;
+    \\        this.emit("close", !!error);
+    \\      }));
+    \\    }
     \\    return this;
     \\  };
     \\  return socket;
     \\}
     \\function __home_TLSSocket(socket) {
-    \\  return __home_tls_create_socket();
+    \\  return __home_tls_create_socket(socket);
     \\}
     \\function __home_tls_create_server(options, handler) {
     \\  const server = __home_http_event_target();
@@ -48892,12 +48912,12 @@ const harness_prelude =
     \\  return "unknown";
     \\}
     \\function __home_tls_connect(options, callback) {
-    \\  const tlsSocket = __home_tls_create_socket();
+    \\  const tcpSocket = options && options.socket;
+    \\  const tlsSocket = __home_tls_create_socket(tcpSocket);
     \\  if (options && options.session) {
     \\    tlsSocket.__home_session = Buffer.from(options.session);
     \\    tlsSocket.__home_session_reused = true;
     \\  }
-    \\  const tcpSocket = options && options.socket;
     \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || 0);
     \\  if (typeof callback === "function") tlsSocket.once("secureConnect", callback);
     \\  Promise.resolve().then(() => {
@@ -99729,27 +99749,34 @@ test "bootstrap runner supports TLS upgrade leak regression flow" {
     const source =
         \\import { describe, expect, it } from "bun:test";
         \\import { tls as COMMON_CERT, expectMaxObjectTypeCount } from "harness";
+        \\import { once } from "node:events";
         \\import net from "node:net";
         \\import tls from "node:tls";
         \\
         \\describe("TLS upgrade", () => {
-        \\  it("does not leak TLSSocket objects after close", () => {
+        \\  it("does not leak TLSSocket objects after close", async () => {
         \\    const server = tls.createServer({ key: COMMON_CERT.key, cert: COMMON_CERT.cert }, socket => {
         \\      socket.end("hello");
         \\    });
-        \\    server.listen(0, "127.0.0.1");
+        \\    await once(server.listen(0, "127.0.0.1"), "listening");
         \\    const port = (server.address() as net.AddressInfo).port;
         \\    try {
-        \\      for (let i = 0; i < 1; i++) {
+        \\      for (let i = 0; i < 3; i++) {
         \\        const tcpSocket = net.createConnection({ host: "127.0.0.1", port });
+        \\        await once(tcpSocket, "connect");
         \\        const tlsSocket = tls.connect({ socket: tcpSocket, ca: COMMON_CERT.cert, rejectUnauthorized: false });
+        \\        await once(tlsSocket, "secureConnect");
         \\        tlsSocket.on("data", () => {});
         \\        tlsSocket.destroy();
+        \\        await once(tlsSocket, "close");
+        \\        expect(tlsSocket.destroyed).toBe(true);
+        \\        expect(tcpSocket.destroyed).toBe(true);
         \\      }
         \\    } finally {
         \\      server.close();
+        \\      await once(server, "close");
         \\    }
-        \\    expectMaxObjectTypeCount(expect, "TLSSocket", 10, 1000);
+        \\    await expectMaxObjectTypeCount(expect, "TLSSocket", 10, 1000);
         \\  });
         \\});
     ;
