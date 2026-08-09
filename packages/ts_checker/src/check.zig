@@ -4436,6 +4436,7 @@ pub const Checker = struct {
     /// the virtual filesystem. Empty means "fall back to the
     /// `@filename:` virtual-section scan".
     importer_path: []const u8 = "",
+    allow_importing_ts_extensions: bool = false,
     rewrite_relative_import_extensions: bool = false,
     /// Program-level JS namespace-object expandos such as
     /// `var Ns = {}; Ns.C = function() {}` discovered in sibling
@@ -4751,6 +4752,10 @@ pub const Checker = struct {
 
     pub fn setRewriteRelativeImportExtensionsEnabled(self: *Checker, enabled: bool) void {
         self.rewrite_relative_import_extensions = enabled;
+    }
+
+    pub fn setAllowImportingTsExtensionsEnabled(self: *Checker, enabled: bool) void {
+        self.allow_importing_ts_extensions = enabled;
     }
 
     pub fn setScriptObjectExpandos(self: *Checker, expandos: []const ScriptObjectExpando) void {
@@ -9531,10 +9536,10 @@ pub const Checker = struct {
                     const decl_kind = self.hir.kindOf(ex.decl);
                     if (self.isExportAssignmentDecl(s)) {
                         if (!self.namespaceNameComesFromStringLiteral(node)) {
-                            // `export = expr` is itself illegal in a
-                            // namespace. Upstream reports TS1063 only and
-                            // does not cascade into name-resolution errors
-                            // for the invalid assignment expression.
+                            const old_report = self.report_unresolved_in_namespace_scope;
+                            self.report_unresolved_in_namespace_scope = true;
+                            defer self.report_unresolved_in_namespace_scope = old_report;
+                            _ = try self.checkExpression(ex.decl);
                             continue;
                         }
                         if (decl_kind == .identifier) {
@@ -49434,7 +49439,8 @@ pub const Checker = struct {
         if (is_type_only_context) return;
         if (!std.mem.startsWith(u8, spec, ".")) return;
         const code = tsExtensionImportDiagnosticCode(spec) orelse return;
-        const allow_ts_extensions = self.sourceDirectiveValueMentions("allowImportingTsExtensions", "true");
+        const allow_ts_extensions = self.allow_importing_ts_extensions or
+            self.sourceDirectiveValueMentions("allowImportingTsExtensions", "true");
         const rewrite_ts_extensions = self.rewriteRelativeImportExtensionsEnabledForNode(node);
         // Default for `allowImportingTsExtensions` is FALSE ÃÂ¢ÃÂÃÂ TS5097
         // fires unless explicitly enabled. TS2846 is independent: value
@@ -94890,19 +94896,18 @@ pub const Checker = struct {
                     }
                     break :blk types.Primitive.any;
                 }
-                // Skip operand type-checking when the enclosing function
-                // isn't actually a generator ÃÂ¢ÃÂÃÂ the parser already raised
-                // TS1163 ("'yield' is only allowed in a generator body")
-                // and tsc suppresses cascading TS2304/TS2363 noise on
-                // the operand. Matches fixtures like `YieldExpression11/14/15_es6`
-                // and `YieldStarExpression1_es6`.
+                // Legacy non-strict corpus cases suppress operand cascades
+                // after TS1163. Strict TS7 checking still visits the child,
+                // so unresolved operands receive their own TS2304.
                 //
                 // `current_generator_info` alone isn't a sufficient signal:
                 // valid generators without a return-type annotation also
                 // leave it null (yield type is inferred from body). Walk
                 // the parent chain to confirm we're outside any generator
                 // fn / method body before suppressing.
-                if (gen == null and !self.isInsideGeneratorFunction(node)) {
+                if (gen == null and !self.isInsideGeneratorFunction(node) and
+                    !self.strict_flags.always_strict)
+                {
                     break :blk types.Primitive.any;
                 }
                 const inner_t_raw = try self.checkExpression(y.expr);
@@ -126731,12 +126736,16 @@ pub const Checker = struct {
                 break :blk self.expressionAlwaysNullishForNullishDiag(c.then_branch) and
                     self.expressionAlwaysNullishForNullishDiag(c.else_branch);
             },
-            // `a ?? b` / `a ??= b`: the right operand is controlling.
+            // `a ?? b` is always nullish only when both possible result
+            // operands are always nullish.
             // `||`/`&&` can produce a non-nullish operand, so they are
             // "sometimes" ÃÂ¢ÃÂÃÂ never "always" ÃÂ¢ÃÂÃÂ and are excluded here.
             .logical_op => blk: {
                 const lg = hir_mod.logicalOf(self.hir, cur);
-                if (lg.op == .nullish) break :blk self.expressionAlwaysNullishForNullishDiag(lg.rhs);
+                if (lg.op == .nullish) {
+                    break :blk self.expressionAlwaysNullishForNullishDiag(lg.lhs) and
+                        self.expressionAlwaysNullishForNullishDiag(lg.rhs);
+                }
                 break :blk false;
             },
             // Comma operator: the right operand is controlling.
@@ -126745,10 +126754,12 @@ pub const Checker = struct {
                 if (bo.op == .comma) break :blk self.expressionAlwaysNullishForNullishDiag(bo.rhs);
                 break :blk false;
             },
-            // Plain/compound assignment `x = e` / `x ??= e`: the assigned
-            // value is controlling.
+            // Plain assignment returns the assigned value. Compound
+            // assignment can retain the old target value, so its RHS alone
+            // cannot establish that the result is always nullish.
             .assignment => blk: {
                 const a = hir_mod.assignmentOf(self.hir, cur);
+                if (a.op != null) break :blk false;
                 break :blk self.expressionAlwaysNullishForNullishDiag(a.value);
             },
             else => false,
@@ -214076,6 +214087,41 @@ test "checker: TS2871 does not fire for a possibly-nullish variable on the left 
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.always_nullish));
+}
+
+test "checker: TS2871 does not treat a mixed coalesce branch as always nullish" {
+    const s = try newSetup(
+        \\declare let a: unknown, b: unknown;
+        \\const p = (a ? b ?? null : null) ?? 0;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.always_nullish));
+}
+
+test "checker: TS2871 does not treat nullish assignment as always nullish" {
+    const s = try newSetup(
+        \\declare let x: string | null | undefined;
+        \\const q = (x ??= null) ?? 0;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.always_nullish));
+}
+
+test "checker: strict illegal control-flow forms still check their operands" {
+    const s = try newSetup(
+        \\function notAGenerator() { yield yieldOperandName; }
+        \\class C { static { return returnOperandName; } }
+        \\namespace N { export = exportOperandName; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .always_strict = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: TS1271 fires for a legacy property decorator returning a non-void type" {
