@@ -6315,12 +6315,30 @@ pub const Checker = struct {
             const line_end = jsDocLineEnd(body, tag_name_end);
             const content_start = jsDocFirstContentByte(body, tag_name_end, line_end);
             if (content_start < line_end and body[content_start] == '{') continue;
+            if (jsDocInlineTypedTag(body, tag_name_end, line_end, "this")) continue;
             if (jsDocNextTagCompletesTypedef(body, tag_name_end)) continue;
 
             const report_rel = jsDocTypedefNamePos(body, content_start, line_end) orelse continue;
             return .{ .pos = @intCast(body_start + report_rel) };
         }
         return null;
+    }
+
+    fn jsDocInlineTypedTag(body: []const u8, start: usize, end: usize, wanted: []const u8) bool {
+        var search_start = start;
+        while (std.mem.indexOfPos(u8, body, search_start, wanted)) |name_start| {
+            search_start = name_start + wanted.len;
+            if (name_start == 0 or body[name_start - 1] != '@') continue;
+            if (search_start < body.len and isJsDocIdentChar(body[search_start])) continue;
+            var type_start = search_start;
+            while (type_start < end and (body[type_start] == ' ' or body[type_start] == '\t')) : (type_start += 1) {}
+            if (type_start < end and body[type_start] == '{' and
+                std.mem.indexOfScalarPos(u8, body, type_start + 1, '}') != null)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn jsDocNextLineTagStart(body: []const u8, start: usize) ?usize {
@@ -49066,7 +49084,7 @@ pub const Checker = struct {
             if (entry.len == 0) continue;
             const colon = std.mem.indexOfScalar(u8, entry, ':') orelse continue;
             const key = std.mem.trim(u8, entry[0..colon], " \t\r\n\"'");
-            const value = std.mem.trim(u8, entry[colon + 1 ..], " \t\r\n");
+            const value = trimImportAttributeValueTrivia(entry[colon + 1 ..]);
             const value_type = try self.importAttributeNonStringValueType(value, false) orelse continue;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -49081,6 +49099,15 @@ pub const Checker = struct {
             });
             return;
         }
+    }
+
+    fn trimImportAttributeValueTrivia(raw: []const u8) []const u8 {
+        var value = std.mem.trim(u8, raw, " \t\r\n");
+        while (std.mem.startsWith(u8, value, "/*")) {
+            const close = std.mem.indexOf(u8, value[2..], "*/") orelse return value;
+            value = std.mem.trim(u8, value[close + 4 ..], " \t\r\n");
+        }
+        return value;
     }
 
     fn importAttributeNonStringValueType(self: *Checker, raw: []const u8, widen_literal: bool) CheckError!?[]const u8 {
@@ -93364,6 +93391,8 @@ pub const Checker = struct {
                             }
                             try self.reportSuperAbstractMethodAccess(m.object, node, m.name);
                         }
+                    } else if (self.superReferenceHasDerivedMemberOwner(m.object)) {
+                        obj_t = types.Primitive.any;
                     } else {
                         // See note in `call_expr` super branch: TS2466 is the
                         // canonical diagnostic for super used inside a class
@@ -96469,7 +96498,7 @@ pub const Checker = struct {
     /// present, then `reactNamespace`, then the configured factory name
     /// (default `React.createElement` → `React`).
     fn jsxClassicScopeName(self: *Checker) []const u8 {
-        if (self.sourceDirectiveValue("jsxFactory")) |name| {
+        if (self.sourceJsxFactoryPragmaValue()) |name| {
             if (self.jsxFactoryRootName(name)) |root| return root;
         }
         if (self.sourceDirectiveValue("reactNamespace")) |name| return name;
@@ -100773,7 +100802,11 @@ pub const Checker = struct {
         while (lines.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r/*");
             if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| return value;
-            if (jsxDirectiveLineValue(line, "@jsx")) |value| return value;
+            if (std.mem.startsWith(u8, line, "@jsx") and line.len > "@jsx".len and
+                (line["@jsx".len] == ' ' or line["@jsx".len] == '\t'))
+            {
+                if (jsxDirectiveLineValue(line, "@jsx")) |value| return value;
+            }
         }
         return null;
     }
@@ -101243,6 +101276,12 @@ pub const Checker = struct {
         const class_node = self.enclosingSuperClass(node);
         if (class_node == hir_mod.none_node_id) return false;
         return hir_mod.classOf(self.hir, class_node).extends == hir_mod.none_node_id;
+    }
+
+    fn superReferenceHasDerivedMemberOwner(self: *Checker, node: NodeId) bool {
+        const class_node = self.enclosingSuperClass(node);
+        return class_node != hir_mod.none_node_id and
+            hir_mod.classOf(self.hir, class_node).extends != hir_mod.none_node_id;
     }
 
     fn superReferenceLexicalChainIsBroken(self: *Checker, node: NodeId) bool {
@@ -168209,6 +168248,23 @@ test "checker: JSX factory reports tag arity beyond factory callback" {
     try T.expect(found_related);
 }
 
+test "checker: tsgo fallback batch uses block JSX pragma after compiler option" {
+    const s = try newTsxSetup(
+        \\// @jsx: react
+        \\/**
+        \\ * @fileoverview comment
+        \\ * @jsx h
+        \\ */
+        \\declare var h: any;
+        \\declare var Fragment: any;
+        \\declare namespace JSX { interface Element {} }
+        \\const x = <Fragment></Fragment>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
+}
+
 test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
     const s = try newTsxSetup(
         \\declare namespace JSX { interface Element {} }
@@ -175313,6 +175369,19 @@ test "checker: super element access in non-derived class emits TS2335" {
         if (d.code == TsCodes.super_not_derived) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: tsgo fallback batch preserves super in async method defaults" {
+    const s = try newSetup(
+        \\class B { m() { return 1; } }
+        \\class C extends B {
+        \\  async h(b = super.m()) { return b; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.super_not_in_derived_member));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.super_not_derived));
 }
 
 test "checker: super in method decorator on derived class fires TS2660 not TS2335" {
@@ -199258,6 +199327,19 @@ test "checker: checkjs JSDoc typedef without type reports TS8021 at typedef name
     try T.expect(found);
 }
 
+test "checker: tsgo fallback batch accepts typed inline this on JSDoc typedef" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: bug.js
+        \\/** @typedef T @this {object} */
+        \\const x = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsdoc_typedef_missing_type));
+}
+
 test "checker: checkjs JSDoc typedef property prop or type child suppresses TS8021" {
     const s = try newSetup(
         \\// @checkjs: true
@@ -205531,6 +205613,16 @@ test "checker: default ImportAttributes requires string-valued properties" {
         found += 1;
     }
     try T.expectEqual(expected.len, found);
+}
+
+test "checker: tsgo fallback batch skips comments before import attribute values" {
+    const s = try newSetup(
+        \\// @module: esnext
+        \\import value from "./m" with { a: /* a */ "a", "b": /* b */ "b" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2856 import attributes cannot compile to CommonJS require" {
