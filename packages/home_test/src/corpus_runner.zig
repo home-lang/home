@@ -37804,6 +37804,45 @@ const harness_prelude =
     \\          };
     \\        },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_env_teardown_gc")) {
+    \\      let activeEnvironment = null;
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          const environment = { wrappedObject: null, finalizing: false, finalized: false };
+    \\          class MyObject {
+    \\            constructor() {
+    \\              if (environment.wrappedObject !== null) throw new Error("Node N-API teardown fixture only supports one wrapped object");
+    \\              environment.wrappedObject = this;
+    \\            }
+    \\          }
+    \\          activeEnvironment = environment;
+    \\          return { MyObject };
+    \\        },
+    \\        __home_napi_run_env_teardown() {
+    \\          const environment = activeEnvironment;
+    \\          if (!environment || environment.wrappedObject === null) throw new Error("Node N-API environment teardown has no wrapped object to finalize");
+    \\          if (environment.finalizing || environment.finalized) throw new Error("Node N-API wrapped object finalizer ran more than once");
+    \\          environment.finalizing = true;
+    \\          try {
+    \\            if (typeof globalThis.cleanup !== "function") throw new Error("Node N-API wrapped object finalizer could not find global cleanup callback");
+    \\            let pendingException = null;
+    \\            try { globalThis.cleanup(); } catch (error) { pendingException = error; }
+    \\            if (globalThis.it !== undefined) {
+    \\              globalThis.it = undefined;
+    \\              globalThis.gc();
+    \\            }
+    \\            if (globalThis.it !== undefined) throw new Error("Node N-API teardown cleanup retained the wrapped object");
+    \\            void pendingException;
+    \\            environment.wrappedObject = null;
+    \\            environment.finalized = true;
+    \\          } finally {
+    \\            environment.finalizing = false;
+    \\            activeEnvironment = null;
+    \\            globalThis.it = undefined;
+    \\            globalThis.cleanup = undefined;
+    \\          }
+    \\        },
+    \\      };
     \\    } else if (targetName === "test_buffer") {
     \\      const theText = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
     \\      let deleterCallCount = 0;
@@ -37880,6 +37919,11 @@ const harness_prelude =
     \\      globalThis.__home_current_dirname = ".";
     \\      delete globalThis.require.cache[resolved];
     \\      globalThis.require("./" + resolved);
+    \\      for (const addonPath of Object.keys(globalThis.__home_native_node_modules_by_path)) {
+    \\        if (!addonPath.startsWith(fixtureDir + "/build/Debug/")) continue;
+    \\        const registered = globalThis.__home_native_node_modules_by_path[addonPath];
+    \\        if (registered && typeof registered.__home_napi_run_env_teardown === "function") registered.__home_napi_run_env_teardown();
+    \\      }
     \\    } finally {
     \\      globalThis.__home_current_filename = previousFilename;
     \\      globalThis.__home_current_dirname = previousDirname;
