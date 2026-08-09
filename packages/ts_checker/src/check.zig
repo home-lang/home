@@ -38633,6 +38633,7 @@ pub const Checker = struct {
         method_types: std.ArrayListUnmanaged(TypeId) = .empty,
         is_static: bool = false,
         first_name_node: NodeId = hir_mod.none_node_id,
+        first_method_empty_array_target: NodeId = hir_mod.none_node_id,
     };
 
     /// Infer JS class members from `this.x = …` assignments in NON-constructor
@@ -38714,7 +38715,23 @@ pub const Checker = struct {
                 }
             }
             var member_t: TypeId = undefined;
-            if (all_nullish) {
+            if (!use_ctor and entry.first_method_empty_array_target != hir_mod.none_node_id) {
+                member_t = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
+                member_t = self.unionWithUndefined(member_t) catch member_t;
+                if (self.strict_flags.no_implicit_any) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Member '{s}' implicitly has an 'any[]' type.",
+                        .{self.string_interner.get(name)},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = entry.first_method_empty_array_target,
+                        .pos = self.hir.spanOf(entry.first_method_empty_array_target).start,
+                        .code = TsCodes.member_implicitly_any,
+                        .message = msg,
+                    });
+                }
+            } else if (all_nullish) {
                 member_t = types.Primitive.any;
                 if (self.strict_flags.no_implicit_any and entry.first_name_node != hir_mod.none_node_id) {
                     const msg = try std.fmt.allocPrint(
@@ -38778,7 +38795,15 @@ pub const Checker = struct {
                         std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, mm.object).name), "this") and
                         !self.memberNameIsEcmaPrivate(mm.name))
                     {
-                        const value_t = if (a.value != hir_mod.none_node_id) blk: {
+                        const method_empty_array = !is_ctor and
+                            a.value != hir_mod.none_node_id and
+                            self.hir.kindOf(a.value) == .array_literal and
+                            hir_mod.arrayLiteralElements(self.hir, a.value).len == 0;
+                        const self_referential_method_write = !is_ctor and
+                            self.expressionContainsThisMember(a.value, mm.name);
+                        const value_t = if (method_empty_array)
+                            self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory
+                        else if (a.value != hir_mod.none_node_id) blk: {
                             const cached = self.hir.typeOf(a.value);
                             break :blk if (cached != types.Primitive.none)
                                 cached
@@ -38789,10 +38814,14 @@ pub const Checker = struct {
                         if (!gop.found_existing) {
                             gop.value_ptr.* = .{ .is_static = is_static, .first_name_node = a.target };
                         }
-                        if (is_ctor)
-                            try gop.value_ptr.ctor_types.append(self.gpa, value_t)
-                        else
+                        if (method_empty_array and gop.value_ptr.first_method_empty_array_target == hir_mod.none_node_id) {
+                            gop.value_ptr.first_method_empty_array_target = a.target;
+                        }
+                        if (is_ctor) {
+                            try gop.value_ptr.ctor_types.append(self.gpa, value_t);
+                        } else if (!self_referential_method_write) {
                             try gop.value_ptr.method_types.append(self.gpa, value_t);
+                        }
                     }
                 }
                 try self.collectJsThisMemberValueTypes(a.value, is_ctor, is_static, map);
@@ -38819,6 +38848,88 @@ pub const Checker = struct {
             .var_decl, .let_decl, .const_decl => try self.collectJsThisMemberValueTypes(hir_mod.varDeclOf(self.hir, node).init, is_ctor, is_static, map),
             else => {},
         }
+    }
+
+    fn checkJsThisMemberAssignedOnlyInMethods(self: *Checker, receiver: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(receiver) != .member_access) return false;
+        const access = hir_mod.memberOf(self.hir, receiver);
+        if (!self.nodeIsThisReference(access.object)) return false;
+        const class_node = self.enclosingClassNode(receiver);
+        if (class_node == hir_mod.none_node_id) return false;
+
+        var assigned_in_method = false;
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            switch (self.hir.kindOf(member)) {
+                .object_property => {
+                    const property = hir_mod.objectPropertyOf(self.hir, member);
+                    if (property.is_method) continue;
+                    const property_name = (try self.classMemberNameFromPropertyKey(
+                        property.key,
+                        property.is_computed or self.nodeIsBracketedComputedName(property.key),
+                    )) orelse continue;
+                    if (property_name == access.name) return false;
+                },
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const function = hir_mod.fnDeclOf(self.hir, member);
+                    if (!self.nodeContainsDirectThisMemberAssignment(function.body, access.name)) continue;
+                    if (function.flags.is_constructor) return false;
+                    assigned_in_method = true;
+                },
+                else => {},
+            }
+        }
+        return assigned_in_method;
+    }
+
+    fn nodeContainsDirectThisMemberAssignment(
+        self: *Checker,
+        node: NodeId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (self.directThisPropertyName(assignment.target) == member_name) break :blk true;
+                break :blk self.nodeContainsDirectThisMemberAssignment(assignment.value, member_name);
+            },
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |statement| {
+                    if (self.nodeContainsDirectThisMemberAssignment(statement, member_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                break :blk self.nodeContainsDirectThisMemberAssignment(conditional.then_branch, member_name) or
+                    self.nodeContainsDirectThisMemberAssignment(conditional.else_branch, member_name);
+            },
+            .while_stmt => self.nodeContainsDirectThisMemberAssignment(hir_mod.whileOf(self.hir, node).body, member_name),
+            .do_while_stmt => self.nodeContainsDirectThisMemberAssignment(hir_mod.doWhileOf(self.hir, node).body, member_name),
+            .for_stmt => self.nodeContainsDirectThisMemberAssignment(hir_mod.forStmtOf(self.hir, node).body, member_name),
+            .for_in_stmt, .for_of_stmt => self.nodeContainsDirectThisMemberAssignment(hir_mod.forInOf(self.hir, node).body, member_name),
+            .switch_stmt => blk: {
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.nodeContainsDirectThisMemberAssignment(case, member_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .switch_case => blk: {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |statement| {
+                    if (self.nodeContainsDirectThisMemberAssignment(statement, member_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .try_stmt => blk: {
+                const statement = hir_mod.tryOf(self.hir, node);
+                break :blk self.nodeContainsDirectThisMemberAssignment(statement.block, member_name) or
+                    self.nodeContainsDirectThisMemberAssignment(statement.catch_block, member_name) or
+                    self.nodeContainsDirectThisMemberAssignment(statement.finally_block, member_name);
+            },
+            .arrow_fn => self.nodeContainsDirectThisMemberAssignment(hir_mod.fnDeclOf(self.hir, node).body, member_name),
+            .fn_decl, .fn_expr, .class_decl, .class_expr => false,
+            else => false,
+        };
     }
 
     fn checkMergedNamespaceStaticConflicts(
@@ -90980,6 +91091,13 @@ pub const Checker = struct {
                     if (try self.classAccessorSetterAssignmentType(a.target)) |setter_t| {
                         target_t = setter_t;
                     }
+                    if (self.sourceHasCheckJsDirective() and self.thisHasClassLexicalBinding(a.target)) {
+                        if (self.identifierRootedMemberKey(a.target)) |key| {
+                            if (std.mem.eql(u8, self.string_interner.get(key.obj_name), "this")) {
+                                if (self.lookupMemberNarrow(key)) |narrowed_t| target_t = narrowed_t;
+                            }
+                        }
+                    }
                 }
                 // Reassignment clears any prior conditional alias for
                 // the variable: `let cond = isString(x); cond = false;
@@ -91133,6 +91251,28 @@ pub const Checker = struct {
                     if (assignment_value_jsdoc_t) |declared_t| assignment_check_value_t = declared_t;
                 }
                 const assignment_value_has_error = self.diagnostics.items.len > value_diag_start;
+                if (a.op == null and
+                    !assignment_value_has_error and
+                    target_kind == .member_access and
+                    self.sourceHasCheckJsDirective() and
+                    self.thisHasClassLexicalBinding(a.target))
+                {
+                    if (self.identifierRootedMemberKey(a.target)) |key| {
+                        if (std.mem.eql(u8, self.string_interner.get(key.obj_name), "this")) {
+                            const raw_member_flow_t = if (self.hir.kindOf(a.value) == .array_literal and
+                                hir_mod.arrayLiteralElements(self.hir, a.value).len == 0)
+                                self.subtractNullUndefined(target_t) catch target_t
+                            else
+                                try self.flowTypeForAssignmentValue(a.value, value_t);
+                            const member_flow_t = self.widenLiteralType(raw_member_flow_t);
+                            if (member_flow_t != types.Primitive.none and
+                                member_flow_t != types.Primitive.unknown)
+                            {
+                                try self.recordMemberNarrow(key, member_flow_t);
+                            }
+                        }
+                    }
+                }
                 const target_is_destructuring = a.op == null and
                     (self.hir.kindOf(a.target) == .array_literal or self.hir.kindOf(a.target) == .object_literal);
                 const target_is_untyped_uninitialized_var =
@@ -93914,7 +94054,11 @@ pub const Checker = struct {
                     self.typeIsPossiblyNullishStrict(raw_obj_t))
                 blk_non_nullish: {
                     if (!self.identifierIsPendingJsDocTypedVar(e.object)) {
-                        try self.reportPossiblyNullishMember(e.object, raw_obj_t);
+                        if (try self.checkJsThisMemberAssignedOnlyInMethods(e.object)) {
+                            try self.report(e.object, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
+                        } else {
+                            try self.reportPossiblyNullishMember(e.object, raw_obj_t);
+                        }
                     }
                     break :blk_non_nullish self.subtractNullUndefined(raw_obj_t) catch raw_obj_t;
                 } else
@@ -123861,6 +124005,7 @@ pub const Checker = struct {
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             switch (self.hir.kindOf(cur)) {
+                .decorator => return false,
                 .arrow_fn => continue,
                 .fn_decl, .fn_expr => {
                     const f = hir_mod.fnDeclOf(self.hir, cur);
@@ -201365,6 +201510,36 @@ test "checker: empty-array function expandos report TS7008 unless contextually t
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.member_implicitly_any));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'a' implicitly has an 'any[]' type."));
+}
+
+test "checker: checked JS method this assignments participate in local CFA" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: main.js
+        \\class C {
+        \\  seed() { this.foo = [3]; }
+        \\  use() {
+        \\    this.foo = [this.foo[0] * 2];
+        \\    this.foo;
+        \\  }
+        \\  conflict() {
+        \\    this.count = 0;
+        \\    this.count = this.count + "x";
+        \\  }
+        \\  empty() {
+        \\    this.items = [];
+        \\    this.items.push("x");
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
 
 test "checker: checkjs expando JSDoc property type participates in parent assignment" {
