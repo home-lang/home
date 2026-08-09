@@ -37837,6 +37837,18 @@ const harness_prelude =
     \\          };
     \\        },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_make_callback")) {
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          return {
+    \\            makeCallback(resource, receiver, callback) {
+    \\              void resource;
+    \\              if (typeof callback !== "function") throw new TypeError("Unexpected argument type: callback must be a function");
+    \\              return callback.apply(receiver, Array.prototype.slice.call(arguments, 3));
+    \\            },
+    \\          };
+    \\        },
+    \\      };
     \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_cleanup_hook")) {
     \\      addon = {
     \\        __home_napi_factory() {
@@ -43177,8 +43189,22 @@ const harness_prelude =
     \\    };
     \\  },
     \\};
+    \\function __home_vm_context_object() {
+    \\  function ContextObject(value) {
+    \\    if (new.target) return Reflect.construct(Object, arguments, ContextObject);
+    \\    return arguments.length === 0 ? {} : Object(value);
+    \\  }
+    \\  Object.setPrototypeOf(ContextObject, Object);
+    \\  ContextObject.prototype = Object.create(Object.prototype, {
+    \\    constructor: { configurable: true, writable: true, value: ContextObject },
+    \\  });
+    \\  return ContextObject;
+    \\}
     \\function __home_vm_run_in_context(code, context) {
     \\  const sandbox = context && typeof context === "object" ? context : {};
+    \\  if (!Object.prototype.hasOwnProperty.call(sandbox, "Object")) {
+    \\    Object.defineProperty(sandbox, "Object", { configurable: true, writable: true, value: __home_vm_context_object() });
+    \\  }
     \\  let source = String(code || "");
     \\  while (true) {
     \\    const declaration = source.match(/^\s*var\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*)*)\s*;/);
