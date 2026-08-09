@@ -6561,6 +6561,7 @@ fn countSectionLeadingDirectives(
                     // but the explicit check keeps the helper safe
                     // when callers feed it `maxInt` for the tail.
                     if (std.ascii.eqlIgnoreCase(key, "filename")) break;
+                    if (!isRunnerDirectiveKey(key)) break;
                     const rest = body[name_end..];
                     if (rest.len > 0 and rest[0] != ':' and !std.ascii.isWhitespace(rest[0])) break;
                     count += pending_blanks + 1;
@@ -56332,6 +56333,18 @@ test "conformance: buildVirtualFileIndex strips multiple post-marker blanks" {
     defer idx.deinit(T.allocator);
     try T.expectEqual(@as(usize, 1), idx.items.len);
     try T.expectEqual(@as(u32, 2), idx.items[0].extra_strip);
+}
+
+test "conformance: virtual file offsets preserve ordinary at-sign comments" {
+    var idx = try buildVirtualFileIndex(T.allocator,
+        \\// @filename: a.mts
+        \\
+        \\// @see https://example.test/issue
+        \\const f = <T>() => 1;
+    );
+    defer idx.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 1), idx.items.len);
+    try T.expectEqual(@as(u32, 1), idx.items[0].extra_strip);
 }
 
 test "conformance: virtualMarkerForByte returns latest preceding marker" {
