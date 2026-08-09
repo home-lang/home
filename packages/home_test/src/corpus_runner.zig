@@ -37363,7 +37363,7 @@ const harness_prelude =
     \\        createTypeErrorCode() { return codedError(TypeError, "TypeError", "type error"); },
     \\        createSyntaxErrorCode() { return codedError(SyntaxError, "SyntaxError", "syntax error"); },
     \\      };
-    \\    } else if (targetName === "test_exception") {
+    \\    } else if (targetName === "test_exception" && buildDir.endsWith("/test/js-native-api/test_exception")) {
     \\      let wasPending = false;
     \\      const invoke = (callback, construct, allow) => {
     \\        try {
@@ -37384,6 +37384,15 @@ const harness_prelude =
     \\        constructAllowException(callback) { return invoke(callback, true, true); },
     \\        wasPending() { return wasPending; },
     \\        createExternal() {},
+    \\      };
+    \\    } else if (targetName === "test_exception" && buildDir.endsWith("/test/node-api/test_exception")) {
+    \\      addon = {
+    \\        createExternalBuffer() {
+    \\          __home_node_napi_gc_callbacks.push(() => {
+    \\            queueMicrotask(() => process.emit("uncaughtException", new Error("Error during Finalize")));
+    \\          });
+    \\          return Buffer.alloc(12);
+    \\        },
     \\      };
     \\    } else if (targetName === "test_finalizer") {
     \\      let finalizerCallCount = 0;
@@ -37808,7 +37817,13 @@ const harness_prelude =
     \\      let activeEnvironment = null;
     \\      addon = {
     \\        __home_napi_factory() {
-    \\          const environment = { wrappedObject: null, finalizing: false, finalized: false };
+    \\          const environment = {
+    \\            wrappedObject: null,
+    \\            finalizing: false,
+    \\            finalized: false,
+    \\            previousGlobalIt: globalThis.it,
+    \\            previousGlobalCleanup: globalThis.cleanup,
+    \\          };
     \\          class MyObject {
     \\            constructor() {
     \\              if (environment.wrappedObject !== null) throw new Error("Node N-API teardown fixture only supports one wrapped object");
@@ -37838,8 +37853,8 @@ const harness_prelude =
     \\          } finally {
     \\            environment.finalizing = false;
     \\            activeEnvironment = null;
-    \\            globalThis.it = undefined;
-    \\            globalThis.cleanup = undefined;
+    \\            globalThis.it = environment.previousGlobalIt;
+    \\            globalThis.cleanup = environment.previousGlobalCleanup;
     \\          }
     \\        },
     \\      };
