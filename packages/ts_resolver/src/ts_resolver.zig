@@ -839,7 +839,9 @@ pub const Resolver = struct {
             // `#`-prefixed private subpath imports resolve against the
             // nearest enclosing `package.json` `imports` map.
             if (specifier.len > 0 and specifier[0] == '#') {
-                if (std.mem.eql(u8, specifier, "#") or std.mem.startsWith(u8, specifier, "#/")) {
+                if (std.mem.eql(u8, specifier, "#") or
+                    (std.mem.startsWith(u8, specifier, "#/") and !self.importsPatternRootEnabled()))
+                {
                     self.traceMsg(6272, "Invalid import specifier '{s}' has no possible resolutions.", .{specifier});
                     return error.NotFound;
                 }
@@ -1141,6 +1143,10 @@ pub const Resolver = struct {
             .node16, .nodenext, .bundler => true,
             .classic, .node10 => false,
         };
+    }
+
+    fn importsPatternRootEnabled(self: *Resolver) bool {
+        return self.config.strategy == .nodenext or self.config.strategy == .bundler;
     }
 
     fn joinPath(self: *Resolver, a: []const u8, b: []const u8) ResolveError![]const u8 {
@@ -5525,6 +5531,35 @@ test "Resolver: package maps resolve TS source targets for rewrite extension che
     try T.expect(!self_ref.is_declaration);
     try T.expect(self_ref.package_json_map);
     try T.expect(!self_ref.package_imports_pattern);
+}
+
+test "Resolver: root imports patterns are enabled after node16" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "imports": {
+        \\    "#/*": { "types": "./src/*ts", "default": "./dist/*js" },
+        \\    "#/*.omg": "./src/*"
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/src/b.ts", "export const foo = 1;");
+    try vfs.addFile("/src/foo.ts", "export const hello = 1;");
+    try vfs.addFile("/src/index.ts", "");
+
+    var nodenext = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .nodenext });
+    defer nodenext.deinit();
+    const conditional = try nodenext.resolve("#/b.", "/src/index.ts");
+    try T.expectEqualStrings("/src/b.ts", conditional.path);
+    try T.expect(conditional.package_imports_pattern);
+    const captured_extension = try nodenext.resolve("#/foo.ts.omg", "/src/index.ts");
+    try T.expectEqualStrings("/src/foo.ts", captured_extension.path);
+    try T.expect(captured_extension.package_imports_pattern);
+
+    var node16 = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer node16.deinit();
+    try T.expectError(error.NotFound, node16.resolve("#/b.", "/src/index.ts"));
 }
 
 test "Resolver: #imports — invalid target traces TS6275" {

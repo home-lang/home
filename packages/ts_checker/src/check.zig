@@ -49739,8 +49739,16 @@ pub const Checker = struct {
 
     fn checkImportingTsExtensionSpecifier(self: *Checker, node: NodeId, spec: []const u8, is_type_only_context: bool) CheckError!void {
         if (is_type_only_context) return;
-        if (!std.mem.startsWith(u8, spec, ".")) return;
-        const code = tsExtensionImportDiagnosticCode(spec) orelse return;
+        const is_relative = std.mem.startsWith(u8, spec, ".");
+        const code = if (is_relative)
+            tsExtensionImportDiagnosticCode(spec) orelse return
+        else
+            TsCodes.import_path_ts_extension;
+        const captured_extension = if (is_relative)
+            tsSourceExtensionFromSpecifier(spec)
+        else
+            tsSourceExtensionContainedInSpecifier(spec);
+        if (!is_relative and captured_extension == null) return;
         const allow_ts_extensions = self.allow_importing_ts_extensions or
             self.sourceDirectiveValueMentions("allowImportingTsExtensions", "true");
         const rewrite_ts_extensions = self.rewriteRelativeImportExtensionsEnabledForNode(node);
@@ -49749,7 +49757,9 @@ pub const Checker = struct {
         // imports of declaration files are still rejected, but the
         // suggested implementation specifier changes with the option.
         if ((allow_ts_extensions or rewrite_ts_extensions) and code == TsCodes.import_path_ts_extension) return;
-        if (!try self.tsExtensionSpecifierResolves(node, spec)) return;
+        if (is_relative) {
+            if (!try self.tsExtensionSpecifierResolves(node, spec)) return;
+        } else if (!try self.nonRelativeTsExtensionResolvesToTsImplementation(node, spec)) return;
         if (code == TsCodes.import_path_ts_extension and self.virtualSectionIsDeclarationFile(node)) return;
         if (code == TsCodes.declaration_file_import_requires_import_type) {
             if (!try self.declarationFileSpecifierResolvesDirectly(node, spec)) return;
@@ -49773,12 +49783,7 @@ pub const Checker = struct {
         // TS5097's upstream prose includes the concrete extension
         // (`.ts` / `.tsx` / `.mts` / `.cts`) ÃÂ¢ÃÂÃÂ render it dynamically
         // so baselines like `allowsImportingTsExtension` line up.
-        const ext: []const u8 = blk: {
-            if (std.mem.endsWith(u8, spec, ".tsx")) break :blk ".tsx";
-            if (std.mem.endsWith(u8, spec, ".mts")) break :blk ".mts";
-            if (std.mem.endsWith(u8, spec, ".cts")) break :blk ".cts";
-            break :blk ".ts";
-        };
+        const ext = captured_extension orelse ".ts";
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "An import path can only end with a '{s}' extension when 'allowImportingTsExtensions' is enabled.",
@@ -50064,6 +50069,14 @@ pub const Checker = struct {
         if (std.mem.endsWith(u8, spec, ".mts")) return ".mts";
         if (std.mem.endsWith(u8, spec, ".cts")) return ".cts";
         if (std.mem.endsWith(u8, spec, ".ts") and !std.mem.endsWith(u8, spec, ".d.ts")) return ".ts";
+        return null;
+    }
+
+    fn tsSourceExtensionContainedInSpecifier(spec: []const u8) ?[]const u8 {
+        if (std.mem.indexOf(u8, spec, ".tsx") != null) return ".tsx";
+        if (std.mem.indexOf(u8, spec, ".mts") != null) return ".mts";
+        if (std.mem.indexOf(u8, spec, ".cts") != null) return ".cts";
+        if (std.mem.indexOf(u8, spec, ".ts") != null) return ".ts";
         return null;
     }
 
@@ -203730,6 +203743,29 @@ test "checker: TS2877 reports external package imports pattern TS source" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.non_relative_ts_extension_not_rewritten) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS5097 reports TS extensions captured by package imports patterns" {
+    const s = try newSetup(
+        \\import {} from "#/foo.ts.omg";
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/src/foo.ts",
+        .canned_is_declaration = true,
+        .canned_package_json_map = true,
+        .canned_package_imports_pattern = true,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.import_path_ts_extension) {
+            found = true;
+            try T.expectEqualStrings("An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.", d.message);
+        }
     }
     try T.expect(found);
 }
