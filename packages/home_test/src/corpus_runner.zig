@@ -67744,13 +67744,18 @@ test "bootstrap runner accounts for the full copied Bun corpus" {
     if (!has_range) {
         try std.testing.expectEqual(@as(usize, corpus.expected_copied_bun_test_files), summary.files);
     }
-    if (summary.failed != 0) {
+    std.debug.print(
+        "[home-bun-corpus] summary files={d} passed={d} failed={d} todo={d} unsupported={d} allowed-empty={d}\n",
+        .{ summary.files, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.allowed_empty_files },
+    );
+    if (summary.failed != 0 or summary.unsupported != 0) {
         std.debug.print(
-            "full Bun corpus gate failed first at {s}: {s}\n",
-            .{ summary.first_failure_file, summary.first_failure_message },
+            "full Bun corpus gate failed (failed={d}, unsupported={d}) first at {s}: {s}\n",
+            .{ summary.failed, summary.unsupported, summary.first_failure_file, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "mirrored N-API delete-reference supports in-GC finalizers" {
