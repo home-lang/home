@@ -37646,6 +37646,51 @@ const harness_prelude =
     \\          if ((typeof object !== "object" && typeof object !== "function") || object === null) throw new Error("Expected object parameter");
     \\        },
     \\      };
+    \\    } else if (targetName === "test_string") {
+    \\      const identityString = value => String(value);
+    \\      const utf8Insufficient = value => {
+    \\        let result = "";
+    \\        for (const character of String(value)) {
+    \\          if (Buffer.byteLength(result + character, "utf8") > 3) break;
+    \\          result += character;
+    \\        }
+    \\        return result;
+    \\      };
+    \\      const invalidLargeString = () => { throw new Error("Invalid argument"); };
+    \\      const nullStringResult = () => ({ envIsNull: "Invalid argument", stringIsNullNonZeroLength: "Invalid argument", stringIsNullZeroLength: "napi_ok", resultIsNull: "Invalid argument" });
+    \\      addon = {
+    \\        TestLatin1: identityString,
+    \\        TestLatin1AutoLength: identityString,
+    \\        TestLatin1External: identityString,
+    \\        TestLatin1ExternalAutoLength: identityString,
+    \\        TestLatin1Insufficient(value) { return String(value).slice(0, 3); },
+    \\        TestUtf8: identityString,
+    \\        TestUtf8AutoLength: identityString,
+    \\        TestUtf8Insufficient: utf8Insufficient,
+    \\        TestUtf16: identityString,
+    \\        TestUtf16AutoLength: identityString,
+    \\        TestUtf16External: identityString,
+    \\        TestUtf16ExternalAutoLength: identityString,
+    \\        TestUtf16Insufficient(value) { return String(value).slice(0, 3); },
+    \\        Latin1Length(value) { return String(value).length; },
+    \\        Utf16Length(value) { return String(value).length; },
+    \\        Utf8Length(value) { return Buffer.byteLength(String(value), "utf8"); },
+    \\        TestLargeUtf8: invalidLargeString,
+    \\        TestLargeLatin1: invalidLargeString,
+    \\        TestLargeUtf16: invalidLargeString,
+    \\        TestMemoryCorruption() {},
+    \\        TestPropertyKeyLatin1: identityString,
+    \\        TestPropertyKeyLatin1AutoLength: identityString,
+    \\        TestPropertyKeyUtf8: identityString,
+    \\        TestPropertyKeyUtf8AutoLength: identityString,
+    \\        TestPropertyKeyUtf16: identityString,
+    \\        TestPropertyKeyUtf16AutoLength: identityString,
+    \\        testNull: {
+    \\          test_create_latin1: nullStringResult,
+    \\          test_create_utf8: nullStringResult,
+    \\          test_create_utf16: nullStringResult,
+    \\        },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
