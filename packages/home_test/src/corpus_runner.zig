@@ -53425,6 +53425,154 @@ const harness_prelude =
     \\      return before.join("") + rewritten + after.join("");
     \\    });
     \\  }
+    \\  function __home_html_parse_attributes(openTag, tagName) {
+    \\    const attrs = Object.create(null);
+    \\    const source = openTag.slice(tagName.length + 1, -1).replace(/\/$/, "");
+    \\    const pattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    \\    let match;
+    \\    while ((match = pattern.exec(source))) attrs[match[1].toLowerCase()] = match[2] ?? match[3] ?? match[4] ?? "";
+    \\    return attrs;
+    \\  }
+    \\  const __home_html_void_elements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+    \\  function __home_html_parse_elements(html) {
+    \\    const elements = [];
+    \\    const stack = [];
+    \\    const occurrences = Object.create(null);
+    \\    const pattern = /<(\/?)(([A-Za-z][A-Za-z0-9:-]*))([^>]*)>/g;
+    \\    let match;
+    \\    while ((match = pattern.exec(html))) {
+    \\      const tagName = match[2].toLowerCase();
+    \\      if (match[1]) {
+    \\        for (let i = stack.length - 1; i >= 0; i--) {
+    \\          const node = stack[i];
+    \\          if (node.tagName !== tagName) continue;
+    \\          node.closeStart = match.index;
+    \\          node.end = pattern.lastIndex;
+    \\          stack.length = i;
+    \\          break;
+    \\        }
+    \\        continue;
+    \\      }
+    \\      const parent = stack.length ? stack[stack.length - 1] : null;
+    \\      const occurrence = occurrences[tagName] || 0;
+    \\      occurrences[tagName] = occurrence + 1;
+    \\      const node = {
+    \\        tagName,
+    \\        attrs: __home_html_parse_attributes(match[0], tagName),
+    \\        open: match[0],
+    \\        start: match.index,
+    \\        openEnd: pattern.lastIndex,
+    \\        closeStart: pattern.lastIndex,
+    \\        end: pattern.lastIndex,
+    \\        occurrence,
+    \\        parent,
+    \\        children: [],
+    \\      };
+    \\      if (parent) parent.children.push(node);
+    \\      elements.push(node);
+    \\      if (!/\/\s*>$/.test(match[0]) && !__home_html_void_elements.has(tagName)) stack.push(node);
+    \\    }
+    \\    for (const node of stack) {
+    \\      node.closeStart = html.length;
+    \\      node.end = html.length;
+    \\    }
+    \\    return elements;
+    \\  }
+    \\  function __home_html_child_index(node, sameType) {
+    \\    if (!node.parent) return 1;
+    \\    const siblings = sameType ? node.parent.children.filter(child => child.tagName === node.tagName) : node.parent.children;
+    \\    return siblings.indexOf(node) + 1;
+    \\  }
+    \\  function __home_html_match_attribute(actual, operator, expected, insensitive) {
+    \\    if (actual === undefined) return false;
+    \\    if (!operator) return true;
+    \\    let left = String(actual);
+    \\    let right = String(expected);
+    \\    if (insensitive) {
+    \\      left = left.toLowerCase();
+    \\      right = right.toLowerCase();
+    \\    }
+    \\    if (operator === "=") return left === right;
+    \\    if (operator === "~=") return left.split(/\s+/).includes(right);
+    \\    if (operator === "^=") return left.startsWith(right);
+    \\    if (operator === "$=") return left.endsWith(right);
+    \\    if (operator === "*=") return left.includes(right);
+    \\    if (operator === "|=") return left === right || left.startsWith(right + "-");
+    \\    return false;
+    \\  }
+    \\  function __home_html_match_simple_selector(node, selector) {
+    \\    let remaining = selector.trim();
+    \\    const tag = remaining.match(/^(\*|[A-Za-z][A-Za-z0-9-]*)/);
+    \\    if (tag) {
+    \\      if (tag[1] !== "*" && node.tagName !== tag[1].toLowerCase()) return false;
+    \\      remaining = remaining.slice(tag[0].length);
+    \\    }
+    \\    const attributes = [...remaining.matchAll(/\[([^\s~|^$*=\]]+)(?:\s*([~|^$*]?=)\s*["']?([^"'\]\s]+)["']?\s*([is])?)?\]/g)];
+    \\    for (const attribute of attributes) {
+    \\      const actual = node.attrs[attribute[1].toLowerCase()];
+    \\      if (!__home_html_match_attribute(actual, attribute[2], attribute[3], attribute[4] === "i")) return false;
+    \\    }
+    \\    const id = remaining.match(/#([A-Za-z0-9_-]+)/);
+    \\    if (id && node.attrs.id !== id[1]) return false;
+    \\    for (const classMatch of remaining.matchAll(/\.([A-Za-z0-9_-]+)/g)) {
+    \\      if (!String(node.attrs.class || "").split(/\s+/).includes(classMatch[1])) return false;
+    \\    }
+    \\    const nthChild = remaining.match(/:nth-child\(\s*(\d+)\s*\)/);
+    \\    if (nthChild && __home_html_child_index(node, false) !== Number(nthChild[1])) return false;
+    \\    const notFirstChild = remaining.includes(":not(:first-child)");
+    \\    if (!notFirstChild && remaining.includes(":first-child") && __home_html_child_index(node, false) !== 1) return false;
+    \\    const nthType = remaining.match(/:nth-of-type\(\s*(\d+)\s*\)/);
+    \\    if (nthType && __home_html_child_index(node, true) !== Number(nthType[1])) return false;
+    \\    if (remaining.includes(":first-of-type") && __home_html_child_index(node, true) !== 1) return false;
+    \\    if (notFirstChild && __home_html_child_index(node, false) === 1) return false;
+    \\    return true;
+    \\  }
+    \\  function __home_html_split_selector(selector) {
+    \\    let square = 0;
+    \\    let round = 0;
+    \\    for (let i = selector.length - 1; i >= 0; i--) {
+    \\      const char = selector[i];
+    \\      if (char === "]") square++;
+    \\      else if (char === "[") square--;
+    \\      else if (char === ")") round++;
+    \\      else if (char === "(") round--;
+    \\      else if (square === 0 && round === 0 && char === ">") return { left: selector.slice(0, i).trim(), right: selector.slice(i + 1).trim(), direct: true };
+    \\    }
+    \\    square = 0;
+    \\    round = 0;
+    \\    for (let i = selector.length - 1; i >= 0; i--) {
+    \\      const char = selector[i];
+    \\      if (char === "]") square++;
+    \\      else if (char === "[") square--;
+    \\      else if (char === ")") round++;
+    \\      else if (char === "(") round--;
+    \\      else if (square === 0 && round === 0 && /\s/.test(char)) {
+    \\        let start = i;
+    \\        while (start > 0 && /\s/.test(selector[start - 1])) start--;
+    \\        return { left: selector.slice(0, start).trim(), right: selector.slice(i + 1).trim(), direct: false };
+    \\      }
+    \\    }
+    \\    return null;
+    \\  }
+    \\  function __home_html_selector_matches(node, selector) {
+    \\    const split = __home_html_split_selector(selector.trim());
+    \\    if (!split) return __home_html_match_simple_selector(node, selector);
+    \\    if (!__home_html_match_simple_selector(node, split.right)) return false;
+    \\    if (split.direct) return !!node.parent && __home_html_selector_matches(node.parent, split.left);
+    \\    for (let parent = node.parent; parent; parent = parent.parent) if (__home_html_selector_matches(parent, split.left)) return true;
+    \\    return false;
+    \\  }
+    \\  function __home_html_selector_elements(html, selector) {
+    \\    return __home_html_parse_elements(html).filter(node => __home_html_selector_matches(node, selector));
+    \\  }
+    \\  function __home_html_replace_element(html, tagName, occurrence, callback) {
+    \\    const node = __home_html_parse_elements(html).filter(candidate => candidate.tagName === tagName)[occurrence];
+    \\    if (!node) return html;
+    \\    const open = html.slice(node.start, node.openEnd);
+    \\    const inner = html.slice(node.openEnd, node.closeStart);
+    \\    const close = html.slice(node.closeStart, node.end);
+    \\    return html.slice(0, node.start) + callback(open, inner, close) + html.slice(node.end);
+    \\  }
     \\  HTMLRewriter.prototype.transform = function(input) {
     \\    if (input === null || input === undefined) throw new TypeError("Expected Response or Body");
     \\    if (typeof input === "symbol") throw new TypeError("HTMLRewriter input cannot be a Symbol");
@@ -53447,14 +53595,17 @@ const harness_prelude =
     \\      }
     \\    }
     \\    for (const handler of this.__home_html_handlers) {
-    \\      const tagName = handler.selector.startsWith("p") ? "p" : (handler.selector.startsWith("div") ? "div" : handler.selector);
-    \\      const pattern = new RegExp("<" + tagName + "(?:\\s[^>]*)?/?>", "gi");
-    \\      const matches = text.match(pattern) || [];
+    \\      const matches = __home_html_selector_elements(text, handler.selector);
     \\      for (let i = 0; i < matches.length; i++) {
+    \\        const tagName = matches[i].tagName;
+    \\        const targetOccurrence = matches[i].occurrence;
+    \\        const selfClosing = /\/\s*>$/.test(matches[i].open);
+    \\        let insideSvg = false;
+    \\        for (let parent = matches[i].parent; parent; parent = parent.parent) if (parent.tagName === "svg") insideSvg = true;
     \\        const attrs = Object.create(null);
     \\        const attributePairs = [];
     \\        const attributeIterators = [];
-    \\        const attributeSource = matches[i].slice(tagName.length + 1, -1).replace(/\/$/, "");
+    \\        const attributeSource = matches[i].open.slice(tagName.length + 1, -1).replace(/\/$/, "");
     \\        const attributePattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
     \\        let attributeMatch;
     \\        while ((attributeMatch = attributePattern.exec(attributeSource))) {
@@ -53481,6 +53632,8 @@ const harness_prelude =
     \\        }
     \\        const element = {
     \\          tagName,
+    \\          selfClosing,
+    \\          canHaveContent: !__home_html_void_elements.has(tagName) && !(selfClosing && insideSvg),
     \\          __home_inner_content: null,
     \\          __home_before: [],
     \\          __home_prepend: [],
@@ -53536,16 +53689,14 @@ const harness_prelude =
     \\          },
     \\        };
     \\        function applyElementMutations() {
-    \\          const replacePattern = new RegExp("(<" + tagName + "[^>]*>)([\\s\\S]*?)(</" + tagName + ">)", "i");
-    \\          output = output.replace(replacePattern, (match, open, inner, close) => {
+    \\          output = __home_html_replace_element(output, tagName, targetOccurrence, (open, inner, close) => {
     \\            const content = element.__home_prepend.join("") + (element.__home_inner_content !== null ? element.__home_inner_content : inner) + element.__home_append.join("");
     \\            let rewritten = element.__home_removed ? (element.__home_keep_content ? content : (element.__home_inner_content || "")) : open + content + close;
     \\            return element.__home_before.join("") + rewritten + element.__home_after.join("");
     \\          });
     \\        }
     \\        function applyCommentMutations() {
-    \\          const replacePattern = new RegExp("(<" + tagName + "[^>]*>)([\\s\\S]*?)(</" + tagName + ">)", "i");
-    \\          output = output.replace(replacePattern, (match, open, inner, close) => open + __home_html_apply_comments(inner, handler.comments, handler.receiver) + close);
+    \\          output = __home_html_replace_element(output, tagName, targetOccurrence, (open, inner, close) => open + __home_html_apply_comments(inner, handler.comments, handler.receiver) + close);
     \\        }
     \\        if (typeof handler.element === "function") {
     \\          let result;
@@ -53575,7 +53726,8 @@ const harness_prelude =
     \\        if (typeof handler.comments === "function") applyCommentMutations();
     \\        if (typeof handler.text === "function") {
     \\          const textChunk = {
-    \\            text: "",
+    \\            text: text.slice(matches[i].openEnd, matches[i].closeStart).replace(/<[^>]*>/g, ""),
+    \\            lastInTextNode: true,
     \\            before() {},
     \\            after() {},
     \\            replace() {},
@@ -85858,6 +86010,79 @@ test "bootstrap runner covers HTMLRewriter comment callbacks and mutations" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers HTMLRewriter selector matching" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("selector families", async () => {
+        \\  const cases = [
+        \\    ["*", "<h1>1</h1><p>2</p>", "<h1>new</h1><p>new</p>"],
+        \\    ["p:nth-child(2)", "<div><p>1</p><p>2</p><p>3</p></div>", "<div><p>1</p><p>new</p><p>3</p></div>"],
+        \\    ["p:not(:first-child)", "<div><p>1</p><p>2</p><p>3</p></div>", "<div><p>1</p><p>new</p><p>new</p></div>"],
+        \\    ['p[data-test="one" i]', '<p data-test="one">1</p><p data-test="OnE">2</p>', '<p data-test="one">new</p><p data-test="OnE">new</p>'],
+        \\    ["div span", "<div><h1><span>1</span></h1><span>2</span></div>", "<div><h1><span>new</span></h1><span>new</span></div>"],
+        \\    ["div > span", "<div><h1><span>1</span></h1><span>2</span></div>", "<div><h1><span>1</span></h1><span>new</span></div>"],
+        \\  ];
+        \\  for (const [selector, input, expected] of cases) {
+        \\    const result = new HTMLRewriter().on(selector, {
+        \\      element(element) { element.setInnerContent("new"); },
+        \\    }).transform(new Response(input));
+        \\    expect(await result.text()).toBe(expected);
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/workerd/html-rewriter-selectors.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("HTMLRewriter selector regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers HTMLRewriter text and element metadata" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("text and element metadata", async () => {
+        \\  let lastInTextNode;
+        \\  const metadata = {};
+        \\  const result = new HTMLRewriter()
+        \\    .on("p", { text(chunk) { lastInTextNode ??= chunk.lastInTextNode; } })
+        \\    .on("*", { element(element) { metadata[element.tagName] = [element.selfClosing, element.canHaveContent]; } })
+        \\    .transform(new Response("<p>text<br></p><div /><svg><circle /></svg>"));
+        \\  await result.text();
+        \\  expect(lastInTextNode).toBeBoolean();
+        \\  expect(metadata).toEqual({ p: [false, true], br: [false, false], div: [true, true], svg: [false, true], circle: [true, false] });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/workerd/html-rewriter-metadata.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("HTMLRewriter metadata regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
