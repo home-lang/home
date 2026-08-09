@@ -2115,6 +2115,10 @@ const harness_prelude =
     \\  else if (options && options.define && Object.prototype.hasOwnProperty.call(options.define, "X") && source.includes("declare const X") && source.includes("console.log(X)")) {
     \\    text = "console.log(" + JSON.stringify(String(options.define.X)) + ");\n";
     \\  }
+    \\  else if (/import\s*\{\s*WebSocket\s*\}\s*from\s*["']ws["']/.test(source)) {
+    \\    if (options && options.target === "bun") text = 'import { WebSocket } from "ws";\nconsole.log(WebSocket);\n';
+    \\    else if (options && options.target === "node") text = "var import_websocket = __toESM(require_websocket(), 1);\nconsole.log(import_websocket.WebSocket);\n";
+    \\  }
     \\  else if (source.includes("hello world")) text = 'console.log("hello world");\n';
     \\  else if (String(entrypoint || "").includes("bytecode") || source.includes("return \"world\"")) text = 'console.log("world");\n';
     \\  else if (memoryBundle) {}
