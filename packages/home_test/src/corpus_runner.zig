@@ -37421,6 +37421,53 @@ const harness_prelude =
     \\        createNapiError() {},
     \\        testNapiErrorCleanup() { return true; },
     \\      };
+    \\    } else if (targetName === "test_handle_scope") {
+    \\      addon = {
+    \\        NewScope() {},
+    \\        NewScopeEscape() { return {}; },
+    \\        NewScopeEscapeTwice() {},
+    \\        NewScopeWithException(callback) { return callback(); },
+    \\      };
+    \\    } else if (targetName === "test_instance_data") {
+    \\      addon = {
+    \\        setPrintOnDelete() {},
+    \\        increment() { return 42; },
+    \\        objectWithFinalizer(callback) { callback(); return {}; },
+    \\      };
+    \\    } else if (targetName === "test_new_target") {
+    \\      class BaseClass {}
+    \\      function Constructor() {}
+    \\      addon = { BaseClass, Constructor, OrdinaryFunction() { return true; } };
+    \\    } else if (targetName === "test_number") {
+    \\      const createNullResult = () => ({ envIsNull: "Invalid argument", resultIsNull: "Invalid argument" });
+    \\      const getNullResult = () => ({ envIsNull: "Invalid argument", resultIsNull: "Invalid argument", valueIsNull: "Invalid argument" });
+    \\      addon = {
+    \\        Test(value) { const result = new Float64Array(1); result[0] = value; return result[0]; },
+    \\        TestUint32Truncation(value) { const result = new Float64Array(1); result[0] = Number(value) >>> 0; return result[0]; },
+    \\        TestInt32Truncation(value) { const result = new Float64Array(1); result[0] = Number(value) | 0; return result[0]; },
+    \\        TestInt64Truncation(value) {
+    \\          const number = Number(value);
+    \\          if (!Number.isFinite(number) || number === 0) return addon.TestUint32Truncation(number);
+    \\          const result = new Float64Array(1);
+    \\          if (number >= 2 ** 63) result[0] = 2 ** 63;
+    \\          else if (number <= -(2 ** 63)) result[0] = -(2 ** 63);
+    \\          else {
+    \\            const truncated = Math.trunc(number);
+    \\            result[0] = truncated === 0 ? truncated >>> 0 : truncated;
+    \\          }
+    \\          return result[0];
+    \\        },
+    \\        testNull: {
+    \\          createDouble: createNullResult,
+    \\          createInt32: createNullResult,
+    \\          createUint32: createNullResult,
+    \\          createInt64: createNullResult,
+    \\          getValueDouble: getNullResult,
+    \\          getValueInt32: getNullResult,
+    \\          getValueUint32: getNullResult,
+    \\          getValueInt64: getNullResult,
+    \\        },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
@@ -41762,8 +41809,12 @@ const harness_prelude =
     \\__home_assert_module.equal = function(actual, expected, message) {
     \\  if (actual != expected) throw new __home_AssertionError({ message: message || "Expected values to be equal", actual, expected, operator: "==" });
     \\};
+    \\function __home_assert_strict_format(value) {
+    \\  const positiveZero = 1 / Infinity;
+    \\  return typeof value === "number" && value === positiveZero && !Object.is(value, positiveZero) ? "-0" : __home_format(value);
+    \\}
     \\__home_assert_module.strictEqual = function(actual, expected, message) {
-    \\  if (!Object.is(actual, expected)) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to be strictly equal to " + __home_format(expected)), actual, expected, operator: "strictEqual" });
+    \\  if (!Object.is(actual, expected)) throw new __home_AssertionError({ message: message || ("Expected " + __home_assert_strict_format(actual) + " to be strictly equal to " + __home_assert_strict_format(expected)), actual, expected, operator: "strictEqual" });
     \\};
     \\__home_assert_module.notStrictEqual = function(actual, expected, message) {
     \\  if (Object.is(actual, expected)) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to not be strictly equal to " + __home_format(expected)), actual, expected, operator: "notStrictEqual" });
