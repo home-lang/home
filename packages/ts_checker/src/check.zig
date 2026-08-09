@@ -64249,9 +64249,9 @@ pub const Checker = struct {
         var all_literal_parts = true;
         for (text_parts, 0..) |text_node, i| {
             if (text_node != hir_mod.none_node_id and self.hir.kindOf(text_node) == .literal_string) {
-                const lit = hir_mod.literalStringOf(self.hir, text_node);
-                try text_ids.append(self.gpa, lit.value);
-                try buf.appendSlice(self.gpa, self.string_interner.get(lit.value));
+                const text_id = try self.literalStringCookedId(text_node);
+                try text_ids.append(self.gpa, text_id);
+                try buf.appendSlice(self.gpa, self.string_interner.get(text_id));
             } else {
                 return types.Primitive.string_t;
             }
@@ -64270,7 +64270,10 @@ pub const Checker = struct {
             return types.Primitive.any;
         }
         if (all_literal_parts) {
-            const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+            var canonical: std.ArrayListUnmanaged(u8) = .empty;
+            defer canonical.deinit(self.gpa);
+            try self.appendCanonicalJsStringBytes(buf.items, &canonical);
+            const sid = self.string_interner.intern(canonical.items) catch return error.OutOfMemory;
             return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
         }
         return self.interner.internTemplateLiteral(text_ids.items, lowered_parts.items) catch return error.OutOfMemory;
@@ -64889,8 +64892,8 @@ pub const Checker = struct {
                 const lit = lt.literal;
                 return switch (self.hir.kindOf(lit)) {
                     .literal_string => blk: {
-                        const s = hir_mod.literalStringOf(self.hir, lit);
-                        break :blk self.interner.internStringLiteral(s.value) catch return error.OutOfMemory;
+                        const sid = try self.literalStringCookedId(lit);
+                        break :blk self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
                     },
                     .literal_number => blk: {
                         const value = hir_mod.literalNumberOf(self.hir, lit);
@@ -69804,9 +69807,14 @@ pub const Checker = struct {
 
         const next_text = self.string_interner.get(texts[text_index + 1]);
         if (next_text.len == 0) {
-            var end = after_text;
-            while (end <= raw.len) : (end += 1) {
+            var end = if (text_index + 1 < parts.len and after_text < raw.len)
+                jsStringCodePointEnd(raw, after_text)
+            else
+                after_text;
+            while (end <= raw.len) {
                 if (try self.tryTemplateInferSlice(texts, parts, raw, text_index, after_text, end, subs)) return true;
+                if (end == raw.len) break;
+                end = jsStringCodePointEnd(raw, end);
             }
             return false;
         }
@@ -85922,6 +85930,10 @@ pub const Checker = struct {
             }
         }
         if (self.containsTemplatePatternSurface(target_t)) {
+            const literal_t = try self.expressionLiteralType(init_node, init_t);
+            if (literal_t != init_t) return literal_t;
+        }
+        if (self.isLiteralType(target_t)) {
             const literal_t = try self.expressionLiteralType(init_node, init_t);
             if (literal_t != init_t) return literal_t;
         }
@@ -147368,36 +147380,140 @@ pub const Checker = struct {
         index: *usize,
         out: *std.ArrayListUnmanaged(u8),
     ) CheckError!bool {
-        if (index.* < raw.len and raw[index.*] == '{') {
-            var j = index.* + 1;
+        const first = parseJsUnicodeEscape(raw, index.*) orelse return false;
+        var cp = first.code_point;
+        var end = first.end;
+        if (isHighSurrogate(cp) and end + 2 <= raw.len and raw[end] == '\\' and raw[end + 1] == 'u') {
+            if (parseJsUnicodeEscape(raw, end + 2)) |second| {
+                if (isLowSurrogate(second.code_point)) {
+                    cp = 0x10000 + ((cp - 0xd800) << 10) + (second.code_point - 0xdc00);
+                    end = second.end;
+                }
+            }
+        }
+        try self.appendJsStringCodePoint(out, cp);
+        index.* = end;
+        return true;
+    }
+
+    const ParsedJsUnicodeEscape = struct {
+        code_point: u21,
+        end: usize,
+    };
+
+    fn parseJsUnicodeEscape(raw: []const u8, start: usize) ?ParsedJsUnicodeEscape {
+        if (start < raw.len and raw[start] == '{') {
+            var j = start + 1;
             var cp: u21 = 0;
             var saw_digit = false;
             while (j < raw.len and raw[j] != '}') : (j += 1) {
-                const v = hexValue(raw[j]) orelse return false;
+                const value = hexValue(raw[j]) orelse return null;
                 saw_digit = true;
-                const next = (@as(u32, cp) << 4) | v;
-                if (next > 0x10ffff) return false;
+                const next = (@as(u32, cp) << 4) | value;
+                if (next > 0x10ffff) return null;
                 cp = @intCast(next);
             }
-            if (!saw_digit or j >= raw.len or raw[j] != '}') return false;
-            var enc: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(cp, &enc) catch return false;
-            try out.appendSlice(self.gpa, enc[0..len]);
-            index.* = j + 1;
-            return true;
+            if (!saw_digit or j >= raw.len or raw[j] != '}') return null;
+            return .{ .code_point = cp, .end = j + 1 };
         }
-        if (index.* + 3 >= raw.len) return false;
+        if (start + 3 >= raw.len) return null;
         var cp: u21 = 0;
-        var j = index.*;
-        while (j < index.* + 4) : (j += 1) {
-            const v = hexValue(raw[j]) orelse return false;
-            cp = @intCast((@as(u32, cp) << 4) | v);
+        var j = start;
+        while (j < start + 4) : (j += 1) {
+            const value = hexValue(raw[j]) orelse return null;
+            cp = @intCast((@as(u32, cp) << 4) | value);
         }
-        var enc: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(cp, &enc) catch return false;
-        try out.appendSlice(self.gpa, enc[0..len]);
-        index.* += 4;
-        return true;
+        return .{ .code_point = cp, .end = start + 4 };
+    }
+
+    fn appendJsStringCodePoint(
+        self: *Checker,
+        out: *std.ArrayListUnmanaged(u8),
+        cp: u21,
+    ) CheckError!void {
+        if (isHighSurrogate(cp) or isLowSurrogate(cp)) {
+            const value: u16 = @intCast(cp);
+            const cesu = [_]u8{
+                0xe0 | @as(u8, @intCast(value >> 12)),
+                0x80 | @as(u8, @intCast((value >> 6) & 0x3f)),
+                0x80 | @as(u8, @intCast(value & 0x3f)),
+            };
+            try out.appendSlice(self.gpa, &cesu);
+            return;
+        }
+        var encoded: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &encoded) catch return;
+        try out.appendSlice(self.gpa, encoded[0..len]);
+    }
+
+    fn appendCanonicalJsStringBytes(
+        self: *Checker,
+        raw: []const u8,
+        out: *std.ArrayListUnmanaged(u8),
+    ) CheckError!void {
+        var i: usize = 0;
+        while (i < raw.len) {
+            const first = jsStringSurrogateAt(raw, i) orelse {
+                try out.append(self.gpa, raw[i]);
+                i += 1;
+                continue;
+            };
+            if (isHighSurrogate(first)) {
+                if (jsStringSurrogateAt(raw, i + 3)) |second| {
+                    if (isLowSurrogate(second)) {
+                        const cp: u21 = 0x10000 +
+                            ((@as(u21, first) - 0xd800) << 10) +
+                            (@as(u21, second) - 0xdc00);
+                        try self.appendJsStringCodePoint(out, cp);
+                        i += 6;
+                        continue;
+                    }
+                }
+            }
+            try out.appendSlice(self.gpa, raw[i .. i + 3]);
+            i += 3;
+        }
+    }
+
+    fn isHighSurrogate(cp: u21) bool {
+        return cp >= 0xd800 and cp <= 0xdbff;
+    }
+
+    fn isLowSurrogate(cp: u21) bool {
+        return cp >= 0xdc00 and cp <= 0xdfff;
+    }
+
+    fn jsStringCodePointEnd(raw: []const u8, start: usize) usize {
+        if (start >= raw.len) return raw.len;
+        const lead = raw[start];
+        const width: usize = if (lead < 0x80)
+            1
+        else if (lead & 0xe0 == 0xc0)
+            2
+        else if (lead & 0xf0 == 0xe0)
+            3
+        else if (lead & 0xf8 == 0xf0)
+            4
+        else
+            1;
+        if (start + width > raw.len) return start + 1;
+        for (raw[start + 1 .. start + width]) |continuation| {
+            if (continuation & 0xc0 != 0x80) return start + 1;
+        }
+        return start + width;
+    }
+
+    fn jsStringSurrogateAt(raw: []const u8, start: usize) ?u16 {
+        if (start + 3 > raw.len) return null;
+        const b0 = raw[start];
+        const b1 = raw[start + 1];
+        const b2 = raw[start + 2];
+        if (b0 & 0xf0 != 0xe0 or b1 & 0xc0 != 0x80 or b2 & 0xc0 != 0x80) return null;
+        const cp: u16 = (@as(u16, b0 & 0x0f) << 12) |
+            (@as(u16, b1 & 0x3f) << 6) |
+            @as(u16, b2 & 0x3f);
+        if (cp < 0xd800 or cp > 0xdfff) return null;
+        return cp;
     }
 
     fn hexValue(c: u8) ?u8 {
@@ -153245,7 +153361,15 @@ pub const Checker = struct {
         const arena = self.diag_arena.allocator();
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         try buf.append(arena, '"');
-        for (raw) |c| {
+        var i: usize = 0;
+        while (i < raw.len) {
+            if (jsStringSurrogateAt(raw, i)) |surrogate| {
+                const escaped = try std.fmt.allocPrint(arena, "\\u{X:0>4}", .{surrogate});
+                try buf.appendSlice(arena, escaped);
+                i += 3;
+                continue;
+            }
+            const c = raw[i];
             switch (c) {
                 '\n' => try buf.appendSlice(arena, "\\n"),
                 '\r' => try buf.appendSlice(arena, "\\r"),
@@ -153257,6 +153381,7 @@ pub const Checker = struct {
                 '"' => try buf.appendSlice(arena, "\\\""),
                 else => try buf.append(arena, c),
             }
+            i += 1;
         }
         try buf.append(arena, '"');
         return buf.items;
@@ -225135,6 +225260,57 @@ test "checker: import-equals alias errors do not cascade through later aliases" 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_used_as_namespace));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_namespace));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+}
+
+test "checker: JavaScript string cooking preserves and combines surrogate escapes" {
+    const s = try newSetup(
+        \\const high: "\uD800" = "\uD800";
+        \\const mismatch: "\uD800" = "\uDC00";
+        \\const pair = "\u{D83D}\u{DE00}" as const;
+        \\const canonical: "\u{1F600}" = pair;
+        \\type Hi = "\uD83D";
+        \\type Lo = "\uDE00";
+        \\type Joined = `${Hi}${Lo}`;
+        \\const joined: "\u{1F600}" = "x" as unknown as Joined;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '\"\\uDC00\"' is not assignable to type '\"\\uD800\"'.",
+    ));
+}
+
+test "checker: intrinsic string mappings retain lone surrogate code units" {
+    const s = try newSetup(
+        \\type U = Uppercase<"\uD800">;
+        \\type L = Lowercase<"A\uD800B">;
+        \\const u: "\uD800" = "x" as unknown as U;
+        \\const l: "a\uD800b" = "x" as unknown as L;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: template infer slicing advances by JavaScript code point" {
+    const s = try newSetup(
+        \\type Head<S extends string> = S extends `${infer H}${infer _R}` ? H : never;
+        \\type Rest<S extends string> = S extends `${infer _H}${infer R}` ? R : never;
+        \\type EmojiHead = Head<"\u{1F600}abc">;
+        \\type EmojiRest = Rest<"\u{1F600}abc">;
+        \\type JapaneseHead = Head<"\u3042\u3044">;
+        \\type SurrogateHead = Head<"\uD800abc">;
+        \\const eh: "\u{1F600}" = "x" as unknown as EmojiHead;
+        \\const er: "abc" = "x" as unknown as EmojiRest;
+        \\const jh: "\u3042" = "x" as unknown as JapaneseHead;
+        \\const sh: "\uD800" = "x" as unknown as SurrogateHead;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: large finite template literal unions use default diagnostic truncation" {
