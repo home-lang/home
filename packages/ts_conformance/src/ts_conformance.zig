@@ -26,6 +26,7 @@ const ts_diagnostics = @import("ts_diagnostics");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const ts_checker = @import("ts_checker");
+const tsconfig_mod = @import("tsconfig");
 const hir_mod = @import("hir");
 
 /// Adapter that exposes a `ts_resolver.Resolver` through the
@@ -1179,6 +1180,7 @@ fn shouldRouteThroughProgram(c: Case) bool {
         // package.json/tsconfig and then reports a spurious TS2307 for
         // the package's own name.
         if (rawSourceHasProjectSelfNameOutputMapping(c.raw_source)) return true;
+        if (rawSourceHasProjectImportsOutputMapping(c.raw_source)) return true;
         // Clean virtual fixtures with declaration files under an
         // ancestor node_modules directory and bare imports need the
         // resolver-backed VFS. The legacy concatenated path cannot
@@ -1299,6 +1301,44 @@ fn rawSourceHasProjectSelfNameOutputMapping(raw: []const u8) bool {
         }
     }
     return saw_root_package_json and root_package_has_name and root_package_has_exports and tsconfig_has_output_mapping;
+}
+
+fn rawSourceHasProjectImportsOutputMapping(raw: []const u8) bool {
+    var root_package_has_imports = false;
+    var tsconfig_has_output_mapping = false;
+    var section: enum { none, root_package_json, tsconfig_json, other } = .none;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, " \t\r");
+        if (virtualFilename(line)) |path| {
+            if (isRootVirtualPath(path, "package.json")) {
+                section = .root_package_json;
+            } else if (isRootVirtualPath(path, "tsconfig.json")) {
+                section = .tsconfig_json;
+            } else {
+                section = .other;
+            }
+            continue;
+        }
+        switch (section) {
+            .root_package_json => {
+                if (std.mem.indexOf(u8, line, "\"imports\"") != null) root_package_has_imports = true;
+            },
+            .tsconfig_json => {
+                if (jsonStringFieldOnLine(line, "outDir") != null or
+                    jsonStringFieldOnLine(line, "declarationDir") != null)
+                {
+                    tsconfig_has_output_mapping = true;
+                }
+            },
+            .none, .other => {},
+        }
+    }
+    const has_private_import = std.mem.indexOf(u8, raw, "from \"#") != null or
+        std.mem.indexOf(u8, raw, "from '#") != null or
+        std.mem.indexOf(u8, raw, "import \"#") != null or
+        std.mem.indexOf(u8, raw, "import '#") != null;
+    return root_package_has_imports and tsconfig_has_output_mapping and has_private_import;
 }
 
 fn isRootVirtualPath(path: []const u8, expected: []const u8) bool {
@@ -1841,56 +1881,39 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         if (!std.mem.eql(u8, f.path, "tsconfig.json") and
             !std.mem.eql(u8, f.path, "/tsconfig.json") and
             !std.mem.endsWith(u8, f.path, "/tsconfig.json")) continue;
-        var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch return .{};
-        defer parsed.deinit();
-        const config = if (parsed.value == .array and parsed.value.array.items.len > 0)
-            parsed.value.array.items[0]
-        else
-            parsed.value;
-        if (config != .object) return .{};
-        const compiler_options = config.object.get("compilerOptions") orelse return .{};
-        if (compiler_options != .object) return .{};
-        const obj = compiler_options.object;
-        return .{
-            .out_dir = try dupeJsonStringField(gpa, obj, "outDir"),
-            .declaration_dir = try dupeJsonStringField(gpa, obj, "declarationDir"),
-            .root_dir = try dupeJsonStringField(gpa, obj, "rootDir"),
-            .root_dirs = try dupeJsonStringArrayField(gpa, obj, "rootDirs"),
-            .module = try dupeJsonStringField(gpa, obj, "module"),
-            .module_resolution = try dupeJsonStringField(gpa, obj, "moduleResolution"),
-            .type_roots = try dupeJsonStringArrayField(gpa, obj, "typeRoots"),
-            .types = try dupeJsonStringArrayField(gpa, obj, "types"),
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const parsed = tsconfig_mod.parseString(gpa, arena.allocator(), f.source) catch return .{};
+        const options = parsed.compiler_options;
+        var result: TsconfigResolverOptions = .{
             .config_file_path = try canonicalVfsPath(gpa, f.path),
         };
+        errdefer result.deinit(gpa);
+        if (options.out_dir) |value| result.out_dir = try gpa.dupe(u8, value);
+        if (options.declaration_dir) |value| result.declaration_dir = try gpa.dupe(u8, value);
+        if (options.root_dir) |value| result.root_dir = try gpa.dupe(u8, value);
+        result.root_dirs = try dupeOptionalStringList(gpa, options.root_dirs);
+        if (options.module) |value| result.module = try gpa.dupe(u8, @tagName(value));
+        if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
+        result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
+        result.types = try dupeOptionalStringList(gpa, options.types);
+        return result;
     }
     return .{};
 }
 
-fn dupeJsonStringField(
+fn dupeOptionalStringList(
     gpa: std.mem.Allocator,
-    obj: std.json.ObjectMap,
-    key: []const u8,
-) ![]const u8 {
-    const value = obj.get(key) orelse return "";
-    if (value != .string) return "";
-    return try gpa.dupe(u8, value.string);
-}
-
-fn dupeJsonStringArrayField(
-    gpa: std.mem.Allocator,
-    obj: std.json.ObjectMap,
-    key: []const u8,
+    maybe_values: ?[]const []const u8,
 ) ![]const []const u8 {
-    const value = obj.get(key) orelse return &.{};
-    if (value != .array) return &.{};
+    const values = maybe_values orelse return &.{};
     var out: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
         for (out.items) |item| gpa.free(item);
         out.deinit(gpa);
     }
-    for (value.array.items) |item| {
-        if (item != .string) continue;
-        const duped = try gpa.dupe(u8, item.string);
+    for (values) |item| {
+        const duped = try gpa.dupe(u8, item);
         out.append(gpa, duped) catch |err| {
             gpa.free(duped);
             return err;
@@ -1940,7 +1963,8 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
             \\    "outDir": "./dist",
             \\    "declarationDir": "./types",
             \\    "typeRoots": ["/a/types"],
-            \\    "composite": true
+            \\    // JSONC comments and trailing commas are accepted by tsconfig.
+            \\    "composite": true,
             \\  }
             \\}
             ,
@@ -2245,6 +2269,26 @@ test "conformance: clean package self-name output mappings route through program
         .name = "nodeNextPackageSelfNameWithOutDirDeclDirCompositeNestedDirs",
         .source = "",
         .path = "index.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    }));
+}
+
+test "conformance: clean package imports output mappings route through program" {
+    const raw =
+        \\// @filename: tsconfig.json
+        \\{ "compilerOptions": { "outDir": "dist", "rootDir": "src" } }
+        \\// @filename: package.json
+        \\{ "name": "pkg", "imports": { "#subpath": "./dist/subpath.js" } }
+        \\// @filename: src/index.ts
+        \\import { foo } from "#subpath";
+    ;
+    try T.expect(rawSourceHasProjectImportsOutputMapping(raw));
+    try T.expect(shouldRouteThroughProgram(.{
+        .name = "subpathImportsJS",
+        .source = "",
+        .path = "src/index.ts",
         .raw_source = raw,
         .expected_errors = "",
         .strict_flags = .{},

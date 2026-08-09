@@ -4479,6 +4479,7 @@ pub const Checker = struct {
     /// the virtual filesystem. Empty means "fall back to the
     /// `@filename:` virtual-section scan".
     importer_path: []const u8 = "",
+    package_type_module: bool = false,
     allow_importing_ts_extensions: bool = false,
     rewrite_relative_import_extensions: bool = false,
     /// Program-level JS namespace-object expandos such as
@@ -4856,6 +4857,10 @@ pub const Checker = struct {
 
     pub fn setModuleKind(self: *Checker, name: []const u8) void {
         self.module_kind = name;
+    }
+
+    pub fn setPackageTypeModule(self: *Checker, enabled: bool) void {
+        self.package_type_module = enabled;
     }
 
     pub fn deinit(self: *Checker) void {
@@ -42047,6 +42052,7 @@ pub const Checker = struct {
         const has_base = self.baseClassHasMember(parent_t, name);
         const has_jsdoc_override = !has_override and !is_parameter_property and
             self.sourceHasCheckJsDirective() and self.leadingJsDocHasOverride(node);
+        if (has_jsdoc_override and parent_t == null and containing_class_name_when_no_extends == null) return;
         if (has_override and self.virtualSectionIsJsLike(node)) {
             try self.diagnostics.append(self.gpa, .{
                 .node = node,
@@ -47316,6 +47322,7 @@ pub const Checker = struct {
         const filename = self.virtualSectionFilenameForNode(node) orelse self.importer_path;
         if (self.sectionFileIsCommonJsFormat(node)) return true;
         if (!sectionFilenameHasAmbiguousNodeFormat(filename)) return false;
+        if (self.package_type_module) return false;
         const package_type = if (self.nearestVirtualPackageJson(filename)) |meta| meta.type_kind else .none;
         return package_type != .module;
     }
@@ -172707,6 +172714,20 @@ test "checker: JSDoc override tag rejects members absent from base class" {
     try T.expect(found);
 }
 
+test "checker: JSDoc override defers when an external base type is unavailable" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\import React from "react";
+        \\const C = class extends React.Component {
+        \\  /** @override */
+        \\  render() {}
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsdoc_override_not_in_base));
+}
+
 test "checker: JSDoc override without extends emits TS4121" {
     const s = try newSetup(
         \\// @checkJs: true
@@ -205305,6 +205326,23 @@ test "checker: TS1309 does not fire for an ESM-format (.mts) module" {
         \\await x;
     );
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.top_level_await_commonjs);
+    }
+}
+
+test "checker: TS1309 does not fire for a package type module" {
+    const s = try newSetup(
+        \\// @module: nodenext
+        \\// @target: esnext
+        \\export {};
+        \\declare const x: Promise<number>;
+        \\await x;
+    );
+    defer destroySetup(s);
+    s.checker.setImporterPath("/src/a.ts");
+    s.checker.setPackageTypeModule(true);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.top_level_await_commonjs);

@@ -329,6 +329,9 @@ pub const CompileOptions = struct {
     /// Effective `--module` value when the caller already resolved it
     /// from conformance directives or matrix baseline selection.
     module_kind: []const u8 = "",
+    /// True when the nearest package.json classifies an ambiguous
+    /// `.ts`/`.tsx`/`.js`/`.jsx` input as ESM via `"type": "module"`.
+    package_type_module: bool = false,
     /// Optional `ts_resolver`-backed module-resolution hook. When
     /// set, the driver installs it on the checker via
     /// `Checker.setExternalResolver` so bare-module lookups
@@ -2073,6 +2076,7 @@ pub fn compileSource(
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
     if (options.module_kind.len > 0) checker.setModuleKind(options.module_kind);
+    checker.setPackageTypeModule(options.package_type_module);
     if (options.pub_tsconfig) |cfg| {
         if (cfg.compiler_options.module) |m| checker.setModuleKind(@tagName(m));
     }

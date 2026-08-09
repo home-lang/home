@@ -142,6 +142,8 @@ pub const File = struct {
     is_declaration: bool,
     /// True for `.tsx` / `.jsx` files.
     is_tsx: bool,
+    /// Resolver-derived implied Node format for ambiguous extensions.
+    package_type_module: bool,
     /// First-seen reason this file is in the program. `null` until set
     /// by `resolveImports` (for imported files); root files are
     /// classified by the CLI layer at `--explainFiles` time.
@@ -239,6 +241,7 @@ pub const Program = struct {
             .imports = .empty,
             .is_declaration = isDeclarationPath(path),
             .is_tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
+            .package_type_module = self.resolver.containingPackageIsTypeModule(path),
             .include_reason = null,
             .redirect_target = null,
         };
@@ -272,6 +275,7 @@ pub const Program = struct {
             .imports = .empty,
             .is_declaration = target.is_declaration,
             .is_tsx = target.is_tsx,
+            .package_type_module = target.package_type_module,
             .include_reason = null,
             .redirect_target = target_id,
         };
@@ -365,6 +369,7 @@ pub const Program = struct {
             if (f.compilation != null) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.package_type_module = f.package_type_module;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
             per_file.program_global_var_names = program_global_var_names;
@@ -505,6 +510,7 @@ pub const Program = struct {
             }
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.package_type_module = f.package_type_module;
             per_file.is_declaration_file = f.is_declaration;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
@@ -1911,6 +1917,7 @@ pub const Program = struct {
         for (self.files.items, 0..) |f, idx| {
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.package_type_module = f.package_type_module;
             per_file.is_declaration_file = f.is_declaration;
             const r = ts_driver.emitWithCache(self.gpa, f.source, cache, config_blob, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -1989,6 +1996,7 @@ pub const Program = struct {
                     const f = prog.files.items[idx];
                     var per_file = opts;
                     per_file.is_tsx = opts.is_tsx or f.is_tsx;
+                    per_file.package_type_module = f.package_type_module;
                     per_file.is_declaration_file = f.is_declaration;
                     per_file.suppress_import_helper_diagnostics = true;
                     if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
@@ -2669,6 +2677,7 @@ pub const Program = struct {
 
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.package_type_module = f.package_type_module;
             per_file.is_declaration_file = f.is_declaration;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -3609,7 +3618,9 @@ fn moduleExportFactsFromResolvedModuleDepth(
     if (depth >= 8) return .{};
     const src = try resolver.fs.readFile(gpa, module_path);
     defer gpa.free(src);
-    const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or std.mem.endsWith(u8, module_path, ".jsx");
+    const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or
+        std.mem.endsWith(u8, module_path, ".jsx") or
+        (std.mem.endsWith(u8, module_path, ".js") and Program.sourceHasJsxSyntax(src));
     var facts: ModuleExportFacts = .{
         .exported_type = moduleExportsTypeSpaceName(gpa, src, name, is_tsx) or
             moduleExportsTypeOnlyNamespaceName(gpa, src, name, is_tsx),
@@ -3660,8 +3671,38 @@ fn moduleExportFactsFromResolvedModuleDepth(
     for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
         if (compilation.hir.kindOf(stmt) != .export_decl) continue;
         const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
-        if (!ex.is_namespace or compilation.interner.get(ex.namespace_alias).len != 0) continue;
         const specifier = compilation.interner.get(ex.module);
+        if (ex.decl == hir_mod_ns.none_node_id and ex.named_len > 0) {
+            const name_id = compilation.interner.lookup(name) orelse continue;
+            for (hir_mod_ns.exportNamed(&compilation.hir, stmt)) |spec_node| {
+                if (compilation.hir.kindOf(spec_node) != .import_specifier) continue;
+                const export_spec = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
+                if (export_spec.local != name_id) continue;
+                if (specifier.len == 0) {
+                    if (moduleRootDeclaresValueBinding(
+                        &compilation.hir,
+                        compilation.root,
+                        export_spec.imported,
+                    )) facts.exported_value = true;
+                    continue;
+                }
+                const target = resolver.resolve(specifier, module_path) catch continue;
+                if (std.mem.eql(u8, target.path, module_path)) continue;
+                const imported_name = compilation.interner.get(export_spec.imported);
+                const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, imported_name, depth + 1);
+                if (ex.is_type_only or export_spec.is_type_only) {
+                    if (nested.exported_type) {
+                        facts.exported_type = true;
+                        if (facts.type_only_pos == null) facts.type_only_pos = compilation.hir.spanOf(spec_node).start;
+                    }
+                } else {
+                    facts.exported_type = facts.exported_type or nested.exported_type;
+                    facts.exported_value = facts.exported_value or nested.exported_value;
+                    facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
+                }
+            }
+        }
+        if (!ex.is_namespace or compilation.interner.get(ex.namespace_alias).len != 0) continue;
         if (!std.mem.startsWith(u8, specifier, ".") or exportStarTargetPrefersIndex(specifier)) continue;
         const target = resolver.resolve(specifier, module_path) catch continue;
         if (std.mem.eql(u8, target.path, module_path)) continue;
@@ -3678,6 +3719,48 @@ fn moduleExportFactsFromResolvedModuleDepth(
         facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
     }
     return facts;
+}
+
+fn moduleRootDeclaresValueBinding(
+    hir: *const hir_mod_ns.Hir,
+    root: hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        const stmt = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (stmt == hir_mod_ns.none_node_id) continue;
+        switch (hir.kindOf(stmt)) {
+            .var_decl, .let_decl, .const_decl => {
+                if (bindingDeclaresName(hir, hir_mod_ns.varDeclOf(hir, stmt).name, name)) return true;
+            },
+            .fn_decl, .class_decl, .enum_decl => {
+                if (declarationName(hir, stmt) == name) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn bindingDeclaresName(
+    hir: *const hir_mod_ns.Hir,
+    binding: hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+) bool {
+    if (binding == hir_mod_ns.none_node_id) return false;
+    return switch (hir.kindOf(binding)) {
+        .identifier => hir_mod_ns.identifierOf(hir, binding).name == name,
+        .object_pattern, .array_pattern => blk: {
+            for (hir_mod_ns.patternElements(hir, binding)) |element| {
+                if (hir.kindOf(element) != .parameter) continue;
+                const parameter = hir_mod_ns.parameterOf(hir, element);
+                if (bindingDeclaresName(hir, parameter.name, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
 }
 
 fn moduleRootIsExternalOrCommonJsModule(
@@ -5931,6 +6014,33 @@ test "module export facts distinguish scripts from external modules" {
     try T.expect(!script.module_is_external);
     try T.expect(esm.module_is_external);
     try T.expect(commonjs.module_is_external);
+}
+
+test "module export facts follow named reexports and destructured bindings" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/pkg/package.json", "{\"name\":\"pkg\",\"version\":\"1.0.0\",\"types\":\"index.d.ts\"}");
+    try vfs.addFile("/node_modules/pkg/index.d.ts", "export class Foo { private x; }");
+    try vfs.addFile("/reexport.d.ts", "export { Foo } from 'pkg';");
+    try vfs.addFile("/local.ts", "const source = { bar() {} }; const { bar } = source; export { bar };");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const named = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/reexport.d.ts", "Foo");
+    const destructured = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/local.ts", "bar");
+    try T.expect(named.exported_type);
+    try T.expect(named.exported_value);
+    try T.expect(destructured.exported_value);
+}
+
+test "module export facts parse JSX-bearing JavaScript modules" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/component.js", "export const C = () => <div />;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const facts = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/component.js", "C");
+    try T.expect(facts.exported_value);
 }
 
 test "Program: collects only non-void CommonJS exports" {

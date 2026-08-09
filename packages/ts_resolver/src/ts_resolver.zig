@@ -343,6 +343,18 @@ pub const Resolver = struct {
         self.arena.deinit();
     }
 
+    pub fn containingPackageIsTypeModule(self: *Resolver, containing_file: []const u8) bool {
+        const scope = self.getPackageScope(containing_file) catch return false;
+        const package = scope orelse return false;
+        const bytes = self.fs.readFile(self.gpa, package.pkg_json) catch return false;
+        defer self.gpa.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return false;
+        defer parsed.deinit();
+        if (parsed.value != .object) return false;
+        const type_value = parsed.value.object.get("type") orelse return false;
+        return type_value == .string and std.mem.eql(u8, type_value.string, "module");
+    }
+
     /// Best-effort rendering of the probe extension set for the
     /// "target file types: {1}" trace slot. Honestly reports the
     /// extensions Home actually probes (rendered into the trace sink's
@@ -1028,6 +1040,12 @@ pub const Resolver = struct {
                             .package_json_map = true,
                             .package_imports_pattern = m.is_pattern,
                         };
+                    }
+                    if (try self.tryLoadInputFileForPath(joined)) |r| {
+                        var out = r;
+                        out.package_json_map = true;
+                        out.package_imports_pattern = m.is_pattern;
+                        return out;
                     }
                     return null;
                 },
@@ -3112,6 +3130,29 @@ test "Resolver: relative .ts file" {
     const res = try r.resolve("./foo", "/proj/src/bar.ts");
     try T.expectEqualStrings("/proj/src/foo.ts", res.path);
     try T.expectEqual(Resolution.Source.relative, res.source);
+}
+
+test "Resolver: package imports map output paths back to project sources" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/package.json",
+        "{\"name\":\"pkg\",\"type\":\"module\",\"imports\":{\"#subpath\":\"./dist/subpath.js\"}}",
+    );
+    try vfs.addFile("/src/subpath.ts", "export const foo = 'foo';");
+    try vfs.addFile("/src/index.ts", "import { foo } from '#subpath';");
+    var resolver = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .module_kind = "nodenext",
+        .out_dir = "dist",
+        .root_dir = "src",
+        .config_file_path = "/tsconfig.json",
+    });
+    defer resolver.deinit();
+    const result = try resolver.resolve("#subpath", "/src/index.ts");
+    try T.expectEqualStrings("/src/subpath.ts", result.path);
+    try T.expect(result.package_json_map);
+    try T.expect(resolver.containingPackageIsTypeModule("/src/index.ts"));
 }
 
 test "Resolver: --traceResolution emits TS6086/6089/6095/6096/6097 banners and file probes" {
