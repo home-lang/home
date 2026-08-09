@@ -37748,6 +37748,16 @@ const harness_prelude =
     \\      addon = {
     \\        __home_napi_factory() { return {}; },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_async_context")) {
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          return {
+    \\            createAsyncResource(resource, destroyOnFinalizer) { return { resource: resource && typeof resource === "object" ? resource : {}, destroyOnFinalizer: destroyOnFinalizer !== false, destroyed: false }; },
+    \\            destroyAsyncResource(context) { context.destroyed = true; return context; },
+    \\            makeCallback(context, receiver, callback) { void context; return callback.apply(receiver, Array.prototype.slice.call(arguments, 3)); },
+    \\          };
+    \\        },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
