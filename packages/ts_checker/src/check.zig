@@ -5115,6 +5115,7 @@ pub const Checker = struct {
         try self.checkJsDocTemplateDeclarations(root);
         try self.checkJSDocTypedefTypeTags(root);
         try self.checkJSDocUnsupportedNamepathTypes(root);
+        try self.checkJSDocTagTokensInTypeExpressions(root);
         try self.checkJSDocUnsupportedTypedefWrapping(root);
         try self.checkJSDocMalformedSatisfiesTags(root);
         try self.checkJSDocMalformedParamTags(root);
@@ -5986,6 +5987,33 @@ pub const Checker = struct {
                     });
                 }
                 i = open + type_len;
+            }
+        }
+    }
+
+    fn checkJSDocTagTokensInTypeExpressions(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..comment_end];
+            var scan: usize = 0;
+            while (std.mem.indexOfPos(u8, body, scan, "{@import")) |open| {
+                scan = open + "{@import".len;
+                if (scan < body.len and isJsDocIdentChar(body[scan])) continue;
+                const pos: u32 = @intCast(body_start + open + 1);
+                if (self.hasDiagnosticAtPosition(TsCodes.type_expected, pos)) continue;
+                try self.diagnostics.append(self.gpa, .{
+                    .node = root,
+                    .pos = pos,
+                    .code = TsCodes.type_expected,
+                    .message = "Type expected.",
+                });
             }
         }
     }
@@ -19739,7 +19767,7 @@ pub const Checker = struct {
         }
         if (self.enclosingFunctionLike(node)) |fn_node| {
             const fp = hir_mod.fnDeclOf(self.hir, fn_node);
-            if (!fp.flags.is_async) {
+            if (!fp.flags.is_async or fp.flags.is_getter or fp.flags.is_setter) {
                 // tsc attaches a TS1356 "Did you mean to mark this
                 // function as 'async'?" related-info on the enclosing
                 // non-async function (excluding constructors).
@@ -35284,6 +35312,13 @@ pub const Checker = struct {
                     // for a name appends the member; later sibling
                     // accessors of either kind are folded by skipping.
                     if (fn_p.flags.is_getter or fn_p.flags.is_setter) {
+                        if (fn_p.flags.is_setter and
+                            self.strict_flags.declaration and
+                            hir_mod.fnParams(self.hir, m).len == 0)
+                        {
+                            const anchor: NodeId = if (fn_p.name != hir_mod.none_node_id) fn_p.name else m;
+                            try self.reportSetterPropertyImplicitAny(anchor, member_name);
+                        }
                         if (fn_p.flags.is_abstract and fn_p.body != hir_mod.none_node_id) {
                             // Anchor TS1318 at the accessor name (e.g.
                             // `aa` in `abstract get aa() { }`) so the
@@ -56872,7 +56907,7 @@ pub const Checker = struct {
         return self.objectLiteralHasGetterForName(self.hir.parentOf(prop), name);
     }
 
-    fn reportObjectLiteralSetterImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+    fn reportSetterPropertyImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
         const member_name = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -95511,7 +95546,7 @@ pub const Checker = struct {
                                 // (the latter suppressed at its emission site
                                 // in checkFnSignatureOnly).
                                 if (!self.objectLiteralHasGetterForName(node, k.name)) {
-                                    try self.reportObjectLiteralSetterImplicitAny(op.key, k.name);
+                                    try self.reportSetterPropertyImplicitAny(op.key, k.name);
                                 }
                             }
                         }
@@ -160972,6 +161007,26 @@ test "checker: for-await context diagnostics match async/top-level split" {
     try T.expect(found_1103);
 }
 
+test "checker: tsgo parity: async accessor rejects for-await" {
+    const async_getter = try newSetup(
+        \\class C {
+        \\    async get x() {
+        \\        for await (const y of []) {}
+        \\    }
+        \\}
+    );
+    defer destroySetup(async_getter);
+    try async_getter.checker.checkSourceFile(async_getter.root);
+    var found_accessor_1103 = false;
+    for (async_getter.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.for_await_only_in_async) continue;
+        found_accessor_1103 = true;
+        try T.expectEqual(@as(usize, 1), d.related.len);
+        try T.expectEqual(TsCodes.did_you_mean_async, d.related[0].code);
+    }
+    try T.expect(found_accessor_1103);
+}
+
 test "checker: for-await allowed in async function and async generator" {
     const s = try newSetup(
         \\async function f() { for await (const x of y) {} }
@@ -198770,6 +198825,28 @@ test "checker: checkjs JSDoc inner namepath type reports parse diagnostic" {
     try T.expect(saw_expected_close);
 }
 
+test "checker: tsgo parity: checkjs JSDoc type rejects nested import tag token" {
+    const b = try newBoundSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\/** @type {@import("a").Type} */
+        \\let x;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    const src = b.base.checker.source.?;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "@import").?);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_expected) continue;
+        found = true;
+        try T.expectEqual(expected_pos, d.pos.?);
+        try T.expectEqualStrings("Type expected.", d.message);
+    }
+    try T.expect(found);
+}
+
 test "checker: checkjs JSDoc multiline typedef without leading stars reports type expected" {
     const b = try newBoundSetup(
         \\// @checkjs: true
@@ -206311,6 +206388,19 @@ test "checker: object literal setter without annotation reports TS7032 and TS700
     }
     try T.expect(saw_property);
     try T.expect(saw_param);
+}
+
+test "checker: tsgo parity: declaration emit reports TS7032 for parameterless setter" {
+    const s = try newSetup("class C { set foo() {} }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .declaration = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.setter_property_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.setter_property_implicitly_any,
+        "Property 'foo' implicitly has type 'any', because its set accessor lacks a parameter type annotation.",
+    ));
 }
 
 test "checker: bare arrow with unannotated param still fires TS7006" {
