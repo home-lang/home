@@ -7192,9 +7192,17 @@ fn baselineHasNoPositionLibDiagnostic(gpa: std.mem.Allocator, path: []const u8) 
 fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
+    var clean_line: std.ArrayListUnmanaged(u8) = .empty;
+    defer clean_line.deinit(gpa);
+    var normalized_line: std.ArrayListUnmanaged(u8) = .empty;
+    defer normalized_line.deinit(gpa);
     var lines = std.mem.splitScalar(u8, baseline, '\n');
     while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, "\r");
+        clean_line.clearRetainingCapacity();
+        try appendWithoutAnsiSgr(gpa, &clean_line, raw);
+        normalized_line.clearRetainingCapacity();
+        try appendCanonicalDiagnosticHeader(gpa, &normalized_line, std.mem.trim(u8, clean_line.items, "\r"));
+        const line = normalized_line.items;
         // Stop at the `==== <file> (N errors) ====` separator that
         // introduces the inlined source body. Any line after it is
         // file content — including comments that happen to look like
@@ -7211,6 +7219,63 @@ fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 
     }
     if (out.items.len == 0) return "";
     return out.toOwnedSlice(gpa);
+}
+
+fn appendWithoutAnsiSgr(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    input: []const u8,
+) !void {
+    var i: usize = 0;
+    while (i < input.len) {
+        if (input[i] == 0x1b and i + 1 < input.len and input[i + 1] == '[') {
+            var end = i + 2;
+            while (end < input.len and input[end] != 'm') : (end += 1) {}
+            if (end < input.len) {
+                i = end + 1;
+                continue;
+            }
+        }
+        try out.append(gpa, input[i]);
+        i += 1;
+    }
+}
+
+fn appendCanonicalDiagnosticHeader(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    line: []const u8,
+) !void {
+    const separator = std.mem.indexOf(u8, line, " - ") orelse {
+        try out.appendSlice(gpa, line);
+        return;
+    };
+    const location = line[0..separator];
+    const column_colon = std.mem.lastIndexOfScalar(u8, location, ':') orelse {
+        try out.appendSlice(gpa, line);
+        return;
+    };
+    const line_colon = std.mem.lastIndexOfScalar(u8, location[0..column_colon], ':') orelse {
+        try out.appendSlice(gpa, line);
+        return;
+    };
+    const line_text = location[line_colon + 1 .. column_colon];
+    const column_text = location[column_colon + 1 ..];
+    _ = std.fmt.parseUnsigned(u32, line_text, 10) catch {
+        try out.appendSlice(gpa, line);
+        return;
+    };
+    _ = std.fmt.parseUnsigned(u32, column_text, 10) catch {
+        try out.appendSlice(gpa, line);
+        return;
+    };
+    try out.appendSlice(gpa, location[0..line_colon]);
+    try out.append(gpa, '(');
+    try out.appendSlice(gpa, line_text);
+    try out.append(gpa, ',');
+    try out.appendSlice(gpa, column_text);
+    try out.appendSlice(gpa, "): ");
+    try out.appendSlice(gpa, line[separator + " - ".len ..]);
 }
 
 /// Filter the option-validation / tsconfig-aware diagnostic family
@@ -55254,6 +55319,21 @@ test "conformance: extracts diagnostic headers from upstream baseline text" {
         headers,
     );
     try T.expectEqualStrings("tests/cases/conformance/types/example.ts", firstDiagnosticPath(headers).?);
+}
+
+test "conformance: extracts diagnostic headers from pretty ANSI baselines" {
+    const headers = try extractDiagnosticHeaders(
+        T.allocator,
+        "\x1b[96mmod1.js\x1b[0m:\x1b[93m1\x1b[0m:\x1b[93m23\x1b[0m - \x1b[91merror\x1b[0m\x1b[90m TS2300: \x1b[0mDuplicate identifier 'Foo'.\r\n" ++
+            "\r\n==== mod1.js (1 errors) ====\r\n" ++
+            "// ignored.js(1,1): error TS9999: source text\r\n",
+    );
+    defer if (headers.len > 0) T.allocator.free(headers);
+
+    try T.expectEqualStrings(
+        "mod1.js(1,23): error TS2300: Duplicate identifier 'Foo'.",
+        headers,
+    );
 }
 
 test "conformance: discovers option-suffixed upstream error baselines" {
