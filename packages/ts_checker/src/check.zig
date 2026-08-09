@@ -34534,9 +34534,10 @@ pub const Checker = struct {
             // name; only named classes participate.
             if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
                 const ctor_class_name = hir_mod.identifierOf(self.hir, c.name).name;
-                if (fp.flags.is_private) {
+                const jsdoc_visibility = self.jsDocAccessibility(m);
+                if (fp.flags.is_private or jsdoc_visibility == .private) {
                     try self.private_constructor_classes.put(self.gpa, ctor_class_name, {});
-                } else if (fp.flags.is_protected) {
+                } else if (fp.flags.is_protected or jsdoc_visibility == .protected) {
                     try self.protected_constructor_classes.put(self.gpa, ctor_class_name, {});
                 }
             }
@@ -218470,6 +218471,27 @@ test "checker: TS2674 fires for new on a class with a protected constructor" {
             try T.expectEqualStrings("Constructor of class 'C' is protected and only accessible within the class declaration.", d.message);
         }
     }
+}
+
+test "checker: checked JS constructor JSDoc controls accessibility" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\class PrivateC {
+        \\  /** @private */
+        \\  constructor() {}
+        \\}
+        \\class ProtectedC {
+        \\  /** @protected */
+        \\  constructor() {}
+        \\}
+        \\new PrivateC();
+        \\new ProtectedC();
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_is_private));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_is_protected));
 }
 
 test "checker: inaccessible constructor calls recover as any" {
