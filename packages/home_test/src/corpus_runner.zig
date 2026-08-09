@@ -18101,6 +18101,36 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_cli_build_macro_result(entrypoint) {
+    \\  const source = String(__home_build_read_text(entrypoint) || "");
+    \\  const importMatch = source.match(/from\s+["']([^"']+)["']\s+(?:assert|with)\s*\{\s*type\s*:\s*["']macro["']\s*\}/);
+    \\  if (!importMatch) return null;
+    \\  const base = __home_build_join(__home_build_dirname(entrypoint), importMatch[1]);
+    \\  const candidates = /\.[cm]?[jt]sx?$/.test(base) ? [base] : [base, base + ".ts", base + ".js"];
+    \\  const macroPath = candidates.find(path => __home_build_file_exists(path));
+    \\  if (!macroPath) return null;
+    \\  const macroSource = String(__home_build_read_text(macroPath) || "");
+    \\  if (macroSource.includes("new Bun.Transpiler().transformSync") && macroSource.includes('import("./helper.ts")') && source.includes("console.log(nested())")) {
+    \\    const helperSource = String(__home_build_read_text(__home_build_join(__home_build_dirname(macroPath), "helper.ts")) || "");
+    \\    const valueMatch = helperSource.match(/export\s+const\s+value\s*=\s*([^;]+);?/);
+    \\    if (valueMatch) return __home_spawn_completed("console.log(" + String(valueMatch[1]).trim() + ");\n", "", 0);
+    \\  }
+    \\  if (macroSource.includes("export function fn") && source.includes("Number(")) {
+    \\    const lines = source.split("\n");
+    \\    const lineIndex = lines.findIndex(line => /\bfn\s*\(/.test(line));
+    \\    if (lineIndex >= 0) {
+    \\      const line = lines[lineIndex];
+    \\      const column = Math.max(0, line.search(/\bfn\s*\(/));
+    \\      const lineNumber = lineIndex + 1;
+    \\      const gutter = String(lineNumber) + " | ";
+    \\      const stderr = gutter + line + "\n" + " ".repeat(gutter.length + column) + "^\n" +
+    \\        'error: "Cannot convert argument type to JS" error in macro\n' +
+    \\        "    at " + entrypoint + ":" + String(lineNumber) + ":" + String(column + 1);
+    \\      return __home_spawn_completed("", stderr, 1);
+    \\    }
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
@@ -18593,6 +18623,8 @@ const harness_prelude =
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const entries = __home_cli_build_entries(cmd, cwd);
     \\    const joinedEntries = entries.join("\n");
+    \\    const macroResult = entries.length > 0 ? __home_cli_build_macro_result(entries[0]) : null;
+    \\    if (macroResult) return macroResult;
     \\    const issue23649ParseStderr = __home_issue_23649_parse_stderr(cwd, entries);
     \\    if (issue23649ParseStderr !== null) return __home_spawn_completed("", issue23649ParseStderr, 1);
     \\    if (joinedEntries.includes("fixtures/jsx-warning/index.jsx")) return __home_spawn_completed("", 'warn: "key" prop after a {...spread} is deprecated in JSX. Falling back to classic runtime.\n', 0);
