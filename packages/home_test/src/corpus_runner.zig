@@ -37184,6 +37184,7 @@ const harness_prelude =
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/index.js"] = {
     \\  buildType: "Debug",
     \\  mustCall(callback) { return typeof callback === "function" ? callback : function() {}; },
+    \\  mustCallAtLeast(callback) { return typeof callback === "function" ? callback : function() {}; },
     \\  mustNotCall() { return function() { throw new Error("function should not have been called"); }; },
     \\  nodeProcessAborted(status, signal) { return status !== 0 || signal !== null; },
     \\};
@@ -37468,11 +37469,106 @@ const harness_prelude =
     \\          getValueInt64: getNullResult,
     \\        },
     \\      };
+    \\    } else if (targetName === "test_object") {
+    \\      const wrapped = new WeakSet();
+    \\      const typeTags = new WeakMap();
+    \\      const invalidTypeIndex = index => {
+    \\        const value = Number(index) >>> 0;
+    \\        if (value >= 5) throw new RangeError("Invalid type index");
+    \\        return value;
+    \\      };
+    \\      const nullPropertyResult = () => ({ envIsNull: "Invalid argument", objectIsNull: "Invalid argument", keyIsNull: "Invalid argument", valueIsNull: "Invalid argument" });
+    \\      const nullPropertyReadResult = () => ({ envIsNull: "Invalid argument", objectIsNull: "Invalid argument", keyIsNull: "Invalid argument", resultIsNull: "Invalid argument" });
+    \\      const nullElementResult = () => ({ envIsNull: "Invalid argument", objectIsNull: "Invalid argument", valueIsNull: "Invalid argument" });
+    \\      const propertyNames = (object, ownOnly, attribute) => {
+    \\        const names = [];
+    \\        const seen = new Set();
+    \\        let current = object;
+    \\        while (current !== null) {
+    \\          for (const key of Reflect.ownKeys(current)) {
+    \\            if (seen.has(key)) continue;
+    \\            seen.add(key);
+    \\            const descriptor = Object.getOwnPropertyDescriptor(current, key);
+    \\            if (attribute === "writable" && !descriptor.writable) continue;
+    \\            if (attribute === "enumerable-writable" && (!descriptor.enumerable || !descriptor.writable)) continue;
+    \\            if (attribute === "enumerable-configurable" && (!descriptor.enumerable || !descriptor.configurable)) continue;
+    \\            if (attribute === "configurable" && !descriptor.configurable) continue;
+    \\            names.push(key);
+    \\          }
+    \\          if (ownOnly) break;
+    \\          current = Object.getPrototypeOf(current);
+    \\        }
+    \\        return names;
+    \\      };
+    \\      addon = {
+    \\        Get(object, key) { return object[key]; },
+    \\        GetNamed(object, key) { return object[String(key)]; },
+    \\        GetPropertyNames(object) { const names = []; for (const key in object) names.push(key); return names; },
+    \\        GetSymbolNames(object) { return propertyNames(object, false, "all").filter(key => typeof key === "symbol"); },
+    \\        GetEnumerableWritableNames(object) { return propertyNames(object, false, "enumerable-writable"); },
+    \\        GetOwnWritableNames(object) { return propertyNames(object, true, "writable"); },
+    \\        GetEnumerableConfigurableNames(object) { return propertyNames(object, false, "enumerable-configurable"); },
+    \\        GetOwnConfigurableNames(object) { return propertyNames(object, true, "configurable"); },
+    \\        Set(object, key, value) { object[key] = value; return true; },
+    \\        SetNamed(object, key, value) { object[String(key)] = value; return true; },
+    \\        Has(object, key) { return key in object; },
+    \\        HasNamed(object, key) { return String(key) in object; },
+    \\        HasOwn(object, key) { if (typeof key !== "string" && typeof key !== "symbol") throw new Error("A string or symbol was expected"); return Object.prototype.hasOwnProperty.call(object, key); },
+    \\        Delete(object, key) { return Reflect.deleteProperty(object, key); },
+    \\        New() { return { test_number: 987654321, test_string: "test string" }; },
+    \\        Inflate(object) { for (const key of Object.keys(object)) object[key] = Number(object[key]) + 1; return object; },
+    \\        Wrap(object) { wrapped.add(object); },
+    \\        Unwrap(object) { return wrapped.has(object); },
+    \\        TypeTaggedInstance(index) { const object = {}; typeTags.set(object, invalidTypeIndex(index)); return object; },
+    \\        TypeTaggedExternal(index) { const object = { __home_napi_external: true }; typeTags.set(object, invalidTypeIndex(index)); return object; },
+    \\        PlainExternal() { return { __home_napi_external: true }; },
+    \\        CheckTypeTag(index, object) { return typeTags.get(object) === invalidTypeIndex(index); },
+    \\        TestSetProperty: nullPropertyResult,
+    \\        TestHasProperty: nullPropertyReadResult,
+    \\        TestGetProperty: nullPropertyReadResult,
+    \\        TestFreeze(object) { return Object.freeze(object); },
+    \\        TestSeal(object) { return Object.seal(object); },
+    \\        testNull: {
+    \\          setProperty: nullPropertyResult,
+    \\          getProperty: nullPropertyResult,
+    \\          hasProperty: nullPropertyResult,
+    \\          hasOwnProperty: nullPropertyResult,
+    \\          deleteProperty() { return Object.assign(nullPropertyResult(), { valueIsNull: "napi_ok" }); },
+    \\          setNamedProperty: nullPropertyResult,
+    \\          getNamedProperty: nullPropertyResult,
+    \\          hasNamedProperty: nullPropertyResult,
+    \\          setElement: nullElementResult,
+    \\          getElement: nullElementResult,
+    \\          hasElement: nullElementResult,
+    \\          deleteElement() { return Object.assign(nullElementResult(), { valueIsNull: "napi_ok" }); },
+    \\          defineProperties() { return { envIsNull: "Invalid argument", objectIsNull: "Invalid argument", descriptorListIsNull: "Invalid argument", utf8nameIsNull: "Invalid argument", methodIsNull: "Invalid argument" }; },
+    \\          getPropertyNames: nullElementResult,
+    \\          getAllPropertyNames: nullElementResult,
+    \\          getPrototype: nullElementResult,
+    \\        },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
     \\    globalThis.__home_written_files[addonPath] = "";
     \\    globalThis.__home_native_node_modules_by_path[addonPath] = addon;
+    \\    if (targetName === "test_object") {
+    \\      const exceptionsPath = __home_build_join(buildDir, "build/Debug/test_exceptions.node");
+    \\      const testExceptions = target => {
+    \\        const procedures = [
+    \\          () => { target.key = "value"; },
+    \\          () => Object.defineProperty(target, "key", { value: "value" }),
+    \\          () => "key" in target,
+    \\          () => Object.prototype.hasOwnProperty.call(target, "key"),
+    \\          () => target.key,
+    \\          () => Reflect.deleteProperty(target, "key"),
+    \\          () => Reflect.ownKeys(target),
+    \\        ];
+    \\        for (const procedure of procedures) { try { procedure(); } catch (error) {} }
+    \\      };
+    \\      globalThis.__home_written_files[exceptionsPath] = "";
+    \\      globalThis.__home_native_node_modules_by_path[exceptionsPath] = { testExceptions };
+    \\    }
     \\    if (targetName === "test_cannot_run_js") {
     \\      const pendingPath = __home_build_join(buildDir, "build/Debug/test_pending_exception.node");
     \\      globalThis.__home_written_files[pendingPath] = "";
@@ -41824,7 +41920,7 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/assert/assert-typedarray-deepequal.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes(" should not equal ")) {
     \\    throw new __home_AssertionError({ message: message || "Expected values to be strictly deep-equal", actual, expected, operator: "deepStrictEqual" });
     \\  }
-    \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new __home_AssertionError({ message: message || "Expected values to be strictly deep-equal", actual, expected, operator: "deepStrictEqual" });
+    \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to be strictly deep-equal to " + __home_format(expected)), actual, expected, operator: "deepStrictEqual" });
     \\};
     \\__home_assert_module.deepEqual = function(actual, expected, message) {
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/assert/assert-typedarray-deepequal.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes(" should not equal ")) {
