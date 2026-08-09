@@ -3768,6 +3768,7 @@ pub const ModuleExportFacts = struct {
     type_only_pos: ?u32 = null,
     export_assignment_type_only: bool = false,
     default_export_member_readonly: bool = false,
+    generic_function: bool = false,
     module_is_external: bool = false,
 };
 
@@ -3845,10 +3846,19 @@ fn moduleExportFactsFromResolvedModuleDepth(
         compilation.root,
         name,
     );
+    const queried_name = compilation.interner.lookup(name);
     for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
         if (compilation.hir.kindOf(stmt) != .export_decl) continue;
         const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
         const specifier = compilation.interner.get(ex.module);
+        if (queried_name) |name_id| {
+            if (ex.decl != hir_mod_ns.none_node_id and compilation.hir.kindOf(ex.decl) == .fn_decl and
+                declarationName(&compilation.hir, ex.decl) == name_id and
+                hir_mod_ns.fnTypeParams(&compilation.hir, ex.decl).len > 0)
+            {
+                facts.generic_function = true;
+            }
+        }
         if (ex.decl == hir_mod_ns.none_node_id and ex.named_len > 0) {
             const name_id = compilation.interner.lookup(name) orelse continue;
             for (hir_mod_ns.exportNamed(&compilation.hir, stmt)) |spec_node| {
@@ -3861,6 +3871,11 @@ fn moduleExportFactsFromResolvedModuleDepth(
                         compilation.root,
                         export_spec.imported,
                     )) facts.exported_value = true;
+                    if (moduleRootDeclaresGenericFunction(
+                        &compilation.hir,
+                        compilation.root,
+                        export_spec.imported,
+                    )) facts.generic_function = true;
                     continue;
                 }
                 const target = resolver.resolve(specifier, module_path) catch continue;
@@ -3876,6 +3891,7 @@ fn moduleExportFactsFromResolvedModuleDepth(
                     facts.exported_type = facts.exported_type or nested.exported_type;
                     facts.exported_value = facts.exported_value or nested.exported_value;
                     facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
+                    facts.generic_function = facts.generic_function or nested.generic_function;
                 }
             }
         }
@@ -3894,8 +3910,23 @@ fn moduleExportFactsFromResolvedModuleDepth(
         facts.exported_type = facts.exported_type or nested.exported_type;
         facts.exported_value = facts.exported_value or nested.exported_value;
         facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
+        facts.generic_function = facts.generic_function or nested.generic_function;
     }
     return facts;
+}
+
+fn moduleRootDeclaresGenericFunction(
+    hir: *const hir_mod_ns.Hir,
+    root: hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+) bool {
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        const decl = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (decl == hir_mod_ns.none_node_id or hir.kindOf(decl) != .fn_decl) continue;
+        if (declarationName(hir, decl) != name) continue;
+        return hir_mod_ns.fnTypeParams(hir, decl).len > 0;
+    }
+    return false;
 }
 
 fn moduleRootDeclaresValueBinding(
@@ -6282,6 +6313,40 @@ test "module export facts follow named reexports and destructured bindings" {
     try T.expect(named.exported_type);
     try T.expect(named.exported_value);
     try T.expect(destructured.exported_value);
+}
+
+test "module export facts preserve generic function exports through reexports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/node_modules/lib/index.d.ts",
+        "export declare function createService<T>(): T; export declare function plain(): void;",
+    );
+    try vfs.addFile("/reexport.d.ts", "export { createService } from 'lib';");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const generic = moduleExportFactsFromResolvedModule(
+        T.allocator,
+        &resolver,
+        "/node_modules/lib/index.d.ts",
+        "createService",
+    );
+    const plain = moduleExportFactsFromResolvedModule(
+        T.allocator,
+        &resolver,
+        "/node_modules/lib/index.d.ts",
+        "plain",
+    );
+    const reexport = moduleExportFactsFromResolvedModule(
+        T.allocator,
+        &resolver,
+        "/reexport.d.ts",
+        "createService",
+    );
+    try T.expect(generic.generic_function);
+    try T.expect(!plain.generic_function);
+    try T.expect(reexport.generic_function);
 }
 
 test "module export facts parse JSX-bearing JavaScript modules" {

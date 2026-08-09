@@ -290,6 +290,11 @@ pub const ExternalResolver = struct {
         /// export. This lets cross-file default imports retain mapped
         /// `Readonly<T>` member flags for assignment checks (TS2540).
         default_export_member_readonly: bool = false,
+        /// True when the queried value export is a function with type
+        /// parameters. Call checking uses this cross-file fact to accept
+        /// explicit type arguments even when the foreign signature has not
+        /// been interned into the importing checker's type pool.
+        generic_function: bool = false,
         /// True when the exported value is an ambient const enum. Under
         /// isolatedModules-like flags (including verbatimModuleSyntax),
         /// TypeScript rejects value imports/re-exports of these symbols with
@@ -17583,6 +17588,10 @@ pub const Checker = struct {
                 });
             },
             .block_stmt => for (hir_mod.blockStmts(self.hir, stmt)) |s| try self.collectExpandoMembersFromStmt(name, s, members, seen),
+            .var_decl, .let_decl, .const_decl => {
+                const variable = hir_mod.varDeclOf(self.hir, stmt);
+                try self.collectExpandoMembersFromStmt(name, variable.init, members, seen);
+            },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, stmt);
                 try self.collectExpandoMembersFromStmt(name, i.then_branch, members, seen);
@@ -81240,6 +81249,7 @@ pub const Checker = struct {
         if (anchor != hir_mod.none_node_id) {
             if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
             if (try self.jsConstructorInstanceTypeForHeritage(anchor, name)) |t| return t;
+            if (try self.importedTypeRefForLocal(name, anchor)) |t| return t;
             if (self.type_names.get(name)) |t| {
                 if (self.genericTypeAliasVisibleAt(anchor, name)) return t;
             }
@@ -93150,6 +93160,11 @@ pub const Checker = struct {
                     if (self.generic_fns.get(callee_name)) |_| {
                         callee_had_generic_record = true;
                     }
+                }
+                if (type_arg_nodes.len > 0 and !callee_had_generic_record and
+                    try self.callCalleeIsImportedGenericFunction(c.callee))
+                {
+                    callee_had_generic_record = true;
                 }
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record) {
                     if (effective_callee_t == types.Primitive.any or effective_callee_t == types.Primitive.unknown) {
@@ -105350,6 +105365,47 @@ pub const Checker = struct {
         for (self.diagnostics.items) |d| {
             if (d.code != TsCodes.property_does_not_exist) continue;
             if (d.node == callee or self.nodeIsAncestorOf(callee, d.node)) return true;
+        }
+        return false;
+    }
+
+    fn callCalleeIsImportedGenericFunction(self: *Checker, callee: NodeId) CheckError!bool {
+        if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .identifier) return false;
+        const local_name = hir_mod.identifierOf(self.hir, callee).name;
+        const root = self.rootBlockFor(callee);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(callee);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(stmt) != section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            const spec = self.string_interner.get(imp.module);
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (imported.local != local_name) continue;
+                if (self.external_resolver) |resolver| {
+                    const containing = if (self.importer_path.len > 0)
+                        self.importer_path
+                    else
+                        self.virtualSectionFilenameForNode(callee) orelse "/__root__.ts";
+                    const imported_name = self.string_interner.get(imported.imported);
+                    if (resolver.moduleExport(spec, containing, imported_name)) |info| {
+                        if (info.generic_function) return true;
+                    }
+                }
+                const declaration_file = (try self.virtualBareModuleDeclarationFilename(spec)) orelse return false;
+                defer self.gpa.free(declaration_file);
+                for (hir_mod.blockStmts(self.hir, root)) |candidate_raw| {
+                    const filename = self.virtualSectionFilenameForNode(candidate_raw) orelse continue;
+                    if (!virtualPathEquals(filename, declaration_file)) continue;
+                    const candidate = self.unwrapExportDecl(candidate_raw);
+                    if (candidate == hir_mod.none_node_id or self.hir.kindOf(candidate) != .fn_decl) continue;
+                    if ((self.declarationName(candidate) orelse continue) != imported.imported) continue;
+                    return hir_mod.fnTypeParams(self.hir, candidate).len > 0;
+                }
+                return false;
+            }
         }
         return false;
     }
@@ -201767,6 +201823,40 @@ test "checker: checkjs implements resolves global interfaces from declaration se
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
 }
 
+test "checker: checkjs implements resolves an ordinary imported class" {
+    const b = try newBoundSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: /component.d.ts
+        \\export class WithAccessor {
+        \\    get value(): number;
+        \\    set value(v: number);
+        \\}
+        \\// @filename: /main.js
+        \\import { WithAccessor } from "./component";
+        \\/** @implements {WithAccessor} */
+        \\export class C {
+        \\    constructor() { this.value = 1; }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+}
+
+test "checker: imported generic declaration functions accept explicit type arguments" {
+    const b = try newBoundSetup(
+        \\// @filename: /node_modules/lib/index.d.ts
+        \\export declare function createService<T>(): { new (): {} };
+        \\// @filename: /client.ts
+        \\import { createService } from "lib";
+        \\export class Client extends createService<string>() {}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.untyped_function_type_args));
+}
+
 test "checker: checkjs implements class reports member mismatches and preserves fallbacks" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -202936,6 +203026,18 @@ test "checker: expando properties assigned inside control-flow branches join the
             try T.expect(std.mem.indexOf(u8, d.message, "'q'") == null);
         }
     }
+}
+
+test "checker: expando properties assigned in variable initializers join the function type" {
+    const s = try newSetup(
+        \\function Foo(): void {}
+        \\Foo.top = 1;
+        \\let d: number = (Foo.inInitializer = 2);
+        \\d;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs prototype method resolves the constructor's @template param (no TS2304)" {
