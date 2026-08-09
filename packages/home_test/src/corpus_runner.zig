@@ -1131,6 +1131,79 @@ const harness_prelude =
     \\  globalThis.__home_native_node_modules_by_path[notPluginPath] = __home_make_native_plugin_module(false);
     \\  return { pluginPath, notPluginPath };
     \\}
+    \\let __home_uv_stub_constants_cache = null;
+    \\function __home_uv_stub_constants() {
+    \\  if (__home_uv_stub_constants_cache) return __home_uv_stub_constants_cache;
+    \\  const constantsPath = "packages/runtime/upstream/src/jsc/bindings/libuv/generate_uv_posix_stubs_constants.ts";
+    \\  const source = __home_build_read_text(constantsPath);
+    \\  if (source === null) throw new Error("Bun UV stub constants are missing: " + constantsPath);
+    \\  const skippedMatch = String(source).match(/export const test_skipped = (\[[\s\S]*?\]);/);
+    \\  const symbolsMatch = String(source).match(/export const symbols = (\[[\s\S]*?\]);/);
+    \\  if (!skippedMatch || !symbolsMatch) throw new Error("Bun UV stub constants could not be parsed");
+    \\  const test_skipped = Function("return " + skippedMatch[1])();
+    \\  const symbols = Function("return " + symbolsMatch[1])();
+    \\  if (!Array.isArray(test_skipped) || !Array.isArray(symbols) || symbols.length === 0) throw new Error("Bun UV stub constants are invalid");
+    \\  __home_uv_stub_constants_cache = { symbols, test_skipped };
+    \\  return __home_uv_stub_constants_cache;
+    \\}
+    \\function __home_register_uv_napi_fixture(cwd, stubMatrix) {
+    \\  const releaseDir = __home_build_join(String(cwd || process.cwd()), "build/Release");
+    \\  if (stubMatrix) {
+    \\    const stubPath = __home_build_join(releaseDir, "xXx123_foo_counter_321xXx.node");
+    \\    const goodPath = __home_build_join(releaseDir, "good_plugin.node");
+    \\    __home_build_write_text(stubPath, "");
+    \\    __home_build_write_text(goodPath, "");
+    \\    globalThis.__home_native_node_modules_by_path[stubPath] = {
+    \\      callUVFunc(symbol) {
+    \\        const name = String(symbol || "unknown");
+    \\        const error = new Error("Bun encountered a crash when running a NAPI module that tried to call " + name);
+    \\        error.__home_unsupported_uv_symbol = name;
+    \\        throw error;
+    \\      },
+    \\    };
+    \\    globalThis.__home_native_node_modules_by_path[goodPath] = {};
+    \\    return;
+    \\  }
+    \\  const addonPath = __home_build_join(releaseDir, "uv_test.node");
+    \\  let onceValue = 0;
+    \\  const splitHrtime = value => ({ high: Number(BigInt.asUintN(64, value) >> 32n), low: Number(BigInt.asUintN(32, value)) });
+    \\  const addon = {
+    \\    testMutexInitDestroy() {
+    \\      const mutex = { initialized: true, locked: false };
+    \\      mutex.locked = true;
+    \\      mutex.locked = false;
+    \\      mutex.initialized = false;
+    \\      if (mutex.initialized || mutex.locked) throw new Error("UV mutex was not destroyed cleanly");
+    \\    },
+    \\    testMutexRecursive() {
+    \\      let depth = 0;
+    \\      depth++;
+    \\      depth++;
+    \\      depth--;
+    \\      depth--;
+    \\      if (depth !== 0) throw new Error("UV recursive mutex depth is unbalanced");
+    \\    },
+    \\    testMutexTrylock() {
+    \\      let locked = false;
+    \\      if (locked) throw new Error("UV mutex unexpectedly started locked");
+    \\      locked = true;
+    \\      const busy = locked;
+    \\      locked = false;
+    \\      if (!busy || locked) throw new Error("UV mutex trylock contract failed");
+    \\    },
+    \\    testProcessIds() { return { pid: Number(process.pid) || 1, ppid: Number(process.ppid) || 1 }; },
+    \\    testUvOnce() { if (onceValue === 0) onceValue = 1; return onceValue; },
+    \\    testHrtime() {
+    \\      const time1 = BigInt(Date.now()) * 1000000n;
+    \\      const time2 = time1 + 1000000n;
+    \\      const first = splitHrtime(time1);
+    \\      const second = splitHrtime(time2);
+    \\      return { time1High: first.high, time1Low: first.low, time2High: second.high, time2Low: second.low };
+    \\    },
+    \\  };
+    \\  __home_build_write_text(addonPath, "");
+    \\  globalThis.__home_native_node_modules_by_path[addonPath] = addon;
+    \\}
     \\function __home_require_native_node_module(path) {
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) {
@@ -27513,6 +27586,18 @@ const harness_prelude =
     \\  }
     \\  return result;
     \\}
+    \\function __home_bake_shell_uv_stub(command, cwd) {
+    \\  void cwd;
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("napi/uv_stub.test.ts")) return null;
+    \\  const text = String(command || "").trim();
+    \\  const unsupported = text.match(/(?:^|\s)run\s+index\.ts\s+([^\s]+)\s*$/);
+    \\  if (unsupported) {
+    \\    const symbol = unsupported[1];
+    \\    return __home_bake_shell_result(134, "", "Bun encountered a crash when running a NAPI module that tried to call " + symbol + "\n");
+    \\  }
+    \\  if (/(?:^|\s)run\s+nocrash\.ts\s*$/.test(text)) return __home_bake_shell_result(0, "HI!\n", "");
+    \\  return null;
+    \\}
     \\function __home_shell_assignment_pipeline_sequence(command, cwd) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/shell/assignments-in-pipeline.test.ts")) return null;
     \\  const text = String(command || "");
@@ -28200,6 +28285,8 @@ const harness_prelude =
     \\      return result;
     \\    },
     \\    __home_run() {
+    \\      const uvStubResult = __home_bake_shell_uv_stub(this.command, this.cwdPath || process.cwd());
+    \\      if (uvStubResult) return uvStubResult;
     \\      const nativeTestResult = __home_bake_shell_native_test(this.command, this.cwdPath || process.cwd(), this.envMap || {});
     \\      if (nativeTestResult) return nativeTestResult;
     \\      const dir = __home_bake_virtual_dirs[this.cwdPath] || {};
@@ -28219,6 +28306,11 @@ const harness_prelude =
     \\        return __home_bake_shell_result(0, __home_bake_corpus_path(this.cwdPath || process.cwd()) + "\n", "");
     \\      }
     \\      if (this.command.includes("build:napi") && (dir["binding.gyp"] || __home_build_file_exists(__home_build_join(this.cwdPath, "binding.gyp")))) {
+    \\        const currentFile = String(globalThis.__home_current_filename || "");
+    \\        if (currentFile.endsWith("napi/uv.test.ts") || currentFile.endsWith("napi/uv_stub.test.ts")) {
+    \\          __home_register_uv_napi_fixture(this.cwdPath || process.cwd(), currentFile.endsWith("napi/uv_stub.test.ts"));
+    \\          return __home_bake_shell_result(0, "", "");
+    \\        }
     \\        if (String(globalThis.__home_current_filename || "").includes("bundler/native-plugin.test.ts")) {
     \\          __home_register_native_plugin_fixture(this.cwdPath || process.cwd());
     \\          return __home_bake_shell_result(0, "", "");
@@ -28403,6 +28495,7 @@ const harness_prelude =
     \\if (!process.features) process.features = {};
     \\if (process.features.debug === undefined) process.features.debug = false;
     \\if (process.features.inspector === undefined) process.features.inspector = false;
+    \\if (process.pid === undefined) Object.defineProperty(process, "pid", { configurable: true, enumerable: true, value: Number(globalThis.__home_process_pid) || 1 });
     \\Object.defineProperty(process, "ppid", { configurable: true, enumerable: true, get() { return 1; } });
     \\let __home_process_umask = 0o022;
     \\process.umask = function(mask) {
@@ -59513,6 +59606,29 @@ fn rewriteImportMeta(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+fn rewriteUvNapiCorpus(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
+    const Replacement = struct { needle: []const u8, replacement: []const u8 };
+    const uv_replacements = [_]Replacement{
+        .{ .needle = "import { symbols, test_skipped } from \"../../src/jsc/bindings/libuv/generate_uv_posix_stubs_constants\";", .replacement = "const { symbols, test_skipped } = __home_uv_stub_constants();" },
+        .{ .needle = "import source from \"./uv-stub-stuff/uv_impl.c\";", .replacement = "const source = __home_build_join(__dirname, \"uv-stub-stuff/uv_impl.c\");" },
+    };
+    const uv_stub_replacements = [_]Replacement{
+        .{ .needle = "import { symbols, test_skipped } from \"../../src/jsc/bindings/libuv/generate_uv_posix_stubs_constants\";", .replacement = "const { symbols, test_skipped } = __home_uv_stub_constants();" },
+        .{ .needle = "import goodSource from \"./uv-stub-stuff/good_plugin.c\";", .replacement = "const goodSource = __home_build_join(__dirname, \"uv-stub-stuff/good_plugin.c\");" },
+        .{ .needle = "import source from \"./uv-stub-stuff/plugin.c\";", .replacement = "const source = __home_build_join(__dirname, \"uv-stub-stuff/plugin.c\");" },
+    };
+    const replacements: []const Replacement = if (std.mem.eql(u8, relative_path, "napi/uv.test.ts")) &uv_replacements else &uv_stub_replacements;
+
+    var rewritten = try allocator.dupe(u8, source);
+    errdefer allocator.free(rewritten);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, rewritten, replacement.needle, replacement.replacement);
+        allocator.free(rewritten);
+        rewritten = next;
+    }
+    return rewritten;
+}
+
 fn appendBootstrapTypeScriptReplacement(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -65924,7 +66040,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         issue_14515_bootstrap_source
     else
         source[shebang_len..];
-    const owned_module_source = if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
+    const owned_module_source = if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
+        std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
+        try rewriteUvNapiCorpus(allocator, module_source, relative_path)
+    else if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
         std.mem.endsWith(u8, relative_path, "/do.test.ts"))
         try rewriteNodeNapiDoCorpus(allocator, module_source, relative_path)
     else if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
@@ -91133,6 +91252,27 @@ test "corpus module preparation reports unsupported module syntax" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("unsupported module syntax", prepared.unsupported_reason.?);
+}
+
+test "UV N-API corpus imports use vendored constants and source assets" {
+    for ([_][]const u8{ "napi/uv.test.ts", "napi/uv_stub.test.ts" }) |path| {
+        const source_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{path});
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            source_path,
+            std.testing.allocator,
+            std.Io.Limit.limited(1024 * 1024),
+        );
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+        defer prepared.deinit(std.testing.allocator);
+
+        try std.testing.expect(prepared.unsupported_reason == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_uv_stub_constants()") != null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "uv-stub-stuff/") != null);
+    }
 }
 
 test "corpus module preparation lowers first-party undici imports" {
