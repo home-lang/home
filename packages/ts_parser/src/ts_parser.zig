@@ -3485,6 +3485,26 @@ pub const Parser = struct {
             if (is_await_using_decl) _ = try self.expect(.kw_using, "'using' after 'await' in for initializer");
             if (is_await_using_decl) try self.reportAwaitUsingContextDiagnostics(kw);
             const binding_start = self.peek();
+            if (!is_using_decl and binding_start.kind == .kw_in and self.peekAt(1).kind == .close_paren) {
+                _ = self.advance(); // in
+                const close = self.advance();
+                try self.reportCodeAt(close.span.start, close.line, 1109, "Expression expected.");
+                const missing_source = try self.builder.addObjectLiteral(
+                    .{ .start = close.span.start, .end = close.span.start },
+                    &.{},
+                );
+                self.loop_depth += 1;
+                defer self.loop_depth -= 1;
+                self.loop_switch_depth += 1;
+                defer self.loop_switch_depth -= 1;
+                const body = try self.parseNestedStatement();
+                return try self.builder.addForIn(
+                    .{ .start = start.span.start, .end = self.hir.spanOf(body).end },
+                    hir_mod.none_node_id,
+                    missing_source,
+                    body,
+                );
+            }
             const binding_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
             } else blk: {
@@ -22416,6 +22436,16 @@ test "parser: classic for loop" {
     try T.expect(f.init != hir_mod.none_node_id);
     try T.expect(f.cond != hir_mod.none_node_id);
     try T.expect(f.update != hir_mod.none_node_id);
+}
+
+test "parser: empty for-in declaration reports missing source expression" {
+    var s = try newTestSetup("for (let in) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1109));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
+    const diagnostic = findDiag(s, 1109) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 11), diagnostic.pos);
 }
 
 test "parser: for-in loop" {
