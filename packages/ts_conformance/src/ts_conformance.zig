@@ -438,6 +438,10 @@ pub const Case = struct {
     /// Lower-case `module` label selected by a `(module=X)` baseline
     /// suffix. Empty means use the first source/config directive value.
     baseline_module_kind: []const u8 = "",
+    /// Effective package-ID redirect policy selected by the upstream
+    /// baseline matrix. tsgo defaults this option on and only retains
+    /// duplicate physical package files when it is explicitly false.
+    deduplicate_packages: bool = true,
 };
 
 /// Count the contiguous block of leading lines that the TypeScript
@@ -557,6 +561,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "customConditions") or
         std.ascii.eqlIgnoreCase(key, "declaration") or
         std.ascii.eqlIgnoreCase(key, "declarationMap") or
+        std.ascii.eqlIgnoreCase(key, "deduplicatePackages") or
         std.ascii.eqlIgnoreCase(key, "downlevelIteration") or
         std.ascii.eqlIgnoreCase(key, "emitDeclarationOnly") or
         std.ascii.eqlIgnoreCase(key, "emitDecoratorMetadata") or
@@ -575,6 +580,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "jsxImportSource") or
         std.ascii.eqlIgnoreCase(key, "lib") or
         std.ascii.eqlIgnoreCase(key, "libReplacement") or
+        std.ascii.eqlIgnoreCase(key, "link") or
         std.ascii.eqlIgnoreCase(key, "maxNodeModuleJsDepth") or
         std.ascii.eqlIgnoreCase(key, "module") or
         std.ascii.eqlIgnoreCase(key, "moduleDetection") or
@@ -2209,6 +2215,7 @@ test "conformance: loaded corpus keeps checkJs diagnostics for late-bound comput
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         });
         defer {
             T.allocator.free(result.name);
@@ -2260,6 +2267,7 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         });
         defer {
             T.allocator.free(result.name);
@@ -2743,6 +2751,80 @@ fn tripleSlashAttributeValue(line: []const u8, attr: []const u8) ?[]const u8 {
     return null;
 }
 
+fn mountVirtualLinks(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    files: []const VirtualFile,
+    vfs: *ts_resolver.VirtualFs,
+) !void {
+    const VirtualLink = struct {
+        physical: []u8,
+        link: []u8,
+    };
+    var links: std.ArrayListUnmanaged(VirtualLink) = .empty;
+    defer {
+        for (links.items) |entry| {
+            gpa.free(entry.physical);
+            gpa.free(entry.link);
+        }
+        links.deinit(gpa);
+    }
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.ascii.startsWithIgnoreCase(line, "// @link:")) continue;
+        const body = std.mem.trim(u8, line["// @link:".len..], " \t");
+        const arrow = std.mem.indexOf(u8, body, "->") orelse continue;
+        const physical_raw = std.mem.trim(u8, body[0..arrow], " \t");
+        const link_raw = std.mem.trim(u8, body[arrow + 2 ..], " \t");
+        if (physical_raw.len == 0 or link_raw.len == 0) continue;
+
+        try links.append(gpa, .{
+            .physical = try canonicalVfsPath(gpa, physical_raw),
+            .link = try canonicalVfsPath(gpa, link_raw),
+        });
+    }
+
+    for (links.items) |entry| try vfs.addRealPath(entry.link, entry.physical);
+    for (files) |file| {
+        const original = try canonicalVfsPath(gpa, file.path);
+        defer gpa.free(original);
+        var aliases: std.ArrayListUnmanaged([]u8) = .empty;
+        defer {
+            for (aliases.items) |alias| gpa.free(alias);
+            aliases.deinit(gpa);
+        }
+        try aliases.append(gpa, try gpa.dupe(u8, original));
+        var index: usize = 0;
+        while (index < aliases.items.len) : (index += 1) {
+            const current = aliases.items[index];
+            for (links.items) |entry| {
+                if (!std.mem.eql(u8, current, entry.physical) and
+                    !(std.mem.startsWith(u8, current, entry.physical) and
+                        current.len > entry.physical.len and current[entry.physical.len] == '/')) continue;
+                const alias = try std.fmt.allocPrint(gpa, "{s}{s}", .{
+                    entry.link,
+                    current[entry.physical.len..],
+                });
+                var duplicate = false;
+                for (aliases.items) |known| {
+                    if (std.mem.eql(u8, known, alias)) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) {
+                    gpa.free(alias);
+                    continue;
+                }
+                try vfs.addFile(alias, file.source);
+                try vfs.addRealPath(alias, original);
+                try aliases.append(gpa, alias);
+            }
+        }
+    }
+}
+
 fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     var virtual_files = try splitVirtualFiles(gpa, c.raw_source);
     defer virtual_files.deinit(gpa);
@@ -2760,6 +2842,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         defer gpa.free(canon);
         try vfs.addFile(canon, f.source);
     }
+    try mountVirtualLinks(gpa, c.raw_source, virtual_files.items, &vfs);
 
     // The upstream test harness mounts the real TypeScript declaration
     // files at the absolute `/.ts/...` virtual root, so a
@@ -2961,6 +3044,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .known_type_reference_names = known_type_reference_names.items,
         .compiler_type_reference_names = explicit_type_names,
         .program_umd_globals = known_umd_globals.items,
+        .deduplicate_packages = c.deduplicate_packages,
     };
     compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse
         tsconfig_options.import_helpers orelse
@@ -2976,6 +3060,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
+    try program.recompileAll(compile_options);
     try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files);
 
     var script_globals: ScriptGlobalSpaces = .{};
@@ -6123,6 +6208,7 @@ pub const CorpusEntry = struct {
     baseline_module_resolution: []const u8 = "",
     /// See `Case.baseline_module_kind`.
     baseline_module_kind: []const u8 = "",
+    deduplicate_packages: bool = true,
 };
 
 /// Owned-source variant — like `CorpusEntry` but the source is
@@ -6153,6 +6239,7 @@ pub const OwnedCorpusEntry = struct {
     baseline_module_resolution: []u8 = "",
     /// Lower-case `module` variant extracted from the chosen baseline.
     baseline_module_kind: []u8 = "",
+    deduplicate_packages: bool = true,
 };
 
 pub const DirectoryLoadOptions = struct {
@@ -6436,6 +6523,9 @@ pub fn loadDirectoryWithOptions(
             try extractModuleKindFromBaseline(gpa, bp)
         else
             &.{};
+        const deduplicate_packages = baselineOptionBool(baseline_path, "deduplicatepackages") orelse
+            directiveBool(directive_source, "deduplicatePackages") orelse
+            true;
         try out.append(gpa, .{
             .name = name,
             .source = case_src,
@@ -6464,6 +6554,7 @@ pub fn loadDirectoryWithOptions(
             .raw_source = raw_source,
             .baseline_module_resolution = baseline_mr,
             .baseline_module_kind = baseline_module,
+            .deduplicate_packages = deduplicate_packages,
         });
     }
     return out.toOwnedSlice(gpa);
@@ -8923,6 +9014,7 @@ pub fn runOwnedCorpus(
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         };
         const r = try runOneEntry(gpa, view);
         switch (r.outcome) {
@@ -9084,6 +9176,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         });
         errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
         exact.name = try gpa.dupe(u8, entry.name);
@@ -9117,6 +9210,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         };
         const program_result = (try runProgram(gpa, program_case)) orelse try run(gpa, program_case);
         defer if (program_result.detail.len > 0) gpa.free(program_result.detail);
@@ -55331,6 +55425,7 @@ fn runClusterFixture(
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         });
     }
     return .{
@@ -55594,6 +55689,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         });
         try results.append(T.allocator, r);
     }
@@ -56226,6 +56322,7 @@ fn runOptInTsSuiteFamily(
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,
@@ -56388,6 +56485,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .deduplicate_packages = entry.deduplicate_packages,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,

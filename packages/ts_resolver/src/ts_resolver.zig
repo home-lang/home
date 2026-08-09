@@ -1684,15 +1684,23 @@ pub const Resolver = struct {
         var fallback_exts: std.ArrayListUnmanaged([]const u8) = .empty;
         defer fallback_exts.deinit(self.gpa);
         try self.partitionNodeModuleExtensions(&preferred_exts, &fallback_exts);
+        const real_containing_file = try self.realPath(containing_file);
+        const has_distinct_real_path = !std.mem.eql(u8, real_containing_file, containing_file);
 
         if (preferred_exts.items.len > 0) {
             self.traceMsg(6417, "Searching all ancestor node_modules directories for preferred extensions: {s}.", .{self.extensionsText(preferred_exts.items)});
             if (try self.tryNodeModulesPass(specifier, containing_file, preferred_exts.items)) |r| return r;
+            if (has_distinct_real_path) {
+                if (try self.tryNodeModulesPass(specifier, real_containing_file, preferred_exts.items)) |r| return r;
+            }
         }
 
         if (fallback_exts.items.len > 0) {
             self.traceMsg(6418, "Searching all ancestor node_modules directories for fallback extensions: {s}.", .{self.extensionsText(fallback_exts.items)});
             if (try self.tryNodeModulesPass(specifier, containing_file, fallback_exts.items)) |r| return r;
+            if (has_distinct_real_path) {
+                if (try self.tryNodeModulesPass(specifier, real_containing_file, fallback_exts.items)) |r| return r;
+            }
         }
         return null;
     }
@@ -3383,6 +3391,23 @@ test "Resolver: package peerDependencies trace realpath lookup TS6130" {
     }
     try T.expect(saw_6130);
     try T.expect(saw_real_peer);
+}
+
+test "Resolver: linked package imports search the physical node_modules tree" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/store/a/index.d.ts", "import X from 'x';");
+    try vfs.addRealPath("/node_modules/a/index.d.ts", "/store/a/index.d.ts");
+    try vfs.addFile(
+        "/store/a/node_modules/x/package.json",
+        "{\"name\":\"x\",\"version\":\"1.0.0\",\"types\":\"index.d.ts\"}",
+    );
+    try vfs.addFile("/store/a/node_modules/x/index.d.ts", "export default class X {}");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer r.deinit();
+    const resolution = try r.resolve("x", "/node_modules/a/index.d.ts");
+    try T.expectEqualStrings("/store/a/node_modules/x/index.d.ts", resolution.path);
 }
 
 test "Resolver: automatic typings cache traces TS6140 and replaces JS-only package" {

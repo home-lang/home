@@ -442,14 +442,41 @@ pub const ProgramExportedClass = struct {
     target_path: []const u8,
     ambient_module_name: []const u8 = "",
     class_name: []const u8,
+    is_default: bool = false,
     members: []const ProgramExportedClassMember = &.{},
     static_members: []const ProgramExportedClassMember = &.{},
+};
+
+pub const ProgramMemberVisibility = enum {
+    public,
+    protected,
+    private,
 };
 
 pub const ProgramExportedClassMember = struct {
     name: []const u8,
     type_name: []const u8,
     is_method: bool = false,
+    visibility: ProgramMemberVisibility = .public,
+};
+
+pub const ProgramTypeReference = struct {
+    name: []const u8 = "any",
+    target_path: []const u8 = "",
+    is_default: bool = false,
+};
+
+pub const ProgramExportedValueKind = enum {
+    function,
+    variable,
+};
+
+pub const ProgramExportedValue = struct {
+    target_path: []const u8,
+    export_name: []const u8,
+    kind: ProgramExportedValueKind,
+    parameters: []const ProgramTypeReference = &.{},
+    result: ProgramTypeReference = .{},
 };
 
 pub const ProgramAmbientModuleInterfaceExport = struct {
@@ -4544,6 +4571,8 @@ pub const Checker = struct {
     /// Program-level exported class declarations discovered in sibling
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
+    program_exported_values: []const ProgramExportedValue = &.{},
+    synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     /// Program-level exported interfaces declared inside ambient external
     /// modules. Borrowed from the driver/program while checking this file.
     program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
@@ -4868,6 +4897,10 @@ pub const Checker = struct {
         self.program_exported_classes = classes;
     }
 
+    pub fn setProgramExportedValues(self: *Checker, values: []const ProgramExportedValue) void {
+        self.program_exported_values = values;
+    }
+
     pub fn setProgramAmbientModuleInterfaceExports(self: *Checker, exports: []const ProgramAmbientModuleInterfaceExport) void {
         self.program_ambient_module_interface_exports = exports;
     }
@@ -4929,6 +4962,7 @@ pub const Checker = struct {
         self.symbolic_tuple_layouts.deinit(self.gpa);
         self.infer_type_parameters.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
+        self.synthetic_program_class_origins.deinit(self.gpa);
         self.merged_class_instance_types.deinit(self.gpa);
         self.class_this_types.deinit(self.gpa);
         self.checked_class_decls.deinit(self.gpa);
@@ -43981,6 +44015,14 @@ pub const Checker = struct {
 
     fn classPrivateStructuralMismatch(self: *Checker, target_t: TypeId, source_t: TypeId) bool {
         if (self.ecmaPrivateDifferentMemberName(source_t, target_t) != null) return true;
+        const target_program_origin = self.synthetic_program_class_origins.get(target_t);
+        const source_program_origin = self.synthetic_program_class_origins.get(source_t);
+        if (target_program_origin != null or source_program_origin != null) {
+            if (target_program_origin != null and source_program_origin != null and
+                target_program_origin.? == source_program_origin.?) return false;
+            return self.classPrivateMembersOverlapOther(target_t, source_t) or
+                self.classPrivateMembersOverlapOther(source_t, target_t);
+        }
         const target_name = self.classNameForInstanceType(target_t);
         const source_name = self.classNameForInstanceType(source_t);
         if (target_name != null and source_name != null) {
@@ -44051,6 +44093,12 @@ pub const Checker = struct {
         right_t: TypeId,
         right: types.ObjectMember,
     ) bool {
+        const left_program_origin = self.synthetic_program_class_origins.get(left_t);
+        const right_program_origin = self.synthetic_program_class_origins.get(right_t);
+        if (left_program_origin != null or right_program_origin != null) {
+            return left_program_origin != null and right_program_origin != null and
+                left_program_origin.? == right_program_origin.?;
+        }
         const left_decl = self.memberDeclaringClassNode(left.decl_node);
         const right_decl = self.memberDeclaringClassNode(right.decl_node);
         if (left_decl != hir_mod.none_node_id and right_decl != hir_mod.none_node_id) {
@@ -49022,6 +49070,8 @@ pub const Checker = struct {
             try self.reportImportAttributesTypeLiteralMismatch(node, false);
         }
         if (try self.reportAtTypesPackageImport(node, spec)) return;
+        if (self.importDeclRequestsModuleExports(node, imp) and
+            try self.reportExternalFileIsNotAModule(node, spec)) return;
         if (std.mem.startsWith(u8, spec, ".")) {
             // TS2306: the relative specifier resolves to an existing
             // source file that is a plain script (no top-level
@@ -50055,6 +50105,31 @@ pub const Checker = struct {
             self.diag_arena.allocator(),
             "File '{s}' is not a module.",
             .{name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.moduleSpecifierQuotePos(node, spec),
+            .code = TsCodes.file_is_not_a_module,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn reportExternalFileIsNotAModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        const resolver = self.external_resolver orelse return false;
+        const containing = if (self.importer_path.len > 0)
+            self.importer_path
+        else if (self.virtualSectionFilenameForNode(node)) |raw|
+            raw
+        else
+            "/__root__.ts";
+        const info = resolver.moduleExport(spec, containing, "") orelse return false;
+        if (info.module_is_external != false) return false;
+        const resolution = resolver.resolve(spec, containing) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "File '{s}' is not a module.",
+            .{resolution.path},
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
@@ -54234,6 +54309,14 @@ pub const Checker = struct {
                 hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
             {
                 if (try self.virtualExportAssignmentTargetInstanceType(anchor, imp.module)) |t| return t;
+            }
+            if (!self.importDeclIsRequireAssignment(stmt) and
+                imp.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(imp.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+            {
+                if (try self.programExportedClassInstanceTypeForImportedName(local_name, anchor)) |t| return t;
+                if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
@@ -78968,6 +79051,9 @@ pub const Checker = struct {
     fn checkerAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (self.noInferInnerType(source_t)) |inner| return self.checkerAssignableTo(inner, target_t);
         if (self.noInferInnerType(target_t)) |inner| return self.checkerAssignableTo(source_t, inner);
+        if ((self.synthetic_program_class_origins.contains(source_t) or
+            self.synthetic_program_class_origins.contains(target_t)) and
+            self.classPrivateStructuralMismatch(target_t, source_t)) return false;
         if (try self.symbolicTupleLayoutsAssignable(source_t, target_t)) |ok| {
             if (!ok) return false;
         }
@@ -80350,6 +80436,12 @@ pub const Checker = struct {
 
     fn sameNonGenericClassInstanceDeclaration(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
         if (source_t == target_t) return true;
+        const source_program_origin = self.synthetic_program_class_origins.get(source_t);
+        const target_program_origin = self.synthetic_program_class_origins.get(target_t);
+        if (source_program_origin != null or target_program_origin != null) {
+            return source_program_origin != null and target_program_origin != null and
+                source_program_origin.? == target_program_origin.?;
+        }
         const source_name = self.classNameForInstanceType(source_t) orelse return false;
         const target_name = self.classNameForInstanceType(target_t) orelse return false;
         if (source_name != target_name) return false;
@@ -91653,6 +91745,62 @@ pub const Checker = struct {
         return try self.moduleInterfaceAugmentationMemberType(ctor.name, member_name, anchor);
     }
 
+    fn programExportedValueTypeForImportBinding(
+        self: *Checker,
+        import_node: NodeId,
+        local_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (self.program_exported_values.len == 0 or self.hir.kindOf(import_node) != .import_decl) return null;
+        const imp = hir_mod.importOf(self.hir, import_node);
+        const spec = self.string_interner.get(imp.module);
+        for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
+            if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+            const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
+            if (imported.local != local_name) continue;
+            const export_name = self.string_interner.get(imported.imported);
+            var matched: ?ProgramExportedValue = null;
+            for (self.program_exported_values) |value| {
+                if (!std.mem.eql(u8, value.export_name, export_name)) continue;
+                if (!try self.programImportTargetsPath(import_node, spec, value.target_path)) continue;
+                if (matched != null) return types.Primitive.any;
+                matched = value;
+            }
+            if (matched) |value| {
+                return switch (value.kind) {
+                    .variable => try self.programTypeReferenceType(value.result),
+                    .function => blk: {
+                        var params: std.ArrayListUnmanaged(TypeId) = .empty;
+                        defer params.deinit(self.gpa);
+                        for (value.parameters) |param| {
+                            try params.append(self.gpa, try self.programTypeReferenceType(param));
+                        }
+                        const result = try self.programTypeReferenceType(value.result);
+                        break :blk self.interner.internSignature(params.items, result, false) catch return error.OutOfMemory;
+                    },
+                };
+            }
+        }
+        return null;
+    }
+
+    fn programTypeReferenceType(self: *Checker, reference: ProgramTypeReference) CheckError!TypeId {
+        if (std.mem.eql(u8, reference.name, "string")) return types.Primitive.string_t;
+        if (std.mem.eql(u8, reference.name, "number")) return types.Primitive.number_t;
+        if (std.mem.eql(u8, reference.name, "boolean")) return types.Primitive.boolean_t;
+        if (std.mem.eql(u8, reference.name, "void")) return types.Primitive.void_t;
+        if (std.mem.eql(u8, reference.name, "never")) return types.Primitive.never;
+        if (std.mem.eql(u8, reference.name, "unknown")) return types.Primitive.unknown;
+        if (reference.target_path.len == 0) return types.Primitive.any;
+        for (self.program_exported_classes) |exported_class| {
+            if (!std.mem.eql(u8, exported_class.target_path, reference.target_path)) continue;
+            if (reference.is_default and !exported_class.is_default) continue;
+            if (!reference.is_default and !std.mem.eql(u8, exported_class.class_name, reference.name)) continue;
+            const class_name = self.string_interner.intern(exported_class.class_name) catch return error.OutOfMemory;
+            return try self.syntheticProgramClassInstanceType(exported_class, class_name);
+        }
+        return types.Primitive.any;
+    }
+
     fn programExportedClassTypeForImportBinding(
         self: *Checker,
         import_node: NodeId,
@@ -91663,6 +91811,17 @@ pub const Checker = struct {
         if (self.hir.kindOf(import_node) != .import_decl) return null;
         const imp = hir_mod.importOf(self.hir, import_node);
         const spec = self.string_interner.get(imp.module);
+        if (imp.default_binding != hir_mod.none_node_id and
+            self.hir.kindOf(imp.default_binding) == .identifier and
+            hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+        {
+            for (self.program_exported_classes) |exported_class| {
+                if (!exported_class.is_default) continue;
+                if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
+                const class_name = self.string_interner.intern(exported_class.class_name) catch return error.OutOfMemory;
+                return try self.syntheticProgramClassStaticType(exported_class, class_name, local_name, anchor);
+            }
+        }
         for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
             if (self.hir.kindOf(spec_node) != .import_specifier) continue;
             const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -91691,6 +91850,14 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(imp.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+            {
+                _ = try self.programExportedClassTypeForImportBinding(stmt, local_name, anchor);
+                if (self.class_instance_types.get(local_name)) |instance_t| return instance_t;
+            }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -91740,6 +91907,11 @@ pub const Checker = struct {
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = member.is_method,
+                .visibility = switch (member.visibility) {
+                    .public => .public,
+                    .protected => .protected,
+                    .private => .private,
+                },
             });
         }
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
@@ -91778,7 +91950,13 @@ pub const Checker = struct {
             });
         }
         const static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
-        try self.registerAliasDisplayText(instance_t, self.string_interner.get(class_name));
+        const display = if (exported_class.is_default)
+            try self.programDefaultClassDisplayName(exported_class.target_path)
+        else
+            self.string_interner.get(class_name);
+        try self.registerAliasDisplayText(instance_t, display);
+        const origin = self.string_interner.intern(exported_class.target_path) catch return error.OutOfMemory;
+        try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         try self.class_name_by_instance.put(self.gpa, instance_t, class_name);
         try self.class_name_by_static.put(self.gpa, static_t, class_name);
         try self.class_instance_types.put(self.gpa, local_name, instance_t);
@@ -91808,11 +91986,34 @@ pub const Checker = struct {
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = member.is_method,
+                .visibility = switch (member.visibility) {
+                    .public => .public,
+                    .protected => .protected,
+                    .private => .private,
+                },
             });
         }
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
-        try self.registerAliasDisplayText(instance_t, self.string_interner.get(class_name));
+        const display = if (exported_class.is_default)
+            try self.programDefaultClassDisplayName(exported_class.target_path)
+        else
+            self.string_interner.get(class_name);
+        try self.registerAliasDisplayText(instance_t, display);
+        const origin = self.string_interner.intern(exported_class.target_path) catch return error.OutOfMemory;
+        try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         return instance_t;
+    }
+
+    fn programDefaultClassDisplayName(self: *Checker, path: []const u8) CheckError![]const u8 {
+        var stem = path;
+        const extensions = [_][]const u8{ ".d.mts", ".d.cts", ".d.ts", ".tsx", ".mts", ".cts", ".ts" };
+        for (extensions) |extension| {
+            if (std.mem.endsWith(u8, stem, extension)) {
+                stem = stem[0 .. stem.len - extension.len];
+                break;
+            }
+        }
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "import(\"{s}\").default", .{stem});
     }
 
     fn programExportedClassMemberType(self: *Checker, type_name: []const u8) CheckError!TypeId {
@@ -110311,6 +110512,7 @@ pub const Checker = struct {
                 if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
                 if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
                 if (try self.programExportedClassTypeForImportBinding(decl, id.name, node)) |class_t| return class_t;
+                if (try self.programExportedValueTypeForImportBinding(decl, id.name)) |value_t| return value_t;
                 return types.Primitive.any;
             }
         } else if (sk == .for_in_stmt or sk == .for_of_stmt) {
@@ -111404,6 +111606,7 @@ pub const Checker = struct {
                             const sp = hir_mod.importSpecifierOf(self.hir, decl);
                             if (self.virtualBareModuleExportType(parent, spec_text, sp.imported) catch null) |import_t| return import_t;
                             if (self.programExportedClassTypeForImportBinding(parent, id.name, node) catch null) |class_t| return class_t;
+                            if (self.programExportedValueTypeForImportBinding(parent, id.name) catch null) |value_t| return value_t;
                         }
                     }
                     if (self.moduleNamespaceTypeForImportBinding(decl) catch null) |ns_t| return ns_t;
@@ -143029,6 +143232,7 @@ pub const Checker = struct {
         if (try self.stringMappingSourceAssignableToTarget(arg_t, param_t)) return true;
         if (try self.templateLiteralSourceAssignableToTarget(arg_t, param_t)) return true;
         if (self.objectMemberPrivateComparableMismatch(arg_t, param_t, 0)) return false;
+        if (self.classPrivateStructuralMismatch(param_t, arg_t)) return false;
         if (self.strict_flags.strict_null_checks) {
             // `any` and `unknown` are not treated as nullable for the
             // strict-null gate ÃÂ¢ÃÂÃÂ tsc lets them through and lets the

@@ -2215,10 +2215,18 @@ pub const Parser = struct {
             !self.peekAt(1).flags.preceded_by_newline and
             self.peekAt(2).kind == .identifier and
             !self.peekAt(2).flags.preceded_by_newline;
+        const is_ambient_identifier_chain = (t.kind == .identifier or t.kind.isContextualKeyword()) and
+            ((self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword()) and
+                !self.peekAt(1).flags.preceded_by_newline or
+                (self.cursor > 0 and
+                    (self.tokens[self.cursor - 1].kind == .identifier or
+                        self.tokens[self.cursor - 1].kind.isContextualKeyword()) and
+                    !t.flags.preceded_by_newline));
         if (self.block_depth == 0 and
             self.nested_statement_depth == 0 and
             self.isAmbientContextAt(t.span.start) and
             !is_await_using_in_ambient and
+            !is_ambient_identifier_chain and
             self.statementIsDisallowedInAmbientContext(t.kind))
         {
             try self.reportCodeAt(t.span.start, t.line, 1036, "Statements are not allowed in ambient contexts.");
@@ -10879,6 +10887,19 @@ pub const Parser = struct {
                 try self.reportCannotFindNameToken(t);
                 _ = self.advance();
             }
+            return;
+        }
+        if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
+            self.cursor > 0 and
+            (self.tokens[self.cursor - 1].kind == .identifier or
+                self.tokens[self.cursor - 1].kind.isContextualKeyword()) and
+            !t.flags.preceded_by_newline and
+            self.block_depth == 0 and
+            self.nested_statement_depth == 0 and
+            self.isAmbientContextAt(t.span.start))
+        {
+            const previous = self.tokens[self.cursor - 1];
+            try self.reportCodeAt(previous.span.start, previous.line, 1434, "Unexpected keyword or identifier.");
             return;
         }
         if (t.kind == .colon and self.peekAt(1).kind == .arrow) {
@@ -29270,6 +29291,21 @@ test "parser: declaration-file statements report TS1036" {
     try T.expect(s.parser.diagnostics.items.len >= 2);
     try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: declaration-file identifier chains recover as statements" {
+    var s = try newTestSetup("content not parsed");
+    defer destroyTestSetup(s);
+    s.parser.is_declaration_file = true;
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1434), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 0), s.parser.diagnostics.items[0].pos);
+    try T.expectEqual(@as(u32, 1434), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 8), s.parser.diagnostics.items[1].pos);
 }
 
 test "parser: declaration-file top-level var requires declare or export" {

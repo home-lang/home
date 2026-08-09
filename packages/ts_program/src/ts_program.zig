@@ -171,6 +171,7 @@ pub const Program = struct {
     files: std.ArrayListUnmanaged(*File),
     by_path: std.StringHashMapUnmanaged(FileId),
     by_package_id: std.StringHashMapUnmanaged(FileId),
+    deduplicate_packages: bool,
     resolver: *ts_resolver.Resolver,
     /// Stored sources keyed by path (we own the dupes).
     sources: std.StringHashMapUnmanaged([]const u8),
@@ -181,6 +182,7 @@ pub const Program = struct {
             .files = .empty,
             .by_path = .empty,
             .by_package_id = .empty,
+            .deduplicate_packages = true,
             .resolver = resolver,
             .sources = .empty,
         };
@@ -342,6 +344,7 @@ pub const Program = struct {
     ///   2. Walk imports and resolve specifiers — populating the
     ///      `imports` adjacency list.
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        self.deduplicate_packages = options.deduplicate_packages;
         const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         const script_object_expandos = try self.collectScriptObjectExpandos();
@@ -352,6 +355,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
+        const program_exported_values = try self.collectProgramExportedValues();
+        defer freeProgramExportedValues(self.gpa, program_exported_values);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         const program_commonjs_exports = try self.collectProgramCommonJsExports();
@@ -375,6 +380,7 @@ pub const Program = struct {
             per_file.program_global_var_names = program_global_var_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
+            per_file.program_exported_values = program_exported_values;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
             per_file.program_commonjs_exports = program_commonjs_exports;
             per_file.program_umd_globals = merged_program_umd_globals;
@@ -416,6 +422,22 @@ pub const Program = struct {
         try self.appendMergedAmbientModuleExportDiagnostics();
 
         try self.resolveImports();
+    }
+
+    /// Re-run semantic compilation after the import closure is complete so
+    /// every root observes cross-file export metadata collected from the
+    /// final graph. Parsing during closure discovery remains incremental;
+    /// this is the single authoritative program check.
+    pub fn recompileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        for (self.files.items) |file| {
+            if (file.compilation) |compilation| {
+                compilation.deinit();
+                self.gpa.destroy(compilation);
+                file.compilation = null;
+            }
+            file.imports.clearRetainingCapacity();
+        }
+        try self.compileAll(options);
     }
 
     fn appendMissingCompilerTypeReferenceDiagnostics(
@@ -492,6 +514,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
+        const program_exported_values = try self.collectProgramExportedValues();
+        defer freeProgramExportedValues(self.gpa, program_exported_values);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         const program_commonjs_exports = try self.collectProgramCommonJsExports();
@@ -518,6 +542,7 @@ pub const Program = struct {
             per_file.program_global_var_names = program_global_var_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
+            per_file.program_exported_values = program_exported_values;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
             per_file.program_commonjs_exports = program_commonjs_exports;
             per_file.program_umd_globals = merged_program_umd_globals;
@@ -634,6 +659,139 @@ pub const Program = struct {
             class.static_members = try merged.toOwnedSlice(self.gpa);
         }
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramExportedValues(self: *Program) ProgramError![]const ts_driver.ProgramExportedValue {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedValue) = .empty;
+        errdefer freeProgramExportedValues(self.gpa, out.items);
+        for (self.files.items) |file| {
+            if (file.redirect_target != null or !file.is_declaration) continue;
+            var lines = std.mem.splitScalar(u8, file.source, '\n');
+            while (lines.next()) |raw_line| {
+                var line = std.mem.trim(u8, raw_line, " \t\r");
+                if (!std.mem.startsWith(u8, line, "export ")) continue;
+                line = std.mem.trimStart(u8, line["export ".len..], " \t");
+                if (std.mem.startsWith(u8, line, "declare ")) {
+                    line = std.mem.trimStart(u8, line["declare ".len..], " \t");
+                }
+                if (std.mem.startsWith(u8, line, "function ")) {
+                    try self.collectProgramExportedFunction(file, line["function ".len..], &out);
+                } else if (std.mem.startsWith(u8, line, "const ") or
+                    std.mem.startsWith(u8, line, "let ") or
+                    std.mem.startsWith(u8, line, "var "))
+                {
+                    const keyword_len: usize = if (std.mem.startsWith(u8, line, "const ")) 6 else 4;
+                    try self.collectProgramExportedVariable(file, line[keyword_len..], &out);
+                }
+            }
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramExportedFunction(
+        self: *Program,
+        file: *const File,
+        declaration: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedValue),
+    ) ProgramError!void {
+        const open = std.mem.indexOfScalar(u8, declaration, '(') orelse return;
+        const raw_name = std.mem.trim(u8, declaration[0..open], " \t");
+        const generic_start = std.mem.indexOfScalar(u8, raw_name, '<') orelse raw_name.len;
+        const name = std.mem.trimEnd(u8, raw_name[0..generic_start], " \t");
+        if (name.len == 0) return;
+        const close_rel = std.mem.indexOfScalar(u8, declaration[open + 1 ..], ')') orelse return;
+        const close = open + 1 + close_rel;
+        var params: std.ArrayListUnmanaged(ts_driver.ProgramTypeReference) = .empty;
+        errdefer params.deinit(self.gpa);
+        var param_it = std.mem.splitScalar(u8, declaration[open + 1 .. close], ',');
+        while (param_it.next()) |raw_param| {
+            const param = std.mem.trim(u8, raw_param, " \t");
+            if (param.len == 0) continue;
+            const colon = std.mem.indexOfScalar(u8, param, ':') orelse continue;
+            const type_name = simpleProgramTypeName(param[colon + 1 ..]);
+            try params.append(self.gpa, try self.programTypeReference(file, type_name));
+        }
+        var result: ts_driver.ProgramTypeReference = .{ .name = "void" };
+        const after = std.mem.trimStart(u8, declaration[close + 1 ..], " \t");
+        if (after.len > 0 and after[0] == ':') {
+            result = try self.programTypeReference(file, simpleProgramTypeName(after[1..]));
+        }
+        try out.append(self.gpa, .{
+            .target_path = file.path,
+            .export_name = name,
+            .kind = .function,
+            .parameters = try params.toOwnedSlice(self.gpa),
+            .result = result,
+        });
+    }
+
+    fn collectProgramExportedVariable(
+        self: *Program,
+        file: *const File,
+        declaration: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedValue),
+    ) ProgramError!void {
+        const colon = std.mem.indexOfScalar(u8, declaration, ':') orelse return;
+        const name = std.mem.trim(u8, declaration[0..colon], " \t");
+        if (name.len == 0) return;
+        const value_type = try self.programTypeReference(file, simpleProgramTypeName(declaration[colon + 1 ..]));
+        try out.append(self.gpa, .{
+            .target_path = file.path,
+            .export_name = name,
+            .kind = .variable,
+            .result = value_type,
+        });
+    }
+
+    fn simpleProgramTypeName(raw: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, raw, " \t\r;{}");
+        var end: usize = 0;
+        while (end < trimmed.len and (std.ascii.isAlphanumeric(trimmed[end]) or
+            trimmed[end] == '_' or trimmed[end] == '$')) : (end += 1) {}
+        return if (end == 0) "any" else trimmed[0..end];
+    }
+
+    fn programTypeReference(self: *Program, file: *const File, name: []const u8) ProgramError!ts_driver.ProgramTypeReference {
+        if (name.len == 0 or std.mem.eql(u8, name, "any") or
+            std.mem.eql(u8, name, "unknown") or std.mem.eql(u8, name, "never") or
+            std.mem.eql(u8, name, "void") or std.mem.eql(u8, name, "string") or
+            std.mem.eql(u8, name, "number") or std.mem.eql(u8, name, "boolean"))
+        {
+            return .{ .name = if (name.len == 0) "any" else name };
+        }
+        var lines = std.mem.splitScalar(u8, file.source, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (!std.mem.startsWith(u8, line, "import ")) continue;
+            const after_import = std.mem.trimStart(u8, line["import ".len..], " \t");
+            var local_end: usize = 0;
+            while (local_end < after_import.len and (std.ascii.isAlphanumeric(after_import[local_end]) or
+                after_import[local_end] == '_' or after_import[local_end] == '$')) : (local_end += 1) {}
+            if (local_end == 0 or !std.mem.eql(u8, after_import[0..local_end], name)) continue;
+            const from = std.mem.indexOf(u8, after_import[local_end..], "from") orelse continue;
+            const after_from = std.mem.trimStart(u8, after_import[local_end + from + "from".len ..], " \t");
+            if (after_from.len < 2 or (after_from[0] != '"' and after_from[0] != '\'')) continue;
+            const quote = after_from[0];
+            const quote_end = std.mem.indexOfScalar(u8, after_from[1..], quote) orelse continue;
+            const specifier = after_from[1 .. 1 + quote_end];
+            const resolution = self.resolver.resolve(specifier, file.path) catch continue;
+            var target_path = resolution.path;
+            if (self.by_path.get(resolution.path)) |target_id| {
+                const target_file = self.files.items[target_id];
+                if (target_file.redirect_target) |canonical_id| {
+                    target_path = self.files.items[canonical_id].path;
+                }
+            }
+            return .{ .name = name, .target_path = target_path, .is_default = true };
+        }
+        return .{ .name = name };
+    }
+
+    fn freeProgramExportedValues(gpa: std.mem.Allocator, values: []const ts_driver.ProgramExportedValue) void {
+        for (values) |value| {
+            if (value.parameters.len > 0) gpa.free(value.parameters);
+        }
+        if (values.len > 0) gpa.free(values);
     }
 
     fn collectAmbientModuleInterfaceExports(self: *const Program) ProgramError![]const ts_driver.ProgramAmbientModuleInterfaceExport {
@@ -940,7 +1098,8 @@ pub const Program = struct {
             if (!identifierKeywordAt(source, export_pos, "export")) continue;
             var cursor = export_pos + "export".len;
             while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            if (identifierKeywordAt(source, cursor, "default")) {
+            const is_default = identifierKeywordAt(source, cursor, "default");
+            if (is_default) {
                 cursor += "default".len;
                 while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
             }
@@ -962,6 +1121,7 @@ pub const Program = struct {
             try out.append(gpa, .{
                 .target_path = path,
                 .class_name = source[cursor..name_end],
+                .is_default = is_default,
                 .members = members,
                 .static_members = static_members,
             });
@@ -1220,6 +1380,7 @@ pub const Program = struct {
         errdefer members.deinit(gpa);
         var i = body_start;
         var depth: usize = 0;
+        var visibility: ts_driver.ProgramMemberVisibility = .public;
         while (i < body_end and i < source.len) : (i += 1) {
             const c = source[i];
             if (c == '{' or c == '(' or c == '[') {
@@ -1234,13 +1395,25 @@ pub const Program = struct {
             const member_start = i;
             const member_end = parseIdentifierEnd(source, member_start, body_end) orelse continue;
             const name = source[member_start..member_end];
+            if (std.mem.eql(u8, name, "private")) {
+                visibility = .private;
+                i = member_end;
+                continue;
+            }
+            if (std.mem.eql(u8, name, "protected")) {
+                visibility = .protected;
+                i = member_end;
+                continue;
+            }
+            if (std.mem.eql(u8, name, "public")) {
+                visibility = .public;
+                i = member_end;
+                continue;
+            }
             if (std.mem.eql(u8, name, "constructor") or
                 std.mem.eql(u8, name, "get") or
                 std.mem.eql(u8, name, "set") or
                 std.mem.eql(u8, name, "static") or
-                std.mem.eql(u8, name, "public") or
-                std.mem.eql(u8, name, "private") or
-                std.mem.eql(u8, name, "protected") or
                 std.mem.eql(u8, name, "readonly") or
                 std.mem.eql(u8, name, "declare") or
                 std.mem.eql(u8, name, "abstract"))
@@ -1251,7 +1424,8 @@ pub const Program = struct {
             var cursor = member_end;
             while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
             if (cursor < body_end and source[cursor] == '(') {
-                try members.append(gpa, .{ .name = name, .type_name = "any", .is_method = true });
+                try members.append(gpa, .{ .name = name, .type_name = "any", .is_method = true, .visibility = visibility });
+                visibility = .public;
                 if (findMatchingParen(source, cursor, body_end)) |close| {
                     i = skipClassMemberRemainder(source, close + 1, body_end);
                 }
@@ -1271,7 +1445,8 @@ pub const Program = struct {
                 while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
                 type_name = inferSimpleInitializerTypeName(source, cursor, body_end);
             }
-            try members.append(gpa, .{ .name = name, .type_name = type_name, .is_method = false });
+            try members.append(gpa, .{ .name = name, .type_name = type_name, .is_method = false, .visibility = visibility });
+            visibility = .public;
             i = skipClassMemberRemainder(source, cursor, body_end);
         }
         return members.toOwnedSlice(gpa);
@@ -1998,6 +2173,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
+        const program_exported_values = try self.collectProgramExportedValues();
+        defer freeProgramExportedValues(self.gpa, program_exported_values);
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         const program_commonjs_exports = try self.collectProgramCommonJsExports();
@@ -2010,6 +2187,7 @@ pub const Program = struct {
         shared_options.program_global_var_names = program_global_var_names;
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
+        shared_options.program_exported_values = program_exported_values;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
@@ -2221,6 +2399,7 @@ pub const Program = struct {
     /// `compileAll`) records each added file's `include_reason`, so
     /// `--explainFiles` can later render TS1393.
     pub fn loadImportClosure(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
+        self.deduplicate_packages = options.deduplicate_packages;
         const hir_mod = @import("hir");
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
@@ -2574,25 +2753,29 @@ pub const Program = struct {
 
     fn addResolvedIncludeFileFromResolution(self: *Program, res: ts_resolver.Resolution) ProgramError!?FileId {
         if (self.by_path.get(res.path) != null) return null;
-        if (res.package_id) |package_id| {
-            if (package_id.len != 0) {
-                if (self.by_package_id.get(package_id)) |canonical_id| {
-                    const canonical = self.files.items[canonical_id];
-                    if (!std.mem.eql(u8, canonical.path, res.path)) {
-                        return try self.addRedirectFile(res.path, canonical_id);
+        if (self.deduplicate_packages) {
+            if (res.package_id) |package_id| {
+                if (package_id.len != 0) {
+                    if (self.by_package_id.get(package_id)) |canonical_id| {
+                        const canonical = self.files.items[canonical_id];
+                        if (!std.mem.eql(u8, canonical.path, res.path)) {
+                            return try self.addRedirectFile(res.path, canonical_id);
+                        }
+                        return null;
                     }
-                    return null;
                 }
             }
         }
 
         const added_id = try self.addResolvedIncludeFile(res.path);
-        if (added_id) |id| {
-            if (res.package_id) |package_id| {
-                if (package_id.len != 0) {
-                    const key = try self.gpa.dupe(u8, package_id);
-                    errdefer self.gpa.free(key);
-                    try self.by_package_id.put(self.gpa, key, id);
+        if (self.deduplicate_packages) {
+            if (added_id) |id| {
+                if (res.package_id) |package_id| {
+                    if (package_id.len != 0) {
+                        const key = try self.gpa.dupe(u8, package_id);
+                        errdefer self.gpa.free(key);
+                        try self.by_package_id.put(self.gpa, key, id);
+                    }
                 }
             }
         }
@@ -5165,6 +5348,39 @@ test "Program: duplicate package-id import records redirect file (TS1429 reason)
     try T.expectEqual(nested_id, redirect.include_reason.?.importer);
     try T.expectEqualStrings("\"pkg\"", redirect.include_reason.?.specifier_text);
     try T.expectEqualStrings("pkg/index.d.ts@1.0.0", redirect.include_reason.?.package_id);
+}
+
+test "Program: disabled package deduplication retains physical package copies" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/app/a.ts", "import 'pkg';\n");
+    try vfs.addFile("/app/nested/consumer.ts", "import 'pkg';\n");
+    try vfs.addFile(
+        "/app/node_modules/pkg/package.json",
+        "{\"name\":\"pkg\",\"version\":\"1.0.0\",\"types\":\"index.d.ts\"}",
+    );
+    try vfs.addFile("/app/node_modules/pkg/index.d.ts", "export const value: number;\n");
+    try vfs.addFile(
+        "/app/nested/node_modules/pkg/package.json",
+        "{\"name\":\"pkg\",\"version\":\"1.0.0\",\"types\":\"index.d.ts\"}",
+    );
+    try vfs.addFile("/app/nested/node_modules/pkg/index.d.ts", "export const value: number;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/app/a.ts", "import 'pkg';\n");
+    _ = try program.add("/app/nested/consumer.ts", "import 'pkg';\n");
+
+    const added = try program.loadImportClosure(.{ .deduplicate_packages = false });
+    try T.expectEqual(@as(usize, 2), added);
+    const first_id = program.lookupPath("/app/node_modules/pkg/index.d.ts") orelse return error.TestUnexpectedResult;
+    const nested_id = program.lookupPath("/app/nested/node_modules/pkg/index.d.ts") orelse return error.TestUnexpectedResult;
+    try T.expect(program.fileById(first_id).redirect_target == null);
+    try T.expect(program.fileById(nested_id).redirect_target == null);
+    try T.expect(program.fileById(first_id).compilation != null);
+    try T.expect(program.fileById(nested_id).compilation != null);
 }
 
 test "Program: project-reference output import records redirected output (TS1428 reason)" {
