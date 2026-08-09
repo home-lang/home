@@ -37417,6 +37417,13 @@ const harness_prelude =
     \\        TestStringLength() { return fatal("test_fatal::Test", "fatal message"); },
     \\        TestThread() { return fatal("work_thread", "foobar"); },
     \\      };
+    \\    } else if (targetName === "test_fatal_exception") {
+    \\      addon = {
+    \\        Test(error) {
+    \\          if (arguments.length === 0) throw new TypeError("napi_fatal_exception requires an exception value");
+    \\          process.emit("uncaughtException", error);
+    \\        },
+    \\      };
     \\    } else if (targetName === "test_finalizer") {
     \\      let finalizerCallCount = 0;
     \\      addon = {
