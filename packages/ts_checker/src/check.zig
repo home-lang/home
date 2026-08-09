@@ -3970,6 +3970,10 @@ pub const Checker = struct {
     /// side table gives explicit type-argument calls on function
     /// values the same substitution path.
     generic_signature_params: std.AutoHashMapUnmanaged(TypeId, []TypeId),
+    /// Type parameters declared by a constrained JSDoc `@template` tag.
+    /// Call inference uses this provenance to apply JSDoc's constraint
+    /// fallback without changing inference for ordinary TypeScript generics.
+    jsdoc_constrained_type_params: std.AutoHashMapUnmanaged(TypeId, void),
     /// Signature TypeId ÃÂ¢ÃÂÃÂ explicit `this` parameter type. The `this`
     /// parameter is not a call argument, but method calls on union
     /// receivers must still prove the receiver satisfies it.
@@ -4562,6 +4566,7 @@ pub const Checker = struct {
             .resolving_exported_type_decls = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
+            .jsdoc_constrained_type_params = .empty,
             .signature_this_params = .empty,
             .constructor_signature_visibility = .empty,
             .fn_predicates = .empty,
@@ -4942,6 +4947,7 @@ pub const Checker = struct {
         var gsig_it = self.generic_signature_params.valueIterator();
         while (gsig_it.next()) |params| self.gpa.free(params.*);
         self.generic_signature_params.deinit(self.gpa);
+        self.jsdoc_constrained_type_params.deinit(self.gpa);
         self.signature_this_params.deinit(self.gpa);
         self.constructor_signature_visibility.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
@@ -5649,6 +5655,13 @@ pub const Checker = struct {
             const body = src[body_start..comment_end];
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
+            var has_template = false;
+            for (tags) |candidate| {
+                if (candidate.kind == .template_tag and candidate.name.len > 0) {
+                    has_template = true;
+                    break;
+                }
+            }
             for (tags, 0..) |tag, tag_index| {
                 if (tag.kind != .typedef_tag or tag.type_text.len == 0) continue;
                 var pushed_template_scope = false;
@@ -5674,7 +5687,57 @@ pub const Checker = struct {
                     try self.recordNarrow(template_name, tp_id);
                 }
                 _ = try self.jsDocTypeTextToTypeAt(src, tag.type_text, root);
+                if (!has_template) {
+                    try self.checkJsDocTypedefPropertyTypes(src, body, root);
+                    if (tag.name.len > 0) {
+                        if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |typedef_t| {
+                            const typedef_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
+                            if (!self.type_names.contains(typedef_name)) {
+                                try self.type_names.put(self.gpa, typedef_name, typedef_t);
+                                try self.registerAliasDisplayText(typedef_t, tag.name);
+                            }
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    fn checkJsDocTypedefPropertyTypes(
+        self: *Checker,
+        src: []const u8,
+        body: []const u8,
+        root: NodeId,
+    ) CheckError!void {
+        var line_start: usize = 0;
+        var i: usize = 0;
+        while (i <= body.len) : (i += 1) {
+            const at_end = i == body.len;
+            if (!at_end and body[i] != '\n') continue;
+            var line = std.mem.trim(u8, body[line_start..i], " \t\r");
+            line_start = i + 1;
+            if (line.len > 0 and line[0] == '*') {
+                line = std.mem.trim(u8, line[1..], " \t\r");
+            }
+            const tag_len: usize = if (std.mem.startsWith(u8, line, "@property"))
+                "@property".len
+            else if (std.mem.startsWith(u8, line, "@prop"))
+                "@prop".len
+            else
+                continue;
+            var rest = std.mem.trim(u8, line[tag_len..], " \t\r");
+            if (rest.len == 0) continue;
+            if (rest[0] != '{') {
+                while (rest.len > 0 and rest[0] != '{' and rest[0] != ' ' and rest[0] != '\t') {
+                    rest = rest[1..];
+                }
+                rest = std.mem.trim(u8, rest, " \t\r");
+            }
+            if (rest.len == 0 or rest[0] != '{') continue;
+            const type_len = jsDocBalancedBraceLen(rest);
+            if (type_len == 0) continue;
+            const type_text = std.mem.trim(u8, rest[1 .. type_len - 1], " \t\r\n");
+            _ = try self.jsDocTypeTextToTypeAt(src, type_text, root);
         }
     }
 
@@ -6809,6 +6872,11 @@ pub const Checker = struct {
                     {
                         emitted_nullish_return_mismatch = true;
                     }
+                    if (!emitted_nullish_return_mismatch and
+                        try self.jsDocReturnDisplayMatchesUnionMember(ret_t, declared))
+                    {
+                        emitted_nullish_return_mismatch = true;
+                    }
                     // Validate the returned expression against the
                     // declared function return type. Conservatively
                     // restricted to the `object_t` declared-return case
@@ -6904,7 +6972,7 @@ pub const Checker = struct {
                         !self.enumMemberExpressionMatchesReturnAnnotation(r.value, self.current_function_return_node) and
                         !self.enumLiteralAssignableToEnumUnion(ret_t, declared) and
                         !(try self.literalExpressionAssignableToTarget(r.value, declared)) and
-                        !(self.engine.isAssignableTo(ret_t, declared) catch true))
+                        !(try self.checkerAssignableTo(ret_t, declared)))
                     {
                         try self.reportTypeNotAssignable(node, ret_t, declared, "Type is not assignable to function return type.");
                         if (self.current_function_return_sig) |sig| {
@@ -7366,6 +7434,18 @@ pub const Checker = struct {
                 }
             },
         }
+    }
+
+    fn jsDocReturnDisplayMatchesUnionMember(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (!self.current_function_return_from_jsdoc) return false;
+        const source_display = (try self.allocSimpleTypeName(source_t)) orelse return false;
+        const target_display = (try self.allocSimpleTypeName(target_t)) orelse return false;
+        if (std.mem.indexOfScalar(u8, target_display, '|') == null) return false;
+        var parts = JsDocTopLevelSplitter.init(target_display, '|');
+        while (parts.next()) |part| {
+            if (std.mem.eql(u8, source_display, std.mem.trim(u8, part, " \t\r\n"))) return true;
+        }
+        return false;
     }
 
     fn checkIsolatedDeclarationsExport(self: *Checker, export_node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
@@ -76046,7 +76126,15 @@ pub const Checker = struct {
             if (tag.type_text.len == 0) continue;
             _ = try self.jsDocTypeTextToTypeAt(src, tag.type_text, fn_node);
             const inner_pos = self.sliceStartPos(src, tag.type_text) orelse continue;
-            const pos = inner_pos + @as(u32, @intCast(tag.type_text.len)) + 1;
+            const after_constraint = @as(usize, inner_pos) + tag.type_text.len + 1;
+            const pos = blk: {
+                const line_end = std.mem.indexOfScalarPos(u8, src, @min(after_constraint, src.len), '\n') orelse
+                    break :blk @as(u32, @intCast(after_constraint));
+                var next = line_end + 1;
+                while (next < src.len and (src[next] == ' ' or src[next] == '\t')) : (next += 1) {}
+                if (next < src.len and src[next] == '*') break :blk @as(u32, @intCast(next));
+                break :blk @as(u32, @intCast(after_constraint));
+            };
             try self.diagnostics.append(self.gpa, .{
                 .node = fn_node,
                 .pos = pos,
@@ -76130,15 +76218,18 @@ pub const Checker = struct {
             if (std.mem.startsWith(u8, rest, "const") and rest.len > 5 and (rest[5] == ' ' or rest[5] == '\t')) {
                 rest = std.mem.trim(u8, rest[5..], " \t\r");
             }
+            var constraint_text: []const u8 = "";
             if (rest.len > 0 and rest[0] == '{') {
                 const type_len = jsDocBalancedBraceLen(rest);
                 if (type_len == 0) continue;
+                constraint_text = std.mem.trim(u8, rest[1 .. type_len - 1], " \t\r\n");
                 rest = std.mem.trim(u8, rest[type_len..], " \t\r");
             }
             if (std.mem.startsWith(u8, rest, "const") and rest.len > 5 and (rest[5] == ' ' or rest[5] == '\t')) {
                 rest = std.mem.trim(u8, rest[5..], " \t\r");
             }
             var pos: usize = 0;
+            var parameter_index: usize = 0;
             while (pos < rest.len) {
                 while (pos < rest.len and (rest[pos] == ' ' or rest[pos] == '\t' or rest[pos] == ',')) : (pos += 1) {}
                 if (pos >= rest.len or !isJsDocIdentStart(rest[pos])) break;
@@ -76146,19 +76237,27 @@ pub const Checker = struct {
                 pos += 1;
                 while (pos < rest.len and isJsDocIdentChar(rest[pos])) : (pos += 1) {}
                 const name = self.string_interner.intern(rest[name_start..pos]) catch return error.OutOfMemory;
-                if (self.lookupNarrow(name)) |existing| {
-                    try captured_tp_ids.append(self.gpa, existing);
-                } else {
-                    const tp_id = self.interner.internFreshTypeParameterWithFlags(
+                const tp_id = blk: {
+                    if (self.lookupNarrow(name)) |existing| break :blk existing;
+                    const constraint_t = if (parameter_index == 0 and constraint_text.len > 0)
+                        (try self.jsDocTypeTextToTypeAt(src, constraint_text, fn_node)) orelse types.Primitive.unknown
+                    else
+                        types.Primitive.unknown;
+                    const fresh = self.interner.internFreshTypeParameterWithFlags(
                         name,
-                        types.Primitive.unknown,
+                        constraint_t,
                         types.Primitive.none,
                         .invariant,
                         false,
                     ) catch return error.OutOfMemory;
-                    try self.recordNarrow(name, tp_id);
-                    try captured_tp_ids.append(self.gpa, tp_id);
+                    try self.recordNarrow(name, fresh);
+                    break :blk fresh;
+                };
+                try captured_tp_ids.append(self.gpa, tp_id);
+                if (parameter_index == 0 and constraint_text.len > 0) {
+                    try self.jsdoc_constrained_type_params.put(self.gpa, tp_id, {});
                 }
+                parameter_index += 1;
                 while (pos < rest.len and (rest[pos] == ' ' or rest[pos] == '\t')) : (pos += 1) {}
                 if (pos >= rest.len or rest[pos] != ',') break;
             }
@@ -76747,6 +76846,7 @@ pub const Checker = struct {
         if (reduced_source_t != source_t) return try self.checkerAssignableTo(reduced_source_t, target_t);
         const reduced_target_t = try self.reduceNeverIntersectionsForAssignability(target_t);
         if (reduced_target_t != target_t) return try self.checkerAssignableTo(source_t, reduced_target_t);
+        if (try self.jsDocGenericUnionAssignableToTypeParameter(source_t, target_t)) return true;
         if (self.typeIsUniversalEmptyObjectNullishUnion(target_t)) return true;
         if (self.indexedAccessPayloadOrNull(source_t) != null) {
             if (try self.indexedAccessBaseConstraint(source_t, 0)) |constraint| {
@@ -76837,6 +76937,24 @@ pub const Checker = struct {
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn jsDocGenericUnionAssignableToTypeParameter(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return false;
+        if (target_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target_t).is_type_parameter) return false;
+        if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_union) return false;
+
+        const members = self.interner.unionMembers(source_t);
+        if (members.len == 0) return false;
+        for (members) |member| {
+            // A union containing `any` is semantically `any`, even when the
+            // interner retains the unreduced members for diagnostic display.
+            if (member == types.Primitive.any) return true;
+            if (member == target_t or self.sameTypeParameterName(member, target_t)) continue;
+            if (try self.nonNullableIntersectionSourceAssignableToTarget(member, target_t)) continue;
+            return false;
+        }
+        return true;
     }
 
     fn upperObjectSourceAssignableToAllOptionalTarget(
@@ -80401,7 +80519,11 @@ pub const Checker = struct {
         if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) {
             return types.Primitive.any;
         }
-        if (self.sourceHasVirtualFilenameSections() and self.sourceHasLexicalValueDeclarationText(name)) {
+        const pos = self.sliceStartPos(src, trimmed);
+        if (self.sourceHasVirtualFilenameSections() and
+            !jsDocTypePositionIsPropertyTag(src, pos) and
+            self.sourceHasLexicalValueDeclarationTextAtPos(name, pos))
+        {
             return types.Primitive.any;
         }
         if (std.mem.eql(u8, base, "exports")) {
@@ -80421,7 +80543,6 @@ pub const Checker = struct {
                 "Cannot find name '{s}'.",
                 .{base},
             );
-        const pos = self.sliceStartPos(src, trimmed);
         const code = if (suggestion != null) TsCodes.cannot_find_name_did_you_mean else TsCodes.cannot_find_name;
         for (self.diagnostics.items) |d| {
             if (d.code == code and d.pos == pos) return types.Primitive.any;
@@ -80433,6 +80554,14 @@ pub const Checker = struct {
             .message = msg,
         });
         return types.Primitive.any;
+    }
+
+    fn jsDocTypePositionIsPropertyTag(src: []const u8, pos: ?u32) bool {
+        const at = @min(@as(usize, pos orelse return false), src.len);
+        const line_start = if (std.mem.lastIndexOfScalar(u8, src[0..at], '\n')) |newline| newline + 1 else 0;
+        const prefix = src[line_start..at];
+        return std.mem.indexOf(u8, prefix, "@property") != null or
+            std.mem.indexOf(u8, prefix, "@prop") != null;
     }
 
     fn jsDocUnresolvedNameSuggestion(self: *Checker, name: []const u8) ?[]const u8 {
@@ -81897,6 +82026,14 @@ pub const Checker = struct {
     fn jsDocObjectSkeletonFromPropertyTags(self: *Checker, src: []const u8, body: []const u8) CheckError!?TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
+        const has_template = blk: {
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch break :blk false;
+            defer self.gpa.free(tags);
+            for (tags) |tag| {
+                if (tag.kind == .template_tag and tag.name.len > 0) break :blk true;
+            }
+            break :blk false;
+        };
         var line_start: usize = 0;
         var i: usize = 0;
         while (i <= body.len) : (i += 1) {
@@ -81942,7 +82079,10 @@ pub const Checker = struct {
                 optional = true;
                 type_text = std.mem.trim(u8, type_text[0 .. type_text.len - 1], " \t\r\n");
             }
-            const prop_t = (try self.jsDocTypeTextToType(src, type_text)) orelse types.Primitive.any;
+            const prop_t = if (!has_template and try self.topLevelJsDocTypedefPropertyIgnoresNarrow(type_text))
+                (try self.jsDocUnresolvedSimpleNameToType(src, type_text, type_text)) orelse types.Primitive.any
+            else
+                (try self.jsDocTypeTextToType(src, type_text)) orelse types.Primitive.any;
             if (rest.len > 0 and rest[0] == '[') {
                 optional = true;
                 rest = rest[1..];
@@ -81961,6 +82101,27 @@ pub const Checker = struct {
         }
         if (members.items.len == 0) return null;
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn topLevelJsDocTypedefPropertyIgnoresNarrow(self: *Checker, type_text: []const u8) CheckError!bool {
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id or self.nodeIsInsideFunctionLike(anchor)) return false;
+        if (type_text.len == 0 or !isJsDocIdentStart(type_text[0])) return false;
+        for (type_text[1..]) |c| {
+            if (!isJsDocIdentChar(c)) return false;
+        }
+        const name = self.string_interner.intern(type_text) catch return error.OutOfMemory;
+        const narrow_t = self.lookupNarrow(name) orelse return false;
+        if (narrow_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(narrow_t).is_type_parameter) return false;
+        if (self.type_names.contains(name) or
+            self.generic_aliases.contains(name) or
+            self.class_instance_types.contains(name) or
+            self.class_static_types.contains(name) or
+            self.isBuiltinName(name))
+        {
+            return false;
+        }
+        return true;
     }
 
     fn jsDocTypedefAliasType(self: *Checker, src: []const u8, wanted_name: []const u8) CheckError!?TypeId {
@@ -92073,7 +92234,7 @@ pub const Checker = struct {
                 if (try self.typeParameterObjectPrototypeMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
-                if (self.strict_flags.strict_null_checks and self.unconstrainedTypeParameter(obj_t)) {
+                if (self.unconstrainedTypeParameter(obj_t)) {
                     try self.reportPropertyDoesNotExistOnType(node, m.name, obj_t);
                     break :blk types.Primitive.any;
                 }
@@ -103783,6 +103944,20 @@ pub const Checker = struct {
             if (self.engine.isAssignableTo(candidate, constraint) catch false) continue;
             const fallback = try self.substituteInferenceConstraintPreservingKeyof(raw_constraint, subs);
             try subs.put(self.gpa, inferred_param, fallback);
+        }
+        for (declared_params) |declared_param| {
+            if (!self.jsdoc_constrained_type_params.contains(declared_param)) continue;
+            const candidate = subs.get(declared_param) orelse continue;
+            const raw_constraint = self.typeParameterConstraint(declared_param) orelse continue;
+            if (raw_constraint == types.Primitive.any or
+                raw_constraint == types.Primitive.unknown or
+                raw_constraint == types.Primitive.none)
+            {
+                continue;
+            }
+            const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+            if (self.engine.isAssignableTo(candidate, constraint) catch false) continue;
+            try subs.put(self.gpa, declared_param, constraint);
         }
     }
 
@@ -118579,6 +118754,7 @@ pub const Checker = struct {
         const tf = self.interner.pool.flagsOf(target);
         if (!tf.is_type_parameter) return false;
         if (tf.is_union) return false;
+        if (self.jsDocGenericUnionAssignableToTypeParameter(source, target) catch false) return false;
         if (self.nonNullableIntersectionSourceAssignableToTarget(source, target) catch false) return false;
         if (self.mappedSourceAssignableToTypeParameterTarget(source, target)) return false;
         if (self.intersectionSourceContainsTypeParameter(source, target)) return false;
@@ -140364,6 +140540,33 @@ pub const Checker = struct {
 
     fn sourceHasLexicalValueDeclarationText(self: *Checker, name: hir_mod.StringId) bool {
         const src = self.source orelse return false;
+        return self.sourceRangeHasLexicalValueDeclarationText(src, name);
+    }
+
+    fn sourceHasLexicalValueDeclarationTextAtPos(self: *Checker, name: hir_mod.StringId, pos: ?u32) bool {
+        const src = self.source orelse return false;
+        if (!self.sourceHasVirtualFilenameSections()) return self.sourceRangeHasLexicalValueDeclarationText(src, name);
+        const at = pos orelse return false;
+        const section_start = self.virtualSectionStartForPos(at);
+        var section_end = src.len;
+        var line_start = std.mem.indexOfScalarPos(u8, src, section_start, '\n') orelse src.len;
+        if (line_start < src.len) line_start += 1;
+        while (line_start < src.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
+            const line = src[line_start..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                section_end = line_start;
+                break;
+            }
+            if (line_end == src.len) break;
+            line_start = line_end + 1;
+        }
+        return self.sourceRangeHasLexicalValueDeclarationText(src[section_start..section_end], name);
+    }
+
+    fn sourceRangeHasLexicalValueDeclarationText(self: *Checker, src: []const u8, name: hir_mod.StringId) bool {
         const raw_name = self.string_interner.get(name);
         const keywords = [_][]const u8{ "var", "let", "const", "function", "class" };
         for (keywords) |kw| {
@@ -142439,6 +142642,14 @@ pub const Checker = struct {
         while (it.next()) |entry| {
             const name = entry.key_ptr.*;
             const info = entry.value_ptr;
+            // A declaration such as `/** @type {T} */ this.value` owns the
+            // member type. Prototype writes contribute flow facts, but must
+            // not replace that declaration with their inferred union.
+            if (info.constructor_types.items.len == 0 and
+                objectMemberListContains(members.items, name))
+            {
+                continue;
+            }
             if (info.first_target != hir_mod.none_node_id and
                 (try self.jsConstructorThisMemberJsDocType(fn_node, info.first_target)) != null)
             {
@@ -196796,6 +197007,25 @@ test "checker: checkjs JSDoc typedef property optional syntax is optional" {
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
+test "checker: checkjs non-generic typedef property reports unknown type" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/**
+        \\ * @typedef {Object} A
+        \\ * @property {T} value
+        \\ */
+        \\/** @type {A} */
+        \\const options = { value: null };
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setAllowJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
 test "checker: checkjs JSDoc typedef member child does not suppress TS8021" {
     const source =
         \\// @checkjs: true
@@ -197295,21 +197525,57 @@ test "checker: checkjs JSDoc constructor typed this member substitutes template"
         \\  this.u
         \\  this.t = t
         \\}
+        \\/** @param {T} v */
+        \\Zet.prototype.add = function(v) { this.u = v || this.t; }
         \\var z = new Zet(1)
         \\z.u = false
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     var saw_mismatch = false;
+    var mismatch_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable and
-            std.mem.indexOf(u8, d.message, "boolean") != null and
+        if (d.code != TsCodes.type_not_assignable) continue;
+        mismatch_count += 1;
+        if (std.mem.indexOf(u8, d.message, "boolean") != null and
             std.mem.indexOf(u8, d.message, "number") != null)
         {
             saw_mismatch = true;
         }
     }
     try T.expect(saw_mismatch);
+    try T.expectEqual(@as(usize, 1), mismatch_count);
+}
+
+test "checker: checkjs JSDoc template constraint applies only to first parameter" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: false
+        \\// @filename: templateConstraints.js
+        \\/**
+        \\ * @template {{ a: number, b: string }} T,U
+        \\ * @template W
+        \\ * @template X
+        \\ * @param {T} t
+        \\ * @param {U} u
+        \\ * @param {W} w
+        \\ * @param {X} x
+        \\ * @return {W | X}
+        \\ */
+        \\function f(t, u, w, x) {
+        \\  if (u.a + u.b.length) return w;
+        \\  return x;
+        \\}
+        \\f({ a: 1 }, undefined, 1, "x");
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setAllowJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: checkjs class template parameters drive constructor inference" {
@@ -211736,20 +212002,24 @@ test "checker: stable late-bound unique-symbol object keys report TS1117" {
 test "checker: checkjs @template with curly braces but no name emits TS1069" {
     // Mirrors `jsdocOuterTypeParameters1.js(4,19)`:
     //
-    //     /** @template {T} */
+    //      * @template {T}
+    //      * @template U
     //
     // The `{T}` is parsed as a constraint by JSDoc's type expression
     // path, then `parseJSDocIdentifierName` finds no trailing name
     // and emits TS1069 with the upstream message. Home recognizes
     // the same shape via `checkJsDocTemplateBracketedName` ÃÂ¢ÃÂÃÂ when a
     // `@template` tag has non-empty `type_text` but empty `name`,
-    // surface TS1069 at the position immediately after the closing
-    // `}` (matching upstream's column).
+    // surface TS1069 at the next JSDoc token (matching upstream's
+    // recovery position).
     const source =
         \\// @allowJs: true
         \\// @checkJs: true
         \\// @Filename: /a.js
-        \\/** @template {T} */
+        \\/**
+        \\ * @template {T}
+        \\ * @template U
+        \\ */
         \\function f() {}
     ;
     const s = try newSetup(source);
@@ -211760,6 +212030,8 @@ test "checker: checkjs @template with curly braces but no name emits TS1069" {
         if (d.code == 1069) {
             found = true;
             try T.expect(d.pos != null);
+            const expected = std.mem.indexOf(u8, source, "* @template U") orelse unreachable;
+            try T.expectEqual(@as(u32, @intCast(expected)), d.pos.?);
             try T.expect(std.mem.indexOf(u8, d.message, "type parameter name was expected without curly braces") != null);
         }
     }
