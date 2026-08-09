@@ -37566,6 +37566,24 @@ const harness_prelude =
     \\        },
     \\        isPromise(value) { return value instanceof Promise; },
     \\      };
+    \\    } else if (targetName === "test_properties") {
+    \\      let accessorValue = 1;
+    \\      addon = {};
+    \\      Object.defineProperties(addon, {
+    \\        echo: { enumerable: true, value(value) { return value; } },
+    \\        readwriteValue: { enumerable: true, writable: true, value: 1 },
+    \\        readonlyValue: { enumerable: true, value: 1 },
+    \\        hiddenValue: { value: 1 },
+    \\        NameKeyValue: { enumerable: true, value: 1 },
+    \\        readwriteAccessor1: { get() { return accessorValue; }, set(value) { accessorValue = Number(value); } },
+    \\        readwriteAccessor2: { get() { return accessorValue; }, set(value) { accessorValue = Number(value); } },
+    \\        readonlyAccessor1: { get() { return accessorValue; } },
+    \\        readonlyAccessor2: { get() { return accessorValue; } },
+    \\        hasNamedProperty: { value(object, name) { return String(name) in object; } },
+    \\      });
+    \\      Object.defineProperty(addon, Symbol("NameKeySymbol"), { enumerable: true, value: 1 });
+    \\      Object.defineProperty(addon, Symbol(), { enumerable: true, value: 1 });
+    \\      Object.defineProperty(addon, Symbol.for("NameKeySymbolFor"), { enumerable: true, value: 1 });
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
