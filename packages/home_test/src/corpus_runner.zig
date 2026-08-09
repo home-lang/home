@@ -37214,7 +37214,7 @@ const harness_prelude =
     \\globalThis.__home_modules["napi/node-napi-tests/test/common/gc.js"] = {
     \\  gcUntil(name, condition) {
     \\    void name;
-    \\    Bun.gc(true);
+    \\    globalThis.gc();
     \\    return condition() ? Promise.resolve() : Promise.reject(new Error("GC condition was not satisfied"));
     \\  },
     \\};
@@ -37717,6 +37717,61 @@ const harness_prelude =
     \\          if ((typeof object !== "object" && typeof object !== "function") || object === null) throw new Error("Expected object parameter");
     \\        },
     \\      };
+    \\    } else if (targetName === "test_reference_all_types" && buildDir.endsWith("/test/node-api/test_reference_by_node_api_version")) {
+    \\      const makeReferenceAddon = version8 => {
+    \\        const references = [];
+    \\        let finalizeCount = 0;
+    \\        const valueType = value => {
+    \\          if (value === undefined) return 0;
+    \\          if (value === null) return 1;
+    \\          if (typeof value === "boolean") return 2;
+    \\          if (typeof value === "number") return 3;
+    \\          if (typeof value === "string") return 4;
+    \\          if (typeof value === "symbol") return 5;
+    \\          if (typeof value === "function") return 7;
+    \\          if (value && value.__home_napi_external) return 8;
+    \\          if (typeof value === "bigint") return 9;
+    \\          return 6;
+    \\        };
+    \\        const getReference = index => {
+    \\          const reference = references[Number(index) >>> 0];
+    \\          if (!reference || reference.deleted) throw new Error("Invalid argument");
+    \\          return reference;
+    \\        };
+    \\        const clearWeakReferences = () => {
+    \\          for (const reference of references) {
+    \\            if (reference && reference.count === 0 && reference.weak && !reference.alwaysStrong) reference.value = undefined;
+    \\          }
+    \\        };
+    \\        return {
+    \\          createExternal() { return { __home_napi_external: true, data: 42 }; },
+    \\          createRef(value) {
+    \\            const type = valueType(value);
+    \\            if (version8 && ![5, 6, 7, 8].includes(type)) throw new Error("Invalid argument");
+    \\            const localSymbol = type === 5 && Symbol.keyFor(value) === undefined;
+    \\            references[type] = { value, count: 1, weak: localSymbol || type === 6 || type === 7 || type === 8, alwaysStrong: type === 5 && !localSymbol, deleted: false };
+    \\            return type;
+    \\          },
+    \\          getRefValue(index) {
+    \\            const reference = getReference(index);
+    \\            if (reference.count === 0 && !reference.weak && !reference.alwaysStrong) return undefined;
+    \\            return reference.value;
+    \\          },
+    \\          ref(index) { return ++getReference(index).count; },
+    \\          unref(index) { const reference = getReference(index); if (reference.count === 0) throw new Error("Invalid argument"); return --reference.count; },
+    \\          deleteRef(index) { const reference = getReference(index); reference.deleted = true; reference.value = undefined; },
+    \\          addFinalizer(value) {
+    \\            if ((typeof value !== "object" && typeof value !== "function") || value === null) throw new Error("Argument must be an object.");
+    \\            __home_node_napi_gc_callbacks.push(() => { clearWeakReferences(); finalizeCount++; });
+    \\          },
+    \\          getFinalizeCount() { return finalizeCount; },
+    \\          initFinalizeCount() { finalizeCount = 0; },
+    \\        };
+    \\      };
+    \\      addon = { __home_napi_factory() { return makeReferenceAddon(false); } };
+    \\      const legacyPath = __home_build_join(buildDir, "build/Debug/test_reference_obj_only.node");
+    \\      globalThis.__home_written_files[legacyPath] = "";
+    \\      globalThis.__home_native_node_modules_by_path[legacyPath] = { __home_napi_factory() { return makeReferenceAddon(true); } };
     \\    } else if (targetName === "test_string") {
     \\      const identityString = value => String(value);
     \\      const utf8Insufficient = value => {
