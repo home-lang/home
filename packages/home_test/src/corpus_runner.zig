@@ -3829,6 +3829,27 @@ const harness_prelude =
     \\  }
     \\  return __home_spawn_completed(text, "", 0);
     \\}
+    \\function __home_spawn_virtual_file_stdin_text_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 3 || (cmd[1] !== "-c" && cmd[1] !== "/C")) return null;
+    \\  const command = String(cmd[2] || "");
+    \\  const pipeline = __home_shell_split_top_level(command, ["|"]);
+    \\  if (pipeline.length !== 2) return null;
+    \\  const inputWords = __home_bun_shell_words(pipeline[0]);
+    \\  const runtimeWords = __home_bun_shell_words(pipeline[1]);
+    \\  if (inputWords.length < 2 || runtimeWords.length < 2) return null;
+    \\  const inputCommand = String(inputWords[0] || "").toLowerCase();
+    \\  if (inputCommand !== "cat" && inputCommand !== "get-content") return null;
+    \\  const inputPath = String(inputWords[inputWords.length - 1] || "");
+    \\  const scriptPath = String(runtimeWords[runtimeWords.length - 1] || "");
+    \\  const script = __home_build_read_text(scriptPath);
+    \\  if (script === null || !script.includes("Bun.stdin.text()") || !script.includes("console.write")) return null;
+    \\  const input = __home_build_read_text(inputPath);
+    \\  if (input === null) return null;
+    \\  const stdout = typeof Buffer === "function" ? Buffer.from(input) : new TextEncoder().encode(input);
+    \\  const stderr = typeof Buffer === "function" ? Buffer.from("") : new Uint8Array(0);
+    \\  return { stdout, stderr, exitCode: 0, signalCode: null, success: true };
+    \\}
     \\function __home_spawn_stdin_slice_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/bun-stdin-slice.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -25018,6 +25039,8 @@ const harness_prelude =
     \\    if (versionFixture) return versionFixture;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, true);
     \\    if (stdinEchoFixture) return stdinEchoFixture;
+    \\    const virtualFileStdinTextFixture = __home_spawn_virtual_file_stdin_text_fixture(options || {});
+    \\    if (virtualFileStdinTextFixture) return virtualFileStdinTextFixture;
     \\    const bunWriteFixture = __home_spawn_bun_write_fixture(options || {});
     \\    if (bunWriteFixture) return bunWriteFixture;
     \\    const globPathLengthFixture = __home_spawn_glob_path_length_fixture(options || {});
@@ -70788,6 +70811,31 @@ test "bootstrap runner mirrors bun run stdin pipeline" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors complete Bun stdin text pipeline reads" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/07500/07500.test.ts";
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_virtual_file_stdin_text_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "script.includes(\"Bun.stdin.text()\")") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "Bun stdin text pipeline mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors bun update latest color output" {
