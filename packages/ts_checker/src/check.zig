@@ -109295,6 +109295,7 @@ pub const Checker = struct {
             }
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
+                !self.thisHasClassLexicalBinding(node) and
                 !self.thisInsideObjectLiteralMethod(node) and
                 !self.thisInsideClassConstructorParameter(node) and
                 !self.thisIsPrivateMemberReceiverInsideClass(node))
@@ -122648,6 +122649,7 @@ pub const Checker = struct {
             if (self.currentThisType()) |this_t| return this_t;
         }
         if (!self.sourceHasStrictFalseDirective() and
+            !self.thisHasClassLexicalBinding(node) and
             !self.thisInsideObjectLiteralMethod(node) and
             !self.thisInsideClassConstructorParameter(node) and
             !self.thisIsPrivateMemberReceiverInsideClass(node))
@@ -123704,6 +123706,25 @@ pub const Checker = struct {
             if (k == .fn_decl or k == .fn_expr) {
                 const f = hir_mod.fnDeclOf(self.hir, cur);
                 return !f.flags.is_method and !f.flags.is_constructor;
+            }
+        }
+        return false;
+    }
+
+    /// True when the lexical `this` host is a class method, constructor,
+    /// field, or static block. Arrow functions inherit that binding, while an
+    /// intervening ordinary function creates its own untyped `this` binding.
+    fn thisHasClassLexicalBinding(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .arrow_fn => continue,
+                .fn_decl, .fn_expr => {
+                    const f = hir_mod.fnDeclOf(self.hir, cur);
+                    return f.flags.is_method or f.flags.is_constructor;
+                },
+                .class_decl, .class_expr => return true,
+                else => {},
             }
         }
         return false;
@@ -223874,6 +223895,24 @@ test "checker: plain function without this-parameter still implicit-any (TS2683)
     b.base.checker.setStrictFlags(.{ .no_implicit_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCode(b, TsCodes.this_implicitly_any));
+}
+
+test "checker: class lexical this bindings do not report TS2683" {
+    const b = try newBoundSetup(
+        \\class C {
+        \\  value = this;
+        \\  constructor() { this.value = this; }
+        \\  method() {
+        \\    this.value;
+        \\    const inherited = () => this.value;
+        \\    function rebound() { return this.value; }
+        \\  }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.this_implicitly_any));
 }
 
 test "checker: tuple-annotated array destructuring with nullish initializers is not implicit-any (no TS7031)" {
