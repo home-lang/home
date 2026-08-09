@@ -10090,6 +10090,20 @@ pub const Checker = struct {
         return false;
     }
 
+    fn namespaceBodyExportsValueName(self: *Checker, stmts: []const NodeId, name: hir_mod.StringId) bool {
+        for (stmts) |raw| {
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const stmt = self.unwrapExportDecl(raw);
+            const k = self.hir.kindOf(stmt);
+            if (k == .interface_decl or k == .type_alias_decl) continue;
+            if (k == .import_decl and self.importDeclBindsLocal(stmt, name)) return true;
+            if (self.declarationName(stmt)) |decl_name| {
+                if (decl_name == name) return true;
+            }
+        }
+        return false;
+    }
+
     /// Append the full qualified-name path of a `namespace_decl`,
     /// outermost-first. Mirrors `collectNamespaceQualifiedPath` but
     /// starts FROM the namespace node itself (rather than an arbitrary
@@ -10133,8 +10147,8 @@ pub const Checker = struct {
         return true;
     }
 
-    /// True if `name` is declared as a VALUE in any namespace declaration
-    /// that is a *merged enclosing scope* of the namespace `ns_node`.
+    /// True if `name` is visible as a VALUE through another declaration of
+    /// the namespace containing `ns_node`.
     ///
     /// Dotted namespace names (`namespace my.data.foo {}`) are stored as a
     /// single `namespace_decl` whose name string is the full dotted path,
@@ -10145,9 +10159,10 @@ pub const Checker = struct {
     /// references inside the latter. The local parent-chain walk only sees
     /// the body the reference is physically nested in, missing the merged
     /// sibling. This scans every namespace_decl whose own qualified path is
-    /// a PROPER PREFIX of `ns_node`'s path and reports whether it declares
-    /// the name. (A genuinely undeclared name matches no prefix scope, so
-    /// TS2304 still fires ÃÂ¢ÃÂÃÂ see the negative test.)
+    /// either equal to or a proper prefix of `ns_node`'s path. Equal-path
+    /// declarations contribute only exported values; proper-prefix scopes
+    /// contribute their local values as before. A genuinely undeclared name
+    /// matches neither path, so TS2304 still fires.
     fn mergedEnclosingNamespaceDeclaresValueName(
         self: *Checker,
         ns_node: NodeId,
@@ -10156,8 +10171,7 @@ pub const Checker = struct {
         var own_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer own_path.deinit(self.gpa);
         try self.collectNamespaceOwnPath(ns_node, &own_path);
-        // Need at least one enclosing segment to have a merged scope.
-        if (own_path.items.len < 2) return false;
+        if (own_path.items.len == 0) return false;
 
         var cand_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer cand_path.deinit(self.gpa);
@@ -10168,11 +10182,12 @@ pub const Checker = struct {
             if (i == ns_node) continue;
             cand_path.clearRetainingCapacity();
             self.collectNamespaceOwnPath(i, &cand_path) catch continue;
-            // Only proper prefixes of `ns_node`'s path are enclosing
-            // (merged) scopes; equal-length or longer paths are siblings
-            // or descendants, which don't contribute to this lookup.
-            if (cand_path.items.len == 0 or cand_path.items.len >= own_path.items.len) continue;
+            if (cand_path.items.len == 0 or cand_path.items.len > own_path.items.len) continue;
             if (!qualifiedPathsEqual(cand_path.items, own_path.items[0..cand_path.items.len])) continue;
+            if (cand_path.items.len == own_path.items.len) {
+                if (self.namespaceBodyExportsValueName(hir_mod.namespaceBody(self.hir, i), name)) return true;
+                continue;
+            }
             if (self.namespaceBodyDeclaresValueName(hir_mod.namespaceBody(self.hir, i), name)) return true;
         }
         return false;
@@ -16543,7 +16558,7 @@ pub const Checker = struct {
                     else
                         ret_types.items[0])
                 else
-                    self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
+                    try self.bestCommonReturnType(ret_types.items);
                 // tsc widens an inferred function return type via
                 // `getWidenedType`. With `strictNullChecks` OFF, a bare
                 // `return null;` / `return undefined;` body widens its
@@ -53804,7 +53819,7 @@ pub const Checker = struct {
             else => return true,
         }
         const from = self.virtualSectionFilenameForNode(node) orelse return true;
-        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        const resolved = try self.resolveVirtualRelativePath(from, stripJsOutputExtension(spec));
         defer self.gpa.free(resolved);
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return true;
@@ -148480,6 +148495,97 @@ pub const Checker = struct {
         return t;
     }
 
+    fn bestCommonReturnType(self: *Checker, candidates: []const TypeId) CheckError!TypeId {
+        if (try self.freshObjectReturnUnion(candidates)) |fresh_union| return fresh_union;
+        for (candidates) |candidate| {
+            var accepts_all = true;
+            for (candidates) |source| {
+                if (source == candidate) continue;
+                if (!(self.engine.isAssignableTo(source, candidate) catch false)) {
+                    accepts_all = false;
+                    break;
+                }
+            }
+            if (accepts_all) return candidate;
+        }
+        return self.interner.internUnion(candidates) catch return error.OutOfMemory;
+    }
+
+    fn collectFreshObjectReturnConstituents(
+        self: *Checker,
+        candidate: TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!bool {
+        if (candidate >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(candidate);
+        if (flags.is_union) {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(candidate));
+            defer self.gpa.free(members);
+            for (members) |member| {
+                if (!try self.collectFreshObjectReturnConstituents(member, out)) return false;
+            }
+            return true;
+        }
+        if (!flags.is_object_type or
+            self.class_name_by_instance.contains(candidate) or
+            self.interner.objectStringIndex(candidate) != types.Primitive.none or
+            self.interner.objectNumberIndex(candidate) != types.Primitive.none)
+        {
+            return false;
+        }
+        try out.append(self.gpa, candidate);
+        return true;
+    }
+
+    /// Inferred unions of object-return branches expose every sibling key by
+    /// adding an optional `undefined` member where a branch omitted it.
+    fn freshObjectReturnUnion(self: *Checker, candidates: []const TypeId) CheckError!?TypeId {
+        var objects: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer objects.deinit(self.gpa);
+        for (candidates) |candidate| {
+            if (!try self.collectFreshObjectReturnConstituents(candidate, &objects)) return null;
+        }
+        if (objects.items.len < 2) return null;
+
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        for (objects.items) |object_t| {
+            for (self.interner.objectMembers(object_t)) |member| {
+                if (std.mem.indexOfScalar(hir_mod.StringId, names.items, member.name) == null) {
+                    try names.append(self.gpa, member.name);
+                }
+            }
+        }
+
+        var augmented: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer augmented.deinit(self.gpa);
+        for (objects.items) |object_t| {
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+            try members.appendSlice(self.gpa, self.interner.objectMembers(object_t));
+            for (names.items) |name| {
+                var present = false;
+                for (members.items) |member| {
+                    if (member.name == name) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (present) continue;
+                try members.append(self.gpa, .{
+                    .name = name,
+                    .type = types.Primitive.undefined_t,
+                    .is_optional = true,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+            }
+            const augmented_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+            try augmented.append(self.gpa, augmented_t);
+        }
+        return self.interner.internUnion(augmented.items) catch return error.OutOfMemory;
+    }
+
     fn widenLiteralType(self: *Checker, t: TypeId) TypeId {
         if (t == types.Primitive.true_lit or t == types.Primitive.false_lit) return types.Primitive.boolean_t;
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return t;
@@ -162495,6 +162601,24 @@ test "checker: merged dotted namespace exposes value to nested merged part (no T
     }
 }
 
+test "checker: merged namespace declarations expose exported sibling values" {
+    const b = try newBoundSetup(
+        \\namespace N {
+        \\    export const x = 1;
+        \\}
+        \\namespace N {
+        \\    x;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) {
+            try T.expect(std.mem.indexOf(u8, d.message, "'x'") == null);
+        }
+    }
+}
+
 test "checker: genuinely undeclared name in nested merged namespace still emits TS2304" {
     // Negative guard for the merged-namespace fix: `qux` is never declared
     // in any merged part of `my.data`, so the reference inside
@@ -162934,6 +163058,21 @@ test "checker: virtual file export stars do not use single-source conflict heuri
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.export_star_conflict);
     }
+}
+
+test "checker: virtual js export stars resolve TypeScript source extensions" {
+    const s = try newSetup(
+        \\// @filename: a.ts
+        \\export const a = 1;
+        \\// @filename: b.ts
+        \\export const b = 1;
+        \\// @filename: index.ts
+        \\export * from "./a.js";
+        \\export * from "./b.js";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
 }
 
 test "checker: export star from export assignment module emits TS2498" {
@@ -177588,6 +177727,21 @@ test "checker: function without return annotation infers from a single return" {
     const sig = s.hir.typeOf(top);
     const ret = s.ti.signatureReturn(sig) orelse return error.TestExpectedEqual;
     try T.expectEqual(types.Primitive.number_t, ret);
+}
+
+test "checker: inferred object returns select an accepting structural supertype" {
+    const s = try newSetup(
+        \\function f() {
+        \\    if (!!true) return { valid: true };
+        \\    return declared();
+        \\}
+        \\declare const declared: () => { valid: boolean, msg?: undefined };
+        \\f().msg;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: function without returns infers void" {
