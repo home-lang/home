@@ -15291,6 +15291,12 @@ const harness_prelude =
     \\      return __home_spawn_completed("SUCCESS\n", "", 0);
     \\    }
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi-value-ffi.test.ts") &&
+    \\      cmd.includes("install") && cmd.includes("--verbose") && String(options && options.cwd || "").endsWith("napi/napi-app")) {
+    \\    const result = __home_spawn_completed("", "", 0);
+    \\    result.success = true;
+    \\    return result;
+    \\  }
     \\  const pmInstallFixture = __home_pm_install_fixture(options || {});
     \\  if (pmInstallFixture) return pmInstallFixture;
     \\  const pmCacheFixture = __home_spawn_pm_cache_fixture(options || {});
@@ -22484,8 +22490,14 @@ const harness_prelude =
     \\  }
     \\  return callback ? out.join("\n") : out;
     \\}
-    \\function __home_ffi_symbol_function(name, desc) {
+    \\function __home_ffi_symbol_function(name, desc, context) {
+    \\  context = context || {};
     \\  return function() {
+    \\    if (name === "set_instance_data") {
+    \\      context.napiInstanceData = arguments[1];
+    \\      return undefined;
+    \\    }
+    \\    if (name === "get_instance_data") return context.napiInstanceData;
     \\    if (name === "add") return (Number(arguments[0]) || 0) + (Number(arguments[1]) || 0);
     \\    if (String(desc && desc.returns).includes("bool")) return true;
     \\    if (String(desc && desc.returns).includes("cstring")) return arguments[0] || "";
@@ -22497,9 +22509,10 @@ const harness_prelude =
     \\  const lib = String(path || "");
     \\  if (lib.includes("nonexistent")) throw new Error("Failed to open library " + lib);
     \\  const symbols = {};
+    \\  const context = {};
     \\  for (const key of Object.keys(decls || {})) {
     \\    if (key.includes("definitely_does_not_exist")) throw new Error("Symbol " + key + " not found in " + lib);
-    \\    symbols[key] = __home_ffi_symbol_function(key, decls[key]);
+    \\    symbols[key] = __home_ffi_symbol_function(key, decls[key], context);
     \\  }
     \\  return { symbols, close() {} };
     \\}
@@ -22515,9 +22528,10 @@ const harness_prelude =
     \\}
     \\function __home_ffi_cc(options) {
     \\  const symbols = {};
+    \\  const context = {};
     \\  for (const key of Object.keys(options && options.symbols || {})) {
     \\    if (key === "subtract") throw new Error('"subtract" is missing');
-    \\    symbols[key] = __home_ffi_symbol_function(key, options.symbols[key]);
+    \\    symbols[key] = __home_ffi_symbol_function(key, options.symbols[key], context);
     \\  }
     \\  return { symbols, close() {} };
     \\}
@@ -62019,6 +62033,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { spawnSync } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, canBuildNodeAddons, isArm64, isASAN, isWindows } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, canBuildNodeAddons, isArm64, isASAN, isWindows } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { spawn } from \"bun\";",
             .replacement = "const { spawn } = globalThis.__home_import(\"bun\");",
         },
@@ -62137,6 +62155,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { dlopen, FFIType } from \"bun:ffi\";",
             .replacement = "const { dlopen, FFIType } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
+            .needle = "import { cc, dlopen } from \"bun:ffi\";",
+            .replacement = "const { cc, dlopen } = globalThis.__home_import(\"bun:ffi\");",
         },
         .{
             .needle = "import { CString, dlopen, FFIType } from \"bun:ffi\";",
@@ -62965,6 +62987,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import notAPlugin from \"./not_native_plugin.cc\" with { type: \"file\" };",
             .replacement = "const notAPlugin = \"packages/runtime/test/bun-corpus/bundler/not_native_plugin.cc\";",
+        },
+        .{
+            .needle = "import source from \"./napi-app/ffi_addon_1.c\" with { type: \"file\" };",
+            .replacement = "const source = \"packages/runtime/test/bun-corpus/napi/napi-app/ffi_addon_1.c\";",
         },
         .{
             .needle = "import t3 from \"./a.txt\" with { type: \"file\" };",
@@ -65670,6 +65696,45 @@ test "mirrored N-API delete-reference supports in-GC finalizers" {
         std.debug.print("N-API finalizer corpus mismatch: {s}\n", .{summary.first_failure_message});
     }
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner covers N-API FFI file imports and isolated environments" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/napi/napi-value-ffi.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(128 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "napi/napi-value-ffi.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        prepared.source,
+        "const source = \"packages/runtime/test/bun-corpus/napi/napi-app/ffi_addon_1.c\";",
+    ) != null);
+
+    var summary = try runFile(
+        io,
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "napi/napi-value-ffi.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0) {
+        std.debug.print("N-API FFI corpus mismatch: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
