@@ -49504,6 +49504,11 @@ const harness_prelude =
     \\  const entry = Array.isArray(stdio) ? stdio[index] : stdio;
     \\  return entry === undefined || entry === null || entry === "pipe";
     \\}
+    \\function __home_child_process_readable(text) {
+    \\  const stream = __home_spawn_async_iterable_text(text);
+    \\  Object.setPrototypeOf(stream, __home_stream_readable.prototype);
+    \\  return stream;
+    \\}
     \\function __home_child_process_encoded_output(text, capture, encoding) {
     \\  if (!capture) return null;
     \\  const value = String(text || "");
@@ -49658,8 +49663,8 @@ const harness_prelude =
     \\    if (options.args !== undefined && !Array.isArray(options.args)) throw __home_child_process_type_error("ERR_INVALID_ARG_TYPE", 'The "options.args" property must be an instance of Array');
     \\    this.pid = 0;
     \\    this.stdin = __home_spawn_async_iterable_text("");
-    \\    this.stdout = __home_spawn_async_iterable_text("");
-    \\    this.stderr = __home_spawn_async_iterable_text("");
+    \\    this.stdout = __home_child_process_readable("");
+    \\    this.stderr = __home_child_process_readable("");
     \\    this.stdio = [this.stdin, this.stdout, this.stderr];
     \\    Promise.resolve().then(() => this.emit("spawn"));
     \\    return 0;
@@ -49703,12 +49708,13 @@ const harness_prelude =
     \\  },
     \\  spawn(file, args, options) {
     \\    const spawnArgs = Array.isArray(args) ? args.map(String) : [];
+    \\    options = Array.isArray(args) ? (options || {}) : (args || {});
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/child_process/child-process-stdio.test.js") && spawnArgs.some(part => part.endsWith("spawned-child.js"))) {
     \\      const child = __home_http_event_target();
     \\      let stdoutPayload = "";
     \\      let stdoutRead = false;
     \\      let stdoutEncoding = null;
-    \\      const stdout = __home_spawn_async_iterable_text("");
+    \\      const stdout = __home_child_process_readable("");
     \\      stdout.setEncoding = function(encoding) { stdoutEncoding = String(encoding || ""); return this; };
     \\      stdout.read = function() {
     \\        if (stdoutRead || stdoutPayload.length === 0) return null;
@@ -49741,7 +49747,7 @@ const harness_prelude =
     \\        if (typeof callback === "function") Promise.resolve().then(callback);
     \\        return this;
     \\      };
-    \\      const stderr = __home_spawn_async_iterable_text("");
+    \\      const stderr = __home_child_process_readable("");
     \\      Object.defineProperties(child, {
     \\        stdin: { value: stdin, enumerable: true, writable: true, configurable: true },
     \\        stdout: { value: stdout, enumerable: true, writable: true, configurable: true },
@@ -49756,11 +49762,14 @@ const harness_prelude =
     \\      return child;
     \\    }
     \\    const child = __home_http_event_target();
-    \\    const stdin = __home_spawn_async_iterable_text("");
-    \\    stdin.write = function() { return true; };
-    \\    stdin.end = function() { this.emit("finish"); return this; };
-    \\    const stdout = __home_spawn_async_iterable_text("");
-    \\    const stderr = __home_spawn_async_iterable_text("");
+    \\    const stdioOption = options && options.stdio;
+    \\    const stdin = __home_child_process_stdio_capture(stdioOption, 0) ? __home_spawn_async_iterable_text("") : null;
+    \\    if (stdin) {
+    \\      stdin.write = function() { return true; };
+    \\      stdin.end = function() { this.emit("finish"); return this; };
+    \\    }
+    \\    const stdout = __home_child_process_stdio_capture(stdioOption, 1) ? __home_child_process_readable("") : null;
+    \\    const stderr = __home_child_process_stdio_capture(stdioOption, 2) ? __home_child_process_readable("") : null;
     \\    Object.defineProperties(child, {
     \\      stdin: { value: stdin, enumerable: true, writable: true, configurable: true },
     \\      stdout: { value: stdout, enumerable: true, writable: true, configurable: true },
@@ -70944,6 +70953,31 @@ test "bootstrap runner mirrors vendored hardlink package installs" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner normalizes child process default stdio streams" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/08095.test.ts";
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_child_process_readable(text)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf(stream, __home_stream_readable.prototype)") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
+        std.debug.print(
+            "child process default stdio mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 4), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 4), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
