@@ -52566,6 +52566,65 @@ const harness_prelude =
     \\  }
     \\  return body;
     \\}
+    \\function __home_track_body_reader(body, reader) {
+    \\  if (!body || !reader) return reader;
+    \\  try { Object.defineProperty(body, "__home_logically_locked", { configurable: true, writable: true, value: true }); } catch (error) {}
+    \\  try {
+    \\    const locked = Object.getOwnPropertyDescriptor(body, "locked");
+    \\    if (!locked || locked.configurable !== false) {
+    \\      Object.defineProperty(body, "locked", { configurable: true, get() { return !!this.__home_logically_locked; } });
+    \\    }
+    \\  } catch (error) {}
+    \\  const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
+    \\  try {
+    \\    Object.defineProperty(reader, "releaseLock", { configurable: true, writable: true, value: function() {
+    \\      try { return releaseLock.apply(this, arguments); }
+    \\      finally { try { body.__home_logically_locked = false; } catch (error) {} }
+    \\    } });
+    \\  } catch (error) {}
+    \\  return reader;
+    \\}
+    \\function __home_wrap_body_reader(body) {
+    \\  if (!body || typeof body !== "object" || typeof body.getReader !== "function" || body.__home_body_reader_wrapped) return;
+    \\  const getReader = body.getReader;
+    \\  try {
+    \\    Object.defineProperty(body, "__home_body_reader_wrapped", { configurable: true, value: true });
+    \\    Object.defineProperty(body, "getReader", { configurable: true, writable: true, value: function() {
+    \\      if (!globalThis.__home_suppress_body_used) __home_mark_body_used(this);
+    \\      return __home_track_body_reader(this, getReader.apply(this, arguments));
+    \\    } });
+    \\  } catch (error) {}
+    \\}
+    \\function __home_add_body_owner(body, owner) {
+    \\  if (!body || typeof body !== "object" || !owner) return;
+    \\  __home_wrap_body_reader(body);
+    \\  let owners = body.__home_owners;
+    \\  if (!Array.isArray(owners)) {
+    \\    owners = [];
+    \\    if (body.__home_owner) owners.push(body.__home_owner);
+    \\    try { Object.defineProperty(body, "__home_owners", { configurable: true, value: owners }); } catch (error) { return; }
+    \\  }
+    \\  if (!owners.includes(owner)) owners.push(owner);
+    \\  if (!body.__home_owner) {
+    \\    try { Object.defineProperty(body, "__home_owner", { configurable: true, value: owner }); } catch (error) {}
+    \\  }
+    \\}
+    \\function __home_mark_body_used(body) {
+    \\  if (!body || typeof body !== "object") return;
+    \\  const owners = Array.isArray(body.__home_owners) ? body.__home_owners : (body.__home_owner ? [body.__home_owner] : []);
+    \\  for (const owner of owners) {
+    \\    try { owner.bodyUsed = true; } catch (error) {}
+    \\  }
+    \\}
+    \\function __home_lock_captured_body(body) {
+    \\  if (!body || typeof body.getReader !== "function") return;
+    \\  __home_mark_body_used(body);
+    \\  if (body.locked) return;
+    \\  try {
+    \\    const reader = body.getReader();
+    \\    Object.defineProperty(body, "__home_consumption_reader", { configurable: true, value: reader });
+    \\  } catch (error) {}
+    \\}
     \\function __home_body_chunk_for_stream(chunk) {
     \\  const bytes = __home_body_bytes_sync(chunk);
     \\  if (bytes && bytes.__home_logical_buffer) return bytes;
@@ -52765,10 +52824,10 @@ const harness_prelude =
     \\}
     \\function __home_body_bytes(body) {
     \\  const capture = __home_readable_stream_capture(body);
-    \\  if (capture && capture.startPending) return __home_then(capture.startPending, () => __home_body_bytes_sync({ __home_chunks: capture.chunks || [] }));
-    \\  if (capture && capture.closed) return Promise.resolve(__home_body_bytes_sync({ __home_chunks: capture.chunks || [] }));
-    \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) return __home_then(body.__home_start_pending, () => __home_body_bytes_sync(__home_stream_all_chunks_body(body)));
-    \\  if (__home_stream_chunks_replayable(body)) return Promise.resolve(__home_body_bytes_sync(body));
+    \\  if (capture && capture.startPending) { __home_lock_captured_body(body); return __home_then(capture.startPending, () => __home_body_bytes_sync({ __home_chunks: capture.chunks || [] })); }
+    \\  if (capture && capture.closed) { __home_lock_captured_body(body); return Promise.resolve(__home_body_bytes_sync({ __home_chunks: capture.chunks || [] })); }
+    \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) { __home_lock_captured_body(body); return __home_then(body.__home_start_pending, () => __home_body_bytes_sync(__home_stream_all_chunks_body(body))); }
+    \\  if (__home_stream_chunks_replayable(body)) { __home_lock_captured_body(body); return Promise.resolve(__home_body_bytes_sync(body)); }
     \\  if (body && typeof body.getReader === "function") {
     \\    const reader = body.getReader();
     \\    const chunks = [];
@@ -52799,10 +52858,10 @@ const harness_prelude =
     \\    if (ArrayBuffer.isView(value)) return Promise.resolve(__home_utf8_bytes_to_text(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
     \\  }
     \\  const capture = __home_readable_stream_capture(body);
-    \\  if (capture && capture.startPending) return __home_then(capture.startPending, () => __home_chunks_to_text(capture.chunks || []));
-    \\  if (capture && capture.closed) return Promise.resolve(__home_chunks_to_text(capture.chunks || []));
-    \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) return __home_then(body.__home_start_pending, () => __home_chunks_to_text(body.__home_all_chunks || []));
-    \\  if (__home_stream_chunks_replayable(body)) return Promise.resolve(__home_chunks_to_text(body.__home_chunks || []));
+    \\  if (capture && capture.startPending) { __home_lock_captured_body(body); return __home_then(capture.startPending, () => __home_chunks_to_text(capture.chunks || [])); }
+    \\  if (capture && capture.closed) { __home_lock_captured_body(body); return Promise.resolve(__home_chunks_to_text(capture.chunks || [])); }
+    \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) { __home_lock_captured_body(body); return __home_then(body.__home_start_pending, () => __home_chunks_to_text(body.__home_all_chunks || [])); }
+    \\  if (__home_stream_chunks_replayable(body)) { __home_lock_captured_body(body); return Promise.resolve(__home_chunks_to_text(body.__home_chunks || [])); }
     \\  if (body && typeof body.getReader === "function") return __home_body_chunks_via_reader(body).then(chunks => __home_chunks_to_text(chunks));
     \\  return Promise.resolve(__home_response_body_text(body));
     \\}
@@ -52947,9 +53006,7 @@ const harness_prelude =
     \\    const status = options.status === undefined ? 200 : Number(options.status);
     \\    if (!Number.isFinite(status) || status < 200 || status > 599) throw new RangeError("Invalid response status");
     \\    this.body = __home_body_record(body);
-    \\    if (this.body && typeof this.body === "object") {
-    \\      try { Object.defineProperty(this.body, "__home_owner", { configurable: true, value: this }); } catch (error) {}
-    \\    }
+    \\    __home_add_body_owner(this.body, this);
     \\    this.init = options;
     \\    this.status = status;
     \\    this.ok = status >= 200 && status < 300;
@@ -53502,6 +53559,7 @@ const harness_prelude =
     \\  });
     \\}
     \\function fetch(input, init) {
+    \\  if (typeof Request === "function" && input instanceof Request && input.body !== null && (input.bodyUsed || input.body.locked)) throw new TypeError("Body already used");
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
     \\  const fetchOptions = (() => {
     \\    if (typeof Request === "function" && input instanceof Request) {
@@ -55485,7 +55543,11 @@ const harness_prelude =
     \\      this.headers = __home_request_clone_headers(input.headers);
     \\      this.__home_text = input.__home_text;
     \\      this.__home_formdata = input.__home_formdata;
-    \\      this.body = input.body;
+    \\      if (input.body && Object.prototype.hasOwnProperty.call(input.body, "__home_body_value")) this.body = __home_body_record(input.body.__home_body_value);
+    \\      else if (__home_stream_chunks_replayable(input.body)) {
+    \\        const chunks = input.body.__home_chunks.slice();
+    \\        this.body = new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } });
+    \\      } else this.body = input.body;
     \\    } else {
     \\      this.url = __home_request_url_from_input(input);
     \\      this.cache = "default";
@@ -55523,7 +55585,7 @@ const harness_prelude =
     \\    }
     \\    if (this.headers.get("user-agent") === null && globalThis.navigator && globalThis.navigator.userAgent) this.headers.set("user-agent", globalThis.navigator.userAgent);
     \\    if (this.body && typeof this.body === "object") {
-    \\      try { Object.defineProperty(this.body, "__home_owner", { configurable: true, value: this }); } catch (error) {}
+    \\      __home_add_body_owner(this.body, this);
     \\    }
     \\  };
     \\  Request.prototype.text = function() {
@@ -58001,12 +58063,27 @@ const harness_prelude =
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.getReader === "function" && !ReadableStream.prototype.getReader.__home_release_lock_compatible) {
     \\  const __home_readable_stream_get_reader = ReadableStream.prototype.getReader;
     \\  ReadableStream.prototype.getReader = function() {
-    \\    if (this && this.__home_owner && !globalThis.__home_suppress_body_used) this.__home_owner.bodyUsed = true;
+    \\    if (this && !globalThis.__home_suppress_body_used) __home_mark_body_used(this);
+    \\    const stream = this;
     \\    const reader = __home_readable_stream_get_reader.apply(this, arguments);
-    \\    if (reader && typeof reader.releaseLock !== "function") reader.releaseLock = function() {};
+    \\    if (reader) {
+    \\      try { Object.defineProperty(stream, "__home_logically_locked", { configurable: true, writable: true, value: true }); } catch (error) {}
+    \\      const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
+    \\      reader.releaseLock = function() {
+    \\        try { return releaseLock.apply(this, arguments); }
+    \\        finally { try { stream.__home_logically_locked = false; } catch (error) {} }
+    \\      };
+    \\    }
     \\    return reader;
     \\  };
     \\  ReadableStream.prototype.getReader.__home_release_lock_compatible = true;
+    \\  const lockedDescriptor = Object.getOwnPropertyDescriptor(ReadableStream.prototype, "locked");
+    \\  if (lockedDescriptor && typeof lockedDescriptor.get === "function" && lockedDescriptor.configurable !== false) {
+    \\    Object.defineProperty(ReadableStream.prototype, "locked", {
+    \\      configurable: true,
+    \\      get() { return !!this.__home_logically_locked || !!lockedDescriptor.get.call(this); },
+    \\    });
+    \\  }
     \\}
     \\if (typeof ReadableStreamDefaultController === "function" && ReadableStreamDefaultController.prototype && !ReadableStreamDefaultController.prototype.__home_desired_size_normalized) {
     \\  const __home_desired_size_descriptor = Object.getOwnPropertyDescriptor(ReadableStreamDefaultController.prototype, "desiredSize");
