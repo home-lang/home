@@ -197,7 +197,8 @@ fn parseLine(line: []const u8) ?Tag {
             rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
         } else {
             var m: usize = 0;
-            while (m < rest.len and isIdentChar(rest[m])) m += 1;
+            while (m < rest.len and
+                (isIdentChar(rest[m]) or (kind == .param_tag and rest[m] == '.'))) m += 1;
             name_text = rest[0..m];
             rest = std.mem.trimStart(u8, rest[m..], " \t");
         }
@@ -392,6 +393,18 @@ test "jsdoc: param with name and description" {
     try T.expectEqualStrings("string", tags[0].type_text);
     try T.expectEqualStrings("name", tags[0].name);
     try T.expectEqualStrings("The user's name", tags[0].description);
+}
+
+test "jsdoc: dotted param names preserve their property path" {
+    const body =
+        \\ * @param {object} options
+        \\ * @param {string[]} options.schema Nested schema entries
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqualStrings("options.schema", tags[1].name);
+    try T.expectEqualStrings("Nested schema entries", tags[1].description);
 }
 
 test "jsdoc: returns is normalized" {

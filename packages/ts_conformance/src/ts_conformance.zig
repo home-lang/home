@@ -555,6 +555,7 @@ fn isRunnerDirectiveKey(key: []const u8) bool {
         std.ascii.eqlIgnoreCase(key, "noEmit") or
         std.ascii.eqlIgnoreCase(key, "noEmitHelpers") or
         std.ascii.eqlIgnoreCase(key, "noEmitOnError") or
+        std.ascii.eqlIgnoreCase(key, "noErrorTruncation") or
         std.ascii.eqlIgnoreCase(key, "noFallthroughCasesInSwitch") or
         std.ascii.eqlIgnoreCase(key, "noImplicitAny") or
         std.ascii.eqlIgnoreCase(key, "noImplicitOverride") or
@@ -56299,6 +56300,17 @@ test "conformance: baselineDirectiveOffsetBeforeLine strips later runner directi
     ;
     try T.expectEqual(@as(u32, 3), countLeadingDirectiveLines(ordinary_at_comment_shape));
     try T.expectEqual(@as(u32, 3), baselineDirectiveOffsetBeforeLine(ordinary_at_comment_shape, 7));
+
+    const diagnostic_truncation_shape =
+        \\// @strict: true
+        \\// @noEmit: true
+        \\// @noErrorTruncation: false
+        \\// @noTypesAndSymbols: true
+        \\
+        \\const bad: number = "wrong";
+    ;
+    try T.expectEqual(@as(u32, 5), countLeadingDirectiveLines(diagnostic_truncation_shape));
+    try T.expectEqual(@as(u32, 5), baselineDirectiveOffsetBeforeLine(diagnostic_truncation_shape, 6));
 }
 
 test "conformance: directiveTargetDeprecated detects es3 / es5 targets" {

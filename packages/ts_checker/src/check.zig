@@ -12657,13 +12657,31 @@ pub const Checker = struct {
 
     fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
         var by_section: std.AutoHashMapUnmanaged(usize, ExportAssignmentSection) = .empty;
+        var commonjs_export_assignments: std.AutoHashMapUnmanaged(usize, NodeId) = .empty;
+        var commonjs_typedef_property_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
         defer {
             var it = by_section.valueIterator();
             while (it.next()) |v| v.all_export_assignments.deinit(self.gpa);
             by_section.deinit(self.gpa);
+            commonjs_export_assignments.deinit(self.gpa);
+            commonjs_typedef_property_sections.deinit(self.gpa);
         }
 
         for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) == .assignment) {
+                const assignment = hir_mod.assignmentOf(self.hir, stmt);
+                if (assignment.op == null and self.hir.kindOf(assignment.target) == .member_access) {
+                    const section = self.virtualSectionStartForNode(stmt);
+                    if (self.memberAccessIsModuleExports(assignment.target)) {
+                        try commonjs_export_assignments.put(self.gpa, section, stmt);
+                    } else if (self.commonJsModuleExportsPropertyName(assignment.target)) |property_name| {
+                        if (self.visibleJsDocTypedefNameExistsAt(assignment.target, property_name)) {
+                            try commonjs_typedef_property_sections.put(self.gpa, section, {});
+                        }
+                    }
+                }
+                continue;
+            }
             if (self.hir.kindOf(stmt) != .export_decl) continue;
             const section = self.virtualSectionStartForNode(stmt);
             const gop = try by_section.getOrPut(self.gpa, section);
@@ -12676,6 +12694,11 @@ pub const Checker = struct {
             } else {
                 gop.value_ptr.has_other_export = true;
             }
+        }
+        var commonjs_it = commonjs_typedef_property_sections.keyIterator();
+        while (commonjs_it.next()) |section| {
+            const export_assignment = commonjs_export_assignments.get(section.*) orelse continue;
+            try self.report(export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
         }
         // When the source declares an ESM-target module (`esnext`,
         // `es2015`, `es2020`, etc.) `export = X` is invalid syntax ÃÂ¢ÃÂÃÂ
@@ -76384,6 +76407,7 @@ pub const Checker = struct {
             if (jsDocAnyDottedParamWithPrefix(tags, tag.name)) continue;
 
             const pos = self.sliceStartPos(src, tag.name) orelse @as(u32, @intCast(jsdoc.start));
+            if (self.hasDiagnosticAtPosition(TsCodes.jsdoc_param_name_no_parameter, pos)) continue;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "JSDoc '@param' tag has name '{s}', but there is no parameter with that name.",
@@ -76420,7 +76444,17 @@ pub const Checker = struct {
         const pp = hir_mod.parameterOf(self.hir, p);
         if (pp.name == hir_mod.none_node_id) return false;
         const kind = self.hir.kindOf(pp.name);
-        return kind == .object_pattern or kind == .array_pattern;
+        if (kind == .object_pattern or kind == .array_pattern) return true;
+        const source_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(p), " \t\r\n");
+        if (source_text.len > 0 and (source_text[0] == '{' or source_text[0] == '[')) return true;
+        if (wanted_index != 0) return false;
+
+        // Constructor lowering can retain only the first bound identifier as
+        // the parameter name. Recover the root binding shape from source.
+        const fn_source = self.nodeSourceTextOrEmpty(fn_node);
+        const open = std.mem.indexOfScalar(u8, fn_source, '(') orelse return false;
+        const first_param = std.mem.trimStart(u8, fn_source[open + 1 ..], " \t\r\n");
+        return first_param.len > 0 and (first_param[0] == '{' or first_param[0] == '[');
     }
 
     /// TS1069 ÃÂ¢ÃÂÃÂ JSDoc `@template {X}` (no trailing identifier) is the
@@ -80900,12 +80934,12 @@ pub const Checker = struct {
         const orig_id = self.string_interner.intern(orig_buf[0..orig_len]) catch return error.OutOfMemory;
         const pos = self.sliceStartPos(src, base);
         if (!std.mem.startsWith(u8, spec_buf[0..spec_len], ".")) {
-            return try self.virtualJSDocBareImportMemberByName(
+            return (try self.virtualJSDocBareImportMemberByName(
                 anchor,
                 spec_buf[0..spec_len],
                 orig_id,
                 if (mode_len > 0) mode_buf[0..mode_len] else null,
-            );
+            )) orelse types.Primitive.any;
         }
         // Resolve to the real cross-module type, or null (NOT `any`) on failure
         // so an unresolvable import still surfaces a diagnostic.
@@ -90267,7 +90301,8 @@ pub const Checker = struct {
                     }
                     if (self.commonJsModuleExportsPropertyName(a.target)) |prop_name| {
                         if (self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey())) |exports_t| {
-                            if (!self.typeCanReceiveCommonJsExportProperty(exports_t) and
+                            const collides_with_typedef = self.visibleJsDocTypedefNameExistsAt(a.target, prop_name);
+                            if ((collides_with_typedef or !self.typeCanReceiveCommonJsExportProperty(exports_t)) and
                                 (try self.lookupObjectMember(exports_t, prop_name)) == null)
                             {
                                 try self.reportPropertyDoesNotExistOnType(a.target, prop_name, exports_t);
@@ -153549,8 +153584,12 @@ pub const Checker = struct {
         if (!self.containsFreeTypeParameter(t)) {
             var finite: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
             defer finite.deinit(self.gpa);
-            if (try self.expandFiniteTemplateLiteralStrings(t, &finite, 64)) {
-                if (finite.items.len > 0) return try self.allocStringLiteralDisplayUnion(finite.items);
+            if (try self.expandFiniteTemplateLiteralStrings(
+                t,
+                &finite,
+                max_union_representation_constituents,
+            )) {
+                if (finite.items.len > 0) return try self.allocFiniteStringLiteralDisplayUnion(finite.items);
             }
         }
         if (!self.containsFreeTypeParameter(t)) {
@@ -153692,6 +153731,23 @@ pub const Checker = struct {
             first = false;
             try buf.appendSlice(arena, display);
         }
+        return buf.items;
+    }
+
+    fn allocFiniteStringLiteralDisplayUnion(self: *Checker, sids: []const hir_mod.StringId) CheckError![]const u8 {
+        if (sids.len <= 22 or self.sourceDirectiveValueMentions("noErrorTruncation", "true")) {
+            return self.allocStringLiteralDisplayUnion(sids);
+        }
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        for (sids[0..21], 0..) |sid, index| {
+            if (index > 0) try buf.appendSlice(arena, " | ");
+            try buf.appendSlice(arena, try self.allocStringLiteralDisplay(sid));
+        }
+        const omitted = sids.len - 22;
+        const summary = try std.fmt.allocPrint(arena, " | ... {d} more ... | ", .{omitted});
+        try buf.appendSlice(arena, summary);
+        try buf.appendSlice(arena, try self.allocStringLiteralDisplay(sids[sids.len - 1]));
         return buf.items;
     }
 
@@ -154095,24 +154151,33 @@ pub const Checker = struct {
                     var entries: std.ArrayListUnmanaged(UnionDisplayEntry) = .empty;
                     defer entries.deinit(self.gpa);
                     var all_template_display_members = true;
-                    for (self.interner.unionMembers(t)) |member| {
+                    var all_string_literal_members = true;
+                    const union_members = self.interner.unionMembers(t);
+                    for (union_members) |member| {
                         if (member == types.Primitive.null_t) {
                             has_null = true;
+                            all_string_literal_members = false;
                             continue;
                         }
                         if (member == types.Primitive.undefined_t) {
                             has_undef = true;
+                            all_string_literal_members = false;
                             continue;
                         }
                         const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
                         const member_flags = self.interner.pool.flagsOf(member);
                         all_template_display_members = all_template_display_members and self.typeIsTemplateUnionDisplayMember(member);
+                        const is_string_literal = member_flags.is_literal and member_flags.is_string and
+                            !member_flags.is_union and !member_flags.is_intersection;
+                        all_string_literal_members = all_string_literal_members and is_string_literal;
                         // Skip if we've already emitted this exact label.
                         var duplicate = false;
-                        for (entries.items) |prior| {
-                            if (std.mem.eql(u8, prior.name, member_name)) {
-                                duplicate = true;
-                                break;
+                        if (!(union_members.len > 1024 and is_string_literal)) {
+                            for (entries.items) |prior| {
+                                if (std.mem.eql(u8, prior.name, member_name)) {
+                                    duplicate = true;
+                                    break;
+                                }
                             }
                         }
                         if (duplicate) continue;
@@ -154153,13 +154218,28 @@ pub const Checker = struct {
                             }
                         }.lessThan);
                     }
-                    for (entries.items) |entry| {
-                        if (!first) try union_buf.appendSlice(arena_u, " | ");
-                        first = false;
-                        const needs_parens = !all_template_display_members and entry.parens;
-                        if (needs_parens) try union_buf.append(arena_u, '(');
-                        try union_buf.appendSlice(arena_u, entry.name);
-                        if (needs_parens) try union_buf.append(arena_u, ')');
+                    const truncate_large_literal_union = all_string_literal_members and
+                        entries.items.len > 22 and
+                        !self.sourceDirectiveValueMentions("noErrorTruncation", "true");
+                    if (truncate_large_literal_union) {
+                        for (entries.items[0..21]) |entry| {
+                            if (!first) try union_buf.appendSlice(arena_u, " | ");
+                            first = false;
+                            try union_buf.appendSlice(arena_u, entry.name);
+                        }
+                        const omitted = entries.items.len - 22;
+                        const summary = try std.fmt.allocPrint(arena_u, " | ... {d} more ... | ", .{omitted});
+                        try union_buf.appendSlice(arena_u, summary);
+                        try union_buf.appendSlice(arena_u, entries.items[entries.items.len - 1].name);
+                    } else {
+                        for (entries.items) |entry| {
+                            if (!first) try union_buf.appendSlice(arena_u, " | ");
+                            first = false;
+                            const needs_parens = !all_template_display_members and entry.parens;
+                            if (needs_parens) try union_buf.append(arena_u, '(');
+                            try union_buf.appendSlice(arena_u, entry.name);
+                            if (needs_parens) try union_buf.append(arena_u, ')');
+                        }
                     }
                     if (has_null) {
                         if (!first) try union_buf.appendSlice(arena_u, " | ");
@@ -224744,6 +224824,67 @@ test "checker: circular alias variance refresh is declaration-order independent"
     defer destroySetup(second);
     try second.checker.checkSourceFile(second.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(second, TsCodes.type_not_assignable));
+}
+
+test "checker: JSDoc imports and root params support destructured constructors" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\/**
+        \\ * @import {SchemaElement} from 'external'
+        \\ */
+        \\class Example {
+        \\  /**
+        \\   * @param {object} options
+        \\   * @param {SchemaElement[]} options.schema
+        \\   */
+        \\  constructor({ schema }) { this.schema = schema; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsdoc_param_name_no_parameter));
+}
+
+test "checker: CommonJS typedef export property conflicts with export assignment" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: ModuleGraphConnection.js
+        \\/** @typedef {typeof T} T */
+        \\const T = Symbol();
+        \\module.exports = class ModuleGraphConnection {};
+        \\module.exports.T = T;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'T' does not exist on type 'typeof ModuleGraphConnection'.",
+    ));
+}
+
+test "checker: large finite template literal unions use default diagnostic truncation" {
+    const s = try newSetup(
+        \\type Prefix = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k";
+        \\type Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+        \\type LargeStringLiteralUnion = `${Prefix}${Digit}${Digit}${Digit}`;
+        \\const ok: LargeStringLiteralUnion = "a000";
+        \\const bad: LargeStringLiteralUnion = "zzzz";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '\"zzzz\"' is not assignable to type '\"a000\" | \"a001\" | \"a002\" | \"a003\" | \"a004\" | \"a005\" | \"a006\" | \"a007\" | \"a008\" | \"a009\" | \"a010\" | \"a011\" | \"a012\" | \"a013\" | \"a014\" | \"a015\" | \"a016\" | \"a017\" | \"a018\" | \"a019\" | \"a020\" | ... 10978 more ... | \"k999\"'.",
+    ));
 }
 
 test "checker: forward class static private access reports TS18013" {
