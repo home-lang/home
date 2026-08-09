@@ -53,8 +53,10 @@ TypeScript corpus at `4d4f005c8541e0255a9d8791205fdce326e462bc`.
 The 2026-08-08 transition moved tsgo forward 64 commits from `b8276f35` while
 leaving the nested TypeScript pin unchanged. The tsgo-native compiler corpus
 grew from 300 to 321 source files and from 299 to 320 expanded cases. With
-family-aware native baseline discovery, Home currently passes 192/320 exactly,
-with 128 remaining failures. The former 299/299 claim was measured while the
+family-aware native baseline discovery, Home initially passed 192/320 exactly,
+with 128 failures. A fresh-cache survey on 2026-08-09 after the native-parity
+porting waves passes 263/320 exactly, with 57 remaining failures. The former
+299/299 claim was measured while the
 harness searched one directory above `testdata/baselines/reference/compiler`,
 so native error baselines were treated as absent; it was not a valid parity
 measurement. The inherited TypeScript inventory remains 5,907 expanded cases.
