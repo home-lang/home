@@ -5052,6 +5052,7 @@ pub const Checker = struct {
             try self.checkMultipleDefaultExports(stmts);
         }
         try self.checkJSDocTypedefMissingTypeTags(root);
+        try self.checkJsDocTemplateDeclarations(root);
         try self.checkJSDocTypedefTypeTags(root);
         try self.checkJSDocUnsupportedNamepathTypes(root);
         try self.checkJSDocUnsupportedTypedefWrapping(root);
@@ -5701,6 +5702,111 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn checkJsDocTemplateDeclarations(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..comment_end];
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
+            defer self.gpa.free(tags);
+
+            var template_names: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer template_names.deinit(self.gpa);
+            var has_typedef = false;
+            for (tags) |tag| {
+                if (tag.kind == .typedef_tag) has_typedef = true;
+                if (tag.kind == .template_tag and tag.name.len > 0) try template_names.append(self.gpa, tag.name);
+            }
+
+            var seen_optional = false;
+            var template_index: usize = 0;
+            for (tags) |tag| {
+                if (tag.kind != .template_tag or tag.name.len == 0) continue;
+                const name_pos = self.sliceStartPos(src, tag.name) orelse @as(u32, @intCast(comment_start));
+                if (tag.optional and !tag.has_default) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = name_pos + @as(u32, @intCast(tag.name.len)),
+                        .code = 1005,
+                        .message = "'=' expected.",
+                    });
+                } else if (tag.has_default and tag.default_text.len == 0) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = name_pos + @as(u32, @intCast(tag.name.len)) + 1,
+                        .code = 1110,
+                        .message = "Type expected.",
+                    });
+                }
+                if (seen_optional and !tag.optional) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = name_pos,
+                        .code = TsCodes.required_type_param_after_optional,
+                        .message = "Required type parameters may not follow optional type parameters.",
+                    });
+                }
+                seen_optional = seen_optional or tag.optional;
+
+                if (tag.default_text.len > 0) {
+                    var later = template_index;
+                    while (later < template_names.items.len) : (later += 1) {
+                        const hit = jsDocWordIndex(tag.default_text, template_names.items[later]) orelse continue;
+                        const default_pos = self.sliceStartPos(src, tag.default_text) orelse name_pos;
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = root,
+                            .pos = default_pos + @as(u32, @intCast(hit)),
+                            .code = TsCodes.type_param_default_references_later,
+                            .message = "Type parameter defaults can only reference previously declared type parameters.",
+                        });
+                        break;
+                    }
+                }
+                if (!has_typedef and tag.template_variance != .none) {
+                    const modifier_pos = self.jsDocTemplateVarianceModifierPos(src, body_start, tag.name, tag.template_variance) orelse name_pos;
+                    const modifier = if (tag.template_variance == .out) "out" else "in";
+                    const message = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier can only appear on a type parameter of a class, interface or type alias",
+                        .{modifier},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = modifier_pos,
+                        .code = 1274,
+                        .message = message,
+                    });
+                }
+                template_index += 1;
+            }
+        }
+    }
+
+    fn jsDocTemplateVarianceModifierPos(
+        self: *Checker,
+        src: []const u8,
+        body_start: usize,
+        name: []const u8,
+        variance: ts_parser.jsdoc.TemplateVariance,
+    ) ?u32 {
+        const name_pos = self.sliceStartPos(src, name) orelse return null;
+        const name_at: usize = @intCast(name_pos);
+        const line_start = if (std.mem.lastIndexOfScalar(u8, src[body_start..name_at], '\n')) |newline|
+            body_start + newline + 1
+        else
+            body_start;
+        const prefix = src[line_start..name_at];
+        const word = if (variance == .out) "out" else "in";
+        const at = jsDocWordIndex(prefix, word) orelse return null;
+        return @intCast(line_start + at);
     }
 
     fn checkJsDocTypedefPropertyTypes(
@@ -76218,6 +76324,19 @@ pub const Checker = struct {
             if (std.mem.startsWith(u8, rest, "const") and rest.len > 5 and (rest[5] == ' ' or rest[5] == '\t')) {
                 rest = std.mem.trim(u8, rest[5..], " \t\r");
             }
+            var variance: types.Variance = .invariant;
+            if (std.mem.startsWith(u8, rest, "in ") or std.mem.startsWith(u8, rest, "in\t")) {
+                rest = std.mem.trim(u8, rest[2..], " \t\r");
+                if (std.mem.startsWith(u8, rest, "out ") or std.mem.startsWith(u8, rest, "out\t")) {
+                    rest = std.mem.trim(u8, rest[3..], " \t\r");
+                    variance = .invariant;
+                } else {
+                    variance = .contravariant;
+                }
+            } else if (std.mem.startsWith(u8, rest, "out ") or std.mem.startsWith(u8, rest, "out\t")) {
+                rest = std.mem.trim(u8, rest[3..], " \t\r");
+                variance = .covariant;
+            }
             var constraint_text: []const u8 = "";
             if (rest.len > 0 and rest[0] == '{') {
                 const type_len = jsDocBalancedBraceLen(rest);
@@ -76232,22 +76351,40 @@ pub const Checker = struct {
             var parameter_index: usize = 0;
             while (pos < rest.len) {
                 while (pos < rest.len and (rest[pos] == ' ' or rest[pos] == '\t' or rest[pos] == ',')) : (pos += 1) {}
-                if (pos >= rest.len or !isJsDocIdentStart(rest[pos])) break;
-                const name_start = pos;
-                pos += 1;
-                while (pos < rest.len and isJsDocIdentChar(rest[pos])) : (pos += 1) {}
-                const name = self.string_interner.intern(rest[name_start..pos]) catch return error.OutOfMemory;
+                if (pos >= rest.len) break;
+                var name_text: []const u8 = "";
+                var default_text: []const u8 = "";
+                if (rest[pos] == '[') {
+                    const close = std.mem.indexOfScalarPos(u8, rest, pos + 1, ']') orelse break;
+                    const inner = rest[pos + 1 .. close];
+                    if (std.mem.indexOfScalar(u8, inner, '=')) |eq| {
+                        name_text = std.mem.trim(u8, inner[0..eq], " \t");
+                        default_text = std.mem.trim(u8, inner[eq + 1 ..], " \t");
+                    } else {
+                        name_text = std.mem.trim(u8, inner, " \t");
+                    }
+                    pos = close + 1;
+                } else {
+                    if (!isJsDocIdentStart(rest[pos])) break;
+                    const name_start = pos;
+                    pos += 1;
+                    while (pos < rest.len and isJsDocIdentChar(rest[pos])) : (pos += 1) {}
+                    name_text = rest[name_start..pos];
+                }
+                if (name_text.len == 0) break;
+                const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
                 const tp_id = blk: {
                     if (self.lookupNarrow(name)) |existing| break :blk existing;
                     const constraint_t = if (parameter_index == 0 and constraint_text.len > 0)
                         (try self.jsDocTypeTextToTypeAt(src, constraint_text, fn_node)) orelse types.Primitive.unknown
                     else
                         types.Primitive.unknown;
+                    const default_t = try self.jsDocTemplateDefaultType(src, body, default_text, fn_node);
                     const fresh = self.interner.internFreshTypeParameterWithFlags(
                         name,
                         constraint_t,
-                        types.Primitive.none,
-                        .invariant,
+                        default_t,
+                        variance,
                         false,
                     ) catch return error.OutOfMemory;
                     try self.recordNarrow(name, fresh);
@@ -76262,6 +76399,31 @@ pub const Checker = struct {
                 if (pos >= rest.len or rest[pos] != ',') break;
             }
         }
+    }
+
+    fn jsDocTemplateDefaultType(
+        self: *Checker,
+        src: []const u8,
+        body: []const u8,
+        default_text: []const u8,
+        anchor: NodeId,
+    ) CheckError!TypeId {
+        if (default_text.len == 0) return types.Primitive.none;
+        if (isJsDocIdentStart(default_text[0])) {
+            var ident_len: usize = 1;
+            while (ident_len < default_text.len and isJsDocIdentChar(default_text[ident_len])) : (ident_len += 1) {}
+            if (ident_len == default_text.len) {
+                const name = self.string_interner.intern(default_text) catch return error.OutOfMemory;
+                if (self.lookupNarrow(name) == null) {
+                    const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return types.Primitive.none;
+                    defer self.gpa.free(tags);
+                    for (tags) |tag| {
+                        if (tag.kind == .template_tag and std.mem.eql(u8, tag.name, default_text)) return types.Primitive.none;
+                    }
+                }
+            }
+        }
+        return (try self.jsDocTypeTextToTypeAt(src, default_text, anchor)) orelse types.Primitive.none;
     }
 
     /// True when the var/let/const decl `node` has a leading
@@ -79701,8 +79863,24 @@ pub const Checker = struct {
         if (try self.jsDocKeyofTextToType(src, trimmed)) |keyof_t| return keyof_t;
         if (try self.jsDocIndexedAccessTextToType(src, trimmed)) |indexed_t| return indexed_t;
         if (try self.jsDocQualifiedNamespaceTextToType(src, trimmed)) |qualified_t| return qualified_t;
-        if (std.mem.eql(u8, trimmed, "readonly []")) {
-            return try self.internTupleFromTypes(&.{}, true);
+        var tuple_text = trimmed;
+        var tuple_readonly = false;
+        if (std.mem.startsWith(u8, tuple_text, "readonly ")) {
+            tuple_readonly = true;
+            tuple_text = std.mem.trimStart(u8, tuple_text["readonly".len..], " \t\r\n");
+        }
+        if (tuple_text.len >= 2 and tuple_text[0] == '[' and tuple_text[tuple_text.len - 1] == ']') {
+            const elements_text = tuple_text[1 .. tuple_text.len - 1];
+            var element_types: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer element_types.deinit(self.gpa);
+            var elements = JsDocTopLevelSplitter.init(elements_text, ',');
+            while (elements.next()) |element_text| {
+                const element = std.mem.trim(u8, element_text, " \t\r\n");
+                if (element.len == 0) continue;
+                const element_t = (try self.jsDocTypeTextToType(src, element)) orelse types.Primitive.any;
+                try element_types.append(self.gpa, element_t);
+            }
+            return try self.internTupleFromTypes(element_types.items, tuple_readonly);
         }
         if (!jsDocSplitTopLevelAny(trimmed, '|') and
             !jsDocSplitTopLevelAny(trimmed, '&') and
@@ -79761,6 +79939,9 @@ pub const Checker = struct {
         const base = jsDocTypeBaseName(trimmed);
         if (base.len == 0) return null;
         if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
+        if (base.len == trimmed.len) {
+            if (try self.jsDocGenericTypedefTypeTextToType(src, base, "")) |t| return t;
+        }
         if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
         if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
         if (try self.jsDocImportedNameType(src, base)) |t| return t;
@@ -80764,12 +80945,11 @@ pub const Checker = struct {
         defer arg_positions.deinit(self.gpa);
         var args = JsDocTopLevelSplitter.init(args_text, ',');
         while (args.next()) |arg_text| {
+            if (std.mem.trim(u8, arg_text, " \t\r\n").len == 0) continue;
             const arg_t = (try self.jsDocTypeTextToType(src, arg_text)) orelse types.Primitive.any;
             try arg_types.append(self.gpa, arg_t);
             try arg_positions.append(self.gpa, self.sliceStartPos(src, arg_text));
         }
-        if (arg_types.items.len == 0) return null;
-
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
@@ -80794,22 +80974,55 @@ pub const Checker = struct {
 
             var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer subs.deinit(self.gpa);
+            var formal_params: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer formal_params.deinit(self.gpa);
             var template_index: usize = 0;
             for (tags) |tag| {
                 if (tag.kind == .typedef_tag and std.mem.eql(u8, tag.name, name)) break;
                 if (tag.kind != .template_tag or tag.name.len == 0) continue;
-                try self.recordJsDocGenericTypedefTemplate(src, tag.name, tag.type_text, arg_types.items, arg_positions.items, &subs, &template_index);
+                try self.recordJsDocGenericTypedefTemplate(
+                    src,
+                    body,
+                    tag.name,
+                    tag.type_text,
+                    tag.default_text,
+                    tag.template_variance,
+                    tag.is_const,
+                    arg_types.items,
+                    arg_positions.items,
+                    &subs,
+                    &formal_params,
+                    &template_index,
+                );
             }
             if (template_index == 0) {
-                try self.recordJsDocInlineTemplatesBeforeTypedef(src, body, arg_types.items, arg_positions.items, &subs, &template_index);
+                try self.recordJsDocInlineTemplatesBeforeTypedef(src, body, arg_types.items, arg_positions.items, &subs, &formal_params, &template_index);
             }
             if (template_index == 0) return null;
 
-            var typedef_t = (try self.jsDocTypeTextToType(src, body_type_text)) orelse types.Primitive.any;
+            var typedef_t = (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) orelse
+                ((try self.jsDocTypeTextToType(src, body_type_text)) orelse types.Primitive.any);
+            const generic_body = typedef_t;
+            const params_copy = self.gpa.dupe(TypeId, formal_params.items) catch return error.OutOfMemory;
+            if (self.generic_aliases.getPtr(alias_name)) |existing| {
+                self.gpa.free(existing.params);
+                existing.* = .{ .params = params_copy, .body = generic_body };
+            } else {
+                try self.generic_aliases.put(self.gpa, alias_name, .{
+                    .params = params_copy,
+                    .body = generic_body,
+                });
+            }
             if (subs.count() > 0) {
+                try self.extendSubstitutionsByMatchingTypeParamNames(generic_body, formal_params.items, &subs);
                 typedef_t = self.substituteType(typedef_t, &subs) catch typedef_t;
             }
-            try self.registerAliasDisplayName(typedef_t, alias_name, arg_types.items);
+            var display_args: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer display_args.deinit(self.gpa);
+            for (formal_params.items) |param_t| {
+                try display_args.append(self.gpa, subs.get(param_t) orelse param_t);
+            }
+            try self.registerAliasDisplayName(typedef_t, alias_name, display_args.items);
             return typedef_t;
         }
         return null;
@@ -80818,11 +81031,16 @@ pub const Checker = struct {
     fn recordJsDocGenericTypedefTemplate(
         self: *Checker,
         src: []const u8,
+        body: []const u8,
         name_text: []const u8,
         constraint_text: []const u8,
+        default_text: []const u8,
+        template_variance: ts_parser.jsdoc.TemplateVariance,
+        is_const: bool,
         arg_types: []const TypeId,
         arg_positions: []const ?u32,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        formal_params: *std.ArrayListUnmanaged(TypeId),
         template_index: *usize,
     ) CheckError!void {
         if (name_text.len == 0) return;
@@ -80831,12 +81049,13 @@ pub const Checker = struct {
             (try self.jsDocTypeTextToType(src, constraint_text)) orelse types.Primitive.unknown
         else
             types.Primitive.unknown;
+        const default_t = try self.jsDocTemplateDefaultType(src, body, default_text, self.jsdoc_diagnostic_anchor);
         const formal_t = self.interner.internFreshTypeParameterWithFlags(
             template_name,
             constraint,
-            types.Primitive.none,
-            .invariant,
-            false,
+            default_t,
+            jsDocTemplateVariance(template_variance),
+            is_const,
         ) catch return error.OutOfMemory;
         if (template_index.* < arg_types.len) {
             const supplied_t = arg_types[template_index.*];
@@ -80844,8 +81063,12 @@ pub const Checker = struct {
             try self.checkTypeArgSatisfiesConstraint(self.jsdoc_diagnostic_anchor, formal_t, supplied_t);
             self.relocateJsDocTypeArgConstraintDiagnostics(diagnostic_start, arg_positions[template_index.*]);
             try subs.put(self.gpa, formal_t, supplied_t);
+        } else if (default_t != types.Primitive.none) {
+            const instantiated_default = self.substituteType(default_t, subs) catch default_t;
+            try subs.put(self.gpa, formal_t, instantiated_default);
         }
         try self.recordNarrow(template_name, formal_t);
+        try formal_params.append(self.gpa, formal_t);
         template_index.* += 1;
     }
 
@@ -80856,6 +81079,7 @@ pub const Checker = struct {
         arg_types: []const TypeId,
         arg_positions: []const ?u32,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        formal_params: *std.ArrayListUnmanaged(TypeId),
         template_index: *usize,
     ) CheckError!void {
         const typedef_pos = std.mem.indexOf(u8, body, "@typedef") orelse return;
@@ -80878,11 +81102,33 @@ pub const Checker = struct {
                 var name_len: usize = 0;
                 while (name_len < rest.len and isJsDocIdentChar(rest[name_len])) : (name_len += 1) {}
                 if (name_len == 0) break;
-                try self.recordJsDocGenericTypedefTemplate(src, rest[0..name_len], constraint_text, arg_types, arg_positions, subs, template_index);
+                try self.recordJsDocGenericTypedefTemplate(
+                    src,
+                    body,
+                    rest[0..name_len],
+                    constraint_text,
+                    "",
+                    .none,
+                    false,
+                    arg_types,
+                    arg_positions,
+                    subs,
+                    formal_params,
+                    template_index,
+                );
                 rest = rest[name_len..];
                 if (rest.len == 0 or rest[0] != ',') break;
             }
         }
+    }
+
+    fn jsDocTemplateVariance(variance: ts_parser.jsdoc.TemplateVariance) types.Variance {
+        return switch (variance) {
+            .none => .invariant,
+            .in => .contravariant,
+            .out => .covariant,
+            .in_out => .invariant,
+        };
     }
 
     fn jsDocGenericNominalTypeTextToType(
@@ -81883,13 +82129,24 @@ pub const Checker = struct {
         }
         const before = src[0..limit];
         const end = std.mem.lastIndexOf(u8, before, "*/") orelse return null;
-        const between = std.mem.trim(u8, before[end + 2 ..], " \t\r\n");
-        if (between.len != 0) return null;
+        if (!jsDocTrailingTriviaOnly(before[end + 2 ..])) return null;
         const start = std.mem.lastIndexOf(u8, before[0..end], "/**") orelse return null;
         return .{
             .body = before[start + 3 .. end],
             .start = start + 3,
         };
+    }
+
+    fn jsDocTrailingTriviaOnly(text: []const u8) bool {
+        var line_start: usize = 0;
+        while (line_start <= text.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, text, line_start, '\n') orelse text.len;
+            const line = std.mem.trim(u8, text[line_start..line_end], " \t\r");
+            if (line.len > 0 and !std.mem.startsWith(u8, line, "//")) return false;
+            if (line_end == text.len) break;
+            line_start = line_end + 1;
+        }
+        return true;
     }
 
     fn leadingDeprecatedJsDocTag(self: *Checker, decl: NodeId) ?DeprecatedJsDocTag {
@@ -225621,4 +225878,54 @@ test "checker: array mutation evolves a capture before a later closure read" {
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: JSDoc template defaults instantiate tuple aliases" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/**
+        \\ * @template {string | number} [T=string]
+        \\ * @typedef {[T]} A
+        \\ */
+        \\/** @type {A} */ // trailing comment remains JSDoc trivia
+        \\const bad = [0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'number' is not assignable to type 'string'.",
+    ));
+}
+
+test "checker: JSDoc typedef variance controls generic assignment" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/**
+        \\ * @template out T
+        \\ * @typedef {Object} Covariant
+        \\ * @property {T} x
+        \\ */
+        \\/** @type {Covariant<unknown>} */
+        \\let broad = { x: 1 };
+        \\/** @type {Covariant<string>} */
+        \\let narrow = { x: "" };
+        \\
+        \\narrow = broad;
+        \\/**
+        \\ * @template in T
+        \\ * @param {T} value
+        \\ */
+        \\function invalidVariance(value) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 1274));
 }
