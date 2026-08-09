@@ -1054,6 +1054,9 @@ pub const JsxElementPayload = struct {
     /// Tag identifier for `<Foo>`. For namespaced tags (`<svg:rect>`)
     /// the qualifier list provides the namespace prefix.
     tag: NodeId,
+    /// Children-pool slice: explicit JSX type arguments (`<Foo<T> />`).
+    type_args_start: u32,
+    type_args_len: u32,
     /// Children-pool slice: attributes (`jsx_attribute` /
     /// `jsx_spread_attribute`).
     attrs_start: u32,
@@ -2929,10 +2932,13 @@ pub const Builder = struct {
         self: *Builder,
         span: Span,
         tag: NodeId,
+        type_args: []const NodeId,
         attrs: []const NodeId,
         children: []const NodeId,
         self_closing: bool,
     ) !NodeId {
+        const t_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_args);
         const a_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, attrs);
         const c_start: u32 = @intCast(self.hir.child_pool.items.len);
@@ -2940,6 +2946,8 @@ pub const Builder = struct {
         const payload_idx: u32 = @intCast(self.hir.jsx_element_payloads.items.len);
         try self.hir.jsx_element_payloads.append(self.hir.gpa, .{
             .tag = tag,
+            .type_args_start = t_start,
+            .type_args_len = @intCast(type_args.len),
             .attrs_start = a_start,
             .attrs_len = @intCast(attrs.len),
             .children_start = c_start,
@@ -2949,6 +2957,7 @@ pub const Builder = struct {
         const kind: NodeKind = if (self_closing) .jsx_self_closing else .jsx_element;
         const id = try self.newNode(kind, span, payload_idx);
         self.hir.setParent(tag, id);
+        for (type_args) |type_arg| self.hir.setParent(type_arg, id);
         for (attrs) |a| self.hir.setParent(a, id);
         for (children) |c| self.hir.setParent(c, id);
         return id;
@@ -3531,6 +3540,11 @@ pub fn jsxElementOf(hir: *const Hir, id: NodeId) JsxElementPayload {
     const k = hir.kindOf(id);
     std.debug.assert(k == .jsx_element or k == .jsx_self_closing);
     return hir.jsx_element_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn jsxTypeArgs(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = jsxElementOf(hir, id);
+    return hir.child_pool.items[p.type_args_start .. p.type_args_start + p.type_args_len];
 }
 
 pub fn jsxAttrs(hir: *const Hir, id: NodeId) []const NodeId {

@@ -1547,21 +1547,37 @@ fn appendJsxDirectiveDiagnostics(
     const has_jsx_frag_pragma = directiveValue(source, "jsxFrag") != null or directiveValue(source, "jsxfrag") != null;
     const jsx_mode = directiveValue(source, "jsx");
     const jsx_import_source = directiveValue(source, "jsxImportSource");
-    if (jsx_import_source) |import_source| {
-        if (jsx_mode != null and
-            (std.mem.startsWith(u8, jsx_mode.?, "react-jsx") or std.mem.startsWith(u8, jsx_mode.?, "react-jsxdev")))
-        {
-            const runtime = try std.fmt.allocPrint(gpa, "{s}/jsx-runtime", .{import_source});
-            defer gpa.free(runtime);
-            if (std.mem.indexOf(u8, source, runtime) == null) {
-                const msg = try std.fmt.allocPrint(
-                    gpa,
-                    "This JSX tag requires the module path '{s}' to exist, but none could be found. Make sure you have types for the appropriate package installed.",
-                    .{runtime},
-                );
-                defer gpa.free(msg);
-                try appendDriverDiagnostic(gpa, c, 0, 2875, msg);
-            }
+    const automatic_runtime = if (jsx_mode) |mode|
+        std.mem.startsWith(u8, mode, "react-jsx")
+    else
+        options.emit.jsx_runtime == .automatic or options.emit.jsx_runtime == .automatic_dev;
+    if (automatic_runtime) {
+        const config_import_source: ?[]const u8 = if (options.pub_tsconfig) |cfg|
+            cfg.compiler_options.jsx_import_source
+        else
+            null;
+        const import_source = jsx_import_source orelse config_import_source orelse "react";
+        const automatic_dev = if (jsx_mode) |mode|
+            std.mem.startsWith(u8, mode, "react-jsxdev")
+        else
+            options.emit.jsx_runtime == .automatic_dev;
+        const suffix = if (automatic_dev) "jsx-dev-runtime" else "jsx-runtime";
+        const runtime = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ import_source, suffix });
+        defer gpa.free(runtime);
+        const containing_file = if (options.importer_path.len > 0) options.importer_path else "/__root__.tsx";
+        const runtime_exists = if (options.external_resolver) |resolver|
+            resolver.resolve(runtime, containing_file) != null
+        else
+            std.mem.indexOf(u8, source, runtime) != null;
+        if (!runtime_exists) {
+            const msg = try std.fmt.allocPrint(
+                gpa,
+                "This JSX tag requires the module path '{s}' to exist, but none could be found. Make sure you have types for the appropriate package installed.",
+                .{runtime},
+            );
+            defer gpa.free(msg);
+            const pos: u32 = @intCast(std.mem.indexOfScalar(u8, source, '<') orelse 0);
+            try appendDriverDiagnostic(gpa, c, pos, 2875, msg);
         }
     }
 
@@ -5766,7 +5782,28 @@ test "driver: automatic jsx import source reports missing runtime module" {
     }
     var found = false;
     for (c.diagnostics.items) |d| {
-        if (d.code == 2875) found = true;
+        if (d.code == 2875) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "preact/jsx-runtime") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: automatic jsx runtime defaults to react" {
+    var c = try compileSource(T.allocator,
+        \\let v = <div />;
+    , .{ .is_tsx = true, .jsx_option_present = true, .emit = .{ .jsx_runtime = .automatic } });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2875) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "react/jsx-runtime") != null);
+        }
     }
     try T.expect(found);
 }

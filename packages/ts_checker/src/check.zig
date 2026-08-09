@@ -31785,6 +31785,18 @@ pub const Checker = struct {
         return false;
     }
 
+    fn rootValueDeclarationNameNode(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?NodeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const decl = self.unwrapExportDecl(stmt);
+            const name_node = self.globalValueDeclarationNameNode(decl) orelse continue;
+            if (self.hir.kindOf(name_node) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, name_node).name == name) return name_node;
+        }
+        return null;
+    }
+
     fn globalValueDeclarationNameNode(self: *Checker, decl: NodeId) ?NodeId {
         return switch (self.hir.kindOf(decl)) {
             .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, decl).name,
@@ -96104,6 +96116,20 @@ pub const Checker = struct {
         try self.reportMissingJsxClassicFactoryScope(node, el.tag);
         try self.checkJsxNamespacedPropertyAccessTag(el.tag);
         try self.checkJsxNamespacedComponentTag(el.tag);
+        const type_args = hir_mod.jsxTypeArgs(self.hir, node);
+        if (self.jsxTagIsIntrinsic(el.tag) and type_args.len > 0) {
+            for (type_args) |type_arg| _ = self.lowererLowerWithTypeParams(type_arg) catch types.Primitive.unknown;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected 0 type arguments, but got {d}.",
+                .{type_args.len},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = type_args[0],
+                .code = TsCodes.expected_n_type_arguments,
+                .message = msg,
+            });
+        }
         const attrs = hir_mod.jsxAttrs(self.hir, node);
         const children = hir_mod.jsxChildren(self.hir, node);
         const raw_props_t = try self.jsxPropsType(node, el.tag, attrs.len);
@@ -117459,7 +117485,7 @@ pub const Checker = struct {
                         const v = hir_mod.varDeclOf(self.hir, s);
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                             const vid = hir_mod.identifierOf(self.hir, v.name);
-                            considerCandidate(name_str, self.string_interner.get(vid.name), true, false, in_type_position, &best);
+                            considerCandidate(name_str, self.string_interner.get(vid.name), true, self.nodeHasAncestor(node, s), in_type_position, &best);
                             if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(vid.name), true, false, in_type_position, &namespace_best);
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
@@ -117588,6 +117614,17 @@ pub const Checker = struct {
         // `addErrorOrSuggestion(!isUncheckedJS, …)` on this path.
         const unchecked_js = has_suggestion and
             self.virtualSectionIsJsLike(node) and !self.sourceHasCheckJsDirective();
+        const suggestion_decl = if (has_suggestion)
+            if (self.string_interner.lookup(suggestion_name)) |suggestion_id|
+                self.rootValueDeclarationNameNode(node, suggestion_id)
+            else
+                null
+        else
+            null;
+        const related = if (suggestion_decl) |decl|
+            try self.declaredHereRelated(decl, suggestion_name)
+        else
+            &.{};
         const msg = if (unchecked_js)
             try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -117616,6 +117653,7 @@ pub const Checker = struct {
             else
                 TsCodes.cannot_find_name,
             .message = msg,
+            .related = related,
             .category = if (unchecked_js) .suggestion else .error_,
         });
         // Upstream increments `suggestionCount` after every unresolved-name
@@ -167740,6 +167778,31 @@ test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
         if (d.code == TsCodes.jsx_element_implicit_any_no_intrinsic) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: JSX intrinsic type arguments report TS2558" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\const el = <div<   number> />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+}
+
+test "checker: JSX tag typo suggests its containing declaration" {
+    const s = try newTsxSetup(
+        \\const app = <App />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name_did_you_mean) continue;
+        try T.expectEqualStrings("Cannot find name 'App'. Did you mean 'app'?", d.message);
+        try T.expectEqual(@as(usize, 1), d.related.len);
+        try T.expectEqual(@as(u32, TsCodes.is_declared_here), d.related[0].code);
+    }
 }
 
 test "checker: JSX without global Element does not report TS2602 (dead in tsgo)" {

@@ -19177,10 +19177,9 @@ pub const Parser = struct {
                 false,
             );
         }
-        if (self.peek().kind == .less_than) {
-            const type_args = try self.parseTypeArgumentList();
-            self.gpa.free(type_args);
-        }
+        var type_args: []const NodeId = &.{};
+        defer if (type_args.len != 0) self.gpa.free(type_args);
+        if (self.peek().kind == .less_than) type_args = try self.parseTypeArgumentList();
 
         // Attributes.
         var attrs: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -19265,6 +19264,7 @@ pub const Parser = struct {
             return try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = close.span.end },
                 tag,
+                type_args,
                 attrs.items,
                 &.{},
                 true,
@@ -19294,6 +19294,7 @@ pub const Parser = struct {
             return try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = close_end },
                 tag,
+                type_args,
                 attrs.items,
                 &.{},
                 true,
@@ -19322,6 +19323,7 @@ pub const Parser = struct {
             return try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = self.peek().span.start },
                 tag,
+                type_args,
                 attrs.items,
                 children.items,
                 false,
@@ -19367,6 +19369,7 @@ pub const Parser = struct {
         return try self.builder.addJsxElement(
             .{ .start = open.span.start, .end = close.span.end },
             tag,
+            type_args,
             attrs.items,
             children.items,
             false,
@@ -26712,13 +26715,16 @@ test "parser: jsx text child preserves same-line whitespace" {
     try T.expectEqual(hir_mod.NodeKind.literal_string, s.hir.kindOf(children[1]));
 }
 
-test "parser: jsx tag type arguments are skipped before attributes" {
+test "parser: jsx tag type arguments are preserved before attributes" {
     var s = try newTsxTestSetup("let v = <Foo<string> bar />;");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const type_args = hir_mod.jsxTypeArgs(&s.hir, init_node);
     const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), type_args.len);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(type_args[0]));
     try T.expectEqual(@as(usize, 1), attrs.len);
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
