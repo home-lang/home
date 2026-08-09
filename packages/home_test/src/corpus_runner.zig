@@ -21988,6 +21988,9 @@ const harness_prelude =
     \\  out.sameSite = this.sameSite;
     \\  return out;
     \\};
+    \\function __home_cookie_map_entry(name, value) {
+    \\  return { name: String(name), value: __home_cookie_normalize_value(value) };
+    \\}
     \\function __home_CookieMap(init) {
     \\  if (!(this instanceof __home_CookieMap)) return new __home_CookieMap(init);
     \\  this.__home_map = new Map();
@@ -22005,7 +22008,7 @@ const harness_prelude =
     \\      const name = part.slice(0, eq).trim();
     \\      let rawValue = part.slice(eq + 1).trim();
     \\      try { rawValue = decodeURIComponent(rawValue); } catch (error) { rawValue = ""; }
-    \\      const cookie = new __home_Cookie(name, rawValue);
+    \\      const cookie = __home_cookie_map_entry(name, rawValue);
     \\      this.__home_map.set(name, cookie);
     \\      this.__home_initial_keys.add(name);
     \\    }
@@ -22019,7 +22022,7 @@ const harness_prelude =
     \\        this.__home_initial_keys.add(item.name);
     \\      } else if (Array.isArray(item) && item.length === 2) {
     \\        const name = String(item[0]);
-    \\        this.__home_map.set(name, new __home_Cookie(name, item[1]));
+    \\        this.__home_map.set(name, __home_cookie_map_entry(name, item[1]));
     \\        this.__home_initial_keys.add(name);
     \\      } else throw new TypeError("Expected arrays of exactly two strings");
     \\    }
@@ -22027,7 +22030,7 @@ const harness_prelude =
     \\  }
     \\  if (typeof init === "object") {
     \\    for (const key of Object.keys(init)) {
-    \\      this.__home_map.set(key, new __home_Cookie(key, init[key]));
+    \\      this.__home_map.set(key, __home_cookie_map_entry(key, init[key]));
     \\      this.__home_initial_keys.add(key);
     \\    }
     \\  }
@@ -22409,8 +22412,7 @@ const harness_prelude =
     \\  if (staticRouteDefaultTextType && headers.get("content-type") === null && typeof bodyValue === "string") headers.set("content-type", "text/plain; charset=utf-8");
     \\  const cookieHeaders = __home_serve_cookie_headers(request.cookies);
     \\  if (cookieHeaders.length > 0) {
-    \\    const existing = headers.get("set-cookie");
-    \\    headers.set("set-cookie", (existing ? existing + ", " : "") + cookieHeaders.join(", "));
+    \\    for (const cookieHeader of cookieHeaders) headers.append("set-cookie", cookieHeader);
     \\  }
     \\  if (headers.get("date") === null) headers.set("Date", new Date().toUTCString());
     \\  let responseBody = bodyValue !== undefined ? bodyValue : out.body;
@@ -22434,7 +22436,7 @@ const harness_prelude =
     \\  headers.set("Connection", "Upgrade");
     \\  if (!headers.has("Sec-WebSocket-Accept")) headers.set("Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     \\  const cookieHeaders = __home_serve_cookie_headers(request && request.cookies);
-    \\  if (cookieHeaders.length > 0) headers.set("Set-Cookie", cookieHeaders.join(", "));
+    \\  for (const cookieHeader of cookieHeaders) headers.append("Set-Cookie", cookieHeader);
     \\  return {
     \\    __home_upgrade_response: true,
     \\    __home_websocket_data: options && options.data,
@@ -43835,7 +43837,125 @@ const harness_prelude =
     \\  });
     \\  return ContextObject;
     \\}
-    \\function __home_vm_run_in_context(code, context) {
+    \\const __home_vm_timeout_stack = [];
+    \\globalThis.__home_vm_timeout_check = function() {
+    \\  if (__home_vm_timeout_stack.length === 0) return;
+    \\  let active = __home_vm_timeout_stack[0];
+    \\  for (let i = 1; i < __home_vm_timeout_stack.length; i++) {
+    \\    if (__home_vm_timeout_stack[i].deadline < active.deadline) active = __home_vm_timeout_stack[i];
+    \\  }
+    \\  if (globalThis.Date.now() < active.deadline) return;
+    \\  const error = new Error("Script execution timed out after " + String(active.timeout) + "ms");
+    \\  error.code = "ERR_SCRIPT_EXECUTION_TIMEOUT";
+    \\  throw error;
+    \\};
+    \\function __home_vm_skip_quoted(source, index, quote) {
+    \\  index++;
+    \\  while (index < source.length) {
+    \\    const char = source.charAt(index);
+    \\    if (char === "\\") index += 2;
+    \\    else if (char === quote) return index + 1;
+    \\    else index++;
+    \\  }
+    \\  return source.length;
+    \\}
+    \\function __home_vm_skip_trivia(source, index) {
+    \\  while (index < source.length) {
+    \\    const char = source.charAt(index);
+    \\    if (/\s/.test(char)) { index++; continue; }
+    \\    if (char === "/" && source.charAt(index + 1) === "/") {
+    \\      index += 2;
+    \\      while (index < source.length && source.charAt(index) !== "\n") index++;
+    \\      continue;
+    \\    }
+    \\    if (char === "/" && source.charAt(index + 1) === "*") {
+    \\      index += 2;
+    \\      while (index + 1 < source.length && !(source.charAt(index) === "*" && source.charAt(index + 1) === "/")) index++;
+    \\      index = Math.min(source.length, index + 2);
+    \\      continue;
+    \\    }
+    \\    break;
+    \\  }
+    \\  return index;
+    \\}
+    \\function __home_vm_matching_paren(source, start) {
+    \\  let depth = 0;
+    \\  for (let index = start; index < source.length; index++) {
+    \\    const char = source.charAt(index);
+    \\    if (char === '"' || char === "'" || char === "`") {
+    \\      index = __home_vm_skip_quoted(source, index, char) - 1;
+    \\      continue;
+    \\    }
+    \\    if (char === "/" && (source.charAt(index + 1) === "/" || source.charAt(index + 1) === "*")) {
+    \\      index = __home_vm_skip_trivia(source, index) - 1;
+    \\      continue;
+    \\    }
+    \\    if (char === "(") depth++;
+    \\    else if (char === ")" && --depth === 0) return index;
+    \\  }
+    \\  return -1;
+    \\}
+    \\function __home_vm_instrument_timeout(source) {
+    \\  const insertions = [];
+    \\  const isIdentifier = char => !!char && /[A-Za-z0-9_$]/.test(char);
+    \\  for (let index = 0; index < source.length;) {
+    \\    const char = source.charAt(index);
+    \\    if (char === '"' || char === "'" || char === "`") {
+    \\      index = __home_vm_skip_quoted(source, index, char);
+    \\      continue;
+    \\    }
+    \\    if (char === "/" && (source.charAt(index + 1) === "/" || source.charAt(index + 1) === "*")) {
+    \\      index = __home_vm_skip_trivia(source, index);
+    \\      continue;
+    \\    }
+    \\    let keyword = null;
+    \\    if (source.startsWith("while", index)) keyword = "while";
+    \\    else if (source.startsWith("for", index)) keyword = "for";
+    \\    else if (source.startsWith("do", index)) keyword = "do";
+    \\    if (!keyword || isIdentifier(source.charAt(index - 1)) || isIdentifier(source.charAt(index + keyword.length))) {
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    let body = __home_vm_skip_trivia(source, index + keyword.length);
+    \\    if (keyword === "for" && source.startsWith("await", body) && !isIdentifier(source.charAt(body + 5))) {
+    \\      body = __home_vm_skip_trivia(source, body + 5);
+    \\    }
+    \\    if (keyword !== "do") {
+    \\      if (source.charAt(body) !== "(") { index += keyword.length; continue; }
+    \\      const close = __home_vm_matching_paren(source, body);
+    \\      if (close < 0) return source;
+    \\      body = __home_vm_skip_trivia(source, close + 1);
+    \\    }
+    \\    if (source.charAt(body) === "{") insertions.push(body + 1);
+    \\    index = Math.max(index + keyword.length, body + 1);
+    \\  }
+    \\  if (insertions.length === 0) return source;
+    \\  let output = "";
+    \\  let previous = 0;
+    \\  for (const insertion of insertions) {
+    \\    output += source.slice(previous, insertion) + "globalThis.__home_vm_timeout_check();";
+    \\    previous = insertion;
+    \\  }
+    \\  return output + source.slice(previous);
+    \\}
+    \\function __home_vm_with_timeout(callback, options) {
+    \\  if (!options || options.timeout === undefined) return callback();
+    \\  const timeout = Number(options.timeout);
+    \\  if (!Number.isFinite(timeout) || timeout <= 0 || Math.floor(timeout) !== timeout) {
+    \\    const error = new RangeError('The value of "options.timeout" is out of range. It must be a positive integer. Received ' + String(options.timeout));
+    \\    error.code = "ERR_OUT_OF_RANGE";
+    \\    throw error;
+    \\  }
+    \\  const frame = { timeout, deadline: globalThis.Date.now() + timeout };
+    \\  __home_vm_timeout_stack.push(frame);
+    \\  try {
+    \\    return callback();
+    \\  } finally {
+    \\    const index = __home_vm_timeout_stack.lastIndexOf(frame);
+    \\    if (index >= 0) __home_vm_timeout_stack.splice(index, 1);
+    \\  }
+    \\}
+    \\function __home_vm_run_in_context(code, context, options) {
     \\  const sandbox = context && typeof context === "object" ? context : {};
     \\  if (!Object.prototype.hasOwnProperty.call(sandbox, "Object")) {
     \\    Object.defineProperty(sandbox, "Object", { configurable: true, writable: true, value: __home_vm_context_object() });
@@ -43849,7 +43969,11 @@ const harness_prelude =
     \\    }
     \\    source = source.slice(declaration[0].length);
     \\  }
-    \\  return Function("sandbox", "code", "with (sandbox) { return eval(code); }").call(sandbox, sandbox, source);
+    \\  const executableSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
+    \\  return __home_vm_with_timeout(
+    \\    () => Function("sandbox", "code", "with (sandbox) { return eval(code); }").call(sandbox, sandbox, executableSource),
+    \\    options,
+    \\  );
     \\}
     \\const __home_vm_module = {
     \\  compileFunction(code, params, options) {
@@ -43864,29 +43988,34 @@ const harness_prelude =
     \\  createContext(sandbox) {
     \\    return sandbox && typeof sandbox === "object" ? sandbox : {};
     \\  },
-    \\  runInContext(code, context) {
-    \\    return __home_vm_run_in_context(code, context);
+    \\  runInContext(code, context, options) {
+    \\    return __home_vm_run_in_context(code, context, options);
     \\  },
-    \\  runInNewContext(code, sandbox) {
+    \\  runInNewContext(code, sandbox, options) {
     \\    const context = sandbox || {};
-    \\    return __home_vm_run_in_context(code, context);
+    \\    return __home_vm_run_in_context(code, context, options);
     \\  },
-    \\  runInThisContext(code) {
-    \\    return Function("code", "return eval(code);")(String(code || ""));
+    \\  runInThisContext(code, options) {
+    \\    const source = String(code || "");
+    \\    const executableSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
+    \\    return __home_vm_with_timeout(
+    \\      () => Function("code", "return eval(code);")(executableSource),
+    \\      options,
+    \\    );
     \\  },
     \\};
     \\function __home_vm_Script(code, options) {
     \\  this.code = String(code || "");
     \\  this.options = options || {};
     \\}
-    \\__home_vm_Script.prototype.runInContext = function(context) {
-    \\  return __home_vm_module.runInContext(this.code, context);
+    \\__home_vm_Script.prototype.runInContext = function(context, options) {
+    \\  return __home_vm_module.runInContext(this.code, context, options);
     \\};
-    \\__home_vm_Script.prototype.runInNewContext = function(sandbox) {
-    \\  return __home_vm_module.runInNewContext(this.code, sandbox);
+    \\__home_vm_Script.prototype.runInNewContext = function(sandbox, options) {
+    \\  return __home_vm_module.runInNewContext(this.code, sandbox, options);
     \\};
-    \\__home_vm_Script.prototype.runInThisContext = function() {
-    \\  return __home_vm_module.runInThisContext(this.code);
+    \\__home_vm_Script.prototype.runInThisContext = function(options) {
+    \\  return __home_vm_module.runInThisContext(this.code, options);
     \\};
     \\__home_vm_module.Script = __home_vm_Script;
     \\__home_vm_module.default = __home_vm_module;
@@ -45726,11 +45855,99 @@ const harness_prelude =
     \\};
     \\__home_stream_readable.from = function(chunks) {
     \\  const stream = __home_http_event_target();
-    \\  stream.__home_chunks = Array.from(chunks || []);
+    \\  const input = chunks === undefined || chunks === null ? [] : chunks;
+    \\  const iterator = typeof input[Symbol.asyncIterator] === "function"
+    \\    ? input[Symbol.asyncIterator]()
+    \\    : typeof input[Symbol.iterator] === "function"
+    \\      ? input[Symbol.iterator]()
+    \\      : null;
+    \\  if (!iterator || typeof iterator.next !== "function") throw new TypeError("The iterable argument must be an iterable");
+    \\  stream.__home_iterator = iterator;
+    \\  stream.__home_iterator_closed = false;
+    \\  stream.__home_iterator_done = false;
+    \\  stream.__home_destroyed = false;
+    \\  stream.__home_pumping = false;
+    \\  stream.__home_end_emitted = false;
+    \\  stream.__home_close_iterator = async function(value) {
+    \\    if (this.__home_iterator_closed || this.__home_iterator_done) return { done: true, value };
+    \\    this.__home_iterator_closed = true;
+    \\    if (typeof iterator.return !== "function") return { done: true, value };
+    \\    const closed = await iterator.return(value);
+    \\    if (closed && Object.prototype.hasOwnProperty.call(closed, "value")) await closed.value;
+    \\    return { done: true, value };
+    \\  };
+    \\  const asyncIterator = {
+    \\    async next() {
+    \\      if (stream.__home_destroyed || stream.__home_iterator_done) return { done: true, value: undefined };
+    \\      let step;
+    \\      try {
+    \\        step = await iterator.next();
+    \\      } catch (error) {
+    \\        stream.__home_iterator_done = true;
+    \\        throw error;
+    \\      }
+    \\      if (!step || step.done) {
+    \\        stream.__home_iterator_done = true;
+    \\        if (!stream.__home_end_emitted) {
+    \\          stream.__home_end_emitted = true;
+    \\          stream.emit("end");
+    \\        }
+    \\        return { done: true, value: step && step.value };
+    \\      }
+    \\      try {
+    \\        const value = await step.value;
+    \\        if (stream.__home_destroyed) return { done: true, value: undefined };
+    \\        return { done: false, value };
+    \\      } catch (error) {
+    \\        await stream.__home_close_iterator();
+    \\        throw error;
+    \\      }
+    \\    },
+    \\    async return(value) {
+    \\      return stream.__home_close_iterator(value);
+    \\    },
+    \\    [Symbol.asyncIterator]() { return this; },
+    \\  };
+    \\  stream[Symbol.asyncIterator] = function() { return asyncIterator; };
+    \\  stream.__home_start_pump = function() {
+    \\    if (this.__home_pumping) return;
+    \\    this.__home_pumping = true;
+    \\    Promise.resolve().then(async () => {
+    \\      try {
+    \\        while (!this.__home_destroyed) {
+    \\          const step = await asyncIterator.next();
+    \\          if (step.done) break;
+    \\          this.emit("data", step.value);
+    \\          if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") {
+    \\            this.__home_pipe_destination.write(step.value);
+    \\          }
+    \\        }
+    \\        if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
+    \\      } catch (error) {
+    \\        this.emit("error", error);
+    \\      }
+    \\    });
+    \\  };
+    \\  const on = stream.on;
+    \\  stream.on = function(name, callback) {
+    \\    on.call(this, name, callback);
+    \\    if (String(name) === "data") this.__home_start_pump();
+    \\    return this;
+    \\  };
+    \\  stream.resume = function() { this.__home_start_pump(); return this; };
+    \\  stream.destroy = function(error) {
+    \\    if (this.__home_destroyed) return this;
+    \\    this.__home_destroyed = true;
+    \\    Promise.resolve(this.__home_close_iterator()).then(
+    \\      () => this.emit("close"),
+    \\      closeError => this.emit("error", closeError),
+    \\    );
+    \\    if (error) this.emit("error", error);
+    \\    return this;
+    \\  };
     \\  stream.pipe = function(destination) {
-    \\    for (const chunk of this.__home_chunks) destination.write(chunk);
-    \\    if (destination && typeof destination.end === "function") destination.end();
-    \\    this.emit("end");
+    \\    this.__home_pipe_destination = destination;
+    \\    this.__home_start_pump();
     \\    return destination;
     \\  };
     \\  return stream;
@@ -49057,6 +49274,44 @@ const harness_prelude =
     \\  }
     \\  return chunk;
     \\}
+    \\function __home_http_chunk_byte_length(chunk) {
+    \\  if (chunk === undefined || chunk === null) return 0;
+    \\  if (typeof chunk === "string") return new TextEncoder().encode(chunk).byteLength;
+    \\  if (chunk instanceof ArrayBuffer) return chunk.byteLength;
+    \\  if (ArrayBuffer.isView(chunk)) return chunk.byteLength;
+    \\  return new TextEncoder().encode(String(chunk)).byteLength;
+    \\}
+    \\function __home_http_write_outgoing(target, chunks, chunk, encoding, callback) {
+    \\  if (typeof encoding === "function") {
+    \\    callback = encoding;
+    \\    encoding = undefined;
+    \\  }
+    \\  if (chunk !== undefined) chunks.push(chunk);
+    \\  target.__home_buffered_bytes = Number(target.__home_buffered_bytes || 0) + __home_http_chunk_byte_length(chunk);
+    \\  const highWaterMark = Number(target.writableHighWaterMark || 16 * 1024);
+    \\  const needsDrain = target.__home_buffered_bytes >= highWaterMark;
+    \\  target.writableNeedDrain = needsDrain;
+    \\  Promise.resolve().then(() => {
+    \\    if (typeof callback === "function") callback(null);
+    \\    if (needsDrain) {
+    \\      target.__home_buffered_bytes = 0;
+    \\      target.writableNeedDrain = false;
+    \\      target.emit("drain");
+    \\    }
+    \\  });
+    \\  return !needsDrain;
+    \\}
+    \\function __home_http_end_arguments(chunk, encoding, callback) {
+    \\  if (typeof chunk === "function") return { chunk: undefined, encoding: undefined, callback: chunk };
+    \\  if (typeof encoding === "function") return { chunk, encoding: undefined, callback: encoding };
+    \\  return { chunk, encoding, callback };
+    \\}
+    \\function __home_http_finish_outgoing(target, callback) {
+    \\  Promise.resolve().then(() => {
+    \\    target.emit("finish");
+    \\    if (typeof callback === "function") callback(null);
+    \\  });
+    \\}
     \\function __home_http_emit_client_response(clientRequest, callback, statusCode, headers, body) {
     \\  const responseEvents = Object.assign(__home_http_event_target(), {
     \\    statusCode: Number(statusCode) || 200,
@@ -49064,6 +49319,7 @@ const harness_prelude =
     \\      out[String(key).toLowerCase()] = headers[key];
     \\      return out;
     \\    }, {}),
+    \\    resume() { this.__home_resumed = true; return this; },
     \\  });
     \\  if (typeof callback === "function") callback(responseEvents);
     \\  clientRequest.emit("response", responseEvents);
@@ -49095,11 +49351,14 @@ const harness_prelude =
     \\    __home_http_apply_headers(this, headers);
     \\    return this;
     \\  };
-    \\  response.write = function(chunk) {
-    \\    return true;
+    \\  response.__home_body_chunks = [];
+    \\  response.write = function(chunk, encoding, callback) {
+    \\    return __home_http_write_outgoing(this, this.__home_body_chunks, chunk, encoding, callback);
     \\  };
-    \\  response.end = function(chunk) {
-    \\    this.emit("finish");
+    \\  response.end = function(chunk, encoding, callback) {
+    \\    const args = __home_http_end_arguments(chunk, encoding, callback);
+    \\    if (args.chunk !== undefined) this.write(args.chunk, args.encoding);
+    \\    __home_http_finish_outgoing(this, args.callback);
     \\    return this;
     \\  };
     \\  return response;
@@ -49128,8 +49387,11 @@ const harness_prelude =
     \\              method: String(request && request.method || "GET").toUpperCase(),
     \\              headers: request && request.headers ? request.headers : new Headers(),
     \\              url: request && request.url ? new URL(request.url).pathname : "/",
+    \\              resume() { this.__home_resumed = true; return this; },
     \\            });
-    \\            const serverResponse = {
+    \\            const responseEvents = __home_http_event_target();
+    \\            const responseChunks = [];
+    \\            const serverResponse = Object.assign(responseEvents, {
     \\              statusCode: 200,
     \\              headers: {},
     \\              setHeader(name, value) {
@@ -49143,10 +49405,17 @@ const harness_prelude =
     \\                this.statusCode = Number(statusCode) || 200;
     \\                __home_http_apply_headers(this, headers);
     \\              },
-    \\              end(body) {
-    \\                resolve(new Response(body === undefined || body === null ? "" : String(body), { status: this.statusCode, headers: __home_http_response_headers(this.headers) }));
+    \\              write(chunk, encoding, callback) {
+    \\                return __home_http_write_outgoing(this, responseChunks, chunk, encoding, callback);
     \\              },
-    \\            };
+    \\              end(chunk, encoding, callback) {
+    \\                const args = __home_http_end_arguments(chunk, encoding, callback);
+    \\                if (args.chunk !== undefined) this.write(args.chunk, args.encoding);
+    \\                resolve(new Response(__home_http_body_text(responseChunks), { status: this.statusCode, headers: __home_http_response_headers(this.headers) }));
+    \\                __home_http_finish_outgoing(this, args.callback);
+    \\                return this;
+    \\              },
+    \\            });
     \\            self.__home_handler(serverRequest, serverResponse);
     \\          });
     \\        },
@@ -49224,12 +49493,13 @@ const harness_prelude =
     \\    setHeaders(headers) {
     \\      return __home_http_apply_headers(this, headers);
     \\    },
-    \\    write(chunk) {
-    \\      if (chunk !== undefined) chunks.push(chunk);
-    \\      return true;
+    \\    write(chunk, encoding, callback) {
+    \\      return __home_http_write_outgoing(this, chunks, chunk, encoding, callback);
     \\    },
-    \\    end(chunk) {
-    \\      if (chunk !== undefined) chunks.push(chunk);
+    \\    end(chunk, encoding, endCallback) {
+    \\      const endArgs = __home_http_end_arguments(chunk, encoding, endCallback);
+    \\      if (endArgs.chunk !== undefined) chunks.push(endArgs.chunk);
+    \\      const finishRequest = () => __home_http_finish_outgoing(clientRequest, endArgs.callback);
     \\      const serveHandle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
     \\      if (serveHandle && typeof serveHandle.fetch === "function") {
     \\        const requestInit = { method: String((options && options.method) || "GET").toUpperCase(), headers: new Headers(clientRequest.__home_headers) };
@@ -49243,11 +49513,13 @@ const harness_prelude =
     \\            __home_http_emit_client_response(clientRequest, callback, response.status, headers, text);
     \\          });
     \\        }, error => clientRequest.emit("error", error));
+    \\        finishRequest();
     \\        return this;
     \\      }
     \\      const server = __home_http_servers[port];
     \\      if (!server) {
     \\        Promise.resolve().then(() => clientRequest.emit("error", new Error("ECONNREFUSED")));
+    \\        finishRequest();
     \\        return this;
     \\      }
     \\      const requestHeaders = __home_http_headers_object(clientRequest.__home_headers);
@@ -49256,8 +49528,10 @@ const harness_prelude =
     \\      const serverRequest = Object.assign(__home_http_event_target(), {
     \\        method: String((options && options.method) || "GET").toUpperCase(),
     \\        headers: requestHeaders,
+    \\        resume() { this.__home_resumed = true; return this; },
     \\      });
-    \\      const serverResponse = {
+    \\      const responseChunks = [];
+    \\      const serverResponse = Object.assign(__home_http_event_target(), {
     \\        statusCode: 200,
     \\        headers: {},
     \\        setHeader(name, value) {
@@ -49271,15 +49545,23 @@ const harness_prelude =
     \\          this.statusCode = Number(statusCode) || 200;
     \\          __home_http_apply_headers(this, headers);
     \\        },
-    \\        end(body) {
-    \\          __home_http_emit_client_response(clientRequest, callback, this.statusCode, this.headers, body);
+    \\        write(chunk, encoding, callback) {
+    \\          return __home_http_write_outgoing(this, responseChunks, chunk, encoding, callback);
     \\        },
-    \\      };
+    \\        end(chunk, encoding, callback) {
+    \\          const args = __home_http_end_arguments(chunk, encoding, callback);
+    \\          if (args.chunk !== undefined) responseChunks.push(args.chunk);
+    \\          __home_http_emit_client_response(clientRequest, normalized.callback, this.statusCode, this.headers, __home_http_body_text(responseChunks));
+    \\          __home_http_finish_outgoing(this, args.callback);
+    \\          return this;
+    \\        },
+    \\      });
     \\      server.__home_handler(serverRequest, serverResponse);
     \\      Promise.resolve().then(() => {
     \\        for (const chunk of chunks) serverRequest.emit("data", __home_http_body_event_chunk(chunk));
     \\        serverRequest.emit("end");
     \\      });
+    \\      finishRequest();
     \\      return this;
     \\    },
     \\  });
@@ -60167,9 +60449,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "let concurrency = 7;\n  const count = 100;", .replacement = "let concurrency = 2;\n  const count = 4;" },
         .{ .needle = "describe.each([\n  { name: \"http/1.1\", http3: false },\n  { name: \"http/3\", http3: true },\n])", .replacement = "describe.each([\n  { name: \"http/1.1\", http3: false },\n])" },
         .{ .needle = "describe.concurrent(\"Bun.cron (in-process) — firing\",", .replacement = "describe.skip.concurrent(\"Bun.cron (in-process) — firing\"," },
-        .{ .needle = "describe(\"Bun.serve() cookies\",", .replacement = "describe.skip(\"Bun.serve() cookies\"," },
-        .{ .needle = "describe(\"Bun.serve() cookies 2\",", .replacement = "describe.skip(\"Bun.serve() cookies 2\"," },
-        .{ .needle = "describe(\"cookie path option\",", .replacement = "describe.skip(\"cookie path option\"," },
         .{ .needle = "registeredAlgorithmNames.forEach(name => {\n  run_test_success([name]);\n  run_test_failure([name]);\n});", .replacement = "test.todo(\"webcrypto generateKey WPT vectors\");" },
         .{ .needle = "import { color } from \"bun\";", .replacement = "const color = globalThis.__home_bun_color;" },
         .{ .needle = "const { color } = globalThis.__home_import(\"bun\");", .replacement = "const color = globalThis.__home_bun_color;" },
@@ -67219,6 +67498,13 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
     if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
         std.mem.endsWith(u8, relative_path, ".js")) return true;
 
+    // Node's upstream test files execute assertions directly and use the
+    // common harness's mustCall bookkeeping rather than registering bun:test
+    // cases. Reaching the end of one without an exception is a successful
+    // corpus execution, not an unsupported empty test file.
+    if (std.mem.startsWith(u8, relative_path, "js/node/test/") and
+        std.mem.endsWith(u8, relative_path, ".js")) return true;
+
     return std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts") or
@@ -67351,9 +67637,22 @@ fn fullBunCorpusGateEnabled() bool {
 }
 
 fn envFlagEnabled(name: [:0]const u8) bool {
+    if (builtin.is_test) {
+        const value = std.testing.environ.getAlloc(std.testing.allocator, name) catch return false;
+        defer std.testing.allocator.free(value);
+        const text = std.mem.trim(u8, value, " \t\r\n");
+        return text.len > 0 and !std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "false");
+    }
     const value = std.c.getenv(name) orelse return false;
-    const text = std.mem.span(value);
+    const text = std.mem.trim(u8, std.mem.span(value), " \t\r\n");
     return text.len > 0 and !std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "false");
+}
+
+fn envVariablePresent(name: [:0]const u8) bool {
+    if (builtin.is_test) {
+        return std.testing.environ.contains(std.testing.allocator, name) catch false;
+    }
+    return std.c.getenv(name) != null;
 }
 
 fn bunCorpusRange(total: usize) struct { start: usize, end: usize } {
@@ -67365,6 +67664,13 @@ fn bunCorpusRange(total: usize) struct { start: usize, end: usize } {
 }
 
 fn bunCorpusEnvUsize(name: [:0]const u8) ?usize {
+    if (builtin.is_test) {
+        const value = std.testing.environ.getAlloc(std.testing.allocator, name) catch return null;
+        defer std.testing.allocator.free(value);
+        const text = std.mem.trim(u8, value, " \t\r\n");
+        if (text.len == 0) return null;
+        return std.fmt.parseUnsigned(usize, text, 10) catch null;
+    }
     const value = std.c.getenv(name) orelse return null;
     const text = std.mem.trim(u8, std.mem.span(value), " \t\r\n");
     if (text.len == 0) return null;
@@ -67714,8 +68020,7 @@ test "bootstrap runner accounts for the full copied Bun corpus" {
     var summary = try runGate(io, std.testing.allocator, corpus.default_root);
     defer summary.deinit(std.testing.allocator);
 
-    const has_range = std.c.getenv("HOME_BUN_CORPUS_START") != null or
-        std.c.getenv("HOME_BUN_CORPUS_LIMIT") != null;
+    const has_range = envVariablePresent("HOME_BUN_CORPUS_START") or envVariablePresent("HOME_BUN_CORPUS_LIMIT");
     if (!has_range) {
         try std.testing.expectEqual(@as(usize, corpus.expected_copied_bun_test_files), summary.files);
     }
@@ -82461,6 +82766,87 @@ test "bootstrap runner mirrors Bun Cookie and CookieMap JSON corpus" {
     try std.testing.expectEqual(@as(usize, 25), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner mirrors Bun.serve cookie integration corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/cookie/cookie.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/js/bun/cookie/cookie.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"Bun.serve() cookies\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"Bun.serve() cookies 2\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"cookie path option\"") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed or file_run.result.passed != 32 or file_run.result.todo != 0) {
+        std.debug.print(
+            "Bun.serve cookie corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ file_run.result.passed, file_run.result.failed, file_run.result.todo, file_run.result.unsupported, file_run.result.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 32), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner completes Bun deadlock regression corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const paths = [_][]const u8{
+        "js/node/test/parallel/test-http-outgoing-finish.js",
+        "js/node/test/parallel/test-readable-from-iterator-closing.js",
+        "js/node/test/parallel/test-vm-timeout.js",
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    for (paths) |path| {
+        const absolute_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+        defer std.testing.allocator.free(absolute_path);
+        const source = try Io.Dir.cwd().readFileAlloc(
+            io,
+            absolute_path,
+            std.testing.allocator,
+            std.Io.Limit.limited(1024 * 1024),
+        );
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+        defer prepared.deinit(std.testing.allocator);
+        try std.testing.expect(prepared.unsupported_reason == null);
+        prepared.allow_no_tests = true;
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+        if (file_run.result.status() != .passed) {
+            std.debug.print(
+                "Bun deadlock regression mismatch for {s}: failed={} unsupported={} message={s}\n",
+                .{ path, file_run.result.failed, file_run.result.unsupported, file_run.result.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    }
 }
 
 test "bootstrap Bun.connect sees websocket upgrade response cookies" {
