@@ -37691,6 +37691,14 @@ const harness_prelude =
     \\          test_create_utf16: nullStringResult,
     \\        },
     \\      };
+    \\    } else if (targetName === "test_symbol") {
+    \\      addon = {
+    \\        New(description) {
+    \\          if (arguments.length === 0) return Symbol();
+    \\          if (typeof description !== "string") throw new Error("Wrong type of arguments. Expects a string.");
+    \\          return Symbol(description);
+    \\        },
+    \\      };
     \\    } else {
     \\      throw new Error("Node N-API addon contract is not implemented: " + targetName);
     \\    }
