@@ -2779,6 +2779,11 @@ const DependentBinding = struct {
     selector: DependentBindingSelector,
 };
 
+const SymbolicTupleSegment = struct {
+    type: TypeId,
+    is_variadic: bool,
+};
+
 const EnumIdentityInfo = struct {
     name: hir_mod.StringId,
     decl: ?NodeId = null,
@@ -4358,6 +4363,10 @@ pub const Checker = struct {
     /// Kept separate from an array rest element (`...T[]`) so mapped tuple
     /// inference can preserve and reverse-map the whole trailing slice.
     tuple_trailing_variadic_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// Ordered tuple syntax retained for symbolic spreads that are not
+    /// necessarily trailing (`[...A, number]`, `[...A, ...A]`). The
+    /// structural tuple object cannot otherwise distinguish these layouts.
+    symbolic_tuple_layouts: std.AutoHashMapUnmanaged(TypeId, []const SymbolicTupleSegment) = .empty,
     /// Type parameters introduced by `infer T` binders. They may share an
     /// interned TypeId across recursive conditional instantiations, so tuple
     /// pattern metadata must keep the binder symbolic while true-branch uses
@@ -4852,6 +4861,9 @@ pub const Checker = struct {
         self.array_origin_types.deinit(self.gpa);
         self.tuple_trailing_rest_types.deinit(self.gpa);
         self.tuple_trailing_variadic_types.deinit(self.gpa);
+        var symbolic_layout_it = self.symbolic_tuple_layouts.valueIterator();
+        while (symbolic_layout_it.next()) |layout| self.gpa.free(layout.*);
+        self.symbolic_tuple_layouts.deinit(self.gpa);
         self.infer_type_parameters.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.merged_class_instance_types.deinit(self.gpa);
@@ -29134,22 +29146,28 @@ pub const Checker = struct {
                 stmt;
             if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
             const ta = hir_mod.typeAliasOf(self.hir, decl);
-            for (self.hir.childSlice(ta.type_params_start, ta.type_params_len)) |tp_node| {
-                if (self.hir.kindOf(tp_node) != .type_parameter) continue;
-                const variance = hir_mod.typeParameterOf(self.hir, tp_node).variance;
-                if (variance == 1 or variance == 2) {
-                    has_deferred_work = true;
-                    break;
-                }
-            }
+            has_deferred_work = ta.type_params_len != 0;
             if (has_deferred_work) break;
         }
         if (!has_deferred_work) return;
 
+        try self.refreshDeferredVarianceGraph(stmts);
+
+        for (stmts) |stmt| {
+            const decl = if (self.hir.kindOf(stmt) == .export_decl)
+                hir_mod.exportOf(self.hir, stmt).decl
+            else
+                stmt;
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
+            try self.recheckDeferredVarianceAlias(decl);
+        }
+    }
+
+    fn refreshDeferredVarianceGraph(self: *Checker, stmts: []const NodeId) CheckError!void {
         // Forward aliases are initially lowered against placeholders. Refresh
         // the small declaration graph to a fixed point before measuring an
-        // annotated alias, so a cycle such as Foo -> Fn -> Bar -> Foo carries
-        // the root parameter back through the opposite polarity.
+        // alias, so a cycle such as Foo -> Fn -> Bar -> Foo carries the root
+        // parameter back through the opposite polarity.
         const refresh_passes = @min(stmts.len, @as(usize, 4));
         for (0..refresh_passes) |_| {
             for (stmts) |stmt| {
@@ -29160,15 +29178,33 @@ pub const Checker = struct {
                 if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
                 try self.refreshGenericAliasBodyForVariance(decl);
             }
+            for (stmts) |stmt| {
+                const decl = if (self.hir.kindOf(stmt) == .export_decl)
+                    hir_mod.exportOf(self.hir, stmt).decl
+                else
+                    stmt;
+                if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
+                try self.refreshDeferredInferredVariance(decl);
+            }
         }
+    }
 
-        for (stmts) |stmt| {
-            const decl = if (self.hir.kindOf(stmt) == .export_decl)
-                hir_mod.exportOf(self.hir, stmt).decl
-            else
-                stmt;
-            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
-            try self.recheckDeferredVarianceAlias(decl);
+    fn refreshDeferredInferredVariance(self: *Checker, node: NodeId) CheckError!void {
+        const ta = hir_mod.typeAliasOf(self.hir, node);
+        if (ta.name == hir_mod.none_node_id or self.hir.kindOf(ta.name) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, ta.name);
+        const info = self.generic_aliases.get(id.name) orelse return;
+        const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        var param_index: usize = 0;
+        for (type_params) |tp_node| {
+            if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+            if (param_index >= info.params.len) return;
+            const param_t = info.params[param_index];
+            param_index += 1;
+            if (hir_mod.typeParameterOf(self.hir, tp_node).variance != 0) continue;
+            if (self.typeParameterVariance(param_t) != .bivariant) continue;
+            const refreshed = self.inferVariance(info.body, param_t);
+            if (refreshed != .bivariant) try self.inferred_variance.put(self.gpa, param_t, refreshed);
         }
     }
 
@@ -68219,6 +68255,9 @@ pub const Checker = struct {
         defer fixed_optional.deinit(self.gpa);
         var rest_elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer rest_elem_types.deinit(self.gpa);
+        var symbolic_layout: std.ArrayListUnmanaged(SymbolicTupleSegment) = .empty;
+        defer symbolic_layout.deinit(self.gpa);
+        var has_symbolic_variadic = false;
         var saw_unknown_rest = false;
         var trailing_rest_element_t = types.Primitive.none;
         var trailing_variadic_t = types.Primitive.none;
@@ -68261,6 +68300,7 @@ pub const Checker = struct {
                             }
                             try fixed_types.append(self.gpa, t);
                             try fixed_optional.append(self.gpa, inner_optional);
+                            try symbolic_layout.append(self.gpa, .{ .type = t, .is_variadic = false });
                         }
                         continue;
                     }
@@ -68289,11 +68329,17 @@ pub const Checker = struct {
                     defer self.circ_ctx_floor = rest_array_floor;
                     const elt = try self.lowererLowerWithTypeParams(at.element);
                     try rest_elem_types.append(self.gpa, elt);
+                    try symbolic_layout.append(self.gpa, .{ .type = rest_operand_t, .is_variadic = true });
+                    has_symbolic_variadic = true;
                     if (elem_index + 1 == elems.len) trailing_rest_element_t = elt;
                     saw_unknown_rest = true;
                     continue;
                 }
+                const fixed_before = fixed_types.items.len;
                 if (try self.expandFixedTupleConstraintRest(rest_operand_t, &fixed_types, &fixed_optional)) {
+                    for (fixed_types.items[fixed_before..]) |fixed_t| {
+                        try symbolic_layout.append(self.gpa, .{ .type = fixed_t, .is_variadic = false });
+                    }
                     continue;
                 }
                 if (elem_index + 1 == elems.len and
@@ -68304,6 +68350,8 @@ pub const Checker = struct {
                     trailing_variadic_t = rest_operand_t;
                 }
                 try rest_elem_types.append(self.gpa, rest_operand_t);
+                try symbolic_layout.append(self.gpa, .{ .type = rest_operand_t, .is_variadic = true });
+                has_symbolic_variadic = true;
                 saw_unknown_rest = true;
                 continue;
             }
@@ -68320,6 +68368,7 @@ pub const Checker = struct {
             }
             try fixed_types.append(self.gpa, t);
             try fixed_optional.append(self.gpa, is_optional);
+            try symbolic_layout.append(self.gpa, .{ .type = t, .is_variadic = false });
         }
 
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -68399,6 +68448,9 @@ pub const Checker = struct {
         }
         if (trailing_variadic_t != types.Primitive.none) {
             try self.tuple_trailing_variadic_types.put(self.gpa, tuple_t, trailing_variadic_t);
+        }
+        if (has_symbolic_variadic) {
+            try self.symbolic_tuple_layouts.put(self.gpa, tuple_t, try symbolic_layout.toOwnedSlice(self.gpa));
         }
         if (readonly and elem_union != types.Primitive.none) try self.readonly_index_types.put(self.gpa, tuple_t, {});
         return tuple_t;
@@ -73983,6 +74035,60 @@ pub const Checker = struct {
         return slice;
     }
 
+    fn symbolicTupleLayoutMismatchChain(
+        self: *Checker,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError![]const DiagnosticChainEntry {
+        const source_layout = self.symbolic_tuple_layouts.get(source) orelse return &.{};
+        const target_layout = self.symbolic_tuple_layouts.get(target) orelse return &.{};
+        const shared = @min(source_layout.len, target_layout.len);
+        const arena = self.diag_arena.allocator();
+        for (source_layout[0..shared], target_layout[0..shared], 0..) |source_segment, target_segment, position| {
+            if (source_segment.is_variadic and !target_segment.is_variadic) {
+                const message = try std.fmt.allocPrint(
+                    arena,
+                    "Variadic element at position {d} in source does not match element at position {d} in target.",
+                    .{ position, position },
+                );
+                const chain = try arena.alloc(DiagnosticChainEntry, 1);
+                chain[0] = .{ .code = TsCodes.source_variadic_element_mismatch, .message = message };
+                return chain;
+            }
+            if (!source_segment.is_variadic and target_segment.is_variadic) {
+                const message = try std.fmt.allocPrint(
+                    arena,
+                    "Source provides no match for variadic element at position {d} in target.",
+                    .{position},
+                );
+                const chain = try arena.alloc(DiagnosticChainEntry, 1);
+                chain[0] = .{ .code = TsCodes.source_no_match_variadic_element, .message = message };
+                return chain;
+            }
+        }
+        if (source_layout.len > target_layout.len) {
+            const message = try std.fmt.allocPrint(
+                arena,
+                "Target allows only {d} element(s) but source may have more.",
+                .{target_layout.len},
+            );
+            const chain = try arena.alloc(DiagnosticChainEntry, 1);
+            chain[0] = .{ .code = TsCodes.target_allows_source_may_have_more, .message = message };
+            return chain;
+        }
+        if (target_layout.len > source_layout.len and target_layout[source_layout.len].is_variadic) {
+            const message = try std.fmt.allocPrint(
+                arena,
+                "Source provides no match for variadic element at position {d} in target.",
+                .{source_layout.len},
+            );
+            const chain = try arena.alloc(DiagnosticChainEntry, 1);
+            chain[0] = .{ .code = TsCodes.source_no_match_variadic_element, .message = message };
+            return chain;
+        }
+        return &.{};
+    }
+
     fn tuplePositionElaborationChain(
         self: *Checker,
         source: TypeId,
@@ -77109,6 +77215,9 @@ pub const Checker = struct {
     fn checkerAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (self.noInferInnerType(source_t)) |inner| return self.checkerAssignableTo(inner, target_t);
         if (self.noInferInnerType(target_t)) |inner| return self.checkerAssignableTo(source_t, inner);
+        if (try self.symbolicTupleLayoutsAssignable(source_t, target_t)) |ok| {
+            if (!ok) return false;
+        }
         if (self.sameNonGenericClassInstanceDeclaration(source_t, target_t)) return true;
         const normalized_source_t = try self.normalizeKeyofAlgebra(source_t);
         if (normalized_source_t != source_t) return self.checkerAssignableTo(normalized_source_t, target_t);
@@ -77204,6 +77313,7 @@ pub const Checker = struct {
         if (try self.recursiveHomomorphicAliasIndexerAssignable(source_t, target_t)) return true;
         if (try self.sameGenericInstantiationAssignableByVariance(source_t, target_t)) |ok| return ok;
         if (try self.optionalAliasUnionsEquivalent(source_t, target_t)) return true;
+        if (try self.symbolicTupleLayoutsAssignable(source_t, target_t)) |ok| return ok;
         if (try self.variadicTupleTypeParameterAssignableTo(source_t, target_t)) |ok| return ok;
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
@@ -90706,6 +90816,10 @@ pub const Checker = struct {
                             false
                         else if (try self.recursiveTupleAliasAssignmentResult(a.value, a.target)) |recursive_tuple_ok|
                             recursive_tuple_ok
+                        else if (try self.symbolicTupleIdentifierAssignmentResult(a.value, a.target)) |symbolic_tuple_ok|
+                            symbolic_tuple_ok
+                        else if (try self.annotatedGenericAliasVarianceAssignmentResult(a.value, a.target)) |variance_ok|
+                            variance_ok
                         else if (try self.recursiveGenericReturnAliasAssignmentResult(a.value, a.target)) |recursive_return_ok|
                             recursive_return_ok
                         else if (try self.tupleSpreadIdentifierAssignmentResult(a.value, a.target)) |tuple_spread_ok|
@@ -119435,6 +119549,84 @@ pub const Checker = struct {
         return try self.variadicTupleTypeParameterAssignableTo(source_t, target_t);
     }
 
+    fn symbolicTupleIdentifierAssignmentResult(self: *Checker, source_node: NodeId, target_node: NodeId) CheckError!?bool {
+        if (source_node == hir_mod.none_node_id or target_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(source_node) != .identifier or self.hir.kindOf(target_node) != .identifier) return null;
+        const source_type_node = self.visibleAnnotatedIdentifierTypeNode(source_node) orelse return null;
+        const target_type_node = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return null;
+        const source_t = try self.lowererLowerWithTypeParams(source_type_node);
+        const target_t = try self.lowererLowerWithTypeParams(target_type_node);
+        return try self.symbolicTupleLayoutsAssignable(source_t, target_t);
+    }
+
+    fn symbolicTupleIdentifierMismatchChain(
+        self: *Checker,
+        source_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!?[]const DiagnosticChainEntry {
+        if (source_node == hir_mod.none_node_id or target_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(source_node) != .identifier or self.hir.kindOf(target_node) != .identifier) return null;
+        const source_type_node = self.visibleAnnotatedIdentifierTypeNode(source_node) orelse return null;
+        const target_type_node = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return null;
+        const source_t = try self.lowererLowerWithTypeParams(source_type_node);
+        const target_t = try self.lowererLowerWithTypeParams(target_type_node);
+        const chain = try self.symbolicTupleLayoutMismatchChain(source_t, target_t);
+        return if (chain.len == 0) null else chain;
+    }
+
+    fn annotatedGenericAliasVarianceAssignmentResult(
+        self: *Checker,
+        source_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!?bool {
+        if (source_node == hir_mod.none_node_id or target_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(source_node) != .identifier or self.hir.kindOf(target_node) != .identifier) return null;
+        const source_type_node = self.visibleAnnotatedIdentifierTypeNode(source_node) orelse return null;
+        const target_type_node = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return null;
+        if (self.hir.kindOf(source_type_node) != .type_ref or self.hir.kindOf(target_type_node) != .type_ref) return null;
+        const source_ref = hir_mod.typeRefOf(self.hir, source_type_node);
+        const target_ref = hir_mod.typeRefOf(self.hir, target_type_node);
+        if (source_ref.qualifier_len != 0 or target_ref.qualifier_len != 0 or
+            source_ref.name != target_ref.name or source_ref.args_len != target_ref.args_len)
+        {
+            return null;
+        }
+        var info = self.generic_aliases.get(source_ref.name) orelse return null;
+        const source_args = hir_mod.typeRefArgs(self.hir, source_type_node);
+        const target_args = hir_mod.typeRefArgs(self.hir, target_type_node);
+        if (source_args.len != info.params.len or target_args.len != info.params.len) return null;
+
+        var needs_refresh = false;
+        for (info.params) |param_t| {
+            if (self.typeParameterVariance(param_t) == .bivariant) {
+                needs_refresh = true;
+                break;
+            }
+        }
+        if (needs_refresh) {
+            const root = self.rootBlockFor(source_node);
+            if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+                try self.refreshDeferredVarianceGraph(hir_mod.blockStmts(self.hir, root));
+                info = self.generic_aliases.get(source_ref.name) orelse return null;
+            }
+        }
+
+        for (info.params, source_args, target_args) |param_t, source_arg_node, target_arg_node| {
+            const source_arg = try self.lowererLowerWithTypeParams(source_arg_node);
+            const target_arg = try self.lowererLowerWithTypeParams(target_arg_node);
+            switch (self.typeParameterVariance(param_t)) {
+                .covariant => if (!try self.typeArgumentAssignableTo(source_arg, target_arg)) return false,
+                .contravariant => if (!try self.typeArgumentAssignableTo(target_arg, source_arg)) return false,
+                .invariant => {
+                    if (!try self.typeArgumentAssignableTo(source_arg, target_arg)) return false;
+                    if (!try self.typeArgumentAssignableTo(target_arg, source_arg)) return false;
+                },
+                .bivariant => {},
+            }
+        }
+        return true;
+    }
+
     const RecursiveGenericReturnAlias = struct {
         body: NodeId,
         name: hir_mod.StringId,
@@ -119683,6 +119875,22 @@ pub const Checker = struct {
 
         const source_rest = (try self.variadicTupleRestTypeParameter(source)) orelse return null;
         return try self.variadicTupleRestAssignableToRest(source, source_rest, target, target_rest);
+    }
+
+    fn symbolicTupleLayoutsAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!?bool {
+        const source_layout = self.symbolic_tuple_layouts.get(source) orelse return null;
+        const target_layout = self.symbolic_tuple_layouts.get(target) orelse return null;
+        if (source_layout.len != target_layout.len) return false;
+        for (source_layout, target_layout) |source_segment, target_segment| {
+            if (source_segment.is_variadic != target_segment.is_variadic) return false;
+            if (source_segment.type == target_segment.type) continue;
+            if (source_segment.is_variadic) {
+                if (!self.typeParameterConstraintReaches(source_segment.type, target_segment.type)) return false;
+            } else if (!try self.checkerAssignableTo(source_segment.type, target_segment.type)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     fn variadicTupleRestTypeParameter(self: *Checker, tuple_t: TypeId) CheckError!?TypeId {
@@ -131578,6 +131786,19 @@ pub const Checker = struct {
                 else
                     try self.substituteType(variadic_t, subs);
                 try self.tuple_trailing_variadic_types.put(self.gpa, new_obj, new_variadic_t);
+            }
+            if (new_obj != t and !self.symbolic_tuple_layouts.contains(new_obj)) {
+                if (self.symbolic_tuple_layouts.get(t)) |layout| {
+                    const next_layout = try self.gpa.alloc(SymbolicTupleSegment, layout.len);
+                    errdefer self.gpa.free(next_layout);
+                    for (layout, next_layout) |segment, *next| {
+                        next.* = .{
+                            .type = try self.substituteType(segment.type, subs),
+                            .is_variadic = segment.is_variadic,
+                        };
+                    }
+                    try self.symbolic_tuple_layouts.put(self.gpa, new_obj, next_layout);
+                }
             }
             if (self.builtin_object_names.get(t)) |builtin_name| {
                 try self.builtin_object_names.put(self.gpa, new_obj, builtin_name);
@@ -148757,6 +148978,8 @@ pub const Checker = struct {
             return chain;
         }
         if (self.isTupleShapedTarget(source) and self.isTupleShapedTarget(target)) {
+            const symbolic_tuple_chain = try self.symbolicTupleLayoutMismatchChain(source, target);
+            if (symbolic_tuple_chain.len != 0) return symbolic_tuple_chain;
             const tuple_variadic_source_chain = try self.tupleSourceVariadicMismatchChain(source, target);
             if (tuple_variadic_source_chain.len != 0) return tuple_variadic_source_chain;
             const tuple_chain = try self.tupleWidthElaborationChain(source, target);
@@ -149434,6 +149657,12 @@ pub const Checker = struct {
         }
         if (target >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(target).is_object_type) return false;
+        if ((self.symbolic_tuple_layouts.contains(source) and
+            self.symbolic_tuple_layouts.contains(target)) or
+            (self.isActualTupleType(source) and self.isActualTupleType(target)))
+        {
+            return false;
+        }
         if (source == types.Primitive.any or source == types.Primitive.unknown or
             source == types.Primitive.none)
         {
@@ -151030,7 +151259,8 @@ pub const Checker = struct {
             source,
             target,
             null,
-        )) orelse (self.buildAssignmentAssignabilityElaborationChain(source, target) catch &.{});
+        )) orelse (try self.symbolicTupleIdentifierMismatchChain(value_node, target_node)) orelse
+            (self.buildAssignmentAssignabilityElaborationChain(source, target) catch &.{});
         const related = try self.sourceTypeParameterConstraintHintRelated(source, target);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
@@ -224463,6 +224693,57 @@ test "checker: exhaustive nested tuple switch removes fallthrough variant" {
     });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: symbolic variadic tuple layouts remain ordered in relations" {
+    const s = try newSetup(
+        \\function f1<A extends unknown[]>(x: [...A, number], y: [...A, number, number, number, number]) {
+        \\  x = y;
+        \\}
+        \\function f2<A extends unknown[]>(x: [number, ...A], y: [...A, number, number, number, number]) {
+        \\  x = y;
+        \\}
+        \\function f3<A extends unknown[]>(x: [...A, ...A], y: [...A, number, number, number, number]) {
+        \\  x = y;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.target_allows_source_may_have_more));
+    try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.source_variadic_element_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.source_no_match_variadic_element));
+}
+
+test "checker: circular alias variance refresh is declaration-order independent" {
+    const source_prefix =
+        \\type Bar<U> = (x: Baz<U[]>) => void;
+        \\type Baz<V> = { value: Foo<V[]> };
+        \\type Foo<T> = { x: T; f: Bar<T> };
+    ;
+    const first = try newSetup(source_prefix ++
+        \\declare let foo1: Foo<unknown>, foo2: Foo<string>;
+        \\foo1 = foo2;
+        \\foo2 = foo1;
+        \\declare let bar1: Bar<unknown>, bar2: Bar<string>;
+        \\bar1 = bar2;
+        \\bar2 = bar1;
+    );
+    defer destroySetup(first);
+    try first.checker.checkSourceFile(first.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(first, TsCodes.type_not_assignable));
+
+    const second = try newSetup(source_prefix ++
+        \\declare let bar1: Bar<unknown>, bar2: Bar<string>;
+        \\bar1 = bar2;
+        \\bar2 = bar1;
+        \\declare let foo1: Foo<unknown>, foo2: Foo<string>;
+        \\foo1 = foo2;
+        \\foo2 = foo1;
+    );
+    defer destroySetup(second);
+    try second.checker.checkSourceFile(second.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(second, TsCodes.type_not_assignable));
 }
 
 test "checker: forward class static private access reports TS18013" {
