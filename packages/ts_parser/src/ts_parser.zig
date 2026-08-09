@@ -1693,6 +1693,12 @@ pub const Parser = struct {
             const tag_name = self.source[tag_name_start..tag_name_end];
             i = tag_name_end;
 
+            if (std.mem.eql(u8, tag_name, "overload")) {
+                seen_return = false;
+                seen_type = false;
+                continue;
+            }
+
             const is_return = std.mem.eql(u8, tag_name, "returns") or std.mem.eql(u8, tag_name, "return");
             const is_type = !has_typedef_like and std.mem.eql(u8, tag_name, "type");
             if (!is_return and !is_type) continue;
@@ -1852,6 +1858,7 @@ pub const Parser = struct {
                         depth -= 1;
                         if (depth == 0) {
                             try self.scanJSDocTypeArgumentListSyntax(i + 1, j);
+                            try self.scanJSDocPrefixTypeSyntax(i + 1, j);
                             i = j;
                             break;
                         }
@@ -1859,6 +1866,46 @@ pub const Parser = struct {
                     else => {},
                 }
             }
+        }
+    }
+
+    fn scanJSDocPrefixTypeSyntax(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) : (i += 1) {
+            const operator = self.source[i];
+            if (operator != '?' and operator != '!') continue;
+
+            const previous = lastNonWhitespaceBefore(self.source, start, i);
+            const is_prefix = previous == null or switch (self.source[previous.?]) {
+                '|', '&', ',', '(', '<', '[', ':' => true,
+                else => false,
+            };
+            const next = firstNonWhitespace(self.source, i + 1, end);
+
+            if (is_prefix and (next >= end or self.source[next] == '|')) {
+                const pos: u32 = @intCast(if (next < end) next else end);
+                try self.reportCodeAt(pos, self.lineAt(pos), 1110, "Type expected.");
+                continue;
+            }
+
+            if (operator == '?' and !is_prefix and next < end and self.source[next] == '|') {
+                const pos: u32 = @intCast(i);
+                try self.reportCodeAt(pos, self.lineAt(pos), 1005, "'}' expected.");
+                continue;
+            }
+
+            if (!is_prefix or next + "readonly".len > end or
+                !std.mem.eql(u8, self.source[next .. next + "readonly".len], "readonly")) continue;
+            const after_readonly = firstNonWhitespace(self.source, next + "readonly".len, end);
+            if (after_readonly >= end or (self.source[after_readonly] != '?' and self.source[after_readonly] != '!')) continue;
+            const pos: u32 = @intCast(next);
+            try self.reportCodeAtWithSpan(
+                pos,
+                self.lineAt(pos),
+                "readonly".len,
+                1354,
+                "'readonly' type modifier is only permitted on array and tuple literal types.",
+            );
         }
     }
 
@@ -31269,6 +31316,24 @@ test "parser: duplicate JSDoc @return mixed spelling reports TS1223 with second 
     try T.expectEqual(@as(usize, 1), count);
 }
 
+test "parser: JSDoc overload groups may each declare a return tag" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @overload
+        \\ * @return {string}
+        \\ * @overload
+        \\ * @return {number}
+        \\ */
+        \\function f() { return 1; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1223);
+    }
+}
+
 test "parser: duplicate JSDoc @type outside typedef reports TS1223" {
     var s = try newTestSetup(
         \\/**
@@ -31319,6 +31384,35 @@ test "parser: single JSDoc @returns does not report TS1223" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1223);
     }
+}
+
+test "parser: JSDoc nullable and non-nullable prefixes follow type grammar recovery" {
+    var s = try newTestSetup(
+        \\/** @param {?} x */
+        \\function f0(x) {}
+        \\/** @param {number | ? | string} x */
+        \\function f1(x) {}
+        \\/** @param {number? | string} x */
+        \\function f2(x) {}
+        \\/** @param {?readonly ?number[]} x */
+        \\function f3(x) {}
+        \\/** @param {!readonly !number[]} x */
+        \\function f4(x) {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var type_expected: usize = 0;
+    var close_expected: usize = 0;
+    var readonly_modifier: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1110) type_expected += 1;
+        if (d.code == 1005) close_expected += 1;
+        if (d.code == 1354) readonly_modifier += 1;
+    }
+    try T.expectEqual(@as(usize, 2), type_expected);
+    try T.expectEqual(@as(usize, 1), close_expected);
+    try T.expectEqual(@as(usize, 2), readonly_modifier);
 }
 
 test "parser: leading JSDoc template before type-like tag is allowed" {

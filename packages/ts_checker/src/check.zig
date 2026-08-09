@@ -81268,6 +81268,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, base, "Image")) {
             return self.seedCtor(self.htmlImageElementType() catch types.Primitive.any) catch types.Primitive.any;
         }
+        if (self.isBuiltinName(name)) return types.Primitive.any;
         return null;
     }
 
@@ -112034,6 +112035,7 @@ pub const Checker = struct {
             "History",                "Storage",                      "URL",
             "URLSearchParams",        "Blob",                         "File",
             "FileReader",             "FormData",                     "Headers",
+            "HTMLElementTagNameMap",
             "Request",                "Response",
             // Constructors / namespaces.
                                 "Math",
@@ -199577,6 +199579,22 @@ test "checker: qualified JSDoc aliases retain their complete namespace paths" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: JSDoc template constraints recognize HTMLElementTagNameMap" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/**
+        \\ * @template {keyof HTMLElementTagNameMap} T
+        \\ * @param {T} tag
+        \\ */
+        \\function create(tag) { return document.createElement(tag); }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
 }
 
