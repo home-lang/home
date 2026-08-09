@@ -37849,6 +37849,28 @@ const harness_prelude =
     \\          };
     \\        },
     \\      };
+    \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_make_callback_recurse")) {
+    \\      addon = {
+    \\        __home_napi_factory() {
+    \\          return {
+    \\            makeCallback(receiver, callback) {
+    \\              if (typeof callback !== "function") throw new TypeError("Unexpected argument type: callback must be a function");
+    \\              const previousDomain = process.domain;
+    \\              const domain = receiver && receiver.domain;
+    \\              if (domain) process.domain = domain;
+    \\              try {
+    \\                callback.call(receiver);
+    \\              } catch (error) {
+    \\                if (domain && typeof domain.emit === "function") domain.emit("error", error);
+    \\                else throw error;
+    \\              } finally {
+    \\                process.domain = previousDomain;
+    \\              }
+    \\              return receiver;
+    \\            },
+    \\          };
+    \\        },
+    \\      };
     \\    } else if (targetName === "binding" && buildDir.endsWith("/test/node-api/test_cleanup_hook")) {
     \\      addon = {
     \\        __home_napi_factory() {
