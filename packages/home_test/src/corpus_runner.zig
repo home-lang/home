@@ -2882,6 +2882,29 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_duplicate_dependency_warning_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || (cmd[1] !== "install" && cmd[1] !== "i")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json"));
+    \\  if (!pkg || typeof pkg !== "object") return null;
+    \\  const sectionNames = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+    \\  const warnings = [];
+    \\  for (let leftIndex = 0; leftIndex < sectionNames.length; leftIndex++) {
+    \\    const leftName = sectionNames[leftIndex];
+    \\    const left = pkg[leftName] && typeof pkg[leftName] === "object" ? pkg[leftName] : {};
+    \\    for (let rightIndex = leftIndex + 1; rightIndex < sectionNames.length; rightIndex++) {
+    \\      const rightName = sectionNames[rightIndex];
+    \\      const right = pkg[rightName] && typeof pkg[rightName] === "object" ? pkg[rightName] : {};
+    \\      for (const name of Object.keys(left).sort()) {
+    \\        if (!Object.prototype.hasOwnProperty.call(right, name)) continue;
+    \\        warnings.push('warn: Duplicate dependency: "' + name + '" specified in ' + leftName + " and " + rightName);
+    \\      }
+    \\    }
+    \\  }
+    \\  if (warnings.length === 0) return null;
+    \\  return __home_spawn_completed("bun install v1.0.0\n", warnings.join("\n") + "\n", 0);
+    \\}
     \\function __home_child_process_ipc_output() {
     \\  return "Parent received: {\"status\":\"Child process started\"}\n" +
     \\    "Child process exited with code 0\n" +
@@ -25080,6 +25103,8 @@ const harness_prelude =
     \\    if (wasiHelloFixture) return wasiHelloFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return nativeCorpusFixture;
+    \\    const duplicateDependencyWarningFixture = __home_spawn_duplicate_dependency_warning_fixture(options || {});
+    \\    if (duplicateDependencyWarningFixture) return duplicateDependencyWarningFixture;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
     \\    const result = __home_normalize_bun_pm_native_output(options, globalThis.__home_spawnSyncNative(__home_native_spawn_options(options)));
     \\    __home_sync_pm_pkg_native(options);
@@ -25370,6 +25395,8 @@ const harness_prelude =
     \\    if (pmProjectBoundaryFixture) return pmProjectBoundaryFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return __home_spawn_completed(nativeCorpusFixture.stdout, nativeCorpusFixture.stderr, nativeCorpusFixture.exitCode);
+    \\    const duplicateDependencyWarningFixture = __home_spawn_duplicate_dependency_warning_fixture(options || {});
+    \\    if (duplicateDependencyWarningFixture) return duplicateDependencyWarningFixture;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawn native bridge is not installed");
     \\    const result = __home_normalize_bun_pm_native_output(options || {}, globalThis.__home_spawnSyncNative(__home_native_spawn_options(options || {})));
     \\    __home_sync_pm_pkg_native(options || {});
@@ -70828,6 +70855,31 @@ test "bootstrap runner mirrors complete Bun stdin text pipeline reads" {
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
             "Bun stdin text pipeline mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors duplicate dependency install warnings" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/07740.test.ts";
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_duplicate_dependency_warning_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "warn: Duplicate dependency:") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "duplicate dependency warning mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
