@@ -49602,6 +49602,16 @@ const harness_prelude =
     \\  const entry = Array.isArray(stdio) ? stdio[index] : stdio;
     \\  return entry === undefined || entry === null || entry === "pipe";
     \\}
+    \\function __home_child_process_ipc_literal_message(args, options) {
+    \\  const stdio = options && options.stdio;
+    \\  if (!Array.isArray(stdio) || !stdio.includes("ipc")) return null;
+    \\  const script = (args || []).find(part => /\.[cm]?[jt]sx?$/.test(String(part)));
+    \\  if (!script) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const source = __home_build_read_text(__home_build_join(cwd, String(script))) || "";
+    \\  const match = source.match(/process\.send\(\s*["']([^"']*)["']\s*\)/);
+    \\  return match ? match[1] : null;
+    \\}
     \\function __home_child_process_readable(text) {
     \\  const stream = __home_spawn_async_iterable_text(text);
     \\  Object.setPrototypeOf(stream, __home_stream_readable.prototype);
@@ -49883,6 +49893,7 @@ const harness_prelude =
     \\      this.exitCode = null;
     \\      this.emit("exit", null, this.signalCode);
     \\      this.emit("close", null, this.signalCode);
+    \\      if (this.pid !== undefined && globalThis.__home_spawn_processes_by_pid) delete globalThis.__home_spawn_processes_by_pid[this.pid];
     \\      return true;
     \\    };
     \\    const joinedArgs = spawnArgs.join("\n");
@@ -49904,6 +49915,12 @@ const harness_prelude =
     \\        }
     \\        return this;
     \\      };
+    \\    }
+    \\    const ipcMessage = __home_child_process_ipc_literal_message(spawnArgs, options);
+    \\    if (ipcMessage !== null) {
+    \\      __home_register_spawn_process(child);
+    \\      Promise.resolve().then(() => { if (!child.killed && child.exitCode === null) child.emit("message", ipcMessage); });
+    \\      return child;
     \\    }
     \\    const timeout = Number(options && options.timeout) || 0;
     \\    const delay = timeout > 0 ? timeout : 0;
@@ -83100,6 +83117,36 @@ test "bootstrap Bun.spawn mirrors issue 9041 nested test summary" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap child_process IPC fixture exits through process kill" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/regression/issue/20144/20144.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20144/20144.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("child_process IPC exit failure: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
