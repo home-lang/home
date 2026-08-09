@@ -22275,8 +22275,8 @@ const harness_prelude =
     \\  jar.__home_values = jar.toJSON();
     \\  return jar;
     \\}
-    \\function __home_attach_request_cookies(request) {
-    \\  const jar = __home_serve_cookie_jar(__home_cookie_seed_from_request(request));
+    \\function __home_attach_request_cookies(request, seed) {
+    \\  const jar = __home_serve_cookie_jar(seed === undefined ? __home_cookie_seed_from_request(request) : seed);
     \\  Object.defineProperty(request, "cookies", {
     \\    configurable: true,
     \\    enumerable: true,
@@ -22577,7 +22577,8 @@ const harness_prelude =
     \\      request.clone = function() {
     \\        const cloned = originalClone ? originalClone() : new Request(request);
     \\        cloned.params = Object.assign({}, request.params || {});
-    \\        __home_attach_request_cookies(cloned);
+    \\        const cookieSeed = request.cookies && typeof request.cookies.toJSON === "function" ? request.cookies.toJSON() : __home_cookie_seed_from_request(request);
+    \\        __home_attach_request_cookies(cloned, cookieSeed);
     \\        return cloned;
     \\      };
     \\      const isStaticRoute = routeInfo.isStatic;
@@ -82393,6 +82394,36 @@ test "bootstrap net connect preserves high header bytes for Bun.serve" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.serve request clones preserve cookies and route params" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/regression/issue/18547.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/18547.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.serve cloned request cookie failure: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
