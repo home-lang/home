@@ -37494,6 +37494,8 @@ const harness_prelude =
     \\        testGetNodeVersion() { return [version[0], version[1], version[2], String(process.release && process.release.name || "node")]; },
     \\      };
     \\      Object.defineProperty(addon, "filename", { enumerable: true, get() { return __home_url_path_to_file_url(addonPath).href; } });
+    \\    } else if (targetName === "test_init_order") {
+    \\      addon = { cppIntValue: 42, cppStringValue: "123" };
     \\    } else if (targetName === "test_handle_scope") {
     \\      addon = {
     \\        NewScope() {},
