@@ -7230,6 +7230,21 @@ pub const Parser = struct {
             "namespace",
             "type",
         };
+        const name_len = utf8CodepointCount(name);
+        const maximum_length_difference = @max(@as(usize, 2), name_len * 34 / 100);
+        var best: ?[]const u8 = null;
+        var best_distance = (name_len * 4 + 9) / 10 + 1;
+        for (candidates) |candidate| {
+            const candidate_len = utf8CodepointCount(candidate);
+            const length_difference = @max(name_len, candidate_len) - @min(name_len, candidate_len);
+            if (length_difference > maximum_length_difference) continue;
+            const distance = levenshteinIcase(name, candidate);
+            if (distance < best_distance) {
+                best = candidate;
+                best_distance = distance;
+            }
+        }
+        if (best) |suggestion| return suggestion;
         return try self.spaceSeparatedKeywordSuggestion(name, &candidates);
     }
 
@@ -7243,26 +7258,45 @@ pub const Parser = struct {
     }
 
     fn levenshteinIcase(a: []const u8, b: []const u8) usize {
+        var a_codepoints: [128]u21 = undefined;
+        var b_codepoints: [128]u21 = undefined;
+        const a_len = decodeUtf8Codepoints(a, &a_codepoints) orelse return std.math.maxInt(usize);
+        const b_len = decodeUtf8Codepoints(b, &b_codepoints) orelse return std.math.maxInt(usize);
         var previous_buf: [128]usize = undefined;
         var current_buf: [128]usize = undefined;
-        if (b.len + 1 > previous_buf.len) return std.math.maxInt(usize);
-        for (0..b.len + 1) |i| previous_buf[i] = i;
+        if (b_len + 1 > previous_buf.len) return std.math.maxInt(usize);
+        for (0..b_len + 1) |i| previous_buf[i] = i;
         var i: usize = 0;
-        while (i < a.len) : (i += 1) {
+        while (i < a_len) : (i += 1) {
             current_buf[0] = i + 1;
             var j: usize = 0;
-            while (j < b.len) : (j += 1) {
-                const ca = std.ascii.toLower(a[i]);
-                const cb = std.ascii.toLower(b[j]);
+            while (j < b_len) : (j += 1) {
+                const ca = if (a_codepoints[i] <= 0x7f) std.ascii.toLower(@intCast(a_codepoints[i])) else a_codepoints[i];
+                const cb = if (b_codepoints[j] <= 0x7f) std.ascii.toLower(@intCast(b_codepoints[j])) else b_codepoints[j];
                 const cost: usize = if (ca == cb) 0 else 1;
                 const del = previous_buf[j + 1] + 1;
                 const ins = current_buf[j] + 1;
                 const sub = previous_buf[j] + cost;
                 current_buf[j + 1] = @min(@min(del, ins), sub);
             }
-            @memcpy(previous_buf[0 .. b.len + 1], current_buf[0 .. b.len + 1]);
+            @memcpy(previous_buf[0 .. b_len + 1], current_buf[0 .. b_len + 1]);
         }
-        return previous_buf[b.len];
+        return previous_buf[b_len];
+    }
+
+    fn utf8CodepointCount(text: []const u8) usize {
+        return std.unicode.utf8CountCodepoints(text) catch text.len;
+    }
+
+    fn decodeUtf8Codepoints(text: []const u8, output: *[128]u21) ?usize {
+        var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+        var len: usize = 0;
+        while (iter.nextCodepoint()) |codepoint| {
+            if (len == output.len) return null;
+            output[len] = codepoint;
+            len += 1;
+        }
+        return len;
     }
 
     fn reportMissingClassMemberImplementation(self: *Parser, member_start: Token, mods: ClassModifiers) ParseError!void {
@@ -21427,6 +21461,26 @@ test "parser: TS1435 suggests missing space after class member keyword" {
     _ = try s.parser.parseSourceFile();
     const d = findDiag(s, 1435) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Unknown keyword or identifier. Did you mean 'public Field'?", d.message);
+}
+
+test "parser: tsgo parity: TS1435 spelling suggestions count Unicode codepoints" {
+    const src = "classA\xc3\xa9 {}\nclassA\xc3\xa9\xc3\xa9 {}\nclassA\xc3\xa9\xc3\xa9\xc3\xa9 {}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const expected = [_][]const u8{
+        "Unknown keyword or identifier. Did you mean 'class'?",
+        "Unknown keyword or identifier. Did you mean 'class A\xc3\xa9\xc3\xa9'?",
+        "Unknown keyword or identifier. Did you mean 'class A\xc3\xa9\xc3\xa9\xc3\xa9'?",
+    };
+    var index: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 1435) continue;
+        try T.expect(index < expected.len);
+        try T.expectEqualStrings(expected[index], diagnostic.message);
+        index += 1;
+    }
+    try T.expectEqual(expected.len, index);
 }
 
 test "parser: TS1435 stays clean for ordinary class properties" {
