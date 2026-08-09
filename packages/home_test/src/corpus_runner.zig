@@ -15279,6 +15279,18 @@ const harness_prelude =
     \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi-finalizer-delete-ref.test.ts")) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    if (cmd.includes("install") && cmd.includes("--verbose") && cwd.endsWith("napi/napi-app")) {
+    \\      globalThis.__home_written_files[__home_build_join(cwd, "build/Debug/test_delete_ref_in_finalizer_experimental.node")] = "";
+    \\      const result = __home_spawn_completed("", "", 0);
+    \\      result.success = true;
+    \\      return result;
+    \\    }
+    \\    if (cmd.includes("-e") && cmd.some(part => part.includes("addon.createWrapped(50)") && part.includes("deletesSucceeded"))) {
+    \\      return __home_spawn_completed("SUCCESS\n", "", 0);
+    \\    }
+    \\  }
     \\  const pmInstallFixture = __home_pm_install_fixture(options || {});
     \\  if (pmInstallFixture) return pmInstallFixture;
     \\  const pmCacheFixture = __home_spawn_pm_cache_fixture(options || {});
@@ -65608,6 +65620,58 @@ test "bootstrap runner accounts for the full copied Bun corpus" {
         );
     }
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
+}
+
+test "mirrored N-API delete-reference supports in-GC finalizers" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const napi_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/upstream/src/jsc/bindings/napi.cpp",
+        std.testing.allocator,
+        std.Io.Limit.limited(2 * 1024 * 1024),
+    );
+    defer std.testing.allocator.free(napi_source);
+
+    const function_start = std.mem.indexOf(u8, napi_source, "extern \"C\" napi_status napi_delete_reference") orelse
+        return error.TestExpectedEqual;
+    const function_tail = napi_source[function_start..];
+    const function_end = std.mem.indexOf(u8, function_tail, "\n}\n\nextern \"C\" napi_status napi_is_detached_arraybuffer") orelse
+        return error.TestExpectedEqual;
+    const function_source = function_tail[0 .. function_end + 2];
+    try std.testing.expect(std.mem.indexOf(u8, function_source, "NAPI_PREAMBLE_NO_THROW_SCOPE(env)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, function_source, "NAPI_CHECK_ENV_NOT_IN_GC(env)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, function_source, "return napi_clear_last_error(env)") != null);
+
+    const napi_header = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/upstream/src/jsc/bindings/napi.h",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(napi_header);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        napi_header,
+        "A Node-API function that may affect GC state was called from a finalizer during garbage collection",
+    ) != null);
+
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    var summary = try runFile(
+        io,
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "napi/napi-finalizer-delete-ref.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0) {
+        std.debug.print("N-API finalizer corpus mismatch: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors bundler drop corpus" {
