@@ -3434,6 +3434,17 @@ pub const Parser = struct {
         defer self.loop_depth -= 1;
         self.loop_switch_depth += 1;
         defer self.loop_switch_depth -= 1;
+        if (self.peek().kind == .eof) {
+            const missing_span = Span{ .start = start.span.end, .end = start.span.end };
+            try self.reportCodeAt(start.span.end, start.line, 1109, "Expression expected.");
+            const body = try self.builder.addBlock(missing_span, &.{});
+            const cond = try self.builder.addLiteralNumber(missing_span, 0);
+            return try self.builder.addDoWhile(
+                .{ .start = start.span.start, .end = start.span.end },
+                body,
+                cond,
+            );
+        }
         const body = try self.parseNestedStatement();
         _ = try self.expect(.kw_while, "'while' after do-block");
         const open_paren = try self.expect(.open_paren, "'(' after 'while'");
@@ -22382,6 +22393,17 @@ test "parser: do-while loop" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.do_while_stmt, s.hir.kindOf(top));
+}
+
+test "parser: incomplete do statement anchors TS1109 after keyword" {
+    var s = try newTestSetup("do\n");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1109));
+    const diagnostic = findDiag(s, 1109) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 2), diagnostic.pos);
+    try T.expectEqual(@as(u32, 1), diagnostic.line);
+    try T.expectEqualStrings("Expression expected.", diagnostic.message);
 }
 
 test "parser: classic for loop" {
