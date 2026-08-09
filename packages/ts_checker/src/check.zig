@@ -81105,6 +81105,11 @@ pub const Checker = struct {
         if (try self.jsDocPrimitiveType(trimmed)) |prim| return prim;
         if (try self.jsDocMappedTypeTextToType(src, trimmed)) |mapped_t| return mapped_t;
         if (try self.jsDocObjectSkeletonFromTypeText(trimmed)) |obj| return obj;
+        if (std.mem.indexOfScalar(u8, trimmed, '.') != null) {
+            if (try self.jsDocCallbackSignature(src, trimmed)) |sig| return sig;
+            if (try self.jsDocTypedefObjectSkeleton(src, trimmed)) |t| return t;
+            if (try self.jsDocTypedefAliasType(src, trimmed)) |t| return t;
+        }
         const base = jsDocTypeBaseName(trimmed);
         if (base.len == 0) return null;
         if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
@@ -83742,9 +83747,10 @@ pub const Checker = struct {
         if (type_len == 0) return null;
         const trailing = std.mem.trim(u8, rest[brace_pos + type_len ..], " \t\r\n*");
         var name_end: usize = 0;
-        while (name_end < trailing.len and isJsDocIdentChar(trailing[name_end])) : (name_end += 1) {}
+        while (name_end < trailing.len and
+            (isJsDocIdentChar(trailing[name_end]) or trailing[name_end] == '.' or trailing[name_end] == '~')) : (name_end += 1)
+        {}
         if (name_end == 0) return null;
-        if (name_end < trailing.len and (trailing[name_end] == '.' or trailing[name_end] == '~')) return null;
         if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
         return rest[brace_pos + 1 .. brace_pos + type_len - 1];
     }
@@ -83912,7 +83918,9 @@ pub const Checker = struct {
                 rest = std.mem.trim(u8, rest[type_len..], " \t\r");
             }
             var name_end: usize = 0;
-            while (name_end < rest.len and isJsDocIdentChar(rest[name_end])) : (name_end += 1) {}
+            while (name_end < rest.len and
+                (isJsDocIdentChar(rest[name_end]) or rest[name_end] == '.' or rest[name_end] == '~')) : (name_end += 1)
+            {}
             if (name_end == wanted_name.len and std.mem.eql(u8, rest[0..name_end], wanted_name)) return true;
         }
         return false;
@@ -120257,6 +120265,14 @@ pub const Checker = struct {
         constraint_info: TypeArgSignatureConstraint,
     ) bool {
         if (self.isBuiltinFunctionObjectTypeArg(arg_t)) return false;
+        if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union) {
+            const members = self.interner.unionMembers(arg_t);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.typeArgSatisfiesSignatureConstraint(member, constraint_info)) return false;
+            }
+            return true;
+        }
         if (constraint_info.is_builtin_variadic) {
             return self.matchingSignatureForTypeArg(arg_t, constraint_info.is_construct) != null;
         }
@@ -199540,6 +199556,30 @@ test "checker: checkjs JSDoc @callback declares a function-typed alias" {
     }
 }
 
+test "checker: qualified JSDoc aliases retain their complete namespace paths" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @typedef {number} NS.T */
+        \\/** @typedef {string} NS.U */
+        \\/** @type {NS.T} */
+        \\const x = 1;
+        \\/** @type {NS.U} */
+        \\const y = "hello";
+        \\/** @callback NS.MyCallback
+        \\ * @param {string} name
+        \\ * @returns {void}
+        \\ */
+        \\/** @type {NS.MyCallback} */
+        \\const f = (name) => {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: checkjs generic JSDoc @callback preserves alias display" {
     const s = try newSetup(
         \\// @checkjs: true
@@ -209988,6 +210028,21 @@ test "checker: TS2344 still fires for concrete indexed-access arg violating cons
         found = true;
     }
     try T.expect(found);
+}
+
+test "checker: builtin Parameters accepts unions of callable signatures" {
+    const s = try newSetup(
+        \\declare let overload:
+        \\    | ((arg: string) => Promise<boolean>)
+        \\    | ((arg: string, callback: (error: Error | null, result: boolean) => void) => void);
+        \\type Args = Parameters<typeof overload>;
+        \\declare function invoke(...args: Args): void;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_does_not_satisfy_constraint);
+    }
 }
 
 test "checker: TS2344 validates function and constructor type-argument constraints" {

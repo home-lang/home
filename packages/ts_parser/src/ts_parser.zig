@@ -1311,6 +1311,10 @@ pub const Parser = struct {
     }
 
     fn scanJSDocParamParentDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        // Callback parameters belong to the declared callback signature, not
+        // to a host function whose parameter list can be matched here.
+        if (self.jsDocBlockHasTag(start, end, "callback")) return;
+
         var object_params: std.ArrayListUnmanaged([]const u8) = .empty;
         defer object_params.deinit(self.gpa);
 
@@ -31103,6 +31107,20 @@ test "parser: qualified JSDoc param parent check preserves object child for late
     );
     try T.expectEqual(@as(u32, 2), d.line);
     try T.expectEqual(@as(u32, 7), d.span_len);
+}
+
+test "parser: qualified JSDoc callback param does not require a host parent" {
+    var s = try newTestSetup(
+        \\/** @callback cb
+        \\ * @param x.y
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 8032);
+    }
 }
 
 test "parser: malformed JSDoc import tags mirror TypeScript recovery" {
