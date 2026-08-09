@@ -470,6 +470,7 @@ pub const ProgramAmbientInterfaceMember = struct {
     type_name: []const u8 = "any",
     is_optional: bool = false,
     is_readonly: bool = false,
+    is_method: bool = false,
 };
 
 pub const ProgramUmdGlobal = struct {
@@ -10978,6 +10979,7 @@ pub const Checker = struct {
         // sees each block in isolation. Mirrors fixture
         // `twoGenericInterfacesWithTheSameNameButDifferentArity` M3.
         try self.checkSiblingNamespaceInterfaceMerges(stmts);
+        try self.checkSiblingAmbientModuleExportCollisions(stmts);
         try self.checkSiblingNamespaceFunctionImplementations(stmts);
         try self.checkClassInterfaceMemberModifierMerges(stmts);
         try self.checkEnumDeclarationMergeDiagnostics(stmts);
@@ -11556,6 +11558,73 @@ pub const Checker = struct {
             const ns_decls = e.value_ptr.items;
             if (ns_decls.len < 2) continue;
             try self.crossNamespaceInterfaceMergeCheck(ns_decls);
+        }
+    }
+
+    const AmbientModuleExportBinding = struct {
+        module_name: hir_mod.StringId,
+        name: hir_mod.StringId,
+        namespace_node: NodeId,
+        anchor: NodeId,
+        pos: u32,
+        is_block_scoped: bool,
+    };
+
+    fn checkSiblingAmbientModuleExportCollisions(
+        self: *Checker,
+        stmts: []const NodeId,
+    ) CheckError!void {
+        var bindings: std.ArrayListUnmanaged(AmbientModuleExportBinding) = .empty;
+        defer bindings.deinit(self.gpa);
+
+        for (stmts) |raw| {
+            const ns_node = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(ns_node) != .namespace_decl or
+                !self.namespaceNameComesFromStringLiteral(ns_node)) continue;
+            const ns = hir_mod.namespaceOf(self.hir, ns_node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const module_name = hir_mod.identifierOf(self.hir, ns.name).name;
+            for (hir_mod.namespaceBody(self.hir, ns_node)) |body_raw| {
+                if (self.hir.kindOf(body_raw) != .export_decl) continue;
+                const ex = hir_mod.exportOf(self.hir, body_raw);
+                if (ex.module == string_interner.empty_string_id) {
+                    for (hir_mod.exportNamed(self.hir, body_raw)) |spec_node| {
+                        if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                        const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                        try bindings.append(self.gpa, .{
+                            .module_name = module_name,
+                            .name = self.exportSpecifierExportedName(spec_node, spec),
+                            .namespace_node = ns_node,
+                            .anchor = spec_node,
+                            .pos = spec.local_pos,
+                            .is_block_scoped = true,
+                        });
+                    }
+                }
+                const decl = self.unwrapExportDecl(body_raw);
+                const kind = self.hir.kindOf(decl);
+                if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                const name = self.declarationName(decl) orelse continue;
+                try bindings.append(self.gpa, .{
+                    .module_name = module_name,
+                    .name = name,
+                    .namespace_node = ns_node,
+                    .anchor = decl,
+                    .pos = self.declarationNameSpanStart(decl) orelse self.hir.spanOf(decl).start,
+                    .is_block_scoped = kind != .var_decl,
+                });
+            }
+        }
+
+        for (bindings.items, 0..) |binding, i| {
+            for (bindings.items[0..i]) |previous| {
+                if (binding.namespace_node == previous.namespace_node or
+                    binding.module_name != previous.module_name or
+                    binding.name != previous.name or
+                    (!binding.is_block_scoped and !previous.is_block_scoped)) continue;
+                try self.reportBlockScopedRedeclareAt(previous.anchor, previous.pos, previous.name);
+                try self.reportBlockScopedRedeclareAt(binding.anchor, binding.pos, binding.name);
+            }
         }
     }
 
@@ -54218,12 +54287,16 @@ pub const Checker = struct {
             defer members.deinit(self.gpa);
             for (exported.members) |m| {
                 const member_name = self.string_interner.intern(m.name) catch return error.OutOfMemory;
+                const value_t = try self.programAmbientInterfaceMemberType(m.type_name);
                 try members.append(self.gpa, .{
                     .name = member_name,
-                    .type = try self.programAmbientInterfaceMemberType(m.type_name),
+                    .type = if (m.is_method)
+                        self.interner.internSignature(&.{}, value_t, false) catch return error.OutOfMemory
+                    else
+                        value_t,
                     .is_optional = m.is_optional,
                     .is_readonly = m.is_readonly,
-                    .is_method = false,
+                    .is_method = m.is_method,
                     .decl_node = hir_mod.none_node_id,
                 });
             }
@@ -90924,6 +90997,65 @@ pub const Checker = struct {
                 inst_t = try self.substituteType(info.body, &subs);
             }
             if (self.interner.objectMember(inst_t, name)) |member_t| return member_t;
+        }
+        if (try self.lookupDeclareGlobalArrayMember(elem_t, name)) |member_t| return member_t;
+        return try self.lookupProgramGlobalArrayMember(elem_t, name);
+    }
+
+    fn lookupDeclareGlobalArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        var root = hir_mod.none_node_id;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) == .block_stmt and self.hir.parentOf(node) == hir_mod.none_node_id) {
+                root = node;
+                break;
+            }
+        }
+        if (root == hir_mod.none_node_id) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const ns_node = self.unwrapExportDecl(raw);
+            if (!self.namespaceIsDeclareGlobalAugmentation(ns_node)) continue;
+            for (hir_mod.namespaceBody(self.hir, ns_node)) |body_raw| {
+                const iface = self.unwrapExportDecl(body_raw);
+                if (self.hir.kindOf(iface) != .interface_decl) continue;
+                const iface_name = self.declarationName(iface) orelse continue;
+                const iface_text = self.string_interner.get(iface_name);
+                if (!std.mem.eql(u8, iface_text, "Array") and
+                    !std.mem.eql(u8, iface_text, "ReadonlyArray")) continue;
+                if (self.hir.typeOf(iface) == types.Primitive.none) try self.checkInterfaceDecl(iface);
+                var inst_t = self.hir.typeOf(iface);
+                if (self.generic_interfaces_by_decl.get(iface)) |info| {
+                    inst_t = info.body;
+                    if (info.params.len > 0) {
+                        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer subs.deinit(self.gpa);
+                        try subs.put(self.gpa, info.params[0], elem_t);
+                        inst_t = try self.substituteType(info.body, &subs);
+                    }
+                }
+                if (self.interner.objectMember(inst_t, name)) |member_t| return member_t;
+            }
+        }
+        return null;
+    }
+
+    fn lookupProgramGlobalArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const name_text = self.string_interner.get(name);
+        for (self.program_ambient_module_interface_exports) |augmentation| {
+            if (!std.mem.eql(u8, augmentation.specifier, "__global__")) continue;
+            if (!std.mem.eql(u8, augmentation.name, "Array") and
+                !std.mem.eql(u8, augmentation.name, "ReadonlyArray")) continue;
+            for (augmentation.members) |member| {
+                if (!std.mem.eql(u8, member.name, name_text)) continue;
+                const value_t = if (std.mem.eql(u8, member.type_name, "T"))
+                    elem_t
+                else
+                    try self.programAmbientInterfaceMemberType(member.type_name);
+                return if (member.is_method)
+                    self.interner.internSignature(&.{}, value_t, false) catch return error.OutOfMemory
+                else
+                    value_t;
+            }
         }
         return null;
     }
@@ -204573,6 +204705,36 @@ test "checker: declare global interface merges across virtual sections" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: declare global generic Array augmentation supplies array members" {
+    const s = try newSetup(
+        \\// @filename: augment.ts
+        \\declare global {
+        \\  interface Array<T> { customMethod(): T; }
+        \\}
+        \\export {};
+        \\// @filename: index.ts
+        \\const values: string[] = [];
+        \\const value: string = values.customMethod();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: sibling ambient modules diagnose reexport and const collision" {
+    const s = try newSetup(
+        \\// @filename: dep.d.ts
+        \\declare module "dep" { export const value: number; }
+        \\// @filename: a.d.ts
+        \\declare module "m" { import * as foo from "dep"; export { foo }; }
+        \\// @filename: b.d.ts
+        \\declare module "m" { export const foo: number; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_redeclare_block_scoped));
 }
 
 test "checker: declare global value is visible from later virtual sections" {

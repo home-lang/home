@@ -413,6 +413,7 @@ pub const Program = struct {
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
         try self.appendProgramGlobalDeclareVarDiagnostics();
+        try self.appendMergedAmbientModuleExportDiagnostics();
 
         try self.resolveImports();
     }
@@ -793,6 +794,19 @@ pub const Program = struct {
             try collectAmbientModuleInterfacesFromBody(gpa, source, spec, body_open + 1, body_close, out);
             search_start = body_close + 1;
         }
+
+        search_start = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
+            search_start = declare_pos + "declare".len;
+            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
+            var global_pos = declare_pos + "declare".len;
+            while (global_pos < source.len and std.ascii.isWhitespace(source[global_pos])) : (global_pos += 1) {}
+            if (!identifierKeywordAt(source, global_pos, "global")) continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, global_pos + "global".len, '{') orelse continue;
+            const body_close = findMatchingBrace(source, body_open) orelse continue;
+            try collectAmbientModuleInterfacesFromBody(gpa, source, "__global__", body_open + 1, body_close, out);
+            search_start = body_close + 1;
+        }
     }
 
     fn collectAmbientModuleInterfacesFromBody(
@@ -871,6 +885,17 @@ pub const Program = struct {
                 while (i < body_end and std.ascii.isWhitespace(source[i])) : (i += 1) {}
                 break :blk true;
             } else false;
+            var is_method = false;
+            if (i < body_end and source[i] == '(') {
+                var depth: usize = 1;
+                i += 1;
+                while (i < body_end and depth > 0) : (i += 1) {
+                    if (source[i] == '(') depth += 1;
+                    if (source[i] == ')') depth -= 1;
+                }
+                while (i < body_end and std.ascii.isWhitespace(source[i])) : (i += 1) {}
+                is_method = true;
+            }
             if (i >= body_end or source[i] != ':') {
                 while (i < body_end and source[i] != ';' and source[i] != '\n' and source[i] != '\r') : (i += 1) {}
                 continue;
@@ -889,6 +914,7 @@ pub const Program = struct {
                 .type_name = type_copy,
                 .is_optional = is_optional,
                 .is_readonly = is_readonly,
+                .is_method = is_method,
             });
             i = type_end;
         }
@@ -2723,6 +2749,133 @@ pub const Program = struct {
         name: []const u8,
         type_text: []const u8,
     };
+
+    const ProgramAmbientExportBinding = struct {
+        file_index: usize,
+        module_name: []const u8,
+        name: []const u8,
+        pos: usize,
+        is_block_scoped: bool,
+    };
+
+    fn appendMergedAmbientModuleExportDiagnostics(self: *Program) ProgramError!void {
+        var bindings: std.ArrayListUnmanaged(ProgramAmbientExportBinding) = .empty;
+        defer bindings.deinit(self.gpa);
+        for (self.files.items, 0..) |f, file_index| {
+            if (f.redirect_target != null or !f.is_declaration) continue;
+            try collectAmbientExportBindingsFromSource(f.source, file_index, &bindings, self.gpa);
+        }
+        for (bindings.items, 0..) |binding, i| {
+            for (bindings.items[0..i]) |previous| {
+                if (binding.file_index == previous.file_index or
+                    !std.mem.eql(u8, binding.module_name, previous.module_name) or
+                    !std.mem.eql(u8, binding.name, previous.name) or
+                    (!binding.is_block_scoped and !previous.is_block_scoped)) continue;
+                try self.appendAmbientExportRedeclareDiagnostic(previous);
+                try self.appendAmbientExportRedeclareDiagnostic(binding);
+            }
+        }
+    }
+
+    fn appendAmbientExportRedeclareDiagnostic(self: *Program, binding: ProgramAmbientExportBinding) ProgramError!void {
+        const file = self.files.items[binding.file_index];
+        const compilation = file.compilation orelse return;
+        if (diagnosticExistsAt(compilation, 2451, @intCast(binding.pos))) return;
+        const message = try std.fmt.allocPrint(
+            self.gpa,
+            "Cannot redeclare block-scoped variable '{s}'.",
+            .{binding.name},
+        );
+        try compilation.diagnostics.append(self.gpa, .{
+            .phase = .bind,
+            .pos = @intCast(binding.pos),
+            .line = 0,
+            .span_len = @intCast(binding.name.len),
+            .code = 2451,
+            .message = message,
+        });
+        compilation.has_errors = true;
+    }
+
+    fn collectAmbientExportBindingsFromSource(
+        source: []const u8,
+        file_index: usize,
+        out: *std.ArrayListUnmanaged(ProgramAmbientExportBinding),
+        gpa: std.mem.Allocator,
+    ) ProgramError!void {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
+            search_start = declare_pos + "declare".len;
+            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
+            var module_pos = declare_pos + "declare".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (!identifierKeywordAt(source, module_pos, "module")) continue;
+            module_pos += "module".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (module_pos >= source.len or (source[module_pos] != '"' and source[module_pos] != '\'')) continue;
+            const quote = source[module_pos];
+            const name_start = module_pos + 1;
+            const name_end = std.mem.indexOfScalarPos(u8, source, name_start, quote) orelse continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, name_end + 1, '{') orelse continue;
+            const body_close = findMatchingBrace(source, body_open) orelse continue;
+            const module_name = source[name_start..name_end];
+            var export_search = body_open + 1;
+            while (std.mem.indexOfPos(u8, source, export_search, "export")) |export_pos| {
+                if (export_pos >= body_close) break;
+                export_search = export_pos + "export".len;
+                if (!identifierKeywordAt(source, export_pos, "export")) continue;
+                var cursor = export_pos + "export".len;
+                while (cursor < body_close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+                if (cursor < body_close and source[cursor] == '{') {
+                    const close = std.mem.indexOfScalarPos(u8, source, cursor + 1, '}') orelse continue;
+                    if (close > body_close) continue;
+                    cursor += 1;
+                    while (cursor < close) {
+                        while (cursor < close and (std.ascii.isWhitespace(source[cursor]) or source[cursor] == ',')) : (cursor += 1) {}
+                        const local_end = parseIdentifierEnd(source, cursor, close) orelse break;
+                        var exported_start = cursor;
+                        var exported_end = local_end;
+                        var after = local_end;
+                        while (after < close and std.ascii.isWhitespace(source[after])) : (after += 1) {}
+                        if (identifierKeywordAt(source, after, "as")) {
+                            after += "as".len;
+                            while (after < close and std.ascii.isWhitespace(source[after])) : (after += 1) {}
+                            if (parseIdentifierEnd(source, after, close)) |alias_end| {
+                                exported_start = after;
+                                exported_end = alias_end;
+                            }
+                        }
+                        try out.append(gpa, .{
+                            .file_index = file_index,
+                            .module_name = module_name,
+                            .name = source[exported_start..exported_end],
+                            .pos = exported_start,
+                            .is_block_scoped = true,
+                        });
+                        cursor = exported_end;
+                    }
+                    export_search = close + 1;
+                    continue;
+                }
+                const keywords = [_][]const u8{ "const", "let", "var" };
+                for (keywords) |keyword| {
+                    if (!identifierKeywordAt(source, cursor, keyword)) continue;
+                    var binding_start = cursor + keyword.len;
+                    while (binding_start < body_close and std.ascii.isWhitespace(source[binding_start])) : (binding_start += 1) {}
+                    const binding_end = parseIdentifierEnd(source, binding_start, body_close) orelse break;
+                    try out.append(gpa, .{
+                        .file_index = file_index,
+                        .module_name = module_name,
+                        .name = source[binding_start..binding_end],
+                        .pos = binding_start,
+                        .is_block_scoped = !std.mem.eql(u8, keyword, "var"),
+                    });
+                    break;
+                }
+            }
+            search_start = body_close + 1;
+        }
+    }
 
     fn appendProgramGlobalDeclareVarDiagnostics(self: *Program) ProgramError!void {
         var seen: std.StringHashMapUnmanaged(ProgramDeclareVar) = .empty;
