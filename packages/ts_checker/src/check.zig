@@ -2765,6 +2765,20 @@ pub const DiscAlias = struct {
     prop: hir_mod.StringId,
 };
 
+const DependentBindingSelector = union(enum) {
+    property: hir_mod.StringId,
+    tuple_index: u32,
+};
+
+/// A binding projected from a discriminated object/tuple union. Bindings in
+/// the same pattern stay correlated: narrowing one projection narrows the
+/// source union and re-projects every sibling into the active flow scope.
+const DependentBinding = struct {
+    pattern: NodeId,
+    source_type: TypeId,
+    selector: DependentBindingSelector,
+};
+
 const EnumIdentityInfo = struct {
     name: hir_mod.StringId,
     decl: ?NodeId = null,
@@ -4014,6 +4028,12 @@ pub const Checker = struct {
     /// narrows the aliased reference `obj` instead of the alias `t`.
     /// Aliased-discriminant narrowing (TS 4.4). Cleared on reassignment.
     disc_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, DiscAlias),
+    /// Const/parameter destructuring bindings that retain correlation with a
+    /// shared discriminated union source.
+    dependent_bindings: std.AutoHashMapUnmanaged(hir_mod.StringId, DependentBinding),
+    /// Switches proven exhaustive from the narrowed literal type of their
+    /// discriminant. Used by enclosing fallthrough/exit analysis.
+    exhaustive_switches: std.AutoHashMapUnmanaged(NodeId, void),
     /// Pre-rendered display names for instantiated generic aliases
     /// (`Covariant<A>`, `NonNullable<T>`, `FunctionProperties<T>`).
     /// Populated by `lowererLowerWithTypeParams` whenever an alias is
@@ -4576,6 +4596,8 @@ pub const Checker = struct {
             .signature_param_predicates = .empty,
             .cond_aliases = .empty,
             .disc_aliases = .empty,
+            .dependent_bindings = .empty,
+            .exhaustive_switches = .empty,
             .alias_display_names = .empty,
             .type_alias_bodies = .empty,
             .alias_type_args = .empty,
@@ -4961,6 +4983,8 @@ pub const Checker = struct {
         self.signature_param_predicates.deinit(self.gpa);
         self.cond_aliases.deinit(self.gpa);
         self.disc_aliases.deinit(self.gpa);
+        self.dependent_bindings.deinit(self.gpa);
+        self.exhaustive_switches.deinit(self.gpa);
         self.alias_display_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
@@ -9536,10 +9560,12 @@ pub const Checker = struct {
                     const decl_kind = self.hir.kindOf(ex.decl);
                     if (self.isExportAssignmentDecl(s)) {
                         if (!self.namespaceNameComesFromStringLiteral(node)) {
-                            const old_report = self.report_unresolved_in_namespace_scope;
-                            self.report_unresolved_in_namespace_scope = true;
-                            defer self.report_unresolved_in_namespace_scope = old_report;
-                            _ = try self.checkExpression(ex.decl);
+                            if (self.strict_flags.always_strict) {
+                                const old_report = self.report_unresolved_in_namespace_scope;
+                                self.report_unresolved_in_namespace_scope = true;
+                                defer self.report_unresolved_in_namespace_scope = old_report;
+                                _ = try self.checkExpression(ex.decl);
+                            }
                             continue;
                         }
                         if (decl_kind == .identifier) {
@@ -14243,6 +14269,7 @@ pub const Checker = struct {
                             target
                         else
                             try self.narrowTypeByPredicate(current, target);
+                        try self.applyDependentBindingNarrow(id.name, target, true);
                         try self.recordNarrow(id.name, narrowed);
                     }
                 }
@@ -14268,6 +14295,10 @@ pub const Checker = struct {
                     const other_p = hir_mod.switchCaseOf(self.hir, other);
                     if (other_p.value == hir_mod.none_node_id) continue;
                     try self.applyIdentifierLiteralNarrow(sw.discriminant, other_p.value, false);
+                    if (try self.expressionNarrowLiteralType(other_p.value)) |lit_t| {
+                        const id = hir_mod.identifierOf(self.hir, sw.discriminant);
+                        try self.applyDependentBindingNarrow(id.name, lit_t, false);
+                    }
                 }
             }
 
@@ -14289,6 +14320,16 @@ pub const Checker = struct {
                 !self.caseClauseStatementsExit(stmts))
             {
                 try self.report(case_node, TsCodes.fallthrough_case_in_switch, "Fallthrough case in switch.");
+            }
+        }
+
+        if (case_literal_types.items.len > 0) {
+            var remaining = discriminant_lit_t;
+            for (case_literal_types.items) |lit_t| {
+                remaining = self.subtractTypeByPredicate(remaining, lit_t) catch remaining;
+            }
+            if (remaining == types.Primitive.never) {
+                try self.exhaustive_switches.put(self.gpa, node, {});
             }
         }
 
@@ -14572,6 +14613,7 @@ pub const Checker = struct {
                 break :blk self.caseClauseStatementExits(i.then_branch) and
                     self.caseClauseStatementExits(i.else_branch);
             },
+            .switch_stmt => self.switchDefinitelyExits(node),
             else => false,
         };
     }
@@ -15774,6 +15816,15 @@ pub const Checker = struct {
                 try self.recordNarrow(id.name, param_t);
             }
         }
+        for (fn_params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id or pp.type_annotation == hir_mod.none_node_id) continue;
+            const name_kind = self.hir.kindOf(pp.name);
+            if (name_kind != .object_pattern and name_kind != .array_pattern) continue;
+            const param_t = self.lowererLowerWithTypeParams(pp.type_annotation) catch continue;
+            try self.recordDependentBindings(pp.name, param_t);
+        }
         const prev_generator_info = self.current_generator_info;
         defer self.current_generator_info = prev_generator_info;
         self.current_generator_info = null;
@@ -16176,6 +16227,7 @@ pub const Checker = struct {
         }
         if (has_default) return true;
         if (has_true and has_false) return true;
+        if (self.exhaustive_switches.contains(node)) return true;
         return self.hir.typeOf(sw.discriminant) == types.Primitive.never;
     }
 
@@ -75062,6 +75114,12 @@ pub const Checker = struct {
 
         // If both are present, check assignability.
         const final_type: TypeId = if (declared_type != types.Primitive.none) declared_type else init_type;
+        if (decl_kind == .const_decl and
+            v.name != hir_mod.none_node_id and
+            v.init != hir_mod.none_node_id)
+        {
+            try self.recordDependentBindings(v.name, final_type);
+        }
         if (declared_type != types.Primitive.none and v.init != hir_mod.none_node_id) {
             if (self.hir.kindOf(v.init) == .array_literal and
                 v.type_annotation != hir_mod.none_node_id and
@@ -105052,17 +105110,15 @@ pub const Checker = struct {
         const args = hir_mod.callArgs(self.hir, stmt);
         if (pred.param_index >= args.len) return;
         const arg = args[pred.param_index];
-        if (self.hir.kindOf(arg) != .identifier) return;
-        const arg_id = hir_mod.identifierOf(self.hir, arg);
         // Predicate-less `asserts arg` (no `is T`): narrow to a
-        // truthy approximation by subtracting `null | undefined`
-        // from the current type.
+        // truthy condition. This deliberately reuses normal guard flow so
+        // member paths and compound conditions narrow as they do in `if`.
         if (pred.target_type == types.Primitive.unknown or pred.target_type == types.Primitive.none) {
-            const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
-            const narrowed = self.subtractNullUndefined(current) catch current;
-            try self.recordNarrow(arg_id.name, narrowed);
+            try self.applyTypeGuard(arg, true);
             return;
         }
+        if (self.hir.kindOf(arg) != .identifier) return;
+        const arg_id = hir_mod.identifierOf(self.hir, arg);
         const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
         const target = try self.instantiatePredicateTarget(stmt, pred);
         try self.recordNarrow(arg_id.name, try self.narrowTypeByPredicate(current, target));
@@ -106374,12 +106430,13 @@ pub const Checker = struct {
                 null;
             const lit_operand: NodeId = if (self.hir.kindOf(b.lhs) == .identifier) b.rhs else b.lhs;
             if (alias_id) |aid| {
-                if (self.disc_aliases.get(aid)) |alias| {
-                    if (try self.expressionNarrowLiteralType(lit_operand)) |lit_t| {
+                if (try self.expressionNarrowLiteralType(lit_operand)) |lit_t| {
+                    if (self.disc_aliases.get(aid)) |alias| {
                         try self.applyDiscriminatedNarrowByObjectAndProp(alias.object, alias.prop, lit_t, positive);
                     }
-                    // Fall through so the alias variable itself still narrows.
+                    try self.applyDependentBindingNarrow(aid, lit_t, positive);
                 }
+                // Fall through so the alias variable itself still narrows.
             }
         }
         // `typeof x === "kind"` and the operand-order-independent
@@ -106897,6 +106954,126 @@ pub const Checker = struct {
                 const target_name = hir_mod.identifierOf(self.hir, tp.name).name;
                 try self.disc_aliases.put(self.gpa, target_name, .{ .object = v.init, .prop = key_name });
             }
+        }
+    }
+
+    fn directDependentBindingIdentifier(self: *Checker, node: NodeId) ?NodeId {
+        if (node == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(node)) {
+            .identifier => node,
+            .assignment => self.directDependentBindingIdentifier(hir_mod.assignmentOf(self.hir, node).target),
+            else => null,
+        };
+    }
+
+    fn dependentPatternFlowName(self: *Checker, pattern: NodeId) CheckError!hir_mod.StringId {
+        var buf: [48]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "\x00dependent-pattern:{d}", .{pattern}) catch return error.OutOfMemory;
+        return self.string_interner.intern(text) catch return error.OutOfMemory;
+    }
+
+    fn dependentBindingProjectedType(
+        self: *Checker,
+        source_t: TypeId,
+        selector: DependentBindingSelector,
+    ) CheckError!TypeId {
+        if (source_t == types.Primitive.never) return types.Primitive.never;
+        return switch (selector) {
+            .property => |name| self.objectPropertyTypeByName(source_t, name) orelse types.Primitive.any,
+            .tuple_index => |index| blk: {
+                if (try self.unionTupleElementAccessAt(source_t, index)) |access| break :blk access.value_type;
+                const elem_t = self.tupleElementType(source_t, index);
+                break :blk if (elem_t != types.Primitive.none) elem_t else types.Primitive.any;
+            },
+        };
+    }
+
+    fn recordDependentBindings(
+        self: *Checker,
+        pattern: NodeId,
+        source_t: TypeId,
+    ) CheckError!void {
+        if (pattern == hir_mod.none_node_id or source_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(source_t).is_union) return;
+        const pattern_kind = self.hir.kindOf(pattern);
+        if (pattern_kind != .object_pattern and pattern_kind != .array_pattern) return;
+
+        var tuple_index: u32 = 0;
+        for (hir_mod.patternElements(self.hir, pattern)) |elem| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, elem);
+            defer if (pattern_kind == .array_pattern and !p.flags.is_rest) {
+                tuple_index += 1;
+            };
+            if (p.name == hir_mod.none_node_id or p.flags.is_rest or p.flags.is_computed_binding_key) continue;
+            const target = self.directDependentBindingIdentifier(p.name) orelse continue;
+            const name = hir_mod.identifierOf(self.hir, target).name;
+            const selector: DependentBindingSelector = if (pattern_kind == .array_pattern)
+                .{ .tuple_index = tuple_index }
+            else
+                .{ .property = (try self.objectBindingElementKeyName(elem, target)) orelse continue };
+            try self.dependent_bindings.put(self.gpa, name, .{
+                .pattern = pattern,
+                .source_type = source_t,
+                .selector = selector,
+            });
+        }
+
+        const flow_name = try self.dependentPatternFlowName(pattern);
+        try self.recordNarrow(flow_name, source_t);
+        var it = self.dependent_bindings.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.pattern != pattern) continue;
+            const projected = try self.dependentBindingProjectedType(source_t, entry.value_ptr.selector);
+            if (projected == types.Primitive.none or projected == types.Primitive.any or projected == types.Primitive.unknown) continue;
+            try self.recordNarrow(entry.key_ptr.*, projected);
+        }
+    }
+
+    fn narrowDependentSource(
+        self: *Checker,
+        source_t: TypeId,
+        selector: DependentBindingSelector,
+        predicate_t: TypeId,
+        positive: bool,
+    ) CheckError!TypeId {
+        if (source_t == types.Primitive.never) return source_t;
+        const flags = self.interner.pool.flagsOf(source_t);
+        if (!flags.is_union) {
+            const projected = try self.dependentBindingProjectedType(source_t, selector);
+            const matches = try self.typesHaveComparableOverlap(projected, predicate_t);
+            return if (matches == positive) source_t else types.Primitive.never;
+        }
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        for (self.interner.unionMembers(source_t)) |member| {
+            const projected = try self.dependentBindingProjectedType(member, selector);
+            const matches = try self.typesHaveComparableOverlap(projected, predicate_t);
+            if (matches == positive) try kept.append(self.gpa, member);
+        }
+        if (kept.items.len == 0) return types.Primitive.never;
+        if (kept.items.len == 1) return kept.items[0];
+        return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+    }
+
+    fn applyDependentBindingNarrow(
+        self: *Checker,
+        name: hir_mod.StringId,
+        predicate_t: TypeId,
+        positive: bool,
+    ) CheckError!void {
+        const binding = self.dependent_bindings.get(name) orelse return;
+        const flow_name = try self.dependentPatternFlowName(binding.pattern);
+        const source_t = self.lookupNarrow(flow_name) orelse binding.source_type;
+        const narrowed_source = try self.narrowDependentSource(source_t, binding.selector, predicate_t, positive);
+        try self.recordNarrow(flow_name, narrowed_source);
+
+        var it = self.dependent_bindings.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.pattern != binding.pattern) continue;
+            const projected = try self.dependentBindingProjectedType(narrowed_source, entry.value_ptr.selector);
+            if (projected == types.Primitive.none or projected == types.Primitive.any or projected == types.Primitive.unknown) continue;
+            try self.recordNarrow(entry.key_ptr.*, projected);
         }
     }
 
@@ -224209,6 +224386,83 @@ test "checker: annotated class field arrows retain contextual assertion signatur
         TsCodes.type_not_assignable,
         "Type '() => number' is not assignable to type '() => string'.",
     ));
+}
+
+test "checker: dependent destructuring defaults narrow sibling bindings" {
+    const s = try newSetup(
+        \\type U =
+        \\  | { kind: "a"; payload: number; extra?: unknown }
+        \\  | { kind: "b"; payload: string; extra?: unknown };
+        \\declare const u: U;
+        \\const {
+        \\  kind,
+        \\  payload,
+        \\  extra = kind === "a" ? payload.toFixed() : payload.toUpperCase(),
+        \\} = u;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: overloaded assertion narrows a dependent member path" {
+    const s = try newSetup(
+        \\type State =
+        \\  | { status: "ready"; payload: { value?: string } }
+        \\  | { status: "pending"; payload?: undefined };
+        \\declare function getState(): State;
+        \\declare function assert(condition: boolean): asserts condition;
+        \\declare function assert(condition: boolean, message: string): asserts condition;
+        \\const readValue = () => {
+        \\  const { status, payload } = getState();
+        \\  if (status !== "ready") throw new Error("not ready");
+        \\  assert(payload.value !== undefined);
+        \\  return payload.value;
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: exhaustive nested tuple switch removes fallthrough variant" {
+    const s = try newSetup(
+        \\type F =
+        \\  | readonly [0, readonly [number]]
+        \\  | readonly [0 | 1, readonly [number, number]]
+        \\  | readonly [1, readonly [number, number, number]];
+        \\const f = ([i, x]: F): undefined => {
+        \\  switch (i) {
+        \\    case 0: {
+        \\      switch (x.length) {
+        \\        case 1:
+        \\        case 2: return undefined;
+        \\      }
+        \\    }
+        \\    case 1: {
+        \\      const length: 2 | 3 = x.length;
+        \\    }
+        \\  }
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: forward class static private access reports TS18013" {
