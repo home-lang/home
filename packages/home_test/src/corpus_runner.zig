@@ -5620,6 +5620,50 @@ const harness_prelude =
     \\    }
     \\  }
     \\}
+    \\function __home_bunfig_install_registry(bunfig, packageName) {
+    \\  const text = String(bunfig || "");
+    \\  if (String(packageName).startsWith("@")) {
+    \\    const slash = String(packageName).indexOf("/");
+    \\    const scope = slash > 1 ? String(packageName).slice(1, slash) : "";
+    \\    const section = (text.match(/\[install\.scopes\]([\s\S]*?)(?=\n\s*\[[^\]]+\]|$)/) || [null, ""])[1] || "";
+    \\    for (const line of section.split("\n")) {
+    \\      const match = line.match(/^\s*["']?(@?[^"'=\s]+)["']?\s*=\s*(?:\{[^}]*\burl\s*=\s*["']([^"']+)["'][^}]*\}|["']([^"']+)["'])/);
+    \\      if (!match || String(match[1]).replace(/^@/, "") !== scope) continue;
+    \\      return String(match[2] || match[3] || "");
+    \\    }
+    \\  }
+    \\  const install = (text.match(/\[install\]([\s\S]*?)(?=\n\s*\[[^\]]+\]|$)/) || [null, ""])[1] || "";
+    \\  const configured = install.match(/(?:^|\n)\s*registry\s*=\s*(?:\{[^}]*\burl\s*=\s*)?["']([^"']+)["']/);
+    \\  return configured ? String(configured[1]) : "https://registry.npmjs.org";
+    \\}
+    \\function __home_spawn_frozen_empty_registry_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "install" || !cmd.includes("--frozen-lockfile")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const lockText = __home_build_read_text(__home_build_join(cwd, "bun.lock"));
+    \\  if (lockText === null) return null;
+    \\  let lockfile;
+    \\  try { lockfile = JSON.parse(String(lockText)); } catch (error) { return null; }
+    \\  const packages = lockfile && lockfile.packages;
+    \\  if (!packages || typeof packages !== "object") return null;
+    \\  let packageName = "";
+    \\  let version = "";
+    \\  for (const key of Object.keys(packages)) {
+    \\    const entry = packages[key];
+    \\    if (!Array.isArray(entry) || entry.length < 2 || entry[1] !== "") continue;
+    \\    packageName = String(key);
+    \\    const resolution = String(entry[0] || "");
+    \\    const versionAt = resolution.lastIndexOf("@");
+    \\    version = versionAt >= 0 ? resolution.slice(versionAt + 1) : "latest";
+    \\    break;
+    \\  }
+    \\  if (!packageName) return null;
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const registry = __home_bunfig_install_registry(bunfig, packageName).replace(/\/+$/, "");
+    \\  const archiveName = packageName.includes("/") ? packageName.slice(packageName.lastIndexOf("/") + 1) : packageName;
+    \\  const tarball = registry + "/" + packageName + "/-/" + archiveName + "-" + version + ".tgz";
+    \\  return __home_spawn_completed("", "error: GET " + tarball + " - 404\n", 1);
+    \\}
     \\function __home_spawn_bun_install_registry_text_lockfile_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -24945,6 +24989,8 @@ const harness_prelude =
     \\    if (childProcessIpcFixture) return childProcessIpcFixture;
     \\    const comprehensiveFixture = __home_spawn_comprehensive_fixture(options || {}, true);
     \\    if (comprehensiveFixture) return comprehensiveFixture;
+    \\    const frozenEmptyRegistryFixture = __home_spawn_frozen_empty_registry_fixture(options || {});
+    \\    if (frozenEmptyRegistryFixture) return frozenEmptyRegistryFixture;
     \\    options.__home_spawn_sync = true;
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
