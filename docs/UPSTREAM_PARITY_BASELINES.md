@@ -8,7 +8,7 @@ how to triage the result.
 | Upstream | Pin (where Home ported from) | Pin location | Reference checkout | Diff computable today? |
 |---|---|---|---|---|
 | **Bun** (engine) | `fd0b6f1a271fca0b8124b69f230b100f4d636af6` | `packages/runtime/UPSTREAM_SHA.txt` (enforced by `scripts/sync-bun-tests.sh`) | `~/Code/bun` | ✅ yes — after `git fetch` |
-| **typescript-go** (canonical TypeScript 7 reference) | `b8276f35cd288aa163fad0516b60ddaacec87ee7` | `_submodules/typescript-go` gitlink | `_submodules/typescript-go` | ✅ yes — pinned submodule on `main` |
+| **typescript-go** (canonical TypeScript 7 reference) | `24fabe95acba758c05fcb349bf427a3a0c8ad676` | `_submodules/typescript-go` gitlink | `_submodules/typescript-go` | ✅ yes — pinned submodule tracking `main` |
 
 ## Bun
 
@@ -47,14 +47,17 @@ self-contained porting targets.
 
 `microsoft/typescript-go` is now Home's repository-owned source of truth for
 TypeScript 7 behavior. The gitlink pins tsgo `main` at
-`b8276f35cd288aa163fad0516b60ddaacec87ee7`; that revision pins its inherited
+`24fabe95acba758c05fcb349bf427a3a0c8ad676`; that revision pins its inherited
 TypeScript corpus at `4d4f005c8541e0255a9d8791205fdce326e462bc`.
 
-The 2026-07-16 transition moved tsgo forward 107 commits from the prior local
-checkout. Its inherited TypeScript corpus moved forward 23 commits without
-changing the 5,907-case expanded conformance inventory or its error baselines.
-Home passes all 299 expanded tsgo-native compiler testdata cases exactly and
-holds 5,045/5,907 inherited exact cases, with 862 recorded failure identities.
+The 2026-08-08 transition moved tsgo forward 64 commits from `b8276f35` while
+leaving the nested TypeScript pin unchanged. The tsgo-native compiler corpus
+grew from 300 to 321 source files and from 299 to 320 expanded cases. With
+family-aware native baseline discovery, Home currently passes 192/320 exactly,
+with 128 remaining failures. The former 299/299 claim was measured while the
+harness searched one directory above `testdata/baselines/reference/compiler`,
+so native error baselines were treated as absent; it was not a valid parity
+measurement. The inherited TypeScript inventory remains 5,907 expanded cases.
 
 Initialize the reproducible two-level checkout with:
 
