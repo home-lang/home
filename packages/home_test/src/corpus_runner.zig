@@ -59327,14 +59327,40 @@ const harness_prelude =
     \\    this.__home_chunks = [];
     \\    this.__home_all_chunks = [];
     \\    this.__home_closed = false;
+    \\    this.__home_errored = null;
+    \\    this.__home_read_waiters = [];
+    \\    this.__home_pull_pending = false;
+    \\    this.__home_byob_request = null;
     \\    this.__home_start_pending = null;
     \\    this.locked = false;
     \\    this.__home_underlying_source = underlyingSource || {};
+    \\    this.__home_byte_stream = !!(underlyingSource && underlyingSource.type === "bytes");
+    \\    this.__home_auto_allocate_chunk_size = Number(underlyingSource && underlyingSource.autoAllocateChunkSize) || 16384;
     \\    const stream = this;
+    \\    function streamError(code, message) {
+    \\      const error = new TypeError(message);
+    \\      error.code = code;
+    \\      return error;
+    \\    }
+    \\    function flushClosedWaiters() {
+    \\      while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().resolve({ done: true, value: undefined });
+    \\    }
     \\    const controller = {
+    \\      get byobRequest() { return stream.__home_byob_request; },
     \\      enqueue(chunk) {
-    \\        if (stream.__home_closed) throw new TypeError("ReadableStream is closed");
-    \\        stream.__home_chunks.push(chunk);
+    \\        if (stream.__home_closed) throw streamError("ERR_INVALID_STATE", "Invalid state: Controller is already closed");
+    \\        if (stream.__home_byte_stream && !ArrayBuffer.isView(chunk)) throw streamError("ERR_INVALID_ARG_TYPE", 'The "chunk" argument must be an instance of Buffer, TypedArray, or DataView.');
+    \\        const request = stream.__home_byob_request;
+    \\        if (stream.__home_byte_stream && request) {
+    \\          const target = request.view;
+    \\          const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    \\          const count = Math.min(target.byteLength, bytes.byteLength);
+    \\          new Uint8Array(target.buffer, target.byteOffset, count).set(bytes.subarray(0, count));
+    \\          if (count < bytes.byteLength) stream.__home_chunks.push(bytes.slice(count));
+    \\          request.respond(count);
+    \\        } else if (stream.__home_read_waiters.length > 0) {
+    \\          stream.__home_read_waiters.shift().resolve({ done: false, value: chunk });
+    \\        } else stream.__home_chunks.push(chunk);
     \\        __home_array_append(stream.__home_all_chunks, chunk);
     \\      },
     \\      write(chunk) {
@@ -59349,9 +59375,23 @@ const harness_prelude =
     \\        return Promise.resolve(undefined);
     \\      },
     \\      close() {
+    \\        if (stream.__home_closed) throw streamError("ERR_INVALID_STATE", "Invalid state: Controller is already closed");
     \\        stream.__home_closed = true;
+    \\        Promise.resolve().then(() => {
+    \\          const request = stream.__home_byob_request;
+    \\          if (request) {
+    \\            try { request.respond(0); } catch (error) {}
+    \\          }
+    \\          flushClosedWaiters();
+    \\        });
+    \\      },
+    \\      error(reason) {
+    \\        stream.__home_errored = reason || new Error("ReadableStream errored");
+    \\        stream.__home_closed = true;
+    \\        while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().reject(stream.__home_errored);
     \\      },
     \\    };
+    \\    this.__home_controller = controller;
     \\    if (underlyingSource && typeof underlyingSource.start === "function") {
     \\      const startResult = underlyingSource.start(controller);
     \\      if (__home_is_thenable(startResult)) this.__home_start_pending = __home_then(startResult, () => {
@@ -59361,41 +59401,31 @@ const harness_prelude =
     \\  };
     \\  ReadableStream.prototype.getReader = function() {
     \\    const stream = this;
-    \\    const controller = {
-    \\      enqueue(chunk) {
-    \\        if (stream.__home_closed) throw new TypeError("ReadableStream is closed");
-    \\        stream.__home_chunks.push(chunk);
-    \\        __home_array_append(stream.__home_all_chunks, chunk);
-    \\      },
-    \\      write(chunk) {
-    \\        this.enqueue(chunk);
-    \\        return Promise.resolve(undefined);
-    \\      },
-    \\      flush() {
-    \\        return Promise.resolve(undefined);
-    \\      },
-    \\      end() {
-    \\        this.close();
-    \\        return Promise.resolve(undefined);
-    \\      },
-    \\      close() {
-    \\        stream.__home_closed = true;
-    \\      },
-    \\    };
+    \\    const controller = stream.__home_controller;
     \\    return {
     \\      read() {
     \\        if (stream.__home_chunks.length > 0) return Promise.resolve({ done: false, value: stream.__home_chunks.shift() });
     \\        if (stream.__home_start_pending) return __home_then(stream.__home_start_pending, () => this.read());
-    \\        if (!stream.__home_closed && stream.__home_underlying_source && typeof stream.__home_underlying_source.pull === "function") {
-    \\          return __home_then(stream.__home_underlying_source.pull(controller), () => {
-    \\            if (stream.__home_chunks.length > 0) return { done: false, value: stream.__home_chunks.shift() };
-    \\            return { done: !!stream.__home_closed, value: undefined };
-    \\          });
+    \\        if (stream.__home_errored) return Promise.reject(stream.__home_errored);
+    \\        if (stream.__home_closed) return Promise.resolve({ done: true, value: undefined });
+    \\        if (stream.__home_byte_stream) return __home_read_byte_stream(stream, new Uint8Array(stream.__home_auto_allocate_chunk_size));
+    \\        const pending = new Promise((resolve, reject) => stream.__home_read_waiters.push({ resolve, reject }));
+    \\        if (!stream.__home_pull_pending && stream.__home_underlying_source && typeof stream.__home_underlying_source.pull === "function") {
+    \\          stream.__home_pull_pending = true;
+    \\          Promise.resolve().then(() => stream.__home_underlying_source.pull(controller)).then(
+    \\            () => { stream.__home_pull_pending = false; },
+    \\            error => {
+    \\              stream.__home_pull_pending = false;
+    \\              stream.__home_errored = error;
+    \\              while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().reject(error);
+    \\            },
+    \\          );
     \\        }
-    \\        return Promise.resolve({ done: true, value: undefined });
+    \\        return pending;
     \\      },
     \\      cancel(reason) {
     \\        stream.__home_closed = true;
+    \\        while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().resolve({ done: true, value: undefined });
     \\        if (stream.__home_underlying_source && typeof stream.__home_underlying_source.cancel === "function") return Promise.resolve(stream.__home_underlying_source.cancel(reason));
     \\        return Promise.resolve(undefined);
     \\      },
@@ -59608,9 +59638,9 @@ const harness_prelude =
     \\    let capturedMeta = null;
     \\    let exposeCapturedChunks = false;
     \\    function publishCapturedChunks() {
-    \\      if (!capturedStream || !capturedChunks || !exposeCapturedChunks) return;
-    \\      capturedStream.__home_chunks = capturedChunks;
-    \\      capturedStream.__home_all_chunks = capturedChunks;
+    \\      if (!capturedStream || !capturedChunks || !exposeCapturedChunks || !capturedClosed) return;
+    \\      capturedStream.__home_chunks = capturedChunks.slice();
+    \\      capturedStream.__home_all_chunks = capturedChunks.slice();
     \\      capturedStream.__home_closed = capturedClosed;
     \\    }
     \\    let source = underlyingSource;
@@ -59618,6 +59648,8 @@ const harness_prelude =
     \\      capturedChunks = [];
     \\      exposeCapturedChunks = typeof source.pull !== "function";
     \\      source = Object.assign({}, source, {
+    \\        type: source.type,
+    \\        autoAllocateChunkSize: source.autoAllocateChunkSize,
     \\        start(controller) {
     \\          controller.__home_desired_size = 1;
     \\          const controllerProxy = new Proxy(controller, {
@@ -59633,11 +59665,12 @@ const harness_prelude =
     \\                    error.code = "ERR_INVALID_STATE";
     \\                    throw error;
     \\                  }
+    \\                  const result = target.close.apply(target, arguments);
     \\                  target.__home_desired_size = 0;
     \\                  capturedClosed = true;
     \\                  if (capturedStream) capturedStream.__home_closed = true;
     \\                  if (capturedMeta) capturedMeta.closed = true;
-    \\                  return target.close.apply(target, arguments);
+    \\                  return result;
     \\                };
     \\              }
     \\              if (property === "error") {
@@ -59674,11 +59707,11 @@ const harness_prelude =
     \\                    error.code = "ERR_INVALID_STATE";
     \\                    throw error;
     \\                  }
+    \\                  const result = target.close.call(target);
     \\                  target.__home_desired_size = 0;
     \\                  capturedClosed = true;
     \\                  if (capturedStream) capturedStream.__home_closed = true;
     \\                  if (capturedMeta) capturedMeta.closed = true;
-    \\                  const result = target.close.call(target);
     \\                  return Promise.resolve(result);
     \\                };
     \\              }
@@ -59746,7 +59779,7 @@ const harness_prelude =
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.tee !== "function") {
     \\  Object.defineProperty(ReadableStream.prototype, "tee", { configurable: true, writable: true, value: function() {
     \\    const captured = Array.isArray(this.__home_all_chunks) ? this.__home_all_chunks.slice() : null;
-    \\    if (captured) {
+    \\    if (captured && this.__home_closed) {
     \\      const branch = () => new ReadableStream({ start(controller) { for (const chunk of captured) controller.enqueue(chunk); controller.close(); } });
     \\      return [branch(), branch()];
     \\    }
@@ -59791,7 +59824,19 @@ const harness_prelude =
     \\    const stream = this;
     \\    const reader = __home_readable_stream_get_reader.apply(this, arguments);
     \\    if (reader) {
+    \\      try {
+    \\        if (typeof __home_ReadableStreamDefaultReader === "function" && !(reader instanceof __home_ReadableStreamDefaultReader)) Object.setPrototypeOf(reader, __home_ReadableStreamDefaultReader.prototype);
+    \\      } catch (error) {}
     \\      try { Object.defineProperty(stream, "__home_logically_locked", { configurable: true, writable: true, value: true }); } catch (error) {}
+    \\      try {
+    \\        const ownLocked = Object.getOwnPropertyDescriptor(stream, "locked");
+    \\        if (!ownLocked || ownLocked.configurable !== false) {
+    \\          Object.defineProperty(stream, "locked", {
+    \\            configurable: true,
+    \\            get() { return !!stream.__home_logically_locked || !!(lockedDescriptor && lockedDescriptor.get && lockedDescriptor.get.call(stream)); },
+    \\          });
+    \\        }
+    \\      } catch (error) {}
     \\      const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
     \\      reader.releaseLock = function() {
     \\        try { return releaseLock.apply(this, arguments); }
@@ -59908,7 +59953,7 @@ const harness_prelude =
     \\var __home_TransformStreamDefaultController = typeof globalThis.TransformStreamDefaultController === "function" ? globalThis.TransformStreamDefaultController : function TransformStreamDefaultController() {};
     \\var __home_WritableStreamDefaultController = typeof globalThis.WritableStreamDefaultController === "function" ? globalThis.WritableStreamDefaultController : function WritableStreamDefaultController() {};
     \\var __home_WritableStreamDefaultWriter = typeof globalThis.WritableStreamDefaultWriter === "function" ? globalThis.WritableStreamDefaultWriter : function WritableStreamDefaultWriter() {};
-    \\var __home_ReadableStreamBYOBReader = typeof globalThis.ReadableStreamBYOBReader === "function" ? globalThis.ReadableStreamBYOBReader : function ReadableStreamBYOBReader(stream) { this.__home_stream = stream || null; };
+    \\var __home_ReadableStreamBYOBReader = typeof globalThis.ReadableStreamBYOBReader === "function" ? globalThis.ReadableStreamBYOBReader : function ReadableStreamBYOBReader(stream) { Object.defineProperty(this, "__home_stream", { configurable: true, writable: true, value: stream || null }); };
     \\globalThis.ByteLengthQueuingStrategy = __home_ByteLengthQueuingStrategy;
     \\globalThis.CompressionStream = __home_CompressionStream;
     \\globalThis.CountQueuingStrategy = __home_CountQueuingStrategy;
@@ -59921,12 +59966,138 @@ const harness_prelude =
     \\globalThis.TransformStreamDefaultController = __home_TransformStreamDefaultController;
     \\globalThis.WritableStreamDefaultController = __home_WritableStreamDefaultController;
     \\globalThis.WritableStreamDefaultWriter = __home_WritableStreamDefaultWriter;
+    \\const __home_byob_request_states = new WeakMap();
+    \\function __home_byob_error(code, message) {
+    \\  const error = new TypeError(message);
+    \\  error.code = code;
+    \\  return error;
+    \\}
+    \\function __home_byob_request_state(request) {
+    \\  const state = __home_byob_request_states.get(request);
+    \\  if (!state) throw __home_byob_error("ERR_INVALID_THIS", "Value of this must be of type ReadableStreamBYOBRequest");
+    \\  return state;
+    \\}
+    \\function __home_make_byob_request(view, respond) {
+    \\  const request = Object.create(__home_ReadableStreamBYOBRequest.prototype);
+    \\  __home_byob_request_states.set(request, { active: true, view, respond });
+    \\  return request;
+    \\}
+    \\function __home_read_byte_stream(stream, suppliedView) {
+    \\  if (stream.__home_start_pending) return Promise.resolve(stream.__home_start_pending).then(() => __home_read_byte_stream(stream, suppliedView));
+    \\  if (stream.__home_errored) return Promise.reject(stream.__home_errored);
+    \\  const view = suppliedView;
+    \\  if (!ArrayBuffer.isView(view) || view.byteLength === 0) return Promise.reject(__home_byob_error("ERR_INVALID_ARG_TYPE", 'The "view" argument must be a non-empty Buffer, TypedArray, or DataView.'));
+    \\  if (stream.__home_chunks.length > 0) {
+    \\    const queued = stream.__home_chunks.shift();
+    \\    const bytes = new Uint8Array(queued.buffer, queued.byteOffset, queued.byteLength);
+    \\    const count = Math.min(view.byteLength, bytes.byteLength);
+    \\    new Uint8Array(view.buffer, view.byteOffset, count).set(bytes.subarray(0, count));
+    \\    if (count < bytes.byteLength) stream.__home_chunks.unshift(bytes.slice(count));
+    \\    return Promise.resolve({ done: false, value: new Uint8Array(view.buffer, view.byteOffset, count) });
+    \\  }
+    \\  if (stream.__home_closed) return Promise.resolve({ done: true, value: undefined });
+    \\  return new Promise((resolve, reject) => {
+    \\    let settled = false;
+    \\    const request = __home_make_byob_request(view, (bytesWritten, responseView) => {
+    \\      if (settled) throw __home_byob_error("ERR_INVALID_STATE", "This BYOB request has been invalidated");
+    \\      const count = Number(bytesWritten);
+    \\      if (!Number.isInteger(count) || count < 0 || count > responseView.byteLength) throw __home_byob_error("ERR_INVALID_ARG_VALUE", 'The "bytesWritten" argument is invalid.');
+    \\      settled = true;
+    \\      stream.__home_byob_request = null;
+    \\      const done = count === 0 && stream.__home_closed;
+    \\      const value = done ? undefined : new Uint8Array(responseView.buffer, responseView.byteOffset, count);
+    \\      resolve({ done, value });
+    \\    });
+    \\    stream.__home_byob_request = request;
+    \\    let pullResult;
+    \\    try {
+    \\      pullResult = stream.__home_underlying_source && typeof stream.__home_underlying_source.pull === "function"
+    \\        ? stream.__home_underlying_source.pull(stream.__home_controller)
+    \\        : undefined;
+    \\    } catch (error) {
+    \\      stream.__home_byob_request = null;
+    \\      reject(error);
+    \\      return;
+    \\    }
+    \\    Promise.resolve(pullResult).then(
+    \\      () => {
+    \\        if (!settled && stream.__home_closed) {
+    \\          try { request.respond(0); } catch (error) { reject(error); }
+    \\        }
+    \\      },
+    \\      error => {
+    \\        if (!settled) {
+    \\          stream.__home_byob_request = null;
+    \\          reject(error);
+    \\        }
+    \\      },
+    \\    );
+    \\  });
+    \\}
+    \\Object.defineProperty(__home_ReadableStreamBYOBRequest.prototype, "view", {
+    \\  configurable: true,
+    \\  enumerable: true,
+    \\  get() {
+    \\    const state = __home_byob_request_state(this);
+    \\    return state.active ? state.view : null;
+    \\  },
+    \\});
+    \\__home_ReadableStreamBYOBRequest.prototype.respond = function(bytesWritten) {
+    \\  const state = __home_byob_request_state(this);
+    \\  if (!state.active) throw __home_byob_error("ERR_INVALID_STATE", "This BYOB request has been invalidated");
+    \\  state.active = false;
+    \\  return state.respond(Number(bytesWritten), state.view);
+    \\};
+    \\__home_ReadableStreamBYOBRequest.prototype.respondWithNewView = function(view) {
+    \\  const state = __home_byob_request_state(this);
+    \\  if (!state.active) throw __home_byob_error("ERR_INVALID_STATE", "This BYOB request has been invalidated");
+    \\  if (!ArrayBuffer.isView(view)) throw __home_byob_error("ERR_INVALID_ARG_TYPE", 'The "view" argument must be an instance of Buffer, TypedArray, or DataView.');
+    \\  state.active = false;
+    \\  return state.respond(view.byteLength, view);
+    \\};
+    \\if (!__home_ReadableStreamBYOBReader.prototype[__home_util_inspect_custom]) Object.defineProperty(__home_ReadableStreamBYOBReader.prototype, __home_util_inspect_custom, { configurable: true, value() { return "ReadableStreamBYOBReader {}"; } });
+    \\if (!__home_ReadableStreamBYOBRequest.prototype[__home_util_inspect_custom]) Object.defineProperty(__home_ReadableStreamBYOBRequest.prototype, __home_util_inspect_custom, { configurable: true, value() { return "ReadableStreamBYOBRequest {}"; } });
+    \\if (!__home_ReadableStreamBYOBReader.prototype.read) __home_ReadableStreamBYOBReader.prototype.read = function(view) {
+    \\  const stream = this && this.__home_stream;
+    \\  if (!stream) return Promise.reject(__home_byob_error("ERR_INVALID_STATE", "Invalid state: The reader is not bound to a stream"));
+    \\  return __home_read_byte_stream(stream, view);
+    \\};
+    \\if (!__home_ReadableStreamBYOBReader.prototype.cancel) __home_ReadableStreamBYOBReader.prototype.cancel = function(reason) {
+    \\  const stream = this && this.__home_stream;
+    \\  if (!stream) return Promise.reject(__home_byob_error("ERR_INVALID_STATE", "Invalid state: The reader is not bound to a stream"));
+    \\  stream.__home_closed = true;
+    \\  return Promise.resolve(stream.__home_underlying_source && typeof stream.__home_underlying_source.cancel === "function" ? stream.__home_underlying_source.cancel(reason) : undefined);
+    \\};
     \\if (!__home_ReadableStreamBYOBReader.prototype.releaseLock) __home_ReadableStreamBYOBReader.prototype.releaseLock = function() { this.__home_stream = null; };
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_byob_reader_shim) {
     \\  const __home_readable_stream_get_reader = ReadableStream.prototype.getReader;
     \\  Object.defineProperty(ReadableStream.prototype, "__home_byob_reader_shim", { value: true });
     \\  ReadableStream.prototype.getReader = function(options) {
-    \\    if (options && options.mode === "byob") return new __home_ReadableStreamBYOBReader(this);
+    \\    if (arguments.length > 0 && options !== undefined && (options === null || (typeof options !== "object" && typeof options !== "function"))) {
+    \\      const error = new TypeError('The "options" argument must be of type Object.');
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    if (options && options.mode !== undefined) {
+    \\      if (options.mode !== "byob") {
+    \\        const error = new TypeError('The property "options.mode" is invalid.');
+    \\        error.code = "ERR_INVALID_ARG_VALUE";
+    \\        throw error;
+    \\      }
+    \\      const stream = this;
+    \\      const reader = new __home_ReadableStreamBYOBReader(stream);
+    \\      try { stream.__home_logically_locked = true; } catch (error) {}
+    \\      try {
+    \\        const ownLocked = Object.getOwnPropertyDescriptor(stream, "locked");
+    \\        if (!ownLocked || ownLocked.configurable !== false) Object.defineProperty(stream, "locked", { configurable: true, get() { return !!stream.__home_logically_locked; } });
+    \\      } catch (error) {}
+    \\      const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
+    \\      reader.releaseLock = function() {
+    \\        try { return releaseLock.apply(this, arguments); }
+    \\        finally { try { stream.__home_logically_locked = false; } catch (error) {} }
+    \\      };
+    \\      return reader;
+    \\    }
     \\    return typeof __home_readable_stream_get_reader === "function" ? __home_readable_stream_get_reader.call(this, options) : { read() { return Promise.resolve({ done: true, value: undefined }); } };
     \\  };
     \\}
@@ -65066,6 +65237,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         replacement: []const u8,
     }{
         .{
+            .needle = "import { mustCall } from '../common/index.mjs';",
+            .replacement = "const { mustCall } = globalThis.require('../common');",
+        },
+        .{
+            .needle = "import { ReadableStream } from 'stream/web';",
+            .replacement = "const { ReadableStream } = globalThis.__home_import('stream/web');",
+        },
+        .{
+            .needle = "import assert from 'assert';",
+            .replacement = "const assert = globalThis.__home_import('assert');",
+        },
+        .{
             .needle = "import { a } from \"./A.ts\";",
             .replacement = "const { a } = globalThis.__home_import(\"./A.ts\");",
         },
@@ -69326,6 +69509,10 @@ test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"node:stream/web\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype.getReader = function(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function ReadableStreamBYOBReader(stream)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_read_byte_stream(stream, suppliedView)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_byob_request(view, respond)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_VALUE\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_TYPE\";") != null);
     // A transform error must reject reads, writes, and both closed promises.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_transform_error(state, reason) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const text = String(chunk);") != null);
@@ -82819,6 +83006,24 @@ test "Node stream web import rewrite lowers BYOB reader imports" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:stream/web\"") == null);
 }
 
+test "Node WHATWG stream mjs imports lower to bootstrap modules" {
+    const source =
+        \\import { mustCall } from '../common/index.mjs';
+        \\import { ReadableStream } from 'stream/web';
+        \\import assert from 'assert';
+        \\new ReadableStream({ start(controller) { controller.close(); } });
+        \\assert.strictEqual(typeof mustCall, 'function');
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-whatwg-readablestream.mjs");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { mustCall } = globalThis.require('../common');") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { ReadableStream } = globalThis.__home_import('stream/web');") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const assert = globalThis.__home_import('assert');") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+}
+
 test "bootstrap runner mirrors stream web BYOB reader inspection" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -82844,6 +83049,45 @@ test "bootstrap runner mirrors stream web BYOB reader inspection" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29225.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner tees asynchronous byte streams without duplicating chunks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("asynchronous byte stream tee", async () => {
+        \\  async function drain(stream) {
+        \\    const chunks = [];
+        \\    for await (const chunk of stream) chunks.push(chunk);
+        \\    return Buffer.concat(chunks).toString();
+        \\  }
+        \\  const [left, right] = new ReadableStream({
+        \\    type: "bytes",
+        \\    start(controller) {
+        \\      process.nextTick(() => {
+        \\        controller.enqueue(new Uint8Array([102, 111, 111]));
+        \\        process.nextTick(() => controller.close());
+        \\      });
+        \\    },
+        \\  }).tee();
+        \\  expect(await Promise.all([drain(left), drain(right)])).toEqual(["foo", "foo"]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/readablestream-byte-tee.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
