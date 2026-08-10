@@ -3533,6 +3533,7 @@ const SourceFacts = struct {
     legacy_decorators: ?bool = null,
     no_lib_true_directive: ?bool = null,
     contains_import_meta: ?bool = null,
+    use_define_for_class_fields_true: ?bool = null,
 };
 
 pub const Checker = struct {
@@ -4486,6 +4487,8 @@ pub const Checker = struct {
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
     source_facts: SourceFacts = .{},
+    parameter_annotation_index: std.ArrayListUnmanaged(NodeId) = .empty,
+    parameter_annotation_index_built: bool = false,
     source_has_virtual_sections: bool = false,
     allow_js_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -4795,6 +4798,8 @@ pub const Checker = struct {
     pub fn setSource(self: *Checker, source: []const u8) void {
         self.source = source;
         self.source_facts = .{};
+        self.parameter_annotation_index.clearRetainingCapacity();
+        self.parameter_annotation_index_built = false;
         self.source_has_virtual_sections =
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
@@ -5179,6 +5184,7 @@ pub const Checker = struct {
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.virtual_section_start_cache.deinit(self.gpa);
+        self.parameter_annotation_index.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
         self.ts_expect_error_directive_lines.deinit(self.gpa);
@@ -21330,9 +21336,12 @@ pub const Checker = struct {
     }
 
     fn sourceHasUseDefineForClassFieldsTrueDirective(self: *Checker) bool {
+        if (self.source_facts.use_define_for_class_fields_true) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "@useDefineForClassFields: true") != null or
+        const result = std.mem.indexOf(u8, src, "@useDefineForClassFields: true") != null or
             std.mem.indexOf(u8, src, "@useDefineForClassFields:true") != null;
+        self.source_facts.use_define_for_class_fields_true = result;
+        return result;
     }
 
     fn sourceHasUseDefineForClassFieldsTrueOnlyDirective(self: *Checker) bool {
@@ -104000,6 +104009,15 @@ pub const Checker = struct {
     }
 
     fn visibleActiveAnnotatedIdentifierType(self: *Checker, node: NodeId) ?TypeId {
+        return self.visibleActiveAnnotatedIdentifierTypeInner(node, null, false);
+    }
+
+    fn visibleActiveAnnotatedIdentifierTypeInner(
+        self: *Checker,
+        node: NodeId,
+        recovered_annotation: ?TypeId,
+        recovered_annotation_checked: bool,
+    ) ?TypeId {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
         const id = hir_mod.identifierOf(self.hir, node);
         const use_start = self.hir.spanOf(node).start;
@@ -104042,26 +104060,15 @@ pub const Checker = struct {
                 }
             }
         }
-        var nearest_annotation = hir_mod.none_node_id;
-        var nearest_start: u32 = 0;
-        var candidate: NodeId = 1;
-        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
-            if (self.hir.kindOf(candidate) != .parameter) continue;
-            const span = self.hir.spanOf(candidate);
-            if (span.start > use_start) continue;
-            const parameter = hir_mod.parameterOf(self.hir, candidate);
-            if (parameter.name == hir_mod.none_node_id or self.hir.kindOf(parameter.name) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, parameter.name).name != id.name) continue;
-            if (parameter.type_annotation == hir_mod.none_node_id) continue;
-            if (nearest_annotation == hir_mod.none_node_id or span.start >= nearest_start) {
-                nearest_start = span.start;
-                nearest_annotation = parameter.type_annotation;
-            }
-        }
+        const nearest_annotation = self.nearestPriorParameterAnnotation(id.name, use_start);
         if (nearest_annotation != hir_mod.none_node_id) {
             return self.lowerActiveValueTypeAnnotation(id.name, nearest_annotation) catch types.Primitive.any;
         }
-        if (self.recoveredSourceParameterAnnotationType(node, id.name)) |recovered_t| return recovered_t;
+        if (recovered_annotation_checked) {
+            if (recovered_annotation) |recovered_t| return recovered_t;
+        } else if (self.recoveredSourceParameterAnnotationType(node, id.name)) |recovered_t| {
+            return recovered_t;
+        }
         if (self.module) |module| {
             if (module.root.lookup(id.name)) |sym| {
                 if (sym.decls.items.len == 0) return null;
@@ -104081,6 +104088,42 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn nearestPriorParameterAnnotation(self: *Checker, name: hir_mod.StringId, use_start: u32) NodeId {
+        if (!self.parameter_annotation_index_built) {
+            self.parameter_annotation_index.clearRetainingCapacity();
+            var candidate: NodeId = 1;
+            while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+                if (self.hir.kindOf(candidate) != .parameter) continue;
+                const parameter = hir_mod.parameterOf(self.hir, candidate);
+                if (parameter.name == hir_mod.none_node_id or
+                    self.hir.kindOf(parameter.name) != .identifier or
+                    parameter.type_annotation == hir_mod.none_node_id)
+                {
+                    continue;
+                }
+                self.parameter_annotation_index.append(self.gpa, candidate) catch {
+                    self.parameter_annotation_index.clearRetainingCapacity();
+                    return hir_mod.none_node_id;
+                };
+            }
+            self.parameter_annotation_index_built = true;
+        }
+
+        var nearest_annotation = hir_mod.none_node_id;
+        var nearest_start: u32 = 0;
+        for (self.parameter_annotation_index.items) |candidate| {
+            const span = self.hir.spanOf(candidate);
+            if (span.start > use_start) continue;
+            const parameter = hir_mod.parameterOf(self.hir, candidate);
+            if (hir_mod.identifierOf(self.hir, parameter.name).name != name) continue;
+            if (nearest_annotation == hir_mod.none_node_id or span.start >= nearest_start) {
+                nearest_start = span.start;
+                nearest_annotation = parameter.type_annotation;
+            }
+        }
+        return nearest_annotation;
     }
 
     fn recoveredSourceParameterAnnotationType(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
@@ -107132,6 +107175,7 @@ pub const Checker = struct {
         args: []const NodeId,
         arg_types: []const TypeId,
     ) CheckError!TypeId {
+        if (self.generic_signature_params.get(sig) == null) return sig;
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         try self.inferCallSubstitutions(sig, args, arg_types, &subs);
@@ -111252,6 +111296,7 @@ pub const Checker = struct {
             (is_this and self.enclosingThisHostHasExplicitThisParam(node)) or
             (is_this and this_rebound_plain_function and self.thisInsideObjectLiteralMethod(node) and self.currentThisType() != null))
         {
+            var active_annotation_t: ?TypeId = null;
             if (!self.isDeclNameSlot(node)) {
                 if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
                     if (self.typeAnnotationShouldBecomeErrorAny(type_node)) return types.Primitive.any;
@@ -111260,7 +111305,8 @@ pub const Checker = struct {
             if (!self.isDeclNameSlot(node)) {
                 const is_evolving_untyped = self.identifierIsUntypedUninitializedVar(node);
                 const visible_annotation_node = self.visibleAnnotatedIdentifierTypeNode(node);
-                if (self.recoveredSourceParameterAnnotationType(node, id.name)) |declared_t| {
+                const recovered_annotation_t = self.recoveredSourceParameterAnnotationType(node, id.name);
+                if (recovered_annotation_t) |declared_t| {
                     const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
                     const narrow_t = self.lookupNarrow(id.name);
                     const has_incompatible_weak_narrow = if (narrow_t) |flow_t|
@@ -111285,7 +111331,8 @@ pub const Checker = struct {
                 if (!is_evolving_untyped and self.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, id.name)) {
                     if ((self.recoveredEvolvingAnyFlowTypeAt(node, id.name) catch null) != null) return types.Primitive.any;
                 }
-                if (self.visibleActiveAnnotatedIdentifierType(node) == null) {
+                active_annotation_t = self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
+                if (active_annotation_t == null) {
                     if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
                         if (self.lookupNarrow(id.name)) |narrow_t| {
                             if (narrow_t != types.Primitive.any and
@@ -111310,11 +111357,11 @@ pub const Checker = struct {
                     if (self.expandoAugmentedNarrowType(id.name, node, t) catch null) |aug_t| return aug_t;
                 }
                 if ((t == types.Primitive.any or t == types.Primitive.unknown) and !self.isDeclNameSlot(node)) {
-                    if (self.visibleActiveAnnotatedIdentifierType(node)) |declared_t| {
+                    if (active_annotation_t) |declared_t| {
                         if (declared_t != types.Primitive.any and declared_t != types.Primitive.unknown) return declared_t;
                     }
                 } else if (!self.isDeclNameSlot(node)) {
-                    if (self.visibleActiveAnnotatedIdentifierType(node)) |declared_t| {
+                    if (active_annotation_t) |declared_t| {
                         const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
                         if (self.engine.weakTypeNoCommonProperties(t, declared_t) or
                             self.engine.weakTypeNoCommonProperties(t, declared_non_null)) return declared_t;
@@ -174144,6 +174191,7 @@ test "checker: source fact cache resets when source changes" {
         \\// @strict: false
         \\// @experimentalDecorators: true
         \\// @noLib: true
+        \\// @useDefineForClassFields: true
         \\const meta = import.meta;
     );
     try T.expect(s.checker.sourceHasCheckJsDirective());
@@ -174152,6 +174200,7 @@ test "checker: source fact cache resets when source changes" {
     try T.expect(s.checker.sourceUsesLegacyDecorators());
     try T.expect(s.checker.sourceHasNoLibTrueDirective());
     try T.expect(s.checker.sourceContainsImportMeta());
+    try T.expect(s.checker.sourceHasUseDefineForClassFieldsTrueDirective());
 
     s.checker.setSource("// @checkJs: false\n");
     try T.expect(!s.checker.sourceHasCheckJsDirective());
@@ -174161,6 +174210,26 @@ test "checker: source fact cache resets when source changes" {
     try T.expect(!s.checker.sourceUsesLegacyDecorators());
     try T.expect(!s.checker.sourceHasNoLibTrueDirective());
     try T.expect(!s.checker.sourceContainsImportMeta());
+    try T.expect(!s.checker.sourceHasUseDefineForClassFieldsTrueDirective());
+}
+
+test "checker: parameter annotation index resets with source facts" {
+    const s = try newSetup(
+        \\function read(value: string) {
+        \\  return value;
+        \\}
+    );
+    defer destroySetup(s);
+
+    const value_name = try s.checker.string_interner.intern("value");
+    const annotation = s.checker.nearestPriorParameterAnnotation(value_name, std.math.maxInt(u32));
+    try T.expect(annotation != hir_mod.none_node_id);
+    try T.expect(s.checker.parameter_annotation_index_built);
+    try T.expectEqual(@as(usize, 1), s.checker.parameter_annotation_index.items.len);
+
+    s.checker.setSource("const value = 1;");
+    try T.expect(!s.checker.parameter_annotation_index_built);
+    try T.expectEqual(@as(usize, 0), s.checker.parameter_annotation_index.items.len);
 }
 
 test "checker: strict false directive suppresses typed let TS2454" {
@@ -191646,6 +191715,45 @@ test "checker: empty substitutions preserve type graph identity" {
 
     try T.expectEqual(signature_t, try s.checker.substituteType(signature_t, &empty_subs));
     try T.expectEqual(type_count, s.checker.interner.pool.typeCount());
+}
+
+test "checker: call inference only instantiates generic signatures" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const parameter_name = try s.checker.string_interner.intern("T");
+    const value_name = try s.checker.string_interner.intern("value");
+    const type_parameter = try s.checker.interner.internFreshTypeParameterWithVariance(
+        parameter_name,
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const parameter_object = try s.checker.interner.internObjectType(&.{.{
+        .name = value_name,
+        .type = type_parameter,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const argument_object = try s.checker.interner.internObjectType(&.{.{
+        .name = value_name,
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const signature = try s.checker.interner.internSignature(&.{parameter_object}, parameter_object, false);
+    const args = [_]NodeId{hir_mod.none_node_id};
+    const arg_types = [_]TypeId{argument_object};
+
+    try T.expectEqual(signature, try s.checker.instantiateSignatureFromArgs(signature, &args, &arg_types));
+
+    try s.checker.recordGenericSignatureParams(signature, &.{type_parameter});
+    const instantiated = try s.checker.instantiateSignatureFromArgs(signature, &args, &arg_types);
+    try T.expect(instantiated != signature);
+    const instantiated_param = s.checker.interner.signatureParams(instantiated)[0];
+    try T.expectEqual(types.Primitive.string_t, s.checker.interner.objectMember(instantiated_param, value_name).?);
 }
 
 test "checker: template infer constraints coerce numeric string slices" {
