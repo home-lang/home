@@ -7042,10 +7042,7 @@ pub const Checker = struct {
                 try self.checkDefaultExportIdentifierUseBeforeDeclaration(node, ex);
                 try self.checkDefaultExportExpressionPrivateName(node, ex);
                 try self.checkIsolatedDeclarationsExport(node, ex);
-                const invalid_namespace_export_assignment = ex.is_export_equals and
-                    (self.nodeHasAncestorKind(node, .namespace_decl) or
-                        self.nodeHasAncestorKind(node, .module_decl));
-                if (ex.decl != hir_mod.none_node_id and !invalid_namespace_export_assignment) {
+                if (ex.decl != hir_mod.none_node_id) {
                     // isolatedModules: `export const enum E { ... }`
                     // can't be transpiled in isolation because
                     // consumers need the inlined member values. Emit
@@ -9795,6 +9792,7 @@ pub const Checker = struct {
                     const decl_kind = self.hir.kindOf(ex.decl);
                     if (self.isExportAssignmentDecl(s)) {
                         if (!self.namespaceNameComesFromStringLiteral(node)) {
+                            _ = try self.checkExpression(ex.decl);
                             continue;
                         }
                         if (decl_kind == .identifier) {
@@ -97998,15 +97996,13 @@ pub const Checker = struct {
                     }
                     break :blk types.Primitive.any;
                 }
-                // Once TS1163 rejects a yield outside a generator, the
-                // conformance baselines do not cascade into its operand.
-                // `current_generator_info` alone is insufficient here:
-                // valid unannotated generators also leave it null while
-                // their yield types are inferred from the body.
+                // Resolve the operand even when TS1163 rejects a yield
+                // outside a generator. tsgo checks the expression before
+                // returning `any` from the illegal-yield path.
+                const inner_t_raw = try self.checkExpression(y.expr);
                 if (!self.isInsideGeneratorFunction(node)) {
                     break :blk types.Primitive.any;
                 }
-                const inner_t_raw = try self.checkExpression(y.expr);
                 const direct_yield_in_async_generator = y.type_node == hir_mod.none_node_id and self.isInsideAsyncGeneratorFunction(node);
                 const awaited_yield = if (direct_yield_in_async_generator)
                     try self.awaitedTypeForAsyncGeneratorYield(y.expr, inner_t_raw)
@@ -138833,7 +138829,32 @@ pub const Checker = struct {
         const boundary_return_t = try self.lowererLowerWithTypeParams(type_args[0]);
         if (!self.interner.isSignature(boundary_return_t)) return null;
         const source_t = self.interner.internSignature(&.{}, boundary_return_t, false) catch return error.OutOfMemory;
-        return try self.formatArgumentNotAssignable(source_t, param_t, position);
+        const display_param_t = try self.inferredInstantiationBoundaryDiagnosticTarget(param_t);
+        return try self.formatArgumentNotAssignable(source_t, display_param_t, position);
+    }
+
+    fn inferredInstantiationBoundaryDiagnosticTarget(self: *Checker, param_t: TypeId) CheckError!TypeId {
+        if (!self.interner.isSignature(param_t)) return param_t;
+        const return_t = self.interner.signatureReturn(param_t) orelse return param_t;
+        if (self.alias_type_args.contains(return_t)) return param_t;
+        const display = self.alias_display_names.get(return_t) orelse return param_t;
+        const lt = std.mem.indexOfScalar(u8, display, '<') orelse return param_t;
+        const alias_name = self.string_interner.intern(display[0..lt]) catch return error.OutOfMemory;
+        const alias = self.generic_aliases.get(alias_name) orelse return param_t;
+        if (alias.params.len == 0) return param_t;
+        const fallbacks = try self.diag_arena.allocator().alloc(TypeId, alias.params.len);
+        for (alias.params, 0..) |type_param, i| {
+            const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(type_param)];
+            fallbacks[i] = if (payload.default != types.Primitive.none)
+                payload.default
+            else if (payload.constraint != types.Primitive.none and payload.constraint != type_param)
+                payload.constraint
+            else
+                types.Primitive.unknown;
+        }
+        _ = self.alias_display_names.remove(return_t);
+        try self.registerAliasDisplayNameInner(return_t, alias_name, fallbacks, true);
+        return param_t;
     }
 
     fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
@@ -177676,7 +177697,7 @@ test "checker: namespace type declarations are checked for heritage errors" {
     try T.expect(found);
 }
 
-test "checker: namespace export assignment does not cascade into unresolved expression" {
+test "checker: namespace export assignment checks its expression before grammar bailout" {
     const s = try newSetup(
         \\namespace M {
         \\  export = A;
@@ -177684,10 +177705,9 @@ test "checker: namespace export assignment does not cascade into unresolved expr
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.cannot_find_name);
-        try T.expect(d.code != TsCodes.property_does_not_exist);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'A'."));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: interface property must match string index signature" {
@@ -219669,6 +219689,9 @@ test "checker: strict illegal control-flow forms still check their operands" {
     s.checker.setStrictFlags(.{ .always_strict = true });
     try s.checker.checkSourceFile(s.root);
 
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'yieldOperandName'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'returnOperandName'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'exportOperandName'."));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
@@ -232563,7 +232586,7 @@ test "checker: parity scope batch binds mapped keys without hiding missing names
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
 }
 
-test "checker: parity scope batch suppresses invalid yield operand cascades" {
+test "checker: parity scope batch checks invalid yield operands" {
     const b = try newBoundSetup(
         \\function invalidFunction() { yield missingOutside; }
         \\function* validGenerator() { yield missingInside; }
@@ -232572,7 +232595,8 @@ test "checker: parity scope batch suppresses invalid yield operand cascades" {
     b.base.checker.setStrictFlags(.{ .always_strict = true });
     try b.base.checker.checkSourceFile(b.base.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'missingOutside'."));
     try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'missingInside'."));
 }
 
@@ -232593,7 +232617,7 @@ test "checker: parity scope batch validates inferred object parameter keys" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_matching_index_signature));
 }
 
-test "checker: parity recovery batch suppresses diagnosed type cascades" {
+test "checker: parity recovery batch checks diagnosed operands" {
     const b = try newBoundSetup(
         \\type MyUppercase<S extends string> = intrinsic;
         \\namespace M { export = NamespaceMissing; }
@@ -232604,7 +232628,8 @@ test "checker: parity recovery batch suppresses diagnosed type cascades" {
     try b.base.checker.checkSourceFile(b.base.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.intrinsic_keyword_misuse));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'NamespaceMissing'."));
     try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'ActualMissing'."));
 }
 
