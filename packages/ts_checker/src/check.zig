@@ -131517,7 +131517,7 @@ pub const Checker = struct {
         }
         if (p_flags.is_type_parameter) {
             const tp = pool.type_parameter_payloads.items[p_payload];
-            var inferred = if (tp.is_const or try self.typeParameterConstraintPrefersLiteralInference(param_t, subs))
+            var inferred = if (tp.is_const or self.typeParameterConstraintPrefersLiteralInference(param_t))
                 arg_t
             else
                 self.widenForInference(arg_t);
@@ -131930,8 +131930,7 @@ pub const Checker = struct {
     fn typeParameterConstraintPrefersLiteralInference(
         self: *Checker,
         param_t: TypeId,
-        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
-    ) CheckError!bool {
+    ) bool {
         const resolved_param = self.resolvedTypeParameterPlaceholder(param_t);
         if (self.type_parameter_decl_nodes.get(resolved_param)) |decl_node| {
             if (decl_node != hir_mod.none_node_id and self.hir.kindOf(decl_node) == .type_parameter) {
@@ -131944,24 +131943,53 @@ pub const Checker = struct {
                 }
             }
         }
-        const raw_constraint = self.typeParameterConstraint(param_t) orelse return false;
-        const substituted_constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
-        var constraint = (try self.reduceDisplayedAliasInstance(substituted_constraint)) orelse substituted_constraint;
-        if (constraint < self.interner.pool.typeCount() and self.interner.pool.flagsOf(constraint).is_conditional) {
-            const c = self.interner.conditionalPayload(constraint);
-            const evaluated = try self.evalConditionalWithDistribution(c.check_type, c.extends_type, c.true_branch, c.false_branch, true, c.is_distributive);
-            if (evaluated != constraint) constraint = evaluated;
-        }
-        if (self.containsTemplateLiteralType(constraint)) return true;
-        if (constraint == types.Primitive.string_t or
-            constraint == types.Primitive.number_t or
-            constraint == types.Primitive.bigint_t or
-            constraint == types.Primitive.boolean_t or
-            constraint == types.Primitive.symbol_t)
+        const constraint = self.typeParameterConstraint(param_t) orelse return false;
+        return self.constraintMaybePrefersLiteralInference(constraint, 0);
+    }
+
+    // Mirrors tsgo's hasPrimitiveConstraint/maybeTypeOfKind path. This is a
+    // shallow kind query: object members and signatures do not make their
+    // containers primitive, and inference substitutions are intentionally not
+    // applied while classifying the declared constraint.
+    fn constraintMaybePrefersLiteralInference(self: *Checker, constraint: TypeId, depth: u8) bool {
+        if (depth >= 64 or constraint >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(constraint);
+        if (flags.is_string or
+            flags.is_number or
+            flags.is_boolean or
+            flags.is_bigint or
+            flags.is_symbol or
+            flags.is_void or
+            flags.is_null or
+            flags.is_undefined or
+            flags.is_literal or
+            flags.is_keyof or
+            flags.is_template_literal or
+            flags.is_string_mapping)
         {
             return true;
         }
-        return self.typeIsKeyofLikeLiteralConstraint(constraint);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(constraint)) |member| {
+                if (self.constraintMaybePrefersLiteralInference(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(constraint)) |member| {
+                if (self.constraintMaybePrefersLiteralInference(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(constraint);
+            const true_prefers = conditional.true_branch != types.Primitive.any and
+                self.constraintMaybePrefersLiteralInference(conditional.true_branch, depth + 1);
+            const false_prefers = conditional.false_branch != types.Primitive.any and
+                self.constraintMaybePrefersLiteralInference(conditional.false_branch, depth + 1);
+            return true_prefers or false_prefers;
+        }
+        return false;
     }
 
     fn typeIsKeyofLikeLiteralConstraint(self: *Checker, t: TypeId) bool {
@@ -132837,7 +132865,7 @@ pub const Checker = struct {
                 }
                 if (self.engine.isAssignableTo(literal_arg, existing) catch false) return;
             } else {
-                var prefer_literal = try self.typeParameterConstraintPrefersLiteralInference(param_t, subs);
+                var prefer_literal = self.typeParameterConstraintPrefersLiteralInference(param_t);
                 if (!prefer_literal) {
                     if (self.scalarTypeParameterConstraint(param_t)) |raw_constraint_t| {
                         const constraint_t = (try self.reduceDisplayedAliasInstance(raw_constraint_t)) orelse raw_constraint_t;
@@ -134249,6 +134277,7 @@ pub const Checker = struct {
         t: TypeId,
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) (CheckError)!TypeId {
+        if (subs.count() == 0) return t;
         if (self.noInferInnerType(t)) |inner| return self.substituteType(inner, subs);
         if (subs.get(t)) |s| return s;
         if (t >= self.interner.pool.typeCount()) return t;
@@ -191548,6 +191577,75 @@ test "checker: negative numeric literal type remains negative" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: primitive constraint classification stays shallow" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const empty = try s.checker.string_interner.intern("");
+    const value_name = try s.checker.string_interner.intern("value");
+    const parameter_name = try s.checker.string_interner.intern("T");
+    const template_t = try s.checker.interner.internTemplateLiteral(
+        &.{ empty, empty },
+        &.{types.Primitive.string_t},
+    );
+    const nested_object_t = try s.checker.interner.internObjectType(&.{.{
+        .name = value_name,
+        .type = template_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const nested_signature_t = try s.checker.interner.internSignature(&.{}, template_t, false);
+    const union_t = try s.checker.interner.internUnion(&.{ nested_object_t, template_t });
+    const conditional_t = try s.checker.interner.internConditional(
+        types.Primitive.boolean_t,
+        types.Primitive.true_lit,
+        nested_object_t,
+        template_t,
+    );
+    const any_object_conditional_t = try s.checker.interner.internConditional(
+        types.Primitive.boolean_t,
+        types.Primitive.true_lit,
+        types.Primitive.any,
+        nested_object_t,
+    );
+    const parameter_t = try s.checker.interner.internTypeParameter(
+        parameter_name,
+        nested_object_t,
+        types.Primitive.none,
+    );
+
+    try T.expect(!s.checker.constraintMaybePrefersLiteralInference(nested_object_t, 0));
+    try T.expect(!s.checker.constraintMaybePrefersLiteralInference(nested_signature_t, 0));
+    try T.expect(s.checker.constraintMaybePrefersLiteralInference(template_t, 0));
+    try T.expect(s.checker.constraintMaybePrefersLiteralInference(types.Primitive.true_lit, 0));
+    try T.expect(s.checker.constraintMaybePrefersLiteralInference(union_t, 0));
+    try T.expect(s.checker.constraintMaybePrefersLiteralInference(conditional_t, 0));
+    try T.expect(!s.checker.constraintMaybePrefersLiteralInference(any_object_conditional_t, 0));
+    try T.expect(!s.checker.typeParameterConstraintPrefersLiteralInference(parameter_t));
+}
+
+test "checker: empty substitutions preserve type graph identity" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const value_name = try s.checker.string_interner.intern("value");
+    const object_t = try s.checker.interner.internObjectType(&.{.{
+        .name = value_name,
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const signature_t = try s.checker.interner.internSignature(&.{object_t}, object_t, false);
+    var empty_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer empty_subs.deinit(T.allocator);
+    const type_count = s.checker.interner.pool.typeCount();
+
+    try T.expectEqual(signature_t, try s.checker.substituteType(signature_t, &empty_subs));
+    try T.expectEqual(type_count, s.checker.interner.pool.typeCount());
 }
 
 test "checker: template infer constraints coerce numeric string slices" {
