@@ -23589,6 +23589,19 @@ pub const Checker = struct {
     }
 
     fn checkObjectBindingComputedKeysAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!bool {
+        return self.checkObjectBindingComputedKeysAgainstTypeMode(pattern_node, container_t, true);
+    }
+
+    fn checkInferredObjectBindingComputedKeys(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!bool {
+        return self.checkObjectBindingComputedKeysAgainstTypeMode(pattern_node, container_t, false);
+    }
+
+    fn checkObjectBindingComputedKeysAgainstTypeMode(
+        self: *Checker,
+        pattern_node: NodeId,
+        container_t: TypeId,
+        require_matching_index: bool,
+    ) CheckError!bool {
         const parent = self.hir.parentOf(pattern_node);
         if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .parameter) {
             const pattern_param = hir_mod.parameterOf(self.hir, parent);
@@ -23604,7 +23617,7 @@ pub const Checker = struct {
             if (ep.flags.is_computed_binding_key) {
                 if (ep.default_value == hir_mod.none_node_id) continue;
                 const key_t = try self.checkExpression(ep.default_value);
-                if (try self.reportMissingIndexForComputedBindingKey(ep.default_value, container_t, key_t)) {
+                if (try self.reportMissingIndexForComputedBindingKey(ep.default_value, container_t, key_t, require_matching_index)) {
                     saw_dynamic = true;
                 }
                 continue;
@@ -23612,7 +23625,7 @@ pub const Checker = struct {
             if (ep.name == hir_mod.none_node_id) continue;
             const nk = self.hir.kindOf(ep.name);
             if (nk == .object_pattern or nk == .array_pattern) {
-                if (try self.checkObjectBindingComputedKeysAgainstType(ep.name, types.Primitive.any)) saw_dynamic = true;
+                if (try self.checkObjectBindingComputedKeysAgainstTypeMode(ep.name, types.Primitive.any, require_matching_index)) saw_dynamic = true;
             }
         }
         return saw_dynamic;
@@ -23647,13 +23660,19 @@ pub const Checker = struct {
         };
     }
 
-    fn reportMissingIndexForComputedBindingKey(self: *Checker, node: NodeId, container_t: TypeId, key_t: TypeId) CheckError!bool {
+    fn reportMissingIndexForComputedBindingKey(
+        self: *Checker,
+        node: NodeId,
+        container_t: TypeId,
+        key_t: TypeId,
+        require_matching_index: bool,
+    ) CheckError!bool {
         if (container_t == types.Primitive.any) return false;
         if (self.computedBindingKeyIsImmediateClassStaticLiteral(node)) return false;
         if (container_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(container_t).is_union) {
             var reported = false;
             for (self.interner.unionMembers(container_t)) |member| {
-                if (try self.reportMissingIndexForComputedBindingKey(node, member, key_t)) reported = true;
+                if (try self.reportMissingIndexForComputedBindingKey(node, member, key_t, require_matching_index)) reported = true;
             }
             return reported;
         }
@@ -23690,6 +23709,7 @@ pub const Checker = struct {
             );
             return true;
         }
+        if (!require_matching_index) return false;
         if (container_t >= self.interner.pool.typeCount()) return false;
         const cf = self.interner.pool.flagsOf(container_t);
         if (!cf.is_object_type) return false;
@@ -30535,6 +30555,7 @@ pub const Checker = struct {
                 try self.arrayCallbackParameterElementType(node, param_index)
             else
                 null;
+            var inferred_object_binding_pattern = false;
             const t: TypeId = if (has_anno) blk: {
                 const lowered_annotation_t = try self.lowererLowerWithTypeParams(pp.type_annotation);
                 break :blk if (self.typeAnnotationShouldBecomeErrorAny(pp.type_annotation))
@@ -30573,7 +30594,10 @@ pub const Checker = struct {
                 // `destructuringWithLiteralInitializers` and keeps
                 // destructured object parameters from collapsing to
                 // `any` when no annotation/default is present.
-                try self.objectBindingPatternParameterType(pp.name)
+                blk_object_pattern: {
+                    inferred_object_binding_pattern = true;
+                    break :blk_object_pattern try self.objectBindingPatternParameterType(pp.name);
+                }
             else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
                 if (js_default_is_loose_nullish) break :blk_default types.Primitive.any;
                 const default_t = if (try self.nullishArrayLiteralTypeFromSyntax(pp.default_value)) |nullish_array_t|
@@ -30599,7 +30623,10 @@ pub const Checker = struct {
                 types.Primitive.any;
             const declared_param_t = t;
             if (!has_anno and pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .object_pattern) {
-                _ = try self.checkObjectBindingComputedKeysAgainstType(pp.name, declared_param_t);
+                _ = if (inferred_object_binding_pattern)
+                    try self.checkInferredObjectBindingComputedKeys(pp.name, declared_param_t)
+                else
+                    try self.checkObjectBindingComputedKeysAgainstType(pp.name, declared_param_t);
             }
             if (has_anno and pp.name != hir_mod.none_node_id) {
                 const name_kind = self.hir.kindOf(pp.name);
@@ -56393,6 +56420,20 @@ pub const Checker = struct {
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const placeholder = self.interner.internFreshTypeParameterWithFlags(
+                tpp.name,
+                types.Primitive.unknown,
+                types.Primitive.none,
+                types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
+            ) catch return error.OutOfMemory;
+            self.hir.setType(tp, placeholder);
+            try self.recordNarrow(tpp.name, placeholder);
+        }
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const placeholder = self.hir.typeOf(tp);
             const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
                 try self.lowererLowerWithTypeParams(tpp.constraint)
             else
@@ -56401,15 +56442,24 @@ pub const Checker = struct {
                 try self.lowererLowerWithTypeParams(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internFreshTypeParameterWithFlags(
-                tpp.name,
-                constraint,
-                def,
-                types.Variance.fromHirBits(tpp.variance),
-                tpp.is_const,
-            ) catch return error.OutOfMemory;
+            const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
+                (self.lookupNarrow(tpp.name) orelse placeholder)
+            else
+                self.interner.internFreshTypeParameterWithFlags(
+                    tpp.name,
+                    constraint,
+                    def,
+                    types.Variance.fromHirBits(tpp.variance),
+                    tpp.is_const,
+                ) catch return error.OutOfMemory;
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_placeholder_targets.put(self.gpa, placeholder, tp_id);
+            }
             self.hir.setType(tp, tp_id);
             try self.type_parameter_decl_nodes.put(self.gpa, tp_id, tp);
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_decl_nodes.put(self.gpa, placeholder, tp);
+            }
             try self.recordNarrow(tpp.name, tp_id);
             try param_ids.append(self.gpa, tp_id);
         }
@@ -62302,6 +62352,20 @@ pub const Checker = struct {
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const placeholder = self.interner.internFreshTypeParameterWithFlags(
+                tpp.name,
+                types.Primitive.unknown,
+                types.Primitive.none,
+                types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
+            ) catch return error.OutOfMemory;
+            self.hir.setType(tp, placeholder);
+            try self.recordNarrow(tpp.name, placeholder);
+        }
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const placeholder = self.hir.typeOf(tp);
             const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
                 try self.lowererLowerWithTypeParams(tpp.constraint)
             else
@@ -62310,14 +62374,24 @@ pub const Checker = struct {
                 try self.lowererLowerWithTypeParams(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internFreshTypeParameterWithFlags(
-                tpp.name,
-                constraint,
-                def,
-                types.Variance.fromHirBits(tpp.variance),
-                tpp.is_const,
-            ) catch return error.OutOfMemory;
+            const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
+                (self.lookupNarrow(tpp.name) orelse placeholder)
+            else
+                self.interner.internFreshTypeParameterWithFlags(
+                    tpp.name,
+                    constraint,
+                    def,
+                    types.Variance.fromHirBits(tpp.variance),
+                    tpp.is_const,
+                ) catch return error.OutOfMemory;
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_placeholder_targets.put(self.gpa, placeholder, tp_id);
+            }
             self.hir.setType(tp, tp_id);
+            try self.type_parameter_decl_nodes.put(self.gpa, tp_id, tp);
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_decl_nodes.put(self.gpa, placeholder, tp);
+            }
             try self.recordNarrow(tpp.name, tp_id);
             try param_ids.append(self.gpa, tp_id);
         }
@@ -64145,10 +64219,9 @@ pub const Checker = struct {
         };
     }
 
-    /// True when `name` matches a type parameter of an enclosing
-    /// class/interface/alias of `node` — that parameter shadows a same-named
-    /// generic decl (`class T<T> { n: T }`), so a bare reference is the
-    /// parameter, not the generic, and needs no type arguments.
+    /// True when `name` matches a declaration type parameter or a conditional
+    /// `infer` binder visible from `node`. Such binders shadow same-named
+    /// generic declarations, so bare references need no type arguments.
     fn nameHasEnclosingTypeParameter(self: *Checker, name: hir_mod.StringId, node: NodeId) bool {
         var cur = node;
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -64156,8 +64229,100 @@ pub const Checker = struct {
                 if (self.hir.kindOf(tp) != .type_parameter) continue;
                 if (hir_mod.typeParameterOf(self.hir, tp).name == name) return true;
             }
+            if (self.hir.kindOf(cur) == .conditional_type) {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, cur);
+                if (self.nodeIsAncestorOf(conditional.true_branch, node) and
+                    self.typeNodeDeclaresInferName(conditional.extends, name))
+                {
+                    return true;
+                }
+            }
         }
         return false;
+    }
+
+    fn typeNodeDeclaresInferName(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .infer_type => hir_mod.inferTypeOf(self.hir, node).name == name,
+            .type_ref => blk: {
+                for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                    if (self.typeNodeDeclaresInferName(arg, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .object_type => blk: {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    const declares = switch (self.hir.kindOf(member)) {
+                        .interface_member => self.typeNodeDeclaresInferName(hir_mod.interfaceMemberOf(self.hir, member).type_node, name),
+                        .index_signature => index: {
+                            const index_sig = hir_mod.indexSignatureOf(self.hir, member);
+                            break :index self.typeNodeDeclaresInferName(index_sig.key_type, name) or
+                                self.typeNodeDeclaresInferName(index_sig.value_type, name);
+                        },
+                        else => false,
+                    };
+                    if (declares) break :blk true;
+                }
+                break :blk false;
+            },
+            .fn_type, .constructor_type => blk: {
+                const fn_type = hir_mod.fnTypeOf(self.hir, node);
+                for (self.hir.childSlice(fn_type.params_start, @intCast(fn_type.params_len))) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    if (self.typeNodeDeclaresInferName(hir_mod.parameterOf(self.hir, param).type_annotation, name)) break :blk true;
+                }
+                break :blk self.typeNodeDeclaresInferName(fn_type.return_type, name);
+            },
+            .union_type => blk: {
+                for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeDeclaresInferName(member, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .intersection_type => blk: {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeDeclaresInferName(member, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .array_type => self.typeNodeDeclaresInferName(hir_mod.arrayTypeOf(self.hir, node).element, name),
+            .tuple_type => blk: {
+                for (hir_mod.tupleTypeElements(self.hir, node)) |element| {
+                    if (self.typeNodeDeclaresInferName(element, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .optional_type => self.typeNodeDeclaresInferName(hir_mod.optionalTypeOf(self.hir, node).operand, name),
+            .rest_type => self.typeNodeDeclaresInferName(hir_mod.restTypeOf(self.hir, node).operand, name),
+            .readonly_type => self.typeNodeDeclaresInferName(hir_mod.readonlyTypeOf(self.hir, node).operand, name),
+            .keyof_type => self.typeNodeDeclaresInferName(hir_mod.keyofTypeOf(self.hir, node).operand, name),
+            .indexed_access_type => blk: {
+                const access = hir_mod.indexedAccessTypeOf(self.hir, node);
+                break :blk self.typeNodeDeclaresInferName(access.object, name) or
+                    self.typeNodeDeclaresInferName(access.index, name);
+            },
+            .conditional_type => blk: {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, node);
+                break :blk self.typeNodeDeclaresInferName(conditional.check, name) or
+                    self.typeNodeDeclaresInferName(conditional.extends, name) or
+                    self.typeNodeDeclaresInferName(conditional.true_branch, name) or
+                    self.typeNodeDeclaresInferName(conditional.false_branch, name);
+            },
+            .mapped_type => blk: {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                break :blk self.typeNodeDeclaresInferName(mapped.constraint, name) or
+                    self.typeNodeDeclaresInferName(mapped.remap, name) or
+                    self.typeNodeDeclaresInferName(mapped.value, name);
+            },
+            .template_literal_type => blk: {
+                for (hir_mod.templateLiteralTypeTypes(self.hir, node)) |part| {
+                    if (self.typeNodeDeclaresInferName(part, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
     }
 
     fn declTypeParamMinTypeArgCount(self: *Checker, params: []const NodeId) usize {
@@ -66913,8 +67078,7 @@ pub const Checker = struct {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                         return types.Primitive.any;
                     }
-                    if (self.typeParamDeclNameVisibleFrom(type_node, r.name) or
-                        self.typeNodeNamesEnclosingTypeParameter(type_node)) return lowered;
+                    if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return lowered;
                     if (self.visibleJsDocTypedefNameExistsAt(type_node, r.name)) return types.Primitive.any;
                     if (self.sourceLibDirectiveExcludesDomElement() and std.mem.eql(u8, name_str, "Document")) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
@@ -70853,6 +71017,12 @@ pub const Checker = struct {
                 try self.collectInferNames(c.true_branch, out);
                 try self.collectInferNames(c.false_branch, out);
             },
+            .mapped_type => {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                try self.collectInferNames(mapped.constraint, out);
+                try self.collectInferNames(mapped.remap, out);
+                try self.collectInferNames(mapped.value, out);
+            },
             .template_literal_type => for (hir_mod.templateLiteralTypeTypes(self.hir, node)) |part| try self.collectInferNames(part, out),
             else => {},
         }
@@ -71292,6 +71462,12 @@ pub const Checker = struct {
                     self.typeNodeContainsInfer(c.true_branch) or
                     self.typeNodeContainsInfer(c.false_branch);
             },
+            .mapped_type => {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                return self.typeNodeContainsInfer(mapped.constraint) or
+                    self.typeNodeContainsInfer(mapped.remap) or
+                    self.typeNodeContainsInfer(mapped.value);
+            },
             .type_ref => {
                 // `Box<infer T>` carries the `infer T` placeholder
                 // inside its type-argument list. Without recursing into
@@ -71425,6 +71601,13 @@ pub const Checker = struct {
             try self.walkAndRegisterInfer(c.extends);
             try self.walkAndRegisterInfer(c.true_branch);
             try self.walkAndRegisterInfer(c.false_branch);
+            return;
+        }
+        if (k == .mapped_type) {
+            const mapped = hir_mod.mappedTypeOf(self.hir, node);
+            try self.walkAndRegisterInfer(mapped.constraint);
+            try self.walkAndRegisterInfer(mapped.remap);
+            try self.walkAndRegisterInfer(mapped.value);
             return;
         }
         if (k == .object_type) {
@@ -72934,7 +73117,6 @@ pub const Checker = struct {
             // Fall back to plain lower.
             return self.lowerer.lower(node);
         }
-        const constraint_t = try self.lowererLowerWithTypeParams(m.constraint);
         // The type-parameter NodeId ÃÂ¢ÃÂÃÂ its `name` is the StringId we
         // bind for the value template.
         if (m.type_param == hir_mod.none_node_id or self.hir.kindOf(m.type_param) != .type_parameter) {
@@ -72955,6 +73137,7 @@ pub const Checker = struct {
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         try self.recordNarrow(tp.name, tp_id);
+        const constraint_t = try self.lowererLowerWithTypeParams(m.constraint);
 
         // Materialize when the constraint is a string-literal union or
         // a single string-literal type.
@@ -73298,6 +73481,7 @@ pub const Checker = struct {
 
     fn reportMappedTypeKeyConstraintIfNeeded(self: *Checker, node: NodeId, constraint_t: TypeId) CheckError!void {
         if (node == hir_mod.none_node_id) return;
+        if (self.diagnosticExists(node, TsCodes.circular_constraint)) return;
         if (constraint_t >= self.interner.pool.typeCount()) return;
         if (self.typeIsAnyLike(constraint_t) or self.typeIsPropertyKeyDomain(constraint_t, 0)) return;
         if (self.infer_type_parameters.contains(constraint_t)) return;
@@ -74686,7 +74870,7 @@ pub const Checker = struct {
             if (op.is_computed) {
                 const key_t = try self.checkExpression(op.key);
                 if (key_t != types.Primitive.any and
-                    try self.reportMissingIndexForComputedBindingKey(op.key, source_t, key_t))
+                    try self.reportMissingIndexForComputedBindingKey(op.key, source_t, key_t, true))
                 {
                     has_dynamic_computed_key = true;
                 }
@@ -97653,18 +97837,12 @@ pub const Checker = struct {
                     }
                     break :blk types.Primitive.any;
                 }
-                // Legacy non-strict corpus cases suppress operand cascades
-                // after TS1163. Strict TS7 checking still visits the child,
-                // so unresolved operands receive their own TS2304.
-                //
-                // `current_generator_info` alone isn't a sufficient signal:
-                // valid generators without a return-type annotation also
-                // leave it null (yield type is inferred from body). Walk
-                // the parent chain to confirm we're outside any generator
-                // fn / method body before suppressing.
-                if (gen == null and !self.isInsideGeneratorFunction(node) and
-                    !self.strict_flags.always_strict)
-                {
+                // Once TS1163 rejects a yield outside a generator, the
+                // conformance baselines do not cascade into its operand.
+                // `current_generator_info` alone is insufficient here:
+                // valid unannotated generators also leave it null while
+                // their yield types are inferred from the body.
+                if (!self.isInsideGeneratorFunction(node)) {
                     break :blk types.Primitive.any;
                 }
                 const inner_t_raw = try self.checkExpression(y.expr);
@@ -159280,7 +159458,7 @@ pub const Checker = struct {
             try self.report(node, TsCodes.type_cannot_be_used_as_index, "Type 'any' cannot be used as an index type.");
             return;
         }
-        _ = try self.reportMissingIndexForComputedBindingKey(node, source_t, key_t);
+        _ = try self.reportMissingIndexForComputedBindingKey(node, source_t, key_t, true);
     }
 
     fn checkForOfVarSelfReferenceDiagnostics(self: *Checker, for_node: NodeId, target: NodeId, source: NodeId) CheckError!void {
@@ -231854,4 +232032,75 @@ test "checker: destructuring loop feedback through temporary reports circular bi
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: parity scope batch binds complete declaration type parameter lists" {
+    const b = try newBoundSetup(
+        \\interface Forward<T extends U, U extends Date> { value: T }
+        \\interface Recursive<T extends Recursive<T>> { value: T }
+        \\type ThemeValue<K extends keyof Theme, Theme> = Theme[K];
+        \\type Settings<Params extends { [K in keyof Params]?: string }> = Params;
+        \\interface Signatures { <T extends U, U extends number>(): T }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+}
+
+test "checker: parity scope batch binds mapped keys without hiding missing names" {
+    const b = try newBoundSetup(
+        \\type CircularKey = { [P in P]: string };
+        \\export type ObjectOrArray<T, K extends keyof any = keyof any> = T[] | Record<K, T | Record<K, T> | T[]>;
+        \\export type ThemeValue<K extends keyof ThemeType, ThemeType, TVal = any> =
+        \\    ThemeType[K] extends TVal[] ? number :
+        \\    ThemeType[K] extends Record<infer E, TVal> ? E :
+        \\    ThemeType[K] extends ObjectOrArray<infer F> ? F : never;
+        \\export type MappedInfer<T> = T extends { [P in infer M]: any } ? M : never;
+        \\type LeakedMappedInfer<T> = T extends { [P in infer N]: any } ? never : N;
+        \\type LeakedInfer<T> = T extends Record<infer L, any> ? L : L;
+        \\type BrokenAlias<T extends MissingAlias> = T;
+        \\interface BrokenInterface<T extends MissingInterface> { value: T }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .declaration = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'L'."));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'N'."));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'MissingAlias'."));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'MissingInterface'."));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.circular_constraint));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+}
+
+test "checker: parity scope batch suppresses invalid yield operand cascades" {
+    const b = try newBoundSetup(
+        \\function invalidFunction() { yield missingOutside; }
+        \\function* validGenerator() { yield missingInside; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .always_strict = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'missingInside'."));
+}
+
+test "checker: parity scope batch validates inferred object parameter keys" {
+    const s = try newSetup(
+        \\const key = (): string | undefined => undefined;
+        \\(({ [key() ?? "d"]: value = "" }) => {} )();
+        \\declare let anyKey: any;
+        \\function invalidKey({ [anyKey]: value }) {}
+        \\declare const source: { d: string };
+        \\declare const dynamicKey: string;
+        \\const { [dynamicKey]: externalValue } = source;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_matching_index_signature));
 }

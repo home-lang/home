@@ -5524,8 +5524,13 @@ pub const Parser = struct {
 
     fn parseClassStatement(self: *Parser) ParseError!NodeId {
         const class_tok = if (self.peek().kind == .kw_abstract) self.peekAt(1) else self.peek();
+        const name_tok = if (self.peek().kind == .kw_abstract) self.peekAt(2) else self.peekAt(1);
+        const recovered_reserved_name = name_tok.kind == .kw_void;
         const node = try self.parseClassDeclaration();
-        if (!self.in_export_declaration and hir_mod.classOf(self.hir, node).name == hir_mod.none_node_id) {
+        if (!self.in_export_declaration and
+            !recovered_reserved_name and
+            hir_mod.classOf(self.hir, node).name == hir_mod.none_node_id)
+        {
             try self.reportGrammarCodeAtWithSpan(
                 class_tok.span.start,
                 class_tok.line,
@@ -33531,6 +33536,15 @@ test "parser: unterminated generic recovery preserves malformed ambient signatur
     for (s.parser.diagnostics.items) |d| {
         try T.expect(!std.mem.eql(u8, d.message, "'}' expected."));
     }
+}
+
+test "parser: reserved void class name does not become an anonymous declaration" {
+    var s = try newTestSetup("class void {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1211));
 }
 
 test "parser: recovered JavaScript modifiers retain grammar diagnostics" {
