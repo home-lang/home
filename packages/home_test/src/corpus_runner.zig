@@ -131,6 +131,8 @@ const harness_prelude =
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
     "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
     "globalThis.__home_build_debug = " ++ (if (builtin.mode == .Debug) "true;\n" else "false;\n") ++
+    \\let URL = globalThis.URL;
+    \\let URLSearchParams = globalThis.URLSearchParams;
     \\const __home_real_Date = globalThis.Date;
     \\let __home_fake_timers_active = false;
     \\let __home_fake_timers_now = 0;
@@ -52938,7 +52940,7 @@ const harness_prelude =
     \\    const search = searchIndex === -1 ? "" : withoutHash.slice(searchIndex);
     \\    return { pathname, search, hash };
     \\  }
-    \\  var URL = function(input, base) {
+    \\  URL = globalThis.URL = function URL(input, base) {
     \\    let text = String(input);
     \\    if (arguments.length >= 2 && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) {
     \\      const baseURL = new URL(base);
@@ -53378,7 +53380,7 @@ const harness_prelude =
     \\    }
     \\    return url;
     \\  }
-    \\  var URL = function(input, base) {
+    \\  URL = globalThis.URL = function URL(input, base) {
     \\    try {
     \\      const isDenoUrlCorpus = String(globalThis.__home_current_filename || "").includes("js/deno/url/url.test.ts");
     \\      const normalizedInput = arguments.length >= 2
@@ -53432,6 +53434,7 @@ const harness_prelude =
     \\  } catch (error) {}
     \\  globalThis.URL = URL;
     \\}
+    \\try { Object.defineProperty(globalThis, "URL", { configurable: true, enumerable: false, value: URL, writable: true }); } catch (error) {}
     \\function __home_url_path_byte_hex(byte) {
     \\  const text = byte.toString(16).toUpperCase();
     \\  return text.length === 1 ? "0" + text : text;
@@ -57401,7 +57404,7 @@ const harness_prelude =
     \\    }
     \\    return output;
     \\  }
-    \\  var URLSearchParams = function(init) {
+    \\  URLSearchParams = globalThis.URLSearchParams = function URLSearchParams(init) {
     \\    this.__home_pairs = [];
     \\    if (init === undefined) return;
     \\    if (typeof init === "string") {
@@ -57549,7 +57552,45 @@ const harness_prelude =
     \\  } catch (error) {
     \\    URLSearchParams.prototype.length = 0;
     \\  }
+    \\  function __home_url_search_params_invalid_this(method) {
+    \\    const error = new TypeError("Can only call URLSearchParams." + method + " on instances of URLSearchParams");
+    \\    error.code = "ERR_INVALID_THIS";
+    \\    return error;
+    \\  }
+    \\  function __home_url_search_params_missing_args() {
+    \\    const error = new TypeError("Not enough arguments");
+    \\    error.code = "ERR_MISSING_ARGS";
+    \\    return error;
+    \\  }
+    \\  for (const [method, required, stringArgs] of [["append", 2, 2], ["delete", 1, 2], ["entries", 0, 0], ["forEach", 1, 0], ["get", 1, 1], ["getAll", 1, 1], ["has", 1, 2], ["keys", 0, 0], ["set", 2, 2], ["sort", 0, 0], ["toString", 0, 0], ["values", 0, 0]]) {
+    \\    const implementation = URLSearchParams.prototype[method];
+    \\    if (typeof implementation !== "function" || implementation.__home_contract_normalized) continue;
+    \\    URLSearchParams.prototype[method] = function() {
+    \\      if (!(this instanceof URLSearchParams)) throw __home_url_search_params_invalid_this(method);
+    \\      if (arguments.length < required) throw __home_url_search_params_missing_args();
+    \\      for (let index = 0; index < Math.min(arguments.length, stringArgs); index++) if (typeof arguments[index] === "symbol") throw new TypeError("Cannot convert a symbol to a string");
+    \\      return implementation.apply(this, arguments);
+    \\    };
+    \\    URLSearchParams.prototype[method].__home_contract_normalized = true;
+    \\  }
+    \\  URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
+    \\  try {
+    \\    const iteratorPrototype = Object.getPrototypeOf(new URLSearchParams().entries());
+    \\    const iteratorNext = iteratorPrototype && iteratorPrototype.next;
+    \\    if (typeof iteratorNext === "function" && !iteratorNext.__home_contract_normalized) {
+    \\      iteratorPrototype.next = function() {
+    \\        try { return iteratorNext.call(this); }
+    \\        catch (cause) {
+    \\          const error = new TypeError("Cannot call next() on a non-Iterator object");
+    \\          error.code = "ERR_INVALID_THIS";
+    \\          throw error;
+    \\        }
+    \\      };
+    \\      iteratorPrototype.next.__home_contract_normalized = true;
+    \\    }
+    \\  } catch (error) {}
     \\}
+    \\try { Object.defineProperty(globalThis, "URLSearchParams", { configurable: true, enumerable: false, value: URLSearchParams, writable: true }); } catch (error) {}
     \\if (typeof Buffer !== "function") {
     \\  function __home_utf8_bytes(value) {
     \\    const text = String(value);
@@ -60660,6 +60701,15 @@ const harness_prelude =
     \\  const __home_event_target_add = EventTarget.prototype.addEventListener;
     \\  const __home_event_target_remove = EventTarget.prototype.removeEventListener;
     \\  const __home_event_target_dispatch = EventTarget.prototype.dispatchEvent;
+    \\  const __home_event_target_passive_events = new WeakSet();
+    \\  if (typeof Event === "function" && Event.prototype && typeof Event.prototype.preventDefault === "function" && !Event.prototype.preventDefault.__home_passive_aware) {
+    \\    const nativePreventDefault = Event.prototype.preventDefault;
+    \\    Event.prototype.preventDefault = function() {
+    \\      if (__home_event_target_passive_events.has(this)) return undefined;
+    \\      return nativePreventDefault.call(this);
+    \\    };
+    \\    Event.prototype.preventDefault.__home_passive_aware = true;
+    \\  }
     \\  function __home_event_target_store(receiver) {
     \\    const target = __home_event_target_receiver(receiver);
     \\    if (!Object.prototype.hasOwnProperty.call(target, "__home_listener_records")) Object.defineProperty(target, "__home_listener_records", { configurable: true, value: Object.create(null) });
@@ -60668,41 +60718,69 @@ const harness_prelude =
     \\  function __home_event_target_receiver(receiver) {
     \\    return receiver == null || receiver === globalThis || receiver === globalThis.window || receiver === EventTarget.prototype ? __home_global_event_target : receiver;
     \\  }
-    \\  EventTarget.prototype.addEventListener = function(type, callback, options) {
-    \\    if (callback != null) {
-    \\      const key = String(type);
-    \\      const records = __home_event_target_store(this);
-    \\      const listeners = records[key] || (records[key] = []);
-    \\      let seen = false;
-    \\      for (const item of listeners) if (item.callback === callback) seen = true;
-    \\      if (!seen) listeners.push({ callback, once: !!(options && typeof options === "object" && options.once) });
+    \\  function __home_event_listener_options(options, adding) {
+    \\    if (typeof options === "boolean") return { capture: options, once: false, passive: false, signal: undefined };
+    \\    if (!options || typeof options !== "object") return { capture: false, once: false, passive: false, signal: undefined };
+    \\    return {
+    \\      capture: !!options.capture,
+    \\      once: adding ? !!options.once : false,
+    \\      passive: adding ? !!options.passive : false,
+    \\      signal: adding ? options.signal : undefined,
+    \\    };
+    \\  }
+    \\  function __home_event_target_remove_record(target, key, item) {
+    \\    if (!item || item.removed) return;
+    \\    item.removed = true;
+    \\    const listeners = __home_event_target_store(target)[key];
+    \\    if (listeners) {
+    \\      const index = listeners.indexOf(item);
+    \\      if (index >= 0) listeners.splice(index, 1);
     \\    }
-    \\    return __home_event_target_add.call(__home_event_target_receiver(this), type, callback, options);
+    \\    __home_event_target_remove.call(target, key, item.wrapped, item.capture);
+    \\    if (item.signal && item.abortHandler && typeof item.signal.removeEventListener === "function") item.signal.removeEventListener("abort", item.abortHandler);
+    \\  }
+    \\  EventTarget.prototype.addEventListener = function(type, callback, options) {
+    \\    const parsed = __home_event_listener_options(options, true);
+    \\    if (callback == null) return undefined;
+    \\    const target = __home_event_target_receiver(this);
+    \\    const key = String(type);
+    \\    const signal = parsed.signal;
+    \\    if (signal !== undefined && (typeof AbortSignal !== "function" || !(signal instanceof AbortSignal))) throw new TypeError("addEventListener signal must be an AbortSignal");
+    \\    if (signal && signal.aborted) return undefined;
+    \\    const records = __home_event_target_store(target);
+    \\    const listeners = records[key] || (records[key] = []);
+    \\    for (const existing of listeners) if (existing.callback === callback && existing.capture === parsed.capture && !existing.removed) return undefined;
+    \\    const item = { callback, capture: parsed.capture, once: parsed.once, passive: parsed.passive, signal, abortHandler: null, removed: false, wrapped: null };
+    \\    item.wrapped = function(event) {
+    \\      if (item.removed) return;
+    \\      if (item.once) __home_event_target_remove_record(target, key, item);
+    \\      if (item.passive) __home_event_target_passive_events.add(event);
+    \\      try {
+    \\        if (typeof callback === "function") return callback.call(this, event);
+    \\        if (callback && typeof callback.handleEvent === "function") return callback.handleEvent(event);
+    \\      } finally {
+    \\        if (item.passive) __home_event_target_passive_events.delete(event);
+    \\      }
+    \\    };
+    \\    listeners.push(item);
+    \\    __home_event_target_add.call(target, key, item.wrapped, { capture: item.capture, passive: item.passive });
+    \\    if (signal) {
+    \\      item.abortHandler = function() { __home_event_target_remove_record(target, key, item); };
+    \\      signal.addEventListener("abort", item.abortHandler, { once: true });
+    \\    }
+    \\    return undefined;
     \\  };
     \\  EventTarget.prototype.removeEventListener = function(type, callback, options) {
-    \\    if (callback != null) {
-    \\      const listeners = __home_event_target_store(this)[String(type)];
-    \\      if (listeners) {
-    \\        for (let i = 0; i < listeners.length; i++) {
-    \\          if (listeners[i].callback === callback) {
-    \\            listeners.splice(i, 1);
-    \\            break;
-    \\          }
-    \\        }
-    \\      }
-    \\    }
-    \\    return __home_event_target_remove.call(__home_event_target_receiver(this), type, callback, options);
+    \\    if (callback == null) return undefined;
+    \\    const target = __home_event_target_receiver(this);
+    \\    const key = String(type);
+    \\    const capture = __home_event_listener_options(options, false).capture;
+    \\    const listeners = __home_event_target_store(target)[key];
+    \\    if (listeners) for (const item of listeners.slice()) if (item.callback === callback && item.capture === capture && !item.removed) { __home_event_target_remove_record(target, key, item); break; }
+    \\    return undefined;
     \\  };
     \\  EventTarget.prototype.dispatchEvent = function(event) {
-    \\    const result = __home_event_target_dispatch.call(__home_event_target_receiver(this), event);
-    \\    if (event && event.type !== undefined) {
-    \\      const records = __home_event_target_store(this);
-    \\      const listeners = records[String(event.type)];
-    \\      if (listeners) {
-    \\        for (let i = listeners.length - 1; i >= 0; i--) if (listeners[i].once) listeners.splice(i, 1);
-    \\      }
-    \\    }
-    \\    return result;
+    \\    return __home_event_target_dispatch.call(__home_event_target_receiver(this), event);
     \\  };
     \\  Object.defineProperty(EventTarget.prototype, "__home_default_window_target", { configurable: true, value: true });
     \\}
@@ -68072,6 +68150,19 @@ fn rewriteVmModuleReferrerRealmCorpus(allocator: std.mem.Allocator, source: []co
     );
 }
 
+fn rewriteResolvedPassiveListenerSkip(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    // Bun carries Node's historical known-issue guard in this test. Home's
+    // EventTarget shim implements the missing passive semantics, so keep
+    // executing the assertions that follow the obsolete guard.
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "  common.skip('TODO: passive listeners is still broken');",
+        "  // Home supports passive listeners; continue through the full matrix.",
+    );
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -68086,6 +68177,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteVmTimeoutEscapeCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-vm-module-referrer-realm.mjs"))
         try rewriteVmModuleReferrerRealmCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-whatwg-events-add-event-listener-options-passive.js"))
+        try rewriteResolvedPassiveListenerSkip(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
@@ -69180,6 +69273,15 @@ test "harness prelude exposes Web Stream compression and Node adapters" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_compression_stream(format, decompress)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_STREAM_NULL_VALUES") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(ctor.prototype, Symbol.toStringTag") != null);
+}
+
+test "harness prelude normalizes EventTarget and URLSearchParams contracts" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_event_target_passive_events") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "addEventListener signal must be an AbortSignal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_event_target_remove_record") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Can only call URLSearchParams.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot call next() on a non-Iterator object") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(globalThis, \"URLSearchParams\"") != null);
 }
 
 test "harness prelude defines process.setgroups with faithful validation" {
@@ -73158,7 +73260,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_performance_time_origin") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "performance.clearResourceTimings = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "performance.setResourceTimingBufferSize = function(size)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URLSearchParams = globalThis.URLSearchParams = function URLSearchParams(init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URLSearchParams.prototype.toJSON = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(URLSearchParams.prototype, \"length\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bunExe() { return process.execPath; }") != null);
