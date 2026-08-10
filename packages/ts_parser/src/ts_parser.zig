@@ -19849,10 +19849,13 @@ pub const Parser = struct {
                     }
                     _ = self.advance();
                     if (self.peek().kind == .close_brace) {
-                        _ = self.advance();
-                        const node = try self.builder.addJsxExpression(tokenSpan(t), hir_mod.none_node_id);
+                        const close = self.advance();
+                        const node = try self.builder.addJsxExpression(
+                            .{ .start = t.span.start, .end = close.span.end },
+                            hir_mod.none_node_id,
+                        );
                         try out.append(self.gpa, node);
-                        last_child_end = self.hir.spanOf(node).end;
+                        last_child_end = close.span.end;
                         continue;
                     }
                     // tsgo `parseJsxExpression` recovery: a `<` inside a JSX
@@ -27105,6 +27108,23 @@ test "parser: jsx with expression child" {
     const children = hir_mod.jsxChildren(&s.hir, init_node);
     try T.expectEqual(@as(usize, 1), children.len);
     try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(children[0]));
+}
+
+test "parser: jsx line-comment-only child is an empty expression" {
+    var s = try newTsxTestSetup(
+        \\let v = <Foo>{
+        \\  // comment
+        \\}</Foo>;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const children = hir_mod.jsxChildren(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), children.len);
+    try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(children[0]));
+    try T.expectEqual(hir_mod.none_node_id, hir_mod.jsxExpressionOf(&s.hir, children[0]).expression);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: jsx with spread expression child" {

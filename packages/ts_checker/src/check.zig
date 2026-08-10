@@ -7665,7 +7665,11 @@ pub const Checker = struct {
                             try self.reportForOfDestructuredElementType(v.name, elem_t, es5_for_of);
                         }
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .object_pattern) {
-                            try self.checkObjectBindingPatternAgainstType(v.name, elem_t, true);
+                            try self.checkObjectBindingPatternAgainstType(
+                                v.name,
+                                elem_t,
+                                v.type_annotation != hir_mod.none_node_id,
+                            );
                         }
                         if ((self.hir.kindOf(fr.target) == .let_decl or self.hir.kindOf(fr.target) == .const_decl) and
                             v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
@@ -100847,7 +100851,7 @@ pub const Checker = struct {
         for (attrs) |attr| {
             if (self.hir.kindOf(attr) != .jsx_attribute) continue;
             const a = hir_mod.jsxAttributeOf(self.hir, attr);
-            if ((try self.lookupObjectMember(spread_t, a.name)) != null) {
+            if (self.objectMemberAccessHasRequired(spread_t, a.name)) {
                 // tsc names the duplicated attribute: `'x' is
                 // specified more than once, so this usage will be
                 // overwritten.` Match that wording so exact-mode
@@ -156001,6 +156005,7 @@ pub const Checker = struct {
         rhs: NodeId,
     ) ?bool {
         if (op != .eq and op != .neq and op != .eq_strict and op != .neq_strict) return null;
+        if (self.virtualSectionIsJsLike(lhs) and (op == .eq or op == .neq)) return null;
         const lhs_fresh = self.expressionIsFreshObjectReference(lhs);
         const rhs_fresh = self.expressionIsFreshObjectReference(rhs);
         if (!lhs_fresh and !rhs_fresh) return null;
@@ -160076,6 +160081,7 @@ pub const Checker = struct {
                     const f = hir_mod.fnDeclOf(self.hir, node);
                     if (f.name == hir_mod.none_node_id and
                         f.return_type == hir_mod.none_node_id and
+                        !self.functionParametersDeclareName(node, name) and
                         self.firstIdentifierReferenceNoNested(f.body, name) != null)
                     {
                         const contextual_ret = self.contextualReturnTypeForFunction(node);
@@ -160150,6 +160156,14 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn functionParametersDeclareName(self: *Checker, fn_node: NodeId, name: hir_mod.StringId) bool {
+        for (hir_mod.fnParams(self.hir, fn_node)) |param| {
+            if (self.hir.kindOf(param) != .parameter) continue;
+            if (self.bindingPatternDeclaresName(hir_mod.parameterOf(self.hir, param).name, name)) return true;
+        }
+        return false;
     }
 
     fn removeCondAliasesReferencing(self: *Checker, name: hir_mod.StringId) CheckError!void {
@@ -166413,6 +166427,18 @@ test "checker: equality on fresh object references emits TS2839" {
     try T.expectEqual(@as(usize, 3), count);
 }
 
+test "checker: JavaScript fresh object references only warn for strict equality" {
+    const s = try newSetup(
+        \\// @allowJS: true
+        \\// @filename: comparisons.js
+        \\if ({} === {}) {}
+        \\if ({} == {}) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_reference_comparison));
+}
+
 test "checker: typeof produces the finite string literal result union" {
     const s = try newSetup("typeof x;");
     defer destroySetup(s);
@@ -170372,19 +170398,16 @@ test "checker: React18 intrinsic expression child is checked against ReactNode" 
 
 test "checker: JSX spread reports overwritten explicit attributes" {
     const s = try newTsxSetup(
-        \\interface Props { a: number; b: number; }
+        \\interface Props { a: number; b: number; c?: number; }
         \\const props: Props = { a: 1, b: 2 };
         \\const Foo = (x: Props) => <div></div>;
-        \\const k = <Foo a={1} {...props}></Foo>;
+        \\const required = <Foo a={1} {...props}></Foo>;
+        \\const optional = <Foo c={1} {...props}></Foo>;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsx_attribute_overwritten) found = true;
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsx_attribute_overwritten));
 }
 
 test "checker: JSX shorthand attribute is true literal" {
@@ -174549,6 +174572,16 @@ test "checker: for-of destructuring assignment target satisfies outer pending va
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.used_before_assignment);
     }
+}
+
+test "checker: inferred for-of destructuring defaults contribute to binding types" {
+    const s = try newSetup(
+        \\const array = [{ x: "", y: 0 }];
+        \\for (var { x: a = "", y: b = true } of array) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: empty for-of preserves never inference and maybe-unassigned var flow" {
@@ -178721,6 +178754,15 @@ test "checker: anonymous self-referential callback return emits TS7024" {
         }
     }
     try T.expect(saw);
+}
+
+test "checker: arrow parameter shadowing an initializer name skips TS7024" {
+    const s = try newSetup("var x = `abc${x => x}def`;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.anonymous_function_return_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: contextually any self-referential callback skips TS7024" {
