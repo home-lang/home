@@ -28063,13 +28063,18 @@ pub const Checker = struct {
     }
 
     fn reportImplicitAnyYieldOperands(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.strict_flags.no_implicit_any) return;
         if (node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(node)) {
             .yield_expr => {
                 const y = hir_mod.yieldExprOf(self.hir, node);
                 if (y.expr != hir_mod.none_node_id) {
                     var reported = false;
-                    if (self.hir.kindOf(y.expr) == .yield_expr) {
+                    const parent = self.hir.parentOf(node);
+                    if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .template_literal) {
+                        try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                        reported = true;
+                    } else if (self.hir.kindOf(y.expr) == .yield_expr) {
                         const inner = hir_mod.yieldExprOf(self.hir, y.expr);
                         if (inner.expr == hir_mod.none_node_id) {
                             try self.report(y.expr, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
@@ -28181,6 +28186,7 @@ pub const Checker = struct {
                 try self.reportImplicitAnyYieldOperands(op.value);
                 if (op.is_computed) try self.reportImplicitAnyYieldOperands(op.key);
             },
+            .template_literal => for (hir_mod.templateLiteralExprs(self.hir, node)) |expr| try self.reportImplicitAnyYieldOperands(expr),
             else => {},
         }
     }
@@ -35892,8 +35898,15 @@ pub const Checker = struct {
                                 // entry below; do not treat as a
                                 // duplicate.
                             } else {
-                                if (fn_p.flags.is_getter and !setter_names.contains(member_name)) {
-                                    try self.reportDuplicateIdentifier(m, member_name);
+                                const member_name_text = self.string_interner.get(member_name);
+                                if (fn_p.flags.is_getter and
+                                    !setter_names.contains(member_name) and
+                                    !std.mem.startsWith(u8, member_name_text, "Symbol."))
+                                {
+                                    const pos = self.declarationNameSpanStart(m) orelse self.hir.spanOf(m).start;
+                                    if (!self.hasDiagnosticAtPosition(TsCodes.duplicate_identifier, pos)) {
+                                        try self.reportDuplicateIdentifier(m, member_name);
+                                    }
                                 }
                                 continue;
                             }
@@ -40486,6 +40499,21 @@ pub const Checker = struct {
                 if (e.kind == .getter or e.kind == .setter) has_accessor = true;
             }
             if (has_accessor) {
+                const canonical_name = self.string_interner.get(a.canonical);
+                var same_accessor_kind = a.kind == .getter or a.kind == .setter;
+                for (group_idx.items[1..]) |idx| {
+                    if (entries.items[idx].kind != a.kind) {
+                        same_accessor_kind = false;
+                        break;
+                    }
+                }
+                if (same_accessor_kind and std.mem.startsWith(u8, canonical_name, "Symbol.")) {
+                    for (group_idx.items[1..]) |idx| {
+                        const e = entries.items[idx];
+                        try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                    }
+                    continue;
+                }
                 for (group_idx.items) |idx| {
                     const e = entries.items[idx];
                     try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
@@ -98382,6 +98410,7 @@ pub const Checker = struct {
                 if (tag_text.len > 0) {
                     const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Property '{s}' does not exist on type 'JSX.IntrinsicElements'.", .{tag_text});
                     try self.report(node, TsCodes.property_does_not_exist, msg);
+                    try self.reportJsxClosingTagPropertyMissing(node, el, tag_text);
                 } else {
                     try self.report(el.tag, TsCodes.property_does_not_exist, "Property does not exist on type 'JSX.IntrinsicElements'.");
                 }
@@ -101996,6 +102025,9 @@ pub const Checker = struct {
         if (tag == hir_mod.none_node_id) return false;
         if (self.jsxClassInstanceTypeForTag(tag)) |_| return false;
         const tag_t = try self.checkedExpressionType(tag);
+        if ((try self.propertyNameFromLiteralType(tag_t))) |intrinsic_name| {
+            return (try self.jsxIntrinsicPropsType(tag, intrinsic_name)) == null;
+        }
         return !(try self.jsxComponentTypeIsValid(tag_t));
     }
 
@@ -158349,17 +158381,33 @@ pub const Checker = struct {
         node: NodeId,
         el: hir_mod.JsxElementPayload,
     ) CheckError!void {
-        if (el.self_closing) return;
-        const src = self.source orelse return;
-        const span = self.hir.spanOf(node);
-        if (span.end > src.len or span.start >= span.end) return;
-        const slice = src[span.start..span.end];
-        // Find the LAST `</` in the element span ÃÂ¢ÃÂÃÂ that's the closing
-        // tag's `<` position. Bounded by the element span so we never
-        // walk past the source slice.
-        const idx_in_slice = std.mem.lastIndexOf(u8, slice, "</") orelse return;
-        const abs_pos: u32 = @intCast(span.start + idx_in_slice);
+        const abs_pos = self.jsxClosingTagPosition(node, el) orelse return;
         try self.reportAt(node, abs_pos, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+    }
+
+    fn reportJsxClosingTagPropertyMissing(
+        self: *Checker,
+        node: NodeId,
+        el: hir_mod.JsxElementPayload,
+        tag_text: []const u8,
+    ) CheckError!void {
+        const abs_pos = self.jsxClosingTagPosition(node, el) orelse return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type 'JSX.IntrinsicElements'.",
+            .{tag_text},
+        );
+        try self.reportAt(node, abs_pos, TsCodes.property_does_not_exist, msg);
+    }
+
+    fn jsxClosingTagPosition(self: *Checker, node: NodeId, el: hir_mod.JsxElementPayload) ?u32 {
+        if (el.self_closing) return null;
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.end > src.len or span.start >= span.end) return null;
+        const slice = src[span.start..span.end];
+        const idx_in_slice = std.mem.lastIndexOf(u8, slice, "</") orelse return null;
+        return @intCast(span.start + idx_in_slice);
     }
 
     /// Report TS2838 (`infer X` constraint mismatch) anchored at the
@@ -160803,7 +160851,6 @@ pub const Checker = struct {
     }
 
     fn checkTypeAssertionOverlap(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
-        if (self.assertionIsInsideTypedObjectLiteralVarInit(node)) return;
         if (self.assertionTargetHasGenericArityDiagnostic(node)) return;
         if (self.typeIsAnyLike(source_t) or self.typeIsAnyLike(target_t)) return;
         if (self.assertionTargetIsFunctionObject(target_t)) return;
@@ -161291,28 +161338,6 @@ pub const Checker = struct {
             return true;
         }
         return flags.is_boolean;
-    }
-
-    fn assertionIsInsideTypedObjectLiteralVarInit(self: *Checker, node: NodeId) bool {
-        var cur = self.hir.parentOf(node);
-        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
-            switch (self.hir.kindOf(cur)) {
-                .object_literal => {
-                    const parent = self.hir.parentOf(cur);
-                    if (parent == hir_mod.none_node_id) return false;
-                    switch (self.hir.kindOf(parent)) {
-                        .var_decl, .let_decl, .const_decl => {
-                            const v = hir_mod.varDeclOf(self.hir, parent);
-                            return v.init == cur and v.type_annotation != hir_mod.none_node_id;
-                        },
-                        else => return false,
-                    }
-                },
-                .fn_decl, .fn_expr, .arrow_fn => return false,
-                else => {},
-            }
-        }
-        return false;
     }
 
     fn typeExplicitlyIncludesUndefined(self: *Checker, t: TypeId) bool {
@@ -165884,6 +165909,7 @@ test "checker: yield of implicit-any loop variable reports TS7057" {
         \\}
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .no_implicit_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var found = false;
     for (b.base.checker.diagnostics.items) |d| {
@@ -170408,6 +170434,34 @@ test "checker: JSX spread reports overwritten explicit attributes" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsx_attribute_overwritten));
+}
+
+test "checker: dynamic intrinsic JSX tag reports missing property at both tags" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface IntrinsicElements { div: any; }
+        \\}
+        \\var customTag = "h1";
+        \\<customTag>Hello</customTag>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: string literal JSX component without intrinsic entry has no signatures" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface IntrinsicElements { div: any; }
+        \\}
+        \\var CustomTag: "h1" = "h1";
+        \\<CustomTag>Hello</CustomTag>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsx_element_no_construct_or_call));
 }
 
 test "checker: JSX shorthand attribute is true literal" {
@@ -178429,6 +178483,17 @@ test "checker: null assertion to non-null target reports TS2352" {
         if (d.code == TsCodes.conversion_may_be_mistake) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: typed object literal does not suppress null assertion TS2352" {
+    const s = try newSetup(
+        \\interface Foo { value: Foo; }
+        \\const foo: Foo = { value: <Foo>null };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
 test "checker: undefined assertion to this target reports TS2352" {
@@ -190562,6 +190627,7 @@ test "checker: for-of iterator value does not self-reference loop variable" {
 test "checker: nested yield without generator return annotation reports implicit any" {
     const s = try newSetup("function* g() { yield yield; }");
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -190577,6 +190643,18 @@ test "checker: nested yield with typed operand avoids implicit any diagnostic" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.yield_implicit_any);
     }
+}
+
+test "checker: template substitution consumes implicit-any yield result" {
+    const s = try newSetup(
+        \\function* gen() {
+        \\  const value = `abc${yield 10}def`;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.yield_implicit_any));
 }
 
 test "checker: generic call context leaves consumed yield result implicitly any" {
@@ -210526,6 +210604,18 @@ test "checker: two getters of same name emit TS2300" {
         if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
     }
     try T.expect(dup_count >= 1);
+}
+
+test "checker: duplicate well-known symbol getters report only later declarations" {
+    const s = try newSetup(
+        \\class C {
+        \\  get [Symbol.hasInstance]() { return true; }
+        \\  get [Symbol.hasInstance]() { return false; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
 test "checker: method and field of same name emit TS2300" {

@@ -4406,6 +4406,10 @@ pub const Parser = struct {
         const params: []NodeId = if (recovered_missing_name_arrow) blk: {
             if (self.peek().kind == .arrow) _ = self.advance();
             break :blk &.{};
+        } else if (self.peek().kind == .open_brace) blk: {
+            const body_start = self.peek();
+            try self.reportCodeAt(body_start.span.start, body_start.line, 1005, "'(' expected.");
+            break :blk &.{};
         } else blk: {
             owns_params = true;
             break :blk try self.parsePotentialBodylessSignatureParameterList();
@@ -23459,6 +23463,22 @@ test "parser: function declaration with parameters and body" {
     try T.expect(fn_p.name != hir_mod.none_node_id);
     const params = hir_mod.fnParams(&s.hir, top);
     try T.expectEqual(@as(usize, 2), params.len);
+}
+
+test "parser: function missing parameter list preserves its body" {
+    var s = try newTestSetup(
+        \\function* gen {
+        \\  const value = `abc${yield 10}def`;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_node = hir_mod.blockStmts(&s.hir, root)[0];
+    const function = hir_mod.fnDeclOf(&s.hir, fn_node);
+    try T.expectEqual(@as(usize, 0), hir_mod.fnParams(&s.hir, fn_node).len);
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(function.body));
+    try T.expectEqual(@as(usize, 1), hir_mod.blockStmts(&s.hir, function.body).len);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
 }
 
 test "parser: malformed function arrow recovers as signature" {
