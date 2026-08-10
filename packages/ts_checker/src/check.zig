@@ -12891,7 +12891,6 @@ pub const Checker = struct {
                     try self.report(stmt, TsCodes.export_star_conflict, msg);
                     break;
                 }
-                if (self.hasDiagnosticAtPosition(TsCodes.export_star_conflict, self.hir.spanOf(stmt).start)) break;
             }
         }
     }
@@ -50211,7 +50210,9 @@ pub const Checker = struct {
             "/__root__.ts";
         const info = resolver.moduleExport(spec, containing, "") orelse return false;
         if (info.module_is_external != false) return false;
+        if (info.ambient_module) return false;
         const resolution = resolver.resolve(spec, containing) orelse return false;
+        if (self.virtualDeclarationFileHasAmbientModule(resolution.path, spec)) return false;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "File '{s}' is not a module.",
@@ -79902,7 +79903,8 @@ pub const Checker = struct {
         if (source_t >= self.interner.pool.typeCount() or !self.typeIsMappedPayloadType(target_t)) return false;
         const source_flags = self.interner.pool.flagsOf(source_t);
         if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection) return false;
-        const source_members = self.interner.objectMembers(source_t);
+        const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source_t));
+        defer self.gpa.free(source_members);
         if (source_members.len == 0) return false;
 
         const mapped = self.interner.mappedPayload(target_t);
@@ -79945,7 +79947,8 @@ pub const Checker = struct {
         if (target_index == types.Primitive.none) return null;
         const target_number_index = self.interner.objectNumberIndex(target_t);
         if (target_number_index != types.Primitive.none and !self.typeIsAnyLike(target_number_index)) return null;
-        const source_members = self.interner.objectMembers(source_t);
+        const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source_t));
+        defer self.gpa.free(source_members);
         if (source_members.len == 0) return null;
         for (source_members) |member| {
             if (self.isSymbolNamedMember(member.name)) continue;
@@ -133405,6 +133408,74 @@ pub const Checker = struct {
             }
             try self.inferFromObjectLiteralArgument(param_t, spread_t, spread_expr, subs);
         }
+        try self.inferFromObjectLiteralIndexTypes(param_t, arg_t, subs);
+    }
+
+    fn inferFromObjectLiteralIndexTypes(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const kinds = [_]IndexKind{ .string, .number, .symbol };
+        for (kinds) |kind| {
+            const target_index = switch (kind) {
+                .string => self.interner.objectStringIndex(param_t),
+                .number => self.interner.objectNumberIndex(param_t),
+                .symbol => self.interner.objectSymbolIndex(param_t),
+            };
+            if (target_index == types.Primitive.none) continue;
+
+            var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer candidates.deinit(self.gpa);
+            for (self.interner.objectMembers(arg_t)) |member| {
+                const applicable = switch (kind) {
+                    .string => !self.isSymbolNamedMember(member.name),
+                    .number => self.isNumericPropertyName(member.name),
+                    .symbol => self.isSymbolNamedMember(member.name),
+                };
+                if (!applicable) continue;
+                var duplicate = false;
+                for (candidates.items) |candidate| {
+                    if (candidate == member.type) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) try candidates.append(self.gpa, member.type);
+            }
+            const source_indexes = switch (kind) {
+                .string => [_]TypeId{
+                    self.interner.objectStringIndex(arg_t),
+                    self.interner.objectNumberIndex(arg_t),
+                },
+                .number => [_]TypeId{
+                    self.interner.objectNumberIndex(arg_t),
+                    types.Primitive.none,
+                },
+                .symbol => [_]TypeId{
+                    self.interner.objectSymbolIndex(arg_t),
+                    types.Primitive.none,
+                },
+            };
+            for (source_indexes) |source_index| {
+                if (source_index == types.Primitive.none) continue;
+                var duplicate = false;
+                for (candidates.items) |candidate| {
+                    if (candidate == source_index) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) try candidates.append(self.gpa, source_index);
+            }
+            if (candidates.items.len == 0) continue;
+            const source = if (candidates.items.len == 1)
+                candidates.items[0]
+            else
+                self.interner.internUnion(candidates.items) catch return error.OutOfMemory;
+            try self.inferFromPair(target_index, source, subs);
+        }
     }
 
     fn signatureParametersContainFreeType(self: *Checker, t: TypeId) bool {
@@ -135482,7 +135553,8 @@ pub const Checker = struct {
         union_composite: bool,
     ) CheckError!void {
         if (try self.tryReportRecursiveIndexedAliasCallOverflow(call_node)) return;
-        const param_ts = self.interner.signatureParams(sig);
+        const param_ts = try self.gpa.dupe(TypeId, self.interner.signatureParams(sig));
+        defer self.gpa.free(param_ts);
         const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
         // For rest signatures, the trailing slot accepts any number of
         // args (including zero), each typed against the array-element
@@ -160374,13 +160446,36 @@ pub const Checker = struct {
         const decl = self.namedFunctionDeclForCallCallee(call.callee) orelse return null;
         if (self.hir.typeOf(decl) != sig) return null;
 
+        const checked_js = self.virtualSectionIsJsLike(decl) and self.sourceHasCheckJsDirective();
+        const jsdoc_context_sig = if (checked_js)
+            self.jsDocContextualSignatureForFunction(decl) catch null
+        else
+            null;
+        const has_jsdoc_type_tag = checked_js and (self.jsDocFunctionHasTypeTag(decl) catch false);
         var min_required: usize = 0;
         var value_index: usize = 0;
         for (hir_mod.fnParams(self.hir, decl)) |param| {
             if (self.hir.kindOf(param) != .parameter or self.isThisParameter(param)) continue;
             const p = hir_mod.parameterOf(self.hir, param);
+            const jsdoc_param = if (checked_js and p.type_annotation == hir_mod.none_node_id)
+                if (p.name != hir_mod.none_node_id and self.hir.kindOf(p.name) == .identifier)
+                    self.jsDocParamInfoForFunctionParam(
+                        decl,
+                        self.string_interner.get(hir_mod.identifierOf(self.hir, p.name).name),
+                    ) catch null
+                else
+                    self.jsDocParamInfoForFunctionParamIndex(decl, @intCast(value_index)) catch null
+            else
+                null;
+            const unannotated_js = checked_js and
+                p.type_annotation == hir_mod.none_node_id and
+                (jsdoc_param == null or jsdoc_param.?.typ == null) and
+                jsdoc_context_sig == null and
+                !has_jsdoc_type_tag;
             const omittable = p.flags.is_optional or p.flags.is_rest or
                 p.default_value != hir_mod.none_node_id or
+                unannotated_js or
+                (jsdoc_param != null and jsdoc_param.?.optional) or
                 self.parameterTypeAllowsVoidOmission(self.hir.typeOf(param));
             if (!omittable) min_required = value_index + 1;
             value_index += 1;
@@ -232120,4 +232215,98 @@ test "checker: parity recovery batch suppresses diagnosed type cascades" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.intrinsic_keyword_misuse));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name));
     try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'ActualMissing'."));
+}
+
+const AmbientRedirectResolver = struct {
+    pub const vtable = ExternalResolver.VTable{
+        .resolve = resolveImpl,
+        .moduleExport = moduleExportImpl,
+    };
+
+    fn resolveImpl(_: *anyopaque, _: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        return .{ .path = "/node_modules/ext/ts3.1/index.d.ts", .is_declaration = true };
+    }
+
+    fn moduleExportImpl(_: *anyopaque, _: []const u8, _: []const u8, name: []const u8) ?ExternalResolver.ModuleExport {
+        const exported = std.mem.eql(u8, name, "a");
+        return .{
+            .module_name = "ext",
+            .exported_type = exported,
+            .exported_value = exported,
+            .ambient_module = true,
+            .ambient_module_exports_known = true,
+            .module_is_external = false,
+        };
+    }
+};
+
+test "checker: parity batch preserves checked JavaScript parameter omission" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: test.js
+        \\function plain(x) {}
+        \\plain();
+        \\/**
+        \\ * @param {number} [p]
+        \\ * @param {number=} q
+        \\ * @param {number} [r=101]
+        \\ */
+        \\function optional(p, q, r) {}
+        \\optional();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: parity batch reports every export star conflict" {
+    const s = try newSetup(
+        \\// @filename: t1.ts
+        \\export var x = 1;
+        \\export var y = 2;
+        \\// @filename: t3.ts
+        \\export var x = "x";
+        \\export var y = "y";
+        \\export var z = "z";
+        \\// @filename: t4.ts
+        \\export * from "./t1";
+        \\export * from "./t3";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: parity batch infers applicable object literal index members" {
+    const s = try newSetup(
+        \\interface I<T> { [n: number]: T; }
+        \\declare function foo<T>(obj: I<T>): T;
+        \\foo({
+        \\  0: () => {},
+        \\  ["hi" + "bye"]: true,
+        \\  [0 + 1]: 0,
+        \\  [+"hi"]: [0]
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity batch accepts resolver-redirected ambient module files" {
+    const s = try newSetup(
+        \\import { a } from "ext";
+        \\const value: "ts3.1 a" = a;
+    );
+    defer destroySetup(s);
+    var resolver: u8 = 0;
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &AmbientRedirectResolver.vtable });
+    s.checker.setImporterPath("/main.ts");
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.file_is_not_a_module));
 }
