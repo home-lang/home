@@ -7906,6 +7906,9 @@ pub const Parser = struct {
                 const raw = self.source[name_tok.span.start..name_tok.span.end];
                 const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Interface name cannot be '{s}'.", .{raw});
                 try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, msg);
+                if (std.mem.eql(u8, raw, "void")) {
+                    try self.reportCodeAt(start.span.start, start.line, 2304, "Cannot find name 'interface'.");
+                }
             }
             const name_id_str = try self.internToken(name_tok);
             break :name_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id_str);
@@ -9301,6 +9304,7 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
+            const default_tok = self.tokens[self.cursor - 1];
             // `abstract` is not a declaration modifier once a decorator
             // follows it. In `export default abstract @dec class`, tsgo
             // parses `abstract` as the exported value, inserts a semicolon at
@@ -9363,7 +9367,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(start.span.start, start.line, 1258, "A default export must be at the top level of a file or module declaration.");
             }
             if (!self.moduleElementContextIsIllegal() and self.namespace_depth > 0 and self.ambient_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an ECMAScript-style module.");
+                try self.reportCodeAt(default_tok.span.start, default_tok.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
             // `export default` may be followed by a class/function
             // *declaration* (no statement-terminator) — those have
@@ -12623,6 +12627,7 @@ pub const Parser = struct {
             span: Span,
             kind: DuplicateMemberKind,
             is_computed: bool,
+            type_node: NodeId = hir_mod.none_node_id,
         };
         var duplicate_members: std.ArrayListUnmanaged(DuplicateMember) = .empty;
         defer duplicate_members.deinit(self.gpa);
@@ -12724,6 +12729,7 @@ pub const Parser = struct {
                             .span = self.hir.spanOf(member_node),
                             .kind = if (member.is_method) .method else .property,
                             .is_computed = true,
+                            .type_node = member.type_node,
                         });
                     }
                     continue;
@@ -13072,6 +13078,7 @@ pub const Parser = struct {
                 .span = name_span,
                 .kind = .property,
                 .is_computed = false,
+                .type_node = type_node,
             });
             try out.append(self.gpa, member);
         }
@@ -13098,8 +13105,35 @@ pub const Parser = struct {
                 }
             }
             const accessor_count = getter_count + setter_count;
+            var identical_well_known_computed_properties = property_count > 1 and
+                getter_count == 0 and setter_count == 0 and method_count == 0 and
+                std.mem.startsWith(u8, self.interner.get(candidate.name), "Symbol.");
+            var first_type_node: NodeId = hir_mod.none_node_id;
+            if (identical_well_known_computed_properties) {
+                for (duplicate_members.items) |member| {
+                    if (member.name != candidate.name) continue;
+                    if (member.kind != .property or !member.is_computed or member.type_node == hir_mod.none_node_id) {
+                        identical_well_known_computed_properties = false;
+                        break;
+                    }
+                    if (first_type_node == hir_mod.none_node_id) {
+                        first_type_node = member.type_node;
+                        continue;
+                    }
+                    const first_span = self.hir.spanOf(first_type_node);
+                    const member_span = self.hir.spanOf(member.type_node);
+                    if (!std.mem.eql(
+                        u8,
+                        self.source[first_span.start..first_span.end],
+                        self.source[member_span.start..member_span.end],
+                    )) {
+                        identical_well_known_computed_properties = false;
+                        break;
+                    }
+                }
+            }
             const invalid_group = getter_count > 1 or setter_count > 1 or
-                property_count > 1 or
+                (property_count > 1 and !identical_well_known_computed_properties) or
                 (accessor_count > 0 and property_count + method_count > 0) or
                 (property_count > 0 and method_count > 0);
             if (!invalid_group) continue;
@@ -25021,7 +25055,7 @@ test "parser: namespace export assignment forms report diagnostics" {
     try T.expectEqual(@as(u32, 1063), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
     try T.expectEqual(
-        @as(u32, @intCast(std.mem.lastIndexOf(u8, src, "export default").?)),
+        @as(u32, @intCast(std.mem.lastIndexOf(u8, src, "default").?)),
         s.parser.diagnostics.items[1].pos,
     );
     try T.expectEqualStrings("A default export can only be used in an ECMAScript-style module.", s.parser.diagnostics.items[1].message);
@@ -33731,4 +33765,42 @@ test "parser: assertions stop before operators that cannot be erased" {
         }
     }
     for (found_positions) |found| try T.expect(found);
+}
+
+test "parser: namespace default exports anchor TS1319 on default" {
+    const src = "namespace N { export default class C {} }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const diagnostic = findDiag(s, 1319) orelse return error.MissingDiagnostic;
+    try T.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, src, "default").?)),
+        diagnostic.pos,
+    );
+}
+
+test "parser: predefined void interface name preserves recovery diagnostics" {
+    var s = try newTestSetup("interface void {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2304));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2427));
+    const diagnostic = findDiag(s, 2304) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Cannot find name 'interface'.", diagnostic.message);
+    try T.expectEqual(@as(u32, 0), diagnostic.pos);
+}
+
+test "parser: identical well-known symbol interface properties merge" {
+    var s = try newTestSetup(
+        \\interface I {
+        \\  [Symbol.isConcatSpreadable]: string;
+        \\  [Symbol.isConcatSpreadable]: string;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 2300));
 }
