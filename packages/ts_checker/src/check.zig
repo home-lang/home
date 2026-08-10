@@ -3525,6 +3525,16 @@ fn jsonStringContentEnd(src: []const u8, content_start: usize) ?usize {
     return null;
 }
 
+const SourceFacts = struct {
+    check_js_directive: ?bool = null,
+    allow_js_directive: ?bool = null,
+    explicitly_disables_check_js: ?bool = null,
+    strict_false_directive: ?bool = null,
+    legacy_decorators: ?bool = null,
+    no_lib_true_directive: ?bool = null,
+    contains_import_meta: ?bool = null,
+};
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
@@ -4475,6 +4485,7 @@ pub const Checker = struct {
     /// `// @ts-expect-error`). Optional ÃÂ¢ÃÂÃÂ when null, no directive
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
+    source_facts: SourceFacts = .{},
     source_has_virtual_sections: bool = false,
     allow_js_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -4783,6 +4794,7 @@ pub const Checker = struct {
     /// The slice must outlive the checker; we don't copy it.
     pub fn setSource(self: *Checker, source: []const u8) void {
         self.source = source;
+        self.source_facts = .{};
         self.source_has_virtual_sections =
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
@@ -10472,8 +10484,11 @@ pub const Checker = struct {
     }
 
     fn sourceContainsImportMeta(self: *Checker) bool {
+        if (self.source_facts.contains_import_meta) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "import.meta") != null;
+        const result = std.mem.indexOf(u8, src, "import.meta") != null;
+        self.source_facts.contains_import_meta = result;
+        return result;
     }
 
     fn checkUntypedModuleAugmentation(self: *Checker, node: NodeId) CheckError!void {
@@ -20675,14 +20690,19 @@ pub const Checker = struct {
     }
 
     fn sourceHasStrictFalseDirective(self: *Checker) bool {
+        if (self.source_facts.strict_false_directive) |cached| return cached;
         const src = self.source orelse return false;
-        var lines = std.mem.splitScalar(u8, src, '\n');
-        while (lines.next()) |raw_line| {
-            const line = std.mem.trim(u8, raw_line, " \t\r");
-            if (std.mem.indexOf(u8, line, "@strict: false") != null) return true;
-            if (std.mem.indexOf(u8, line, "@strict:false") != null) return true;
-        }
-        return false;
+        const result = blk: {
+            var lines = std.mem.splitScalar(u8, src, '\n');
+            while (lines.next()) |raw_line| {
+                const line = std.mem.trim(u8, raw_line, " \t\r");
+                if (std.mem.indexOf(u8, line, "@strict: false") != null) break :blk true;
+                if (std.mem.indexOf(u8, line, "@strict:false") != null) break :blk true;
+            }
+            break :blk false;
+        };
+        self.source_facts.strict_false_directive = result;
+        return result;
     }
 
     fn sourceTargetDisallowsTopLevelAwait(self: *Checker) bool {
@@ -32143,12 +32163,14 @@ pub const Checker = struct {
     }
 
     fn sourceUsesLegacyDecorators(self: *Checker) bool {
+        if (self.source_facts.legacy_decorators) |cached| return cached;
         const src = self.source orelse return false;
-        if (std.mem.indexOf(u8, src, "@experimentalDecorators: true") != null) return true;
-        if (std.mem.indexOf(u8, src, "@experimentaldecorators: true") != null) return true;
-        if (std.mem.indexOf(u8, src, "\"experimentalDecorators\": true") != null) return true;
-        if (std.mem.indexOf(u8, src, "\"experimentalDecorators\":true") != null) return true;
-        return false;
+        const result = std.mem.indexOf(u8, src, "@experimentalDecorators: true") != null or
+            std.mem.indexOf(u8, src, "@experimentaldecorators: true") != null or
+            std.mem.indexOf(u8, src, "\"experimentalDecorators\": true") != null or
+            std.mem.indexOf(u8, src, "\"experimentalDecorators\":true") != null;
+        self.source_facts.legacy_decorators = result;
+        return result;
     }
 
     fn classMemberSourceHasLeadingKeyword(self: *Checker, node: NodeId, keyword: []const u8) bool {
@@ -32219,11 +32241,15 @@ pub const Checker = struct {
     }
 
     fn sourceHasNoLibTrueDirective(self: *Checker) bool {
+        if (self.source_facts.no_lib_true_directive) |cached| return cached;
         const src = self.source orelse return false;
-        const pos = std.mem.indexOf(u8, src, "@noLib") orelse std.mem.indexOf(u8, src, "@nolib") orelse return false;
-        const line_end = std.mem.indexOfScalarPos(u8, src, pos, '\n') orelse src.len;
-        const line = src[pos..line_end];
-        return std.mem.indexOf(u8, line, "true") != null;
+        const result = blk: {
+            const pos = std.mem.indexOf(u8, src, "@noLib") orelse std.mem.indexOf(u8, src, "@nolib") orelse break :blk false;
+            const line_end = std.mem.indexOfScalarPos(u8, src, pos, '\n') orelse src.len;
+            break :blk std.mem.indexOf(u8, src[pos..line_end], "true") != null;
+        };
+        self.source_facts.no_lib_true_directive = result;
+        return result;
     }
 
     fn checkNoLibRequiredGlobalTypes(self: *Checker, root: NodeId, stmts: []const NodeId) CheckError!void {
@@ -44347,50 +44373,65 @@ pub const Checker = struct {
 
     fn sourceHasCheckJsDirective(self: *Checker) bool {
         if (self.check_js_enabled) return true;
+        if (self.source_facts.check_js_directive) |cached| return cached;
         const src = self.source orelse return false;
-        if (std.mem.indexOf(u8, src, "@ts-check") != null) return true;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
-            search_start = pos + "@check".len;
-            if (src.len < pos + "@checkJs".len) continue;
-            const js = src[pos + "@check".len .. pos + "@checkJs".len];
-            if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
-            var rest = std.mem.trim(u8, src[pos + "@checkJs".len ..], " \t");
-            if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
-            return std.mem.startsWith(u8, rest, "true");
-        }
-        return false;
+        const result = blk: {
+            if (std.mem.indexOf(u8, src, "@ts-check") != null) break :blk true;
+            var search_start: usize = 0;
+            while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
+                search_start = pos + "@check".len;
+                if (src.len < pos + "@checkJs".len) continue;
+                const js = src[pos + "@check".len .. pos + "@checkJs".len];
+                if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
+                var rest = std.mem.trim(u8, src[pos + "@checkJs".len ..], " \t");
+                if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
+                break :blk std.mem.startsWith(u8, rest, "true");
+            }
+            break :blk false;
+        };
+        self.source_facts.check_js_directive = result;
+        return result;
     }
 
     fn sourceHasAllowJsDirective(self: *Checker) bool {
         if (self.allow_js_enabled) return true;
+        if (self.source_facts.allow_js_directive) |cached| return cached;
         const src = self.source orelse return false;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "@allow")) |pos| {
-            search_start = pos + "@allow".len;
-            if (src.len < pos + "@allowJs".len) continue;
-            const js = src[pos + "@allow".len .. pos + "@allowJs".len];
-            if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
-            var rest = std.mem.trim(u8, src[pos + "@allowJs".len ..], " \t");
-            if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
-            return std.mem.startsWith(u8, rest, "true");
-        }
-        return false;
+        const result = blk: {
+            var search_start: usize = 0;
+            while (std.mem.indexOfPos(u8, src, search_start, "@allow")) |pos| {
+                search_start = pos + "@allow".len;
+                if (src.len < pos + "@allowJs".len) continue;
+                const js = src[pos + "@allow".len .. pos + "@allowJs".len];
+                if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
+                var rest = std.mem.trim(u8, src[pos + "@allowJs".len ..], " \t");
+                if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
+                break :blk std.mem.startsWith(u8, rest, "true");
+            }
+            break :blk false;
+        };
+        self.source_facts.allow_js_directive = result;
+        return result;
     }
 
     fn sourceExplicitlyDisablesCheckJs(self: *Checker) bool {
+        if (self.source_facts.explicitly_disables_check_js) |cached| return cached;
         const src = self.source orelse return false;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
-            search_start = pos + "@check".len;
-            if (src.len < pos + "@checkJs".len) continue;
-            const js = src[pos + "@check".len .. pos + "@checkJs".len];
-            if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
-            var rest = std.mem.trim(u8, src[pos + "@checkJs".len ..], " \t");
-            if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
-            return std.mem.startsWith(u8, rest, "false");
-        }
-        return false;
+        const result = blk: {
+            var search_start: usize = 0;
+            while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
+                search_start = pos + "@check".len;
+                if (src.len < pos + "@checkJs".len) continue;
+                const js = src[pos + "@check".len .. pos + "@checkJs".len];
+                if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
+                var rest = std.mem.trim(u8, src[pos + "@checkJs".len ..], " \t");
+                if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
+                break :blk std.mem.startsWith(u8, rest, "false");
+            }
+            break :blk false;
+        };
+        self.source_facts.explicitly_disables_check_js = result;
+        return result;
     }
 
     fn reportUncheckedJsUndeclaredPrivateName(
@@ -174062,6 +174103,35 @@ test "checker: strict false directive suppresses conditional var TS2454" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.used_before_assignment);
     }
+}
+
+test "checker: source fact cache resets when source changes" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+
+    s.checker.setSource(
+        \\// @checkJs: true
+        \\// @allowJs: true
+        \\// @strict: false
+        \\// @experimentalDecorators: true
+        \\// @noLib: true
+        \\const meta = import.meta;
+    );
+    try T.expect(s.checker.sourceHasCheckJsDirective());
+    try T.expect(s.checker.sourceHasAllowJsDirective());
+    try T.expect(s.checker.sourceHasStrictFalseDirective());
+    try T.expect(s.checker.sourceUsesLegacyDecorators());
+    try T.expect(s.checker.sourceHasNoLibTrueDirective());
+    try T.expect(s.checker.sourceContainsImportMeta());
+
+    s.checker.setSource("// @checkJs: false\n");
+    try T.expect(!s.checker.sourceHasCheckJsDirective());
+    try T.expect(!s.checker.sourceHasAllowJsDirective());
+    try T.expect(s.checker.sourceExplicitlyDisablesCheckJs());
+    try T.expect(!s.checker.sourceHasStrictFalseDirective());
+    try T.expect(!s.checker.sourceUsesLegacyDecorators());
+    try T.expect(!s.checker.sourceHasNoLibTrueDirective());
+    try T.expect(!s.checker.sourceContainsImportMeta());
 }
 
 test "checker: strict false directive suppresses typed let TS2454" {
