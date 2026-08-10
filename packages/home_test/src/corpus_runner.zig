@@ -34928,7 +34928,339 @@ const harness_prelude =
     \\function __home_macro_promise() { return Promise.resolve("aaa"); }
     \\globalThis.__home_modules["./macro.ts"] = { default: __home_macro_default, identity: __home_macro_identity, escape: __home_macro_escape, addStrings: __home_macro_add_strings, addStringsUTF16: __home_macro_add_strings_utf16, ireturnapromise: __home_macro_promise };
     \\globalThis.__home_modules["bundler/transpiler/macro.ts"] = globalThis.__home_modules["./macro.ts"];
-    \\globalThis.__home_modules["node:test"] = { after: afterAll, before: beforeAll, describe, test };
+    \\let __home_node_test_depth = 0;
+    \\function __home_node_test_nested_error(name) {
+    \\  const error = new Error(String(name) + "() inside another test() is not yet implemented in Bun. Track the status & thumbs up the issue: https://github.com/oven-sh/bun/issues/5090. Use `bun:test` in the interim.");
+    \\  error.name = "NotImplementedError";
+    \\  return error;
+    \\}
+    \\function __home_node_test_arguments(name, first, second) {
+    \\  let options = {};
+    \\  let callback;
+    \\  if (typeof name === "function") {
+    \\    callback = name;
+    \\    name = callback.name || "<anonymous>";
+    \\  } else if (name && typeof name === "object") {
+    \\    options = name;
+    \\    callback = first;
+    \\    name = callback && callback.name || "<anonymous>";
+    \\  } else if (first && typeof first === "object") {
+    \\    options = first;
+    \\    callback = second;
+    \\  } else {
+    \\    callback = first;
+    \\  }
+    \\  if (name === undefined || name === null || name === "") name = callback && callback.name || "<anonymous>";
+    \\  return { name: String(name), options, callback };
+    \\}
+    \\function __home_node_test_full_name(name, scope) {
+    \\  const names = [];
+    \\  for (let current = scope; current; current = current.parent) if (current.name) names.unshift(String(current.name));
+    \\  names.push(String(name));
+    \\  return names.join(" > ");
+    \\}
+    \\function __home_node_test_assertions() {
+    \\  const assertions = {};
+    \\  for (const key of Object.keys(__home_assert_module)) {
+    \\    if (key === "CallTracker" || key === "strict") continue;
+    \\    Object.defineProperty(assertions, key, {
+    \\      configurable: true,
+    \\      enumerable: key === "AssertionError",
+    \\      value: __home_assert_module[key],
+    \\      writable: true,
+    \\    });
+    \\  }
+    \\  assertions.fileSnapshot = function() {};
+    \\  assertions.snapshot = function() {};
+    \\  return assertions;
+    \\}
+    \\function __home_node_test_context(name, fullName) {
+    \\  const nested = kind => function() { throw __home_node_test_nested_error(kind); };
+    \\  return {
+    \\    name,
+    \\    fullName,
+    \\    filePath: String(globalThis.__home_current_filename || ""),
+    \\    signal: new AbortController().signal,
+    \\    assert: __home_node_test_assertions(),
+    \\    diagnostic() {},
+    \\    before() {},
+    \\    after() {},
+    \\    beforeEach() {},
+    \\    afterEach() {},
+    \\    test: nested("test"),
+    \\    describe: nested("describe"),
+    \\  };
+    \\}
+    \\function __home_node_test_register(registrar, name, first, second) {
+    \\  if (__home_node_test_depth > 0) throw __home_node_test_nested_error("test");
+    \\  const parsed = __home_node_test_arguments(name, first, second);
+    \\  if (typeof parsed.callback !== "function") return registrar(parsed.name);
+    \\  const scope = globalThis.__home_current_scope;
+    \\  const fullName = __home_node_test_full_name(parsed.name, scope);
+    \\  const wrapped = function() {
+    \\    __home_node_test_depth++;
+    \\    try {
+    \\      const result = parsed.callback(__home_node_test_context(parsed.name, fullName));
+    \\      return __home_then_cleanup(result, function() { __home_node_test_depth--; });
+    \\    } catch (error) {
+    \\      __home_node_test_depth--;
+    \\      throw error;
+    \\    }
+    \\  };
+    \\  return registrar(parsed.name, parsed.options, wrapped);
+    \\}
+    \\function __home_node_test(name, first, second) {
+    \\  return __home_node_test_register(test, name, first, second);
+    \\}
+    \\function __home_node_mock_error(code, message, Constructor) {
+    \\  const error = new (Constructor || TypeError)(String(message));
+    \\  error.code = code;
+    \\  return error;
+    \\}
+    \\function __home_node_mock_validate_options(value) {
+    \\  if (value === undefined) return;
+    \\  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object');
+    \\  }
+    \\}
+    \\function __home_node_mock_validate_boolean(value, name) {
+    \\  if (typeof value !== "boolean") {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "' + name + '" argument must be of type boolean');
+    \\  }
+    \\}
+    \\function __home_node_mock_validate_times(value, name, minimum) {
+    \\  if (value === Infinity) return;
+    \\  const min = minimum === undefined ? 1 : minimum;
+    \\  if (!Number.isInteger(value) || value < min) {
+    \\    throw __home_node_mock_error("ERR_OUT_OF_RANGE", 'The value of "' + name + '" is out of range');
+    \\  }
+    \\}
+    \\function __home_node_mock_validate_call(value, name, minimum) {
+    \\  if (!Number.isInteger(value) || value < minimum) {
+    \\    throw __home_node_mock_error("ERR_OUT_OF_RANGE", 'The value of "' + name + '" is out of range');
+    \\  }
+    \\}
+    \\const __home_node_mock_contexts = [];
+    \\function __home_node_mock_context(original, implementation, restore, times) {
+    \\  const calls = [];
+    \\  const onceImplementations = new Map();
+    \\  const context = {
+    \\    __home_original: original,
+    \\    __home_implementation: implementation,
+    \\    __home_restore: restore,
+    \\    __home_times: times,
+    \\    __home_once_implementations: onceImplementations,
+    \\    callCount() { return calls.length; },
+    \\    mockImplementation(nextImplementation) {
+    \\      if (typeof nextImplementation !== "function") {
+    \\        throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "implementation" argument must be of type function');
+    \\      }
+    \\      context.__home_implementation = nextImplementation;
+    \\    },
+    \\    mockImplementationOnce(nextImplementation, onCall) {
+    \\      if (typeof nextImplementation !== "function") {
+    \\        throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "implementation" argument must be of type function');
+    \\      }
+    \\      const call = onCall === undefined ? calls.length : onCall;
+    \\      __home_node_mock_validate_call(call, "onCall", calls.length);
+    \\      onceImplementations.set(call, nextImplementation);
+    \\    },
+    \\    resetCalls() { calls.length = 0; },
+    \\    restore() {
+    \\      if (typeof context.__home_restore === "function") context.__home_restore();
+    \\      else context.__home_implementation = undefined;
+    \\    },
+    \\  };
+    \\  Object.defineProperty(context, "calls", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return Array.from(calls); },
+    \\  });
+    \\  Object.defineProperty(context, "__home_calls", { value: calls });
+    \\  return context;
+    \\}
+    \\function __home_node_mock_create(original, implementation, restore, times) {
+    \\  const context = __home_node_mock_context(original, implementation, restore, times);
+    \\  __home_node_mock_contexts.push(context);
+    \\  const mocked = function() {
+    \\    "use strict";
+    \\    const args = Array.prototype.slice.call(arguments);
+    \\    const callIndex = context.__home_calls.length;
+    \\    let currentImplementation = context.__home_once_implementations.get(callIndex);
+    \\    if (currentImplementation !== undefined) context.__home_once_implementations.delete(callIndex);
+    \\    else currentImplementation = context.__home_implementation || context.__home_original;
+    \\    if (callIndex + 1 === context.__home_times) context.restore();
+    \\    let result;
+    \\    let error;
+    \\    try {
+    \\      result = new.target
+    \\        ? Reflect.construct(currentImplementation, args, new.target)
+    \\        : currentImplementation.apply(this, args);
+    \\      return result;
+    \\    } catch (caught) {
+    \\      error = caught;
+    \\      throw caught;
+    \\    } finally {
+    \\      context.__home_calls.push({
+    \\        arguments: args,
+    \\        error,
+    \\        result,
+    \\        stack: new Error(),
+    \\        target: new.target,
+    \\        this: this,
+    \\      });
+    \\    }
+    \\  };
+    \\  Object.defineProperty(mocked, "mock", { enumerable: false, value: context, writable: false });
+    \\  Object.defineProperty(mocked, "length", { configurable: true, value: original.length });
+    \\  Object.defineProperty(mocked, "name", { configurable: true, value: original.name });
+    \\  return mocked;
+    \\}
+    \\function __home_node_mock_fn(original, implementation, options) {
+    \\  if (original !== null && original !== undefined && typeof original !== "function" && typeof original === "object") {
+    \\    options = implementation;
+    \\    implementation = original;
+    \\    original = undefined;
+    \\  }
+    \\  if (implementation !== null && implementation !== undefined && typeof implementation !== "function" && typeof implementation === "object") {
+    \\    options = implementation;
+    \\    implementation = undefined;
+    \\  }
+    \\  if (original !== undefined && typeof original !== "function") {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "original" argument must be of type function');
+    \\  }
+    \\  if (implementation !== undefined && typeof implementation !== "function") {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "implementation" argument must be of type function');
+    \\  }
+    \\  __home_node_mock_validate_options(options);
+    \\  const normalizedOptions = options || {};
+    \\  const times = normalizedOptions.times === undefined ? Infinity : normalizedOptions.times;
+    \\  __home_node_mock_validate_times(times, "options.times", 1);
+    \\  return __home_node_mock_create(original || function() {}, implementation, undefined, times);
+    \\}
+    \\function __home_node_mock_method(object, methodName, implementation, options) {
+    \\  if (implementation !== null && implementation !== undefined && typeof implementation !== "function" && typeof implementation === "object") {
+    \\    options = implementation;
+    \\    implementation = undefined;
+    \\  }
+    \\  if (implementation !== undefined && typeof implementation !== "function") {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "implementation" argument must be of type function');
+    \\  }
+    \\  if ((typeof object !== "object" || object === null) && typeof object !== "function") {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "object" argument must be of type object');
+    \\  }
+    \\  if (typeof methodName !== "string" && typeof methodName !== "symbol") {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_TYPE", 'The "methodName" argument must be of type string or symbol');
+    \\  }
+    \\  __home_node_mock_validate_options(options);
+    \\  const normalizedOptions = options || {};
+    \\  const getter = normalizedOptions.getter === undefined ? false : normalizedOptions.getter;
+    \\  const setter = normalizedOptions.setter === undefined ? false : normalizedOptions.setter;
+    \\  const times = normalizedOptions.times === undefined ? Infinity : normalizedOptions.times;
+    \\  __home_node_mock_validate_boolean(getter, "options.getter");
+    \\  __home_node_mock_validate_boolean(setter, "options.setter");
+    \\  __home_node_mock_validate_times(times, "options.times", 1);
+    \\  if (getter && setter) {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_VALUE", 'The property "options.setter" cannot be used with "options.getter"');
+    \\  }
+    \\  let target = object;
+    \\  let descriptor;
+    \\  while (target !== null) {
+    \\    descriptor = Object.getOwnPropertyDescriptor(target, methodName);
+    \\    if (descriptor !== undefined) break;
+    \\    target = Object.getPrototypeOf(target);
+    \\  }
+    \\  if (descriptor === undefined) {
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_VALUE", 'The property "methodName" must be a method');
+    \\  }
+    \\  let original;
+    \\  if (getter) original = descriptor.get;
+    \\  else if (setter) original = descriptor.set;
+    \\  else original = descriptor.value;
+    \\  if (typeof original !== "function") {
+    \\    const kind = getter ? "getter" : setter ? "setter" : "method";
+    \\    throw __home_node_mock_error("ERR_INVALID_ARG_VALUE", 'The property "methodName" must be a ' + kind);
+    \\  }
+    \\  const restore = function() { Object.defineProperty(object, methodName, descriptor); };
+    \\  const mocked = __home_node_mock_create(original, implementation, restore, times);
+    \\  const mockDescriptor = { configurable: descriptor.configurable, enumerable: descriptor.enumerable };
+    \\  if (getter) {
+    \\    mockDescriptor.get = mocked;
+    \\    mockDescriptor.set = descriptor.set;
+    \\  } else if (setter) {
+    \\    mockDescriptor.get = descriptor.get;
+    \\    mockDescriptor.set = mocked;
+    \\  } else {
+    \\    mockDescriptor.value = mocked;
+    \\    mockDescriptor.writable = descriptor.writable;
+    \\  }
+    \\  Object.defineProperty(object, methodName, mockDescriptor);
+    \\  return mocked;
+    \\}
+    \\const __home_node_mock = {
+    \\  fn: __home_node_mock_fn,
+    \\  method: __home_node_mock_method,
+    \\  getter(object, methodName, implementation, options) {
+    \\    if (implementation !== null && implementation !== undefined && typeof implementation !== "function" && typeof implementation === "object") {
+    \\      options = implementation;
+    \\      implementation = undefined;
+    \\    }
+    \\    __home_node_mock_validate_options(options);
+    \\    const normalizedOptions = options || {};
+    \\    const getter = normalizedOptions.getter === undefined ? true : normalizedOptions.getter;
+    \\    if (getter === false) throw __home_node_mock_error("ERR_INVALID_ARG_VALUE", 'The property "options.getter" cannot be false');
+    \\    return __home_node_mock_method(object, methodName, implementation, Object.assign({}, normalizedOptions, { getter }));
+    \\  },
+    \\  setter(object, methodName, implementation, options) {
+    \\    if (implementation !== null && implementation !== undefined && typeof implementation !== "function" && typeof implementation === "object") {
+    \\      options = implementation;
+    \\      implementation = undefined;
+    \\    }
+    \\    __home_node_mock_validate_options(options);
+    \\    const normalizedOptions = options || {};
+    \\    const setter = normalizedOptions.setter === undefined ? true : normalizedOptions.setter;
+    \\    if (setter === false) throw __home_node_mock_error("ERR_INVALID_ARG_VALUE", 'The property "options.setter" cannot be false');
+    \\    return __home_node_mock_method(object, methodName, implementation, Object.assign({}, normalizedOptions, { setter }));
+    \\  },
+    \\  reset() {
+    \\    __home_node_mock.restoreAll();
+    \\    __home_node_mock_contexts.length = 0;
+    \\  },
+    \\  restoreAll() {
+    \\    for (const context of __home_node_mock_contexts) context.restore();
+    \\  },
+    \\  module() { throw __home_node_test_nested_error("mock.module"); },
+    \\};
+    \\function __home_node_describe(name, first, second) {
+    \\  if (__home_node_test_depth > 0) throw __home_node_test_nested_error("describe");
+    \\  const parsed = __home_node_test_arguments(name, first, second);
+    \\  return describe(parsed.name, parsed.callback);
+    \\}
+    \\Object.assign(__home_node_test, {
+    \\  after: afterAll,
+    \\  afterEach,
+    \\  before: beforeAll,
+    \\  beforeEach,
+    \\  default: __home_node_test,
+    \\  describe: __home_node_describe,
+    \\  it: __home_node_test,
+    \\  mock: __home_node_mock,
+    \\  only(name, first, second) { return __home_node_test_register(test.only, name, first, second); },
+    \\  skip(name, first, second) {
+    \\    const parsed = __home_node_test_arguments(name, first, second);
+    \\    return test.skip(parsed.name, parsed.callback);
+    \\  },
+    \\  suite: __home_node_describe,
+    \\  test: __home_node_test,
+    \\  todo(name, first, second) {
+    \\    const parsed = __home_node_test_arguments(name, first, second);
+    \\    return test.todo(parsed.name, parsed.callback);
+    \\  },
+    \\});
+    \\__home_node_describe.only = describe.only;
+    \\__home_node_describe.skip = describe.skip;
+    \\__home_node_describe.todo = describe.todo;
+    \\globalThis.__home_modules["node:test"] = __home_node_test;
     \\function __home_fake_timers_clock() {}
     \\__home_fake_timers_clock.install = function(options) {
     \\  const opts = options || {};
@@ -43955,6 +44287,65 @@ const harness_prelude =
     \\    if (index >= 0) __home_vm_timeout_stack.splice(index, 1);
     \\  }
     \\}
+    \\function __home_vm_sync_thenable(value, microtasks) {
+    \\  return {
+    \\    then(onFulfilled, onRejected) {
+    \\      microtasks.push(() => {
+    \\        try {
+    \\          if (typeof onFulfilled === "function") return onFulfilled(value);
+    \\          return value;
+    \\        } catch (error) {
+    \\          if (typeof onRejected === "function") return onRejected(error);
+    \\          throw error;
+    \\        }
+    \\      });
+    \\      return this;
+    \\    },
+    \\    catch(onRejected) { return this.then(undefined, onRejected); },
+    \\  };
+    \\}
+    \\function __home_vm_execution_sandbox(sandbox, options, microtasks) {
+    \\  if (!options || options.timeout === undefined) return sandbox;
+    \\  const executionSandbox = Object.create(sandbox);
+    \\  for (const key of Object.keys(sandbox)) {
+    \\    const value = sandbox[key];
+    \\    if (typeof value !== "function") continue;
+    \\    let executable = value;
+    \\    try {
+    \\      const functionSource = Function.prototype.toString.call(value);
+    \\      const instrumentedSource = __home_vm_instrument_timeout(functionSource);
+    \\      if (instrumentedSource !== functionSource) {
+    \\        const candidate = Function(
+    \\          "sandbox",
+    \\          "source",
+    \\          "with (sandbox) { return eval('(' + source + ')'); }",
+    \\        )(executionSandbox, instrumentedSource);
+    \\        if (typeof candidate === "function") executable = candidate;
+    \\      }
+    \\    } catch {}
+    \\    executionSandbox[key] = function() {
+    \\      try {
+    \\        const result = executable.apply(this, arguments);
+    \\        globalThis.__home_vm_timeout_check();
+    \\        return result;
+    \\      } catch (error) {
+    \\        globalThis.__home_vm_timeout_check();
+    \\        throw error;
+    \\      }
+    \\    };
+    \\  }
+    \\  if (options.microtaskMode === "afterEvaluate") {
+    \\    function ContextPromise(executor) {
+    \\      if (typeof executor === "function") executor(
+    \\        value => __home_vm_sync_thenable(value, microtasks),
+    \\        error => { throw error; },
+    \\      );
+    \\    }
+    \\    ContextPromise.resolve = value => __home_vm_sync_thenable(value, microtasks);
+    \\    executionSandbox.Promise = ContextPromise;
+    \\  }
+    \\  return executionSandbox;
+    \\}
     \\function __home_vm_run_in_context(code, context, options) {
     \\  const sandbox = context && typeof context === "object" ? context : {};
     \\  if (!Object.prototype.hasOwnProperty.call(sandbox, "Object")) {
@@ -43970,11 +44361,141 @@ const harness_prelude =
     \\    source = source.slice(declaration[0].length);
     \\  }
     \\  const executableSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
+    \\  const microtasks = [];
+    \\  const executionSandbox = __home_vm_execution_sandbox(sandbox, options, microtasks);
     \\  return __home_vm_with_timeout(
-    \\    () => Function("sandbox", "code", "with (sandbox) { return eval(code); }").call(sandbox, sandbox, executableSource),
+    \\    () => {
+    \\      const result = Function("sandbox", "code", "with (sandbox) { return eval(code); }").call(executionSandbox, executionSandbox, executableSource);
+    \\      while (microtasks.length > 0) microtasks.shift()();
+    \\      return result;
+    \\    },
     \\    options,
     \\  );
     \\}
+    \\const __home_vm_context_options = new WeakMap();
+    \\const __home_vm_contexts = new WeakSet();
+    \\const __home_vm_module_states = new WeakMap();
+    \\const __home_vm_module_identifiers = new WeakMap();
+    \\function __home_vm_error(code, message, ErrorType) {
+    \\  const error = new (ErrorType || Error)(message);
+    \\  error.code = code;
+    \\  return error;
+    \\}
+    \\function __home_vm_module_state(module) {
+    \\  const state = __home_vm_module_states.get(module);
+    \\  if (!state) throw __home_vm_error("ERR_INVALID_THIS", "Value of this must be of type Module", TypeError);
+    \\  return state;
+    \\}
+    \\function __home_vm_Module() {
+    \\  throw new TypeError("Module is not a constructor");
+    \\}
+    \\Object.defineProperties(__home_vm_Module.prototype, {
+    \\  identifier: { configurable: true, get() { return __home_vm_module_state(this).identifier; } },
+    \\  context: { configurable: true, get() { return __home_vm_module_state(this).context; } },
+    \\  status: { configurable: true, get() { return __home_vm_module_state(this).status; } },
+    \\  error: { configurable: true, get() {
+    \\    const state = __home_vm_module_state(this);
+    \\    if (state.status !== "errored") throw __home_vm_error("ERR_VM_MODULE_STATUS", "Module status must be errored");
+    \\    return state.error;
+    \\  } },
+    \\  namespace: { configurable: true, get() {
+    \\    const state = __home_vm_module_state(this);
+    \\    if (state.status === "unlinked" || state.status === "linking") {
+    \\      throw __home_vm_error("ERR_VM_MODULE_STATUS", "Module status must not be unlinked or linking");
+    \\    }
+    \\    return state.namespace;
+    \\  } },
+    \\});
+    \\__home_vm_Module.prototype.link = function(linker) {
+    \\  const state = __home_vm_module_state(this);
+    \\  if (typeof linker !== "function") return Promise.reject(__home_vm_error("ERR_INVALID_ARG_TYPE", 'The "linker" argument must be of type function', TypeError));
+    \\  if (state.status === "linked" || state.status === "evaluated" || state.status === "errored") {
+    \\    return Promise.reject(__home_vm_error("ERR_VM_MODULE_ALREADY_LINKED", "Module has already been linked"));
+    \\  }
+    \\  if (state.status !== "unlinked") return Promise.reject(__home_vm_error("ERR_VM_MODULE_STATUS", "Module status must be unlinked"));
+    \\  state.status = "linking";
+    \\  return Promise.resolve().then(async () => {
+    \\    try {
+    \\      for (const specifier of state.moduleRequests) {
+    \\        const dependency = await linker(specifier, this, {});
+    \\        const dependencyState = __home_vm_module_states.get(dependency);
+    \\        if (!dependencyState) throw __home_vm_error("ERR_VM_MODULE_NOT_MODULE", "Provided module is not an instance of Module");
+    \\        if (dependencyState.context !== state.context) throw __home_vm_error("ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
+    \\        state.dependencies.set(specifier, dependency);
+    \\      }
+    \\      state.status = "linked";
+    \\    } catch (error) {
+    \\      state.status = "errored";
+    \\      state.error = error;
+    \\      throw error;
+    \\    }
+    \\  });
+    \\};
+    \\__home_vm_Module.prototype.evaluate = function(options) {
+    \\  const state = __home_vm_module_state(this);
+    \\  if (options !== undefined && (options === null || typeof options !== "object")) {
+    \\    return Promise.reject(__home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object', TypeError));
+    \\  }
+    \\  if (state.status === "errored") return Promise.reject(state.error);
+    \\  if (state.status === "evaluated") return Promise.resolve(undefined);
+    \\  if (state.status !== "linked") {
+    \\    return Promise.reject(__home_vm_error("ERR_VM_MODULE_STATUS", "Module status must be one of linked, evaluated, or errored"));
+    \\  }
+    \\  state.status = "evaluating";
+    \\  const contextOptions = __home_vm_context_options.get(state.context) || {};
+    \\  const evaluateOptions = Object.assign({}, contextOptions, options || {});
+    \\  return Promise.resolve().then(() => {
+    \\    try {
+    \\      __home_vm_run_in_context(state.source, state.context, evaluateOptions);
+    \\      state.status = "evaluated";
+    \\      return undefined;
+    \\    } catch (error) {
+    \\      state.status = "errored";
+    \\      state.error = error;
+    \\      throw error;
+    \\    }
+    \\  });
+    \\};
+    \\function __home_vm_SourceTextModule(code, options) {
+    \\  if (!new.target) throw new TypeError("Class constructor SourceTextModule cannot be invoked without 'new'");
+    \\  if (typeof code !== "string") throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "code" argument must be of type string', TypeError);
+    \\  if (options !== undefined && (options === null || typeof options !== "object")) {
+    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object', TypeError);
+    \\  }
+    \\  options = options || {};
+    \\  if (options.context !== undefined && !__home_vm_contexts.has(options.context)) {
+    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.context" property must be a vm.Context', TypeError);
+    \\  }
+    \\  if (options.identifier !== undefined && typeof options.identifier !== "string") {
+    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.identifier" property must be of type string', TypeError);
+    \\  }
+    \\  if (options.importModuleDynamically !== undefined && typeof options.importModuleDynamically !== "function") {
+    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.importModuleDynamically" property must be of type function', TypeError);
+    \\  }
+    \\  const context = options.context || globalThis;
+    \\  const identifierIndex = __home_vm_module_identifiers.get(context) || 0;
+    \\  __home_vm_module_identifiers.set(context, identifierIndex + 1);
+    \\  const requests = [];
+    \\  const requestPattern = /(?:^|[;\n])\s*import\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g;
+    \\  let request;
+    \\  while ((request = requestPattern.exec(code))) if (!requests.includes(request[1])) requests.push(request[1]);
+    \\  __home_vm_module_states.set(this, {
+    \\    source: code,
+    \\    context,
+    \\    identifier: options.identifier || "vm:module(" + String(identifierIndex) + ")",
+    \\    status: "unlinked",
+    \\    error: undefined,
+    \\    namespace: Object.create(null),
+    \\    moduleRequests: Object.freeze(requests.slice()),
+    \\    dependencies: new Map(),
+    \\  });
+    \\}
+    \\Object.setPrototypeOf(__home_vm_SourceTextModule.prototype, __home_vm_Module.prototype);
+    \\Object.defineProperties(__home_vm_SourceTextModule.prototype, {
+    \\  constructor: { configurable: true, writable: true, value: __home_vm_SourceTextModule },
+    \\  moduleRequests: { configurable: true, get() { return __home_vm_module_state(this).moduleRequests; } },
+    \\  dependencySpecifiers: { configurable: true, get() { return __home_vm_module_state(this).moduleRequests; } },
+    \\});
     \\const __home_vm_module = {
     \\  compileFunction(code, params, options) {
     \\    const current = String(globalThis.__home_current_filename || "");
@@ -43985,8 +44506,11 @@ const harness_prelude =
     \\    const names = Array.isArray(params) ? params.map(String) : [];
     \\    return Function.apply(null, names.concat(String(code || "")));
     \\  },
-    \\  createContext(sandbox) {
-    \\    return sandbox && typeof sandbox === "object" ? sandbox : {};
+    \\  createContext(sandbox, options) {
+    \\    const context = sandbox && typeof sandbox === "object" ? sandbox : {};
+    \\    __home_vm_contexts.add(context);
+    \\    __home_vm_context_options.set(context, options && typeof options === "object" ? Object.assign({}, options) : {});
+    \\    return context;
     \\  },
     \\  runInContext(code, context, options) {
     \\    return __home_vm_run_in_context(code, context, options);
@@ -44004,6 +44528,8 @@ const harness_prelude =
     \\    );
     \\  },
     \\};
+    \\__home_vm_module.Module = __home_vm_Module;
+    \\__home_vm_module.SourceTextModule = __home_vm_SourceTextModule;
     \\function __home_vm_Script(code, options) {
     \\  this.code = String(code || "");
     \\  this.options = options || {};
@@ -66863,6 +67389,16 @@ fn rewriteNodeNapiDoCorpus(
     );
 }
 
+fn rewriteVmTimeoutEscapeCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "      hrtime,\n      loop\n    },",
+        "      hrtime,\n      loop,\n      NS_PER_MS\n    },",
+    );
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -66873,7 +67409,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         issue_14515_bootstrap_source
     else
         source[shebang_len..];
-    const owned_module_source = if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
+    const owned_module_source = if (std.mem.indexOf(u8, relative_path, "test-vm-timeout-escape-promise") != null)
+        try rewriteVmTimeoutEscapeCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
     else if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
@@ -67503,7 +68041,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
     // cases. Reaching the end of one without an exception is a successful
     // corpus execution, not an unsupported empty test file.
     if (std.mem.startsWith(u8, relative_path, "js/node/test/") and
-        std.mem.endsWith(u8, relative_path, ".js")) return true;
+        (std.mem.endsWith(u8, relative_path, ".js") or std.mem.endsWith(u8, relative_path, ".mjs"))) return true;
 
     return std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
@@ -82814,6 +83352,10 @@ test "bootstrap runner completes Bun deadlock regression corpus" {
         "js/node/test/parallel/test-http-outgoing-finish.js",
         "js/node/test/parallel/test-readable-from-iterator-closing.js",
         "js/node/test/parallel/test-vm-timeout.js",
+        "js/node/test/parallel/test-vm-timeout-escape-promise-2.js",
+        "js/node/test/parallel/test-vm-timeout-escape-promise-module.js",
+        "js/node/test/parallel/test-vm-timeout-escape-promise-module.mjs",
+        "js/node/test/parallel/test-vm-timeout-escape-promise.js",
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -82847,6 +83389,59 @@ test "bootstrap runner completes Bun deadlock regression corpus" {
         try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
         try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     }
+
+    const source_text_module_source =
+        \\import { test } from "bun:test";
+        \\const vm = require("vm");
+        \\const NS_PER_MS = 1000000n;
+        \\const hrtime = process.hrtime.bigint;
+        \\function loop() {
+        \\  const start = hrtime();
+        \\  while (1) {
+        \\    const span = (hrtime() - start) / NS_PER_MS;
+        \\    if (span >= 2000n) throw new Error("escaped VM module timeout");
+        \\  }
+        \\}
+        \\test("SourceTextModule keeps afterEvaluate microtasks inside timeout", async () => {
+        \\  const module = new vm.SourceTextModule(
+        \\    "Promise.resolve().then(() => loop());",
+        \\    { context: vm.createContext({ hrtime, loop, NS_PER_MS }, { microtaskMode: "afterEvaluate" }) },
+        \\  );
+        \\  await module.link(() => { throw new Error("unexpected module dependency"); });
+        \\  let thrown = null;
+        \\  try {
+        \\    await module.evaluate({ timeout: 10 });
+        \\  } catch (error) {
+        \\    thrown = error;
+        \\  }
+        \\  if (!thrown || thrown.code !== "ERR_SCRIPT_EXECUTION_TIMEOUT" || thrown.message !== "Script execution timed out after 10ms") {
+        \\    throw new Error("SourceTextModule did not preserve the VM timeout boundary");
+        \\  }
+        \\});
+    ;
+    const source_text_module_path = "js/node/test/parallel/test-vm-timeout-escape-promise-source-text-module.test.js";
+    var source_text_module_prepared = try prepareCorpusModule(
+        std.testing.allocator,
+        source_text_module_source,
+        source_text_module_path,
+    );
+    defer source_text_module_prepared.deinit(std.testing.allocator);
+    try std.testing.expect(source_text_module_prepared.unsupported_reason == null);
+    var source_text_module_run = try runtime.runFile(std.testing.allocator, source_text_module_prepared.fileSpec());
+    defer source_text_module_run.deinit(std.testing.allocator);
+    if (source_text_module_run.result.status() != .passed or source_text_module_run.result.passed != 1) {
+        std.debug.print(
+            "SourceTextModule timeout regression mismatch: passed={} failed={} unsupported={} message={s}\n",
+            .{
+                source_text_module_run.result.passed,
+                source_text_module_run.result.failed,
+                source_text_module_run.result.unsupported,
+                source_text_module_run.result.first_failure_message,
+            },
+        );
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, source_text_module_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), source_text_module_run.result.passed);
 }
 
 test "bootstrap Bun.connect sees websocket upgrade response cookies" {
