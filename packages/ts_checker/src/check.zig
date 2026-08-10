@@ -50255,10 +50255,14 @@ pub const Checker = struct {
             raw
         else
             "/__root__.ts";
+        const resolution = resolver.resolve(spec, containing) orelse return false;
+        // Without allowJs, a resolved JavaScript implementation is not a
+        // program source file. Its missing declarations are classified by
+        // the TS7016 path below rather than by the source-file TS2306 check.
+        if (self.pathIsJsLike(resolution.path) and !self.sourceHasAllowJsDirective()) return false;
         const info = resolver.moduleExport(spec, containing, "") orelse return false;
         if (info.module_is_external != false) return false;
         if (info.ambient_module) return false;
-        const resolution = resolver.resolve(spec, containing) orelse return false;
         if (self.virtualDeclarationFileHasAmbientModule(resolution.path, spec)) return false;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -50824,8 +50828,7 @@ pub const Checker = struct {
         else
             tsSourceExtensionContainedInSpecifier(spec);
         if (!is_relative and captured_extension == null) return;
-        const allow_ts_extensions = self.allow_importing_ts_extensions or
-            self.sourceDirectiveValueMentions("allowImportingTsExtensions", "true");
+        const allow_ts_extensions = self.allow_importing_ts_extensions;
         const rewrite_ts_extensions = self.rewriteRelativeImportExtensionsEnabledForNode(node);
         // Default for `allowImportingTsExtensions` is FALSE ÃÂ¢ÃÂÃÂ TS5097
         // fires unless explicitly enabled. TS2846 is independent: value
@@ -55151,7 +55154,7 @@ pub const Checker = struct {
         leaf: hir_mod.StringId,
         space: CommonJsImportMemberSpace,
     ) CheckError!?TypeId {
-        if (space == .value or !std.mem.startsWith(u8, spec, ".")) return null;
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
         const src = self.source orelse return null;
         const sp = self.hir.spanOf(type_node);
         if (sp.start >= sp.end or sp.end > src.len) return null;
@@ -55176,6 +55179,10 @@ pub const Checker = struct {
         if (names.items.len == 0) return null;
         if (names.items[names.items.len - 1] != leaf) return null;
         const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
+        if (space == .value and names.items.len == 1) {
+            return try self.virtualRelativeModuleExportValueType(type_node, spec_id, leaf);
+        }
+        if (space == .value) return null;
         return try self.virtualRelativeModuleExportType(type_node, spec_id, names.items[0 .. names.items.len - 1], leaf);
     }
 
@@ -55199,6 +55206,9 @@ pub const Checker = struct {
         if (space != .value) {
             const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
             if (try self.virtualRelativeModuleExportType(anchor, spec_id, &.{}, leaf)) |type_export| return type_export;
+        } else {
+            const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
+            if (try self.virtualRelativeModuleExportValueType(anchor, spec_id, leaf)) |value_export| return value_export;
         }
 
         const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) orelse return null;
@@ -67832,6 +67842,13 @@ pub const Checker = struct {
                         {
                             try self.reportImportTypeNotAValue(tt.operand, import_spec);
                             return types.Primitive.any;
+                        }
+                        const import_ref = hir_mod.typeRefOf(self.hir, tt.operand);
+                        if (self.external_resolver) |resolver| {
+                            const containing = if (self.importer_path.len > 0) self.importer_path else "/__root__.ts";
+                            if (resolver.moduleExport(import_spec, containing, self.string_interner.get(import_ref.name))) |info| {
+                                if (info.exported_value) return types.Primitive.any;
+                            }
                         }
                     }
                     if (try self.virtualCommonJsImportTypeMember(tt.operand, .value)) |import_value_t| return import_value_t;
@@ -202067,6 +202084,40 @@ test "checker: virtual package exports resolution-mode selects declaration file"
     try T.expectEqualStrings("node_modules/@types/foo/index.d.cts", require_path);
 }
 
+test "checker: relative typeof imports with resolution-mode resolve value exports" {
+    const s = try newSetup(
+        \\// @filename: /app.ts
+        \\type Import = typeof import("./other", { with: { "resolution-mode": "import" } }).x;
+        \\type Require = typeof import("./other", { with: { "resolution-mode": "require" } }).x;
+        \\// @filename: /other.ts
+        \\export const x = "other";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: external resolver satisfies qualified typeof import value export" {
+    const s = try newSetup(
+        \\type Import = typeof import("./other", { with: { "resolution-mode": "import" } }).x;
+        \\type Require = typeof import("./other", { with: { "resolution-mode": "require" } }).x;
+    );
+    defer destroySetup(s);
+    var stub = CrossModuleStubResolver{
+        .canned_module_name = "\"/other\"",
+        .exported_name = "x",
+        .exported_type = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &CrossModuleStubResolver.vtable });
+    s.checker.setImporterPath("/app.ts");
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
 test "checker: checkjs JSDoc returns tag validates returned expression" {
     const s = try newSetup(
         \\// @checkjs: true
@@ -209221,6 +209272,7 @@ test "checker: TS2846 still fires with allowImportingTsExtensions true" {
         \\import z from "./z.d.ts";
     );
     defer destroySetup(s);
+    s.checker.setAllowImportingTsExtensionsEnabled(true);
     try s.checker.checkSourceFile(s.root);
     var found = false;
     var saw_cannot_find = false;

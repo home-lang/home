@@ -204,6 +204,7 @@ fn dupeCheckerChain(
 /// `LibReferenceDirectives`.
 pub const ReferenceDirective = struct {
     pub const Kind = enum { path, types, lib };
+    pub const ResolutionMode = enum { import, require };
     kind: Kind,
     /// Target as written in the directive (e.g. `./foo.ts`, `node`,
     /// `es2015`). Owned by the Compilation.
@@ -211,6 +212,8 @@ pub const ReferenceDirective = struct {
     /// Byte offset of the target text within the source, for
     /// related-info anchoring (TS1401).
     pos: u32,
+    /// Explicit package condition selection for `types` references.
+    resolution_mode: ?ResolutionMode = null,
 };
 
 pub const Compilation = struct {
@@ -718,10 +721,34 @@ fn extractReferenceDirectives(
                 .kind = attr.kind,
                 .name = try gpa.dupe(u8, value),
                 .pos = @intCast(offset + leading + val_start),
+                .resolution_mode = if (attr.kind == .types)
+                    referenceResolutionMode(line[ref_rel..])
+                else
+                    null,
             });
             break;
         }
     }
+}
+
+fn referenceResolutionMode(text: []const u8) ?ReferenceDirective.ResolutionMode {
+    const attr = "resolution-mode";
+    const attr_at = std.mem.indexOf(u8, text, attr) orelse return null;
+    var idx = attr_at + attr.len;
+    while (idx < text.len and (text[idx] == ' ' or text[idx] == '\t')) : (idx += 1) {}
+    if (idx >= text.len or text[idx] != '=') return null;
+    idx += 1;
+    while (idx < text.len and (text[idx] == ' ' or text[idx] == '\t')) : (idx += 1) {}
+    if (idx >= text.len or (text[idx] != '\'' and text[idx] != '"')) return null;
+    const quote = text[idx];
+    idx += 1;
+    const value_start = idx;
+    while (idx < text.len and text[idx] != quote) : (idx += 1) {}
+    if (idx >= text.len) return null;
+    const value = text[value_start..idx];
+    if (std.mem.eql(u8, value, "import")) return .import;
+    if (std.mem.eql(u8, value, "require")) return .require;
+    return null;
 }
 
 fn reportMissingReferencePathDiagnostics(

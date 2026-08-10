@@ -438,6 +438,8 @@ pub const Case = struct {
     /// Lower-case `module` label selected by a `(module=X)` baseline
     /// suffix. Empty means use the first source/config directive value.
     baseline_module_kind: []const u8 = "",
+    /// Effective value selected from an upstream matrix baseline.
+    allow_importing_ts_extensions: ?bool = null,
     /// Effective package-ID redirect policy selected by the upstream
     /// baseline matrix. tsgo defaults this option on and only retains
     /// duplicate physical package files when it is explicitly false.
@@ -719,7 +721,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
-        .allow_importing_ts_extensions = directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
+        .allow_importing_ts_extensions = c.allow_importing_ts_extensions orelse
+            directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
         .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
@@ -2215,6 +2218,7 @@ test "conformance: loaded corpus keeps checkJs diagnostics for late-bound comput
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         });
         defer {
@@ -2267,6 +2271,7 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         });
         defer {
@@ -3025,7 +3030,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
-        .allow_importing_ts_extensions = directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
+        .allow_importing_ts_extensions = c.allow_importing_ts_extensions orelse
+            directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
         .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
@@ -6208,6 +6214,7 @@ pub const CorpusEntry = struct {
     baseline_module_resolution: []const u8 = "",
     /// See `Case.baseline_module_kind`.
     baseline_module_kind: []const u8 = "",
+    allow_importing_ts_extensions: ?bool = null,
     deduplicate_packages: bool = true,
 };
 
@@ -6239,6 +6246,7 @@ pub const OwnedCorpusEntry = struct {
     baseline_module_resolution: []u8 = "",
     /// Lower-case `module` variant extracted from the chosen baseline.
     baseline_module_kind: []u8 = "",
+    allow_importing_ts_extensions: ?bool = null,
     deduplicate_packages: bool = true,
 };
 
@@ -6526,6 +6534,7 @@ pub fn loadDirectoryWithOptions(
         const deduplicate_packages = baselineOptionBool(baseline_path, "deduplicatepackages") orelse
             directiveBool(directive_source, "deduplicatePackages") orelse
             true;
+        const allow_importing_ts_extensions = baselineOptionBool(baseline_path, "allowimportingtsextensions");
         try out.append(gpa, .{
             .name = name,
             .source = case_src,
@@ -6554,6 +6563,7 @@ pub fn loadDirectoryWithOptions(
             .raw_source = raw_source,
             .baseline_module_resolution = baseline_mr,
             .baseline_module_kind = baseline_module,
+            .allow_importing_ts_extensions = allow_importing_ts_extensions,
             .deduplicate_packages = deduplicate_packages,
         });
     }
@@ -7925,6 +7935,7 @@ fn baselineOptionBool(path: ?[]const u8, option: []const u8) ?bool {
 test "conformance: boolean variant baselines override matrix directives" {
     try T.expectEqual(false, baselineOptionBool("case(noimplicitany=false).errors.txt", "noimplicitany").?);
     try T.expectEqual(true, baselineOptionBool("case(noimplicitany=true).errors.txt", "noimplicitany").?);
+    try T.expectEqual(false, baselineOptionBool("case(allowimportingtsextensions=false,noemit=true).errors.txt", "allowimportingtsextensions").?);
     try T.expect(baselineOptionBool("case.errors.txt", "noimplicitany") == null);
 }
 
@@ -9014,6 +9025,7 @@ pub fn runOwnedCorpus(
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         };
         const r = try runOneEntry(gpa, view);
@@ -9176,6 +9188,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         });
         errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
@@ -9210,6 +9223,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         };
         const program_result = (try runProgram(gpa, program_case)) orelse try run(gpa, program_case);
@@ -55425,6 +55439,7 @@ fn runClusterFixture(
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         });
     }
@@ -55689,6 +55704,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         });
         try results.append(T.allocator, r);
@@ -56322,6 +56338,7 @@ fn runOptInTsSuiteFamily(
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         });
         switch (r.outcome) {
@@ -56485,6 +56502,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
         });
         switch (r.outcome) {

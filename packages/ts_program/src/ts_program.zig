@@ -2425,6 +2425,7 @@ pub const Program = struct {
                         error.OutOfMemory => return error.OutOfMemory,
                         else => continue,
                     };
+                    if (!options.allow_js and isJsLikePath(res.path)) continue;
                     if (self.by_path.get(res.path) != null) continue;
                     _ = self.addResolvedIncludeFileFromResolution(res) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
@@ -2456,7 +2457,14 @@ pub const Program = struct {
                             new_in_round += 1;
                         },
                         .types => {
-                            const res = self.resolver.resolveTypeReferenceDirective(ref.name, f.path) catch |err| switch (err) {
+                            const resolution = if (ref.resolution_mode) |mode|
+                                self.resolver.resolveTypeReferenceDirectiveWithMode(ref.name, f.path, switch (mode) {
+                                    .import => .import,
+                                    .require => .require,
+                                })
+                            else
+                                self.resolver.resolveTypeReferenceDirective(ref.name, f.path);
+                            const res = resolution catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
@@ -5276,6 +5284,54 @@ test "Program: imported file records TS1393 include reason (specifier + importer
     // The root importer itself has no recorded import reason — its
     // provenance is supplied by the CLI layer.
     try T.expect(p.fileById(a_id).include_reason == null);
+}
+
+test "Program: loadImportClosure keeps JavaScript external unless allowJs is enabled" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "import value from 'dep';\n");
+    try vfs.addFile("/proj/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
+    try vfs.addFile("/proj/node_modules/dep/index.js", "module.exports = 1;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+
+    var typed_program = Program.init(T.allocator, &resolver);
+    defer typed_program.deinit();
+    _ = try typed_program.add("/proj/main.ts", "import value from 'dep';\n");
+    try T.expectEqual(@as(usize, 0), try typed_program.loadImportClosure(.{}));
+    try T.expect(typed_program.lookupPath("/proj/node_modules/dep/index.js") == null);
+
+    var js_program = Program.init(T.allocator, &resolver);
+    defer js_program.deinit();
+    _ = try js_program.add("/proj/main.ts", "import value from 'dep';\n");
+    try T.expectEqual(@as(usize, 1), try js_program.loadImportClosure(.{ .allow_js = true }));
+    try T.expect(js_program.lookupPath("/proj/node_modules/dep/index.js") != null);
+}
+
+test "Program: triple-slash type reference preserves resolution-mode" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/app.ts", "/// <reference types=\"foo\" resolution-mode=\"require\" />\nSCRIPT;\n");
+    try vfs.addFile(
+        "/node_modules/@types/foo/package.json",
+        "{\"exports\":{\".\":{\"import\":\"./index.d.mts\",\"require\":\"./index.d.cts\"}}}",
+    );
+    try vfs.addFile("/node_modules/@types/foo/index.d.mts", "export {}; declare global { const MODULE: any; }\n");
+    try vfs.addFile("/node_modules/@types/foo/index.d.cts", "export {}; declare global { const SCRIPT: any; }\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .bundler,
+        .module_kind = "esnext",
+    });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/app.ts", "/// <reference types=\"foo\" resolution-mode=\"require\" />\nSCRIPT;\n");
+
+    try T.expectEqual(@as(usize, 1), try program.loadImportClosure(.{}));
+    try T.expect(program.lookupPath("/node_modules/@types/foo/index.d.cts") != null);
+    try T.expect(program.lookupPath("/node_modules/@types/foo/index.d.mts") == null);
 }
 
 test "Program: node_modules import records package-id include reason (TS1394)" {
