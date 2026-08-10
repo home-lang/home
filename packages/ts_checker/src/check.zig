@@ -9842,6 +9842,7 @@ pub const Checker = struct {
                         }
                     },
                     .call_expr, .new_expr => _ = try self.checkExpression(s),
+                    .jsx_element, .jsx_self_closing => _ = try self.checkExpression(s),
                     .assignment => _ = try self.checkExpression(s),
                     .binary_op => {
                         const b = hir_mod.binopOf(self.hir, s);
@@ -33887,6 +33888,7 @@ pub const Checker = struct {
     fn checkExportedClassMemberPrivateNames(self: *Checker, node: NodeId) CheckError!void {
         if (!self.strict_flags.declaration) return;
         if (!self.declarationNodeIsExported(node)) return;
+        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const stmts = self.enclosingModuleStatements(node) orelse return;
         const alloc = self.diag_arena.allocator();
         for (hir_mod.classMembers(self.hir, node)) |member| {
@@ -36453,6 +36455,22 @@ pub const Checker = struct {
                             const overload_info_before = seen.get(member_name);
                             const is_abstract_method = fn_v.flags.is_abstract or (c.is_abstract and fn_v.body == hir_mod.none_node_id);
                             var implementation_is_immediate_for_own_group = false;
+                            const opposite_seen = if (op.is_static) &method_seen else &static_method_seen;
+                            if (!is_abstract_method) {
+                                if (opposite_seen.getPtr(member_name)) |opposite_info| {
+                                    if (opposite_info.bodyless_count > 0 and opposite_info.implementation_count == 0) {
+                                        const code = if (op.is_static) TsCodes.overload_must_not_be_static else TsCodes.overload_must_be_static;
+                                        const message = if (op.is_static) "Function overload must not be static." else "Function overload must be static.";
+                                        try self.reportComputedKeyBracket(op.key, code, message);
+                                        if (fn_v.body != hir_mod.none_node_id) {
+                                            opposite_info.implementation_count = 1;
+                                            if (overload_info_before != null) {
+                                                implementation_is_immediate_for_own_group = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             if (fn_v.body != hir_mod.none_node_id) {
                                 if (previous_bodyless_method_name) |expected| {
                                     if (previous_bodyless_method_static == op.is_static) {
@@ -37575,6 +37593,9 @@ pub const Checker = struct {
                 if (try self.reportClassWeakTypeNoOverlap(node, impl_node, instance_t, target_t, cid.name)) {
                     continue;
                 }
+                if (try self.reportClassImplementsMemberMismatches(node, instance_t, target_t)) {
+                    continue;
+                }
                 if (!(self.classImplementsAssignable(instance_t, target_t) catch true)) {
                     try self.reportClassIncorrectlyImplements(node, impl_node, target_t, cid.name);
                 }
@@ -38272,6 +38293,9 @@ pub const Checker = struct {
                         continue;
                     }
                     if (try self.reportClassWeakTypeNoOverlap(node, impl_node, instance_t, target_t, cid.name)) {
+                        continue;
+                    }
+                    if (try self.reportClassImplementsMemberMismatches(node, instance_t, target_t)) {
                         continue;
                     }
                     if (!(self.heritageAssignable(instance_t, target_t) catch true)) {
@@ -40500,14 +40524,7 @@ pub const Checker = struct {
             }
             if (has_accessor) {
                 const canonical_name = self.string_interner.get(a.canonical);
-                var same_accessor_kind = a.kind == .getter or a.kind == .setter;
-                for (group_idx.items[1..]) |idx| {
-                    if (entries.items[idx].kind != a.kind) {
-                        same_accessor_kind = false;
-                        break;
-                    }
-                }
-                if (same_accessor_kind and std.mem.startsWith(u8, canonical_name, "Symbol.")) {
+                if (std.mem.startsWith(u8, canonical_name, "Symbol.")) {
                     for (group_idx.items[1..]) |idx| {
                         const e = entries.items[idx];
                         try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
@@ -56702,7 +56719,6 @@ pub const Checker = struct {
                 .decl_node = m,
             });
         }
-
         // `interface B extends A { ... }` ÃÂ¢ÃÂÃÂ merge each parent's
         // members into the child. Child decls win on name conflict.
         if (extends.len > 0) {
@@ -57728,6 +57744,35 @@ pub const Checker = struct {
             if (k.name == name) return true;
         }
         return false;
+    }
+
+    fn reportObjectLiteralMethodReturnSelfReference(
+        self: *Checker,
+        object_node: NodeId,
+        fn_node: NodeId,
+        name_node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        const kind = self.hir.kindOf(fn_node);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return;
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.return_type != hir_mod.none_node_id or function.body == hir_mod.none_node_id) return;
+        const return_expr = self.firstReturnExpressionNode(function.body) orelse return;
+        if (self.hir.kindOf(return_expr) != .member_access) return;
+        const member = hir_mod.memberOf(self.hir, return_expr);
+        if (!self.nodeIsThisReference(member.object)) return;
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |property| {
+            if (self.hir.kindOf(property) != .object_property) continue;
+            const payload = hir_mod.objectPropertyOf(self.hir, property);
+            const property_name = self.propertyNameFromKeyNode(payload.key) orelse continue;
+            if (property_name == member.name) return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions.",
+            .{self.string_interner.get(name)},
+        );
+        try self.report(name_node, TsCodes.function_return_self_reference_implicitly_any, msg);
     }
 
     fn objectLiteralHasAccessorForName(self: *Checker, obj_node: NodeId, name: hir_mod.StringId) bool {
@@ -69222,19 +69267,50 @@ pub const Checker = struct {
                 if (self.hir.kindOf(cur) == .namespace_decl) break :blk hir_mod.namespaceBody(self.hir, cur);
                 break :blk &[_]NodeId{};
             };
-            for (stmts) |raw_stmt| {
-                const stmt = self.unwrapExportDecl(raw_stmt);
-                if (self.hir.kindOf(stmt) != .import_decl) continue;
-                const imp = hir_mod.importOf(self.hir, stmt);
-                if (self.string_interner.get(imp.module).len != 0) continue;
-                if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
-                if (hir_mod.identifierOf(self.hir, imp.default_binding).name != local_name) continue;
-                if (imp.import_equals == hir_mod.none_node_id) return null;
-                return stmt;
-            }
+            if (self.importEqualsDeclForLocalInStatements(stmts, local_name)) |stmt| return stmt;
             const parent = self.hir.parentOf(cur);
             if (parent == cur or parent == hir_mod.none_node_id) break;
             cur = parent;
+        }
+
+        const anchor_pos = self.hir.spanOf(anchor).start;
+        var best: NodeId = hir_mod.none_node_id;
+        var best_width: u32 = std.math.maxInt(u32);
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .namespace_decl) continue;
+            const span = self.hir.spanOf(node);
+            if (anchor_pos < span.start or anchor_pos >= span.end) continue;
+            const stmt = self.importEqualsDeclForLocalInStatements(hir_mod.namespaceBody(self.hir, node), local_name) orelse continue;
+            const width = span.end - span.start;
+            if (width < best_width) {
+                best = stmt;
+                best_width = width;
+            }
+        }
+        if (best != hir_mod.none_node_id) return best;
+
+        const root = self.rootBlockFor(anchor);
+        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+            return self.importEqualsDeclForLocalInStatements(hir_mod.blockStmts(self.hir, root), local_name);
+        }
+        return null;
+    }
+
+    fn importEqualsDeclForLocalInStatements(
+        self: *Checker,
+        stmts: []const NodeId,
+        local_name: hir_mod.StringId,
+    ) ?NodeId {
+        for (stmts) |raw_stmt| {
+            const stmt = self.unwrapExportDecl(raw_stmt);
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (self.string_interner.get(imp.module).len != 0) continue;
+            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, imp.default_binding).name != local_name) continue;
+            if (imp.import_equals == hir_mod.none_node_id) return null;
+            return stmt;
         }
         return null;
     }
@@ -70214,6 +70290,29 @@ pub const Checker = struct {
             .message = msg,
         });
         return true;
+    }
+
+    fn reportMissingNamespaceValueMemberNamed(
+        self: *Checker,
+        node: NodeId,
+        namespace_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) CheckError!void {
+        const leaf_pos = self.memberAccessNamePos(node);
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == TsCodes.property_does_not_exist and diagnostic.pos == leaf_pos) return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type 'typeof {s}'.",
+            .{ self.string_interner.get(member_name), self.string_interner.get(namespace_name) },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = leaf_pos,
+            .code = TsCodes.property_does_not_exist,
+            .message = msg,
+        });
     }
 
     /// A dotted declaration such as `namespace A.B {}` creates the
@@ -95532,6 +95631,28 @@ pub const Checker = struct {
                     if (try self.checkJsNamespaceInterfaceValueMemberType(obj_id.name, m.name, node)) |member_t| {
                         break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
                     }
+                    var import_equals_namespace_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                    defer import_equals_namespace_path.deinit(self.gpa);
+                    if (try self.appendImportEqualsNamespacePathForLocal(&import_equals_namespace_path, obj_id.name, node)) {
+                        if (import_equals_namespace_path.items.len == 1) {
+                            const target_namespace_name = import_equals_namespace_path.items[0];
+                            if (try self.mergedNamespaceValueMemberType(target_namespace_name, m.name, node)) |member_t| {
+                                break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
+                            }
+                            const target_path = [_]hir_mod.StringId{target_namespace_name};
+                            const target_namespace = self.findVisibleNamespaceByPath(node, &target_path) orelse root_lookup: {
+                                const root = self.rootBlockFor(node);
+                                if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) break :root_lookup null;
+                                break :root_lookup self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &target_path);
+                            };
+                            if (target_namespace) |namespace_node| {
+                                if (self.findExportedValueDeclInNamespace(namespace_node, m.name) == null) {
+                                    try self.reportMissingNamespaceValueMemberNamed(node, target_namespace_name, m.name);
+                                    break :blk types.Primitive.any;
+                                }
+                            }
+                        }
+                    }
                     // TS2339: `<ns>.<x>` where `<x>` lives inside `<ns>`
                     // but isn't exported. Mirrors the
                     // `ModuleWithExportedAndNonExported*` cluster
@@ -97438,6 +97559,9 @@ pub const Checker = struct {
                         const a = hir_mod.assignmentOf(self.hir, op.value);
                         break :shorthand_init try self.checkExpression(a.value);
                     } else try self.checkExpression(op.value);
+                    if (self.strict_flags.no_implicit_any and op_is_method and !current_is_accessor) {
+                        try self.reportObjectLiteralMethodReturnSelfReference(node, op.value, op.key, k.name);
+                    }
                     if (self.strict_flags.no_implicit_any and
                         (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn))
                     {
@@ -98372,6 +98496,7 @@ pub const Checker = struct {
         try self.reportMissingJsxClassicFactoryScope(node, el.tag);
         try self.checkJsxNamespacedPropertyAccessTag(el.tag);
         try self.checkJsxNamespacedComponentTag(el.tag);
+        try self.checkJsxImportEqualsNamespaceTagMember(el.tag);
         const type_args = hir_mod.jsxTypeArgs(self.hir, node);
         if (self.jsxTagIsIntrinsic(el.tag) and type_args.len > 0) {
             for (type_args) |type_arg| _ = self.lowererLowerWithTypeParams(type_arg) catch types.Primitive.unknown;
@@ -102019,6 +102144,26 @@ pub const Checker = struct {
         const name = self.string_interner.get(id.name);
         if (std.mem.indexOfScalar(u8, name, ':') == null) return;
         try self.report(m.object, TsCodes.jsx_property_access_namespaced_name, "JSX property access expressions cannot include JSX namespace names");
+    }
+
+    fn checkJsxImportEqualsNamespaceTagMember(self: *Checker, tag: NodeId) CheckError!void {
+        if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .member_access) return;
+        const member = hir_mod.memberOf(self.hir, tag);
+        if (self.hir.kindOf(member.object) != .identifier) return;
+        const local_name = hir_mod.identifierOf(self.hir, member.object).name;
+        var namespace_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer namespace_path.deinit(self.gpa);
+        if (!try self.appendImportEqualsNamespacePathForLocal(&namespace_path, local_name, tag)) return;
+        if (namespace_path.items.len != 1) return;
+
+        const root = self.rootBlockFor(tag);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        const namespace_node = self.findNamespaceByPath(
+            hir_mod.blockStmts(self.hir, root),
+            namespace_path.items,
+        ) orelse return;
+        if (self.findExportedValueDeclInNamespace(namespace_node, member.name) != null) return;
+        try self.reportMissingNamespaceValueMemberNamed(tag, namespace_path.items[0], member.name);
     }
 
     fn jsxComponentTypeInvalid(self: *Checker, tag: NodeId) CheckError!bool {
@@ -128378,6 +128523,67 @@ pub const Checker = struct {
         return null;
     }
 
+    fn allocInstantiatedGenericAliasNameFromObjectLiteral(
+        self: *Checker,
+        target_t: TypeId,
+        init_node: NodeId,
+    ) CheckError!?[]const u8 {
+        if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .object_literal) return null;
+        const display = self.alias_display_names.get(target_t) orelse return null;
+        const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
+        if (!std.mem.endsWith(u8, display, ">")) return null;
+        const alias_base = display[0..lt];
+
+        var alias_name: hir_mod.StringId = 0;
+        var alias_info: ?GenericAliasInfo = null;
+        var aliases = self.generic_aliases.iterator();
+        while (aliases.next()) |entry| {
+            if (!std.mem.eql(u8, self.string_interner.get(entry.key_ptr.*), alias_base)) continue;
+            alias_name = entry.key_ptr.*;
+            alias_info = entry.value_ptr.*;
+            break;
+        }
+        const info = alias_info orelse return null;
+        if (info.params.len == 0 or info.body >= self.interner.pool.typeCount()) return null;
+
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        for (hir_mod.objectLiteralProps(self.hir, init_node)) |property| {
+            if (self.hir.kindOf(property) != .object_property) continue;
+            const object_property = hir_mod.objectPropertyOf(self.hir, property);
+            const is_computed = object_property.is_computed or
+                self.nodeIsBracketedComputedName(object_property.key) or
+                self.memberSourceLooksComputed(property);
+            const property_name = if (!is_computed and self.hir.kindOf(object_property.key) == .identifier)
+                hir_mod.identifierOf(self.hir, object_property.key).name
+            else
+                (try self.classMemberNameFromPropertyKey(object_property.key, is_computed)) orelse continue;
+            const alias_member = self.interner.objectMemberInfo(info.body, property_name) orelse continue;
+            var value_t = if (self.hir.typeOf(object_property.value) != types.Primitive.none)
+                self.hir.typeOf(object_property.value)
+            else
+                try self.checkExpression(object_property.value);
+            value_t = self.widenLiteralType(value_t);
+            try self.inferFromPair(alias_member.type, value_t, &substitutions);
+        }
+        if (substitutions.count() == 0) return null;
+
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.appendSlice(arena, self.string_interner.get(alias_name));
+        try buf.append(arena, '<');
+        var changed = false;
+        for (info.params, 0..) |param, index| {
+            if (index > 0) try buf.appendSlice(arena, ", ");
+            const inferred = substitutions.get(param) orelse return null;
+            if (inferred != param) changed = true;
+            const inferred_name = (try self.allocSimpleTypeName(inferred)) orelse return null;
+            try buf.appendSlice(arena, inferred_name);
+        }
+        try buf.append(arena, '>');
+        return if (changed) buf.items else null;
+    }
+
     /// Best-effort name for the target of an `implements` clause used by
     /// TS2420 ("Class 'X' incorrectly implements interface ..."). Returns
     /// the interface's declared name when one is recoverable; otherwise
@@ -128440,6 +128646,47 @@ pub const Checker = struct {
             .message = msg,
         });
         return true;
+    }
+
+    fn reportClassImplementsMemberMismatches(
+        self: *Checker,
+        class_node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_object_type or
+            !self.interner.pool.flagsOf(target_t).is_object_type)
+        {
+            return false;
+        }
+
+        var reported = false;
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            if (target_member.visibility != .public) continue;
+            if (!std.mem.startsWith(u8, self.string_interner.get(target_member.name), "Symbol.")) continue;
+            const source_member = self.interner.objectMemberInfo(source_t, target_member.name) orelse continue;
+            if (source_member.visibility != .public) continue;
+            const assignable = if (!target_member.is_optional and source_member.is_optional)
+                false
+            else if (source_member.is_method and target_member.is_method)
+                try self.methodOverrideAssignable(source_member.type, target_member.type)
+            else
+                try self.heritageMemberAssignable(source_member.type, target_member.type);
+            if (assignable) continue;
+
+            const prop_str = self.classOrInterfaceMemberDisplayName(class_node, target_member.name);
+            const msg = try self.allocPropertyNotAssignableToBaseMessage(class_node, prop_str, target_t);
+            const diagnostic_node = self.classOrInterfaceMemberDiagnosticNode(class_node, target_member.name);
+            try self.diagnostics.append(self.gpa, .{
+                .node = diagnostic_node,
+                .pos = self.computedMemberDiagnosticPos(diagnostic_node, prop_str),
+                .code = TsCodes.property_not_assignable_to_base,
+                .message = msg,
+            });
+            reported = true;
+        }
+        return reported;
     }
 
     fn reportClassIncorrectlyImplements(
@@ -128886,7 +129133,17 @@ pub const Checker = struct {
 
     fn reportInOperandRight(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
         const arena = self.diag_arena.allocator();
-        const type_text = (try self.allocAssignmentDiagnosticTypeName(t)) orelse
+        const well_known_symbol_text: ?[]const u8 = blk: {
+            if (self.hir.kindOf(node) != .member_access) break :blk null;
+            const member = hir_mod.memberOf(self.hir, node);
+            if (self.hir.kindOf(member.object) != .identifier) break :blk null;
+            const object = hir_mod.identifierOf(self.hir, member.object);
+            if (!std.mem.eql(u8, self.string_interner.get(object.name), "Symbol")) break :blk null;
+            if (!self.isWellKnownSymbolComputedKey(node)) break :blk null;
+            break :blk try std.fmt.allocPrint(arena, "typeof Symbol.{s}", .{self.string_interner.get(member.name)});
+        };
+        const type_text = well_known_symbol_text orelse
+            (try self.allocAssignmentDiagnosticTypeName(t)) orelse
             (try self.simpleDiagnosticTypeName(t)) orelse
             "";
         const msg = if (type_text.len > 0)
@@ -161804,7 +162061,9 @@ pub const Checker = struct {
                 // 'Y'?" (note "but" replaces "and").
                 var diag_code = TsCodes.object_literal_excess_property;
                 const msg = blk: {
-                    if (try self.allocPropertyMissingTargetTypeName(declared_t)) |target_text| {
+                    const inferred_alias_name = try self.allocInstantiatedGenericAliasNameFromObjectLiteral(declared_t, init_node);
+                    const target_name = inferred_alias_name orelse try self.allocPropertyMissingTargetTypeName(declared_t);
+                    if (target_name) |target_text| {
                         if (self.closestBaseClassMemberName(declared_t, raw_name)) |sugg| {
                             diag_code = TsCodes.object_literal_excess_property_suggestion;
                             break :blk try std.fmt.allocPrint(
@@ -232441,4 +232700,133 @@ test "checker: parity batch accepts resolver-redirected ambient module files" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.file_is_not_a_module));
+}
+
+test "checker: computed symbol overloads diagnose mixed staticness without TS2391" {
+    const s = try newSetup(
+        \\class C {
+        \\  [Symbol.iterator](x: string): string;
+        \\  static [Symbol.iterator](x: number): number;
+        \\  [Symbol.iterator](x: any) { return undefined; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.overload_must_not_be_static));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.overload_must_be_static));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.implementation_missing));
+}
+
+test "checker: identical well-known symbol interface properties merge" {
+    const s = try newSetup(
+        \\interface I {
+        \\  [Symbol.isConcatSpreadable]: string;
+        \\  [Symbol.isConcatSpreadable]: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+}
+
+test "checker: in operator preserves well-known unique symbol display" {
+    const s = try newSetup("'' in Symbol.toPrimitive;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'typeof Symbol.toPrimitive' is not assignable to type 'object'.",
+    ));
+}
+
+test "checker: import-equals JSX namespace aliases report missing target members" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements {} }
+        \\namespace my { export var div: any; }
+        \\namespace q {
+        \\  import mine = my;
+        \\  <mine.div />;
+        \\  <mine.non />;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'non' does not exist on type 'typeof my'."));
+}
+
+test "checker: object literal method returning a missing this member reports TS7023" {
+    const s = try newSetup("var obj = { f() { return this.spaaace; } };");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_return_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: implements member incompatibility reports TS2416 at computed member" {
+    const s = try newSetup(
+        \\interface I { [Symbol.toPrimitive]: () => boolean; }
+        \\class C implements I {
+        \\  [Symbol.toPrimitive]() { return ""; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
+}
+
+test "checker: global namespace exports can expose namespace-local declaration types" {
+    const s = try newSetup(
+        \\namespace M {
+        \\  interface I {}
+        \\  export class C {
+        \\    [Symbol.iterator]: I;
+        \\    [Symbol.toPrimitive](x: I) {}
+        \\    [Symbol.isConcatSpreadable](): I { return undefined; }
+        \\    get [Symbol.toPrimitive]() { return undefined; }
+        \\    set [Symbol.toPrimitive](x: I) {}
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .declaration = true, .strict_null_checks = true, .strict_property_initialization = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.public_property_private_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.public_method_param_private_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.public_method_return_private_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.public_setter_param_private_name));
+}
+
+test "checker: generic object excess properties render inferred alias arguments" {
+    const s = try newSetup(
+        \\interface I<T, U> {
+        \\  [Symbol.unscopables]: T;
+        \\  [Symbol.isConcatSpreadable]: U;
+        \\}
+        \\declare function foo<T, U>(p: I<T, U>): { t: T; u: U };
+        \\foo({
+        \\  [Symbol.isConcatSpreadable]: "",
+        \\  [Symbol.toPrimitive]: 0,
+        \\  [Symbol.unscopables]: true,
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.object_literal_excess_property,
+        "Object literal may only specify known properties, and '[Symbol.toPrimitive]' does not exist in type 'I<boolean, string>'.",
+    ));
 }
