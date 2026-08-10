@@ -9889,17 +9889,21 @@ pub const Parser = struct {
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // let/const/var
-        if ((start.kind == .kw_let or start.kind == .kw_const) and
-            self.unbraced_statement_block_depth != null and
-            self.labeled_declaration_statement_depth != self.nested_statement_depth)
-        {
-            const name = self.source[start.span.start..start.span.end];
-            const message = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "'{s}' declarations can only be declared inside a block.",
-                .{name},
-            );
-            try self.reportGrammarCodeAt(start.span.start, start.line, 1156, message);
+        if (start.kind == .kw_let or start.kind == .kw_const) {
+            if (self.unbraced_statement_block_depth) |depth| {
+                if (self.block_depth == depth and
+                    !self.in_export_declaration and
+                    self.labeled_declaration_statement_depth != self.nested_statement_depth)
+                {
+                    const name = self.source[start.span.start..start.span.end];
+                    const message = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' declarations can only be declared inside a block.",
+                        .{name},
+                    );
+                    try self.reportGrammarCodeAt(start.span.start, start.line, 1156, message);
+                }
+            }
         }
         if (self.isAmbientContextAt(start.span.start) and
             self.block_depth == 0 and
@@ -33545,6 +33549,20 @@ test "parser: reserved void class name does not become an anonymous declaration"
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
     try T.expectEqual(@as(u32, 0), countDiag(s, 1211));
+}
+
+test "parser: parity recovery batch scopes unbraced lexical declarations" {
+    var s = try newTestSetup(
+        \\if (outer) {} else if (inner) { const nested = 1; }
+        \\if (plain) const unbraced = 1;
+        \\if (exported) export const missing: Missing;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1156));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1184));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1155));
 }
 
 test "parser: recovered JavaScript modifiers retain grammar diagnostics" {

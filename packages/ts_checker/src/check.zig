@@ -7042,7 +7042,10 @@ pub const Checker = struct {
                 try self.checkDefaultExportIdentifierUseBeforeDeclaration(node, ex);
                 try self.checkDefaultExportExpressionPrivateName(node, ex);
                 try self.checkIsolatedDeclarationsExport(node, ex);
-                if (ex.decl != hir_mod.none_node_id) {
+                const invalid_namespace_export_assignment = ex.is_export_equals and
+                    (self.nodeHasAncestorKind(node, .namespace_decl) or
+                        self.nodeHasAncestorKind(node, .module_decl));
+                if (ex.decl != hir_mod.none_node_id and !invalid_namespace_export_assignment) {
                     // isolatedModules: `export const enum E { ... }`
                     // can't be transpiled in isolation because
                     // consumers need the inlined member values. Emit
@@ -9788,12 +9791,6 @@ pub const Checker = struct {
                     const decl_kind = self.hir.kindOf(ex.decl);
                     if (self.isExportAssignmentDecl(s)) {
                         if (!self.namespaceNameComesFromStringLiteral(node)) {
-                            if (self.strict_flags.always_strict) {
-                                const old_report = self.report_unresolved_in_namespace_scope;
-                                self.report_unresolved_in_namespace_scope = true;
-                                defer self.report_unresolved_in_namespace_scope = old_report;
-                                _ = try self.checkExpression(ex.decl);
-                            }
                             continue;
                         }
                         if (decl_kind == .identifier) {
@@ -67050,6 +67047,11 @@ pub const Checker = struct {
                     }
                     const lowered = try self.lowerer.lower(type_node);
                     if (lowered != types.Primitive.unknown or std.mem.eql(u8, name_str, "unknown")) return lowered;
+                    if (self.typeNodeIsIntrinsicReference(type_node) and
+                        self.diagnosticExists(type_node, TsCodes.intrinsic_keyword_misuse))
+                    {
+                        return types.Primitive.any;
+                    }
                     if (self.isDefaultLibTypeOnlyFallbackName(name_str)) return types.Primitive.any;
                     if (self.isReservedKeywordTypeRefName(r.name)) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
@@ -232103,4 +232105,19 @@ test "checker: parity scope batch validates inferred object parameter keys" {
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_matching_index_signature));
+}
+
+test "checker: parity recovery batch suppresses diagnosed type cascades" {
+    const b = try newBoundSetup(
+        \\type MyUppercase<S extends string> = intrinsic;
+        \\namespace M { export = NamespaceMissing; }
+        \\type Broken = ActualMissing;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .declaration = true, .always_strict = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.intrinsic_keyword_misuse));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'ActualMissing'."));
 }
