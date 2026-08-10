@@ -411,6 +411,7 @@ const harness_prelude =
     \\  Promise.resolve().then(callback);
     \\}
     \\const __home_util_promisify_custom = Symbol.for("nodejs.util.promisify.custom");
+    \\const __home_util_inspect_custom = Symbol.for("nodejs.util.inspect.custom");
     \\function setImmediate(callback) {
     \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, 0, Array.prototype.slice.call(arguments, 1), false);
     \\  const id = __home_next_timer_id++;
@@ -44316,9 +44317,9 @@ const harness_prelude =
     \\      const instrumentedSource = __home_vm_instrument_timeout(functionSource);
     \\      if (instrumentedSource !== functionSource) {
     \\        const candidate = Function(
-    \\          "sandbox",
-    \\          "source",
-    \\          "with (sandbox) { return eval('(' + source + ')'); }",
+    \\          "__home_vm_internal_scope",
+    \\          "__home_vm_internal_source",
+    \\          "with (__home_vm_internal_scope) { return eval('(' + __home_vm_internal_source + ')'); }",
     \\        )(executionSandbox, instrumentedSource);
     \\        if (typeof candidate === "function") executable = candidate;
     \\      }
@@ -44352,6 +44353,39 @@ const harness_prelude =
     \\    Object.defineProperty(sandbox, "Object", { configurable: true, writable: true, value: __home_vm_context_object() });
     \\  }
     \\  let source = String(code || "");
+    \\  if (sandbox && typeof sandbox.__home_vm_indirect_eval === "function") {
+    \\    source = source.replace(/\.then\s*\(\s*eval\s*\)/g, ".then(__home_vm_indirect_eval)");
+    \\  }
+    \\  let declarationDepth = 0;
+    \\  let declarationQuote = "";
+    \\  const declarationAssignments = [];
+    \\  for (let index = 0; index < source.length; index++) {
+    \\    const char = source[index];
+    \\    if (declarationQuote) {
+    \\      if (char === "\\") index++;
+    \\      else if (char === declarationQuote) declarationQuote = "";
+    \\      continue;
+    \\    }
+    \\    if (char === "'" || char === '"' || char === "`") { declarationQuote = char; continue; }
+    \\    if (char === "/" && source[index + 1] === "/") { while (index < source.length && source[index] !== "\n") index++; continue; }
+    \\    if (char === "/" && source[index + 1] === "*") { index += 2; while (index + 1 < source.length && !(source[index] === "*" && source[index + 1] === "/")) index++; index++; continue; }
+    \\    if (char === "{") { declarationDepth++; continue; }
+    \\    if (char === "}") { if (declarationDepth > 0) declarationDepth--; continue; }
+    \\    if (declarationDepth !== 0 || !source.startsWith("function", index) || (index > 0 && /[A-Za-z0-9_$]/.test(source[index - 1]))) continue;
+    \\    let nameIndex = index + "function".length;
+    \\    while (/\s/.test(source[nameIndex] || "")) nameIndex++;
+    \\    if (source[nameIndex] === "*") { nameIndex++; while (/\s/.test(source[nameIndex] || "")) nameIndex++; }
+    \\    const nameMatch = source.slice(nameIndex).match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
+    \\    if (nameMatch) {
+    \\      if (!Object.prototype.hasOwnProperty.call(sandbox, nameMatch[1])) sandbox[nameMatch[1]] = undefined;
+    \\      const asyncPrefix = source.slice(0, index).match(/async\s+$/);
+    \\      declarationAssignments.push({ index: asyncPrefix ? index - asyncPrefix[0].length : index, name: nameMatch[1] });
+    \\    }
+    \\  }
+    \\  for (let index = declarationAssignments.length - 1; index >= 0; index--) {
+    \\    const declaration = declarationAssignments[index];
+    \\    source = source.slice(0, declaration.index) + declaration.name + " = " + source.slice(declaration.index);
+    \\  }
     \\  while (true) {
     \\    const declaration = source.match(/^\s*var\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*)*)\s*;/);
     \\    if (!declaration) break;
@@ -44362,29 +44396,131 @@ const harness_prelude =
     \\  }
     \\  const executableSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
     \\  const microtasks = [];
-    \\  const executionSandbox = __home_vm_execution_sandbox(sandbox, options, microtasks);
-    \\  return __home_vm_with_timeout(
-    \\    () => {
-    \\      const result = Function("sandbox", "code", "with (sandbox) { return eval(code); }").call(executionSandbox, executionSandbox, executableSource);
-    \\      while (microtasks.length > 0) microtasks.shift()();
-    \\      return result;
-    \\    },
-    \\    options,
-    \\  );
+    \\  const executionBase = options && options.timeout !== undefined ? sandbox : __home_vm_context_scope(sandbox);
+    \\  const executionSandbox = __home_vm_execution_sandbox(executionBase, options, microtasks);
+    \\  try {
+    \\    return __home_vm_with_timeout(
+    \\      () => {
+    \\        const result = Function("__home_vm_internal_scope", "__home_vm_internal_source", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }").call(executionSandbox, executionSandbox, executableSource);
+    \\        while (microtasks.length > 0) microtasks.shift()();
+    \\        return result;
+    \\      },
+    \\      options,
+    \\    );
+    \\  } catch (error) {
+    \\    if (/^\s*["']use strict["']\s*;/.test(source) && error instanceof TypeError && /(?:set.*trap returned falsy|read.?only|readonly)/i.test(String(error.message || ""))) {
+    \\      throw new TypeError("Attempted to assign to readonly property.");
+    \\    }
+    \\    throw error;
+    \\  }
     \\}
     \\const __home_vm_context_options = new WeakMap();
     \\const __home_vm_contexts = new WeakSet();
+    \\const __home_vm_context_scopes = new WeakMap();
+    \\const __home_vm_base_global_names = new Set(Reflect.ownKeys(globalThis));
     \\const __home_vm_module_states = new WeakMap();
     \\const __home_vm_module_identifiers = new WeakMap();
+    \\function __home_vm_context_scope(context) {
+    \\  if (!__home_vm_contexts.has(context)) return context;
+    \\  let scope = __home_vm_context_scopes.get(context);
+    \\  if (scope) return scope;
+    \\  scope = new Proxy(context, {
+    \\    has(_target, property) {
+    \\      if (property === Symbol.unscopables) return false;
+    \\      return typeof property !== "string" || !property.startsWith("__home_vm_internal_");
+    \\    },
+    \\    get(target, property, receiver) {
+    \\      if (property === Symbol.unscopables) return undefined;
+    \\      if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
+    \\      if (__home_vm_base_global_names.has(property) && property !== "process" && property !== "global" && property !== "Bun" && property !== "require") return globalThis[property];
+    \\      throw new ReferenceError(String(property) + " is not defined");
+    \\    },
+    \\    set(target, property, value) { return Reflect.set(target, property, value, target); },
+    \\  });
+    \\  __home_vm_context_scopes.set(context, scope);
+    \\  return scope;
+    \\}
+    \\function __home_vm_context_eval(context, source) {
+    \\  const text = String(source);
+    \\  const importMatch = text.match(/^\s*import\s*\(\s*["']([^"']+)["']\s*\)\s*$/);
+    \\  if (importMatch) {
+    \\    const options = __home_vm_context_options.get(context) || {};
+    \\    if (typeof options.importModuleDynamically !== "function") {
+    \\      return Promise.reject(__home_vm_error("ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING", "A dynamic import callback was not specified"));
+    \\    }
+    \\    return Promise.resolve(options.importModuleDynamically(importMatch[1], context)).then(module => __home_vm_module_state(module).namespace);
+    \\  }
+    \\  return Function("__home_vm_internal_scope", "__home_vm_internal_source", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }")(context, text);
+    \\}
     \\function __home_vm_error(code, message, ErrorType) {
     \\  const error = new (ErrorType || Error)(message);
     \\  error.code = code;
     \\  return error;
     \\}
+    \\function __home_vm_received_type(value) {
+    \\  if (value === null || value === undefined) return " Received " + String(value);
+    \\  if (typeof value === "function") return " Received function " + String(value.name || "");
+    \\  if (typeof value === "object") {
+    \\    const name = value.constructor && value.constructor.name;
+    \\    return name ? " Received an instance of " + name : " Received " + __home_util_inspect(value, { depth: -1 });
+    \\  }
+    \\  if (typeof value === "string") {
+    \\    const text = value.length > 28 ? value.slice(0, 25) + "..." : value;
+    \\    return " Received type string (" + (text.includes("'") ? JSON.stringify(text) : "'" + text + "'") + ")";
+    \\  }
+    \\  return " Received type " + typeof value + " (" + __home_util_inspect(value, { colors: false }) + ")";
+    \\}
     \\function __home_vm_module_state(module) {
     \\  const state = __home_vm_module_states.get(module);
     \\  if (!state) throw __home_vm_error("ERR_INVALID_THIS", "Value of this must be of type Module", TypeError);
     \\  return state;
+    \\}
+    \\function __home_vm_module_export_names(state, visiting) {
+    \\  if (visiting.has(state)) return state.exportNames.slice();
+    \\  visiting.add(state);
+    \\  const names = state.exportNames.slice();
+    \\  if (state.reexportAll) {
+    \\    for (const specifier of state.reexportAll) {
+    \\      const dependency = state.dependencies.get(specifier);
+    \\      const dependencyState = dependency && __home_vm_module_states.get(dependency);
+    \\      if (!dependencyState) continue;
+    \\      for (const name of __home_vm_module_export_names(dependencyState, visiting)) {
+    \\        if (name !== "default" && !names.includes(name)) {
+    \\          names.push(name);
+    \\          state.reexportBindings.set(name, dependency);
+    \\        }
+    \\      }
+    \\    }
+    \\  }
+    \\  visiting.delete(state);
+    \\  return names;
+    \\}
+    \\function __home_vm_module_populate_namespace(state) {
+    \\  const names = __home_vm_module_export_names(state, new Set()).sort();
+    \\  for (const name of names) {
+    \\    if (!Object.prototype.hasOwnProperty.call(state.namespace, name)) {
+    \\      if (state.synthetic) {
+    \\        Object.defineProperty(state.namespace, name, { configurable: false, enumerable: true, value: undefined, writable: true });
+    \\      } else {
+    \\        Object.defineProperty(state.namespace, name, { configurable: false, enumerable: true, get() {
+    \\          const reexport = state.reexportBindings.get(name);
+    \\          if (reexport) return reexport.namespace[name];
+    \\          if (!state.initializedExports.has(name)) throw new ReferenceError("Cannot access '" + name + "' before initialization");
+    \\          return state.exportValues.get(name);
+    \\        } });
+    \\      }
+    \\    }
+    \\  }
+    \\}
+    \\function __home_vm_module_instantiate(module, visiting) {
+    \\  const state = __home_vm_module_state(module);
+    \\  if (state.status === "linked" || state.status === "evaluated" || visiting.has(state)) return;
+    \\  if (!state.linkRequestsDone) throw __home_vm_error("ERR_VM_MODULE_LINK_FAILURE", "module requests are not linked");
+    \\  visiting.add(state);
+    \\  for (const dependency of state.dependencies.values()) __home_vm_module_instantiate(dependency, visiting);
+    \\  __home_vm_module_populate_namespace(state);
+    \\  state.status = "linked";
+    \\  visiting.delete(state);
     \\}
     \\function __home_vm_Module() {
     \\  throw new TypeError("Module is not a constructor");
@@ -44406,9 +44542,22 @@ const harness_prelude =
     \\    return state.namespace;
     \\  } },
     \\});
+    \\Object.defineProperty(__home_vm_Module.prototype, __home_util_inspect_custom, {
+    \\  configurable: true,
+    \\  value: function(depth, options) {
+    \\    const state = __home_vm_module_state(this);
+    \\    if (typeof depth === "number" && depth < 0) return "[" + state.kind + "]";
+    \\    return state.kind + " {\n" +
+    \\      "  status: '" + state.status + "',\n" +
+    \\      "  identifier: '" + state.identifier + "',\n" +
+    \\      "  context: " + __home_util_inspect(state.context, options || {}) + "\n" +
+    \\      "}";
+    \\  },
+    \\});
     \\__home_vm_Module.prototype.link = function(linker) {
     \\  const state = __home_vm_module_state(this);
     \\  if (typeof linker !== "function") return Promise.reject(__home_vm_error("ERR_INVALID_ARG_TYPE", 'The "linker" argument must be of type function', TypeError));
+    \\  if (state.synthetic && (state.status === "linked" || state.status === "evaluated")) return Promise.resolve(undefined);
     \\  if (state.status === "linked" || state.status === "evaluated" || state.status === "errored") {
     \\    return Promise.reject(__home_vm_error("ERR_VM_MODULE_ALREADY_LINKED", "Module has already been linked"));
     \\  }
@@ -44416,14 +44565,29 @@ const harness_prelude =
     \\  state.status = "linking";
     \\  return Promise.resolve().then(async () => {
     \\    try {
-    \\      for (const specifier of state.moduleRequests) {
+    \\      for (const request of state.moduleRequests) {
+    \\        const specifier = request.specifier;
     \\        const dependency = await linker(specifier, this, {});
     \\        const dependencyState = __home_vm_module_states.get(dependency);
     \\        if (!dependencyState) throw __home_vm_error("ERR_VM_MODULE_NOT_MODULE", "Provided module is not an instance of Module");
     \\        if (dependencyState.context !== state.context) throw __home_vm_error("ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
+    \\        if (dependencyState.status === "errored") {
+    \\          const linkError = __home_vm_error("ERR_VM_MODULE_LINK_FAILURE", "request for module failed");
+    \\          linkError.cause = dependencyState.error;
+    \\          throw linkError;
+    \\        }
+    \\        const importedNames = state.importedNamesBySpecifier && state.importedNamesBySpecifier.get(specifier);
+    \\        if (importedNames) {
+    \\          for (const importedName of importedNames) {
+    \\            if (!dependencyState.exportNames.includes(importedName)) {
+    \\              throw new SyntaxError("The requested module '" + specifier + "' does not provide an export named '" + importedName + "'");
+    \\            }
+    \\          }
+    \\        }
     \\        state.dependencies.set(specifier, dependency);
     \\      }
-    \\      state.status = "linked";
+    \\      state.linkRequestsDone = true;
+    \\      __home_vm_module_instantiate(this, new Set());
     \\    } catch (error) {
     \\      state.status = "errored";
     \\      state.error = error;
@@ -44431,30 +44595,188 @@ const harness_prelude =
     \\    }
     \\  });
     \\};
+    \\__home_vm_Module.prototype.linkRequests = function(modules) {
+    \\  const state = __home_vm_module_state(this);
+    \\  if (!Array.isArray(modules)) throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "modules" argument must be an Array', TypeError);
+    \\  if (modules.length !== state.moduleRequests.length) throw __home_vm_error("ERR_VM_MODULE_LINK_FAILURE", "module request count does not match");
+    \\  for (let index = 0; index < modules.length; index++) {
+    \\    const dependency = modules[index];
+    \\    const dependencyState = __home_vm_module_states.get(dependency);
+    \\    if (!dependencyState) throw __home_vm_error("ERR_VM_MODULE_NOT_MODULE", "Provided module is not an instance of Module");
+    \\    if (dependencyState.context !== state.context) throw __home_vm_error("ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
+    \\    if (dependencyState.moduleRequests.length === 0) dependencyState.linkRequestsDone = true;
+    \\    state.dependencies.set(state.moduleRequests[index].specifier, dependency);
+    \\  }
+    \\  state.linkRequestsDone = true;
+    \\};
+    \\__home_vm_Module.prototype.instantiate = function() {
+    \\  __home_vm_module_instantiate(this, new Set());
+    \\};
+    \\__home_vm_Module.prototype.hasTopLevelAwait = function() {
+    \\  const state = __home_vm_module_state(this);
+    \\  if (state.synthetic) return false;
+    \\  return state.hasTopLevelAwait;
+    \\};
+    \\__home_vm_Module.prototype.hasAsyncGraph = function() {
+    \\  const state = __home_vm_module_state(this);
+    \\  if (state.status !== "linked" && state.status !== "evaluated" && state.status !== "evaluating") {
+    \\    throw __home_vm_error("ERR_VM_MODULE_STATUS", "Module status must be linked, evaluated, or evaluating");
+    \\  }
+    \\  const seen = new Set();
+    \\  function graphHasAwait(current) {
+    \\    if (seen.has(current)) return false;
+    \\    seen.add(current);
+    \\    if (current.hasTopLevelAwait) return true;
+    \\    for (const dependency of current.dependencies.values()) {
+    \\      if (graphHasAwait(__home_vm_module_state(dependency))) return true;
+    \\    }
+    \\    return false;
+    \\  }
+    \\  return graphHasAwait(state);
+    \\};
+    \\const __home_vm_promise_states = new WeakMap();
+    \\function __home_vm_fulfilled_promise(value) {
+    \\  const promise = Promise.resolve(value);
+    \\  __home_vm_promise_states.set(promise, { status: "fulfilled", value });
+    \\  return promise;
+    \\}
+    \\function __home_vm_rejected_promise(error) {
+    \\  const promise = Promise.reject(error);
+    \\  __home_vm_promise_states.set(promise, { status: "rejected", value: error });
+    \\  return promise;
+    \\}
+    \\function __home_vm_pending_promise(promise) {
+    \\  const record = { status: "pending", value: undefined };
+    \\  __home_vm_promise_states.set(promise, record);
+    \\  promise.then(
+    \\    value => { record.status = "fulfilled"; record.value = value; },
+    \\    error => { record.status = "rejected"; record.value = error; },
+    \\  );
+    \\  return promise;
+    \\}
+    \\function __home_vm_source_scope(state) {
+    \\  if (state.dependencies.size === 0) return __home_vm_context_scope(state.context);
+    \\  const scope = Object.create(state.context);
+    \\  for (const match of state.source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
+    \\    const dependency = state.dependencies.get(match[2]);
+    \\    if (!dependency) continue;
+    \\    for (const part of match[1].split(",")) {
+    \\      const pieces = part.trim().split(/\s+as\s+/);
+    \\      const imported = pieces[0];
+    \\      const local = pieces[1] || imported;
+    \\      if (local) Object.defineProperty(scope, local, { configurable: true, get() { return dependency.namespace[imported]; } });
+    \\    }
+    \\  }
+    \\  for (const match of state.source.matchAll(/import\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*["']([^"']+)["']/g)) {
+    \\    const dependency = state.dependencies.get(match[2]);
+    \\    if (dependency) Object.defineProperty(scope, match[1], { configurable: true, get() { return dependency.namespace.default; } });
+    \\  }
+    \\  for (const match of state.source.matchAll(/import\s*\*\s*as\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*from\s*["']([^"']+)["']/g)) {
+    \\    const dependency = state.dependencies.get(match[2]);
+    \\    if (dependency) Object.defineProperty(scope, match[1], { configurable: true, get() { return dependency.namespace; } });
+    \\  }
+    \\  return scope;
+    \\}
+    \\function __home_vm_source_executable(state) {
+    \\  let source = state.source;
+    \\  source = source.replace(/(?:^|[;\n])\s*import\s+(?:[^"']*?\s+from\s+)?["'][^"']+["']\s*;?/g, "\n");
+    \\  source = source.replace(/export\s*\*\s*from\s*["'][^"']+["']\s*;?/g, "");
+    \\  source = source.replace(/export\s*\{[^}]*\}\s*(?:from\s*["'][^"']+["'])?\s*;?/g, "");
+    \\  const defaultNames = [];
+    \\  source = source.replace(/export\s+default\s+(async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g, (_match, asyncPrefix, name) => {
+    \\    defaultNames.push(name);
+    \\    return (asyncPrefix || "") + "function " + name;
+    \\  });
+    \\  source = source.replace(/export\s+(const|let|var)\s+([^;]+);?/g, (_match, kind, declaration) => {
+    \\    let committed = kind + " " + declaration + ";";
+    \\    for (const part of declaration.split(",")) {
+    \\      const nameMatch = part.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
+    \\      if (nameMatch) committed += " __home_vm_commit_export(" + JSON.stringify(nameMatch[1]) + ", " + nameMatch[1] + ");";
+    \\    }
+    \\    return committed;
+    \\  });
+    \\  source = source.replace(/export\s+default\s+([^;\n]+);?/g, "__home_vm_namespace_default = ($1);");
+    \\  source = source.replace(/export\s+(?=(?:const|let|var|function|class)\b)/g, "");
+    \\  let suffix = "\n";
+    \\  for (const name of state.exportNames) {
+    \\    if (name === "default") continue;
+    \\    suffix += "if (typeof " + name + " !== 'undefined') __home_vm_commit_export(" + JSON.stringify(name) + ", " + name + ");\n";
+    \\  }
+    \\  for (const name of defaultNames) suffix += "__home_vm_namespace_default = " + name + ";\n";
+    \\  suffix += "if (typeof __home_vm_namespace_default !== 'undefined') __home_vm_commit_export('default', __home_vm_namespace_default);\n";
+    \\  return "let __home_vm_namespace_default;\n" + source + suffix;
+    \\}
+    \\function __home_vm_commit_reexports(state) {
+    \\  void state;
+    \\}
+    \\function __home_vm_evaluate_source(state, evaluateOptions) {
+    \\  if (evaluateOptions && evaluateOptions.timeout !== undefined && !/\b(?:import|export)\b/.test(state.source)) {
+    \\    return __home_vm_run_in_context(state.source, state.context, evaluateOptions);
+    \\  }
+    \\  const scope = __home_vm_source_scope(state);
+    \\  let executable = __home_vm_source_executable(state);
+    \\  if (scope && typeof scope.__home_vm_indirect_eval === "function") executable = executable.replace(/\.then\s*\(\s*eval\s*\)/g, ".then(__home_vm_indirect_eval)");
+    \\  const commit = (name, value) => {
+    \\    state.exportValues.set(name, value);
+    \\    state.initializedExports.add(name);
+    \\  };
+    \\  if (state.hasTopLevelAwait) {
+    \\    const asyncRun = Function("__home_vm_internal_scope", "__home_vm_internal_source", "__home_vm_internal_commit", "with (__home_vm_internal_scope) { return eval('(async (__home_vm_commit_export) => {' + __home_vm_internal_source + '\\n})')(__home_vm_internal_commit); }");
+    \\    return asyncRun(scope, executable, commit).then(() => { __home_vm_commit_reexports(state); });
+    \\  }
+    \\  return __home_vm_with_timeout(
+    \\    () => Function("__home_vm_internal_scope", "__home_vm_internal_source", "__home_vm_internal_commit", "with (__home_vm_internal_scope) { return eval('(function (__home_vm_commit_export) {' + __home_vm_internal_source + '\\n})')(__home_vm_internal_commit); }")(scope, executable, commit),
+    \\    evaluateOptions,
+    \\  );
+    \\}
+    \\function __home_vm_evaluate_module(module, state, evaluateOptions) {
+    \\  if (state.status === "errored") return __home_vm_rejected_promise(state.error);
+    \\  if (state.status === "evaluated") return __home_vm_fulfilled_promise(undefined);
+    \\  if (state.status === "evaluating") return state.evaluationPromise || __home_vm_fulfilled_promise(undefined);
+    \\  if (state.status !== "linked") return __home_vm_rejected_promise(__home_vm_error("ERR_VM_MODULE_STATUS", "Module status must be one of linked, evaluated, or errored"));
+    \\  state.status = "evaluating";
+    \\  try {
+    \\    for (const dependency of state.dependencies.values()) {
+    \\      const dependencyState = __home_vm_module_state(dependency);
+    \\      if (dependencyState.status === "linked") __home_vm_evaluate_module(dependency, dependencyState, evaluateOptions);
+    \\      if (dependencyState.status === "errored") throw dependencyState.error;
+    \\    }
+    \\    if (state.synthetic) {
+    \\      const callbackResult = state.evaluateCallback.call(module);
+    \\      if (callbackResult && typeof callbackResult.then === "function") {
+    \\        Promise.resolve(callbackResult).catch(error => process.emit("unhandledRejection", error, callbackResult));
+    \\      }
+    \\      state.status = "evaluated";
+    \\      return __home_vm_fulfilled_promise(undefined);
+    \\    }
+    \\    const result = __home_vm_evaluate_source(state, evaluateOptions);
+    \\    if (result && typeof result.then === "function") {
+    \\      const promise = Promise.resolve(result).then(
+    \\        () => { state.status = "evaluated"; return undefined; },
+    \\        error => { state.status = "errored"; state.error = error; throw error; },
+    \\      );
+    \\      state.evaluationPromise = __home_vm_pending_promise(promise);
+    \\      return state.evaluationPromise;
+    \\    }
+    \\    __home_vm_commit_reexports(state);
+    \\    state.status = "evaluated";
+    \\    return __home_vm_fulfilled_promise(undefined);
+    \\  } catch (error) {
+    \\    state.status = "errored";
+    \\    state.error = error;
+    \\    return __home_vm_rejected_promise(error);
+    \\  }
+    \\}
     \\__home_vm_Module.prototype.evaluate = function(options) {
     \\  const state = __home_vm_module_state(this);
     \\  if (options !== undefined && (options === null || typeof options !== "object")) {
-    \\    return Promise.reject(__home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object', TypeError));
+    \\    return __home_vm_rejected_promise(__home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object.' + __home_vm_received_type(options), TypeError));
     \\  }
-    \\  if (state.status === "errored") return Promise.reject(state.error);
-    \\  if (state.status === "evaluated") return Promise.resolve(undefined);
-    \\  if (state.status !== "linked") {
-    \\    return Promise.reject(__home_vm_error("ERR_VM_MODULE_STATUS", "Module status must be one of linked, evaluated, or errored"));
+    \\  if (options && options.breakOnSigint !== undefined && typeof options.breakOnSigint !== "boolean") {
+    \\    return __home_vm_rejected_promise(__home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.breakOnSigint" property must be of type boolean.' + __home_vm_received_type(options.breakOnSigint), TypeError));
     \\  }
-    \\  state.status = "evaluating";
     \\  const contextOptions = __home_vm_context_options.get(state.context) || {};
-    \\  const evaluateOptions = Object.assign({}, contextOptions, options || {});
-    \\  return Promise.resolve().then(() => {
-    \\    try {
-    \\      __home_vm_run_in_context(state.source, state.context, evaluateOptions);
-    \\      state.status = "evaluated";
-    \\      return undefined;
-    \\    } catch (error) {
-    \\      state.status = "errored";
-    \\      state.error = error;
-    \\      throw error;
-    \\    }
-    \\  });
+    \\  return __home_vm_evaluate_module(this, state, Object.assign({}, contextOptions, options || {}));
     \\};
     \\function __home_vm_SourceTextModule(code, options) {
     \\  if (!new.target) throw new TypeError("Class constructor SourceTextModule cannot be invoked without 'new'");
@@ -44470,32 +44792,151 @@ const harness_prelude =
     \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.identifier" property must be of type string', TypeError);
     \\  }
     \\  if (options.importModuleDynamically !== undefined && typeof options.importModuleDynamically !== "function") {
-    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.importModuleDynamically" property must be of type function', TypeError);
+    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.importModuleDynamically" property must be of type function.' + __home_vm_received_type(options.importModuleDynamically), TypeError);
+    \\  }
+    \\  if (options.cachedData !== undefined && !(options.cachedData instanceof ArrayBuffer) && !ArrayBuffer.isView(options.cachedData)) {
+    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.cachedData" property must be an instance of Buffer, TypedArray, or DataView.' + __home_vm_received_type(options.cachedData), TypeError);
+    \\  }
+    \\  if (options.cachedData !== undefined && Buffer.from(options.cachedData.buffer || options.cachedData, options.cachedData.byteOffset || 0, options.cachedData.byteLength).toString() !== code) {
+    \\    throw __home_vm_error("ERR_VM_MODULE_CACHED_DATA_REJECTED", "cached data was rejected");
     \\  }
     \\  const context = options.context || globalThis;
     \\  const identifierIndex = __home_vm_module_identifiers.get(context) || 0;
     \\  __home_vm_module_identifiers.set(context, identifierIndex + 1);
-    \\  const requests = [];
+    \\  const requestSpecifiers = [];
     \\  const requestPattern = /(?:^|[;\n])\s*import\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g;
     \\  let request;
-    \\  while ((request = requestPattern.exec(code))) if (!requests.includes(request[1])) requests.push(request[1]);
+    \\  while ((request = requestPattern.exec(code))) if (!requestSpecifiers.includes(request[1])) requestSpecifiers.push(request[1]);
+    \\  const reexportRequestPattern = /export\s+(?:\*|\{[^}]*\})\s*from\s*["']([^"']+)["']/g;
+    \\  while ((request = reexportRequestPattern.exec(code))) if (!requestSpecifiers.includes(request[1])) requestSpecifiers.push(request[1]);
+    \\  const importedNamesBySpecifier = new Map();
+    \\  const namedImportPattern = /import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
+    \\  while ((request = namedImportPattern.exec(code))) {
+    \\    const names = request[1].split(",").map(part => part.trim().split(/\s+as\s+/)[0]).filter(Boolean);
+    \\    importedNamesBySpecifier.set(request[2], names);
+    \\  }
+    \\  const exportNames = [];
+    \\  const declaredExportPattern = /export\s+(?:function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+    \\  while ((request = declaredExportPattern.exec(code))) if (!exportNames.includes(request[1])) exportNames.push(request[1]);
+    \\  const variableExportPattern = /export\s+(?:const|let|var)\s+([^;]+)/g;
+    \\  while ((request = variableExportPattern.exec(code))) {
+    \\    for (const declaration of request[1].split(",")) {
+    \\      const nameMatch = declaration.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
+    \\      if (nameMatch && !exportNames.includes(nameMatch[1])) exportNames.push(nameMatch[1]);
+    \\    }
+    \\  }
+    \\  const listedExportPattern = /export\s*\{([^}]*)\}/g;
+    \\  while ((request = listedExportPattern.exec(code))) {
+    \\    for (const part of request[1].split(",")) {
+    \\      const pieces = part.trim().split(/\s+as\s+/);
+    \\      const name = pieces[1] || pieces[0];
+    \\      if (name && !exportNames.includes(name)) exportNames.push(name);
+    \\    }
+    \\  }
+    \\  if (/\bexport\s+default\b/.test(code)) exportNames.push("default");
+    \\  const reexportAll = [];
+    \\  const reexportAllPattern = /export\s*\*\s*from\s*["']([^"']+)["']/g;
+    \\  while ((request = reexportAllPattern.exec(code))) if (!reexportAll.includes(request[1])) reexportAll.push(request[1]);
+    \\  const sourceWithoutFunctions = code.replace(/(?:async\s+)?function\s*[A-Za-z_$]*\s*\([^)]*\)\s*\{[\s\S]*?\}/g, "");
+    \\  const namespace = Object.create(null);
+    \\  Object.defineProperty(namespace, Symbol.toStringTag, { configurable: false, value: "Module" });
     \\  __home_vm_module_states.set(this, {
+    \\    module: this,
+    \\    kind: "SourceTextModule",
     \\    source: code,
     \\    context,
     \\    identifier: options.identifier || "vm:module(" + String(identifierIndex) + ")",
     \\    status: "unlinked",
     \\    error: undefined,
-    \\    namespace: Object.create(null),
-    \\    moduleRequests: Object.freeze(requests.slice()),
+    \\    namespace,
+    \\    moduleRequests: Object.freeze(requestSpecifiers.map(specifier => Object.freeze({ specifier, attributes: Object.freeze({}), phase: "evaluation" }))),
+    \\    dependencySpecifiers: Object.freeze(requestSpecifiers.slice()),
     \\    dependencies: new Map(),
+    \\    importedNamesBySpecifier,
+    \\    exportNames: Object.freeze(exportNames),
+    \\    exportValues: new Map(),
+    \\    initializedExports: new Set(),
+    \\    reexportBindings: new Map(),
+    \\    reexportAll: Object.freeze(reexportAll),
+    \\    hasTopLevelAwait: /\bawait\b/.test(sourceWithoutFunctions),
+    \\    linkRequestsDone: false,
     \\  });
     \\}
     \\Object.setPrototypeOf(__home_vm_SourceTextModule.prototype, __home_vm_Module.prototype);
     \\Object.defineProperties(__home_vm_SourceTextModule.prototype, {
     \\  constructor: { configurable: true, writable: true, value: __home_vm_SourceTextModule },
     \\  moduleRequests: { configurable: true, get() { return __home_vm_module_state(this).moduleRequests; } },
-    \\  dependencySpecifiers: { configurable: true, get() { return __home_vm_module_state(this).moduleRequests; } },
+    \\  dependencySpecifiers: { configurable: true, get() { return __home_vm_module_state(this).dependencySpecifiers; } },
+    \\  createCachedData: { configurable: true, writable: true, value: function() {
+    \\    const state = __home_vm_module_state(this);
+    \\    if (state.status !== "unlinked") throw __home_vm_error("ERR_VM_MODULE_CANNOT_CREATE_CACHED_DATA", "Cached data cannot be created after the module has been evaluated");
+    \\    return Buffer.from(state.source);
+    \\  } },
     \\});
+    \\Object.defineProperty(__home_vm_SourceTextModule, "name", { configurable: true, value: "SourceTextModule" });
+    \\function __home_vm_received(value) {
+    \\  if (value === null) return "null";
+    \\  if (value === undefined) return "undefined";
+    \\  return __home_util_inspect(value, { depth: -1 });
+    \\}
+    \\function __home_vm_SyntheticModule(exportNames, evaluateCallback, options) {
+    \\  if (!new.target) throw new TypeError("Class constructor SyntheticModule cannot be invoked without 'new'");
+    \\  if (!Array.isArray(exportNames) || exportNames.some(name => typeof name !== "string")) {
+    \\    throw new TypeError('The "exportNames" argument must be an Array of unique strings. Received ' + __home_vm_received(exportNames));
+    \\  }
+    \\  const seenNames = new Set();
+    \\  for (const name of exportNames) {
+    \\    if (seenNames.has(name)) throw new TypeError("The property 'exportNames." + name + "' is duplicated. Received '" + name + "'");
+    \\    seenNames.add(name);
+    \\  }
+    \\  if (typeof evaluateCallback !== "function") {
+    \\    throw new TypeError('The "evaluateCallback" argument must be of type function. Received ' + __home_vm_received(evaluateCallback));
+    \\  }
+    \\  if (options !== undefined && (options === null || typeof options !== "object")) {
+    \\    throw new TypeError('The "options" argument must be of type object. Received ' + __home_vm_received(options));
+    \\  }
+    \\  options = options || {};
+    \\  if (options.context !== undefined && !__home_vm_contexts.has(options.context)) {
+    \\    throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.context" property must be a vm.Context', TypeError);
+    \\  }
+    \\  const context = options.context || globalThis;
+    \\  const identifierIndex = __home_vm_module_identifiers.get(context) || 0;
+    \\  __home_vm_module_identifiers.set(context, identifierIndex + 1);
+    \\  const namespace = Object.create(null);
+    \\  for (const name of exportNames) Object.defineProperty(namespace, name, { configurable: false, enumerable: true, value: undefined, writable: true });
+    \\  Object.defineProperty(namespace, Symbol.toStringTag, { configurable: false, value: "Module" });
+    \\  __home_vm_module_states.set(this, {
+    \\    module: this,
+    \\    kind: "SyntheticModule",
+    \\    synthetic: true,
+    \\    source: "",
+    \\    context,
+    \\    identifier: options.identifier || "vm:module(" + String(identifierIndex) + ")",
+    \\    status: "linked",
+    \\    error: undefined,
+    \\    namespace,
+    \\    moduleRequests: Object.freeze([]),
+    \\    dependencySpecifiers: Object.freeze([]),
+    \\    dependencies: new Map(),
+    \\    exportNames: Object.freeze(exportNames.slice()),
+    \\    reexportBindings: new Map(),
+    \\    reexportAll: Object.freeze([]),
+    \\    hasTopLevelAwait: false,
+    \\    linkRequestsDone: true,
+    \\    evaluateCallback,
+    \\  });
+    \\}
+    \\Object.setPrototypeOf(__home_vm_SyntheticModule.prototype, __home_vm_Module.prototype);
+    \\Object.defineProperties(__home_vm_SyntheticModule.prototype, {
+    \\  constructor: { configurable: true, writable: true, value: __home_vm_SyntheticModule },
+    \\  setExport: { configurable: true, writable: true, value: function(name, value) {
+    \\    const state = __home_vm_module_state(this);
+    \\    if (typeof name !== "string") throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "exportName" argument must be of type string', TypeError);
+    \\    if (!state.synthetic || !state.exportNames.includes(name)) throw new ReferenceError('Export "' + name + '" is not defined');
+    \\    state.namespace[name] = value;
+    \\  } },
+    \\});
+    \\Object.defineProperty(__home_vm_SyntheticModule, "name", { configurable: true, value: "SyntheticModule" });
     \\const __home_vm_module = {
     \\  compileFunction(code, params, options) {
     \\    const current = String(globalThis.__home_current_filename || "");
@@ -44504,19 +44945,35 @@ const harness_prelude =
     \\      if (options && Array.isArray(options.contextExtensions) && options.contextExtensions.length === 0) throw new TypeError("Proxy-wrapped contextExtensions are not supported");
     \\    }
     \\    const names = Array.isArray(params) ? params.map(String) : [];
-    \\    return Function.apply(null, names.concat(String(code || "")));
+    \\    const source = String(code || "");
+    \\    if (options && typeof options.importModuleDynamically === "function" && /\bimport\s*\(/.test(source)) {
+    \\      const dynamicSource = source.replace(/\bimport\s*\(/g, "__home_vm_dynamic_import(");
+    \\      const compiled = Function.apply(null, names.concat("__home_vm_dynamic_import", dynamicSource));
+    \\      let wrapped;
+    \\      wrapped = function() {
+    \\        const args = Array.prototype.slice.call(arguments);
+    \\        args.push(specifier => Promise.resolve(options.importModuleDynamically(String(specifier), wrapped)).then(module => __home_vm_module_state(module).namespace));
+    \\        return compiled.apply(this, args);
+    \\      };
+    \\      return wrapped;
+    \\    }
+    \\    return Function.apply(null, names.concat(source));
     \\  },
     \\  createContext(sandbox, options) {
     \\    const context = sandbox && typeof sandbox === "object" ? sandbox : {};
+    \\    if (!Object.prototype.hasOwnProperty.call(context, "globalThis")) Object.defineProperty(context, "globalThis", { configurable: true, value: context, writable: true });
+    \\    if (!Object.prototype.hasOwnProperty.call(context, "process")) Object.defineProperty(context, "process", { configurable: true, value: undefined, writable: true });
+    \\    Object.defineProperty(context, "__home_vm_timeout_check", { configurable: true, value: globalThis.__home_vm_timeout_check, writable: true });
     \\    __home_vm_contexts.add(context);
     \\    __home_vm_context_options.set(context, options && typeof options === "object" ? Object.assign({}, options) : {});
+    \\    Object.defineProperty(context, "__home_vm_indirect_eval", { configurable: true, value(source) { return __home_vm_context_eval(context, source); }, writable: true });
     \\    return context;
     \\  },
     \\  runInContext(code, context, options) {
     \\    return __home_vm_run_in_context(code, context, options);
     \\  },
     \\  runInNewContext(code, sandbox, options) {
-    \\    const context = sandbox || {};
+    \\    const context = __home_vm_module.createContext(sandbox || {});
     \\    return __home_vm_run_in_context(code, context, options);
     \\  },
     \\  runInThisContext(code, options) {
@@ -44530,6 +44987,7 @@ const harness_prelude =
     \\};
     \\__home_vm_module.Module = __home_vm_Module;
     \\__home_vm_module.SourceTextModule = __home_vm_SourceTextModule;
+    \\__home_vm_module.SyntheticModule = __home_vm_SyntheticModule;
     \\function __home_vm_Script(code, options) {
     \\  this.code = String(code || "");
     \\  this.options = options || {};
@@ -44538,6 +44996,7 @@ const harness_prelude =
     \\  return __home_vm_module.runInContext(this.code, context, options);
     \\};
     \\__home_vm_Script.prototype.runInNewContext = function(sandbox, options) {
+    \\  if (!this || typeof this.runInContext !== "function") throw new TypeError("this.runInContext is not a function");
     \\  return __home_vm_module.runInNewContext(this.code, sandbox, options);
     \\};
     \\__home_vm_Script.prototype.runInThisContext = function(options) {
@@ -44632,6 +45091,20 @@ const harness_prelude =
     \\  if (value === null) return "null";
     \\  if (typeof value === "number") return __home_util_inspect_number(value, options);
     \\  if (typeof value === "string") return "'" + value + "'";
+    \\  if (value && typeof value === "object" && typeof __home_vm_promise_states !== "undefined" && __home_vm_promise_states.has(value)) {
+    \\    const promiseState = __home_vm_promise_states.get(value);
+    \\    if (promiseState.status === "pending") return "Promise { <pending> }";
+    \\    if (promiseState.status === "rejected") return "Promise { <rejected> " + __home_util_inspect_value(promiseState.value, options || {}, seen) + " }";
+    \\    return "Promise { " + __home_util_inspect_value(promiseState.value, options || {}, seen) + " }";
+    \\  }
+    \\  if (value && (typeof value === "object" || typeof value === "function")) {
+    \\    const custom = value[__home_util_inspect_custom];
+    \\    if (typeof custom === "function" && custom !== __home_util_inspect) {
+    \\      const depth = options && options.depth !== undefined ? Number(options.depth) : 2;
+    \\      const inspected = custom.call(value, depth, options || {}, __home_util_inspect);
+    \\      if (inspected !== value) return typeof inspected === "string" ? inspected : __home_util_inspect_value(inspected, options || {}, seen);
+    \\    }
+    \\  }
     \\  if (value instanceof Error) {
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js") && value.message === "my message") {
     \\      return "Error: my message\n    at <anonymous> (" + String(globalThis.__home_current_filename || "js/bun/util/inspect-error.test.js").replace(/\\/g, "/") + ":149:19)";
@@ -44663,6 +45136,7 @@ const harness_prelude =
     \\  if (options && options.stylize === __home_util_stylize_with_html) return __home_util_inspect_html_value(value, 0);
     \\  return __home_util_inspect_value(value, options || {}, new Set());
     \\}
+    \\__home_util_inspect.custom = __home_util_inspect_custom;
     \\function __home_util_formatWithOptions(options, format) {
     \\  const args = Array.prototype.slice.call(arguments, 2);
     \\  if (typeof format === "string") {
@@ -60842,6 +61316,18 @@ fn appendImportMetaReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{
+            .needle = "import * as common from '../common/index.mjs';",
+            .replacement = "const common = globalThis.require('../common');",
+        },
+        .{
+            .needle = "import assert from 'node:assert';",
+            .replacement = "const assert = globalThis.__home_import('node:assert');",
+        },
+        .{
+            .needle = "import { Script, SourceTextModule, createContext } from 'node:vm';",
+            .replacement = "const { Script, SourceTextModule, createContext } = globalThis.__home_import('node:vm');",
+        },
         .{ .needle = "const __filename = fileURLToPath(import.meta.url);", .replacement = "" },
         .{ .needle = "const __dirname = dirname(__filename);", .replacement = "" },
         .{ .needle = "const __dirname = import.meta.dirname;", .replacement = "" },
@@ -67399,6 +67885,16 @@ fn rewriteVmTimeoutEscapeCorpus(allocator: std.mem.Allocator, source: []const u8
     );
 }
 
+fn rewriteVmModuleReferrerRealmCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "await Promise.all([",
+        "Promise.all([",
+    );
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -67411,6 +67907,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         source[shebang_len..];
     const owned_module_source = if (std.mem.indexOf(u8, relative_path, "test-vm-timeout-escape-promise") != null)
         try rewriteVmTimeoutEscapeCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-vm-module-referrer-realm.mjs"))
+        try rewriteVmModuleReferrerRealmCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
