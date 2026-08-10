@@ -71534,26 +71534,24 @@ pub const Checker = struct {
         if (text_index == parts.len) return after_text == raw.len;
 
         const next_text = self.string_interner.get(texts[text_index + 1]);
+        const is_last_placeholder = text_index + 1 == parts.len;
         if (next_text.len == 0) {
-            var end = if (text_index + 1 < parts.len and after_text < raw.len)
+            const end = if (is_last_placeholder)
+                raw.len
+            else if (after_text < raw.len)
                 jsStringCodePointEnd(raw, after_text)
             else
-                after_text;
-            while (end <= raw.len) {
-                if (try self.tryTemplateInferSlice(texts, parts, raw, text_index, after_text, end, subs)) return true;
-                if (end == raw.len) break;
-                end = jsStringCodePointEnd(raw, end);
-            }
-            return false;
+                return false;
+            return self.tryTemplateInferSlice(texts, parts, raw, text_index, after_text, end, subs);
         }
 
-        var search = after_text;
-        while (search <= raw.len) {
-            const rel = std.mem.indexOfPos(u8, raw, search, next_text) orelse return false;
-            if (try self.tryTemplateInferSlice(texts, parts, raw, text_index, after_text, rel, subs)) return true;
-            search = rel + 1;
-        }
-        return false;
+        const rel = if (is_last_placeholder) blk: {
+            if (!std.mem.endsWith(u8, raw, next_text)) return false;
+            const suffix_start = raw.len - next_text.len;
+            if (suffix_start < after_text) return false;
+            break :blk suffix_start;
+        } else std.mem.indexOfPos(u8, raw, after_text, next_text) orelse return false;
+        return self.tryTemplateInferSlice(texts, parts, raw, text_index, after_text, rel, subs);
     }
 
     fn tryTemplateInferSlice(
@@ -197463,6 +197461,38 @@ test "checker: string literal source type satisfies template literal target" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: adjacent template inference uses greedy code-point partitions" {
+    const s = try newSetup(
+        \\type Parts<S extends string> =
+        \\  S extends `${infer C0}${infer C1}${infer C2}${infer C3}${infer C4}${infer C5}${infer C6}${infer C7}${infer C8}${infer C9}${infer R}`
+        \\    ? [C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, R]
+        \\    : never;
+        \\type Reject<S extends string> =
+        \\  S extends `${infer C0}${infer C1}${infer C2}${infer C3}${infer C4}${infer C5}${infer C6}${infer C7}${infer C8}${infer C9}${infer R extends "!"}`
+        \\    ? [C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, R]
+        \\    : never;
+        \\const parts: Parts<"abcdefghijklmnop"> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "klmnop"];
+        \\let rejected: Reject<"abcdefghijklmnopqrstuvwxyz0123456789">;
+        \\rejected = ["unexpected"];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: template inference does not backtrack past the first delimiter" {
+    const s = try newSetup(
+        \\type Split<S extends string> = S extends `${infer A extends "a-b"}-${infer B}` ? [A, B] : never;
+        \\let split: Split<"a-b-c">;
+        \\split = ["a-b", "c"];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerCountCode(s, TsCodes.type_not_assignable) > 0);
 }
 
 test "checker: template expression satisfies matching generic template parameter" {
