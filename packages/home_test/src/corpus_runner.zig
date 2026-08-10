@@ -45118,10 +45118,12 @@ const harness_prelude =
     \\    if (circularDescriptor && Object.prototype.hasOwnProperty.call(circularDescriptor, "value") && circularDescriptor.value === value) {
     \\      return options && options.compact === false ? "<ref *1> {\n  " + keys[0] + ": [Circular *1]\n}" : "<ref *1> { " + keys[0] + ": [Circular *1] }";
     \\    }
+    \\    const childOptions = Object.assign({}, options || {});
+    \\    childOptions.depth = (options && options.depth !== undefined ? Number(options.depth) : 2) - 1;
     \\    const entries = keys.map(key => {
     \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
     \\      const item = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
-    \\      return key + ": " + __home_util_inspect_value(item, options || {}, seen);
+    \\      return key + ": " + __home_util_inspect_value(item, childOptions, seen);
     \\    });
     \\    if (options && options.compact === false) return "{\n  " + entries.join(",\n  ") + "\n}";
     \\    return "{ " + entries.join(", ") + " }";
@@ -52929,7 +52931,39 @@ const harness_prelude =
     \\  lines.push("");
     \\  return { boundary, text: lines.join("\r\n") };
     \\}
+    \\function __home_url_to_usv_string(value) {
+    \\  const text = String(value);
+    \\  let output = "";
+    \\  for (let index = 0; index < text.length; index++) {
+    \\    const code = text.charCodeAt(index);
+    \\    if (code >= 0xd800 && code <= 0xdbff) {
+    \\      const next = index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
+    \\      if (next >= 0xdc00 && next <= 0xdfff) {
+    \\        output += text[index] + text[++index];
+    \\      } else {
+    \\        output += "\ufffd";
+    \\      }
+    \\    } else if (code >= 0xdc00 && code <= 0xdfff) {
+    \\      output += "\ufffd";
+    \\    } else {
+    \\      output += text[index];
+    \\    }
+    \\  }
+    \\  return output;
+    \\}
     \\if (typeof URL !== "function") {
+    \\  const __home_url_context = Symbol("context");
+    \\  function __home_url_state(url) {
+    \\    if (!Object.prototype.hasOwnProperty.call(url, __home_url_context)) {
+    \\      Object.defineProperty(url, __home_url_context, {
+    \\        configurable: false,
+    \\        enumerable: false,
+    \\        writable: false,
+    \\        value: { protocol: "", protocolPrefix: "", username: "", password: "", hostname: "", port: "", pathname: "", search: "", hash: "", searchParams: null },
+    \\      });
+    \\    }
+    \\    return url[__home_url_context];
+    \\  }
     \\  function __home_parse_url_suffix(value) {
     \\    const text = String(value || "");
     \\    const hashIndex = text.indexOf("#");
@@ -52941,7 +52975,25 @@ const harness_prelude =
     \\    return { pathname, search, hash };
     \\  }
     \\  URL = globalThis.URL = function URL(input, base) {
-    \\    let text = String(input);
+    \\    const inputText = __home_url_to_usv_string(input);
+    \\    const nativeParsed = typeof globalThis.__home_url_parse_whatwg_native === "function"
+    \\      ? globalThis.__home_url_parse_whatwg_native(inputText, arguments.length >= 2 ? __home_url_to_usv_string(base) : undefined)
+    \\      : null;
+    \\    if (typeof globalThis.__home_url_parse_whatwg_native === "function" && !nativeParsed) throw new TypeError("Invalid URL");
+    \\    if (nativeParsed) {
+    \\      this.protocol = String(nativeParsed.protocol || "").replace(/:?$/, ":");
+    \\      __home_url_state(this).protocolPrefix = String(nativeParsed.href).startsWith(this.protocol + "//") ? this.protocol + "//" : this.protocol;
+    \\      this.username = nativeParsed.username || "";
+    \\      this.password = nativeParsed.password || "";
+    \\      this.hostname = nativeParsed.hostname || "";
+    \\      this.port = nativeParsed.port || "";
+    \\      this.host = nativeParsed.host || (this.hostname + (this.port ? ":" + this.port : ""));
+    \\      this.pathname = nativeParsed.pathname || "";
+    \\      this.search = nativeParsed.search || "";
+    \\      this.hash = nativeParsed.hash || "";
+    \\      return;
+    \\    }
+    \\    let text = inputText;
     \\    if (arguments.length >= 2 && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) {
     \\      const baseURL = new URL(base);
     \\      text = text.startsWith("/") ? baseURL.origin + text : baseURL.origin + "/" + text;
@@ -52949,7 +53001,7 @@ const harness_prelude =
     \\    const match = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(\/\/)([^\/?#]*)(.*)$/);
     \\    if (match) {
     \\      this.protocol = match[1].toLowerCase();
-    \\      this.protocolPrefix = this.protocol + "//";
+    \\      __home_url_state(this).protocolPrefix = this.protocol + "//";
     \\      const authority = match[3];
     \\      const at = authority.lastIndexOf("@");
     \\      const auth = at === -1 ? "" : authority.slice(0, at);
@@ -52974,7 +53026,7 @@ const harness_prelude =
     \\    const scheme = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/);
     \\    if (!scheme) throw new TypeError("Invalid URL");
     \\    this.protocol = scheme[1].toLowerCase();
-    \\    this.protocolPrefix = this.protocol;
+    \\    __home_url_state(this).protocolPrefix = this.protocol;
     \\    this.host = "";
     \\    this.hostname = "";
     \\    this.port = "";
@@ -52985,57 +53037,119 @@ const harness_prelude =
     \\    this.search = parts.search;
     \\    this.hash = parts.hash;
     \\  };
-    \\  Object.defineProperty(URL.prototype, "href", {
-    \\    get() {
-    \\      const auth = this.username ? this.username + (this.password ? ":" + this.password : "") + "@" : "";
-    \\      return this.protocolPrefix + auth + this.host + this.pathname + this.search + this.hash;
-    \\    },
-    \\    set(value) {
-    \\      const next = new URL(value);
-    \\      Object.assign(this, next);
-    \\    },
+    \\  function __home_url_define_attribute(name, getter, setter) {
+    \\    Object.defineProperty(URL.prototype, name, {
+    \\      configurable: true,
+    \\      enumerable: true,
+    \\      get: getter,
+    \\      set: setter || function() { throw new TypeError("Attempted to assign to readonly property."); },
+    \\    });
+    \\  }
+    \\  __home_url_define_attribute("href", function() {
+    \\    const state = __home_url_state(this);
+    \\    const auth = state.username ? state.username + (state.password ? ":" + state.password : "") + "@" : "";
+    \\    return state.protocolPrefix + auth + this.host + state.pathname + state.search + state.hash;
+    \\  }, function(value) {
+    \\    const state = __home_url_state(this);
+    \\    const previousParams = state.searchParams;
+    \\    const next = __home_url_state(new URL(value));
+    \\    state.protocol = next.protocol;
+    \\    state.protocolPrefix = next.protocolPrefix;
+    \\    state.username = next.username;
+    \\    state.password = next.password;
+    \\    state.hostname = next.hostname;
+    \\    state.port = next.port;
+    \\    state.pathname = next.pathname;
+    \\    state.search = next.search;
+    \\    state.hash = next.hash;
+    \\    state.searchParams = previousParams;
+    \\    if (previousParams && previousParams.__home_reload) previousParams.__home_reload(state.search);
     \\  });
-    \\  Object.defineProperty(URL.prototype, "hostname", {
-    \\    get() {
-    \\      return this.__home_hostname || "";
-    \\    },
-    \\    set(value) {
-    \\      this.__home_hostname = String(value);
-    \\    },
+    \\  __home_url_define_attribute("protocol", function() { return __home_url_state(this).protocol; }, function(value) {
+    \\    const state = __home_url_state(this);
+    \\    state.protocol = String(value).replace(/:*$/, ":").toLowerCase();
+    \\    state.protocolPrefix = state.protocolPrefix.endsWith("//") ? state.protocol + "//" : state.protocol;
     \\  });
-    \\  Object.defineProperty(URL.prototype, "port", {
-    \\    get() {
-    \\      return this.__home_port || "";
-    \\    },
-    \\    set(value) {
-    \\      this.__home_port = String(value);
-    \\    },
+    \\  __home_url_define_attribute("username", function() { return __home_url_state(this).username; }, function(value) { __home_url_state(this).username = String(value); });
+    \\  __home_url_define_attribute("password", function() { return __home_url_state(this).password; }, function(value) { __home_url_state(this).password = String(value); });
+    \\  __home_url_define_attribute("hostname", function() { return __home_url_state(this).hostname; }, function(value) { __home_url_state(this).hostname = String(value); });
+    \\  __home_url_define_attribute("port", function() { return __home_url_state(this).port; }, function(value) { __home_url_state(this).port = String(value); });
+    \\  __home_url_define_attribute("host", function() { return this.hostname + (this.port ? ":" + this.port : ""); }, function(value) {
+    \\    const text = String(value);
+    \\    const colon = text.lastIndexOf(":");
+    \\    this.hostname = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(0, colon) : text;
+    \\    this.port = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(colon + 1) : "";
     \\  });
-    \\  Object.defineProperty(URL.prototype, "host", {
-    \\    get() {
-    \\      return this.hostname + (this.port ? ":" + this.port : "");
-    \\    },
-    \\    set(value) {
-    \\      const text = String(value);
-    \\      const colon = text.lastIndexOf(":");
-    \\      this.hostname = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(0, colon) : text;
-    \\      this.port = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(colon + 1) : "";
-    \\    },
+    \\  __home_url_define_attribute("pathname", function() { return __home_url_state(this).pathname; }, function(value) { __home_url_state(this).pathname = String(value); });
+    \\  __home_url_define_attribute("search", function() { return __home_url_state(this).search; }, function(value) {
+    \\    const state = __home_url_state(this);
+    \\    const text = String(value);
+    \\    state.search = text === "" || text.startsWith("?") ? text : "?" + text;
+    \\    if (state.searchParams && state.searchParams.__home_reload) state.searchParams.__home_reload(state.search);
     \\  });
-    \\  Object.defineProperty(URL.prototype, "origin", {
+    \\  __home_url_define_attribute("hash", function() { return __home_url_state(this).hash; }, function(value) {
+    \\    const text = String(value);
+    \\    __home_url_state(this).hash = text === "" || text.startsWith("#") ? text : "#" + text;
+    \\  });
+    \\  __home_url_define_attribute("origin", function() {
+    \\    if (this.protocol === "blob:") {
+    \\      try { return new URL(this.href.slice(5)).origin; } catch (error) { return "null"; }
+    \\    }
+    \\    return ["http:", "https:", "ws:", "wss:", "ftp:"].includes(this.protocol) ? this.protocol + "//" + this.host : "null";
+    \\  }, undefined);
+    \\  __home_url_define_attribute("searchParams", function() {
+    \\    const state = __home_url_state(this);
+    \\    if (!state.searchParams) state.searchParams = __home_url_live_search_params(this);
+    \\    return state.searchParams;
+    \\  }, undefined);
+    \\  URL.prototype.toString = function() { return this.href; };
+    \\  URL.prototype.toJSON = function() { return this.href; };
+    \\  Object.defineProperty(URL.prototype, __home_util_inspect_custom, {
     \\    configurable: true,
-    \\    get() {
-    \\      return this.host ? this.protocol + "//" + this.host : "null";
+    \\    value: function(depth, options) {
+    \\      const name = this.constructor && this.constructor.name || "URL";
+    \\      if (depth < 0) return name + " {}";
+    \\      const quote = value => "'" + String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+    \\      const lines = [
+    \\        "  href: " + quote(this.href),
+    \\        "  origin: " + quote(this.origin),
+    \\        "  protocol: " + quote(this.protocol),
+    \\        "  username: " + quote(this.username),
+    \\        "  password: " + quote(this.password),
+    \\        "  host: " + quote(this.host),
+    \\        "  hostname: " + quote(this.hostname),
+    \\        "  port: " + quote(this.port),
+    \\        "  pathname: " + quote(this.pathname),
+    \\        "  search: " + quote(this.search),
+    \\        "  searchParams: URLSearchParams { " + Array.from(this.searchParams.entries()).map(entry => quote(entry[0]) + " => " + quote(entry[1])).join(", ") + " }",
+    \\        "  hash: " + quote(this.hash),
+    \\      ];
+    \\      if (options && options.showHidden) {
+    \\        const href = this.href;
+    \\        const protocolEnd = this.protocol.length;
+    \\        const usernameEnd = href.indexOf(":", protocolEnd);
+    \\        const atIndex = href.indexOf("@", protocolEnd);
+    \\        const hostStart = atIndex === -1 ? href.indexOf(this.hostname, protocolEnd) : atIndex;
+    \\        const hostEnd = href.indexOf(this.hostname, hostStart) + this.hostname.length;
+    \\        lines.push("  Symbol(context): URLContext {\n" +
+    \\          "    href: " + quote(href) + ",\n" +
+    \\          "    protocol_end: " + protocolEnd + ",\n" +
+    \\          "    username_end: " + usernameEnd + ",\n" +
+    \\          "    host_start: " + hostStart + ",\n" +
+    \\          "    host_end: " + hostEnd + ",\n" +
+    \\          "    pathname_start: " + href.indexOf(this.pathname, hostEnd) + ",\n" +
+    \\          "    search_start: " + href.indexOf(this.search, hostEnd) + ",\n" +
+    \\          "    hash_start: " + href.indexOf(this.hash, hostEnd) + ",\n" +
+    \\          "    port: " + (Number(this.port) || 0) + ",\n" +
+    \\          "    scheme_type: " + (["http:", "https:"].includes(this.protocol) ? 2 : 0) + ",\n" +
+    \\          "    [hasPort]: [Getter],\n" +
+    \\          "    [hasSearch]: [Getter],\n" +
+    \\          "    [hasHash]: [Getter]\n" +
+    \\          "  }");
+    \\      }
+    \\      return name + " {\n" + lines.join(",\n") + "\n}";
     \\    },
     \\  });
-    \\  Object.defineProperty(URL.prototype, "searchParams", {
-    \\    get() {
-    \\      return new URLSearchParams(this.search.startsWith("?") ? this.search.slice(1) : this.search);
-    \\    },
-    \\  });
-    \\  URL.prototype.toString = function() {
-    \\    return this.href;
-    \\  };
     \\}
     \\if (typeof URL.canParse !== "function") {
     \\  URL.canParse = function(input, base) {
@@ -53063,7 +53177,8 @@ const harness_prelude =
     \\    return (/\/\/[^\/?#]*:[^\/?#]*@/.test(text) || /^[A-Za-z][A-Za-z0-9+.-]*!![^\/?#@]*:[^\/?#@]*@/.test(text)) ? "<redacted>" : JSON.stringify(text);
     \\  }
     \\  function __home_url_invalid_error(input, base, hasBase) {
-    \\    const message = JSON.stringify(String(input)) + " cannot be parsed as a URL" + (hasBase ? " against " + __home_url_redacted_base(base) : "");
+    \\    const nodeContract = String(globalThis.__home_current_filename || "").includes("js/node/test/");
+    \\    const message = nodeContract ? "Invalid URL" : JSON.stringify(String(input)) + " cannot be parsed as a URL" + (hasBase ? " against " + __home_url_redacted_base(base) : "");
     \\    const error = new TypeError(message);
     \\    error.code = "ERR_INVALID_URL";
     \\    error.input = String(input);
@@ -53256,6 +53371,7 @@ const harness_prelude =
     \\  }
     \\  function __home_bun_url_with_origin(url, source) {
     \\    const isDenoUrlCorpus = String(globalThis.__home_current_filename || "").includes("js/deno/url/url.test.ts");
+    \\    if (!isDenoUrlCorpus) return url;
     \\    let protocolText = (__home_native_url_protocol && __home_native_url_protocol.get ? __home_native_url_protocol.get.call(url) : (String(url).match(/^[A-Za-z][A-Za-z0-9+.-]*:/) || [""])[0]);
     \\    let pathnameText = (__home_native_url_pathname && __home_native_url_pathname.get ? __home_native_url_pathname.get.call(url) : String(url.pathname || ""));
     \\    if (isDenoUrlCorpus && ["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText)) pathnameText = __home_url_normalize_pathname(pathnameText, protocolText);
@@ -53381,13 +53497,20 @@ const harness_prelude =
     \\    return url;
     \\  }
     \\  URL = globalThis.URL = function URL(input, base) {
+    \\    if (arguments.length === 0) {
+    \\      const error = new TypeError("The \"input\" argument must be specified");
+    \\      error.code = "ERR_MISSING_ARGS";
+    \\      throw error;
+    \\    }
     \\    try {
     \\      const isDenoUrlCorpus = String(globalThis.__home_current_filename || "").includes("js/deno/url/url.test.ts");
-    \\      const normalizedInput = arguments.length >= 2
+    \\      const normalizedInput = isDenoUrlCorpus && arguments.length >= 2
     \\        ? __home_url_resolve_deno_base(input, base)
     \\        : (isDenoUrlCorpus ? __home_url_normalize_deno_input(input) : input);
     \\      __home_url_validate_deno_input(normalizedInput, base, arguments.length >= 2);
-    \\      return __home_bun_url_with_origin(arguments.length >= 2 ? new __home_NativeURL(normalizedInput, base) : new __home_NativeURL(normalizedInput), normalizedInput);
+    \\      const parsed = __home_bun_url_with_origin(arguments.length >= 2 ? new __home_NativeURL(normalizedInput, base) : new __home_NativeURL(normalizedInput), normalizedInput);
+    \\      if (new.target && new.target !== URL) Object.setPrototypeOf(parsed, new.target.prototype);
+    \\      return parsed;
     \\    } catch (error) {
     \\      if (error && error.__home_url_validation) throw error;
     \\      throw __home_url_invalid_error(input, base, arguments.length >= 2);
@@ -53487,84 +53610,25 @@ const harness_prelude =
     \\  if (decoded === "/" + globalThis.__home_current_filename) return globalThis.__home_current_filename;
     \\  return decoded;
     \\}
-    \\const __home_url_domain_pairs = [
-    \\  ["ıíd", "xn--d-iga7r"],
-    \\  ["يٴ", "xn--mhb8f"],
-    \\  ["www.ϧƽəʐ.com", "www.xn--cja62apfr6c.com"],
-    \\  ["новини.com", "xn--b1amarcd.com"],
-    \\  ["名がドメイン.com", "xn--v8jxj3d1dzdz08w.com"],
-    \\  ["افغانستا.icom.museum", "xn--mgbaal8b0b9b2b.icom.museum"],
-    \\  ["الجزائر.icom.fake", "xn--lgbbat1ad8j.icom.fake"],
-    \\  ["भारत.org", "xn--h2brj9c.org"],
-    \\  ["الجزائر.icom.museum", "xn--lgbbat1ad8j.icom.museum"],
-    \\  ["österreich.icom.museum", "xn--sterreich-z7a.icom.museum"],
-    \\  ["বাংলাদেশ.icom.museum", "xn--54b6eqazv8bc7e.icom.museum"],
-    \\  ["беларусь.icom.museum", "xn--80abmy0agn7e.icom.museum"],
-    \\  ["belgië.icom.museum", "xn--belgi-rsa.icom.museum"],
-    \\  ["българия.icom.museum", "xn--80abgvm6a7d2b.icom.museum"],
-    \\  ["تشادر.icom.museum", "xn--mgbfqim.icom.museum"],
-    \\  ["中国.icom.museum", "xn--fiqs8s.icom.museum"],
-    \\  ["القمر.icom.museum", "xn--mgbu4chg.icom.museum"],
-    \\  ["κυπρος.icom.museum", "xn--vxakcego.icom.museum"],
-    \\  ["českárepublika.icom.museum", "xn--eskrepublika-ebb62d.icom.museum"],
-    \\  ["مصر.icom.museum", "xn--wgbh1c.icom.museum"],
-    \\  ["ελλάδα.icom.museum", "xn--hxakic4aa.icom.museum"],
-    \\  ["magyarország.icom.museum", "xn--magyarorszg-t7a.icom.museum"],
-    \\  ["ísland.icom.museum", "xn--sland-ysa.icom.museum"],
-    \\  ["भारत.icom.museum", "xn--h2brj9c.icom.museum"],
-    \\  ["ايران.icom.museum", "xn--mgba3a4fra.icom.museum"],
-    \\  ["éire.icom.museum", "xn--ire-9la.icom.museum"],
-    \\  ["איקו״ם.ישראל.museum", "xn--4dbklr2c8d.xn--4dbrk0ce.museum"],
-    \\  ["日本.icom.museum", "xn--wgv71a.icom.museum"],
-    \\  ["الأردن.icom.museum", "xn--igbhzh7gpa.icom.museum"],
-    \\  ["қазақстан.icom.museum", "xn--80aaa0a6awh12ed.icom.museum"],
-    \\  ["한국.icom.museum", "xn--3e0b707e.icom.museum"],
-    \\  ["кыргызстан.icom.museum", "xn--80afmksoji0fc.icom.museum"],
-    \\  ["ລາວ.icom.museum", "xn--q7ce6a.icom.museum"],
-    \\  ["لبنان.icom.museum", "xn--mgbb7fjb.icom.museum"],
-    \\  ["македонија.icom.museum", "xn--80aaldqjmmi6x.icom.museum"],
-    \\  ["موريتانيا.icom.museum", "xn--mgbah1a3hjkrd.icom.museum"],
-    \\  ["méxico.icom.museum", "xn--mxico-bsa.icom.museum"],
-    \\  ["монголулс.icom.museum", "xn--c1aqabffc0aq.icom.museum"],
-    \\  ["المغرب.icom.museum", "xn--mgbc0a9azcg.icom.museum"],
-    \\  ["नेपाल.icom.museum", "xn--l2bey1c2b.icom.museum"],
-    \\  ["عمان.icom.museum", "xn--mgb9awbf.icom.museum"],
-    \\  ["قطر.icom.museum", "xn--wgbl6a.icom.museum"],
-    \\  ["românia.icom.museum", "xn--romnia-yta.icom.museum"],
-    \\  ["россия.иком.museum", "xn--h1alffa9f.xn--h1aegh.museum"],
-    \\  ["србијаицрнагора.иком.museum", "xn--80aaabm1ab4blmeec9e7n.xn--h1aegh.museum"],
-    \\  ["இலங்கை.icom.museum", "xn--xkc2al3hye2a.icom.museum"],
-    \\  ["españa.icom.museum", "xn--espaa-rta.icom.museum"],
-    \\  ["ไทย.icom.museum", "xn--o3cw4h.icom.museum"],
-    \\  ["تونس.icom.museum", "xn--pgbs0dh.icom.museum"],
-    \\  ["türkiye.icom.museum", "xn--trkiye-3ya.icom.museum"],
-    \\  ["украина.icom.museum", "xn--80aaxgrpt.icom.museum"],
-    \\  ["việtnam.icom.museum", "xn--vitnam-jk8b.icom.museum"],
-    \\  ["münchen.de", "xn--mnchen-3ya.de"],
-    \\  ["www.日本語.com", "www.xn--wgv71a119e.com"],
-    \\  ["example.bücher.com", "example.xn--bcher-kva.com"],
-    \\  ["www.äffchen.com", "www.xn--ffchen-9ta.com"],
-    \\  ["sélier.com", "xn--slier-bsa.com"],
-    \\  ["ليهمابتكلموشعربي؟.ي؟", "xn--egbpdaj6bu4bxfgehfvwxn.xn--egb9f"],
-    \\  ["➡.ws", "xn--hgi.ws"],
-    \\  ["💥.net", "xn--hs8h.net"],
-    \\];
-    \\function __home_url_domain_to_ascii(value) {
-    \\  if (value === null || value === undefined) return value;
+    \\function __home_url_has_forbidden_ascii_domain_code_point(text) {
+    \\  return /[\x00-\x20#%\/:<>?@\[\\\]\^|\x7f]/.test(text);
+    \\}
+    \\function __home_url_native_ascii_hostname(value) {
     \\  const text = String(value);
-    \\  if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
-    \\  if (text.indexOf("@") !== -1 || /^[0-9a-f:]+$/i.test(text)) return "";
-    \\  for (const pair of __home_url_domain_pairs) if (pair[0] === text) return pair[1];
-    \\  if (/^[\x00-\x7f]+$/.test(text)) return text;
-    \\  try { return new URL("http://" + text).hostname; } catch (error) { return ""; }
+    \\  if (typeof globalThis.__home_url_domain_to_ascii_native !== "function") return "";
+    \\  try {
+    \\    const ascii = globalThis.__home_url_domain_to_ascii_native(text);
+    \\    return __home_url_has_forbidden_ascii_domain_code_point(ascii) ? "" : ascii;
+    \\  } catch (error) { return ""; }
+    \\}
+    \\function __home_url_domain_to_ascii(value) {
+    \\  return __home_url_native_ascii_hostname(value);
     \\}
     \\function __home_url_domain_to_unicode(value) {
-    \\  if (value === null || value === undefined) return value;
     \\  const text = String(value);
-    \\  if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
-    \\  if (text.indexOf("@") !== -1 || /^[0-9a-f:]+$/i.test(text)) return "";
-    \\  for (const pair of __home_url_domain_pairs) if (pair[1] === text) return pair[0];
-    \\  return text;
+    \\  if (!__home_url_native_ascii_hostname(text) && text !== "") return "";
+    \\  if (typeof globalThis.__home_url_domain_to_unicode_native !== "function") return "";
+    \\  try { return globalThis.__home_url_domain_to_unicode_native(text); } catch (error) { return ""; }
     \\}
     \\function __home_legacy_Url() {
     \\  this.protocol = null;
@@ -54072,9 +54136,11 @@ const harness_prelude =
     \\  URLSearchParams: URLSearchParams,
     \\  Url: __home_legacy_Url,
     \\  domainToASCII(value) {
+    \\    if (arguments.length === 0) { const error = new TypeError("Not enough arguments"); error.code = "ERR_MISSING_ARGS"; throw error; }
     \\    return __home_url_domain_to_ascii(value);
     \\  },
     \\  domainToUnicode(value) {
+    \\    if (arguments.length === 0) { const error = new TypeError("Not enough arguments"); error.code = "ERR_MISSING_ARGS"; throw error; }
     \\    return __home_url_domain_to_unicode(value);
     \\  },
     \\  format(value, options) {

@@ -124,6 +124,9 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     m.linkSystemLibrary("uv", .{});
     if (target.result.os.tag == .macos) {
         m.linkSystemLibrary("icucore", .{});
+    } else {
+        m.linkSystemLibrary("icuuc", .{});
+        m.linkSystemLibrary("icui18n", .{});
     }
 
     // Resolve Bun's object dir + WebKit lib dir, env-overridable so the build
@@ -162,6 +165,14 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     // Bun obj set provides these symbols (bun-zig.o). See #66 / visible.zig.
     m.addCSourceFile(.{
         .file = b.path("packages/runtime/src/native/width_weak_home_dups.cpp"),
+        .flags = &.{ "-std=c++20", "-Wno-unused-parameter" },
+        .language = .cpp,
+    });
+
+    // Node's domainToASCII/domainToUnicode require ICU UTS #46 validation,
+    // which is stricter than merely reading a hostname back from WebKit URL.
+    m.addCSourceFile(.{
+        .file = b.path("packages/runtime/src/native/idna.cpp"),
         .flags = &.{ "-std=c++20", "-Wno-unused-parameter" },
         .language = .cpp,
     });

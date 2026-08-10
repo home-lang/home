@@ -101,6 +101,10 @@ pub const Runtime = struct {
         errdefer self.deinit();
 
         self.installNativeBindings();
+        home_rt.jsc.url_global.installIdnaBridge(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+        );
         try self.installHarness(allocator, harness_source);
         return self;
     }

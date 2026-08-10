@@ -20,6 +20,7 @@ const callback = @import("callback.zig");
 const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
 const url_mod = @import("../url/url.zig");
+const native_url = @import("URL.zig");
 
 const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
@@ -43,6 +44,90 @@ fn setStr(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: []const
     defer extern_fns.JSStringRelease(name);
     const v = jsStringValue(ctx, value) orelse return;
     extern_fns.JSObjectSetProperty(ctx, object, name, v, 0, null);
+}
+
+fn valueToOwnedUtf8(ctx: *JSContextRef, value: *JSValue, allocator: std.mem.Allocator) ?[]u8 {
+    const string = extern_fns.JSValueToStringCopy(ctx, value, null) orelse return null;
+    defer extern_fns.JSStringRelease(string);
+    const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
+    const buffer = allocator.alloc(u8, capacity) catch return null;
+    const written = extern_fns.JSStringGetUTF8CString(string, buffer.ptr, buffer.len);
+    if (written == 0) {
+        allocator.free(buffer);
+        return null;
+    }
+    const result = allocator.dupe(u8, buffer[0 .. written - 1]) catch {
+        allocator.free(buffer);
+        return null;
+    };
+    allocator.free(buffer);
+    return result;
+}
+
+fn setNativeUrlString(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: bun.String) void {
+    defer value.deref();
+    const allocator = std.heap.page_allocator;
+    const bytes = value.toOwnedSlice(allocator) catch return;
+    defer allocator.free(bytes);
+    setStr(ctx, object, key, bytes);
+}
+
+fn nativeStringToOwnedUtf8(value: bun.String, allocator: std.mem.Allocator) ?[]u8 {
+    defer value.deref();
+    return value.toOwnedSlice(allocator) catch null;
+}
+
+fn hasAsciiScheme(input: []const u8) bool {
+    if (input.len == 0 or !std.ascii.isAlphabetic(input[0])) return false;
+    for (input[1..]) |byte| {
+        if (byte == ':') return true;
+        if (!std.ascii.isAlphanumeric(byte) and byte != '+' and byte != '-' and byte != '.') return false;
+    }
+    return false;
+}
+
+fn isOpaqueUrl(href: []const u8) bool {
+    const colon = std.mem.indexOfScalar(u8, href, ':') orelse return false;
+    const scheme = href[0..colon];
+    const special = std.ascii.eqlIgnoreCase(scheme, "http") or
+        std.ascii.eqlIgnoreCase(scheme, "https") or
+        std.ascii.eqlIgnoreCase(scheme, "ws") or
+        std.ascii.eqlIgnoreCase(scheme, "wss") or
+        std.ascii.eqlIgnoreCase(scheme, "ftp") or
+        std.ascii.eqlIgnoreCase(scheme, "file");
+    return !special and !std.mem.startsWith(u8, href[colon + 1 ..], "//");
+}
+
+fn hasForbiddenDomainByte(ascii: []const u8) bool {
+    for (ascii) |byte| {
+        if (byte <= 0x20 or byte == 0x7f) return true;
+        switch (byte) {
+            '#', '%', '/', ':', '<', '>', '?', '@', '[', '\\', ']', '^', '|' => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn validateSpecialHost(parsed: *native_url.URL) bool {
+    const allocator = std.heap.page_allocator;
+    const protocol = nativeStringToOwnedUtf8(native_url.URL.protocol(parsed), allocator) orelse return false;
+    defer allocator.free(protocol);
+    const special = std.mem.eql(u8, protocol, "http") or
+        std.mem.eql(u8, protocol, "https") or
+        std.mem.eql(u8, protocol, "ws") or
+        std.mem.eql(u8, protocol, "wss") or
+        std.mem.eql(u8, protocol, "ftp") or
+        std.mem.eql(u8, protocol, "file");
+    if (!special) return true;
+
+    const hostname = nativeStringToOwnedUtf8(native_url.URL.host(parsed), allocator) orelse return false;
+    defer allocator.free(hostname);
+    if (hostname.len == 0 or (hostname[0] == '[' and hostname[hostname.len - 1] == ']')) return true;
+    if (hostname.len > std.math.maxInt(i32)) return false;
+    var ascii: [idna_buffer_capacity]u8 = undefined;
+    const length = home_idna_to_ascii_utf8(hostname.ptr, @intCast(hostname.len), &ascii, ascii.len);
+    return length >= 0 and !hasForbiddenDomainByte(ascii[0..@intCast(length)]);
 }
 
 /// `__home_url_parse(href)` -> `{ protocol, username, password, host,
@@ -69,7 +154,7 @@ fn parseUrlNative(
     const buf = allocator.alloc(u8, capacity) catch return extern_fns.JSValueMakeNull(c);
     defer allocator.free(buf);
     const written = extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
-    const href = buf[0 .. if (written > 0) written - 1 else 0];
+    const href = buf[0..if (written > 0) written - 1 else 0];
 
     const parsed = url_mod.URL.parse(href);
     const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
@@ -85,6 +170,156 @@ fn parseUrlNative(
     setStr(c, object, "href", parsed.href);
     setStr(c, object, "origin", parsed.origin);
     return @ptrCast(object);
+}
+
+/// `__home_url_parse_whatwg_native(input, base?)` parses through WebKit's
+/// WHATWG URL implementation and returns null on any invalid input/base.
+/// Unlike the lightweight URL global above, this is suitable for Node/Bun
+/// compatibility boundaries including IPv6, IDNA, ports, and opaque paths.
+fn parseWhatwgUrlNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argument_count < 1) return extern_fns.JSValueMakeNull(c);
+    const input_value = arguments[0] orelse return extern_fns.JSValueMakeNull(c);
+
+    const allocator = std.heap.page_allocator;
+    const input = valueToOwnedUtf8(c, input_value, allocator) orelse return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(input);
+
+    var resolved: ?[]u8 = null;
+    defer if (resolved) |bytes| allocator.free(bytes);
+    const href = if (argument_count >= 2 and arguments[1] != null and !extern_fns.JSValueIsUndefined(c, arguments[1])) blk: {
+        const base = valueToOwnedUtf8(c, arguments[1].?, allocator) orelse return extern_fns.JSValueMakeNull(c);
+        defer allocator.free(base);
+        const normalized_base = native_url.URL.hrefFromString(bun.String.borrowUTF8(base));
+        defer normalized_base.deref();
+        if (normalized_base.tag == .Dead) return extern_fns.JSValueMakeNull(c);
+        const base_href = normalized_base.toOwnedSlice(allocator) catch return extern_fns.JSValueMakeNull(c);
+        defer allocator.free(base_href);
+        const base_url = native_url.URL.fromUTF8(base_href) orelse return extern_fns.JSValueMakeNull(c);
+        defer native_url.URL.deinit(base_url);
+        if (!validateSpecialHost(base_url)) return extern_fns.JSValueMakeNull(c);
+        if (!hasAsciiScheme(input) and isOpaqueUrl(base_href)) return extern_fns.JSValueMakeNull(c);
+
+        const joined = native_url.URL.join(bun.String.borrowUTF8(base_href), bun.String.borrowUTF8(input));
+        defer joined.deref();
+        if (joined.tag == .Dead) return extern_fns.JSValueMakeNull(c);
+        resolved = joined.toOwnedSlice(allocator) catch return extern_fns.JSValueMakeNull(c);
+        break :blk resolved.?;
+    } else blk: {
+        const normalized = native_url.URL.hrefFromString(bun.String.borrowUTF8(input));
+        defer normalized.deref();
+        if (normalized.tag == .Dead) return extern_fns.JSValueMakeNull(c);
+        resolved = normalized.toOwnedSlice(allocator) catch return extern_fns.JSValueMakeNull(c);
+        break :blk resolved.?;
+    };
+
+    const parsed = native_url.URL.fromUTF8(href) orelse return extern_fns.JSValueMakeNull(c);
+    defer native_url.URL.deinit(parsed);
+    if (!validateSpecialHost(parsed)) return extern_fns.JSValueMakeNull(c);
+    const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+    setNativeUrlString(c, object, "protocol", native_url.URL.protocol(parsed));
+    setNativeUrlString(c, object, "username", native_url.URL.username(parsed));
+    setNativeUrlString(c, object, "password", native_url.URL.password(parsed));
+    setNativeUrlString(c, object, "hostname", native_url.URL.host(parsed));
+    setNativeUrlString(c, object, "host", native_url.URL.hostname(parsed));
+    setNativeUrlString(c, object, "pathname", native_url.URL.pathname(parsed));
+    setNativeUrlString(c, object, "search", native_url.URL.search(parsed));
+    setNativeUrlString(c, object, "hash", native_url.URL.hash(parsed));
+    setNativeUrlString(c, object, "href", native_url.URL.href(parsed));
+    const port = native_url.URL.port(parsed);
+    if (port == std.math.maxInt(u32)) {
+        setStr(c, object, "port", "");
+    } else {
+        var port_buffer: [5]u8 = undefined;
+        const port_text = std.fmt.bufPrint(&port_buffer, "{d}", .{port}) catch "";
+        setStr(c, object, "port", port_text);
+    }
+    return @ptrCast(object);
+}
+
+const IdnaOperation = enum { ascii, unicode };
+const idna_buffer_capacity = 8192;
+
+extern fn home_idna_to_ascii_utf8([*]const u8, i32, [*]u8, i32) callconv(.c) i32;
+extern fn home_idna_to_unicode_utf8([*]const u8, i32, [*]u8, i32) callconv(.c) i32;
+
+/// ICU UTS #46 hostname conversion used by Node's domainToASCII() and
+/// domainToUnicode(). This matches Bun's NodeURL.cpp validation rules rather
+/// than treating successful URL parsing as sufficient IDNA validation.
+fn domainConvertNative(
+    comptime operation: IdnaOperation,
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argument_count < 1) return jsStringValue(c, "");
+    const value = arguments[0] orelse return jsStringValue(c, "");
+
+    const allocator = std.heap.page_allocator;
+    const string = extern_fns.JSValueToStringCopy(c, value, null) orelse return jsStringValue(c, "");
+    defer extern_fns.JSStringRelease(string);
+    const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
+    const input_buffer = allocator.alloc(u8, capacity) catch return jsStringValue(c, "");
+    defer allocator.free(input_buffer);
+    const written = extern_fns.JSStringGetUTF8CString(string, input_buffer.ptr, input_buffer.len);
+    const input = input_buffer[0..if (written > 0) written - 1 else 0];
+
+    if (input.len > std.math.maxInt(i32)) return jsStringValue(c, "");
+    var output: [idna_buffer_capacity]u8 = undefined;
+    const output_length = switch (operation) {
+        .ascii => home_idna_to_ascii_utf8(input.ptr, @intCast(input.len), &output, output.len),
+        .unicode => home_idna_to_unicode_utf8(input.ptr, @intCast(input.len), &output, output.len),
+    };
+    if (output_length < 0) return jsStringValue(c, "");
+    return jsStringValue(c, output[0..@intCast(output_length)]);
+}
+
+fn domainToAsciiNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return domainConvertNative(.ascii, ctx, function, this_object, argument_count, arguments, exception);
+}
+
+fn domainToUnicodeNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return domainConvertNative(.unicode, ctx, function, this_object, argument_count, arguments, exception);
+}
+
+/// Install only the native IDNA primitive. Corpus and other compatibility
+/// realms can use this without replacing their existing URL constructors.
+pub fn installIdnaBridge(ctx: *JSContextRef, global: *JSGlobalObject) void {
+    if (comptime !build_options.enable_jsc) return;
+    callback.registerCallback(ctx, global, "__home_url_parse_whatwg_native", parseWhatwgUrlNative);
+    callback.registerCallback(ctx, global, "__home_url_domain_to_ascii_native", domainToAsciiNative);
+    callback.registerCallback(ctx, global, "__home_url_domain_to_unicode_native", domainToUnicodeNative);
 }
 
 const install_glue =
@@ -215,6 +450,7 @@ const install_glue =
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     if (comptime !build_options.enable_jsc) return;
 
+    installIdnaBridge(ctx, global);
     callback.registerCallback(ctx, global, "__home_url_parse", parseUrlNative);
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:url-install", 1) catch return;
     result.deinit(allocator);
@@ -236,8 +472,7 @@ test "URL parses an absolute https url into components" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var u = new URL('https://user:pass@example.com:8080/a/b?x=1&y=2#frag');" ++
         "  return u.protocol === 'https:' && u.hostname === 'example.com' && u.port === '8080' &&" ++
         "    u.host === 'example.com:8080' && u.pathname === '/a/b' && u.search === '?x=1&y=2' &&" ++
@@ -256,8 +491,7 @@ test "URL throws TypeError on an invalid (schemeless) url" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() { try { new URL('not a url'); return false; } catch (e) { return e instanceof TypeError; } })()"));
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() { try { new URL('not a url'); return false; } catch (e) { return e instanceof TypeError; } })()"));
 }
 
 test "URL.canParse reports parseability without throwing" {
@@ -270,8 +504,7 @@ test "URL.canParse reports parseability without throwing" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof URL.canParse !== 'function') return false;" ++
         "  if (URL.canParse('https://example.com/p') !== true) return false;" ++
         "  if (URL.canParse('not a url') !== false) return false;" ++
@@ -290,8 +523,7 @@ test "URL resolves common relative forms against a base" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var root = new URL('/api/x', 'https://h.com/a/b');" ++
         "  var rel = new URL('c', 'https://h.com/a/b');" ++
         "  return root.href === 'https://h.com/api/x' && rel.href === 'https://h.com/a/c';" ++
@@ -308,13 +540,48 @@ test "URLSearchParams supports the core mutating + iteration API" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var p = new URLSearchParams('a=1&b=2&a=3');" ++
         "  if (p.get('a') !== '1' || p.getAll('a').join(',') !== '1,3' || p.has('b') !== true) return false;" ++
         "  p.append('c', '4'); p.set('a', '9'); p.delete('b');" ++
         "  if (p.get('a') !== '9' || p.has('b') !== false || p.get('c') !== '4') return false;" ++
         "  var seen = []; for (var e of p) seen.push(e[0] + '=' + e[1]);" ++
         "  return seen.join('&') === 'a=9&c=4' && p.toString() === 'a=9&c=4' && p.size === 2;" ++
+        "})()"));
+}
+
+test "native IDNA bridge follows Node UTS 46 validation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    installIdnaBridge(ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
+        "  return __home_url_domain_to_ascii_native('mañana.com') === 'xn--maana-pta.com' &&" ++
+        "    __home_url_domain_to_unicode_native('xn--maana-pta.com') === 'mañana.com' &&" ++
+        "    __home_url_domain_to_ascii_native('xn--a') === '';" ++
+        "})()"));
+}
+
+test "native WHATWG URL bridge canonicalizes and rejects invalid bases" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    installIdnaBridge(ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
+        "  var parsed = __home_url_parse_whatwg_native('https://mañana.com/a b');" ++
+        "  return parsed !== null && parsed.href === 'https://xn--maana-pta.com/a%20b' &&" ++
+        "    __home_url_parse_whatwg_native('https://example.com:99999/') === null &&" ++
+        "    __home_url_parse_whatwg_native('relative', 'mailto:test@example.com') === null &&" ++
+        "    __home_url_parse_whatwg_native('relative', 'custom:/opaque') === null;" ++
         "})()"));
 }
