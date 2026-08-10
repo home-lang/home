@@ -3875,6 +3875,15 @@ pub const Checker = struct {
     /// Consulted by `lowererLowerWithTypeParams` to instantiate
     /// `Box<number>`-style references against the aliased body.
     generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo),
+    /// Generic aliases whose recursive branch indexes the alias from an
+    /// array-rest tuple, e.g. `[...Recur<T>[number][]]`. tsgo resolves the
+    /// synthetic `Array<...>` arguments eagerly and carries that recursion
+    /// state into return and call instantiation diagnostics.
+    recursive_indexed_access_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    /// Recursive mapped/indexed aliases whose base-constraint computation
+    /// can exhaust the relation stack. Kept separate from ordinary recursive
+    /// mapped aliases because only this shape participates in TS2321.
+    recursive_mapped_index_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
     /// Generic interface declaration -> independent instantiation metadata.
     /// Bare-name generic_aliases entries are intentionally last-wins, while
     /// namespace-local declarations with the same name must remain distinct.
@@ -5046,6 +5055,8 @@ pub const Checker = struct {
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
         self.generic_aliases.deinit(self.gpa);
+        self.recursive_indexed_access_aliases.deinit(self.gpa);
+        self.recursive_mapped_index_aliases.deinit(self.gpa);
         var gid_it = self.generic_interfaces_by_decl.valueIterator();
         while (gid_it.next()) |info| self.gpa.free(info.params);
         self.generic_interfaces_by_decl.deinit(self.gpa);
@@ -7099,7 +7110,8 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to function return type.");
                     }
                 } else if (self.current_function_return_t) |declared| {
-                    var emitted_nullish_return_mismatch = false;
+                    var emitted_nullish_return_mismatch = r.value != hir_mod.none_node_id and
+                        try self.tryReportRecursiveIndexedAliasReturnMismatch(node, r.value, declared);
                     if (self.strict_flags.strict_null_checks and
                         r.value == hir_mod.none_node_id and
                         self.declaredReturnRejectsNullish(declared, types.Primitive.undefined_t))
@@ -61760,6 +61772,315 @@ pub const Checker = struct {
         };
     }
 
+    const RecursiveIndexedArrayRest = struct {
+        tuple_node: NodeId,
+        indexed_node: NodeId,
+    };
+
+    fn findRecursiveIndexedArrayRest(
+        self: *Checker,
+        node: NodeId,
+        alias_name: hir_mod.StringId,
+    ) ?RecursiveIndexedArrayRest {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
+                if (self.findRecursiveIndexedArrayRest(member, alias_name)) |hit| return hit;
+            },
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                if (self.findRecursiveIndexedArrayRest(member, alias_name)) |hit| return hit;
+            },
+            .tuple_type => {
+                for (hir_mod.tupleTypeElements(self.hir, node)) |element| {
+                    if (self.hir.kindOf(element) != .rest_type) continue;
+                    const rest = hir_mod.restTypeOf(self.hir, element);
+                    if (self.hir.kindOf(rest.operand) != .array_type) continue;
+                    const array = hir_mod.arrayTypeOf(self.hir, rest.operand);
+                    if (self.hir.kindOf(array.element) != .indexed_access_type) continue;
+                    const indexed = hir_mod.indexedAccessTypeOf(self.hir, array.element);
+                    if (self.hir.kindOf(indexed.object) != .type_ref) continue;
+                    const object_ref = hir_mod.typeRefOf(self.hir, indexed.object);
+                    if (object_ref.qualifier_len != 0 or object_ref.name != alias_name) continue;
+                    const index_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(indexed.index), " \t\r\n");
+                    if (!std.mem.eql(u8, index_text, "number")) continue;
+                    return .{ .tuple_node = node, .indexed_node = array.element };
+                }
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    fn findNamedTypeRefInTypeNode(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .type_ref => {
+                const ref = hir_mod.typeRefOf(self.hir, node);
+                if (ref.qualifier_len == 0 and ref.name == name) return node;
+                for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                    if (self.findNamedTypeRefInTypeNode(arg, name)) |hit| return hit;
+                }
+            },
+            .array_type => return self.findNamedTypeRefInTypeNode(hir_mod.arrayTypeOf(self.hir, node).element, name),
+            .readonly_type => return self.findNamedTypeRefInTypeNode(hir_mod.readonlyTypeOf(self.hir, node).operand, name),
+            .optional_type => return self.findNamedTypeRefInTypeNode(hir_mod.optionalTypeOf(self.hir, node).operand, name),
+            .rest_type => return self.findNamedTypeRefInTypeNode(hir_mod.restTypeOf(self.hir, node).operand, name),
+            .keyof_type => return self.findNamedTypeRefInTypeNode(hir_mod.keyofTypeOf(self.hir, node).operand, name),
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
+                if (self.findNamedTypeRefInTypeNode(member, name)) |hit| return hit;
+            },
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                if (self.findNamedTypeRefInTypeNode(member, name)) |hit| return hit;
+            },
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, node)) |element| {
+                if (self.findNamedTypeRefInTypeNode(element, name)) |hit| return hit;
+            },
+            .indexed_access_type => {
+                const indexed = hir_mod.indexedAccessTypeOf(self.hir, node);
+                if (self.findNamedTypeRefInTypeNode(indexed.object, name)) |hit| return hit;
+                return self.findNamedTypeRefInTypeNode(indexed.index, name);
+            },
+            .conditional_type => {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, node);
+                if (self.findNamedTypeRefInTypeNode(conditional.check, name)) |hit| return hit;
+                if (self.findNamedTypeRefInTypeNode(conditional.extends, name)) |hit| return hit;
+                if (self.findNamedTypeRefInTypeNode(conditional.true_branch, name)) |hit| return hit;
+                return self.findNamedTypeRefInTypeNode(conditional.false_branch, name);
+            },
+            .template_literal_type => for (hir_mod.templateLiteralTypeTypes(self.hir, node)) |part| {
+                if (self.findNamedTypeRefInTypeNode(part, name)) |hit| return hit;
+            },
+            .mapped_type => {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                if (self.findNamedTypeRefInTypeNode(mapped.constraint, name)) |hit| return hit;
+                if (self.findNamedTypeRefInTypeNode(mapped.value, name)) |hit| return hit;
+                return self.findNamedTypeRefInTypeNode(mapped.remap, name);
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    fn recursiveMappedIndexReference(
+        self: *Checker,
+        body: NodeId,
+        alias_name: hir_mod.StringId,
+    ) ?struct { recursive_ref: NodeId, diagnostic_node: NodeId, relation_target: NodeId, array_target: NodeId } {
+        if (body == hir_mod.none_node_id or self.hir.kindOf(body) != .indexed_access_type) return null;
+        const indexed = hir_mod.indexedAccessTypeOf(self.hir, body);
+        if (self.hir.kindOf(indexed.object) != .mapped_type or self.hir.kindOf(indexed.index) != .conditional_type) return null;
+        const mapped = hir_mod.mappedTypeOf(self.hir, indexed.object);
+        if (self.hir.kindOf(mapped.value) != .conditional_type) return null;
+        const value_conditional = hir_mod.conditionalTypeOf(self.hir, mapped.value);
+        const selector_conditional = hir_mod.conditionalTypeOf(self.hir, indexed.index);
+        const recursive_ref = self.findNamedTypeRefInTypeNode(value_conditional.true_branch, alias_name) orelse return null;
+        const recursive_args = hir_mod.typeRefArgs(self.hir, recursive_ref);
+        if (recursive_args.len != 1 or self.hir.kindOf(recursive_args[0]) != .indexed_access_type) return null;
+        var diagnostic_node = recursive_ref;
+        var parent = self.hir.parentOf(recursive_ref);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            if (self.hir.kindOf(parent) == .template_literal_type) {
+                diagnostic_node = parent;
+                break;
+            }
+            if (parent == value_conditional.true_branch) break;
+        }
+        return .{
+            .recursive_ref = recursive_ref,
+            .diagnostic_node = diagnostic_node,
+            .relation_target = value_conditional.extends,
+            .array_target = selector_conditional.extends,
+        };
+    }
+
+    fn allocRecursiveMappedOverflowTypeName(
+        self: *Checker,
+        base: []const u8,
+        shallow_suffix_count: usize,
+        truncated: bool,
+    ) CheckError![]const u8 {
+        const arena = self.diag_arena.allocator();
+        const first = try std.fmt.allocPrint(
+            arena,
+            "{s}[{s} extends readonly any[] ? keyof {s} & `${{number}}` : keyof {s} & (string | number)]",
+            .{ base, base, base, base },
+        );
+        const abbreviated = try std.fmt.allocPrint(arena, "{s}[...]", .{base});
+        const second = try std.fmt.allocPrint(
+            arena,
+            "{s}[{s} extends readonly any[] ? keyof {s} & `${{number}}` : keyof {s} & (string | number)]",
+            .{ first, first, abbreviated, abbreviated },
+        );
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        try result.appendSlice(arena, second);
+        const full_suffixes: usize = if (truncated) 7 else shallow_suffix_count;
+        for (0..full_suffixes) |_| try result.appendSlice(arena, "[...]");
+        if (truncated) try result.appendSlice(arena, "[...");
+        return result.items;
+    }
+
+    fn appendExcessiveStackDepthDiagnosticNames(
+        self: *Checker,
+        node: NodeId,
+        source_name: []const u8,
+        target_name: []const u8,
+    ) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Excessive stack depth comparing types '{s}' and '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.excessive_stack_depth_comparing_types,
+            .message = msg,
+        });
+    }
+
+    fn reportRecursiveMappedOverflowSet(
+        self: *Checker,
+        node: NodeId,
+        base_node: NodeId,
+        relation_target_node: NodeId,
+        array_target_node: NodeId,
+        shallow_suffix_count: usize,
+    ) CheckError!void {
+        const base = std.mem.trim(u8, self.nodeSourceTextOrEmpty(base_node), " \t\r\n");
+        const relation_target = std.mem.trim(u8, self.nodeSourceTextOrEmpty(relation_target_node), " \t\r\n");
+        const array_target = std.mem.trim(u8, self.nodeSourceTextOrEmpty(array_target_node), " \t\r\n");
+        if (base.len == 0 or relation_target.len == 0 or array_target.len == 0) return;
+        const shallow = try self.allocRecursiveMappedOverflowTypeName(base, shallow_suffix_count, false);
+        const deep = try self.allocRecursiveMappedOverflowTypeName(base, shallow_suffix_count, true);
+        try self.appendExcessiveStackDepthDiagnosticNames(node, shallow, relation_target);
+        try self.appendExcessiveStackDepthDiagnosticNames(node, shallow, array_target);
+        try self.appendExcessiveStackDepthDiagnosticNames(node, deep, relation_target);
+        try self.appendExcessiveStackDepthDiagnosticNames(node, deep, array_target);
+    }
+
+    fn registerRecursiveAliasDiagnostics(
+        self: *Checker,
+        alias_name: hir_mod.StringId,
+        body: NodeId,
+    ) CheckError!void {
+        if (!self.recursive_indexed_access_aliases.contains(alias_name)) {
+            if (self.findRecursiveIndexedArrayRest(body, alias_name)) |hit| {
+                try self.recursive_indexed_access_aliases.put(self.gpa, alias_name, {});
+                const array_name = self.string_interner.intern("Array") catch return error.OutOfMemory;
+                try self.reportCircularTypeArguments(hit.tuple_node, array_name);
+                const indexed = hir_mod.indexedAccessTypeOf(self.hir, hit.indexed_node);
+                const index_name = std.mem.trim(u8, self.nodeSourceTextOrEmpty(indexed.index), " \t\r\n");
+                const object_name = std.mem.trim(u8, self.nodeSourceTextOrEmpty(indexed.object), " \t\r\n");
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Type '{s}' cannot be used to index type '{s}'.",
+                    .{ index_name, object_name },
+                );
+                try self.reportOnce(hit.indexed_node, TsCodes.type_cannot_be_used_to_index_type, msg);
+            }
+        }
+
+        if (!self.recursive_mapped_index_aliases.contains(alias_name)) {
+            if (self.recursiveMappedIndexReference(body, alias_name)) |hit| {
+                try self.recursive_mapped_index_aliases.put(self.gpa, alias_name, {});
+                const args = hir_mod.typeRefArgs(self.hir, hit.recursive_ref);
+                try self.reportRecursiveMappedOverflowSet(
+                    hit.diagnostic_node,
+                    args[0],
+                    hit.relation_target,
+                    hit.array_target,
+                    4,
+                );
+            }
+        }
+    }
+
+    fn reportRecursiveMappedDefaultOverflows(
+        self: *Checker,
+        alias_name_node: NodeId,
+        type_params: []const NodeId,
+    ) CheckError!void {
+        if (self.diagnosticExists(alias_name_node, TsCodes.excessive_stack_depth_comparing_types)) return;
+        for (type_params) |type_param_node| {
+            if (self.hir.kindOf(type_param_node) != .type_parameter) continue;
+            const type_param = hir_mod.typeParameterOf(self.hir, type_param_node);
+            if (type_param.default == hir_mod.none_node_id) continue;
+            var aliases = self.recursive_mapped_index_aliases.keyIterator();
+            while (aliases.next()) |recursive_alias_name| {
+                const ref_node = self.findNamedTypeRefInTypeNode(type_param.default, recursive_alias_name.*) orelse continue;
+                const ref_args = hir_mod.typeRefArgs(self.hir, ref_node);
+                if (ref_args.len != 1) continue;
+                const recursive_decl = self.typeAliasDeclForNameAt(recursive_alias_name.*, ref_node) orelse continue;
+                const recursive_body = hir_mod.typeAliasOf(self.hir, recursive_decl).aliased;
+                const shape = self.recursiveMappedIndexReference(recursive_body, recursive_alias_name.*) orelse continue;
+                try self.reportRecursiveMappedOverflowSet(
+                    alias_name_node,
+                    ref_args[0],
+                    shape.relation_target,
+                    shape.array_target,
+                    5,
+                );
+                return;
+            }
+        }
+    }
+
+    fn directRecursiveIndexedAliasName(self: *Checker, type_node: NodeId) ?hir_mod.StringId {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const ref = hir_mod.typeRefOf(self.hir, type_node);
+        if (ref.qualifier_len != 0 or !self.recursive_indexed_access_aliases.contains(ref.name)) return null;
+        return ref.name;
+    }
+
+    fn tryReportRecursiveIndexedAliasReturnMismatch(
+        self: *Checker,
+        return_node: NodeId,
+        value_node: NodeId,
+        declared_t: TypeId,
+    ) CheckError!bool {
+        if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .array_literal) return false;
+        _ = self.directRecursiveIndexedAliasName(self.current_function_return_node) orelse return false;
+        var has_spread = false;
+        for (hir_mod.arrayLiteralElements(self.hir, value_node)) |element| {
+            if (element != hir_mod.none_node_id and self.hir.kindOf(element) == .spread) {
+                has_spread = true;
+                break;
+            }
+        }
+        if (!has_spread) return false;
+        const source_name = try self.arrayLiteralTupleDisplayName(value_node, declared_t);
+        const target_name = std.mem.trim(
+            u8,
+            self.nodeSourceTextOrEmpty(self.current_function_return_node),
+            " \t\r\n",
+        );
+        if (target_name.len == 0) return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(return_node, TsCodes.type_not_assignable, msg);
+        try self.reportExcessivelyDeepTypeInstantiationAt(value_node);
+        return true;
+    }
+
+    fn tryReportRecursiveIndexedAliasCallOverflow(self: *Checker, call_node: NodeId) CheckError!bool {
+        if (call_node == hir_mod.none_node_id or self.hir.kindOf(call_node) != .call_expr) return false;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .identifier) return false;
+        const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+        const function_decl = self.findFunctionDeclForNameNearNode(call.callee, callee_name) orelse return false;
+        if (hir_mod.fnTypeParams(self.hir, function_decl).len == 0) return false;
+        const function = hir_mod.fnDeclOf(self.hir, function_decl);
+        _ = self.directRecursiveIndexedAliasName(function.return_type) orelse return false;
+        try self.reportExcessivelyDeepTypeInstantiationAt(call_node);
+        return true;
+    }
+
     fn checkTypeAliasDecl(self: *Checker, node: NodeId) CheckError!void {
         const ta = hir_mod.typeAliasOf(self.hir, node);
         try self.checkExportedTypeAliasPrivateNames(node);
@@ -61794,6 +62115,11 @@ pub const Checker = struct {
             try self.reportUnresolvedBodylessSignatureTypeRefs(ta.aliased, ta_type_params);
         }
         const type_params = ta_type_params;
+        if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
+            const alias_name = hir_mod.identifierOf(self.hir, ta.name).name;
+            try self.registerRecursiveAliasDiagnostics(alias_name, ta.aliased);
+            try self.reportRecursiveMappedDefaultOverflows(ta.name, type_params);
+        }
         // TS2637 — variance annotations (`in`/`out`) on a type alias's type
         // parameters are only meaningful when the alias's declared type is an
         // anonymous object / function / constructor / mapped type. tsc keys
@@ -134854,6 +135180,7 @@ pub const Checker = struct {
         sig: TypeId,
         union_composite: bool,
     ) CheckError!void {
+        if (try self.tryReportRecursiveIndexedAliasCallOverflow(call_node)) return;
         const param_ts = self.interner.signatureParams(sig);
         const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
         // For rest signatures, the trailing slot accepts any number of
@@ -141375,6 +141702,7 @@ pub const Checker = struct {
         index_t: TypeId,
     ) !void {
         if (self.indexNodeIsRecoveredPrivateName(index_node)) return;
+        if (self.diagnosticExists(access_node, TsCodes.type_cannot_be_used_to_index_type)) return;
         if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
         if (try self.reportPrivateOrProtectedIndexedAccessOnTypeParameter(index_node, object_t, index_t)) return;
@@ -224732,11 +225060,57 @@ test "checker: recursive indexed access simplification reports upstream recursio
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        const bogus_self_assign = d.code == TsCodes.argument_type_mismatch and
-            std.mem.indexOf(u8, d.message, "Argument of type 'Recur<T>[]' is not assignable to parameter of type 'Recur<T>[]'.") != null;
-        try T.expect(!bogus_self_assign);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.circular_type_arguments));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_matching_index_signature));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '[string, ...Recur<T>[]]' is not assignable to type 'Recur<T>'.",
+    ));
+}
+
+test "checker: recursive mapped base constraints report TS2321 with bounded displays" {
+    const s = try newSetup(
+        \\export type FlattenKeys<O> = {
+        \\    [K in keyof O & (string | number)]: O[K] extends Record<any, any>
+        \\        ? K | `${K}.${FlattenKeys<O[K]>}`
+        \\        : K;
+        \\}[O extends readonly any[]
+        \\    ? keyof O & `${number}`
+        \\    : keyof O & (string | number)];
+        \\export type GetByString<
+        \\    Data,
+        \\    Path extends string | number = FlattenKeys<Data>,
+        \\> = Path;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 8), checkerCountCode(s, TsCodes.excessive_stack_depth_comparing_types));
+    var saw_recursive_record = false;
+    var saw_default_array = false;
+    var saw_truncated = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.excessive_stack_depth_comparing_types) continue;
+        if (std.mem.indexOf(u8, diagnostic.message, "O[K][O[K] extends readonly any[]") != null and
+            std.mem.endsWith(u8, diagnostic.message, "and 'Record<any, any>'."))
+        {
+            saw_recursive_record = true;
+        }
+        if (std.mem.indexOf(u8, diagnostic.message, "Data[Data extends readonly any[]") != null and
+            std.mem.endsWith(u8, diagnostic.message, "and 'readonly any[]'."))
+        {
+            saw_default_array = true;
+        }
+        if (std.mem.indexOf(u8, diagnostic.message, "[...' and '") != null) saw_truncated = true;
     }
+    try T.expect(saw_recursive_record);
+    try T.expect(saw_default_array);
+    try T.expect(saw_truncated);
 }
 
 test "checker: legitimately deep finite generic does not emit spurious TS2589" {
