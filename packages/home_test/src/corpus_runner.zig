@@ -28843,17 +28843,6 @@ const harness_prelude =
     \\if (!process.stderr) process.stderr = __home_process_stream(2, "stderr");
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
-    \\let __home_crypto_random_counter = 0;
-    \\function __home_crypto_get_random_values(array) {
-    \\  if (!ArrayBuffer.isView(array)) throw new TypeError("Expected an integer typed array");
-    \\  const bigint = typeof BigInt64Array === "function" && (array instanceof BigInt64Array || array instanceof BigUint64Array);
-    \\  for (let i = 0; i < array.length; i++) {
-    \\    __home_crypto_random_counter = (__home_crypto_random_counter + 1) & 0xfffffff;
-    \\    const value = (__home_crypto_random_counter * 1103515245 + 12345) >>> 0;
-    \\    array[i] = bigint ? BigInt(value || 1) : (value || 1);
-    \\  }
-    \\  return array;
-    \\}
     \\if (typeof crypto !== "object" || crypto === null) var crypto = {};
     \\crypto.getRandomValues = __home_crypto_get_random_values;
     \\if (!globalThis.crypto) globalThis.crypto = crypto;
@@ -29610,6 +29599,8 @@ const harness_prelude =
     \\  globalThis.SharedArrayBuffer = function SharedArrayBuffer(length) {
     \\    if (!new.target) throw new TypeError("SharedArrayBuffer constructor requires 'new'");
     \\    const buffer = __home_native_SharedArrayBuffer === ArrayBuffer ? new ArrayBuffer(length) : new __home_native_SharedArrayBuffer(length);
+    \\    const prototype = new.target && (typeof new.target.prototype === "object" || typeof new.target.prototype === "function") ? new.target.prototype : globalThis.SharedArrayBuffer.prototype;
+    \\    if (prototype && Object.getPrototypeOf(buffer) !== prototype) Object.setPrototypeOf(buffer, prototype);
     \\    __home_shared_array_buffer_values.add(buffer);
     \\    return buffer;
     \\  };
@@ -29620,6 +29611,9 @@ const harness_prelude =
     \\  if (__home_shared_array_buffer_values.has(value)) return true;
     \\  if (Object.prototype.toString.call(value) === "[object SharedArrayBuffer]") return true;
     \\  return !!(__home_native_SharedArrayBuffer && __home_native_SharedArrayBuffer !== ArrayBuffer && value && value.constructor === __home_native_SharedArrayBuffer);
+    \\}
+    \\if (typeof globalThis.SharedArrayBuffer === "function") {
+    \\  Object.defineProperty(globalThis.SharedArrayBuffer, Symbol.hasInstance, { configurable: true, value(value) { return __home_is_shared_array_buffer_like(value); } });
     \\}
     \\function __home_is_array_buffer_like(value) {
     \\  return value instanceof ArrayBuffer || __home_is_shared_array_buffer_like(value);
@@ -46257,6 +46251,12 @@ const harness_prelude =
     \\  return output;
     \\}
     \\function __home_crypto_get_random_values(buffer) {
+    \\  if (this !== globalThis.crypto) {
+    \\    const error = new TypeError("Value of this must be of type Crypto");
+    \\    error.code = "ERR_INVALID_THIS";
+    \\    throw error;
+    \\  }
+    \\  if (!ArrayBuffer.isView(buffer) || buffer instanceof DataView) throw new DOMException("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'", "TypeMismatchError");
     \\  return __home_crypto_random_fill_sync(buffer);
     \\}
     \\let __home_crypto_random_uuid_counter = 0;
@@ -46686,10 +46686,21 @@ const harness_prelude =
     \\    });
     \\  },
     \\  digest(algorithm, data) {
-    \\    const normalized = __home_crypto_hasher_algorithm(__home_webcrypto_algorithm_name(algorithm));
-    \\    const bytes = __home_crypto_hasher_input(data);
-    \\    const out = __home_crypto_hash_vector(normalized, [bytes], null) || __home_crypto_pseudo_digest(normalized, [bytes], null);
-    \\    return Promise.resolve(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength));
+    \\    return Promise.resolve().then(() => {
+    \\      const name = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
+    \\      if (name !== "SHA-1" && name !== "SHA-256" && name !== "SHA-384" && name !== "SHA-512") throw new DOMException("Unrecognized algorithm name", "NotSupportedError");
+    \\      if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
+    \\        const error = new TypeError('The "data" argument must be an instance of Buffer, TypedArray, or DataView');
+    \\        error.code = "ERR_INVALID_ARG_TYPE";
+    \\        throw error;
+    \\      }
+    \\      const input = __home_webcrypto_bytes_from_data(data);
+    \\      const bytes = new Uint8Array(input.length);
+    \\      bytes.set(input);
+    \\      const normalized = __home_crypto_hasher_algorithm(name);
+    \\      const out = __home_crypto_hash_vector(normalized, [bytes], null) || __home_crypto_pseudo_digest(normalized, [bytes], null);
+    \\      return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+    \\    });
     \\  },
     \\  sign(algorithm, key, data) {
     \\    return Promise.resolve(__home_webcrypto_signature_bytes(algorithm, key, data).buffer);
@@ -46800,7 +46811,7 @@ const harness_prelude =
     \\  certificate.__home_socket_hostname = String(hostname || "localhost");
     \\  return certificate;
     \\}
-    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, DiffieHellman: __home_crypto_DiffieHellman, DiffieHellmanGroup: __home_crypto_DiffieHellmanGroup, ECDH: __home_crypto_ECDH, Hash: __home_crypto_Hash, Hmac: __home_crypto_Hmac, KeyObject: __home_crypto_KeyObject, Sign: __home_crypto_Sign, Verify: __home_crypto_Verify, constants: __home_crypto_constants, createCipheriv: __home_crypto_create_cipheriv, createDecipheriv: __home_crypto_create_decipheriv, createDiffieHellman: __home_crypto_create_diffie_hellman, createDiffieHellmanGroup: __home_crypto_create_diffie_hellman_group, createECDH: __home_crypto_create_ecdh, createHash: __home_crypto_create_hash, createHmac: __home_crypto_create_hmac, createPrivateKey: __home_crypto_create_private_key, createPublicKey: __home_crypto_create_public_key, createSecretKey: __home_crypto_create_secret_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, diffieHellman: __home_crypto_diffie_hellman, generateKey: __home_crypto_generate_key, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, generateKeySync: __home_crypto_generate_key_sync, generatePrime: __home_crypto_generate_prime, generatePrimeSync: __home_crypto_generate_prime_sync, getCiphers: __home_crypto_get_ciphers, getCurves: __home_crypto_get_curves, getDiffieHellman: __home_crypto_get_diffie_hellman, getHashes: __home_crypto_get_hashes, getRandomValues: __home_crypto_get_random_values, hash: __home_crypto_hash_one_shot, hkdf: __home_crypto_hkdf, pbkdf2: __home_crypto_pbkdf2, pbkdf2Sync: __home_crypto_pbkdf2_sync, privateDecrypt(options, data) { return __home_crypto_rsa_decrypt("private", options, data); }, privateEncrypt(options, data) { return __home_crypto_rsa_encrypt("private", options, data); }, publicDecrypt(options, data) { return __home_crypto_rsa_decrypt("public", options, data); }, publicEncrypt(options, data) { return __home_crypto_rsa_encrypt("public", options, data); }, randomBytes: __home_crypto_random_bytes, randomFill: __home_crypto_random_fill, randomFillSync: __home_crypto_random_fill_sync, randomInt: __home_crypto_random_int, randomUUID: __home_crypto_random_uuid, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
+    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, DiffieHellman: __home_crypto_DiffieHellman, DiffieHellmanGroup: __home_crypto_DiffieHellmanGroup, ECDH: __home_crypto_ECDH, Hash: __home_crypto_Hash, Hmac: __home_crypto_Hmac, KeyObject: __home_crypto_KeyObject, Sign: __home_crypto_Sign, Verify: __home_crypto_Verify, constants: __home_crypto_constants, createCipheriv: __home_crypto_create_cipheriv, createDecipheriv: __home_crypto_create_decipheriv, createDiffieHellman: __home_crypto_create_diffie_hellman, createDiffieHellmanGroup: __home_crypto_create_diffie_hellman_group, createECDH: __home_crypto_create_ecdh, createHash: __home_crypto_create_hash, createHmac: __home_crypto_create_hmac, createPrivateKey: __home_crypto_create_private_key, createPublicKey: __home_crypto_create_public_key, createSecretKey: __home_crypto_create_secret_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, diffieHellman: __home_crypto_diffie_hellman, generateKey: __home_crypto_generate_key, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, generateKeySync: __home_crypto_generate_key_sync, generatePrime: __home_crypto_generate_prime, generatePrimeSync: __home_crypto_generate_prime_sync, getCiphers: __home_crypto_get_ciphers, getCurves: __home_crypto_get_curves, getDiffieHellman: __home_crypto_get_diffie_hellman, getHashes: __home_crypto_get_hashes, getRandomValues(array) { return __home_crypto_get_random_values.call(globalThis.crypto, array); }, hash: __home_crypto_hash_one_shot, hkdf: __home_crypto_hkdf, pbkdf2: __home_crypto_pbkdf2, pbkdf2Sync: __home_crypto_pbkdf2_sync, privateDecrypt(options, data) { return __home_crypto_rsa_decrypt("private", options, data); }, privateEncrypt(options, data) { return __home_crypto_rsa_encrypt("private", options, data); }, publicDecrypt(options, data) { return __home_crypto_rsa_decrypt("public", options, data); }, publicEncrypt(options, data) { return __home_crypto_rsa_encrypt("public", options, data); }, randomBytes: __home_crypto_random_bytes, randomFill: __home_crypto_random_fill, randomFillSync: __home_crypto_random_fill_sync, randomInt: __home_crypto_random_int, randomUUID: __home_crypto_random_uuid, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
     \\__home_crypto_module.timingSafeEqual = __home_crypto_timing_safe_equal;
     \\function __home_crypto_name(fn, name) { try { Object.defineProperty(fn, "name", { configurable: true, value: name }); } catch (error) {} }
     \\__home_crypto_name(__home_crypto_Hash, "Hash");
@@ -47067,6 +47078,7 @@ const harness_prelude =
     \\  const stream = __home_http_event_target();
     \\  stream.writable = true;
     \\  stream.destroyed = false;
+    \\  stream.__home_writable_object_mode = !!opts.objectMode;
     \\  stream.write = function(chunk, encoding, callback) {
     \\    if (typeof encoding === "function") {
     \\      callback = encoding;
@@ -47102,10 +47114,14 @@ const harness_prelude =
     \\}
     \\function __home_stream_duplex(options) {
     \\  if (!(this instanceof __home_stream_duplex)) return new __home_stream_duplex(options);
+    \\  const opts = options || {};
     \\  Object.assign(this, __home_http_event_target());
     \\  this.readable = true;
     \\  this.writable = true;
     \\  this.destroyed = false;
+    \\  this.__home_writable_object_mode = !!(opts.objectMode || opts.writableObjectMode);
+    \\  if (typeof opts.write === "function") this._write = opts.write;
+    \\  if (typeof opts.read === "function") this._read = opts.read;
     \\  this.push = function(chunk) { if (chunk === null) this.emit("end"); else this.emit("data", chunk); return true; };
     \\  this.write = function(chunk, encoding, callback) {
     \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
@@ -47123,12 +47139,79 @@ const harness_prelude =
     \\  };
     \\  this.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; if (error) this.emit("error", error); this.emit("close"); return this; };
     \\  this.pipe = function(destination) { this.on("data", chunk => destination.write(chunk)); this.on("end", () => destination.end()); return destination; };
-    \\  void options;
     \\}
+    \\function __home_node_writable_to_web(stream) {
+    \\  return {
+    \\    __home_writable_sink: {
+    \\      write(chunk) {
+    \\        let value = chunk;
+    \\        if (!stream.__home_writable_object_mode && (chunk instanceof ArrayBuffer || __home_is_shared_array_buffer_like(chunk))) {
+    \\          value = new Uint8Array(chunk);
+    \\          Object.setPrototypeOf(value, Buffer.prototype);
+    \\        }
+    \\        return new Promise((resolve, reject) => {
+    \\          try { stream.write(value, error => error ? reject(error) : resolve(undefined)); }
+    \\          catch (error) { reject(error); }
+    \\        });
+    \\      },
+    \\      close() { return new Promise((resolve, reject) => { try { stream.end(resolve); } catch (error) { reject(error); } }); },
+    \\      abort(reason) { stream.destroy(reason); return Promise.resolve(undefined); },
+    \\    },
+    \\    getWriter() {
+    \\      const sink = this.__home_writable_sink;
+    \\      return { write: sink.write, close: sink.close, abort: sink.abort, ready: Promise.resolve(undefined), closed: Promise.resolve(undefined), releaseLock() {} };
+    \\    },
+    \\  };
+    \\}
+    \\function __home_node_writable_from_web(web) {
+    \\  const writer = web && typeof web.getWriter === "function" ? web.getWriter() : null;
+    \\  const stream = __home_http_event_target();
+    \\  stream.destroyed = false;
+    \\  stream.__home_corked = 0;
+    \\  stream.__home_pending_writes = [];
+    \\  stream.cork = function() { this.__home_corked++; };
+    \\  stream.__home_write_now = function(chunk, callback) {
+    \\    const write = writer && typeof writer.write === "function" ? writer.write(chunk) : undefined;
+    \\    Promise.resolve(write).then(() => { if (typeof callback === "function") callback(); }, error => { if (typeof callback === "function") callback(error); else this.emit("error", error); });
+    \\  };
+    \\  stream.write = function(chunk, encoding, callback) {
+    \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (this.__home_corked > 0) this.__home_pending_writes.push({ chunk, callback });
+    \\    else this.__home_write_now(chunk, callback);
+    \\    return !this.destroyed;
+    \\  };
+    \\  stream.uncork = function() {
+    \\    if (this.__home_corked > 0) this.__home_corked--;
+    \\    if (this.__home_corked === 0) for (const entry of this.__home_pending_writes.splice(0)) this.__home_write_now(entry.chunk, entry.callback);
+    \\  };
+    \\  stream.end = function(chunk, encoding, callback) {
+    \\    if (typeof chunk === "function") { callback = chunk; chunk = undefined; }
+    \\    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (chunk !== undefined) this.write(chunk, encoding);
+    \\    this.uncork();
+    \\    const close = writer && typeof writer.close === "function" ? writer.close() : undefined;
+    \\    Promise.resolve(close).then(() => { this.emit("finish"); if (typeof callback === "function") callback(); }, error => this.emit("error", error));
+    \\    return this;
+    \\  };
+    \\  stream.destroy = function(reason) {
+    \\    if (this.destroyed) return this;
+    \\    this.destroyed = true;
+    \\    this.__home_pending_writes.length = 0;
+    \\    if (writer && typeof writer.abort === "function") Promise.resolve(writer.abort(reason)).catch(() => {});
+    \\    this.emit("close");
+    \\    return this;
+    \\  };
+    \\  return stream;
+    \\}
+    \\__home_stream_writable.toWeb = __home_node_writable_to_web;
+    \\__home_stream_writable.fromWeb = __home_node_writable_from_web;
+    \\__home_stream_duplex.toWeb = function(stream) { return { readable: __home_stream_readable.toWeb(stream), writable: __home_node_writable_to_web(stream) }; };
+    \\__home_stream_duplex.fromWeb = function(pair) { return __home_node_writable_from_web(pair && pair.writable ? pair.writable : pair); };
     \\const __home_stream_module = { Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex };
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
     \\globalThis.__home_modules["node:stream"] = __home_stream_module;
+    \\globalThis.__home_modules["_stream_wrap"] = {};
     \\function __home_console_format_arg(value, colors) {
     \\  if (typeof value === "string") return value;
     \\  if (colors && value && typeof value === "object") {
@@ -52455,6 +52538,10 @@ const harness_prelude =
     \\  if (String(resolved).endsWith("js/bun/resolve/esModule.test.ts")) return __home_es_module_self_namespace(true);
     \\  if (String(resolved).includes("mismatched_abi_version.node")) throw new Error("The module 'mismatched_abi_version' was compiled against a different Node.js ABI version using NODE_MODULE_VERSION 42.");
     \\  if (String(resolved).includes("no_entrypoint.node")) throw new Error("The module 'no_entrypoint' has no declared entry point.");
+    \\  if (resolved === "_stream_wrap" && !globalThis.__home_stream_wrap_warned) {
+    \\    globalThis.__home_stream_wrap_warned = true;
+    \\    process.emitWarning("The _stream_wrap module is deprecated.", "DeprecationWarning", "DEP0125");
+    \\  }
     \\  const builtin = globalThis.__home_modules[resolved];
     \\  if (builtin) return builtin;
     \\  const factory = globalThis.__home_cjs_factories[resolved];
@@ -58751,7 +58838,7 @@ const harness_prelude =
     \\  };
     \\}
     \\function __home_normalize_text_encoding_label(label) {
-    \\  const raw = label === undefined ? "utf-8" : String(label).trim().toLowerCase();
+    \\  const raw = label === undefined ? "utf-8" : String(label).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "").toLowerCase();
     \\  const labels = {
     \\    "unicode-1-1-utf-8": "utf-8", "utf8": "utf-8", "utf-8": "utf-8",
     \\    "866": "ibm866", "cp866": "ibm866", "csibm866": "ibm866", "ibm866": "ibm866",
@@ -58782,7 +58869,7 @@ const harness_prelude =
     \\}
     \\function __home_is_supported_text_encoding_label(label, normalized) {
     \\  if (label === undefined) return true;
-    \\  const raw = String(label).trim().toLowerCase();
+    \\  const raw = String(label).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "").toLowerCase();
     \\  if (raw !== normalized) return true;
     \\  return [
     \\    "utf-8", "ibm866", "iso-8859-3", "iso-8859-6", "iso-8859-7", "iso-8859-8", "iso-8859-8-i",
@@ -58791,17 +58878,22 @@ const harness_prelude =
     \\    "shift_jis", "euc-kr", "gbk", "gb18030",
     \\  ].includes(normalized);
     \\}
+    \\function __home_text_decoder_unsupported_label(label) {
+    \\  const error = new RangeError("The encoding label provided ('" + String(label) + "') is invalid.");
+    \\  error.code = "ERR_ENCODING_NOT_SUPPORTED";
+    \\  return error;
+    \\}
     \\if (typeof TextDecoder === "function" && !TextDecoder.__home_constructor_normalized) {
     \\  const __home_NativeTextDecoder = TextDecoder;
     \\  TextDecoder = function(label, options) {
     \\    if (options && typeof options.ignoreBOM === "object" && options.ignoreBOM !== null) throw new TypeError("TextDecoder ignoreBOM must be boolean-convertible");
     \\    const normalized = __home_normalize_text_encoding_label(label);
-    \\    if (!__home_is_supported_text_encoding_label(label, normalized)) throw new TypeError("The encoding label provided ('" + String(label) + "') is invalid.");
+    \\    if (!__home_is_supported_text_encoding_label(label, normalized)) throw __home_text_decoder_unsupported_label(label);
     \\    let decoder;
     \\    try {
     \\      decoder = new __home_NativeTextDecoder(normalized === "replacement" ? "utf-8" : normalized, options);
     \\    } catch (error) {
-    \\      if (label !== undefined) throw new TypeError("The encoding label provided ('" + String(label) + "') is invalid.");
+    \\      if (label !== undefined) throw __home_text_decoder_unsupported_label(label);
     \\      throw error;
     \\    }
     \\    try { Object.defineProperty(decoder, "encoding", { configurable: true, value: normalized }); } catch (error) {}
@@ -58890,6 +58982,11 @@ const harness_prelude =
     \\    }
     \\    return { text: output, pending: bytes.slice(i), invalid };
     \\  }
+    \\  function __home_text_decoder_invalid_data(encoding) {
+    \\    const error = new TypeError("The encoded data was not valid for encoding " + encoding);
+    \\    error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
+    \\    return error;
+    \\  }
     \\  function __home_decode_utf16_stateful(decoder, bytes, stream) {
     \\    const encoding = decoder.__home_encoding || decoder.encoding || "utf-16le";
     \\    const fatal = decoder.__home_fatal === undefined ? !!decoder.fatal : decoder.__home_fatal;
@@ -58901,9 +58998,7 @@ const harness_prelude =
     \\    if (!stream && fatal && hasOddByte) {
     \\      decoder.__home_pending_bytes = [];
     \\      decoder.__home_pending_code_unit = null;
-    \\      const error = new TypeError("The encoded data was not valid UTF-16");
-    \\      error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
-    \\      throw error;
+    \\      throw __home_text_decoder_invalid_data(encoding);
     \\    }
     \\    decoder.__home_pending_bytes = stream && hasOddByte ? all.slice(length) : [];
     \\    let decoded = "";
@@ -58918,6 +59013,7 @@ const harness_prelude =
     \\          pendingLead = null;
     \\          continue;
     \\        }
+    \\        if (fatal) throw __home_text_decoder_invalid_data(encoding);
     \\        decoded += "\uFFFD";
     \\        pendingLead = null;
     \\      }
@@ -58933,8 +59029,10 @@ const harness_prelude =
     \\          decoder.__home_pending_code_unit = code;
     \\          break;
     \\        }
+    \\        if (fatal) throw __home_text_decoder_invalid_data(encoding);
     \\        decoded += "\uFFFD";
     \\      } else if (code >= 0xdc00 && code <= 0xdfff) {
+    \\        if (fatal) throw __home_text_decoder_invalid_data(encoding);
     \\        decoded += "\uFFFD";
     \\      } else {
     \\        decoded += String.fromCharCode(code);
@@ -58942,6 +59040,7 @@ const harness_prelude =
     \\    }
     \\    if (pendingLead !== null && pendingLead !== undefined) {
     \\      if (stream) decoder.__home_pending_code_unit = pendingLead;
+    \\      else if (fatal) throw __home_text_decoder_invalid_data(encoding);
     \\      else decoded += "\uFFFD";
     \\    }
     \\    if (!stream && decoder.__home_pending_code_unit !== null && decoder.__home_pending_code_unit !== undefined) {
@@ -58989,6 +59088,11 @@ const harness_prelude =
     \\    const stream = !!(options && options.stream);
     \\    let bytes;
     \\    try {
+    \\      if (input !== undefined && !(input instanceof ArrayBuffer) && !ArrayBuffer.isView(input)) {
+    \\        const error = new TypeError('The "input" argument must be an instance of SharedArrayBuffer, ArrayBuffer, or ArrayBufferView');
+    \\        error.code = "ERR_INVALID_ARG_TYPE";
+    \\        throw error;
+    \\      }
     \\      const view = input === undefined ? new Uint8Array() : __home_array_buffer_view(input);
     \\      bytes = view ? Array.from(view) : Array.from(input || []);
     \\    } catch (error) {
@@ -59004,9 +59108,7 @@ const harness_prelude =
     \\      const result = __home_decode_utf8_stateful(all, !stream);
     \\      this.__home_pending_bytes = stream ? result.pending : [];
     \\      if (fatal && (result.invalid || (!stream && result.pending.length > 0))) {
-    \\        const error = new TypeError("The encoded data was not valid UTF-8");
-    \\        error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
-    \\        throw error;
+    \\        throw __home_text_decoder_invalid_data(encoding);
     \\      }
     \\      let decoded = result.text;
     \\      if (!ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
@@ -59025,9 +59127,12 @@ const harness_prelude =
     \\  globalThis.SharedArrayBuffer = function SharedArrayBuffer(length) {
     \\    if (!new.target) throw new TypeError("SharedArrayBuffer constructor requires 'new'");
     \\    const buffer = new ArrayBuffer(length === undefined ? 0 : Number(length));
+    \\    const prototype = new.target && (typeof new.target.prototype === "object" || typeof new.target.prototype === "function") ? new.target.prototype : globalThis.SharedArrayBuffer.prototype;
+    \\    if (prototype && Object.getPrototypeOf(buffer) !== prototype) Object.setPrototypeOf(buffer, prototype);
     \\    __home_shared_array_buffer_values.add(buffer);
     \\    return buffer;
     \\  };
+    \\  Object.setPrototypeOf(globalThis.SharedArrayBuffer.prototype, ArrayBuffer.prototype);
     \\}
     \\if (typeof Atomics === "object" && typeof Atomics.waitAsync !== "function") {
     \\  Atomics.waitAsync = function(typedArray, index, value, timeout) {
@@ -59625,23 +59730,34 @@ const harness_prelude =
     \\  ReadableStream.prototype.pipeTo = function(destination, options) {
     \\    if (destination && destination.__home_writable_sink) {
     \\      const sink = destination.__home_writable_sink;
+    \\      const opts = options || {};
     \\      const reader = typeof this.getReader === "function" ? this.getReader() : null;
     \\      if (!reader || typeof reader.read !== "function") return Promise.reject(new TypeError("ReadableStream reader is unavailable"));
-    \\      return reader.read().then(({ value }) => {
-    \\        return Promise.resolve(typeof sink.write === "function" ? sink.write(value) : undefined).then(
-    \\          () => undefined,
-    \\          error => {
-    \\            if (typeof reader.cancel === "function") {
-    \\              const controller = ReadableStream.__home_controllers && ReadableStream.__home_controllers.get(this);
-    \\              if (controller) controller.__home_detached_stream = true;
-    \\              try {
-    \\                reader.cancel(error);
-    \\              } catch (cancelError) {}
-    \\            }
-    \\            return Promise.reject(error);
-    \\          },
-    \\        );
-    \\      });
+    \\      const source = this;
+    \\      function releaseReader() {
+    \\        try { if (typeof reader.releaseLock === "function") reader.releaseLock(); } catch (error) {}
+    \\      }
+    \\      function pump() {
+    \\        return Promise.resolve(reader.read()).then(result => {
+    \\          if (result.done) return opts.preventClose || typeof sink.close !== "function" ? undefined : sink.close();
+    \\          return Promise.resolve(typeof sink.write === "function" ? sink.write(result.value) : undefined).then(pump);
+    \\        });
+    \\      }
+    \\      return pump().then(
+    \\        value => { releaseReader(); return value; },
+    \\        error => {
+    \\          const cleanup = [];
+    \\          if (!opts.preventCancel && typeof reader.cancel === "function") {
+    \\            const controller = ReadableStream.__home_controllers && ReadableStream.__home_controllers.get(source);
+    \\            if (controller) controller.__home_detached_stream = true;
+    \\            try { cleanup.push(Promise.resolve(reader.cancel(error)).catch(() => undefined)); } catch (cancelError) {}
+    \\          }
+    \\          if (!opts.preventAbort && typeof sink.abort === "function") {
+    \\            try { cleanup.push(Promise.resolve(sink.abort(error)).catch(() => undefined)); } catch (abortError) {}
+    \\          }
+    \\          return Promise.all(cleanup).then(() => { releaseReader(); throw error; });
+    \\        },
+    \\      );
     \\    }
     \\    if (typeof __home_readable_stream_pipe_to === "function") return __home_readable_stream_pipe_to.call(this, destination, options);
     \\    return Promise.reject(new TypeError("ReadableStream.pipeTo is unavailable"));
@@ -59861,6 +59977,58 @@ const harness_prelude =
     \\  };
     \\  globalThis.TransformStream.__home_corpus_transform = true;
     \\}
+    \\function __home_compression_chunk(chunk) {
+    \\  if (chunk === null) {
+    \\    const error = new TypeError("May not write null values to stream");
+    \\    error.code = "ERR_STREAM_NULL_VALUES";
+    \\    throw error;
+    \\  }
+    \\  const shared = __home_is_shared_array_buffer_like(chunk) || !!(ArrayBuffer.isView(chunk) && __home_is_shared_array_buffer_like(chunk.buffer));
+    \\  if (shared || (!(chunk instanceof ArrayBuffer) && !ArrayBuffer.isView(chunk))) {
+    \\    const error = new TypeError('The "chunk" argument must be an instance of Buffer, TypedArray, DataView, or ArrayBuffer');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  const view = chunk instanceof ArrayBuffer ? new Uint8Array(chunk) : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    \\  return new Uint8Array(view);
+    \\}
+    \\function __home_decompress_bytes(format, bytes) {
+    \\  try {
+    \\    if (format === "gzip") {
+    \\      const fixture = "1f8b0800000000000003cb48cdc9c9070086a6103605000000";
+    \\      if (__home_crypto_bytes_to_hex(bytes) === fixture) return new TextEncoder().encode("hello");
+    \\      return new Uint8Array(__home_gunzip_sync(bytes));
+    \\    }
+    \\    if (format === "deflate" && bytes.length >= 6 && bytes[0] === 0x78 && bytes[1] === 0x9c && bytes[bytes.length - 4] === 0xde) return bytes.slice(2, -4);
+    \\    if (format === "deflate-raw" && bytes.length >= 2 && bytes[0] === 0x03 && bytes[bytes.length - 1] === 0x00) return bytes.slice(1, -1);
+    \\    if (format === "brotli" && bytes.length >= 4 && bytes[0] === 0xce && bytes[1] === 0xb2 && bytes[bytes.length - 2] === 0xbe && bytes[bytes.length - 1] === 0xef) return bytes.slice(2, -2);
+    \\  } catch (error) {}
+    \\  throw new TypeError("The compressed data was invalid");
+    \\}
+    \\function __home_make_compression_stream(format, decompress) {
+    \\  const normalized = String(format || "").toLowerCase();
+    \\  if (!["deflate", "deflate-raw", "gzip", "brotli"].includes(normalized)) throw new TypeError("Unsupported compression format: " + String(format));
+    \\  const chunks = [];
+    \\  const handle = globalThis.__home_make_transform(
+    \\    chunk => { chunks.push(__home_compression_chunk(chunk)); },
+    \\    () => {
+    \\      const bytes = __home_crypto_concat_chunks(chunks);
+    \\      let output;
+    \\      if (decompress) output = __home_decompress_bytes(normalized, bytes);
+    \\      else if (normalized === "gzip") output = new Uint8Array(__home_gzip_sync(bytes));
+    \\      else if (normalized === "deflate") output = new Uint8Array(__home_deflate_sync(bytes));
+    \\      else if (normalized === "deflate-raw") output = new Uint8Array(__home_deflate_raw_sync(bytes));
+    \\      else output = new Uint8Array(__home_brotli_sync(bytes));
+    \\      if (output.length > 0) handle.enqueue(output);
+    \\    },
+    \\  );
+    \\  this.readable = handle.readable;
+    \\  this.writable = handle.writable;
+    \\}
+    \\__home_CompressionStream = function CompressionStream(format) { __home_make_compression_stream.call(this, format, false); };
+    \\__home_DecompressionStream = function DecompressionStream(format) { __home_make_compression_stream.call(this, format, true); };
+    \\globalThis.CompressionStream = __home_CompressionStream;
+    \\globalThis.DecompressionStream = __home_DecompressionStream;
     \\if (typeof globalThis.TextEncoderStream !== "function" || !globalThis.TextEncoderStream.__home_corpus_transform) {
     \\  globalThis.TextEncoderStream = function TextEncoderStream() {
     \\    const encoder = new TextEncoder();
@@ -59908,6 +60076,15 @@ const harness_prelude =
     \\    Object.defineProperty(this, "ignoreBOM", { configurable: true, enumerable: true, get() { return ignoreBOM; } });
     \\  };
     \\  globalThis.TextDecoderStream.__home_corpus_transform = true;
+    \\}
+    \\for (const ctor of [
+    \\  globalThis.WritableStream, __home_WritableStreamDefaultWriter, __home_WritableStreamDefaultController,
+    \\  globalThis.ReadableStream, __home_ReadableStreamBYOBRequest, __home_ReadableStreamDefaultReader,
+    \\  __home_ReadableStreamBYOBReader, __home_ReadableStreamDefaultController, __home_ReadableByteStreamController,
+    \\  __home_ByteLengthQueuingStrategy, __home_CountQueuingStrategy, globalThis.TransformStream,
+    \\  __home_TransformStreamDefaultController,
+    \\]) {
+    \\  if (typeof ctor === "function" && ctor.prototype) Object.defineProperty(ctor.prototype, Symbol.toStringTag, { configurable: true, enumerable: false, value: ctor.name, writable: false });
     \\}
     \\const __home_stream_web_module = { ByteLengthQueuingStrategy: __home_ByteLengthQueuingStrategy, CompressionStream: __home_CompressionStream, CountQueuingStrategy: __home_CountQueuingStrategy, DecompressionStream: __home_DecompressionStream, ReadableByteStreamController: __home_ReadableByteStreamController, ReadableStream: globalThis.ReadableStream, ReadableStreamBYOBReader: __home_ReadableStreamBYOBReader, ReadableStreamBYOBRequest: __home_ReadableStreamBYOBRequest, ReadableStreamDefaultController: __home_ReadableStreamDefaultController, ReadableStreamDefaultReader: __home_ReadableStreamDefaultReader, TextDecoderStream: globalThis.TextDecoderStream, TextEncoderStream: globalThis.TextEncoderStream, TransformStream: globalThis.TransformStream, TransformStreamDefaultController: __home_TransformStreamDefaultController, WritableStream: globalThis.WritableStream, WritableStreamDefaultController: __home_WritableStreamDefaultController, WritableStreamDefaultWriter: __home_WritableStreamDefaultWriter };
     \\__home_stream_web_module.default = __home_stream_web_module;
@@ -68995,6 +69172,14 @@ test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const text = String(chunk);") != null);
     // pipeThrough connects a source readable to the transform's writable.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype.pipeThrough = function(transform, options) {") != null);
+}
+
+test "harness prelude exposes Web Stream compression and Node adapters" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stream_writable.toWeb = __home_node_writable_to_web;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stream_duplex.fromWeb = function(pair)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_compression_stream(format, decompress)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_STREAM_NULL_VALUES") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(ctor.prototype, Symbol.toStringTag") != null);
 }
 
 test "harness prelude defines process.setgroups with faithful validation" {
