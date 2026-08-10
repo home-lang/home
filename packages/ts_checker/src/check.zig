@@ -79769,6 +79769,10 @@ pub const Checker = struct {
                     matched = true;
                     break;
                 }
+                if (self.namedObjectIsTargetUnionMember(source_member, target_t)) {
+                    matched = true;
+                    break;
+                }
                 if (try self.sameGenericInstantiationAssignableByVariance(source_member, target_member)) |ok| {
                     if (ok) {
                         matched = true;
@@ -96734,6 +96738,7 @@ pub const Checker = struct {
                 const PropAccessorBits = packed struct {
                     has_data: bool = false,
                     has_accessor: bool = false,
+                    reported_collision: bool = false,
                     /// Data property declared with plain `name: value`
                     /// (or shorthand) syntax — method-syntax members
                     /// don't count. Two of these on one effective name
@@ -97107,8 +97112,9 @@ pub const Checker = struct {
                                 gop1119.value_ptr.has_data
                             else
                                 gop1119.value_ptr.has_accessor;
-                            if (collides and !member_is_accessor) {
+                            if (collides and !gop1119.value_ptr.reported_collision) {
                                 try self.report(op.key, TsCodes.object_literal_property_and_accessor, "An object literal cannot have property and accessor with the same name.");
+                                gop1119.value_ptr.reported_collision = true;
                             }
                             if (member_is_accessor) {
                                 gop1119.value_ptr.has_accessor = true;
@@ -143610,7 +143616,12 @@ pub const Checker = struct {
                 self.interner.pool.flagsOf(param_t).is_type_parameter)
             blk: {
                 const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
-                break :blk if (payload.default != types.Primitive.none) payload.default else types.Primitive.unknown;
+                break :blk if (payload.default != types.Primitive.none)
+                    payload.default
+                else if (payload.constraint != types.Primitive.none and payload.constraint != param_t)
+                    payload.constraint
+                else
+                    types.Primitive.unknown;
             } else types.Primitive.unknown;
             fallbacks[i] = fallback;
             try subs.put(self.gpa, param_t, fallback);
@@ -144636,7 +144647,16 @@ pub const Checker = struct {
             }
             return false;
         }
-        if (!target_flags.is_signature) return false;
+        if (!target_flags.is_signature) {
+            var target_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer target_sigs.deinit(self.gpa);
+            try self.collectCallSignatures(target_t, &target_sigs);
+            if (target_sigs.items.len == 0) return false;
+            for (target_sigs.items) |target_sig| {
+                if (!try self.functionExpressionAssignableToSignatureTarget(arg_node, arg_t, target_sig)) return false;
+            }
+            return true;
+        }
         const source_t = if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_signature)
             arg_t
         else
@@ -144652,12 +144672,17 @@ pub const Checker = struct {
         const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.any;
         const target_ret_is_literal = target_ret < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_ret).is_literal;
+        const f = hir_mod.fnDeclOf(self.hir, arg_node);
+        const has_conditional_body = f.body != hir_mod.none_node_id and
+            self.hir.kindOf(f.body) == .conditional;
         const needs_contextual_literal_relation = target_ret_is_literal and
-            self.functionExpressionHasContextSensitiveParameters(arg_node);
+            (self.functionExpressionHasContextSensitiveParameters(arg_node) or has_conditional_body);
         if (needs_contextual_literal_relation) {
-            relation_source_t =
+            relation_source_t = if (has_conditional_body)
+                try self.functionExpressionInferenceSignature(arg_node, relation_source_t, true)
+            else
                 (try self.contextualFunctionExpressionDiagnosticSignature(arg_node, relation_source_t, target_t)) orelse
-                relation_source_t;
+                    relation_source_t;
         }
         if (needs_contextual_literal_relation) {
             const relation_ret = self.interner.signatureReturn(relation_source_t) orelse types.Primitive.void_t;
@@ -147595,6 +147620,8 @@ pub const Checker = struct {
         source_t: TypeId,
         target_t: TypeId,
     ) CheckError!bool {
+        const fn_kind = self.hir.kindOf(fn_node);
+        if (fn_kind != .fn_decl and fn_kind != .fn_expr and fn_kind != .arrow_fn) return false;
         if (hir_mod.fnTypeParams(self.hir, fn_node).len == 0) return false;
         const source_sig = self.firstSignatureType(source_t) orelse return false;
         const target_sig = self.firstSignatureType(target_t) orelse return false;
@@ -197891,8 +197918,8 @@ test "checker: generic object spread return preserves inferred members" {
 }
 
 test "checker: computed property name with identifier key parses and types" {
-    // v0: computed key `[k]` is parsed; the resulting object type has
-    // a `[k: string]: T` index signature with T being the value's type.
+    // A const string computed key is late-bound to its literal property name;
+    // it must not make every string key valid on the inferred object.
     const s = try newSetup(
         \\const k = "foo";
         \\const o = { [k]: 1 };
@@ -197907,8 +197934,9 @@ test "checker: computed property name with identifier key parses and types" {
     try T.expectEqual(hir_mod.NodeKind.object_literal, s.hir.kindOf(v.init));
     const obj_t = s.hir.typeOf(v.init);
     try T.expect(s.ti.pool.flagsOf(obj_t).is_object_type);
-    const idx_t = s.ti.objectStringIndex(obj_t);
-    try T.expectEqual(types.Primitive.number_t, idx_t);
+    try T.expectEqual(types.Primitive.none, s.ti.objectStringIndex(obj_t));
+    const foo_name = try s.sint.intern("foo");
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(obj_t, foo_name).?);
 }
 
 test "checker: generic computed object key rejects unconstrained type parameter" {
