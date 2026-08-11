@@ -25803,17 +25803,7 @@ pub const Checker = struct {
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
                 const sig = self.firstSignatureType(callee_t) orelse return null;
-                const params = self.interner.signatureParams(sig);
-                if (self.rest_signatures.contains(sig) and params.len > 0) {
-                    const fixed_count = params.len - 1;
-                    if (idx >= fixed_count) {
-                        if (self.restTupleAnnotationForSignature(sig)) |tuple_node| {
-                            return self.tupleAnnotationElementTypeAt(tuple_node, idx - fixed_count, args.len - fixed_count) catch null;
-                        }
-                    }
-                }
-                if (idx >= params.len) return null;
-                target_t = params[idx];
+                target_t = (self.contextualCallArgumentType(sig, c.callee, args, idx) catch null) orelse return null;
             },
             else => return null,
         }
@@ -25859,17 +25849,7 @@ pub const Checker = struct {
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
                 const sig = self.firstSignatureType(callee_t) orelse return null;
-                const params = self.interner.signatureParams(sig);
-                if (self.rest_signatures.contains(sig) and params.len > 0) {
-                    const fixed_count = params.len - 1;
-                    if (idx >= fixed_count) {
-                        if (self.restTupleAnnotationForSignature(sig)) |tuple_node| {
-                            return self.tupleAnnotationElementTypeAt(tuple_node, idx - fixed_count, args.len - fixed_count) catch null;
-                        }
-                    }
-                }
-                if (idx >= params.len) return null;
-                return params[idx];
+                return self.contextualCallArgumentType(sig, c.callee, args, idx) catch null;
             },
             .object_property => {
                 const property = hir_mod.objectPropertyOf(self.hir, parent);
@@ -25883,6 +25863,157 @@ pub const Checker = struct {
             },
             else => return null,
         }
+    }
+
+    fn contextualCallArgumentType(
+        self: *Checker,
+        sig: TypeId,
+        callee_node: NodeId,
+        args: []const NodeId,
+        arg_index: usize,
+    ) CheckError!?TypeId {
+        const params = self.interner.signatureParams(sig);
+        if (!self.rest_signatures.contains(sig)) {
+            return if (arg_index < params.len) params[arg_index] else null;
+        }
+        if (params.len == 0) return null;
+        const fixed_count = params.len - 1;
+        if (arg_index < fixed_count) return params[arg_index];
+
+        const rest_index = arg_index - fixed_count;
+        const rest_count = args.len -| fixed_count;
+        const rest_tuple_t = params[params.len - 1];
+        const tuple_annotation = self.restTupleAnnotationForContextualCall(sig, callee_node);
+        var target_t = (try self.contextualSymbolicTupleElementTypeAt(rest_tuple_t, rest_index, rest_count)) orelse
+            if (tuple_annotation) |tuple_node|
+                try self.tupleAnnotationElementTypeAt(tuple_node, rest_index, rest_count)
+            else
+                types.Primitive.none;
+        if (target_t != types.Primitive.none) {
+            const tuple_node = tuple_annotation orelse hir_mod.none_node_id;
+            target_t = try self.instantiateContextualTupleSuffixFromCallArgs(
+                tuple_node,
+                rest_tuple_t,
+                target_t,
+                args,
+                fixed_count,
+                rest_index,
+                rest_count,
+            );
+            return target_t;
+        }
+        return self.contextualRestTupleElementType(rest_tuple_t, rest_index);
+    }
+
+    fn contextualSymbolicTupleElementTypeAt(
+        self: *Checker,
+        tuple_t: TypeId,
+        element_index: usize,
+        total_count: usize,
+    ) CheckError!?TypeId {
+        const layout = self.symbolic_tuple_layouts.get(tuple_t) orelse return null;
+        var variadic_index: ?usize = null;
+        for (layout, 0..) |segment, i| {
+            if (!segment.is_variadic) continue;
+            if (variadic_index != null) return null;
+            variadic_index = i;
+        }
+        const ri = variadic_index orelse {
+            return if (element_index < layout.len) layout[element_index].type else null;
+        };
+        if (element_index < ri) return layout[element_index].type;
+        const suffix_len = layout.len - ri - 1;
+        if (element_index >= total_count -| suffix_len) {
+            const suffix_i = element_index - (total_count - suffix_len);
+            if (suffix_i < suffix_len) return layout[ri + 1 + suffix_i].type;
+        }
+        return try self.contextualVariadicTupleElementType(layout[ri].type, element_index - ri, 0);
+    }
+
+    fn restTupleAnnotationForContextualCall(self: *Checker, sig: TypeId, callee_node: NodeId) ?NodeId {
+        if (self.restTupleAnnotationForSignature(sig)) |tuple_node| return tuple_node;
+        if (callee_node == hir_mod.none_node_id or self.hir.kindOf(callee_node) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, callee_node).name;
+        const decl = self.findFunctionDeclForNameNearNode(callee_node, name) orelse return null;
+        const params = hir_mod.fnParams(self.hir, decl);
+        if (params.len == 0) return null;
+        const param_node = params[params.len - 1];
+        if (self.hir.kindOf(param_node) != .parameter) return null;
+        const param = hir_mod.parameterOf(self.hir, param_node);
+        if (!param.flags.is_rest or param.type_annotation == hir_mod.none_node_id) return null;
+        return self.tupleAnnotationSourceNode(param.type_annotation);
+    }
+
+    fn instantiateContextualTupleSuffixFromCallArgs(
+        self: *Checker,
+        tuple_node: NodeId,
+        tuple_t: TypeId,
+        target_t: TypeId,
+        args: []const NodeId,
+        fixed_count: usize,
+        rest_index: usize,
+        rest_count: usize,
+    ) CheckError!TypeId {
+        if (!self.containsFreeTypeParameter(target_t)) return target_t;
+        var variadic_index: ?usize = null;
+        var suffix_len: usize = 0;
+        var operand_t = types.Primitive.none;
+        if (self.symbolic_tuple_layouts.get(tuple_t)) |layout| {
+            for (layout, 0..) |segment, i| {
+                if (!segment.is_variadic) continue;
+                if (variadic_index != null) return target_t;
+                variadic_index = i;
+                operand_t = segment.type;
+            }
+            const ri = variadic_index orelse return target_t;
+            suffix_len = layout.len - ri - 1;
+        } else {
+            if (tuple_node == hir_mod.none_node_id or self.hir.kindOf(tuple_node) != .tuple_type) return target_t;
+            const elems = hir_mod.tupleTypeElements(self.hir, tuple_node);
+            for (elems, 0..) |elem, i| {
+                if (self.hir.kindOf(elem) == .rest_type) {
+                    variadic_index = i;
+                    break;
+                }
+            }
+            const ri = variadic_index orelse return target_t;
+            suffix_len = elems.len - ri - 1;
+            const operand_node = hir_mod.restTypeOf(self.hir, elems[ri]).operand;
+            operand_t = try self.lowererLowerWithTypeParams(operand_node);
+        }
+        const ri = variadic_index orelse return target_t;
+        if (rest_index < rest_count -| suffix_len) return target_t;
+        if (operand_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(operand_t).is_type_parameter)
+        {
+            return target_t;
+        }
+
+        const middle_start = fixed_count + ri;
+        const middle_end = args.len -| suffix_len;
+        if (middle_start > middle_end) return target_t;
+        var inferred_tuple_t: TypeId = types.Primitive.none;
+        if (middle_end == middle_start + 1 and self.hir.kindOf(args[middle_start]) == .spread) {
+            const spread = hir_mod.spreadOf(self.hir, args[middle_start]);
+            inferred_tuple_t = self.hir.typeOf(spread.expression);
+            if (inferred_tuple_t == types.Primitive.none) inferred_tuple_t = try self.checkExpression(spread.expression);
+        } else {
+            var element_types: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer element_types.deinit(self.gpa);
+            for (args[middle_start..middle_end]) |arg| {
+                if (self.hir.kindOf(arg) == .spread) return target_t;
+                var arg_t = self.hir.typeOf(arg);
+                if (arg_t == types.Primitive.none) arg_t = try self.checkExpression(arg);
+                try element_types.append(self.gpa, self.widenForInference(arg_t));
+            }
+            inferred_tuple_t = try self.internTupleFromTypes(element_types.items, false);
+        }
+
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferFromPair(operand_t, inferred_tuple_t, &subs);
+        if (!subs.contains(operand_t)) return target_t;
+        return self.substituteType(target_t, &subs) catch target_t;
     }
 
     fn contextualFunctionSignatureWithInferredReturn(
@@ -25991,7 +26122,42 @@ pub const Checker = struct {
                 const tuple_node = self.tupleAnnotationSourceNode(v.type_annotation) orelse return null;
                 return try self.tupleAnnotationElementTypeAt(tuple_node, idx, elements.len);
             },
-            else => return null,
+            .call_expr, .new_expr => {
+                const call = hir_mod.callOf(self.hir, parent);
+                const args = hir_mod.callArgs(self.hir, parent);
+                var arg_index: ?usize = null;
+                for (args, 0..) |arg, i| {
+                    if (arg == array_node) {
+                        arg_index = i;
+                        break;
+                    }
+                }
+                const ai = arg_index orelse return null;
+                var callee_t = self.hir.typeOf(call.callee);
+                if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(call.callee);
+                const sig = self.firstSignatureType(callee_t) orelse return null;
+                if (!self.rest_signatures.contains(sig)) {
+                    const param_nodes = self.signature_param_nodes.get(sig) orelse return null;
+                    if (ai < param_nodes.len and self.hir.kindOf(param_nodes[ai]) == .parameter) {
+                        const param = hir_mod.parameterOf(self.hir, param_nodes[ai]);
+                        if (param.type_annotation != hir_mod.none_node_id) {
+                            if (self.tupleAnnotationSourceNode(param.type_annotation)) |tuple_node| {
+                                return try self.tupleAnnotationElementTypeAt(tuple_node, idx, elements.len);
+                            }
+                        }
+                    }
+                }
+                const target_t = (try self.contextualCallArgumentType(sig, call.callee, args, ai)) orelse return null;
+                const element_t = self.tupleElementType(target_t, idx);
+                if (element_t != types.Primitive.none) return element_t;
+                return try self.contextualArrayElementType(target_t);
+            },
+            else => {
+                const target_t = self.contextualTargetTypeForExpression(array_node) orelse return null;
+                const element_t = self.tupleElementType(target_t, idx);
+                if (element_t != types.Primitive.none) return element_t;
+                return try self.contextualArrayElementType(target_t);
+            },
         }
     }
 
@@ -74243,10 +74409,51 @@ pub const Checker = struct {
                 const suffix_i = element_index - (total_count - suffix_len);
                 if (suffix_i < suffix_len) return try self.lowererLowerWithTypeParams(elems[ri + 1 + suffix_i]);
             }
-            return try self.lowererLowerWithTypeParams(self.tupleRestElementTypeNode(elems[ri]));
+            const rest_node = elems[ri];
+            const rest_operand = hir_mod.restTypeOf(self.hir, rest_node).operand;
+            const rest_t = try self.lowererLowerWithTypeParams(rest_operand);
+            if (try self.contextualVariadicTupleElementType(rest_t, element_index - ri, 0)) |element_t| {
+                return element_t;
+            }
+            return try self.lowererLowerWithTypeParams(self.tupleRestElementTypeNode(rest_node));
         }
         if (element_index >= elems.len) return types.Primitive.none;
         return try self.lowererLowerWithTypeParams(elems[element_index]);
+    }
+
+    fn contextualVariadicTupleElementType(
+        self: *Checker,
+        tuple_t: TypeId,
+        index: usize,
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (depth >= 16 or tuple_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(tuple_t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(tuple_t) orelse return null;
+            if (constraint == tuple_t) return null;
+            return try self.contextualVariadicTupleElementType(constraint, index, depth + 1);
+        }
+        if (flags.is_union) {
+            var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer candidates.deinit(self.gpa);
+            for (self.interner.unionMembers(tuple_t)) |member| {
+                const candidate = (try self.contextualVariadicTupleElementType(member, index, depth + 1)) orelse return null;
+                var seen = false;
+                for (candidates.items) |existing| {
+                    if (existing == candidate) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) try candidates.append(self.gpa, candidate);
+            }
+            if (candidates.items.len == 0) return null;
+            if (candidates.items.len == 1) return candidates.items[0];
+            return self.interner.internUnion(candidates.items) catch return error.OutOfMemory;
+        }
+        const element_t = self.tupleElementType(tuple_t, index);
+        return if (element_t == types.Primitive.none) null else element_t;
     }
 
     fn tupleRestElementTypeNode(self: *Checker, rest_node: NodeId) NodeId {
@@ -122508,6 +122715,9 @@ pub const Checker = struct {
         // *non*-bound object name (resolved via `type_names`), so this
         // guard leaves the real-violation case reporting TS2344.
         if (self.indexedAccessOverBoundTypeParameter(arg_node)) return;
+        if (try self.symbolicTupleLayoutsAssignable(arg_t, constraint)) |tuple_ok| {
+            if (tuple_ok) return;
+        }
         const signature_constraint = self.typeArgSignatureConstraint(constraint);
         const allow_signature_display = signature_constraint != null;
         const arg_text = (try self.typeArgConstraintTypeNameAtNode(arg_node, arg_t, allow_signature_display)) orelse return;
@@ -123122,17 +123332,98 @@ pub const Checker = struct {
     fn symbolicTupleLayoutsAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!?bool {
         const source_layout = self.symbolic_tuple_layouts.get(source) orelse return null;
         const target_layout = self.symbolic_tuple_layouts.get(target) orelse return null;
+        var source_variadic: ?usize = null;
+        var target_variadic: ?usize = null;
+        for (source_layout, 0..) |segment, i| {
+            if (!segment.is_variadic) continue;
+            if (source_variadic != null) {
+                const positional = try self.symbolicTupleLayoutsAssignablePositionally(source_layout, target_layout);
+                return positional;
+            }
+            source_variadic = i;
+        }
+        for (target_layout, 0..) |segment, i| {
+            if (!segment.is_variadic) continue;
+            if (target_variadic != null) {
+                const positional = try self.symbolicTupleLayoutsAssignablePositionally(source_layout, target_layout);
+                return positional;
+            }
+            target_variadic = i;
+        }
+        const source_rest_i = source_variadic orelse {
+            const positional = try self.symbolicTupleLayoutsAssignablePositionally(source_layout, target_layout);
+            return positional;
+        };
+        const target_rest_i = target_variadic orelse {
+            const positional = try self.symbolicTupleLayoutsAssignablePositionally(source_layout, target_layout);
+            return positional;
+        };
+
+        const shared_prefix = @min(source_rest_i, target_rest_i);
+        for (0..shared_prefix) |i| {
+            if (!try self.checkerAssignableTo(source_layout[i].type, target_layout[i].type)) return false;
+        }
+        if (target_rest_i > source_rest_i) return false;
+        const target_rest_is_param = target_layout[target_rest_i].type < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target_layout[target_rest_i].type).is_type_parameter;
+        const target_rest_element = (try self.contextualVariadicTupleElementType(target_layout[target_rest_i].type, 0, 0)) orelse return false;
+        if (target_rest_is_param and source_rest_i > target_rest_i) return false;
+        for (target_rest_i..source_rest_i) |i| {
+            if (!try self.checkerAssignableTo(source_layout[i].type, target_rest_element)) return false;
+        }
+
+        const source_suffix = source_layout.len - source_rest_i - 1;
+        const target_suffix = target_layout.len - target_rest_i - 1;
+        if (target_suffix > source_suffix) return false;
+        if (target_rest_is_param and source_suffix > target_suffix) return false;
+        const shared_suffix = @min(source_suffix, target_suffix);
+        for (0..shared_suffix) |offset| {
+            const source_i = source_layout.len - 1 - offset;
+            const target_i = target_layout.len - 1 - offset;
+            if (!try self.checkerAssignableTo(source_layout[source_i].type, target_layout[target_i].type)) return false;
+        }
+        const source_extra_suffix = source_suffix - shared_suffix;
+        for (0..source_extra_suffix) |offset| {
+            const source_i = source_rest_i + 1 + offset;
+            if (!try self.checkerAssignableTo(source_layout[source_i].type, target_rest_element)) return false;
+        }
+        return try self.symbolicVariadicSegmentAssignable(
+            source_layout[source_rest_i].type,
+            target_layout[target_rest_i].type,
+        );
+    }
+
+    fn symbolicTupleLayoutsAssignablePositionally(
+        self: *Checker,
+        source_layout: []const SymbolicTupleSegment,
+        target_layout: []const SymbolicTupleSegment,
+    ) CheckError!bool {
         if (source_layout.len != target_layout.len) return false;
         for (source_layout, target_layout) |source_segment, target_segment| {
             if (source_segment.is_variadic != target_segment.is_variadic) return false;
             if (source_segment.type == target_segment.type) continue;
             if (source_segment.is_variadic) {
-                if (!self.typeParameterConstraintReaches(source_segment.type, target_segment.type)) return false;
+                if (!try self.symbolicVariadicSegmentAssignable(source_segment.type, target_segment.type)) return false;
             } else if (!try self.checkerAssignableTo(source_segment.type, target_segment.type)) {
                 return false;
             }
         }
         return true;
+    }
+
+    fn symbolicVariadicSegmentAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (source == target) return true;
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        const source_is_param = self.interner.pool.flagsOf(source).is_type_parameter;
+        const target_is_param = self.interner.pool.flagsOf(target).is_type_parameter;
+        if (target_is_param) {
+            return source_is_param and self.typeParameterConstraintReaches(source, target);
+        }
+        const comparable_source = if (source_is_param)
+            self.typeParameterConstraint(source) orelse return false
+        else
+            source;
+        return try self.checkerAssignableTo(comparable_source, target);
     }
 
     fn variadicTupleRestTypeParameter(self: *Checker, tuple_t: TypeId) CheckError!?TypeId {
@@ -200129,6 +200420,26 @@ test "checker: tuple-end rest contextually types callback prefix arguments" {
     try T.expectEqual(@as(usize, 2), property_count);
 }
 
+test "checker: variadic tuple contexts reach nested and inferred callbacks" {
+    const s = try newSetup(
+        \\declare function nested(a: [(x: number) => number, ...((x: string) => number)[]]): void;
+        \\nested([x => x * 2, x => x.length, x => x.charCodeAt(0)]);
+        \\declare function call<T extends unknown[], R>(...args: [...T, (...args: T) => R]): [T, R];
+        \\call('hello', 32, (a, b) => 42);
+        \\function pipe<T extends readonly unknown[]>(...args: [...T, (...values: T) => void]) {}
+        \\pipe("foo", 123, true, (a, b, c) => {});
+        \\type Selector<State> = (state: State) => unknown;
+        \\type SelectorTuple<State> = Selector<State>[];
+        \\type State = { foo: string; bar: number };
+        \\declare function createSelector<S extends SelectorTuple<State>>(...selectors: [...S, (x: any) => any]): void;
+        \\createSelector(x => x.foo, x => x.bar, () => 42);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
 test "checker: variadic rest tuple suffix callback accepts captured values" {
     const s = try newSetup(
         \\function pipe<T extends readonly unknown[]>(...args: [...T, (...values: T) => void]) {}
@@ -200302,6 +200613,25 @@ test "checker: bare type parameters obey mutable variadic tuple assignment rules
     }
     try T.expectEqual(@as(usize, 1), same_mismatches);
     try T.expectEqual(@as(usize, 2), narrower_mismatches);
+}
+
+test "checker: variadic tuple relations consume compatible fixed segments" {
+    const s = try newSetup(
+        \\declare function assign<T, S extends T>(): void;
+        \\assign<[number, ...number[]], [number, number, ...number[]]>();
+        \\function relate<T extends string[], U extends T>(x: [string, ...unknown[]], y: [string, ...T], z: [string, ...U]) {
+        \\  x = y;
+        \\  x = z;
+        \\  y = x;
+        \\  y = z;
+        \\  z = x;
+        \\  z = y;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: too-few args to an inferred fixed-tuple rest only reports arity (no TS2345)" {
