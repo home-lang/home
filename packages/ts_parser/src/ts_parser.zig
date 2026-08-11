@@ -15191,12 +15191,49 @@ pub const Parser = struct {
     }
 
     fn parenContentsLookLikeTypedOrRestParams(self: *Parser, open_paren_idx: u32, after_paren_idx: u32) bool {
+        var paren_depth: u32 = 0;
+        var bracket_depth: u32 = 0;
+        var brace_depth: u32 = 0;
+        var previous_top_level: ?ts_lexer.TokenKind = null;
+        var optional_marker_needs_colon = false;
         var i = open_paren_idx + 1;
         while (i < after_paren_idx and i < self.tokens.len) : (i += 1) {
-            switch (self.tokens[i].kind) {
-                .colon, .dot_dot_dot => return true,
+            const kind = self.tokens[i].kind;
+            const at_top = paren_depth == 0 and bracket_depth == 0 and brace_depth == 0;
+            if (at_top) {
+                if (optional_marker_needs_colon) {
+                    if (kind != .colon) return false;
+                    return true;
+                }
+                if (kind == .question) {
+                    const previous = previous_top_level orelse return false;
+                    if (previous != .identifier and previous != .kw_this and
+                        previous != .close_bracket and previous != .close_brace)
+                    {
+                        return false;
+                    }
+                    optional_marker_needs_colon = true;
+                    previous_top_level = kind;
+                    continue;
+                }
+                if (kind == .colon or kind == .dot_dot_dot) return true;
+            }
+            switch (kind) {
+                .open_paren => paren_depth += 1,
+                .close_paren => if (paren_depth > 0) {
+                    paren_depth -= 1;
+                },
+                .open_bracket => bracket_depth += 1,
+                .close_bracket => if (bracket_depth > 0) {
+                    bracket_depth -= 1;
+                },
+                .open_brace => brace_depth += 1,
+                .close_brace => if (brace_depth > 0) {
+                    brace_depth -= 1;
+                },
                 else => {},
             }
+            if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) previous_top_level = kind;
         }
         return false;
     }
@@ -22368,6 +22405,18 @@ test "parser: ternary then-branch doesn't gobble outer ':' into typed arrow" {
     try T.expectEqual(hir_mod.NodeKind.conditional, s.hir.kindOf(stmts[0]));
     // No parser diagnostics should be emitted: TS only flags the
     // unresolved `x` at the checker layer.
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: switch case parenthesized conditional is not missing-arrow recovery" {
+    var s = try newTestSetup(
+        \\switch (x) {
+        \\  case (randBool() ? ("bar") : "baz" ? "bar" : "baz"):
+        \\    break;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
