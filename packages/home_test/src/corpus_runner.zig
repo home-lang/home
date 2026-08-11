@@ -59584,9 +59584,114 @@ const harness_prelude =
     \\  };
     \\}
     \\if (typeof WritableStream !== "function") {
-    \\  var WritableStream = function(underlyingSink) {
-    \\    this.__home_writable_sink = underlyingSink || {};
+    \\  function __home_writable_type_error(message) { return new TypeError(message); }
+    \\  function __home_writable_error(state, error) {
+    \\    if (state.errored || state.closed) return;
+    \\    state.errored = true;
+    \\    state.storedError = error;
+    \\    if (state.closedReject) state.closedReject(error);
+    \\  }
+    \\  function __home_writable_operation(state, callback) {
+    \\    const operation = state.queue.then(() => {
+    \\      if (state.errored) throw state.storedError;
+    \\      return callback();
+    \\    });
+    \\    state.queue = operation.then(undefined, error => { __home_writable_error(state, error); });
+    \\    return operation;
+    \\  }
+    \\  function WritableStreamDefaultController(state) { this.__home_state = state; }
+    \\  WritableStreamDefaultController.prototype.error = function(error) { __home_writable_error(this.__home_state, error); };
+    \\  Object.defineProperty(WritableStreamDefaultController.prototype, "signal", { configurable: true, enumerable: true, get() { return undefined; } });
+    \\  function WritableStreamDefaultWriter(stream) {
+    \\    if (!(stream instanceof WritableStream)) throw __home_writable_type_error("WritableStreamDefaultWriter requires a WritableStream");
+    \\    const state = stream.__home_writable_state;
+    \\    if (state.writer) throw __home_writable_type_error("WritableStream is locked to a writer");
+    \\    this.__home_stream = stream;
+    \\    this.__home_state = state;
+    \\    state.writer = this;
+    \\  }
+    \\  WritableStreamDefaultWriter.prototype.write = function(chunk) {
+    \\    const state = this.__home_state;
+    \\    if (!state) return Promise.reject(__home_writable_type_error("Writer has been released"));
+    \\    if (state.errored) return Promise.reject(state.storedError);
+    \\    if (state.closeRequested || state.closed) return Promise.reject(__home_writable_type_error("Cannot write to a closing or closed WritableStream"));
+    \\    return __home_writable_operation(state, () => typeof state.sink.write === "function" ? state.sink.write(chunk, state.controller) : undefined);
     \\  };
+    \\  WritableStreamDefaultWriter.prototype.close = function() {
+    \\    const state = this.__home_state;
+    \\    if (!state) return Promise.reject(__home_writable_type_error("Writer has been released"));
+    \\    if (state.errored) return Promise.reject(state.storedError);
+    \\    if (state.closeRequested || state.closed) return Promise.reject(__home_writable_type_error("Cannot close an already-closing WritableStream"));
+    \\    state.closeRequested = true;
+    \\    const closePromise = __home_writable_operation(state, () => typeof state.sink.close === "function" ? state.sink.close() : undefined);
+    \\    return closePromise.then(() => {
+    \\      state.closed = true;
+    \\      if (state.closedResolve) state.closedResolve(undefined);
+    \\    });
+    \\  };
+    \\  WritableStreamDefaultWriter.prototype.abort = function(reason) {
+    \\    const state = this.__home_state;
+    \\    if (!state) return Promise.reject(__home_writable_type_error("Writer has been released"));
+    \\    if (state.closed || state.errored) return Promise.resolve(undefined);
+    \\    let result;
+    \\    try { result = typeof state.sink.abort === "function" ? state.sink.abort(reason) : undefined; }
+    \\    catch (error) { __home_writable_error(state, error); return Promise.reject(error); }
+    \\    __home_writable_error(state, reason instanceof Error ? reason : new Error("WritableStream aborted"));
+    \\    return Promise.resolve(result).then(() => undefined);
+    \\  };
+    \\  WritableStreamDefaultWriter.prototype.releaseLock = function() {
+    \\    const state = this.__home_state;
+    \\    if (!state) return;
+    \\    state.writer = null;
+    \\    this.__home_state = null;
+    \\    this.__home_stream = null;
+    \\  };
+    \\  Object.defineProperty(WritableStreamDefaultWriter.prototype, "desiredSize", { configurable: true, enumerable: true, get() {
+    \\    const state = this.__home_state;
+    \\    if (!state || state.errored) return null;
+    \\    return state.closeRequested || state.closed ? 0 : 1;
+    \\  } });
+    \\  Object.defineProperty(WritableStreamDefaultWriter.prototype, "ready", { configurable: true, enumerable: true, get() {
+    \\    return this.__home_state ? Promise.resolve(undefined) : Promise.reject(__home_writable_type_error("Writer has been released"));
+    \\  } });
+    \\  Object.defineProperty(WritableStreamDefaultWriter.prototype, "closed", { configurable: true, enumerable: true, get() {
+    \\    const state = this.__home_state;
+    \\    return state ? state.closedPromise : Promise.reject(__home_writable_type_error("Writer has been released"));
+    \\  } });
+    \\  var WritableStream = function(underlyingSink) {
+    \\    const sink = underlyingSink || {};
+    \\    let closedResolve;
+    \\    let closedReject;
+    \\    const closedPromise = new Promise((resolve, reject) => { closedResolve = resolve; closedReject = reject; });
+    \\    closedPromise.catch(() => undefined);
+    \\    const state = { sink, controller: null, queue: Promise.resolve(), closeRequested: false, closed: false, errored: false, storedError: undefined, writer: null, closedPromise, closedResolve, closedReject };
+    \\    state.controller = new WritableStreamDefaultController(state);
+    \\    this.__home_writable_sink = sink;
+    \\    this.__home_writable_state = state;
+    \\    if (typeof sink.start === "function") {
+    \\      try { state.queue = Promise.resolve(sink.start(state.controller)); }
+    \\      catch (error) { __home_writable_error(state, error); }
+    \\      state.queue = state.queue.then(undefined, error => { __home_writable_error(state, error); });
+    \\    }
+    \\  };
+    \\  Object.defineProperty(WritableStream.prototype, "locked", { configurable: true, enumerable: true, get() { return this.__home_writable_state.writer !== null; } });
+    \\  WritableStream.prototype.getWriter = function() { return new WritableStreamDefaultWriter(this); };
+    \\  WritableStream.prototype.abort = function(reason) {
+    \\    if (this.locked) return Promise.reject(__home_writable_type_error("Cannot abort a locked WritableStream"));
+    \\    const writer = this.getWriter();
+    \\    return writer.abort(reason).then(value => { writer.releaseLock(); return value; }, error => { writer.releaseLock(); throw error; });
+    \\  };
+    \\  WritableStream.prototype.close = function() {
+    \\    if (this.locked) return Promise.reject(__home_writable_type_error("Cannot close a locked WritableStream"));
+    \\    const writer = this.getWriter();
+    \\    return writer.close().then(value => { writer.releaseLock(); return value; }, error => { writer.releaseLock(); throw error; });
+    \\  };
+    \\  Object.defineProperty(WritableStream.prototype, Symbol.toStringTag, { configurable: true, value: "WritableStream" });
+    \\  Object.defineProperty(WritableStreamDefaultWriter.prototype, Symbol.toStringTag, { configurable: true, value: "WritableStreamDefaultWriter" });
+    \\  Object.defineProperty(WritableStreamDefaultController.prototype, Symbol.toStringTag, { configurable: true, value: "WritableStreamDefaultController" });
+    \\  globalThis.WritableStream = WritableStream;
+    \\  globalThis.WritableStreamDefaultWriter = WritableStreamDefaultWriter;
+    \\  globalThis.WritableStreamDefaultController = WritableStreamDefaultController;
     \\}
     \\if (typeof ReadableStream === "function" && !ReadableStream.__home_controller_capture) {
     \\  const __home_NativeReadableStream = ReadableStream;
@@ -69724,6 +69829,8 @@ test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_byob_request(view, respond)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_VALUE\";") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_TYPE\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "WritableStream.prototype.getWriter = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot write to a closing or closed WritableStream") != null);
     // A transform error must reject reads, writes, and both closed promises.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_transform_error(state, reason) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const text = String(chunk);") != null);
@@ -83303,6 +83410,39 @@ test "bootstrap runner mirrors stream web BYOB reader inspection" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29225.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner rejects WritableStream writes after close" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\require('../common');
+        \\const { test } = require('node:test');
+        \\const assert = require('node:assert');
+        \\test('should throw error when writing after close', async () => {
+        \\  const written = [];
+        \\  const writable = new WritableStream({ write(chunk) { written.push(chunk); } });
+        \\  const writer = writable.getWriter();
+        \\  await writer.write('Hello');
+        \\  await writer.close();
+        \\  await assert.rejects(() => writer.write('World'), { name: 'TypeError' });
+        \\  assert.deepStrictEqual(written, ['Hello']);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-whatwg-writablestream-close.js");
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
