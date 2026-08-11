@@ -57822,6 +57822,7 @@ pub const Checker = struct {
         if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return;
         const function = hir_mod.fnDeclOf(self.hir, fn_node);
         if (function.return_type != hir_mod.none_node_id or function.body == hir_mod.none_node_id) return;
+        if (!self.fnBodyHasReturn(function.body)) return;
         const return_expr = self.firstReturnExpressionNode(function.body) orelse return;
         if (self.hir.kindOf(return_expr) != .member_access) return;
         const member = hir_mod.memberOf(self.hir, return_expr);
@@ -150704,9 +150705,6 @@ pub const Checker = struct {
     }
 
     fn inferArrayLiteralElementType(self: *Checker, elems: []const TypeId) CheckError!TypeId {
-        if (self.strict_flags.strict_null_checks) return try self.internArrayElementUnion(elems);
-        var normalized: std.ArrayListUnmanaged(TypeId) = .empty;
-        defer normalized.deinit(self.gpa);
         var has_direct_this = false;
         for (elems) |elem| {
             if (self.isThisTypeParameter(elem)) {
@@ -150736,6 +150734,9 @@ pub const Checker = struct {
                 if (saw_concrete_sibling and all_fit_constraint) return constraint;
             }
         }
+        if (self.strict_flags.strict_null_checks) return try self.internArrayElementUnion(elems);
+        var normalized: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer normalized.deinit(self.gpa);
         for (elems) |elem| {
             if (!self.isThisTypeParameter(elem)) {
                 if (!has_direct_this and self.containsThisTypeParameter(elem)) return try self.internArrayElementUnion(elems);
@@ -233064,6 +233065,16 @@ test "checker: object literal method returning a missing this member reports TS7
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
+test "checker: object literal method without return does not report TS7023" {
+    const s = try newSetup("var obj = { f() { this.spaaace; } };");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.function_return_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
 test "checker: implements member incompatibility reports TS2416 at computed member" {
     const s = try newSetup(
         \\interface I { [Symbol.toPrimitive]: () => boolean; }
@@ -233205,6 +233216,23 @@ test "checker: non-strict array inference collapses this to a present class cons
         \\}
     );
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: strict array inference selects a present class constraint over this" {
+    const s = try newSetup(
+        \\class C {
+        \\  c = new C();
+        \\  f() {
+        \\    var values: C[];
+        \\    var values = [this, this.c];
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
