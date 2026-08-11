@@ -88494,7 +88494,9 @@ pub const Checker = struct {
                     }
                 }
             }
-            if (try self.allocCallableSignatureNameExpandingSignatureParams(t)) |expanded| return expanded;
+            if (try self.allocCallableSignatureNameExpandingSignatureParams(t)) |expanded| {
+                return try self.allocRenderedSignatureNamePreservingGenericPrefix(t, source_display, expanded);
+            }
         }
         const params: []const TypeId = if (self.interner.isSignature(t)) self.interner.signatureParams(t) else &.{};
         const has_strict_optional_params = self.strict_flags.strict_null_checks and
@@ -88593,6 +88595,15 @@ pub const Checker = struct {
         source_display: []const u8,
     ) CheckError!?[]const u8 {
         const rendered = (try self.allocCallableSignatureName(sig)) orelse return null;
+        return try self.allocRenderedSignatureNamePreservingGenericPrefix(sig, source_display, rendered);
+    }
+
+    fn allocRenderedSignatureNamePreservingGenericPrefix(
+        self: *Checker,
+        sig: TypeId,
+        source_display: []const u8,
+        rendered: []const u8,
+    ) CheckError![]const u8 {
         if (self.generic_signature_params.get(sig) == null) return rendered;
         const generic_open = std.mem.indexOfScalar(u8, source_display, '<') orelse return rendered;
         var depth: usize = 0;
@@ -161768,6 +161779,7 @@ pub const Checker = struct {
     fn checkTypeAssertionOverlap(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
         if (self.assertionTargetHasGenericArityDiagnostic(node)) return;
         if (self.typeIsAnyLike(source_t) or self.typeIsAnyLike(target_t)) return;
+        if (self.assertionSourceIncludesTargetTypeParameter(source_t, target_t, 0)) return;
         if (self.assertionTargetIsFunctionObject(target_t)) return;
         if ((source_t == types.Primitive.null_t or source_t == types.Primitive.undefined_t) and
             self.nullAssertionTargetIsPermissive(target_t)) return;
@@ -161806,6 +161818,39 @@ pub const Checker = struct {
         }
         if (try self.typesHaveComparableOverlap(source_t, target_t)) return;
         try self.emitConversionMayBeMistake(node, source_t, target_t);
+    }
+
+    fn assertionSourceIncludesTargetTypeParameter(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+        depth: u8,
+    ) bool {
+        if (depth >= 16 or source_t >= self.interner.pool.typeCount() or
+            target_t >= self.interner.pool.typeCount()) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!target_flags.is_type_parameter or target_flags.is_union or target_flags.is_intersection) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        if (source_flags.is_union) {
+            for (self.interner.unionMembers(source_t)) |member| {
+                if (self.assertionSourceIncludesTargetTypeParameter(member, target_t, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (!source_flags.is_type_parameter or source_flags.is_union or source_flags.is_intersection) return false;
+        if (source_t == target_t or
+            self.resolvedTypeParameterPlaceholder(source_t) == self.resolvedTypeParameterPlaceholder(target_t))
+        {
+            return true;
+        }
+        const source_decl = self.type_parameter_decl_nodes.get(source_t) orelse
+            self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(source_t));
+        const target_decl = self.type_parameter_decl_nodes.get(target_t) orelse
+            self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(target_t));
+        if (source_decl != null and target_decl != null) return source_decl.? == target_decl.?;
+        const source_name = self.interner.typeParameterName(source_t) orelse return false;
+        const target_name = self.interner.typeParameterName(target_t) orelse return false;
+        return source_name == target_name;
     }
 
     fn objectLiteralAssertionHasNoDirectionalOverlap(
@@ -179538,6 +179583,19 @@ test "checker: generic assertion arity diagnostic suppresses TS2352 cascade" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.generic_type_requires_args));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+}
+
+test "checker: next exact window assertion recognizes matching type parameter" {
+    const s = try newSetup(
+        \\interface Y { certain: Y }
+        \\declare const y: Y;
+        \\function destructure<a, r>(something: a | Y, haveValue: (value: a) => r): r {
+        \\  return something === y ? haveValue(something) : haveValue(<a>something);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
@@ -225494,6 +225552,31 @@ test "checker: rest signature assignment reports element mismatch end-to-end" {
         "Types of parameters 'args' and 'args' are incompatible.",
         entry.message,
     );
+}
+
+test "checker: next exact window generic rest diagnostics preserve type parameters" {
+    const s = try newSetup(
+        \\class Base { foo: string = ""; }
+        \\class Derived extends Base { bar: string = ""; }
+        \\declare let callA: (...x: Derived[]) => Derived;
+        \\declare let callB: <T extends Derived>(...x: T[]) => T;
+        \\callA = callB;
+        \\declare let constructA: new (...x: Base[]) => Base;
+        \\declare let constructB: new <T extends Derived>(...x: T[]) => T;
+        \\constructA = constructB;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_call = false;
+    var saw_construct = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.indexOf(u8, diagnostic.message, "<T extends Derived>(...x: T[]) => T") != null) saw_call = true;
+        if (std.mem.indexOf(u8, diagnostic.message, "new <T extends Derived>(...x: T[]) => T") != null) saw_construct = true;
+    }
+    try T.expect(saw_call);
+    try T.expect(saw_construct);
 }
 
 test "checker: source rest element checks target-only fixed parameters" {
