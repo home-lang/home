@@ -28765,6 +28765,24 @@ const harness_prelude =
     \\else if (!process.execPath) process.execPath = "home";
     \\if (!process.argv) process.argv = [process.execPath];
     \\if (!process.execArgv) process.execArgv = [];
+    \\if (typeof process.exit !== "function") {
+    \\  process.exit = function exit(code) {
+    \\    const value = code === undefined ? (process.exitCode === undefined ? 0 : process.exitCode) : code;
+    \\    const numeric = Number(value);
+    \\    if (!Number.isInteger(numeric)) {
+    \\      const typeError = new TypeError('The "code" argument must be of type number. Received ' + String(value));
+    \\      typeError.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw typeError;
+    \\    }
+    \\    process.exitCode = numeric;
+    \\    const error = new Error("process.exit(" + String(numeric) + ")");
+    \\    error.name = "ProcessExitError";
+    \\    error.code = "ERR_PROCESS_EXIT";
+    \\    error.exitCode = numeric;
+    \\    error.__home_process_exit = true;
+    \\    throw error;
+    \\  };
+    \\}
     \\if (!process.platform) process.platform = globalThis.__home_process_platform || "unknown";
     \\if (!process.arch) process.arch = globalThis.__home_process_arch || "unknown";
     \\if (process.platform !== "win32") {
@@ -69259,11 +69277,18 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
     const strict_mode = sourceHasLeadingUseStrict(diagnosed_module_source);
-    try out.appendSlice(allocator, if (strict_mode) "(function() {\n\"use strict\";\n" else "(function() {\n");
+    try out.appendSlice(allocator, if (strict_mode) "try {\n(function() {\n\"use strict\";\n" else "try {\n(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
     try appendSnapshotPrelude(&out, allocator, relative_path);
     try appendSourceWithBunTestImportRewrites(&out, allocator, diagnosed_module_source, relative_path);
-    try out.appendSlice(allocator, "\n})();\n");
+    try out.appendSlice(allocator,
+        \\
+        \\})();
+        \\} catch (__home_file_error) {
+        \\  if (!(__home_file_error && __home_file_error.__home_process_exit && __home_file_error.exitCode === 0)) throw __home_file_error;
+        \\}
+        \\
+    );
     try out.appendSlice(allocator, "\n//# sourceURL=");
     try out.appendSlice(allocator, relative_path);
     try out.append(allocator, '\n');
@@ -83455,6 +83480,48 @@ test "bootstrap runner rejects WritableStream writes after close" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner treats process exit zero as clean file termination" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const common = require('../common');
+        \\if (!common.isWindows) common.skip('test is windows specific');
+        \\throw new Error('platform skip did not terminate the file');
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-windows-platform-skip.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(prepared.allow_no_tests);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner reports nonzero process exit precisely" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, "process.exit(7);", "js/node/test/parallel/test-process-exit-seven.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.failed, file_run.result.status());
+    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "ProcessExitError: process.exit(7)") != null);
 }
 
 test "bootstrap runner tees asynchronous byte streams without duplicating chunks" {
