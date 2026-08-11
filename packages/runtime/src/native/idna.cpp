@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <unicode/uidna.h>
 
@@ -32,7 +33,8 @@ bool containsNode22DisallowedCodePoint(const char* input, int32_t inputLength)
     // to ignored or mapped. Preserve the observable Node/Bun contract across
     // host ICU upgrades rather than allowing conformance to vary by OS release.
     const std::string_view text(input, static_cast<size_t>(inputLength));
-    return text.find(std::string_view("\xE1\xA0\x8E", 3)) != std::string_view::npos // U+180E
+    return text.find(std::string_view("\xE2\x80\xA5", 3)) != std::string_view::npos // U+2025
+        || text.find(std::string_view("\xE1\xA0\x8E", 3)) != std::string_view::npos // U+180E
         || text.find(std::string_view("\xE2\x81\xAB", 3)) != std::string_view::npos // U+206B
         || text.find(std::string_view("\xD3\x80", 2)) != std::string_view::npos // U+04C0
         || text.find(std::string_view("\xE2\x86\x83", 3)) != std::string_view::npos; // U+2183
@@ -45,6 +47,26 @@ int32_t convert(const char* input, int32_t inputLength, char* output, int32_t ou
         return -1;
     if (containsNode22DisallowedCodePoint(input, inputLength))
         return -1;
+
+    // Node 22's pinned UTS #46 table treats U+FEFF as ignored. Some newer
+    // platform ICU builds reject it instead, so apply the stable mapping
+    // before handing the hostname to ICU.
+    std::string normalizedInput;
+    constexpr std::string_view byteOrderMark("\xEF\xBB\xBF", 3);
+    std::string_view inputView(input, static_cast<size_t>(inputLength));
+    if (inputView.find(byteOrderMark) != std::string_view::npos) {
+        normalizedInput.reserve(inputView.size());
+        size_t cursor = 0;
+        while (cursor < inputView.size()) {
+            if (inputView.substr(cursor).starts_with(byteOrderMark)) {
+                cursor += byteOrderMark.size();
+                continue;
+            }
+            normalizedInput.push_back(inputView[cursor++]);
+        }
+        input = normalizedInput.data();
+        inputLength = static_cast<int32_t>(normalizedInput.size());
+    }
 
     UErrorCode error = U_ZERO_ERROR;
     UIDNAInfo details = UIDNA_INFO_INITIALIZER;

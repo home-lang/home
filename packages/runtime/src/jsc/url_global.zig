@@ -86,6 +86,42 @@ fn hasAsciiScheme(input: []const u8) bool {
     return false;
 }
 
+fn containsPinnedDisallowedIdnaCodePoint(input: []const u8) bool {
+    const pinned = [_][]const u8{
+        "\xE2\x80\xA5", // U+2025
+        "\xE1\xA0\x8E", // U+180E
+        "\xE2\x81\xAB", // U+206B
+        "\xD3\x80", // U+04C0
+        "\xE2\x86\x83", // U+2183
+    };
+    for (pinned) |sequence| {
+        if (std.mem.indexOf(u8, input, sequence) != null) return true;
+    }
+    return false;
+}
+
+fn specialAuthorityContainsPinnedDisallowedIdnaCodePoint(input: []const u8) bool {
+    const authority_start = if (std.mem.startsWith(u8, input, "//"))
+        @as(usize, 2)
+    else blk: {
+        const colon = std.mem.indexOfScalar(u8, input, ':') orelse return false;
+        const scheme = input[0..colon];
+        const special = std.ascii.eqlIgnoreCase(scheme, "http") or
+            std.ascii.eqlIgnoreCase(scheme, "https") or
+            std.ascii.eqlIgnoreCase(scheme, "ws") or
+            std.ascii.eqlIgnoreCase(scheme, "wss") or
+            std.ascii.eqlIgnoreCase(scheme, "ftp") or
+            std.ascii.eqlIgnoreCase(scheme, "file");
+        if (!special or !std.mem.startsWith(u8, input[colon + 1 ..], "//")) return false;
+        break :blk colon + 3;
+    };
+    const authority_tail = input[authority_start..];
+    const authority_end = std.mem.indexOfAny(u8, authority_tail, "/?#") orelse authority_tail.len;
+    const authority = authority_tail[0..authority_end];
+    const host_start = if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| at + 1 else 0;
+    return containsPinnedDisallowedIdnaCodePoint(authority[host_start..]);
+}
+
 fn isOpaqueUrl(href: []const u8) bool {
     const colon = std.mem.indexOfScalar(u8, href, ':') orelse return false;
     const scheme = href[0..colon];
@@ -194,6 +230,7 @@ fn parseWhatwgUrlNative(
     const allocator = std.heap.page_allocator;
     const input = valueToOwnedUtf8(c, input_value, allocator) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(input);
+    if (specialAuthorityContainsPinnedDisallowedIdnaCodePoint(input)) return extern_fns.JSValueMakeNull(c);
 
     var resolved: ?[]u8 = null;
     defer if (resolved) |bytes| allocator.free(bytes);
@@ -325,6 +362,31 @@ pub fn installIdnaBridge(ctx: *JSContextRef, global: *JSGlobalObject) void {
 const install_glue =
     \\(function() {
     \\  var parseFn = globalThis.__home_url_parse;
+    \\  var domainToAsciiFn = globalThis.__home_url_domain_to_ascii_native;
+    \\
+    \\  function hasForbiddenDomainCodePoint(text) {
+    \\    for (var i = 0; i < text.length; i++) {
+    \\      var code = text.charCodeAt(i);
+    \\      if (code <= 0x20 || code === 0x7f || code === 0x23 || code === 0x25 || code === 0x2f || code === 0x3a || code === 0x3c || code === 0x3e || code === 0x3f || code === 0x40 || code === 0x5b || code === 0x5c || code === 0x5d || code === 0x5e || code === 0x7c) return true;
+    \\    }
+    \\    return false;
+    \\  }
+    \\
+    \\  function normalizeSpecialHost(value) {
+    \\    var match = String(value).match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)(.*)$/);
+    \\    if (!match || !["http://", "https://", "ws://", "wss://", "ftp://", "file://"].includes(match[1].toLowerCase())) return String(value);
+    \\    var authority = match[2];
+    \\    var at = authority.lastIndexOf("@");
+    \\    var credentials = at === -1 ? "" : authority.slice(0, at + 1);
+    \\    var hostPort = at === -1 ? authority : authority.slice(at + 1);
+    \\    if (hostPort.charAt(0) === "[") return String(value);
+    \\    var colon = hostPort.lastIndexOf(":");
+    \\    var hostname = colon === -1 ? hostPort : hostPort.slice(0, colon);
+    \\    var port = colon === -1 ? "" : hostPort.slice(colon);
+    \\    var ascii = typeof domainToAsciiFn === "function" ? domainToAsciiFn(hostname) : hostname;
+    \\    if ((ascii === "" && hostname !== "") || hasForbiddenDomainCodePoint(ascii)) throw new TypeError("Invalid URL: " + String(value));
+    \\    return match[1] + credentials + ascii + port + match[3];
+    \\  }
     \\
     \\  function encode(s) { return encodeURIComponent(s).replace(/%20/g, "+"); }
     \\  function decode(s) { return decodeURIComponent(String(s).replace(/\+/g, " ")); }
@@ -390,6 +452,7 @@ const install_glue =
     \\    constructor(input, base) {
     \\      var str = String(input);
     \\      if (base !== undefined && base !== null) str = resolve(str, String(base));
+    \\      str = normalizeSpecialHost(str);
     \\      var f = parseFn(str);
     \\      if (!f || !f.protocol) throw new TypeError("Invalid URL: " + String(input));
     \\      this._protocol = f.protocol.charAt(f.protocol.length - 1) === ":" ? f.protocol : f.protocol + ":";
@@ -474,10 +537,12 @@ test "URL parses an absolute https url into components" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var u = new URL('https://user:pass@example.com:8080/a/b?x=1&y=2#frag');" ++
+        "  var ignored = new URL('https://look\u{feff}out.net/x');" ++
         "  return u.protocol === 'https:' && u.hostname === 'example.com' && u.port === '8080' &&" ++
         "    u.host === 'example.com:8080' && u.pathname === '/a/b' && u.search === '?x=1&y=2' &&" ++
         "    u.hash === '#frag' && u.username === 'user' && u.password === 'pass' &&" ++
-        "    u.origin === 'https://example.com:8080' && u.searchParams.get('y') === '2';" ++
+        "    u.origin === 'https://example.com:8080' && u.searchParams.get('y') === '2' &&" ++
+        "    ignored.hostname === 'lookout.net' && ignored.href === 'https://lookout.net/x';" ++
         "})()"));
 }
 
@@ -562,6 +627,7 @@ test "native IDNA bridge follows Node UTS 46 validation" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  return __home_url_domain_to_ascii_native('mañana.com') === 'xn--maana-pta.com' &&" ++
+        "    __home_url_domain_to_ascii_native('look\u{feff}out.net') === 'lookout.net' &&" ++
         "    __home_url_domain_to_unicode_native('xn--maana-pta.com') === 'mañana.com' &&" ++
         "    __home_url_domain_to_ascii_native('xn--a') === '';" ++
         "})()"));

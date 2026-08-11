@@ -52352,6 +52352,22 @@ const harness_prelude =
     \\    module = { default: resolved };
     \\  }
     \\  if (!module) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
+    \\  if (module.harness && typeof module.harness.test === "function" && typeof module.harness.assert_equals === "function" && typeof module.harness.assert_throws === "function" && !module.harness.__home_reports_test_name) {
+    \\    const originalWptTest = module.harness.test;
+    \\    module.harness.test = function(fn, description) {
+    \\      return originalWptTest(function() {
+    \\        try {
+    \\          return fn();
+    \\        } catch (error) {
+    \\          if (error && typeof error.message === "string" && description && !String(error.message).startsWith(String(description) + ": ")) {
+    \\            error.message = String(description) + ": " + error.message;
+    \\          }
+    \\          throw error;
+    \\        }
+    \\      }, description);
+    \\    };
+    \\    Object.defineProperty(module.harness, "__home_reports_test_name", { value: true });
+    \\  }
     \\  return module;
     \\};
     \\globalThis.__home_live_import = function(specifier) {
@@ -52932,6 +52948,7 @@ const harness_prelude =
     \\  return { boundary, text: lines.join("\r\n") };
     \\}
     \\function __home_url_to_usv_string(value) {
+    \\  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
     \\  const text = String(value);
     \\  let output = "";
     \\  for (let index = 0; index < text.length; index++) {
@@ -52951,18 +52968,69 @@ const harness_prelude =
     \\  }
     \\  return output;
     \\}
+    \\function __home_url_encode_non_ascii(value) {
+    \\  let output = "";
+    \\  for (const character of __home_url_to_usv_string(value)) output += character.codePointAt(0) <= 0x7f ? character : encodeURIComponent(character);
+    \\  return output;
+    \\}
+    \\function __home_url_encode_userinfo(value) {
+    \\  return __home_url_encode_non_ascii(value).replace(/ /g, "%20").replace(/=/g, "%3D").replace(/;/g, "%3B").replace(/"/g, "%22").replace(/@/g, "%40");
+    \\}
+    \\function __home_url_has_forbidden_ascii_domain_code_point(text) {
+    \\  for (let index = 0; index < text.length; index++) {
+    \\    const code = text.charCodeAt(index);
+    \\    if (code <= 0x20 || code === 0x7f || code === 0x23 || code === 0x25 || code === 0x2f || code === 0x3a || code === 0x3c || code === 0x3e || code === 0x3f || code === 0x40 || code === 0x5b || code === 0x5c || code === 0x5d || code === 0x5e || code === 0x7c) return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_url_normalize_hostname(value) {
+    \\  const text = __home_url_to_usv_string(value);
+    \\  if (typeof globalThis.__home_url_domain_to_ascii_native !== "function") return text;
+    \\  try {
+    \\    const ascii = globalThis.__home_url_domain_to_ascii_native(text);
+    \\    return (ascii !== "" || text === "") && !__home_url_has_forbidden_ascii_domain_code_point(ascii) ? ascii : null;
+    \\  } catch (error) {
+    \\    return null;
+    \\  }
+    \\}
+    \\function __home_url_retry_idna_parse_input(value) {
+    \\  const text = __home_url_to_usv_string(value);
+    \\  const match = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)(.*)$/);
+    \\  if (!match || !["http://", "https://", "ws://", "wss://", "ftp://", "file://"].includes(match[1].toLowerCase())) return null;
+    \\  const authority = match[2];
+    \\  const at = authority.lastIndexOf("@");
+    \\  const credentials = at === -1 ? "" : authority.slice(0, at + 1);
+    \\  const hostPort = at === -1 ? authority : authority.slice(at + 1);
+    \\  if (hostPort.startsWith("[")) return text;
+    \\  const colon = hostPort.lastIndexOf(":");
+    \\  const hostname = colon === -1 ? hostPort : hostPort.slice(0, colon);
+    \\  const port = colon === -1 ? "" : hostPort.slice(colon);
+    \\  if (typeof globalThis.__home_url_domain_to_ascii_native !== "function") return null;
+    \\  let ascii = "";
+    \\  try {
+    \\    ascii = globalThis.__home_url_domain_to_ascii_native(hostname);
+    \\  } catch (error) {
+    \\    return null;
+    \\  }
+    \\  if ((ascii === "" && hostname !== "") || __home_url_has_forbidden_ascii_domain_code_point(ascii)) return null;
+    \\  return match[1] + credentials + ascii + port + match[3];
+    \\}
     \\if (typeof URL !== "function") {
     \\  const __home_url_context = Symbol("context");
-    \\  function __home_url_state(url) {
-    \\    if (!Object.prototype.hasOwnProperty.call(url, __home_url_context)) {
-    \\      Object.defineProperty(url, __home_url_context, {
+    \\  function __home_url_initialize(url) {
+    \\    Object.defineProperty(url, __home_url_context, {
     \\        configurable: false,
     \\        enumerable: false,
     \\        writable: false,
     \\        value: { protocol: "", protocolPrefix: "", username: "", password: "", hostname: "", port: "", pathname: "", search: "", hash: "", searchParams: null },
-    \\      });
-    \\    }
+    \\    });
+    \\  }
+    \\  function __home_url_state(url) {
+    \\    if (!url || !Object.prototype.hasOwnProperty.call(url, __home_url_context)) throw new TypeError('Value of "this" can only be used on instances of URL');
     \\    return url[__home_url_context];
+    \\  }
+    \\  function __home_url_assert_method(url, method) {
+    \\    if (!url || !Object.prototype.hasOwnProperty.call(url, __home_url_context)) throw new TypeError("Can only call URL." + method + " on instances of URL");
     \\  }
     \\  function __home_parse_url_suffix(value) {
     \\    const text = String(value || "");
@@ -52975,10 +53043,17 @@ const harness_prelude =
     \\    return { pathname, search, hash };
     \\  }
     \\  URL = globalThis.URL = function URL(input, base) {
+    \\    __home_url_initialize(this);
     \\    const inputText = __home_url_to_usv_string(input);
-    \\    const nativeParsed = typeof globalThis.__home_url_parse_whatwg_native === "function"
-    \\      ? globalThis.__home_url_parse_whatwg_native(inputText, arguments.length >= 2 ? __home_url_to_usv_string(base) : undefined)
+    \\    const asciiInput = __home_url_retry_idna_parse_input(inputText);
+    \\    const nativeInput = asciiInput === null ? inputText : asciiInput;
+    \\    let nativeParsed = typeof globalThis.__home_url_parse_whatwg_native === "function"
+    \\      ? globalThis.__home_url_parse_whatwg_native(nativeInput, arguments.length >= 2 ? __home_url_to_usv_string(base) : undefined)
     \\      : null;
+    \\    if (!nativeParsed && typeof globalThis.__home_url_parse_whatwg_native === "function") {
+    \\      const asciiInput = __home_url_retry_idna_parse_input(inputText);
+    \\      if (asciiInput !== null) nativeParsed = globalThis.__home_url_parse_whatwg_native(asciiInput, arguments.length >= 2 ? __home_url_to_usv_string(base) : undefined);
+    \\    }
     \\    if (typeof globalThis.__home_url_parse_whatwg_native === "function" && !nativeParsed) throw new TypeError("Invalid URL");
     \\    if (nativeParsed) {
     \\      this.protocol = String(nativeParsed.protocol || "").replace(/:?$/, ":");
@@ -53038,17 +53113,19 @@ const harness_prelude =
     \\    this.hash = parts.hash;
     \\  };
     \\  function __home_url_define_attribute(name, getter, setter) {
-    \\    Object.defineProperty(URL.prototype, name, {
+    \\    const descriptor = {
     \\      configurable: true,
     \\      enumerable: true,
     \\      get: getter,
-    \\      set: setter || function() { throw new TypeError("Attempted to assign to readonly property."); },
-    \\    });
+    \\    };
+    \\    if (setter) descriptor.set = setter;
+    \\    Object.defineProperty(URL.prototype, name, descriptor);
     \\  }
     \\  __home_url_define_attribute("href", function() {
     \\    const state = __home_url_state(this);
-    \\    const auth = state.username ? state.username + (state.password ? ":" + state.password : "") + "@" : "";
-    \\    return state.protocolPrefix + auth + this.host + state.pathname + state.search + state.hash;
+    \\    const auth = state.username || state.password ? state.username + (state.password ? ":" + state.password : "") + "@" : "";
+    \\    const host = state.hostname + (state.port ? ":" + state.port : "");
+    \\    return state.protocolPrefix + auth + host + state.pathname + state.search + state.hash;
     \\  }, function(value) {
     \\    const state = __home_url_state(this);
     \\    const previousParams = state.searchParams;
@@ -53067,43 +53144,58 @@ const harness_prelude =
     \\  });
     \\  __home_url_define_attribute("protocol", function() { return __home_url_state(this).protocol; }, function(value) {
     \\    const state = __home_url_state(this);
-    \\    state.protocol = String(value).replace(/:*$/, ":").toLowerCase();
+    \\    state.protocol = __home_url_to_usv_string(value).replace(/:*$/, ":").toLowerCase();
     \\    state.protocolPrefix = state.protocolPrefix.endsWith("//") ? state.protocol + "//" : state.protocol;
     \\  });
-    \\  __home_url_define_attribute("username", function() { return __home_url_state(this).username; }, function(value) { __home_url_state(this).username = String(value); });
-    \\  __home_url_define_attribute("password", function() { return __home_url_state(this).password; }, function(value) { __home_url_state(this).password = String(value); });
-    \\  __home_url_define_attribute("hostname", function() { return __home_url_state(this).hostname; }, function(value) { __home_url_state(this).hostname = String(value); });
-    \\  __home_url_define_attribute("port", function() { return __home_url_state(this).port; }, function(value) { __home_url_state(this).port = String(value); });
-    \\  __home_url_define_attribute("host", function() { return this.hostname + (this.port ? ":" + this.port : ""); }, function(value) {
-    \\    const text = String(value);
+    \\  __home_url_define_attribute("username", function() { return __home_url_state(this).username; }, function(value) { __home_url_state(this).username = __home_url_encode_userinfo(value); });
+    \\  __home_url_define_attribute("password", function() { return __home_url_state(this).password; }, function(value) { __home_url_state(this).password = __home_url_encode_userinfo(value); });
+    \\  __home_url_define_attribute("hostname", function() { return __home_url_state(this).hostname; }, function(value) { const normalized = __home_url_normalize_hostname(value); if (normalized !== null) __home_url_state(this).hostname = normalized; });
+    \\  __home_url_define_attribute("port", function() { return __home_url_state(this).port; }, function(value) { __home_url_state(this).port = __home_url_to_usv_string(value); });
+    \\  __home_url_define_attribute("host", function() { const state = __home_url_state(this); return state.hostname + (state.port ? ":" + state.port : ""); }, function(value) {
+    \\    const text = __home_url_to_usv_string(value);
     \\    const colon = text.lastIndexOf(":");
-    \\    this.hostname = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(0, colon) : text;
-    \\    this.port = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(colon + 1) : "";
+    \\    const hostname = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(0, colon) : text;
+    \\    const normalized = __home_url_normalize_hostname(hostname);
+    \\    if (normalized === null) return;
+    \\    const state = __home_url_state(this);
+    \\    state.hostname = normalized;
+    \\    state.port = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(colon + 1) : "";
     \\  });
-    \\  __home_url_define_attribute("pathname", function() { return __home_url_state(this).pathname; }, function(value) { __home_url_state(this).pathname = String(value); });
+    \\  __home_url_define_attribute("pathname", function() { return __home_url_state(this).pathname; }, function(value) {
+    \\    const state = __home_url_state(this);
+    \\    let text = __home_url_encode_non_ascii(value);
+    \\    if (["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(state.protocol)) {
+    \\      if (text === "") text = "/";
+    \\      else if (!text.startsWith("/")) text = "/" + text;
+    \\    }
+    \\    state.pathname = text.replace(/ /g, "%20").replace(/#/g, "%23").replace(/"/g, "%22");
+    \\  });
     \\  __home_url_define_attribute("search", function() { return __home_url_state(this).search; }, function(value) {
     \\    const state = __home_url_state(this);
-    \\    const text = String(value);
+    \\    const text = __home_url_encode_non_ascii(value);
     \\    state.search = text === "" || text.startsWith("?") ? text : "?" + text;
     \\    if (state.searchParams && state.searchParams.__home_reload) state.searchParams.__home_reload(state.search);
     \\  });
     \\  __home_url_define_attribute("hash", function() { return __home_url_state(this).hash; }, function(value) {
-    \\    const text = String(value);
+    \\    const text = __home_url_encode_non_ascii(value);
     \\    __home_url_state(this).hash = text === "" || text.startsWith("#") ? text : "#" + text;
     \\  });
     \\  __home_url_define_attribute("origin", function() {
+    \\    const state = __home_url_state(this);
     \\    if (this.protocol === "blob:") {
     \\      try { return new URL(this.href.slice(5)).origin; } catch (error) { return "null"; }
     \\    }
-    \\    return ["http:", "https:", "ws:", "wss:", "ftp:"].includes(this.protocol) ? this.protocol + "//" + this.host : "null";
+    \\    const host = state.hostname + (state.port ? ":" + state.port : "");
+    \\    return ["http:", "https:", "ws:", "wss:", "ftp:"].includes(state.protocol) ? state.protocol + "//" + host : "null";
     \\  }, undefined);
     \\  __home_url_define_attribute("searchParams", function() {
     \\    const state = __home_url_state(this);
     \\    if (!state.searchParams) state.searchParams = __home_url_live_search_params(this);
     \\    return state.searchParams;
     \\  }, undefined);
-    \\  URL.prototype.toString = function() { return this.href; };
-    \\  URL.prototype.toJSON = function() { return this.href; };
+    \\  URL.prototype.toString = function() { __home_url_assert_method(this, "toString"); return this.href; };
+    \\  URL.prototype.toJSON = function() { __home_url_assert_method(this, "toJSON"); return this.href; };
+    \\  Object.defineProperty(URL.prototype, Symbol.toStringTag, { configurable: true, value: "URL" });
     \\  Object.defineProperty(URL.prototype, __home_util_inspect_custom, {
     \\    configurable: true,
     \\    value: function(depth, options) {
@@ -53248,15 +53340,15 @@ const harness_prelude =
     \\    return "[" + left + "::" + right + "]".replace("[:::", "[::").replace(":::]", "::]");
     \\  }
     \\  function __home_url_auth_component(value) {
-    \\    return String(value || "").replace(/ /g, "%20").replace(/=/g, "%3D").replace(/;/g, "%3B").replace(/"/g, "%22").replace(/@/g, "%40");
+    \\    return __home_url_encode_userinfo(value || "");
     \\  }
     \\  function __home_url_live_search_params(url) {
-    \\    const params = new URLSearchParams(String(url.search || "").replace(/^\?/, ""));
+    \\    const params = new URLSearchParams(String(url.search || ""));
     \\    const nativeAppend = params.append.bind(params);
     \\    const nativeDelete = params.delete.bind(params);
     \\    params.__home_reload = function(search) {
     \\      for (const key of Array.from(params.keys())) nativeDelete(key);
-    \\      new URLSearchParams(String(search || "").replace(/^\?/, "")).forEach((value, key) => nativeAppend(key, value));
+    \\      new URLSearchParams(String(search || "")).forEach((value, key) => nativeAppend(key, value));
     \\    };
     \\    const sync = () => {
     \\      const text = params.toString();
@@ -53401,7 +53493,7 @@ const harness_prelude =
     \\        configurable: true,
     \\        get() {
     \\          if (!protocolOverridden && !isDenoUrlCorpus && __home_native_url_href && __home_native_url_href.get) return __home_native_url_href.get.call(this);
-    \\          const auth = this.username ? this.username + (this.password ? ":" + this.password : "") + "@" : "";
+    \\          const auth = this.username || this.password ? this.username + (this.password ? ":" + this.password : "") + "@" : "";
     \\          if (this.host || ["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText)) return protocolText + "//" + auth + this.host + this.pathname + this.search + this.hash;
     \\          return protocolText + this.pathname + this.search + this.hash;
     \\        },
@@ -53502,13 +53594,25 @@ const harness_prelude =
     \\      error.code = "ERR_MISSING_ARGS";
     \\      throw error;
     \\    }
+    \\    const inputText = __home_url_to_usv_string(input);
+    \\    const baseText = arguments.length >= 2 ? __home_url_to_usv_string(base) : undefined;
     \\    try {
     \\      const isDenoUrlCorpus = String(globalThis.__home_current_filename || "").includes("js/deno/url/url.test.ts");
     \\      const normalizedInput = isDenoUrlCorpus && arguments.length >= 2
-    \\        ? __home_url_resolve_deno_base(input, base)
-    \\        : (isDenoUrlCorpus ? __home_url_normalize_deno_input(input) : input);
-    \\      __home_url_validate_deno_input(normalizedInput, base, arguments.length >= 2);
-    \\      const parsed = __home_bun_url_with_origin(arguments.length >= 2 ? new __home_NativeURL(normalizedInput, base) : new __home_NativeURL(normalizedInput), normalizedInput);
+    \\        ? __home_url_resolve_deno_base(inputText, baseText)
+    \\        : (isDenoUrlCorpus ? __home_url_normalize_deno_input(inputText) : inputText);
+    \\      const asciiInput = __home_url_retry_idna_parse_input(normalizedInput);
+    \\      const nativeInput = asciiInput === null ? normalizedInput : asciiInput;
+    \\      __home_url_validate_deno_input(nativeInput, baseText, arguments.length >= 2);
+    \\      let nativeParsed;
+    \\      try {
+    \\        nativeParsed = arguments.length >= 2 ? new __home_NativeURL(nativeInput, baseText) : new __home_NativeURL(nativeInput);
+    \\      } catch (error) {
+    \\        const asciiInput = __home_url_retry_idna_parse_input(normalizedInput);
+    \\        if (asciiInput === null) throw error;
+    \\        nativeParsed = arguments.length >= 2 ? new __home_NativeURL(asciiInput, baseText) : new __home_NativeURL(asciiInput);
+    \\      }
+    \\      const parsed = __home_bun_url_with_origin(nativeParsed, normalizedInput);
     \\      if (new.target && new.target !== URL) Object.setPrototypeOf(parsed, new.target.prototype);
     \\      return parsed;
     \\    } catch (error) {
@@ -53551,6 +53655,7 @@ const harness_prelude =
     \\    Object.defineProperty(__home_NativeURL.prototype, "origin", {
     \\      configurable: true,
     \\      get() {
+    \\        if (__home_native_url_href && __home_native_url_href.get) __home_native_url_href.get.call(this);
     \\        return __home_bun_url_origin_for(this);
     \\      },
     \\    });
@@ -53609,9 +53714,6 @@ const harness_prelude =
     \\  const decoded = decodeURIComponent(url.pathname);
     \\  if (decoded === "/" + globalThis.__home_current_filename) return globalThis.__home_current_filename;
     \\  return decoded;
-    \\}
-    \\function __home_url_has_forbidden_ascii_domain_code_point(text) {
-    \\  return /[\x00-\x20#%\/:<>?@\[\\\]\^|\x7f]/.test(text);
     \\}
     \\function __home_url_native_ascii_hostname(value) {
     \\  const text = String(value);
@@ -57432,7 +57534,37 @@ const harness_prelude =
     \\  sign: __home_jwt_sign,
     \\  verify: __home_jwt_verify,
     \\};
-    \\if (typeof URLSearchParams !== "function") {
+    \\function __home_install_url_search_params_constructor_contract() {
+    \\  if (typeof URLSearchParams !== "function" || URLSearchParams.__home_constructor_normalized) return;
+    \\  const __home_NativeURLSearchParams = URLSearchParams;
+    \\  const __home_URLSearchParams = function URLSearchParams(init) {
+    \\    if (!new.target) throw new TypeError("Class constructor URLSearchParams cannot be invoked without 'new'");
+    \\    const args = Array.from(arguments);
+    \\    if (typeof init === "string") {
+    \\      let text = __home_url_to_usv_string(init);
+    \\      if (text.startsWith("?")) text = text.slice(1);
+    \\      if (text.startsWith("?")) {
+    \\        const parsed = Reflect.construct(__home_NativeURLSearchParams, ["%253F" + text.slice(1)], __home_NativeURLSearchParams);
+    \\        const result = Reflect.construct(__home_NativeURLSearchParams, [], new.target === __home_URLSearchParams ? __home_NativeURLSearchParams : new.target);
+    \\        let first = true;
+    \\        for (const pair of parsed.entries()) {
+    \\          const key = first && pair[0].startsWith("%3F") ? "?" + pair[0].slice(3) : pair[0];
+    \\          __home_NativeURLSearchParams.prototype.append.call(result, key, pair[1]);
+    \\          first = false;
+    \\        }
+    \\        return result;
+    \\      }
+    \\      args[0] = text;
+    \\    }
+    \\    return Reflect.construct(__home_NativeURLSearchParams, args, new.target === __home_URLSearchParams ? __home_NativeURLSearchParams : new.target);
+    \\  };
+    \\  Object.setPrototypeOf(__home_URLSearchParams, __home_NativeURLSearchParams);
+    \\  __home_URLSearchParams.prototype = __home_NativeURLSearchParams.prototype;
+    \\  Object.defineProperty(__home_URLSearchParams, "__home_constructor_normalized", { value: true });
+    \\  Object.defineProperty(__home_URLSearchParams.prototype, "constructor", { configurable: true, writable: true, value: __home_URLSearchParams });
+    \\  URLSearchParams = globalThis.URLSearchParams = __home_URLSearchParams;
+    \\}
+    \\{
     \\  function __home_url_hex(byte) {
     \\    const text = byte.toString(16).toUpperCase();
     \\    return text.length === 1 ? "0" + text : text;
@@ -57568,6 +57700,7 @@ const harness_prelude =
     \\    return this.__home_pairs.map(pair => __home_url_encode(pair[0]) + "=" + __home_url_encode(pair[1])).join("&");
     \\  };
     \\}
+    \\__home_install_url_search_params_constructor_contract();
     \\if (typeof URLSearchParams === "function") {
     \\  function __home_url_search_params_json(params) {
     \\    const json = {};
@@ -57587,6 +57720,14 @@ const harness_prelude =
     \\  const __home_url_search_params_has = URLSearchParams.prototype.has;
     \\  URLSearchParams.prototype.toJSON = function() {
     \\    return __home_url_search_params_json(this);
+    \\  };
+    \\  URLSearchParams.prototype.forEach = function(callback, thisArg) {
+    \\    if (typeof callback !== "function") {
+    \\      const error = new TypeError('The "callback" argument must be of type function.');
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    for (const pair of this.entries()) callback.call(thisArg, pair[1], pair[0], this);
     \\  };
     \\  URLSearchParams.prototype.delete = function(name, value) {
     \\    if (arguments.length < 1) throw new TypeError("delete requires 1 argument");
@@ -57618,6 +57759,7 @@ const harness_prelude =
     \\  } catch (error) {
     \\    URLSearchParams.prototype.length = 0;
     \\  }
+    \\  Object.defineProperty(URLSearchParams.prototype, Symbol.toStringTag, { configurable: true, value: "URLSearchParams" });
     \\  function __home_url_search_params_invalid_this(method) {
     \\    const error = new TypeError("Can only call URLSearchParams." + method + " on instances of URLSearchParams");
     \\    error.code = "ERR_INVALID_THIS";
@@ -57628,22 +57770,31 @@ const harness_prelude =
     \\    error.code = "ERR_MISSING_ARGS";
     \\    return error;
     \\  }
-    \\  for (const [method, required, stringArgs] of [["append", 2, 2], ["delete", 1, 2], ["entries", 0, 0], ["forEach", 1, 0], ["get", 1, 1], ["getAll", 1, 1], ["has", 1, 2], ["keys", 0, 0], ["set", 2, 2], ["sort", 0, 0], ["toString", 0, 0], ["values", 0, 0]]) {
+    \\  for (const [method, required, stringArgs] of [["append", 2, 2], ["delete", 1, 2], ["entries", 0, 0], ["forEach", 0, 0], ["get", 1, 1], ["getAll", 1, 1], ["has", 1, 2], ["keys", 0, 0], ["set", 2, 2], ["sort", 0, 0], ["toString", 0, 0], ["values", 0, 0]]) {
     \\    const implementation = URLSearchParams.prototype[method];
     \\    if (typeof implementation !== "function" || implementation.__home_contract_normalized) continue;
     \\    URLSearchParams.prototype[method] = function() {
     \\      if (!(this instanceof URLSearchParams)) throw __home_url_search_params_invalid_this(method);
     \\      if (arguments.length < required) throw __home_url_search_params_missing_args();
-    \\      for (let index = 0; index < Math.min(arguments.length, stringArgs); index++) if (typeof arguments[index] === "symbol") throw new TypeError("Cannot convert a symbol to a string");
-    \\      return implementation.apply(this, arguments);
+    \\      const normalizedArgs = Array.from(arguments);
+    \\      for (let index = 0; index < Math.min(normalizedArgs.length, stringArgs); index++) {
+    \\        if (typeof normalizedArgs[index] === "symbol") throw new TypeError("Cannot convert a symbol to a string");
+    \\        if (index < required || normalizedArgs[index] !== undefined) normalizedArgs[index] = __home_url_to_usv_string(normalizedArgs[index]);
+    \\      }
+    \\      return implementation.apply(this, normalizedArgs);
     \\    };
     \\    URLSearchParams.prototype[method].__home_contract_normalized = true;
     \\  }
     \\  URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
     \\  try {
-    \\    const iteratorPrototype = Object.getPrototypeOf(new URLSearchParams().entries());
-    \\    const iteratorNext = iteratorPrototype && iteratorPrototype.next;
-    \\    if (typeof iteratorNext === "function" && !iteratorNext.__home_contract_normalized) {
+    \\    const iteratorPrototypes = [];
+    \\    for (const method of ["entries", "keys", "values"]) {
+    \\      const iteratorPrototype = Object.getPrototypeOf(new URLSearchParams()[method]());
+    \\      if (!iteratorPrototype || iteratorPrototypes.includes(iteratorPrototype)) continue;
+    \\      iteratorPrototypes.push(iteratorPrototype);
+    \\      Object.defineProperty(iteratorPrototype, Symbol.toStringTag, { configurable: true, value: "URLSearchParams Iterator" });
+    \\      const iteratorNext = iteratorPrototype.next;
+    \\      if (typeof iteratorNext !== "function" || iteratorNext.__home_contract_normalized) continue;
     \\      iteratorPrototype.next = function() {
     \\        try { return iteratorNext.call(this); }
     \\        catch (cause) {
@@ -61796,6 +61947,33 @@ fn sourceShebangLen(source: []const u8) usize {
     if (!std.mem.startsWith(u8, source, "#!")) return 0;
     const newline = std.mem.indexOfScalar(u8, source, '\n') orelse return source.len;
     return newline + 1;
+}
+
+fn sourceHasLeadingUseStrict(source: []const u8) bool {
+    var cursor = sourceShebangLen(source);
+    while (cursor < source.len) {
+        while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+        if (std.mem.startsWith(u8, source[cursor..], "//")) {
+            cursor = if (std.mem.indexOfScalarPos(u8, source, cursor + 2, '\n')) |newline| newline + 1 else source.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, source[cursor..], "/*")) {
+            const end = std.mem.indexOfPos(u8, source, cursor + 2, "*/") orelse return false;
+            cursor = end + 2;
+            continue;
+        }
+        break;
+    }
+    if (cursor >= source.len or (source[cursor] != '\'' and source[cursor] != '"')) return false;
+    const quote = source[cursor];
+    cursor += 1;
+    const directive = "use strict";
+    if (!std.mem.startsWith(u8, source[cursor..], directive)) return false;
+    cursor += directive.len;
+    if (cursor >= source.len or source[cursor] != quote) return false;
+    cursor += 1;
+    while (cursor < source.len and (source[cursor] == ' ' or source[cursor] == '\t' or source[cursor] == '\r')) cursor += 1;
+    return cursor == source.len or source[cursor] == ';' or source[cursor] == '\n';
 }
 
 fn appendImportMetaReplacement(
@@ -68940,13 +69118,29 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
     const rewritten_module_source = owned_module_source orelse module_source;
+    const diagnosed_module_source = try std.mem.replaceOwned(u8, allocator, rewritten_module_source, "const { test, assert_equals, assert_throws } = require('../common/wpt').harness;",
+        \\const __home_wpt_harness = require('../common/wpt').harness;
+        \\const { assert_equals, assert_throws } = __home_wpt_harness;
+        \\const test = (fn, description) => __home_wpt_harness.test(() => {
+        \\  try {
+        \\    return fn();
+        \\  } catch (error) {
+        \\    if (error && typeof error.message === "string" && description && !String(error.message).startsWith(String(description) + ": ")) {
+        \\      error.message = String(description) + ": " + error.message;
+        \\    }
+        \\    throw error;
+        \\  }
+        \\}, description);
+    );
+    defer allocator.free(diagnosed_module_source);
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
-    try out.appendSlice(allocator, "(function() {\n");
+    const strict_mode = sourceHasLeadingUseStrict(diagnosed_module_source);
+    try out.appendSlice(allocator, if (strict_mode) "(function() {\n\"use strict\";\n" else "(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
     try appendSnapshotPrelude(&out, allocator, relative_path);
-    try appendSourceWithBunTestImportRewrites(&out, allocator, rewritten_module_source, relative_path);
+    try appendSourceWithBunTestImportRewrites(&out, allocator, diagnosed_module_source, relative_path);
     try out.appendSlice(allocator, "\n})();\n");
     try out.appendSlice(allocator, "\n//# sourceURL=");
     try out.appendSlice(allocator, relative_path);
@@ -73548,6 +73742,49 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_current_filename = __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\n//# sourceURL=js/node/example.test.js\n") != null);
+}
+
+test "Bun test import rewrite preserves file strict mode through explicit directive" {
+    const source =
+        \\// Flags: --expose-internals
+        \\/* Leading comments remain part of the directive prologue. */
+        \\'use strict';
+        \\const callbackThis = (function() { return this; })();
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/strict.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.startsWith(u8, rewritten, "(function() {\n\"use strict\";\n"));
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\n})();\n") != null);
+}
+
+test "bootstrap runner enforces strict readonly URL assignments" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\// Flags: --expose-internals
+        \\'use strict';
+        \\const assert = require("assert");
+        \\const url = new URL("https://example.com/?a=1");
+        \\assert.throws(() => url.origin = "https://invalid.example", /Attempted to assign to readonly property/, "origin must be readonly");
+        \\assert.throws(() => url.searchParams = "?b=2", /Attempted to assign to readonly property/, "searchParams must be readonly");
+        \\assert.strictEqual(Object.getOwnPropertyDescriptor(URL.prototype, "origin").set, undefined);
+        \\assert.strictEqual(Object.getOwnPropertyDescriptor(URL.prototype, "searchParams").set, undefined);
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-whatwg-url-readonly-home-regression.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("strict URL readonly regression: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
 }
 
 test "Bun test import rewrite embeds copied snapshot files" {
@@ -87221,6 +87458,35 @@ test "bootstrap runner covers URLSearchParams behavior" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner pins Node IDNA retry through URL construction" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("Node IDNA retry", () => {
+        \\  const input = "https://look\uFEFFout.net/x";
+        \\  expect(globalThis.__home_url_domain_to_ascii_native("look\uFEFFout.net")).toBe("lookout.net");
+        \\  expect(__home_url_retry_idna_parse_input(input)).toBe("https://lookout.net/x");
+        \\  expect(globalThis.__home_url_parse_whatwg_native("https://lookout.net/x").hostname).toBe("lookout.net");
+        \\  expect(new URL(input).hostname).toBe("lookout.net");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-whatwg-url-idna-home-regression.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Node IDNA retry regression: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }

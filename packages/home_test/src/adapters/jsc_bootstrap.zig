@@ -395,9 +395,10 @@ pub const Runtime = struct {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
 
-        // Strip TypeScript types from the prepared corpus source using the real
-        // Bun parser/printer (transform-only, no macros, no resolver cone) so
-        // `.ts`/`.tsx` test files with type annotations evaluate as JS. The
+        // Strip TypeScript types and JSX from the prepared corpus source using
+        // the real Bun parser/printer (transform-only, no macros, no resolver
+        // cone) so typed/JSX test files evaluate as JS. Plain JS already has
+        // its imports rewritten and must retain directives such as `use strict`.
         // prepared source is already import-rewritten to `__home_import(...)`
         // calls + an IIFE wrapper, so this is a pure type-strip reprint. On any
         // parse error we fall back to the raw source (prior behavior), so this
@@ -406,7 +407,7 @@ pub const Runtime = struct {
         var eval_source: []const u8 = spec.source;
         var stripped_owned: ?[]u8 = null;
         defer if (stripped_owned) |s| allocator.free(s);
-        if (loader.isJSLike()) {
+        if (loader != .js) {
             const handle = TranspilerHandle{
                 .loader = loader,
                 .platform = .bun,
