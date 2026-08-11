@@ -28761,6 +28761,7 @@ const harness_prelude =
     \\if (!process.versions.node) process.versions.node = process.version.replace(/^v/, "").split("-")[0];
     \\if (!process.versions.home) process.versions.home = process.version.replace(/^v/, "");
     \\if (!process.env) process.env = {};
+    \\globalThis.__home_process_env_baseline = Object.assign({}, process.env);
     \\if (globalThis.__home_bun_executable) process.execPath = globalThis.__home_bun_executable;
     \\else if (!process.execPath) process.execPath = "home";
     \\if (!process.argv) process.argv = [process.execPath];
@@ -44122,6 +44123,23 @@ const harness_prelude =
     \\globalThis.__home_modules["../test/common/fixtures"] = __home_node_test_common_fixtures;
     \\globalThis.__home_modules["js/node/test/common/fixtures"] = __home_node_test_common_fixtures;
     \\globalThis.__home_modules["js/node/test/common/fixtures.js"] = __home_node_test_common_fixtures;
+    \\const __home_node_test_tmp_name = ".tmp." + (process.env.TEST_SERIAL_ID || process.env.TEST_THREAD_ID || "0");
+    \\const __home_node_test_tmp_path = process.env.NODE_TEST_DIR
+    \\  ? __home_path_posix_resolve(process.env.NODE_TEST_DIR, __home_node_test_tmp_name)
+    \\  : __home_path_posix_resolve(process.env.TMPDIR || "/tmp", "home-node-test", __home_node_test_tmp_name);
+    \\const __home_node_test_common_tmpdir = {
+    \\  path: __home_node_test_tmp_path,
+    \\  refresh() {
+    \\    __home_node_fs.rmSync(__home_node_test_tmp_path, { recursive: true, force: true });
+    \\    __home_node_fs.mkdirSync(__home_node_test_tmp_path, { recursive: true });
+    \\  },
+    \\  resolve() { return __home_path_posix_resolve.apply(undefined, [__home_node_test_tmp_path].concat(Array.from(arguments))); },
+    \\  fileURL() { return __home_url_path_to_file_url(this.resolve.apply(this, arguments)); },
+    \\  hasEnoughSpace() { return true; },
+    \\};
+    \\globalThis.__home_modules["../common/tmpdir"] = __home_node_test_common_tmpdir;
+    \\globalThis.__home_modules["js/node/test/common/tmpdir"] = __home_node_test_common_tmpdir;
+    \\globalThis.__home_modules["js/node/test/common/tmpdir.js"] = __home_node_test_common_tmpdir;
     \\globalThis.__home_modules["assert/strict"] = {
     \\  deepStrictEqual(actual, expected) {
     \\    return __home_assert_module.deepStrictEqual(actual, expected);
@@ -61628,7 +61646,69 @@ const harness_prelude =
     \\  this.port1.__home_peer = this.port2;
     \\  this.port2.__home_peer = this.port1;
     \\}
+    \\const __home_worker_environment_data = new Map();
+    \\let __home_worker_next_thread_id = 1;
+    \\function __home_worker_data_clone_error(cause) {
+    \\  const detail = cause && cause.message ? ": " + String(cause.message) : "";
+    \\  const error = new Error("DataCloneError: workerData could not be cloned" + detail);
+    \\  error.name = "DataCloneError";
+    \\  error.code = 25;
+    \\  return error;
+    \\}
+    \\function __home_worker_assert_cloneable(value, seen) {
+    \\  if (typeof value === "function" || typeof value === "symbol") throw __home_worker_data_clone_error();
+    \\  if (value === null || typeof value !== "object") return;
+    \\  if (seen.has(value)) return;
+    \\  seen.add(value);
+    \\  if ((typeof WeakMap === "function" && value instanceof WeakMap) ||
+    \\      (typeof WeakSet === "function" && value instanceof WeakSet) ||
+    \\      (typeof Promise === "function" && value instanceof Promise)) throw __home_worker_data_clone_error();
+    \\  if (value instanceof Map) {
+    \\    for (const [key, entry] of value) {
+    \\      __home_worker_assert_cloneable(key, seen);
+    \\      __home_worker_assert_cloneable(entry, seen);
+    \\    }
+    \\    return;
+    \\  }
+    \\  if (value instanceof Set) {
+    \\    for (const entry of value) __home_worker_assert_cloneable(entry, seen);
+    \\    return;
+    \\  }
+    \\  if (value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return;
+    \\  for (const key of Object.keys(value)) __home_worker_assert_cloneable(value[key], seen);
+    \\}
+    \\function __home_worker_strict_clone(value) {
+    \\  __home_worker_assert_cloneable(value, new Set());
+    \\  if (typeof structuredClone === "function") {
+    \\    try { return structuredClone(value); }
+    \\    catch (error) { throw __home_worker_data_clone_error(error); }
+    \\  }
+    \\  if (value === null || typeof value !== "object") return value;
+    \\  if (Array.isArray(value)) return value.map(__home_worker_strict_clone);
+    \\  const clone = {};
+    \\  for (const key of Object.keys(value)) clone[key] = __home_worker_strict_clone(value[key]);
+    \\  return clone;
+    \\}
+    \\function __home_worker_environment_set(map, key, value) {
+    \\  if (value === undefined) map.delete(key);
+    \\  else map.set(key, value);
+    \\}
+    \\function __home_worker_environment_snapshot(source) {
+    \\  const snapshot = new Map();
+    \\  for (const [key, value] of source) snapshot.set(__home_worker_strict_clone(key), __home_worker_strict_clone(value));
+    \\  return snapshot;
+    \\}
+    \\function __home_reset_worker_threads_state() {
+    \\  __home_worker_environment_data.clear();
+    \\  __home_worker_next_thread_id = 1;
+    \\  delete globalThis.__home_worker_environment_context;
+    \\}
     \\function __home_Worker(code, options) {
+    \\  const workerOptions = options && typeof options === "object" ? options : {};
+    \\  const workerData = Object.prototype.hasOwnProperty.call(workerOptions, "workerData") ? __home_worker_strict_clone(workerOptions.workerData) : undefined;
+    \\  const parentEnvironment = globalThis.__home_worker_environment_context instanceof Map ? globalThis.__home_worker_environment_context : __home_worker_environment_data;
+    \\  const workerEnvironment = __home_worker_environment_snapshot(parentEnvironment);
+    \\  const workerThreadId = __home_worker_next_thread_id++;
     \\  const worker = __home_http_event_target();
     \\  const environmentFinalizers = [];
     \\  const parentPort = __home_http_event_target();
@@ -61644,8 +61724,16 @@ const harness_prelude =
     \\    this.emit("exit", 0);
     \\    return Promise.resolve(0);
     \\  };
-    \\  const workerModule = Object.assign({}, globalThis.__home_modules["worker_threads"] || {}, { isMainThread: false, parentPort, workerData: options && options.workerData });
+    \\  const workerModule = Object.assign({}, globalThis.__home_modules["worker_threads"] || {}, {
+    \\    isMainThread: false,
+    \\    parentPort,
+    \\    threadId: workerThreadId,
+    \\    workerData,
+    \\    getEnvironmentData(key) { return workerEnvironment.get(key); },
+    \\    setEnvironmentData(key, value) { __home_worker_environment_set(workerEnvironment, key, value); },
+    \\  });
     \\  const workerProcess = Object.create(process);
+    \\  workerProcess.env = Object.assign({}, process.env);
     \\  workerProcess.exit = function(code) {
     \\    worker.__home_terminated = true;
     \\    worker.exitCode = code === undefined ? 0 : Number(code) | 0;
@@ -61670,9 +61758,11 @@ const harness_prelude =
     \\    const previousFilename = globalThis.__home_current_filename;
     \\    const previousDirname = globalThis.__home_current_dirname;
     \\    const previousProcess = globalThis.process;
+    \\    const previousEnvironmentContext = globalThis.__home_worker_environment_context;
     \\    try {
     \\      globalThis.process = workerProcess;
-    \\      if (options && options.eval) {
+    \\      globalThis.__home_worker_environment_context = workerEnvironment;
+    \\      if (workerOptions.eval) {
     \\        new Function("require", "process", String(code))(workerRequire, workerProcess);
     \\      } else {
     \\        const filename = String(code);
@@ -61698,11 +61788,23 @@ const harness_prelude =
     \\      globalThis.__home_current_filename = previousFilename;
     \\      globalThis.__home_current_dirname = previousDirname;
     \\      globalThis.process = previousProcess;
+    \\      if (previousEnvironmentContext === undefined) delete globalThis.__home_worker_environment_context;
+    \\      else globalThis.__home_worker_environment_context = previousEnvironmentContext;
     \\    }
     \\  });
     \\  return worker;
     \\}
-    \\const __home_worker_threads_module = { MessageChannel: __home_MessageChannel, MessagePort: typeof MessagePort === "function" ? MessagePort : function MessagePort() {}, Worker: __home_Worker, isMainThread: true, parentPort: null, threadId: 0, workerData: undefined };
+    \\const __home_worker_threads_module = {
+    \\  MessageChannel: __home_MessageChannel,
+    \\  MessagePort: typeof MessagePort === "function" ? MessagePort : function MessagePort() {},
+    \\  Worker: __home_Worker,
+    \\  isMainThread: true,
+    \\  parentPort: null,
+    \\  threadId: 0,
+    \\  workerData: undefined,
+    \\  getEnvironmentData(key) { return __home_worker_environment_data.get(key); },
+    \\  setEnvironmentData(key, value) { __home_worker_environment_set(__home_worker_environment_data, key, value); },
+    \\};
     \\__home_worker_threads_module.default = __home_worker_threads_module;
     \\globalThis.__home_modules["worker_threads"] = __home_worker_threads_module;
     \\globalThis.__home_modules["node:worker_threads"] = __home_worker_threads_module;
@@ -61857,7 +61959,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\n__home_node_napi_gc_callbacks.length = 0;\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\nif (globalThis.process) process.env = Object.assign({}, globalThis.__home_process_env_baseline || {});\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\n__home_node_napi_gc_callbacks.length = 0;\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -83522,6 +83624,49 @@ test "bootstrap runner reports nonzero process exit precisely" {
 
     try std.testing.expectEqual(test_result.TestStatus.failed, file_run.result.status());
     try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "ProcessExitError: process.exit(7)") != null);
+}
+
+test "bootstrap runner preserves worker environment snapshots and clone errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const tmpdir = require('../common/tmpdir');
+        \\const { Worker, getEnvironmentData, setEnvironmentData } = require('worker_threads');
+        \\test('worker state boundaries', async () => {
+        \\  tmpdir.refresh();
+        \\  assert.match(tmpdir.resolve('fixture.js'), /home-node-test.*fixture\.js$/);
+        \\  setEnvironmentData('hello', { value: 'world' });
+        \\  assert.deepStrictEqual(getEnvironmentData('hello'), { value: 'world' });
+        \\  assert.throws(() => new Worker('./worker.js', { workerData: { fn() {} } }), /DataCloneError/);
+        \\  const worker = new Worker(`
+        \\    const { parentPort, getEnvironmentData, threadId } = require('worker_threads');
+        \\    parentPort.postMessage({ environment: getEnvironmentData('hello'), threadId });
+        \\  `, { eval: true });
+        \\  const message = await new Promise((resolve, reject) => {
+        \\    worker.once('message', resolve);
+        \\    worker.once('error', reject);
+        \\  });
+        \\  assert.deepStrictEqual(message.environment, { value: 'world' });
+        \\  assert.strictEqual(message.threadId, 1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-worker-state-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("worker state boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner tees asynchronous byte streams without duplicating chunks" {
