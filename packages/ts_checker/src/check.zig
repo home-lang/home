@@ -25797,7 +25797,10 @@ pub const Checker = struct {
                     }
                 }
                 const idx = arg_index orelse return null;
-                const callee_t = self.hir.typeOf(c.callee);
+                var callee_t = self.hir.typeOf(c.callee);
+                if (callee_t == types.Primitive.none) {
+                    callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
+                }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
                 const sig = self.firstSignatureType(callee_t) orelse return null;
                 const params = self.interner.signatureParams(sig);
@@ -25838,6 +25841,45 @@ pub const Checker = struct {
                 const b = hir_mod.binopOf(self.hir, parent);
                 if (b.op != .comma or b.rhs != expr_node) return null;
                 return self.contextualTargetTypeForExpression(parent);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, parent);
+                const args = hir_mod.callArgs(self.hir, parent);
+                var arg_index: ?usize = null;
+                for (args, 0..) |arg, i| {
+                    if (arg == expr_node) {
+                        arg_index = i;
+                        break;
+                    }
+                }
+                const idx = arg_index orelse return null;
+                var callee_t = self.hir.typeOf(c.callee);
+                if (callee_t == types.Primitive.none) {
+                    callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
+                }
+                if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
+                const sig = self.firstSignatureType(callee_t) orelse return null;
+                const params = self.interner.signatureParams(sig);
+                if (self.rest_signatures.contains(sig) and params.len > 0) {
+                    const fixed_count = params.len - 1;
+                    if (idx >= fixed_count) {
+                        if (self.restTupleAnnotationForSignature(sig)) |tuple_node| {
+                            return self.tupleAnnotationElementTypeAt(tuple_node, idx - fixed_count, args.len - fixed_count) catch null;
+                        }
+                    }
+                }
+                if (idx >= params.len) return null;
+                return params[idx];
+            },
+            .object_property => {
+                const property = hir_mod.objectPropertyOf(self.hir, parent);
+                if (property.value != expr_node or property.is_computed) return null;
+                const object_node = self.hir.parentOf(parent);
+                if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) return null;
+                const object_target = (self.jsDocSatisfiesTypeForExpression(object_node) catch null) orelse
+                    self.contextualTargetTypeForExpression(object_node) orelse return null;
+                const name = self.propertyNameFromKeyNode(property.key) orelse return null;
+                return self.contextualObjectLiteralMemberTarget(object_target, name) catch null;
             },
             else => return null,
         }
@@ -30525,14 +30567,28 @@ pub const Checker = struct {
             blk: {
                 const parent = self.hir.parentOf(node);
                 if (parent == hir_mod.none_node_id) break :blk null;
+                var object_member_target: ?TypeId = null;
                 switch (self.hir.kindOf(parent)) {
                     .assignment, .var_decl, .let_decl, .const_decl => {},
+                    .object_property => {
+                        const property = hir_mod.objectPropertyOf(self.hir, parent);
+                        if (property.value != node) break :blk null;
+                        const object_node = self.hir.parentOf(parent);
+                        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) break :blk null;
+                        const object_target = (try self.jsDocSatisfiesTypeForExpression(object_node)) orelse
+                            self.contextualTargetTypeForExpression(object_node) orelse break :blk null;
+                        if (object_target >= self.interner.pool.typeCount()) break :blk null;
+                        const object_flags = self.interner.pool.flagsOf(object_target);
+                        if (object_flags.is_union or self.containsFreeTypeParameter(object_target)) break :blk null;
+                        const member_name = self.propertyNameFromKeyNode(property.key) orelse break :blk null;
+                        object_member_target = try self.contextualObjectLiteralMemberTarget(object_target, member_name);
+                    },
                     else => break :blk null,
                 }
                 if (try self.contextualParameterTypeFromFunctionAnnotation(node, p)) |syntax_t| {
                     break :blk syntax_t;
                 }
-                const target_t = self.contextualTargetTypeForFunction(node) orelse break :blk null;
+                const target_t = object_member_target orelse self.contextualTargetTypeForFunction(node) orelse break :blk null;
                 if (target_t >= self.interner.pool.typeCount()) break :blk null;
                 if (self.containsFreeTypeParameter(target_t)) break :blk null;
                 break :blk self.contextualParameterTypeForFunctionParam(node, p, target_t);
@@ -30777,6 +30833,7 @@ pub const Checker = struct {
             const rest_has_contextual_signature = pp.flags.is_rest and
                 self.functionHasContextualCallableType(node);
             if (!has_anno and !has_jsdoc_param_type and jsdoc_context_param_t == null and
+                contextual_param_t == null and
                 !inferred_from_default and param_implicit_any_report and
                 !default_is_await_error_placeholder and
                 !default_is_yield_in_param_initializer and
@@ -86706,12 +86763,54 @@ pub const Checker = struct {
         return self.interner.signatureParams(prior_sig).len != self.interner.signatureParams(current_sig).len;
     }
 
+    fn repeatedVarCallableTypesIdentical(self: *Checker, prior: TypeId, current: TypeId) bool {
+        if (prior >= self.interner.pool.typeCount() or current >= self.interner.pool.typeCount()) return false;
+        const prior_is_union = self.interner.pool.flagsOf(prior).is_union;
+        const current_is_union = self.interner.pool.flagsOf(current).is_union;
+        if (prior_is_union or current_is_union) {
+            if (!prior_is_union or !current_is_union) return false;
+            const prior_members = self.interner.unionMembers(prior);
+            const current_members = self.interner.unionMembers(current);
+            if (prior_members.len != current_members.len) return false;
+            for (prior_members, current_members) |prior_member, current_member| {
+                if (prior_member == current_member) continue;
+                if (!self.repeatedVarCallableTypesIdentical(prior_member, current_member)) return false;
+            }
+            return true;
+        }
+        const prior_sig = self.nonConstructCallSignatureOfType(prior) orelse return false;
+        const current_sig = self.nonConstructCallSignatureOfType(current) orelse return false;
+        const prior_params = self.interner.signatureParams(prior_sig);
+        const current_params = self.interner.signatureParams(current_sig);
+        if (prior_params.len != current_params.len) return false;
+        if (self.rest_signatures.contains(prior_sig) != self.rest_signatures.contains(current_sig)) return false;
+        if (self.signature_min_args.get(prior_sig) != self.signature_min_args.get(current_sig)) return false;
+        for (prior_params, current_params) |prior_param, current_param| {
+            if (prior_param == current_param) continue;
+            if (!(self.engine.isIdenticalTo(prior_param, current_param) catch false)) return false;
+        }
+        const prior_return = self.interner.signatureReturn(prior_sig);
+        const current_return = self.interner.signatureReturn(current_sig);
+        if (prior_return == null or current_return == null) return prior_return == current_return;
+        if (prior_return.? != current_return.? and
+            !(self.engine.isIdenticalTo(prior_return.?, current_return.?) catch false))
+        {
+            return false;
+        }
+        const prior_this = self.signatureThisParam(prior_sig);
+        const current_this = self.signatureThisParam(current_sig);
+        if (prior_this == null or current_this == null) return prior_this == current_this;
+        return prior_this.? == current_this.? or
+            (self.engine.isIdenticalTo(prior_this.?, current_this.?) catch false);
+    }
+
     fn repeatedVarArrayElementMismatch(self: *Checker, prior: TypeId, current: TypeId) bool {
         if (prior >= self.interner.pool.typeCount() or current >= self.interner.pool.typeCount()) return false;
         if (self.interner.pool.flagsOf(prior).is_union or self.interner.pool.flagsOf(current).is_union) return false;
         if (!self.typeIsArrayLikeObject(prior) or !self.typeIsArrayLikeObject(current)) return false;
         const prior_element = self.interner.objectNumberIndex(prior);
         const current_element = self.interner.objectNumberIndex(current);
+        if (self.repeatedVarCallableTypesIdentical(prior_element, current_element)) return false;
         return prior_element != types.Primitive.none and
             current_element != types.Primitive.none and
             prior_element != current_element and
@@ -91242,7 +91341,11 @@ pub const Checker = struct {
         while (parts.next()) |part| {
             if (part.len == 0) return null;
             const prop_name = self.string_interner.intern(part) catch return error.OutOfMemory;
-            if (root_is_this and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullishStrict(current)) {
+            if (root_is_this and
+                self.strict_flags.strict_null_checks and
+                self.typeIsPossiblyNullishStrict(current) and
+                (!self.thisHasClassLexicalBinding(at_node) or self.enclosingThisHostHasExplicitThisParam(at_node)))
+            {
                 try self.reportThisTypeQueryPossiblyNullish(at_node, current);
                 current = types.Primitive.any;
                 current_is_global_this = false;
@@ -111723,6 +111826,12 @@ pub const Checker = struct {
                 }
             }
             if (self.lookupNarrow(id.name)) |t| {
+                // `this` is a receiver binding, not an ordinary identifier
+                // that can acquire annotations or expando properties. Once
+                // its active scope binding is found, return it directly so a
+                // prior function's explicit `this` parameter cannot be
+                // recovered as the current method's receiver type.
+                if (is_this) return t;
                 // Expando-function augmentation also applies to the narrowed
                 // flow type: a function-valued binding that receives
                 // `name.prop = ÃÂ¢ÃÂÃÂ¦` assignments carries those properties on
@@ -125181,6 +125290,7 @@ pub const Checker = struct {
             return types.Primitive.undefined_t;
         }
         if (self.assignedFunctionExpressionEffectiveThis(node)) |this_t| return this_t;
+        if (self.contextualObjectLiteralMethodThisType(node)) |this_t| return this_t;
         if (!this_rebound_plain_function or
             self.enclosingThisHostHasExplicitThisParam(node) or
             (this_rebound_plain_function and self.thisInsideObjectLiteralMethod(node) and self.currentThisType() != null))
@@ -125196,6 +125306,37 @@ pub const Checker = struct {
             try self.reportThisImplicitlyAny(node);
         }
         return types.Primitive.any;
+    }
+
+    fn contextualObjectLiteralMethodThisType(self: *Checker, node: NodeId) ?TypeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind == .arrow_fn) return null;
+            if (kind != .fn_decl and kind != .fn_expr) continue;
+            if (self.functionDeclHasExplicitThisParam(cur)) return null;
+            const property_node = self.hir.parentOf(cur);
+            if (property_node == hir_mod.none_node_id or self.hir.kindOf(property_node) != .object_property) return null;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            if (property.value != cur) return null;
+            const object_node = self.hir.parentOf(property_node);
+            if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) return null;
+            const object_target = self.contextualTargetTypeForExpression(object_node) orelse return null;
+            if (!property.is_computed) {
+                if (self.propertyNameFromKeyNode(property.key)) |member_name| {
+                    const member_target = self.contextualObjectLiteralMemberTarget(object_target, member_name) catch null;
+                    if (member_target) |target_t| {
+                        if (self.firstSignatureType(target_t)) |signature| {
+                            if (self.signatureThisParam(signature)) |this_t| {
+                                return self.thisTypeMarkerConstraint(this_t) orelse this_t;
+                            }
+                        }
+                    }
+                }
+            }
+            return self.contextualObjectLiteralThisType(object_target);
+        }
+        return null;
     }
 
     fn thisIsUndefinedInExternalModuleArrow(self: *Checker, node: NodeId) bool {
@@ -126669,6 +126810,31 @@ pub const Checker = struct {
                 if (self.firstSignatureType(target_t)) |target_sig| {
                     if (self.signatureThisParam(target_sig)) |target_this_t| {
                         method_this_t = self.thisTypeMarkerConstraint(target_this_t) orelse target_this_t;
+                    }
+                }
+            }
+            // The literal's provisional pass can run before a call/new
+            // argument target is available. Once a contextual signature
+            // supplies a concrete value-parameter type, discard only that
+            // parameter's provisional implicit-any diagnostics. Parameter
+            // nodes can sit outside the function value's HIR span, so this is
+            // intentionally node-based rather than positional.
+            if (target_member_t) |target_t| {
+                if (self.firstSignatureType(target_t)) |target_sig| {
+                    const target_params = self.interner.signatureParams(target_sig);
+                    var value_index: usize = 0;
+                    for (hir_mod.fnParams(self.hir, op.value)) |param| {
+                        if (self.isThisParameter(param)) continue;
+                        if (value_index < target_params.len and
+                            target_params[value_index] != types.Primitive.any and
+                            target_params[value_index] != types.Primitive.unknown)
+                        {
+                            self.removePriorDiagnosticForNode(param, TsCodes.parameter_implicitly_any);
+                            self.removePriorDiagnosticForNode(param, TsCodes.rest_parameter_implicitly_any);
+                            self.removePriorDiagnosticForNode(param, TsCodes.parameter_implicitly_any_suggestion);
+                            self.removePriorDiagnosticForNode(param, TsCodes.rest_parameter_implicitly_any_suggestion);
+                        }
+                        value_index += 1;
                     }
                 }
             }
@@ -150539,12 +150705,63 @@ pub const Checker = struct {
 
     fn inferArrayLiteralElementType(self: *Checker, elems: []const TypeId) CheckError!TypeId {
         if (self.strict_flags.strict_null_checks) return try self.internArrayElementUnion(elems);
+        var normalized: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer normalized.deinit(self.gpa);
+        var has_direct_this = false;
         for (elems) |elem| {
-            if (self.containsThisTypeParameter(elem)) return try self.internArrayElementUnion(elems);
+            if (self.isThisTypeParameter(elem)) {
+                has_direct_this = true;
+                break;
+            }
+        }
+        if (has_direct_this) {
+            for (elems) |elem| {
+                if (!self.isThisTypeParameter(elem)) continue;
+                const constraint = self.typeParameterConstraint(elem) orelse continue;
+                var saw_concrete_sibling = false;
+                var all_fit_constraint = true;
+                for (elems) |candidate| {
+                    if (candidate == elem or self.isThisTypeParameter(candidate) or
+                        candidate == types.Primitive.null_t or candidate == types.Primitive.undefined_t or
+                        candidate == types.Primitive.void_t)
+                    {
+                        continue;
+                    }
+                    saw_concrete_sibling = true;
+                    if (!try self.checkerAssignableTo(candidate, constraint)) {
+                        all_fit_constraint = false;
+                        break;
+                    }
+                }
+                if (saw_concrete_sibling and all_fit_constraint) return constraint;
+            }
+        }
+        for (elems) |elem| {
+            if (!self.isThisTypeParameter(elem)) {
+                if (!has_direct_this and self.containsThisTypeParameter(elem)) return try self.internArrayElementUnion(elems);
+                try normalized.append(self.gpa, elem);
+                continue;
+            }
+            const constraint = self.typeParameterConstraint(elem) orelse {
+                try normalized.append(self.gpa, elem);
+                continue;
+            };
+            var constraint_present = false;
+            for (elems) |candidate| {
+                if (candidate == elem) continue;
+                if (candidate == constraint or
+                    (self.engine.isIdenticalTo(candidate, constraint) catch false) or
+                    (try self.checkerAssignableTo(candidate, constraint)))
+                {
+                    constraint_present = true;
+                    break;
+                }
+            }
+            try normalized.append(self.gpa, if (constraint_present) constraint else elem);
         }
         var filtered: std.ArrayListUnmanaged(TypeId) = .empty;
         defer filtered.deinit(self.gpa);
-        for (elems) |elem| {
+        for (normalized.items) |elem| {
             if (elem == types.Primitive.null_t or elem == types.Primitive.undefined_t or elem == types.Primitive.void_t) continue;
             try filtered.append(self.gpa, elem);
         }
@@ -232906,4 +233123,111 @@ test "checker: generic object excess properties render inferred alias arguments"
         TsCodes.object_literal_excess_property,
         "Object literal may only specify known properties, and '[Symbol.toPrimitive]' does not exist in type 'I<boolean, string>'.",
     ));
+}
+
+test "checker: call-context object methods receive parameter and this types" {
+    const s = try newSetup(
+        \\interface I {
+        \\  foo(n: string): number;
+        \\  bar(): number;
+        \\}
+        \\declare function consume(value: I): void;
+        \\consume({
+        \\  foo(n) { return n.length + this.bar(); },
+        \\  bar() { return 1; },
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.function_return_self_reference_implicitly_any));
+}
+
+test "checker: inferred object function this uses the completed object shape" {
+    const s = try newSetup(
+        \\let value = {
+        \\  n: 1,
+        \\  f: function () { return this.n.length; },
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'length' does not exist on type 'number'."));
+}
+
+test "checker: invalid accessor this parameters do not leak into sibling objects" {
+    const s = try newSetup(
+        \\interface Foo { n: number; x: number; }
+        \\interface Bar { wrong: "place" | "time" | "method" | "technique"; }
+        \\const mismatch = {
+        \\  n: 13,
+        \\  get x(this: Foo) { return this.n; },
+        \\  set x(this: Bar, n) { this.wrong = "method"; },
+        \\};
+        \\const contextual: Foo = {
+        \\  n: 16,
+        \\  get x() { return this.n; },
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerCountCode(s, TsCodes.accessors_cannot_declare_this) >= 2);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: repeated callable arrays compare structural call signatures" {
+    const s = try newSetup(
+        \\var values: { (x: string): string }[];
+        \\var values: ((x: string) => string)[];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: non-strict array inference collapses this to a present class constraint" {
+    const s = try newSetup(
+        \\class C {
+        \\  c = new C();
+        \\  f() {
+        \\    var values: C[];
+        \\    var values = [this, this.c];
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: class typeof this queries honor member narrowing" {
+    const s = try newSetup(
+        \\class C {
+        \\  a?: { b?: string };
+        \\  f() {
+        \\    let a: typeof this.a = undefined as any;
+        \\    if (this.a) {
+        \\      let b: typeof this.a.b = undefined as any;
+        \\    }
+        \\  }
+        \\}
+        \\function explicit(this: { a: number } | undefined) {
+        \\  let value: typeof this.a = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
