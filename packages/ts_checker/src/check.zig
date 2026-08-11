@@ -17444,6 +17444,8 @@ pub const Checker = struct {
             {
                 continue;
             }
+            const name = hir_mod.identifierOf(self.hir, v.name).name;
+            if (self.topLevelHasAmbientVarNamed(stmts, name)) continue;
             const init_type = self.hir.typeOf(v.init);
             const inferred = if (init_type != types.Primitive.none) init_type else self.hir.typeOf(stmt);
             if (inferred == types.Primitive.none or
@@ -17453,8 +17455,28 @@ pub const Checker = struct {
             {
                 continue;
             }
-            try pending.put(self.gpa, hir_mod.identifierOf(self.hir, v.name).name, stmt);
+            try pending.put(self.gpa, name, stmt);
         }
+    }
+
+    fn topLevelHasAmbientVarNamed(
+        self: *Checker,
+        stmts: []const NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        for (stmts) |raw_stmt| {
+            const stmt = self.unwrapExportDecl(raw_stmt);
+            const kind = self.hir.kindOf(stmt);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const decl = hir_mod.varDeclOf(self.hir, stmt);
+            if (!decl.is_ambient or decl.name == hir_mod.none_node_id or
+                self.hir.kindOf(decl.name) != .identifier)
+            {
+                continue;
+            }
+            if (hir_mod.identifierOf(self.hir, decl.name).name == name) return true;
+        }
+        return false;
     }
 
     const ExpandoAssignmentState = enum { assigned, maybe_unassigned };
@@ -76283,6 +76305,13 @@ pub const Checker = struct {
         return self.interner.objectNumberIndex(target);
     }
 
+    fn pureVariadicTupleTarget(self: *Checker, target: TypeId) ?TypeId {
+        const layout = self.symbolic_tuple_layouts.get(target) orelse return null;
+        if (layout.len != 1 or !layout[0].is_variadic) return null;
+        const trailing = self.tuple_trailing_variadic_types.get(target) orelse return null;
+        return if (self.isTupleShapedTarget(trailing)) trailing else null;
+    }
+
     fn numericIndexFromStringId(self: *Checker, name: hir_mod.StringId) ?usize {
         const text = self.string_interner.get(name);
         if (text.len == 0) return null;
@@ -133238,7 +133267,7 @@ pub const Checker = struct {
         const target_lit = self.interner.literalOfOrNull(target_t) orelse return false;
         return switch (source_lit) {
             .string_lit => |source_sid| switch (target_lit) {
-                .string_lit => |target_sid| source_sid == target_sid or try self.cookedStringIdEquals(source_sid, target_sid),
+                .string_lit => |target_sid| source_sid == target_sid,
                 else => false,
             },
             .number_lit => |source_bits| switch (target_lit) {
@@ -133807,7 +133836,7 @@ pub const Checker = struct {
     ) !void {
         if (self.noInferInnerType(param_t) != null) return;
         const nested_array_inference_fixed = try self.seedRecursiveArrayInferenceFromNestedElements(param_t, arg_node, subs);
-        _ = try self.inferFromArrayLiteralToTrailingMappedVariadic(param_t, arg_node, subs);
+        _ = try self.inferFromArgumentToTrailingMappedVariadic(param_t, arg_t, arg_node, subs);
         if (param_t >= types.Primitive.first_dynamic and
             param_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(param_t).is_intersection)
@@ -134499,13 +134528,13 @@ pub const Checker = struct {
         return false;
     }
 
-    fn inferFromArrayLiteralToTrailingMappedVariadic(
+    fn inferFromArgumentToTrailingMappedVariadic(
         self: *Checker,
         param_t: TypeId,
+        arg_t: TypeId,
         arg_node: NodeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!bool {
-        if (arg_node == hir_mod.none_node_id or self.hir.kindOf(arg_node) != .array_literal) return false;
         const mapped_rest_t = self.tuple_trailing_variadic_types.get(param_t) orelse return false;
         if (mapped_rest_t >= self.interner.pool.typeCount() or
             !self.interner.pool.flagsOf(mapped_rest_t).is_mapped)
@@ -134514,31 +134543,52 @@ pub const Checker = struct {
         }
         const mapped = self.interner.mappedPayload(mapped_rest_t);
         const indexed = self.mappedTemplateIndexedAccess(mapped.template) orelse return false;
-        const elements = hir_mod.arrayLiteralElements(self.hir, arg_node);
         const prefix = self.tupleFixedPrefixCount(param_t);
-        if (elements.len < prefix) return false;
+        const elements: ?[]const NodeId = if (arg_node != hir_mod.none_node_id and
+            self.hir.kindOf(arg_node) == .array_literal)
+            hir_mod.arrayLiteralElements(self.hir, arg_node)
+        else
+            null;
+        const source_len: usize = if (elements) |items|
+            items.len
+        else if (self.fixedTupleLength(arg_t)) |len|
+            @intCast(len)
+        else
+            return false;
+        if (source_len < prefix) return false;
 
         var relative_index: usize = 0;
-        for (elements[prefix..]) |element| {
-            if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) return false;
+        while (prefix + relative_index < source_len) : (relative_index += 1) {
+            const source_pos = prefix + relative_index;
             const key = try self.numericStringIdForIndex(relative_index);
             const key_t = self.interner.internStringLiteral(key) catch return error.OutOfMemory;
             var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer key_subs.deinit(self.gpa);
             try key_subs.put(self.gpa, indexed.key_tp, key_t);
             const member_target = try self.substituteType(mapped.template, &key_subs);
-            const member_source = if (self.hir.typeOf(element) != types.Primitive.none)
-                self.hir.typeOf(element)
-            else
-                try self.checkExpression(element);
+            const member_source = if (elements) |items| blk: {
+                const element = items[source_pos];
+                if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) return false;
+                const existing = self.hir.typeOf(element);
+                break :blk if (existing != types.Primitive.none) existing else try self.checkExpression(element);
+            } else self.tupleElementType(arg_t, source_pos);
+            if (member_source == types.Primitive.none) return false;
             const target_index = self.interner.objectNumberIndex(member_target);
             const source_index = self.interner.objectNumberIndex(member_source);
             if (target_index != types.Primitive.none and source_index != types.Primitive.none) {
                 try self.mergeIndexedAccessInference(indexed.object_tp, key, source_index, subs);
             } else {
                 try self.inferFromPair(member_target, member_source, subs);
+                _ = try self.inferReverseMappedIndexedAccessAtKey(
+                    mapped.template,
+                    member_source,
+                    indexed.object_tp,
+                    indexed.key_tp,
+                    key,
+                    subs,
+                    0,
+                );
             }
-            relative_index += 1;
         }
 
         const inferred = subs.get(indexed.object_tp) orelse return false;
@@ -134557,6 +134607,66 @@ pub const Checker = struct {
         const inferred_tuple = try self.internTupleFromTypes(inferred_elements.items, false);
         try subs.put(self.gpa, indexed.object_tp, inferred_tuple);
         return true;
+    }
+
+    fn inferReverseMappedIndexedAccessAtKey(
+        self: *Checker,
+        target_t: TypeId,
+        source_t: TypeId,
+        object_tp: TypeId,
+        key_tp: TypeId,
+        key: hir_mod.StringId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        depth: u8,
+    ) CheckError!bool {
+        if (depth >= 16 or target_t >= self.interner.pool.typeCount() or
+            source_t >= self.interner.pool.typeCount()) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_indexed_access) {
+            const indexed = self.indexedAccessPayloadOrNull(target_t) orelse return false;
+            if (indexed.object != object_tp or indexed.index != key_tp) return false;
+            try self.mergeIndexedAccessInference(object_tp, key, source_t, subs);
+            return true;
+        }
+        if (target_flags.is_union or target_flags.is_intersection) {
+            const members = if (target_flags.is_union)
+                self.interner.unionMembers(target_t)
+            else
+                self.interner.intersectionMembers(target_t);
+            for (members) |member| {
+                if (try self.inferReverseMappedIndexedAccessAtKey(member, source_t, object_tp, key_tp, key, subs, depth + 1)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (!target_flags.is_object_type or !self.interner.pool.flagsOf(source_t).is_object_type) return false;
+        for (self.interner.objectMembers(target_t)) |target_member| {
+            const source_member = self.interner.objectMember(source_t, target_member.name) orelse continue;
+            if (try self.inferReverseMappedIndexedAccessAtKey(
+                target_member.type,
+                source_member,
+                object_tp,
+                key_tp,
+                key,
+                subs,
+                depth + 1,
+            )) return true;
+        }
+        const target_index = self.interner.objectNumberIndex(target_t);
+        const source_index = self.interner.objectNumberIndex(source_t);
+        if (target_index != types.Primitive.none and source_index != types.Primitive.none) {
+            return try self.inferReverseMappedIndexedAccessAtKey(
+                target_index,
+                source_index,
+                object_tp,
+                key_tp,
+                key,
+                subs,
+                depth + 1,
+            );
+        }
+        return false;
     }
 
     fn inferFromConditionalTarget(
@@ -136521,6 +136631,7 @@ pub const Checker = struct {
                 fixed_pos,
             )) continue;
             var param_t = param_ts[fixed_pos];
+            param_t = self.pureVariadicTupleTarget(param_t) orelse param_t;
             if (param_t >= self.interner.pool.typeCount()) continue;
             const declared_param_predicate = self.signature_param_predicates.get(.{
                 .signature = sig,
@@ -151092,7 +151203,7 @@ pub const Checker = struct {
         if (flags.is_literal and flags.is_string) {
             const lit = self.interner.literalOf(target_t);
             return switch (lit) {
-                .string_lit => |target_sid| target_sid == sid or try self.cookedStringIdEquals(sid, target_sid),
+                .string_lit => |target_sid| target_sid == sid,
                 else => false,
             };
         }
@@ -167500,6 +167611,14 @@ test "checker: string and template literal types compare cooked text" {
     }
 }
 
+test "checker: residual parity template source newlines preserve CRLF distinction" {
+    const source = "let abc: \"AB\\r\\nC\" = `AB\r\nC`;\nlet def: \"DE\\nF\" = `DE${\"\\n\"}F`;";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
 test "checker: var with annotation; assignable init OK" {
     const s = try newSetup("let x: number = 1;");
     defer destroySetup(s);
@@ -173287,6 +173406,21 @@ test "checker: use-before-assign emits TS2454" {
         if (d.code == TsCodes.used_before_assignment) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: residual parity ambient var merge is initialized" {
+    const s = try newSetup(
+        \\declare var t1: [number];
+        \\declare var t2: [number, number];
+        \\var len1: 1 = t1.length;
+        \\var len2: 2 = t2.length;
+        \\var t1 = t2;
+        \\var t2 = t1;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.used_before_assignment));
 }
 
 test "checker: var initialized in try remains maybe unassigned in catch" {
@@ -188685,6 +188819,19 @@ test "checker: reverse mapped variadic tuple inference preserves the trailing sl
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: residual parity reverse mapped tuple identifier inference" {
+    const s = try newSetup(
+        \\declare function test<T extends readonly unknown[]>(
+        \\  arg: [...{ [K in keyof T]: { type: T[K] } }]
+        \\): T;
+        \\declare const input: [first: { type: number }, { type: string }];
+        \\const output = test(input);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: identity homomorphic mapped arrays preserve array-like source" {
