@@ -60407,6 +60407,7 @@ const harness_prelude =
     \\  globalThis.TransformStream.__home_corpus_transform = true;
     \\}
     \\function __home_compression_chunk(chunk) {
+    \\  if (typeof chunk === "string") return new TextEncoder().encode(chunk);
     \\  if (chunk === null) {
     \\    const error = new TypeError("May not write null values to stream");
     \\    error.code = "ERR_STREAM_NULL_VALUES";
@@ -60431,12 +60432,17 @@ const harness_prelude =
     \\    if (format === "deflate" && bytes.length >= 6 && bytes[0] === 0x78 && bytes[1] === 0x9c && bytes[bytes.length - 4] === 0xde) return bytes.slice(2, -4);
     \\    if (format === "deflate-raw" && bytes.length >= 2 && bytes[0] === 0x03 && bytes[bytes.length - 1] === 0x00) return bytes.slice(1, -1);
     \\    if (format === "brotli" && bytes.length >= 4 && bytes[0] === 0xce && bytes[1] === 0xb2 && bytes[bytes.length - 2] === 0xbe && bytes[bytes.length - 1] === 0xef) return bytes.slice(2, -2);
+    \\    if (format === "zstd") return new Uint8Array(__home_zstd_decompress_sync(bytes));
     \\  } catch (error) {}
     \\  throw new TypeError("The compressed data was invalid");
     \\}
     \\function __home_make_compression_stream(format, decompress) {
-    \\  const normalized = String(format || "").toLowerCase();
-    \\  if (!["deflate", "deflate-raw", "gzip", "brotli"].includes(normalized)) throw new TypeError("Unsupported compression format: " + String(format));
+    \\  const normalized = String(format).toLowerCase();
+    \\  if (!["deflate", "deflate-raw", "gzip", "brotli", "zstd"].includes(normalized)) {
+    \\    const error = new TypeError("Unsupported compression format: " + String(format));
+    \\    error.code = "ERR_INVALID_ARG_VALUE";
+    \\    throw error;
+    \\  }
     \\  const chunks = [];
     \\  const handle = globalThis.__home_make_transform(
     \\    chunk => { chunks.push(__home_compression_chunk(chunk)); },
@@ -60447,15 +60453,26 @@ const harness_prelude =
     \\      else if (normalized === "gzip") output = new Uint8Array(__home_gzip_sync(bytes));
     \\      else if (normalized === "deflate") output = new Uint8Array(__home_deflate_sync(bytes));
     \\      else if (normalized === "deflate-raw") output = new Uint8Array(__home_deflate_raw_sync(bytes));
-    \\      else output = new Uint8Array(__home_brotli_sync(bytes));
+    \\      else if (normalized === "brotli") output = new Uint8Array(__home_brotli_sync(bytes));
+    \\      else output = new Uint8Array(__home_zstd_sync(bytes));
     \\      if (output.length > 0) handle.enqueue(output);
     \\    },
     \\  );
-    \\  this.readable = handle.readable;
-    \\  this.writable = handle.writable;
+    \\  __home_compression_stream_state.set(this, handle);
     \\}
+    \\const __home_compression_stream_state = new WeakMap();
     \\__home_CompressionStream = function CompressionStream(format) { __home_make_compression_stream.call(this, format, false); };
     \\__home_DecompressionStream = function DecompressionStream(format) { __home_make_compression_stream.call(this, format, true); };
+    \\function __home_compression_stream_get(part) {
+    \\  const handle = __home_compression_stream_state.get(this);
+    \\  if (!handle) throw new TypeError("Value of this must be of type CompressionStream or DecompressionStream");
+    \\  return handle[part];
+    \\}
+    \\for (const ctor of [__home_CompressionStream, __home_DecompressionStream]) {
+    \\  Object.defineProperty(ctor.prototype, "readable", { configurable: true, enumerable: true, get() { return __home_compression_stream_get.call(this, "readable"); } });
+    \\  Object.defineProperty(ctor.prototype, "writable", { configurable: true, enumerable: true, get() { return __home_compression_stream_get.call(this, "writable"); } });
+    \\  Object.defineProperty(ctor.prototype, Symbol.toStringTag, { configurable: true, value: ctor.name });
+    \\}
     \\globalThis.CompressionStream = __home_CompressionStream;
     \\globalThis.DecompressionStream = __home_DecompressionStream;
     \\if (typeof globalThis.TextEncoderStream !== "function" || !globalThis.TextEncoderStream.__home_corpus_transform) {

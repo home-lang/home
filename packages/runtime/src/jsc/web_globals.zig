@@ -904,22 +904,32 @@ const install_glue =
     \\      }
     \\    });
     \\  }
-    \\  function CompressionStream(format) {
-    \\    var fn = format === "gzip" ? "gzipSync" : (format === "deflate" ? "deflateSync" : (format === "deflate-raw" ? "deflateRawSync" : null));
-    \\    if (!fn) throw new TypeError("Unsupported compression format: " + format);
-    \\    this._format = String(format);
-    \\    this._ts = makeZlibStream(fn);
+    \\  var compressionStreamState = new WeakMap();
+    \\  function compressionFunction(format, decompress) {
+    \\    var name = String(format);
+    \\    var functions = decompress
+    \\      ? { gzip: "gunzipSync", deflate: "inflateSync", "deflate-raw": "inflateRawSync", brotli: "brotliDecompressSync", zstd: "zstdDecompressSync" }
+    \\      : { gzip: "gzipSync", deflate: "deflateSync", "deflate-raw": "deflateRawSync", brotli: "brotliCompressSync", zstd: "zstdCompressSync" };
+    \\    var fn = functions[name];
+    \\    if (!fn) {
+    \\      var error = new TypeError("Unsupported compression format: " + name);
+    \\      error.code = "ERR_INVALID_ARG_VALUE";
+    \\      throw error;
+    \\    }
+    \\    return { format: name, stream: makeZlibStream(fn) };
     \\  }
-    \\  Object.defineProperty(CompressionStream.prototype, "readable", { get: function() { return this._ts.readable; }, enumerable: true, configurable: true });
-    \\  Object.defineProperty(CompressionStream.prototype, "writable", { get: function() { return this._ts.writable; }, enumerable: true, configurable: true });
-    \\  function DecompressionStream(format) {
-    \\    var fn = format === "gzip" ? "gunzipSync" : (format === "deflate" ? "inflateSync" : (format === "deflate-raw" ? "inflateRawSync" : null));
-    \\    if (!fn) throw new TypeError("Unsupported compression format: " + format);
-    \\    this._format = String(format);
-    \\    this._ts = makeZlibStream(fn);
+    \\  function CompressionStream(format) { compressionStreamState.set(this, compressionFunction(format, false)); }
+    \\  function DecompressionStream(format) { compressionStreamState.set(this, compressionFunction(format, true)); }
+    \\  function compressionStreamPart(object, part) {
+    \\    var state = compressionStreamState.get(object);
+    \\    if (!state) throw new TypeError("Value of this must be of type CompressionStream or DecompressionStream");
+    \\    return state.stream[part];
     \\  }
-    \\  Object.defineProperty(DecompressionStream.prototype, "readable", { get: function() { return this._ts.readable; }, enumerable: true, configurable: true });
-    \\  Object.defineProperty(DecompressionStream.prototype, "writable", { get: function() { return this._ts.writable; }, enumerable: true, configurable: true });
+    \\  [CompressionStream, DecompressionStream].forEach(function(ctor) {
+    \\    Object.defineProperty(ctor.prototype, "readable", { get: function() { return compressionStreamPart(this, "readable"); }, enumerable: true, configurable: true });
+    \\    Object.defineProperty(ctor.prototype, "writable", { get: function() { return compressionStreamPart(this, "writable"); }, enumerable: true, configurable: true });
+    \\    Object.defineProperty(ctor.prototype, Symbol.toStringTag, { value: ctor.name, configurable: true });
+    \\  });
     \\
     \\  globalThis.TextEncoderStream = TextEncoderStream;
     \\  globalThis.TextDecoderStream = TextDecoderStream;
@@ -1606,6 +1616,26 @@ test "CompressionStream then DecompressionStream round-trips gzip" {
         "globalThis.__es_c = '';(function(){var input='hello hello hello';var src=new ReadableStream({start:function(c){c.enqueue(new TextEncoder().encode(input));c.close();}});var out=src.pipeThrough(new CompressionStream('gzip')).pipeThrough(new DecompressionStream('gzip'));var reader=out.getReader();var chunks=[];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_c=new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();})();",
         "home:es-gzip-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_c === 'hello hello hello'"));
+}
+
+test "CompressionStream exposes Node format, brand, and error contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const global = engine.currentGlobalObject();
+    install(std.testing.allocator, ctx, global);
+    @import("node_modules.zig").installZlibOnly(std.testing.allocator, ctx, global);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
+        "if(CompressionStream.prototype[Symbol.toStringTag]!=='CompressionStream'||DecompressionStream.prototype[Symbol.toStringTag]!=='DecompressionStream')return false;" ++
+        "try{new CompressionStream('invalid');return false;}catch(error){if(error.code!=='ERR_INVALID_ARG_VALUE')return false;}" ++
+        "try{Reflect.get(CompressionStream.prototype,'readable',{});return false;}catch(error){if(!(error instanceof TypeError))return false;}" ++
+        "try{Reflect.get(DecompressionStream.prototype,'writable',{});return false;}catch(error){return error instanceof TypeError;}" ++
+        "})()"));
 }
 
 test "EventTarget addEventListener/dispatchEvent fires with event.type, once removes, removeEventListener works" {
