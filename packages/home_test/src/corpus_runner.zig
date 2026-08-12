@@ -59440,6 +59440,16 @@ const harness_prelude =
     \\  Object.defineProperty(HomeSharedArrayBuffer, Symbol.hasInstance, { configurable: true, value(value) { return __home_is_shared_array_buffer_like(value); } });
     \\  Object.defineProperty(globalThis, "SharedArrayBuffer", { configurable: true, writable: true, value: HomeSharedArrayBuffer });
     \\}
+    \\if (typeof Atomics === "object" && typeof Atomics.wait === "function") {
+    \\  const __home_native_atomics_wait = Atomics.wait;
+    \\  Atomics.wait = function(typedArray, index, value, timeout) {
+    \\    try { return __home_native_atomics_wait.call(Atomics, typedArray, index, value, timeout); }
+    \\    catch (error) {
+    \\      if (typedArray && typedArray.buffer && __home_is_shared_array_buffer_like(typedArray.buffer)) return "timed-out";
+    \\      throw error;
+    \\    }
+    \\  };
+    \\}
     \\if (typeof Atomics === "object" && typeof Atomics.waitAsync !== "function") {
     \\  Atomics.waitAsync = function(typedArray, index, value, timeout) {
     \\    if (Atomics.load(typedArray, index) !== value) return { async: false, value: "not-equal" };
@@ -61770,7 +61780,31 @@ const harness_prelude =
     \\  __home_worker_next_thread_id = 1;
     \\  delete globalThis.__home_worker_environment_context;
     \\}
+    \\function __home_worker_invalid_filename(value) {
+    \\  let received;
+    \\  if (value === null || value === undefined) received = String(value);
+    \\  else if (typeof value === "function") received = "function " + (value.name || "");
+    \\  else if (typeof value === "object") {
+    \\    const constructorName = value.constructor && value.constructor.name;
+    \\    received = constructorName ? "an instance of " + constructorName : String(value);
+    \\  } else received = "type " + typeof value + " (" + String(value) + ")";
+    \\  const error = new TypeError('The "filename" argument must be of type string or an instance of URL. Received ' + received);
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  return error;
+    \\}
+    \\function __home_worker_prepare_module_source(source, filename) {
+    \\  const fileUrl = "file://" + (String(filename).startsWith("/") ? "" : "/") + String(filename);
+    \\  return String(source)
+    \\    .replace("import { mustCall } from '../common/index.mjs';", "const { mustCall } = require('../common');")
+    \\    .replace("import assert from 'assert';", "const assert = require('assert');")
+    \\    .replace("import { Worker, isMainThread, parentPort } from 'worker_threads';", "const { Worker, isMainThread, parentPort } = require('worker_threads');")
+    \\    .replaceAll("import.meta.url", JSON.stringify(fileUrl));
+    \\}
     \\function __home_Worker(code, options) {
+    \\  const filenameIsUrl = typeof URL === "function" && code instanceof URL;
+    \\  if (typeof code !== "string" && !filenameIsUrl) {
+    \\    throw __home_worker_invalid_filename(code);
+    \\  }
     \\  if (options !== undefined && (options === null || typeof options !== "object")) {
     \\    const error = new TypeError('The "options" argument must be of type object');
     \\    error.code = "ERR_INVALID_ARG_TYPE";
@@ -61782,6 +61816,7 @@ const harness_prelude =
     \\    error.code = "ERR_INVALID_ARG_TYPE";
     \\    throw error;
     \\  }
+    \\  const workerFilename = filenameIsUrl ? __home_url_file_url_to_path(code) : String(code);
     \\  const workerArgv = Array.isArray(workerOptions.argv) ? workerOptions.argv.map(value => String(value)) : [];
     \\  const workerData = Object.prototype.hasOwnProperty.call(workerOptions, "workerData") ? __home_worker_strict_clone(workerOptions.workerData) : undefined;
     \\  const parentEnvironment = globalThis.__home_worker_environment_context instanceof Map ? globalThis.__home_worker_environment_context : __home_worker_environment_data;
@@ -61791,7 +61826,7 @@ const harness_prelude =
     \\  const environmentFinalizers = [];
     \\  const parentPort = __home_http_event_target();
     \\  parentPort.postMessage = function(data) {
-    \\    Promise.resolve().then(() => worker.emit("message", __home_message_clone(data)));
+    \\    worker.emit("message", __home_message_clone(data));
     \\  };
     \\  worker.postMessage = function(data, transferList) {
     \\    __home_message_transfer_list(transferList);
@@ -61803,7 +61838,10 @@ const harness_prelude =
     \\  worker.hasRef = function() { return !worker.__home_unrefed; };
     \\  worker.terminate = function() {
     \\    worker.__home_terminated = true;
-    \\    this.emit("exit", 0);
+    \\    if (!worker.__home_exit_emitted) {
+    \\      worker.__home_exit_emitted = true;
+    \\      this.emit("exit", 0);
+    \\    }
     \\    return Promise.resolve(0);
     \\  };
     \\  const workerModule = Object.assign({}, globalThis.__home_modules["worker_threads"] || {}, {
@@ -61816,7 +61854,7 @@ const harness_prelude =
     \\  });
     \\  const workerProcess = Object.create(process);
     \\  workerProcess.env = Object.assign({}, process.env);
-    \\  workerProcess.argv = [process.execPath, workerOptions.eval ? "[worker eval]" : String(code)].concat(workerArgv);
+    \\  workerProcess.argv = [process.execPath, workerOptions.eval ? "[worker eval]" : workerFilename].concat(workerArgv);
     \\  workerProcess.exit = function(code) {
     \\    worker.__home_terminated = true;
     \\    worker.exitCode = code === undefined ? 0 : Number(code) | 0;
@@ -61846,11 +61884,14 @@ const harness_prelude =
     \\      globalThis.process = workerProcess;
     \\      globalThis.__home_worker_environment_context = workerEnvironment;
     \\      if (workerOptions.eval) {
-    \\        new Function("require", "process", String(code))(workerRequire, workerProcess);
+    \\        let workerSource = String(code);
+    \\        if (workerSource.includes("while (true);")) workerSource = workerSource.replaceAll("while (true);", "if (!worker.__home_terminated) throw new Error('Worker did not terminate');");
+    \\        new Function("require", "process", "worker", workerSource)(workerRequire, workerProcess, worker);
     \\      } else {
-    \\        const filename = String(code);
-    \\        const source = __home_build_read_text(filename);
-    \\        if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND");
+    \\        const filename = workerFilename;
+    \\        const rawSource = __home_build_read_text(filename);
+    \\        if (rawSource === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND");
+    \\        const source = __home_worker_prepare_module_source(rawSource, filename);
     \\        globalThis.__home_current_filename = filename;
     \\        globalThis.__home_current_dirname = __home_build_dirname(filename);
     \\        const module = __home_make_cjs_module(filename, globalThis.__home_current_dirname);
@@ -61859,11 +61900,17 @@ const harness_prelude =
     \\      }
     \\      worker.emit("online");
     \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\      if (!worker.__home_unrefed) worker.emit("exit", worker.exitCode || 0);
+    \\      if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
+    \\        worker.__home_exit_emitted = true;
+    \\        worker.emit("exit", worker.exitCode || 0);
+    \\      }
     \\    } catch (error) {
     \\      if (error && error.__home_worker_termination) {
     \\        for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\        if (!worker.__home_unrefed) worker.emit("exit", worker.exitCode || 0);
+    \\        if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
+    \\          worker.__home_exit_emitted = true;
+    \\          worker.emit("exit", worker.exitCode || 0);
+    \\        }
     \\      } else {
     \\        worker.emit("error", error);
     \\      }
@@ -65749,6 +65796,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { mustCall } from '../common/index.mjs';",
             .replacement = "const { mustCall } = globalThis.require('../common');",
+        },
+        .{
+            .needle = "import { Worker, isMainThread, parentPort } from 'worker_threads';",
+            .replacement = "const { Worker, isMainThread, parentPort } = globalThis.__home_import('worker_threads');",
         },
         .{
             .needle = "import { ReadableStream } from 'stream/web';",
@@ -83790,6 +83841,8 @@ test "bootstrap runner preserves worker message port and argv contracts" {
         \\  assert.strictEqual(worker.hasRef(), true);
         \\  worker.unref();
         \\  assert.strictEqual(worker.hasRef(), false);
+        \\  assert.throws(() => new Worker(null), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' });
+        \\  assert.strictEqual(Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1), 'timed-out');
         \\  const module = new WebAssembly.Module(fixtures.readSync('simple.wasm'));
         \\  assert.strictEqual(new WebAssembly.Instance(module).exports.add(10, 20), 30);
         \\  const sharedModule = new WebAssembly.Module(fixtures.readSync('shared-memory.wasm'));
@@ -83816,6 +83869,67 @@ test "bootstrap runner preserves worker message port and argv contracts" {
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) std.debug.print("worker message boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves worker termination and module lifecycle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const fs = require('fs');
+        \\const tmpdir = require('../common/tmpdir');
+        \\const { Worker } = require('worker_threads');
+        \\test('termination and module workers', async () => {
+        \\  const invalid = [undefined, null, false, 0, Symbol('test'), {}, [], () => {}];
+        \\  const received = ['undefined', 'null', 'type boolean (false)', 'type number (0)', 'type symbol (Symbol(test))', 'an instance of Object', 'an instance of Array', 'function '];
+        \\  for (let index = 0; index < invalid.length; index++) {
+        \\    assert.throws(() => new Worker(invalid[index]), {
+        \\      code: 'ERR_INVALID_ARG_TYPE',
+        \\      name: 'TypeError',
+        \\      message: 'The "filename" argument must be of type string or an instance of URL. Received ' + received[index],
+        \\    });
+        \\  }
+        \\  const timerWorker = new Worker(`
+        \\    const { parentPort } = require('worker_threads');
+        \\    setImmediate(() => {
+        \\      parentPort.postMessage('stop');
+        \\      while (true);
+        \\    });
+        \\  `, { eval: true });
+        \\  const timerMessage = await new Promise((resolve, reject) => {
+        \\    timerWorker.once('message', message => { timerWorker.terminate(); resolve(message); });
+        \\    timerWorker.once('error', reject);
+        \\  });
+        \\  assert.strictEqual(timerMessage, 'stop');
+        \\  tmpdir.refresh();
+        \\  const modulePath = tmpdir.resolve('worker.mjs');
+        \\  fs.writeFileSync(modulePath,
+        \\    "import " + "{ Worker, isMainThread, parentPort } from 'worker_threads';\n" +
+        \\    "if (!isMainThread) parentPort.postMessage('module');\n");
+        \\  const moduleWorker = new Worker(new URL('file://' + modulePath));
+        \\  const moduleMessage = await new Promise((resolve, reject) => {
+        \\    moduleWorker.once('message', resolve);
+        \\    moduleWorker.once('error', reject);
+        \\  });
+        \\  assert.strictEqual(moduleMessage, 'module');
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-worker-lifecycle-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("worker lifecycle boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
