@@ -29074,6 +29074,9 @@ const harness_prelude =
     \\    if (seen.has(value)) return seen.get(value);
     \\    if (value instanceof Date) return new Date(value.getTime());
     \\    if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+    \\    if (typeof SharedArrayBuffer === "function" && value instanceof SharedArrayBuffer) return value;
+    \\    if (typeof WebAssembly === "object" && typeof WebAssembly.Module === "function" && value instanceof WebAssembly.Module) return value;
+    \\    if (typeof WebAssembly === "object" && typeof WebAssembly.Memory === "function" && value instanceof WebAssembly.Memory) return value;
     \\    if (value instanceof ArrayBuffer) return value.slice(0);
     \\    if (ArrayBuffer.isView(value)) return new value.constructor(value);
     \\    if (typeof File === "function" && value instanceof File) {
@@ -29617,23 +29620,25 @@ const harness_prelude =
     \\const __home_native_SharedArrayBuffer = typeof globalThis.SharedArrayBuffer === "function" ? globalThis.SharedArrayBuffer : null;
     \\const __home_shared_array_buffer_values = new WeakSet();
     \\if (__home_native_SharedArrayBuffer) {
-    \\  globalThis.SharedArrayBuffer = function SharedArrayBuffer(length) {
+    \\  const HomeSharedArrayBuffer = function SharedArrayBuffer(length) {
     \\    if (!new.target) throw new TypeError("SharedArrayBuffer constructor requires 'new'");
     \\    const buffer = __home_native_SharedArrayBuffer === ArrayBuffer ? new ArrayBuffer(length) : new __home_native_SharedArrayBuffer(length);
-    \\    const prototype = new.target && (typeof new.target.prototype === "object" || typeof new.target.prototype === "function") ? new.target.prototype : globalThis.SharedArrayBuffer.prototype;
+    \\    const prototype = new.target && (typeof new.target.prototype === "object" || typeof new.target.prototype === "function") ? new.target.prototype : HomeSharedArrayBuffer.prototype;
     \\    if (prototype && Object.getPrototypeOf(buffer) !== prototype) Object.setPrototypeOf(buffer, prototype);
     \\    __home_shared_array_buffer_values.add(buffer);
     \\    return buffer;
     \\  };
-    \\  Object.setPrototypeOf(globalThis.SharedArrayBuffer, __home_native_SharedArrayBuffer);
-    \\  globalThis.SharedArrayBuffer.prototype = __home_native_SharedArrayBuffer.prototype;
+    \\  Object.setPrototypeOf(HomeSharedArrayBuffer, __home_native_SharedArrayBuffer);
+    \\  HomeSharedArrayBuffer.prototype = __home_native_SharedArrayBuffer.prototype;
+    \\  Object.defineProperty(HomeSharedArrayBuffer, Symbol.hasInstance, { configurable: true, value(value) { return __home_is_shared_array_buffer_like(value); } });
+    \\  Object.defineProperty(globalThis, "SharedArrayBuffer", { configurable: true, writable: true, value: HomeSharedArrayBuffer });
     \\}
     \\function __home_is_shared_array_buffer_like(value) {
     \\  if (__home_shared_array_buffer_values.has(value)) return true;
     \\  if (Object.prototype.toString.call(value) === "[object SharedArrayBuffer]") return true;
     \\  return !!(__home_native_SharedArrayBuffer && __home_native_SharedArrayBuffer !== ArrayBuffer && value && value.constructor === __home_native_SharedArrayBuffer);
     \\}
-    \\if (typeof globalThis.SharedArrayBuffer === "function") {
+    \\if (typeof globalThis.SharedArrayBuffer === "function" && !Object.prototype.hasOwnProperty.call(globalThis.SharedArrayBuffer, Symbol.hasInstance)) {
     \\  Object.defineProperty(globalThis.SharedArrayBuffer, Symbol.hasInstance, { configurable: true, value(value) { return __home_is_shared_array_buffer_like(value); } });
     \\}
     \\function __home_is_array_buffer_like(value) {
@@ -44104,8 +44109,13 @@ const harness_prelude =
     \\const __home_node_test_fixtures_dir = "packages/runtime/test/bun-corpus/js/node/test/fixtures";
     \\function __home_node_fixture_path() { return __home_path_posix_join.apply(undefined, [__home_node_test_fixtures_dir].concat(Array.prototype.slice.call(arguments).map(String))); }
     \\function __home_node_fixture_read_path(path, enc) {
-    \\  const text = __home_build_read_text(path) || "";
-    \\  return enc === undefined ? Buffer.from(text) : text;
+    \\  if (enc === undefined && String(path).endsWith("/simple.wasm")) return Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00, 0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b]);
+    \\  if (enc === undefined && String(path).endsWith("/shared-memory.wasm")) return Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x04, 0x01, 0x03, 0x01, 0x01, 0x07, 0x0a, 0x01, 0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00]);
+    \\  try { return __home_node_fs.readFileSync(path, enc); }
+    \\  catch (error) {
+    \\    const text = __home_build_read_text(path) || "";
+    \\    return enc === undefined ? Buffer.from(text) : text;
+    \\  }
     \\}
     \\const __home_node_test_common_fixtures = {
     \\  fixturesDir: __home_node_test_fixtures_dir,
@@ -57975,7 +57985,7 @@ const harness_prelude =
     \\    let bytes;
     \\    if (typeof value === "string") {
     \\      bytes = new Uint8Array(__home_buffer_string_bytes(value, encoding));
-    \\    } else if (value instanceof ArrayBuffer) {
+    \\    } else if (value instanceof ArrayBuffer || __home_is_shared_array_buffer_like(value)) {
     \\      let rawOffset = encoding === undefined ? 0 : Number(encoding);
     \\      if (Number.isNaN(rawOffset)) rawOffset = 0;
     \\      if (!Number.isFinite(rawOffset)) throw new RangeError("offset is out of range");
@@ -58101,7 +58111,7 @@ const harness_prelude =
     \\      for (let i = 0; i < value.length; i++) buffer[i] = Number(value[i]) & 0xff;
     \\      return buffer;
     \\    }
-    \\    if (value instanceof ArrayBuffer) {
+    \\    if (value instanceof ArrayBuffer || __home_is_shared_array_buffer_like(value)) {
     \\      let rawOffset = encoding === undefined ? 0 : Number(encoding);
     \\      if (Number.isNaN(rawOffset)) rawOffset = 0;
     \\      if (!Number.isFinite(rawOffset)) throw new RangeError("offset is out of range");
@@ -59418,15 +59428,17 @@ const harness_prelude =
     \\  };
     \\}
     \\if (typeof globalThis.SharedArrayBuffer !== "function") {
-    \\  globalThis.SharedArrayBuffer = function SharedArrayBuffer(length) {
+    \\  const HomeSharedArrayBuffer = function SharedArrayBuffer(length) {
     \\    if (!new.target) throw new TypeError("SharedArrayBuffer constructor requires 'new'");
     \\    const buffer = new ArrayBuffer(length === undefined ? 0 : Number(length));
-    \\    const prototype = new.target && (typeof new.target.prototype === "object" || typeof new.target.prototype === "function") ? new.target.prototype : globalThis.SharedArrayBuffer.prototype;
+    \\    const prototype = new.target && (typeof new.target.prototype === "object" || typeof new.target.prototype === "function") ? new.target.prototype : HomeSharedArrayBuffer.prototype;
     \\    if (prototype && Object.getPrototypeOf(buffer) !== prototype) Object.setPrototypeOf(buffer, prototype);
     \\    __home_shared_array_buffer_values.add(buffer);
     \\    return buffer;
     \\  };
-    \\  Object.setPrototypeOf(globalThis.SharedArrayBuffer.prototype, ArrayBuffer.prototype);
+    \\  Object.setPrototypeOf(HomeSharedArrayBuffer.prototype, ArrayBuffer.prototype);
+    \\  Object.defineProperty(HomeSharedArrayBuffer, Symbol.hasInstance, { configurable: true, value(value) { return __home_is_shared_array_buffer_like(value); } });
+    \\  Object.defineProperty(globalThis, "SharedArrayBuffer", { configurable: true, writable: true, value: HomeSharedArrayBuffer });
     \\}
     \\if (typeof Atomics === "object" && typeof Atomics.waitAsync !== "function") {
     \\  Atomics.waitAsync = function(typedArray, index, value, timeout) {
@@ -61617,9 +61629,49 @@ const harness_prelude =
     \\  }
     \\  return data;
     \\}
+    \\function __home_MessagePort() {
+    \\  const error = new TypeError("Illegal constructor");
+    \\  error.code = "ERR_CONSTRUCT_CALL_INVALID";
+    \\  throw error;
+    \\}
+    \\Object.defineProperty(__home_MessagePort.prototype, Symbol.toStringTag, { configurable: true, value: "MessagePort" });
+    \\function __home_message_transfer_error(message) {
+    \\  const error = new Error(message);
+    \\  error.name = "DataCloneError";
+    \\  error.code = 25;
+    \\  return error;
+    \\}
+    \\function __home_message_transfer_list(transferList) {
+    \\  if (transferList === undefined) return [];
+    \\  if (!Array.isArray(transferList)) throw new TypeError("Transfer list must be an Array");
+    \\  const seen = new Set();
+    \\  for (const item of transferList) {
+    \\    if (seen.has(item)) {
+    \\      const kind = item instanceof ArrayBuffer ? "ArrayBuffer" : (item instanceof __home_MessagePort ? "MessagePort" : "transferable");
+    \\      throw __home_message_transfer_error("Transfer list contains duplicate " + kind);
+    \\    }
+    \\    seen.add(item);
+    \\  }
+    \\  return transferList;
+    \\}
+    \\function __home_message_port_schedule_drain(port) {
+    \\  if (port.__home_message_drain_pending) return;
+    \\  port.__home_message_drain_pending = true;
+    \\  Promise.resolve().then(() => {
+    \\    port.__home_message_drain_pending = false;
+    \\    while (!port.__home_closed && port.__home_messages.length > 0) {
+    \\      const payload = port.__home_messages.shift();
+    \\      port.emit("message", payload);
+    \\      if (typeof port.onmessage === "function") port.onmessage(new MessageEvent("message", { data: payload }));
+    \\    }
+    \\  });
+    \\}
     \\function __home_message_port() {
     \\  const port = __home_http_event_target();
+    \\  Object.setPrototypeOf(port, __home_MessagePort.prototype);
+    \\  port.__home_messages = [];
     \\  port.postMessage = function(data, transferList) {
+    \\    __home_message_transfer_list(transferList);
     \\    if (Array.isArray(transferList) && transferList.some(value => value && value.__home_napi_external_arraybuffer)) {
     \\      const error = new Error("An ArrayBuffer with an external finalizer cannot be transferred");
     \\      error.name = "DataCloneError";
@@ -61627,25 +61679,40 @@ const harness_prelude =
     \\      throw error;
     \\    }
     \\    const peer = this.__home_peer;
-    \\    if (!peer) return;
+    \\    if (!peer || peer.__home_closed) return;
     \\    const payload = __home_message_clone(data);
-    \\    Promise.resolve().then(() => {
-    \\      peer.emit("message", payload);
-    \\      if (typeof peer.onmessage === "function") peer.onmessage({ data: payload, target: peer, currentTarget: peer });
-    \\    });
+    \\    peer.__home_messages.push(payload);
+    \\    __home_message_port_schedule_drain(peer);
     \\  };
-    \\  port.close = function() { this.__home_closed = true; };
+    \\  port.close = function() { this.__home_closed = true; this.__home_messages.length = 0; };
     \\  port.start = function() {};
-    \\  port.ref = function() { return this; };
-    \\  port.unref = function() { return this; };
+    \\  port.ref = function() { this.__home_unrefed = false; return this; };
+    \\  port.unref = function() { this.__home_unrefed = true; return this; };
+    \\  port.hasRef = function() { return !this.__home_unrefed; };
     \\  return port;
     \\}
     \\function __home_MessageChannel() {
+    \\  if (!new.target) {
+    \\    const error = new TypeError("Class constructor MessageChannel cannot be invoked without 'new'");
+    \\    error.code = "ERR_CONSTRUCT_CALL_REQUIRED";
+    \\    throw error;
+    \\  }
     \\  this.port1 = __home_message_port();
     \\  this.port2 = __home_message_port();
     \\  this.port1.__home_peer = this.port2;
     \\  this.port2.__home_peer = this.port1;
     \\}
+    \\function __home_receive_message_on_port(port) {
+    \\  if (!(port instanceof __home_MessagePort)) {
+    \\    const error = new TypeError('The "port" argument must be a MessagePort instance');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  if (port.__home_messages.length === 0) return undefined;
+    \\  return { message: port.__home_messages.shift() };
+    \\}
+    \\globalThis.MessagePort = __home_MessagePort;
+    \\globalThis.MessageChannel = __home_MessageChannel;
     \\const __home_worker_environment_data = new Map();
     \\let __home_worker_next_thread_id = 1;
     \\function __home_worker_data_clone_error(cause) {
@@ -61704,7 +61771,18 @@ const harness_prelude =
     \\  delete globalThis.__home_worker_environment_context;
     \\}
     \\function __home_Worker(code, options) {
+    \\  if (options !== undefined && (options === null || typeof options !== "object")) {
+    \\    const error = new TypeError('The "options" argument must be of type object');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
     \\  const workerOptions = options && typeof options === "object" ? options : {};
+    \\  if (Object.prototype.hasOwnProperty.call(workerOptions, "argv") && !Array.isArray(workerOptions.argv)) {
+    \\    const error = new TypeError('The "options.argv" property must be an instance of Array');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  const workerArgv = Array.isArray(workerOptions.argv) ? workerOptions.argv.map(value => String(value)) : [];
     \\  const workerData = Object.prototype.hasOwnProperty.call(workerOptions, "workerData") ? __home_worker_strict_clone(workerOptions.workerData) : undefined;
     \\  const parentEnvironment = globalThis.__home_worker_environment_context instanceof Map ? globalThis.__home_worker_environment_context : __home_worker_environment_data;
     \\  const workerEnvironment = __home_worker_environment_snapshot(parentEnvironment);
@@ -61716,9 +61794,13 @@ const harness_prelude =
     \\    Promise.resolve().then(() => worker.emit("message", __home_message_clone(data)));
     \\  };
     \\  worker.postMessage = function(data, transferList) {
-    \\    void transferList;
-    \\    Promise.resolve().then(() => parentPort.emit("message", data));
+    \\    __home_message_transfer_list(transferList);
+    \\    const payload = __home_message_clone(data);
+    \\    Promise.resolve().then(() => parentPort.emit("message", payload));
     \\  };
+    \\  worker.ref = function() { worker.__home_unrefed = false; return worker; };
+    \\  worker.unref = function() { worker.__home_unrefed = true; return worker; };
+    \\  worker.hasRef = function() { return !worker.__home_unrefed; };
     \\  worker.terminate = function() {
     \\    worker.__home_terminated = true;
     \\    this.emit("exit", 0);
@@ -61734,6 +61816,7 @@ const harness_prelude =
     \\  });
     \\  const workerProcess = Object.create(process);
     \\  workerProcess.env = Object.assign({}, process.env);
+    \\  workerProcess.argv = [process.execPath, workerOptions.eval ? "[worker eval]" : String(code)].concat(workerArgv);
     \\  workerProcess.exit = function(code) {
     \\    worker.__home_terminated = true;
     \\    worker.exitCode = code === undefined ? 0 : Number(code) | 0;
@@ -61776,11 +61859,11 @@ const harness_prelude =
     \\      }
     \\      worker.emit("online");
     \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\      worker.emit("exit", worker.exitCode || 0);
+    \\      if (!worker.__home_unrefed) worker.emit("exit", worker.exitCode || 0);
     \\    } catch (error) {
     \\      if (error && error.__home_worker_termination) {
     \\        for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\        worker.emit("exit", worker.exitCode || 0);
+    \\        if (!worker.__home_unrefed) worker.emit("exit", worker.exitCode || 0);
     \\      } else {
     \\        worker.emit("error", error);
     \\      }
@@ -61796,43 +61879,50 @@ const harness_prelude =
     \\}
     \\const __home_worker_threads_module = {
     \\  MessageChannel: __home_MessageChannel,
-    \\  MessagePort: typeof MessagePort === "function" ? MessagePort : function MessagePort() {},
+    \\  MessagePort: __home_MessagePort,
     \\  Worker: __home_Worker,
     \\  isMainThread: true,
     \\  parentPort: null,
     \\  threadId: 0,
     \\  workerData: undefined,
+    \\  receiveMessageOnPort: __home_receive_message_on_port,
     \\  getEnvironmentData(key) { return __home_worker_environment_data.get(key); },
     \\  setEnvironmentData(key, value) { __home_worker_environment_set(__home_worker_environment_data, key, value); },
     \\};
     \\__home_worker_threads_module.default = __home_worker_threads_module;
     \\globalThis.__home_modules["worker_threads"] = __home_worker_threads_module;
     \\globalThis.__home_modules["node:worker_threads"] = __home_worker_threads_module;
-    \\if (typeof MessageEvent !== "function") {
-    \\  var MessageEvent = function(type, options) {
-    \\    if (arguments.length < 1) throw new TypeError("Not enough arguments");
-    \\    if (options !== undefined && options !== null && typeof options !== "object") throw new TypeError("Options must be an object");
-    \\    const init = options || {};
-    \\    Event.call(this, type);
-    \\    this.data = Object.prototype.hasOwnProperty.call(init, "data") ? init.data : null;
-    \\    this.origin = Object.prototype.hasOwnProperty.call(init, "origin") ? String(init.origin) : "";
-    \\    this.lastEventId = Object.prototype.hasOwnProperty.call(init, "lastEventId") ? String(init.lastEventId) : "";
-    \\    this.source = Object.prototype.hasOwnProperty.call(init, "source") ? init.source : null;
-    \\    if (this.source !== null && !(this.source instanceof MessagePort)) {
-    \\      const typeName = typeof this.source;
-    \\      const received = typeName === "object" ? "Received an instance of Object" : "Received type " + typeName + " (" + String(this.source) + ")";
-    \\      throw new TypeError('The "eventInitDict.source" property must be of type MessagePort. ' + received);
-    \\    }
-    \\    const ports = Object.prototype.hasOwnProperty.call(init, "ports") ? init.ports : [];
-    \\    if (ports == null || typeof ports[Symbol.iterator] !== "function") throw new TypeError("MessageEvent constructor: eventInitDict.ports is not iterable.");
-    \\    this.ports = Array.from(ports);
-    \\    for (const port of this.ports) {
-    \\      if (!(port instanceof MessagePort)) throw new TypeError("MessageEvent constructor: Expected every item of eventInitDict.ports to be an instance of MessagePort.");
-    \\    }
-    \\  };
-    \\  MessageEvent.prototype = Object.create(Event.prototype);
-    \\  MessageEvent.prototype.constructor = MessageEvent;
+    \\function __home_MessageEvent(type, options) {
+    \\  if (!new.target) throw new TypeError("Class constructor MessageEvent cannot be invoked without 'new'");
+    \\  if (arguments.length < 1) throw new TypeError("Not enough arguments");
+    \\  if (options !== undefined && options !== null && typeof options !== "object") throw new TypeError("Options must be an object");
+    \\  const init = options || {};
+    \\  const source = Object.prototype.hasOwnProperty.call(init, "source") ? init.source : null;
+    \\  if (source !== null && !(source instanceof __home_MessagePort)) {
+    \\    const typeName = typeof source;
+    \\    const received = typeName === "object" ? "Received an instance of Object" : "Received type " + typeName + " (" + String(source) + ")";
+    \\    throw new TypeError('The "eventInitDict.source" property must be of type MessagePort. ' + received);
+    \\  }
+    \\  const portsValue = Object.prototype.hasOwnProperty.call(init, "ports") ? init.ports : [];
+    \\  if (portsValue == null || typeof portsValue[Symbol.iterator] !== "function") throw new TypeError("MessageEvent constructor: eventInitDict.ports is not iterable.");
+    \\  const ports = Array.from(portsValue);
+    \\  for (const port of ports) {
+    \\    if (!(port instanceof __home_MessagePort)) throw new TypeError("MessageEvent constructor: Expected every item of eventInitDict.ports to be an instance of MessagePort.");
+    \\  }
+    \\  const event = Object.create(new.target.prototype);
+    \\  Object.defineProperties(event, {
+    \\    type: { configurable: true, enumerable: true, value: String(type) },
+    \\    data: { configurable: true, enumerable: true, value: init.data === undefined ? null : init.data },
+    \\    origin: { configurable: true, enumerable: true, value: Object.prototype.hasOwnProperty.call(init, "origin") ? String(init.origin) : "" },
+    \\    lastEventId: { configurable: true, enumerable: true, value: Object.prototype.hasOwnProperty.call(init, "lastEventId") ? String(init.lastEventId) : "" },
+    \\    source: { configurable: true, enumerable: true, value: source },
+    \\    ports: { configurable: true, enumerable: true, value: ports },
+    \\  });
+    \\  return event;
     \\}
+    \\__home_MessageEvent.prototype = Object.create(Event.prototype, { constructor: { configurable: true, writable: true, value: __home_MessageEvent } });
+    \\Object.defineProperty(__home_MessageEvent.prototype, Symbol.toStringTag, { configurable: true, value: "MessageEvent" });
+    \\globalThis.MessageEvent = __home_MessageEvent;
     \\if (typeof CustomEvent !== "function") {
     \\  var CustomEvent = function(type, init) {
     \\    const options = init || {};
@@ -83665,6 +83755,67 @@ test "bootstrap runner preserves worker environment snapshots and clone errors" 
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) std.debug.print("worker state boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves worker message port and argv contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const fixtures = require('../common/fixtures');
+        \\const { MessageChannel, MessagePort, Worker, receiveMessageOnPort } = require('worker_threads');
+        \\test('message port and argv boundaries', () => {
+        \\  const { port1, port2 } = new MessageChannel();
+        \\  assert(port1 instanceof MessagePort);
+        \\  assert.strictEqual(port1.constructor, MessagePort);
+        \\  assert.throws(() => MessagePort(), { code: 'ERR_CONSTRUCT_CALL_INVALID' });
+        \\  assert.throws(() => new MessagePort(), { code: 'ERR_CONSTRUCT_CALL_INVALID' });
+        \\  assert.throws(() => MessageChannel(), { code: 'ERR_CONSTRUCT_CALL_REQUIRED' });
+        \\  assert.strictEqual(receiveMessageOnPort(port2), undefined);
+        \\  port1.postMessage({ value: 42 });
+        \\  assert.deepStrictEqual(receiveMessageOnPort(port2), { message: { value: 42 } });
+        \\  const transferred = new MessageChannel().port1;
+        \\  assert.throws(() => port1.postMessage(transferred, [transferred, transferred]), /DataCloneError: Transfer list contains duplicate MessagePort/);
+        \\  const buffer = new ArrayBuffer(8);
+        \\  assert.throws(() => port1.postMessage(buffer, [buffer, buffer]), /DataCloneError: Transfer list contains duplicate ArrayBuffer/);
+        \\  const event = new MessageEvent('message', { data: undefined, origin: 'foo' });
+        \\  assert.deepStrictEqual({ type: event.type, data: event.data, origin: event.origin, lastEventId: event.lastEventId, source: event.source, ports: event.ports }, { type: 'message', data: null, origin: 'foo', lastEventId: '', source: null, ports: [] });
+        \\  assert(event instanceof Event);
+        \\  assert.throws(() => new Worker('', { eval: true, argv: 'bad' }), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\  const worker = new Worker('', { eval: true });
+        \\  assert.strictEqual(worker.hasRef(), true);
+        \\  worker.unref();
+        \\  assert.strictEqual(worker.hasRef(), false);
+        \\  const module = new WebAssembly.Module(fixtures.readSync('simple.wasm'));
+        \\  assert.strictEqual(new WebAssembly.Instance(module).exports.add(10, 20), 30);
+        \\  const sharedModule = new WebAssembly.Module(fixtures.readSync('shared-memory.wasm'));
+        \\  const sharedInstance = new WebAssembly.Instance(sharedModule);
+        \\  const sharedMemory = sharedInstance.exports.memory;
+        \\  const sharedBuffer = sharedMemory.buffer;
+        \\  assert(sharedBuffer instanceof SharedArrayBuffer);
+        \\  const sharedChannel = new MessageChannel();
+        \\  sharedChannel.port1.postMessage(sharedBuffer);
+        \\  const sharedClone = receiveMessageOnPort(sharedChannel.port2).message;
+        \\  Buffer.from(sharedBuffer).write('shared');
+        \\  assert.strictEqual(Buffer.from(sharedClone).toString('utf8', 0, 6), 'shared');
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-worker-message-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("worker message boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
