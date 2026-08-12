@@ -46889,7 +46889,32 @@ const harness_prelude =
     \\  allValidUsages() { return [[]]; },
     \\  objectToString(value) { try { return JSON.stringify(value); } catch (error) { return String(value); } },
     \\};
-    \\function __home_stream_readable() {}
+    \\function __home_stream_readable(options) {
+    \\  const stream = __home_http_event_target();
+    \\  const opts = options || {};
+    \\  stream.__home_read_started = false;
+    \\  stream.__home_read_ended = false;
+    \\  stream.__home_pipe_destination = null;
+    \\  stream.push = function(chunk) {
+    \\    if (chunk === null) {
+    \\      this.__home_read_ended = true;
+    \\      this.emit("end");
+    \\      if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
+    \\      return false;
+    \\    }
+    \\    this.emit("data", chunk);
+    \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") this.__home_pipe_destination.write(chunk);
+    \\    return true;
+    \\  };
+    \\  stream.__home_start_read = function() {
+    \\    if (this.__home_read_started) return;
+    \\    this.__home_read_started = true;
+    \\    if (typeof opts.read === "function") opts.read.call(this);
+    \\  };
+    \\  stream.pipe = function(destination) { this.__home_pipe_destination = destination; this.__home_start_read(); return destination; };
+    \\  stream.resume = function() { this.__home_start_read(); return this; };
+    \\  return stream;
+    \\}
     \\__home_stream_readable.toWeb = function(stream) {
     \\  return new ReadableStream({ start(controller) { controller.close(); } });
     \\};
@@ -47326,7 +47351,7 @@ const harness_prelude =
     \\  Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5, Z_TREES: 6,
     \\  Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4, Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6,
     \\  Z_DEFAULT_COMPRESSION: -1, Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0, Z_DEFLATED: 8,
-    \\  Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: 4294967295, Z_DEFAULT_CHUNK: 16384,
+    \\  Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity, Z_DEFAULT_CHUNK: 16384,
     \\  Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9, Z_DEFAULT_LEVEL: -1,
     \\  BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3,
     \\  BROTLI_PARAM_MODE: 0, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_LGWIN: 2, BROTLI_PARAM_LGBLOCK: 3,
@@ -47349,6 +47374,39 @@ const harness_prelude =
     \\  const error = new ErrorType(message);
     \\  if (code) error.code = code;
     \\  return error;
+    \\}
+    \\function __home_zlib_invalid_number(name, value) {
+    \\  const label = name.startsWith("options.") ? "property" : "argument";
+    \\  const received = typeof value === "string" ? " Received type string ('" + value + "')" : " Received type " + typeof value + " (" + String(value) + ")";
+    \\  return __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "' + name + '" ' + label + " must be of type number." + received);
+    \\}
+    \\function __home_zlib_out_of_range(name, requirement, value) {
+    \\  return __home_zlib_error("RangeError", "ERR_OUT_OF_RANGE", 'The value of "' + name + '" is out of range. It must be ' + requirement + ". Received " + String(value));
+    \\}
+    \\function __home_zlib_validate_number(name, value, minimum, maximum, defaultValue) {
+    \\  if (value === undefined || (typeof value === "number" && Number.isNaN(value))) return defaultValue;
+    \\  if (typeof value !== "number") throw __home_zlib_invalid_number(name, value);
+    \\  if (!Number.isFinite(value)) throw __home_zlib_out_of_range(name, "a finite number", value);
+    \\  if (value < minimum || value > maximum) throw __home_zlib_out_of_range(name, ">= " + minimum + " and <= " + maximum, value);
+    \\  return value;
+    \\}
+    \\function __home_validate_zlib_options(kind, options) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "chunkSize")) {
+    \\    const value = opts.chunkSize;
+    \\    if (typeof value !== "number") throw __home_zlib_invalid_number("options.chunkSize", value);
+    \\    if (!Number.isFinite(value)) throw __home_zlib_out_of_range("options.chunkSize", "a finite number", value);
+    \\    if (value < 64) throw __home_zlib_out_of_range("options.chunkSize", ">= 64", value);
+    \\  }
+    \\  const windowMinimum = String(kind) === "gzip" ? 9 : 8;
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "windowBits")) __home_zlib_validate_number("options.windowBits", opts.windowBits, windowMinimum, 15, 15);
+    \\  const level = __home_zlib_validate_number("options.level", opts.level, -1, 9, -1);
+    \\  const memLevel = __home_zlib_validate_number("options.memLevel", opts.memLevel, 1, 9, 8);
+    \\  const strategy = __home_zlib_validate_number("options.strategy", opts.strategy, 0, 4, 0);
+    \\  if (opts.dictionary !== undefined && !ArrayBuffer.isView(opts.dictionary) && !(opts.dictionary instanceof ArrayBuffer)) {
+    \\    throw __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "options.dictionary" property must be an instance of Buffer, TypedArray, DataView, or ArrayBuffer');
+    \\  }
+    \\  return { opts, level, memLevel, strategy };
     \\}
     \\function __home_validate_brotli_options(options) {
     \\  const opts = options && typeof options === "object" ? options : {};
@@ -47400,7 +47458,8 @@ const harness_prelude =
     \\}
     \\function __home_create_zlib_stream(kind, options) {
     \\  const normalizedKind = String(kind);
-    \\  const opts = normalizedKind.startsWith("brotli") ? __home_validate_brotli_options(options) : (options || {});
+    \\  const validated = normalizedKind.startsWith("brotli") ? null : __home_validate_zlib_options(normalizedKind, options);
+    \\  const opts = normalizedKind.startsWith("brotli") ? __home_validate_brotli_options(options) : validated.opts;
     \\  const stream = __home_http_event_target();
     \\  const state = { activeContexts: 1, closed: false, kind: normalizedKind, pendingReset: false, totalCreated: 1, totalDestroyed: 0, writeInProgress: false };
     \\  const input = [];
@@ -47411,6 +47470,10 @@ const harness_prelude =
     \\    _readableState: { enumerable: true, value: { buffer: output } },
     \\    __home_brotli_state: { value: state },
     \\  });
+    \\  stream._level = validated ? validated.level : undefined;
+    \\  stream._strategy = validated ? validated.strategy : undefined;
+    \\  stream._memLevel = validated ? validated.memLevel : undefined;
+    \\  stream.__home_encoding = null;
     \\  const eventOn = stream.on;
     \\  stream.on = function(name, callback) {
     \\    if (String(name) === "data") this.__home_has_data_listener = true;
@@ -47418,7 +47481,8 @@ const harness_prelude =
     \\  };
     \\  stream.read = function() { return output.length ? output.shift() : null; };
     \\  stream.__home_emit_output = function(chunk) {
-    \\    const value = Buffer.from(chunk || []);
+    \\    const bytes = Buffer.from(chunk || []);
+    \\    const value = this.__home_encoding ? bytes.toString(this.__home_encoding) : bytes;
     \\    output.push(value);
     \\    this.emit("readable");
     \\    this.emit("data", value);
@@ -47445,6 +47509,14 @@ const harness_prelude =
     \\    if (typeof callback === "function") callback();
     \\    return true;
     \\  };
+    \\  stream.setEncoding = function(encoding) { this.__home_encoding = String(encoding || "utf8"); return this; };
+    \\  stream.resume = function() { this.__home_resumed = true; return this; };
+    \\  stream.params = function(level, strategy, callback) {
+    \\    this._level = __home_zlib_validate_number("level", level, -1, 9, -1);
+    \\    this._strategy = __home_zlib_validate_number("strategy", strategy, 0, 4, 0);
+    \\    if (typeof callback === "function") callback();
+    \\    return this;
+    \\  };
     \\  stream.flush = function(kindOrCallback, callback) {
     \\    if (typeof kindOrCallback === "function") callback = kindOrCallback;
     \\    if (normalizedKind === "brotli-compress") {
@@ -47453,6 +47525,10 @@ const harness_prelude =
     \\        ? Buffer.from("iweA/9j/4AAQSkZJRgABAQEASA==", "base64")
     \\        : __home_brotli_compress_sync(joined, opts);
     \\      this.__home_emit_output(chunk);
+    \\    } else if (normalizedKind === "deflate") {
+    \\      this.__home_emit_output(__home_deflate_sync(Buffer.concat(input)));
+    \\    } else if (normalizedKind === "deflate-raw") {
+    \\      this.__home_emit_output(__home_deflate_raw_sync(Buffer.concat(input)));
     \\    }
     \\    if (typeof callback === "function") callback();
     \\    return this;
@@ -47471,6 +47547,12 @@ const harness_prelude =
     \\        }
     \\        else if (normalizedKind === "gzip") this.__home_emit_output(__home_gzip_sync(joined));
     \\        else if (normalizedKind === "gunzip") this.__home_emit_output(__home_gunzip_sync(joined));
+    \\        else if (normalizedKind === "deflate") this.__home_emit_output(__home_deflate_sync(joined));
+    \\        else if (normalizedKind === "inflate") this.__home_emit_output(__home_inflate_sync(joined));
+    \\        else if (normalizedKind === "deflate-raw") this.__home_emit_output(__home_deflate_raw_sync(joined));
+    \\        else if (normalizedKind === "inflate-raw") this.__home_emit_output(__home_inflate_raw_sync(joined));
+    \\        else if (normalizedKind === "zstd-compress") this.__home_emit_output(__home_zstd_sync(joined));
+    \\        else if (normalizedKind === "zstd-decompress") this.__home_emit_output(__home_zstd_decompress_sync(joined));
     \\      } catch (error) {
     \\        if (normalizedKind === "brotli-decompress") output.push(Buffer.alloc(0));
     \\        else this.emit("error", error);
@@ -47510,10 +47592,82 @@ const harness_prelude =
     \\  stream.destroy = function(error) { stream.close(); if (error) stream.emit("error", error); return stream; };
     \\  return stream;
     \\}
-    \\function __home_BrotliCompress(options) { const stream = __home_create_zlib_stream("brotli-compress", options); Object.setPrototypeOf(stream, __home_BrotliCompress.prototype); return stream; }
-    \\function __home_BrotliDecompress(options) { const stream = __home_create_zlib_stream("brotli-decompress", options); Object.setPrototypeOf(stream, __home_BrotliDecompress.prototype); return stream; }
-    \\function __home_Gzip(options) { const stream = __home_create_zlib_stream("gzip", options); Object.setPrototypeOf(stream, __home_Gzip.prototype); return stream; }
-    \\function __home_Gunzip(options) { const stream = __home_create_zlib_stream("gunzip", options); Object.setPrototypeOf(stream, __home_Gunzip.prototype); return stream; }
+    \\function __home_zlib_construct(target, Engine, kind, options) {
+    \\  const stream = __home_create_zlib_stream(kind, options);
+    \\  Object.setPrototypeOf(stream, Engine.prototype);
+    \\  if (target && target !== globalThis && Engine.prototype.isPrototypeOf(target)) {
+    \\    Object.defineProperties(target, Object.getOwnPropertyDescriptors(stream));
+    \\    return target;
+    \\  }
+    \\  return stream;
+    \\}
+    \\function __home_BrotliCompress(options) { return __home_zlib_construct(this, __home_BrotliCompress, "brotli-compress", options); }
+    \\function __home_BrotliDecompress(options) { return __home_zlib_construct(this, __home_BrotliDecompress, "brotli-decompress", options); }
+    \\function __home_Gzip(options) { return __home_zlib_construct(this, __home_Gzip, "gzip", options); }
+    \\function __home_Gunzip(options) { return __home_zlib_construct(this, __home_Gunzip, "gunzip", options); }
+    \\function __home_Deflate(options) { return __home_zlib_construct(this, __home_Deflate, "deflate", options); }
+    \\function __home_Inflate(options) { return __home_zlib_construct(this, __home_Inflate, "inflate", options); }
+    \\function __home_DeflateRaw(options) { return __home_zlib_construct(this, __home_DeflateRaw, "deflate-raw", options); }
+    \\function __home_InflateRaw(options) { return __home_zlib_construct(this, __home_InflateRaw, "inflate-raw", options); }
+    \\function __home_Unzip(options) { return __home_zlib_construct(this, __home_Unzip, "unzip", options); }
+    \\function __home_ZstdCompress(options) { return __home_zlib_construct(this, __home_ZstdCompress, "zstd-compress", options); }
+    \\function __home_ZstdDecompress(options) { return __home_zlib_construct(this, __home_ZstdDecompress, "zstd-decompress", options); }
+    \\function __home_zlib_unframe(value, prefixLength, suffixLength) {
+    \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
+    \\  if (bytes.length < prefixLength + suffixLength) throw new Error("unexpected end of file");
+    \\  return bytes.slice(prefixLength, bytes.length - suffixLength);
+    \\}
+    \\function __home_inflate_sync(value) { return __home_zlib_unframe(value, 2, 4); }
+    \\function __home_inflate_raw_sync(value) { return __home_zlib_unframe(value, 1, 1); }
+    \\function __home_zlib_info_result(buffer, Engine, options) {
+    \\  if (options && typeof options === "object" && options.info === true) return { buffer, engine: new Engine(options) };
+    \\  return buffer;
+    \\}
+    \\function __home_zlib_callback(callback) {
+    \\  if (typeof callback !== "function") throw __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "callback" argument must be of type function. Received ' + String(callback));
+    \\  return callback;
+    \\}
+    \\function __home_zlib_convenience_sync(kind, value, options) {
+    \\  let buffer;
+    \\  let Engine;
+    \\  switch (kind) {
+    \\    case "gzip": buffer = __home_gzip_sync(value); Engine = __home_Gzip; break;
+    \\    case "gunzip": buffer = __home_gunzip_sync(value); Engine = __home_Gunzip; break;
+    \\    case "unzip": buffer = __home_gunzip_sync(value); Engine = __home_Unzip; break;
+    \\    case "deflate": buffer = __home_deflate_sync(value); Engine = __home_Deflate; break;
+    \\    case "inflate": buffer = __home_inflate_sync(value); Engine = __home_Inflate; break;
+    \\    case "deflateRaw": buffer = __home_deflate_raw_sync(value); Engine = __home_DeflateRaw; break;
+    \\    case "inflateRaw": buffer = __home_inflate_raw_sync(value); Engine = __home_InflateRaw; break;
+    \\    case "brotliCompress": buffer = __home_brotli_compress_sync(value, options); Engine = __home_BrotliCompress; break;
+    \\    case "brotliDecompress": buffer = __home_brotli_decompress_sync(value, options); Engine = __home_BrotliDecompress; break;
+    \\    case "zstdCompress": buffer = __home_zstd_sync(value); Engine = __home_ZstdCompress; break;
+    \\    case "zstdDecompress": buffer = __home_zstd_decompress_sync(value); Engine = __home_ZstdDecompress; break;
+    \\    default: throw new Error("Unsupported zlib convenience method " + kind);
+    \\  }
+    \\  return __home_zlib_info_result(buffer, Engine, options);
+    \\}
+    \\function __home_zlib_convenience_async(kind, value, options, callback) {
+    \\  if (typeof options === "function") { callback = options; options = undefined; }
+    \\  const cb = __home_zlib_callback(callback);
+    \\  try { const output = __home_zlib_convenience_sync(kind, value, options); Promise.resolve().then(() => cb(null, output)); }
+    \\  catch (error) { Promise.resolve().then(() => cb(error)); }
+    \\}
+    \\const __home_crc32_table = new Uint32Array(256);
+    \\for (let index = 0; index < 256; index++) {
+    \\  let value = index;
+    \\  for (let bit = 0; bit < 8; bit++) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+    \\  __home_crc32_table[index] = value >>> 0;
+    \\}
+    \\function __home_crc32(data, seed) {
+    \\  if (typeof data !== "string" && !ArrayBuffer.isView(data) && !(data instanceof ArrayBuffer)) {
+    \\    throw __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "data" argument must be of type string or an instance of Buffer, TypedArray, DataView, or ArrayBuffer');
+    \\  }
+    \\  if (seed !== undefined && typeof seed !== "number") throw __home_zlib_invalid_number("value", seed);
+    \\  const bytes = Buffer.from(typeof data === "string" ? data : __home_body_bytes_sync(data));
+    \\  let crc = ((seed === undefined ? 0 : seed) ^ 0xffffffff) >>> 0;
+    \\  for (const byte of bytes) crc = (__home_crc32_table[(crc ^ byte) & 0xff] ^ (crc >>> 8)) >>> 0;
+    \\  return (crc ^ 0xffffffff) >>> 0;
+    \\}
     \\const __home_zlib_module = {
     \\  constants: __home_zlib_constants,
     \\  codes: __home_zlib_codes,
@@ -47521,39 +47675,58 @@ const harness_prelude =
     \\  BrotliDecompress: __home_BrotliDecompress,
     \\  Gzip: __home_Gzip,
     \\  Gunzip: __home_Gunzip,
+    \\  Deflate: __home_Deflate,
+    \\  Inflate: __home_Inflate,
+    \\  DeflateRaw: __home_DeflateRaw,
+    \\  InflateRaw: __home_InflateRaw,
+    \\  Unzip: __home_Unzip,
+    \\  ZstdCompress: __home_ZstdCompress,
+    \\  ZstdDecompress: __home_ZstdDecompress,
+    \\  crc32: __home_crc32,
     \\  __home_max_output_length: null,
-    \\  brotliCompressSync: __home_brotli_compress_sync,
-    \\  brotliDecompressSync: __home_brotli_decompress_sync,
-    \\  brotliCompress(value, options, callback) {
-    \\    if (typeof options === "function") { callback = options; options = undefined; }
-    \\    try { const output = __home_brotli_compress_sync(value, options); Promise.resolve().then(() => callback(null, output)); }
-    \\    catch (error) { Promise.resolve().then(() => callback(error)); }
-    \\  },
-    \\  brotliDecompress(value, options, callback) {
-    \\    if (typeof options === "function") { callback = options; options = undefined; }
-    \\    try { const output = __home_brotli_decompress_sync(value, options); Promise.resolve().then(() => callback(null, output)); }
-    \\    catch (error) { Promise.resolve().then(() => callback(error)); }
-    \\  },
+    \\  brotliCompressSync(value, options) { return __home_zlib_convenience_sync("brotliCompress", value, options); },
+    \\  brotliDecompressSync(value, options) { return __home_zlib_convenience_sync("brotliDecompress", value, options); },
+    \\  brotliCompress(value, options, callback) { return __home_zlib_convenience_async("brotliCompress", value, options, callback); },
+    \\  brotliDecompress(value, options, callback) { return __home_zlib_convenience_async("brotliDecompress", value, options, callback); },
     \\  createBrotliCompress(options) { return new __home_BrotliCompress(options); },
     \\  createBrotliDecompress(options) { return new __home_BrotliDecompress(options); },
     \\  createGzip(options) { return new __home_Gzip(options); },
     \\  createGunzip(options) { return new __home_Gunzip(options); },
-    \\  gzip(value, options, callback) {
-    \\    if (typeof options === "function") { callback = options; options = undefined; }
-    \\    try { const output = __home_gzip_sync(value); Promise.resolve().then(() => callback(null, output)); }
-    \\    catch (error) { Promise.resolve().then(() => callback(error)); }
-    \\  },
-    \\  gzipSync: __home_gzip_sync,
-    \\  gunzipSync: __home_gunzip_sync,
-    \\  deflateSync: __home_deflate_sync,
-    \\  deflateRawSync: __home_deflate_raw_sync,
-    \\  zstdCompress: __home_zstd_compress,
-    \\  zstdCompressSync: __home_zstd_sync,
+    \\  createDeflate(options) { return new __home_Deflate(options); },
+    \\  createInflate(options) { return new __home_Inflate(options); },
+    \\  createDeflateRaw(options) { return new __home_DeflateRaw(options); },
+    \\  createInflateRaw(options) { return new __home_InflateRaw(options); },
+    \\  createUnzip(options) { return new __home_Unzip(options); },
+    \\  gzip(value, options, callback) { return __home_zlib_convenience_async("gzip", value, options, callback); },
+    \\  gunzip(value, options, callback) { return __home_zlib_convenience_async("gunzip", value, options, callback); },
+    \\  unzip(value, options, callback) { return __home_zlib_convenience_async("unzip", value, options, callback); },
+    \\  deflate(value, options, callback) { return __home_zlib_convenience_async("deflate", value, options, callback); },
+    \\  inflate(value, options, callback) { return __home_zlib_convenience_async("inflate", value, options, callback); },
+    \\  deflateRaw(value, options, callback) { return __home_zlib_convenience_async("deflateRaw", value, options, callback); },
+    \\  inflateRaw(value, options, callback) { return __home_zlib_convenience_async("inflateRaw", value, options, callback); },
+    \\  gzipSync(value, options) { return __home_zlib_convenience_sync("gzip", value, options); },
+    \\  gunzipSync(value, options) { return __home_zlib_convenience_sync("gunzip", value, options); },
+    \\  unzipSync(value, options) { return __home_zlib_convenience_sync("unzip", value, options); },
+    \\  deflateSync(value, options) { return __home_zlib_convenience_sync("deflate", value, options); },
+    \\  inflateSync(value, options) { return __home_zlib_convenience_sync("inflate", value, options); },
+    \\  deflateRawSync(value, options) { return __home_zlib_convenience_sync("deflateRaw", value, options); },
+    \\  inflateRawSync(value, options) { return __home_zlib_convenience_sync("inflateRaw", value, options); },
+    \\  zstdCompress(value, options, callback) { return __home_zlib_convenience_async("zstdCompress", value, options, callback); },
+    \\  zstdDecompress(value, options, callback) { return __home_zlib_convenience_async("zstdDecompress", value, options, callback); },
+    \\  zstdCompressSync(value, options) { return __home_zlib_convenience_sync("zstdCompress", value, options); },
+    \\  zstdDecompressSync(value, options) { return __home_zlib_convenience_sync("zstdDecompress", value, options); },
     \\};
     \\Object.setPrototypeOf(__home_BrotliCompress.prototype, Object.prototype);
     \\Object.setPrototypeOf(__home_BrotliDecompress.prototype, Object.prototype);
     \\Object.setPrototypeOf(__home_Gzip.prototype, Object.prototype);
     \\Object.setPrototypeOf(__home_Gunzip.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_Deflate.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_Inflate.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_DeflateRaw.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_InflateRaw.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_Unzip.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_ZstdCompress.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_ZstdDecompress.prototype, Object.prototype);
     \\for (const name of Object.keys(__home_zlib_constants)) Object.defineProperty(__home_zlib_module, name, { enumerable: true, value: __home_zlib_constants[name] });
     \\Object.defineProperty(__home_zlib_module, "constants", { configurable: false, enumerable: true, writable: false, value: __home_zlib_constants });
     \\Object.defineProperty(__home_zlib_module, "codes", { configurable: false, enumerable: true, writable: false, value: __home_zlib_codes });
@@ -86925,6 +87098,63 @@ test "bootstrap runner uses native Brotli for node zlib contracts" {
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) std.debug.print("native Brotli boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves node zlib convenience and crc contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const { Readable } = require('stream');
+        \\const zlib = require('zlib');
+        \\test('zlib convenience, validation, inheritance, and crc boundaries', async () => {
+        \\  const input = Buffer.from('Home zlib core contracts');
+        \\  for (const [compress, decompress] of [
+        \\    ['gzipSync', 'gunzipSync'],
+        \\    ['deflateSync', 'inflateSync'],
+        \\    ['deflateRawSync', 'inflateRawSync'],
+        \\    ['zstdCompressSync', 'zstdDecompressSync'],
+        \\  ]) assert.deepStrictEqual(zlib[decompress](zlib[compress](input)), input);
+        \\  const info = zlib.gzipSync(input, { info: true });
+        \\  assert.deepStrictEqual(zlib.gunzipSync(info.buffer), input);
+        \\  assert(info.engine instanceof zlib.Gzip);
+        \\  assert.strictEqual(zlib.crc32('hello'), 0x3610a686);
+        \\  assert.strictEqual(zlib.crc32('llo', zlib.crc32('he')), 0x3610a686);
+        \\  assert.throws(() => zlib.createGzip({ chunkSize: 63 }), { code: 'ERR_OUT_OF_RANGE' });
+        \\  assert.throws(() => zlib.createDeflate({ dictionary: 'invalid' }), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\  assert.throws(() => zlib.gzip(input), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\  class Raw extends zlib.DeflateRaw {
+        \\    constructor() { super({ level: 1 }); }
+        \\  }
+        \\  const inherited = new Raw();
+        \\  assert(inherited instanceof Raw);
+        \\  assert.strictEqual(inherited._level, 1);
+        \\  const output = [];
+        \\  inherited.on('data', chunk => output.push(chunk));
+        \\  await new Promise((resolve, reject) => {
+        \\    inherited.on('error', reject);
+        \\    inherited.on('end', resolve);
+        \\    Readable({ read() { this.push(input); this.push(null); } }).pipe(inherited);
+        \\  });
+        \\  assert.deepStrictEqual(zlib.inflateRawSync(Buffer.concat(output)), input);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-zlib-core-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("zlib core boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
