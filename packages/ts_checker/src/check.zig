@@ -7205,6 +7205,9 @@ pub const Checker = struct {
                                 self.nodeSourceTextOrEmpty(self.current_function_return_node),
                                 " \t\r\n",
                             );
+                            if (self.sourceHasReactJsxReference() and std.mem.eql(u8, text, "JSX.Element")) {
+                                break :blk "Element";
+                            }
                             break :blk if (text.len == 0) null else text;
                         } else null;
                         const target_name = return_annotation_name orelse
@@ -28205,10 +28208,12 @@ pub const Checker = struct {
         const contextual_return = self.contextualReturnTypeForFunction(fn_node) orelse return null;
         if (self.alias_display_names.get(contextual_return)) |display| {
             // Iterable<T> / AsyncIterable<T> describe only yielded values;
-            // unlike Iterator/Generator, they have no caller-sent TNext
-            // channel to contribute to inference.
-            if (std.mem.startsWith(u8, display, "Iterable<") or
-                std.mem.startsWith(u8, display, "AsyncIterable<")) return null;
+            // unlike Iterator/Generator, they have no declared caller-sent
+            // TNext channel. AsyncIterable context nevertheless gives a
+            // direct yield the async protocol default `any`; synchronous
+            // Iterable context retains `unknown`.
+            if (std.mem.startsWith(u8, display, "AsyncIterable<")) return types.Primitive.any;
+            if (std.mem.startsWith(u8, display, "Iterable<")) return null;
         }
         const next_name = self.string_interner.intern("next") catch return null;
         if (self.interner.objectMember(contextual_return, next_name) == null) return null;
@@ -28265,7 +28270,13 @@ pub const Checker = struct {
                         else
                             self.hir.typeOf(node)
                     else if (self.generator_type_info.get(expr_t)) |delegated|
-                        delegated.next_type
+                        if (is_async_generator)
+                            // Async-generator delegation contributes `any`
+                            // to TNext; synchronous iterable delegation does
+                            // not contribute and therefore remains unknown.
+                            types.Primitive.any
+                        else
+                            delegated.next_type
                     else
                         types.Primitive.none;
                     if (next_t != types.Primitive.none) {
@@ -172714,6 +172725,21 @@ test "checker: JSX.Element resolves to a named synthetic when only /.lib/react.d
     try T.expect(found);
 }
 
+test "checker: React JSX nullish returns render the Element leaf name" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\function NoOverload(): JSX.Element { return undefined; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'undefined' is not assignable to type 'Element'.",
+    ));
+}
+
 test "checker: JSX logical class component unions use class props" {
     const s = try newTsxSetup(
         \\/// <reference path="/.lib/react.d.ts" />
@@ -231876,6 +231902,41 @@ test "checker: static class object rest keeps one prototype member" {
         s,
         TsCodes.property_does_not_exist,
         "Property '#field' does not exist on type '{ prototype: C; }'.",
+    ));
+}
+
+test "checker: async generator delegation distinguishes synchronous and async next types" {
+    const b = try newBoundSetup(
+        \\// @strict: false
+        \\// @target: es2018
+        \\// @lib: esnext
+        \\const synchronous: () => AsyncIterableIterator<number> = async function* () {
+        \\  yield* ["a", "b"];
+        \\};
+        \\const asynchronous: () => AsyncIterableIterator<number> = async function* () {
+        \\  yield* (async function* () { yield "a"; })();
+        \\};
+        \\const direct: () => AsyncIterable<number> = async function* () {
+        \\  yield "a";
+        \\};
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '() => AsyncGenerator<string, void, any>' is not assignable to type '() => AsyncIterableIterator<number>'.",
+    ));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '() => AsyncGenerator<string, void, unknown>' is not assignable to type '() => AsyncIterableIterator<number>'.",
+    ));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '() => AsyncGenerator<string, void, any>' is not assignable to type '() => AsyncIterable<number>'.",
     ));
 }
 
