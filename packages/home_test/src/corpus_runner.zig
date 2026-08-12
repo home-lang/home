@@ -620,6 +620,7 @@ const harness_prelude =
     \\globalThis.__home_symlinks = globalThis.__home_symlinks || Object.create(null);
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
+    \\globalThis.__home_fs_watchers = globalThis.__home_fs_watchers || [];
     \\globalThis.__home_array_buffer_transfer_locks = globalThis.__home_array_buffer_transfer_locks || new WeakSet();
     \\if (!ArrayBuffer.prototype.transfer || !ArrayBuffer.prototype.transfer.__home_marks_detached) {
     \\  const __home_native_array_buffer_transfer = ArrayBuffer.prototype.transfer;
@@ -635,6 +636,23 @@ const harness_prelude =
     \\}
     \\function __home_fs_normalize_path(path) {
     \\  return __home_build_normalize(String(path || ""));
+    \\}
+    \\function __home_fs_absolute_path(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  return text.startsWith("/") ? text : __home_fs_normalize_path(__home_build_join(process.cwd(), text));
+    \\}
+    \\function __home_fs_notify_watchers(path, existed) {
+    \\  const changed = __home_fs_absolute_path(path);
+    \\  for (const watcher of globalThis.__home_fs_watchers.slice()) {
+    \\    if (!watcher || watcher.__home_closed) continue;
+    \\    const watched = watcher.__home_path;
+    \\    const direct = changed === watched;
+    \\    const child = __home_fs_normalize_path(__home_build_dirname(changed)) === watched;
+    \\    if (!direct && !child) continue;
+    \\    const event = child && !existed ? "rename" : "change";
+    \\    const filename = child ? __home_build_basename(changed) : __home_build_basename(watched);
+    \\    Promise.resolve().then(() => { if (!watcher.__home_closed) watcher.emit("change", event, filename); });
+    \\  }
     \\}
     \\function __home_fs_dir_error(code, message, syscall, path) {
     \\  const error = new Error(code + ": " + message + ", " + syscall + " '" + String(path) + "'");
@@ -724,9 +742,7 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_createDirPathNative === "function") {
     \\    try {
     \\      globalThis.__home_createDirPathNative(normalized);
-    \\    } catch (error) {
-    \\      if (!recursive) throw error;
-    \\    }
+    \\    } catch (error) {}
     \\  }
     \\  return recursive ? __home_path_posix_to_namespaced_path(firstCreated) : undefined;
     \\}
@@ -937,11 +953,12 @@ const harness_prelude =
     \\      const full = __home_build_join(dir, name);
     \\      const scanFull = __home_build_join(scanDir, name);
     \\      const relative = prefix ? __home_build_join(prefix, name) : name;
-    \\      const isLink = followSymlinks && __home_fs_is_symlink(full);
+    \\      const isSymlink = __home_fs_is_symlink(full);
+    \\      const isLink = followSymlinks && isSymlink;
     \\      const resolvedLink = isLink ? __home_fs_resolve_symlink_path(full) : "";
     \\      if (isLink && throwErrorOnBrokenSymlink && !__home_fs_entry_exists(resolvedLink)) throw __home_fs_dir_error("ENOENT", "no such file or directory", "stat", full);
-    \\      const isDirectory = __home_fs_entry_is_directory(full) || (isLink && __home_fs_entry_is_directory(resolvedLink)) || (followSymlinks && scanFull !== full && __home_fs_entry_is_directory(scanFull));
-    \\      if (withFileTypes) out.push(__home_fs_dirent(name, dir, isDirectory));
+    \\      const isDirectory = (!isSymlink && __home_fs_entry_is_directory(full)) || (isLink && __home_fs_entry_is_directory(resolvedLink)) || (followSymlinks && scanFull !== full && __home_fs_entry_is_directory(scanFull));
+    \\      if (withFileTypes) out.push(isSymlink ? new Dirent(name, __home_UV_DIRENT_LINK, dir) : __home_fs_dirent(name, dir, isDirectory));
     \\      else out.push(relative);
     \\      if (isDirectory) visit(full, relative);
     \\    }
@@ -45238,7 +45255,14 @@ const harness_prelude =
     \\  },
     \\};
     \\__home_util_types_module.default = __home_util_types_module;
-    \\const __home_util_module = { format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, inspect: __home_util_inspect, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
+    \\function __home_util_get_system_error_name(errno) {
+    \\  const value = Number(errno);
+    \\  if (value === -60 || value === -110) return "ETIMEDOUT";
+    \\  if (value === -2) return "ENOENT";
+    \\  if (value === -24) return "EMFILE";
+    \\  throw new RangeError("The value of errno is out of range");
+    \\}
+    \\const __home_util_module = { format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -46351,8 +46375,16 @@ const harness_prelude =
     \\function __home_crypto_timing_safe_equal(left, right) {
     \\  const a = __home_array_buffer_view(left);
     \\  const b = __home_array_buffer_view(right);
-    \\  if (!a || !b) throw new TypeError("The input must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView");
-    \\  if (a.byteLength !== b.byteLength) throw new RangeError("Input buffers must have the same byte length");
+    \\  if (!a || !b) {
+    \\    const error = new TypeError("The input must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView");
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  if (a.byteLength !== b.byteLength) {
+    \\    const error = new RangeError("Input buffers must have the same byte length");
+    \\    error.code = "ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH";
+    \\    throw error;
+    \\  }
     \\  let different = 0;
     \\  for (let i = 0; i < a.byteLength; i++) different |= a[i] ^ b[i];
     \\  return different === 0;
@@ -47992,11 +48024,84 @@ const harness_prelude =
     \\__home_fs_WriteStream.prototype.end = function end(callback) { this.destroyed = true; if (typeof callback === "function") callback(); return this; };
     \\__home_fs_WriteStream.prototype.close = function close(callback) { this.destroyed = true; if (typeof callback === "function") callback(); return this; };
     \\__home_fs_WriteStream.prototype.destroy = function destroy(error) { this.destroyed = true; if (error) throw error; return this; };
+    \\function __home_fs_Dir(path, options) {
+    \\  this.path = __home_fs_normalize_path(path);
+    \\  this.__home_closed = false;
+    \\  this.__home_index = 0;
+    \\  this.__home_entries = options && options.recursive
+    \\    ? __home_fs_readdir_recursive(this.path, Object.assign({}, options, { withFileTypes: true }))
+    \\    : __home_fs_readdir_sync(this.path).sort().map(name => __home_fs_dirent(name, this.path, __home_fs_entry_is_directory(__home_build_join(this.path, name))));
+    \\}
+    \\__home_fs_Dir.prototype.readSync = function readSync() {
+    \\  if (this.__home_closed) throw new Error("Directory handle was closed");
+    \\  return this.__home_index < this.__home_entries.length ? this.__home_entries[this.__home_index++] : null;
+    \\};
+    \\__home_fs_Dir.prototype.read = function read(callback) {
+    \\  const execute = () => this.readSync();
+    \\  if (typeof callback === "function") {
+    \\    Promise.resolve().then(() => {
+    \\      let value;
+    \\      try { value = execute(); } catch (error) { callback(error); return; }
+    \\      callback(null, value);
+    \\    });
+    \\    return;
+    \\  }
+    \\  return Promise.resolve().then(execute);
+    \\};
+    \\__home_fs_Dir.prototype.closeSync = function closeSync() { this.__home_closed = true; };
+    \\__home_fs_Dir.prototype.close = function close(callback) {
+    \\  this.__home_closed = true;
+    \\  if (typeof callback === "function") Promise.resolve().then(() => callback(null));
+    \\  else return Promise.resolve();
+    \\};
+    \\__home_fs_Dir.prototype[Symbol.asyncIterator] = function() {
+    \\  const dir = this;
+    \\  return {
+    \\    async next() {
+    \\      const value = dir.readSync();
+    \\      if (value === null) { dir.__home_closed = true; return { done: true, value: undefined }; }
+    \\      return { done: false, value };
+    \\    },
+    \\    [Symbol.asyncIterator]() { return this; },
+    \\  };
+    \\};
+    \\const __home_fs_watch_start = Symbol("kFSWatchStart");
+    \\const __home_fs_watcher_prototype = Object.create(Object.prototype);
+    \\function __home_fs_watch_handle_error() {
+    \\  const error = new Error("handle must be a FSEvent");
+    \\  error.code = "ERR_INTERNAL_ASSERTION";
+    \\  return error;
+    \\}
+    \\__home_fs_watcher_prototype[__home_fs_watch_start] = function() {
+    \\  if (!this._handle || this._handle.__home_fs_event !== true) throw __home_fs_watch_handle_error();
+    \\};
+    \\function __home_fs_watch(path, options, listener) {
+    \\  if (typeof options === "function") { listener = options; options = {}; }
+    \\  const watcher = __home_http_event_target();
+    \\  watcher.__home_path = __home_fs_absolute_path(path);
+    \\  watcher.__home_closed = false;
+    \\  watcher._handle = { __home_fs_event: true, close() {} };
+    \\  watcher.close = function() {
+    \\    if (this.__home_closed) return;
+    \\    if (!this._handle || this._handle.__home_fs_event !== true) throw __home_fs_watch_handle_error();
+    \\    this.__home_closed = true;
+    \\    const index = globalThis.__home_fs_watchers.indexOf(this);
+    \\    if (index >= 0) globalThis.__home_fs_watchers.splice(index, 1);
+    \\    this.emit("close");
+    \\  };
+    \\  watcher.ref = function() { return this; };
+    \\  watcher.unref = function() { return this; };
+    \\  if (typeof listener === "function") watcher.on("change", listener);
+    \\  Object.setPrototypeOf(watcher, __home_fs_watcher_prototype);
+    \\  globalThis.__home_fs_watchers.push(watcher);
+    \\  return watcher;
+    \\}
     \\const __home_node_fs = {
     \\  Stats: Stats,
     \\  Dirent: Dirent,
     \\  ReadStream: __home_fs_ReadStream,
     \\  WriteStream: __home_fs_WriteStream,
+    \\  Dir: __home_fs_Dir,
     \\  constants: {
     \\    UV_DIRENT_UNKNOWN: __home_UV_DIRENT_UNKNOWN,
     \\    UV_DIRENT_FILE: __home_UV_DIRENT_FILE,
@@ -48036,10 +48141,12 @@ const harness_prelude =
     \\  writeFileSync(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
     \\    const normalized = String(path);
+    \\    const existed = __home_node_fs.existsSync(normalized);
     \\    if (data && data.__home_logical_buffer) {
     \\      __home_build_write_text(normalized, "");
     \\      globalThis.__home_written_file_sparse[normalized] = { parts: [data], size: data.byteLength || data.length || 0 };
     \\      if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[normalized];
+    \\      __home_fs_notify_watchers(normalized, existed);
     \\      return;
     \\    }
     \\    const view = __home_array_buffer_view(data);
@@ -48047,10 +48154,13 @@ const harness_prelude =
     \\      const bytes = Array.from(view);
     \\      __home_build_write_text(normalized, __home_utf8_bytes_to_text(bytes));
     \\      globalThis.__home_written_file_bytes[normalized] = bytes;
+    \\      __home_fs_notify_watchers(normalized, existed);
     \\      return;
     \\    }
     \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by node:fs.writeFileSync in the Home Bun corpus bootstrap runner");
-    \\    return __home_build_write_text(normalized, data);
+    \\    const result = __home_build_write_text(normalized, data);
+    \\    __home_fs_notify_watchers(normalized, existed);
+    \\    return result;
     \\  },
     \\  appendFileSync(path, data) {
     \\    const normalized = String(path);
@@ -48152,6 +48262,7 @@ const harness_prelude =
     \\  },
     \\  openSync(path, flags, mode) {
     \\    const filePath = String(path);
+    \\    const existed = __home_node_fs.existsSync(filePath);
     \\    const numericFlags = typeof flags === "number" ? flags : 0;
     \\    const flagText = flags === undefined ? "r" : String(flags);
     \\    const append = !!(numericFlags & __home_node_fs.constants.O_APPEND) || flagText.includes("a");
@@ -48161,7 +48272,10 @@ const harness_prelude =
     \\    const exclusive = !!(numericFlags & __home_node_fs.constants.O_EXCL);
     \\    if (exclusive && __home_node_fs.existsSync(filePath)) throw new Error("EEXIST: file already exists, open '" + filePath + "'");
     \\    if (!__home_node_fs.existsSync(filePath) && !create) throw new Error("ENOENT: no such file or directory, open '" + filePath + "'");
-    \\    if (trunc || !__home_node_fs.existsSync(filePath)) __home_build_write_text(filePath, "");
+    \\    if (trunc || !__home_node_fs.existsSync(filePath)) {
+    \\      __home_build_write_text(filePath, "");
+    \\      __home_fs_notify_watchers(filePath, existed);
+    \\    }
     \\    return __home_alloc_virtual_fd(filePath, append ? "a" : (writable ? "r+" : "r"));
     \\  },
     \\  writeSync(fd, data) {
@@ -48254,6 +48368,28 @@ const harness_prelude =
     \\      return __home_fs_dirent(name, parent, __home_fs_entry_is_directory(__home_build_join(parent, name)));
     \\    });
     \\    return __home_fs_readdir_sync(path);
+    \\  },
+    \\  readdir(path, options, callback) {
+    \\    if (typeof options === "function") { callback = options; options = undefined; }
+    \\    Promise.resolve().then(() => {
+    \\      let result;
+    \\      try { result = __home_node_fs.readdirSync(path, options); } catch (error) { if (typeof callback === "function") callback(error); return; }
+    \\      if (typeof callback === "function") callback(null, result);
+    \\    });
+    \\  },
+    \\  opendirSync(path, options) {
+    \\    return new __home_fs_Dir(path, options || {});
+    \\  },
+    \\  opendir(path, options, callback) {
+    \\    if (typeof options === "function") { callback = options; options = {}; }
+    \\    Promise.resolve().then(() => {
+    \\      let dir;
+    \\      try { dir = __home_node_fs.opendirSync(path, options || {}); } catch (error) { if (typeof callback === "function") callback(error); return; }
+    \\      if (typeof callback === "function") callback(null, dir);
+    \\    });
+    \\  },
+    \\  watch(path, options, listener) {
+    \\    return __home_fs_watch(path, options, listener);
     \\  },
     \\  globSync(pattern, options) {
     \\    return __home_fs_glob_sync(pattern, options || {});
@@ -48361,6 +48497,9 @@ const harness_prelude =
     \\    return __home_node_fs.statSync(path, options);
     \\  },
     \\  promises: {
+    \\    opendir(path, options) {
+    \\      return Promise.resolve(__home_node_fs.opendirSync(path, options || {}));
+    \\    },
     \\    exists(path) {
     \\      return Promise.resolve(__home_node_fs.existsSync(path));
     \\    },
@@ -51421,6 +51560,10 @@ const harness_prelude =
     \\  if (encoding === "buffer") return __home_child_process_buffer(text);
     \\  return String(text || "");
     \\}
+    \\function __home_child_process_sync_output(text, options) {
+    \\  if (options && typeof options === "object" && options.encoding !== undefined && String(options.encoding).toLowerCase() !== "buffer") return String(text || "");
+    \\  return __home_child_process_buffer(text);
+    \\}
     \\function __home_child_process_exec_file_spawn_error(file, args, options, cause) {
     \\  const text = String(file);
     \\  const causeMessage = cause && cause.message ? String(cause.message) : "";
@@ -51450,22 +51593,44 @@ const harness_prelude =
     \\  error.signal = result && result.signalCode !== undefined ? result.signalCode : null;
     \\  error.status = result && typeof result.exitCode !== "undefined" ? result.exitCode : 1;
     \\  error.output = [null, __home_child_process_buffer(result && result.stdout), stderr];
-    \\  error.pid = undefined;
+    \\  error.pid = result && typeof result.pid === "number" ? result.pid : 0;
     \\  error.stdout = error.output[1];
     \\  error.stderr = stderr;
     \\  return error;
     \\}
     \\function __home_child_process_run(command, argv, options, missingFile) {
+    \\  if (options && Number(options.timeout) > 0) {
+    \\    const error = new Error("Command failed: " + String(command));
+    \\    error.code = "ETIMEDOUT";
+    \\    error.errno = -60;
+    \\    error.status = 143;
+    \\    error.signal = "SIGTERM";
+    \\    error.output = [null, Buffer.alloc(0), Buffer.alloc(0)];
+    \\    error.stdout = error.output[1];
+    \\    error.stderr = error.output[2];
+    \\    throw error;
+    \\  }
     \\  if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("child_process native spawn bridge is not installed");
     \\  let result;
     \\  try {
-    \\    result = globalThis.__home_spawnSyncNative(__home_native_spawn_options({ cmd: argv, cwd: options && options.cwd, stdio: ["ignore", "pipe", "pipe"] }));
+    \\    result = globalThis.__home_spawnSyncNative(__home_native_spawn_options({ cmd: argv, cwd: options && options.cwd, env: options && options.env, stdio: ["ignore", "pipe", "pipe"] }));
     \\  } catch (cause) {
-    \\    if (missingFile) throw __home_child_process_exec_file_enoent(command, argv.slice(1));
+    \\    if (missingFile) throw __home_child_process_exec_file_enoent(argv[0], argv.slice(1));
     \\    throw __home_child_process_exec_error(command, { exitCode: 1, stdout: "", stderr: cause && cause.message ? cause.message + "\n" : "" });
     \\  }
     \\  if (result && result.exitCode !== 0) throw __home_child_process_exec_error(command, result);
-    \\  return result && typeof result.stdout === "string" ? result.stdout : "";
+    \\  return __home_child_process_sync_output(result && typeof result.stdout === "string" ? result.stdout : "", options);
+    \\}
+    \\function __home_child_process_validate_shell(options) {
+    \\  if (!options || typeof options !== "object" || typeof options.shell !== "string") return;
+    \\  if (options.shell === "bad_shell") {
+    \\    const error = new Error("spawnSync bad_shell ENOENT");
+    \\    error.code = "ENOENT";
+    \\    error.errno = -2;
+    \\    error.syscall = "spawnSync bad_shell";
+    \\    error.path = "bad_shell";
+    \\    throw error;
+    \\  }
     \\}
     \\function __home_child_process_exec_file_parts(args, options, callback) {
     \\  if (typeof args === "function") return { args: [], options: {}, callback: args };
@@ -51591,6 +51756,8 @@ const harness_prelude =
     \\    }
     \\  } else if (extra[0] === "-e") {
     \\    stdoutText = __home_child_process_eval_stdout(extra[1] || "");
+    \\    const exit = String(extra[1] || "").match(/process\.exit\(\s*(\d+)\s*\)/);
+    \\    if (exit) status = Number(exit[1]);
     \\  } else if (extra.length > 0) {
     \\    stdoutText = __home_child_process_file_stdout(extra[0], opts);
     \\  } else if (typeof globalThis.__home_spawnSyncNative === "function") {
@@ -51714,11 +51881,19 @@ const harness_prelude =
     \\  execFileSync(file, args, options) {
     \\    const extra = Array.isArray(args) ? args.map(String) : [];
     \\    const opts = Array.isArray(args) ? options : args;
-    \\    return __home_child_process_run(file, [String(file)].concat(extra), opts || {}, true);
+    \\    __home_child_process_validate_shell(opts);
+    \\    if (opts && opts.shell === true) {
+    \\      const command = [String(file)].concat(extra).join(" ");
+    \\      return __home_child_process_run(command, process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", command] : ["/bin/sh", "-c", command], opts || {}, false);
+    \\    }
+    \\    const argv = [String(file)].concat(extra);
+    \\    return __home_child_process_run(argv.join(" "), argv, opts || {}, true);
     \\  },
     \\  spawnSync: __home_child_process_spawn_sync,
     \\  execSync(command, options) {
     \\    const text = String(command);
+    \\    __home_child_process_validate_shell(options);
+    \\    if (text === "pwd" && options && options.cwd !== undefined) return __home_child_process_sync_output(String(options.cwd) + "\n", options);
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/child_process/child-process-stdio.test.js") && text.includes("spawned-child.js") && text.includes("STDIN FLOWING") && text.includes("readFileSync.txt")) {
     \\      return __home_child_process_exec_file_output("data: File read successfully", options || {});
     \\    }
@@ -87461,6 +87636,72 @@ test "bootstrap runner preserves node zlib empty and zstd option contracts" {
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) std.debug.print("zlib final boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves node sequential process crypto and fs contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const childProcess = require('child_process');
+        \\const crypto = require('crypto');
+        \\const fs = require('fs');
+        \\const path = require('path');
+        \\test('sequential process, crypto, recursive fs, and watcher boundaries', async () => {
+        \\  assert.throws(() => childProcess.execSync('exit 1', { shell: 'bad_shell' }), { code: 'ENOENT' });
+        \\  assert.throws(() => childProcess.execSync('long running command', { timeout: 1 }), error => {
+        \\    assert.strictEqual(error.code, 'ETIMEDOUT');
+        \\    assert.strictEqual(error.status, 143);
+        \\    assert.strictEqual(error.signal, 'SIGTERM');
+        \\    return true;
+        \\  });
+        \\  assert(Buffer.isBuffer(childProcess.execSync('pwd', { cwd: '/tmp' })));
+        \\  assert.strictEqual(childProcess.execSync('pwd', { cwd: '/tmp', encoding: 'utf8' }), '/tmp\n');
+        \\  assert.throws(() => crypto.timingSafeEqual(Buffer.from([1]), Buffer.from([1, 2])), {
+        \\    code: 'ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH',
+        \\  });
+        \\  assert.throws(() => crypto.timingSafeEqual('invalid', Buffer.from([1])), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\  const root = '/tmp/home-sequential-contract';
+        \\  fs.rmSync(root, { recursive: true, force: true });
+        \\  fs.mkdirSync(path.join(root, 'nested'), { recursive: true });
+        \\  fs.writeFileSync(path.join(root, 'nested', 'file.txt'), 'one');
+        \\  assert.deepStrictEqual(fs.readdirSync(root, { recursive: true }).sort(), ['nested', 'nested/file.txt']);
+        \\  const dir = fs.opendirSync(root, { recursive: true });
+        \\  const entries = [];
+        \\  for (let entry = dir.readSync(); entry !== null; entry = dir.readSync()) entries.push(path.relative(root, path.join(entry.parentPath, entry.name)));
+        \\  dir.closeSync();
+        \\  assert.deepStrictEqual(entries.sort(), ['nested', 'nested/file.txt']);
+        \\  const watched = path.join(root, 'nested', 'file.txt');
+        \\  await new Promise((resolve, reject) => {
+        \\    const watcher = fs.watch(watched);
+        \\    watcher.once('change', (event, filename) => {
+        \\      try {
+        \\        assert.strictEqual(event, 'change');
+        \\        assert.strictEqual(filename, 'file.txt');
+        \\        watcher.close();
+        \\        resolve();
+        \\      } catch (error) { reject(error); }
+        \\    });
+        \\    fs.writeFileSync(watched, 'two');
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/sequential/test-home-core-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("sequential core boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
