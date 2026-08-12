@@ -87268,8 +87268,10 @@ pub const Checker = struct {
 
     fn repeatedVarObjectMembersIdentical(self: *Checker, prior: TypeId, current: TypeId) CheckError!bool {
         if (prior >= self.interner.pool.typeCount() or current >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(prior).is_object_type or
-            !self.interner.pool.flagsOf(current).is_object_type)
+        const prior_flags = self.interner.pool.flagsOf(prior);
+        const current_flags = self.interner.pool.flagsOf(current);
+        if (!prior_flags.is_object_type or prior_flags.is_union or prior_flags.is_intersection or prior_flags.is_signature or
+            !current_flags.is_object_type or current_flags.is_union or current_flags.is_intersection or current_flags.is_signature)
         {
             return false;
         }
@@ -87295,7 +87297,11 @@ pub const Checker = struct {
     }
 
     fn repeatedVarObjectMemberSetMatches(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
-        for (self.interner.objectMembers(source)) |source_member| {
+        // Assignability below may intern object types and reallocate the
+        // shared member pool, so retain an owned snapshot while iterating.
+        const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+        defer self.gpa.free(source_members);
+        for (source_members) |source_member| {
             if (source_member.name == 0 or self.syntheticSignatureMemberName(source_member.name)) continue;
             const target_member = self.interner.objectMemberInfo(target, source_member.name) orelse return false;
             if (source_member.is_optional != target_member.is_optional or
@@ -181107,6 +181113,19 @@ test "checker: repeated var declarations reject subtype-collapsed unions" {
     }
     try T.expect(found);
     try T.expectEqual(@as(usize, 1), mismatch_count);
+}
+
+test "checker: repeated object unions do not enter direct object payload comparison" {
+    const s = try newSetup(
+        \\interface A { a: string; }
+        \\interface B { b: string; }
+        \\interface C { c: string; }
+        \\var value: A | B;
+        \\var value: A | C;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: repeated explicit recursive mapped aliases still report TS2403" {
