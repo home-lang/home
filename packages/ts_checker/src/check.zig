@@ -7792,7 +7792,10 @@ pub const Checker = struct {
                         );
                     } else if (ck == .object_pattern or ck == .array_pattern) {
                         self.hir.setType(ts.catch_param, types.Primitive.any);
-                        if (ck == .object_pattern and self.objectBindingPatternHasRest(ts.catch_param)) {
+                        if (self.strict_flags.use_unknown_in_catch_variables and
+                            ck == .object_pattern and
+                            self.objectBindingPatternHasRest(ts.catch_param))
+                        {
                             _ = try self.reportObjectRestBindingFromNonObject(ts.catch_param);
                         }
                     }
@@ -26685,6 +26688,19 @@ pub const Checker = struct {
 
     fn contextualRestTupleElementType(self: *Checker, rest_t: TypeId, index: usize) ?TypeId {
         if (rest_t >= self.interner.pool.typeCount()) return null;
+        if (self.interner.pool.flagsOf(rest_t).is_type_parameter) {
+            const constraint = self.typeParameterConstraint(rest_t) orelse return null;
+            if (!self.restParamTypeIsValidArrayLike(constraint)) return null;
+            const constraint_element = self.interner.objectNumberIndex(constraint);
+            if (constraint_element != types.Primitive.none and
+                constraint_element != types.Primitive.any and
+                constraint_element != types.Primitive.unknown)
+            {
+                return constraint_element;
+            }
+            const index_t = self.interner.internNumberLiteral(@floatFromInt(index)) catch return null;
+            return self.interner.internIndexedAccess(rest_t, index_t) catch return null;
+        }
         if (!self.interner.pool.flagsOf(rest_t).is_union) {
             const element_t = self.tupleElementType(rest_t, index);
             if (element_t != types.Primitive.none) return element_t;
@@ -27251,6 +27267,32 @@ pub const Checker = struct {
         if (!flags.is_object_type) return false;
         const elem_t = try self.arrayElementType(t);
         return elem_t == types.Primitive.any;
+    }
+
+    fn signatureIsMixinConstructorType(self: *Checker, sig: TypeId) CheckError!bool {
+        if (!self.signatureIsConstruct(sig) or !self.rest_signatures.contains(sig)) return false;
+        if (self.generic_signature_params.get(sig)) |params| {
+            if (params.len != 0) return false;
+        }
+        const params = self.interner.signatureParams(sig);
+        if (params.len != 1) return false;
+        return params[0] == types.Primitive.any or try self.typeIsAnyArrayForMixinCtor(params[0]);
+    }
+
+    fn constructorIntersectionUsesMixinMerge(self: *Checker, t: TypeId) CheckError!bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_intersection) return false;
+        var construct_count: usize = 0;
+        var has_mixin = false;
+        for (self.interner.intersectionMembers(t)) |member| {
+            var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer signatures.deinit(self.gpa);
+            try self.collectConstructSignatures(member, &signatures);
+            for (signatures.items) |sig| {
+                construct_count += 1;
+                has_mixin = has_mixin or try self.signatureIsMixinConstructorType(sig);
+            }
+        }
+        return has_mixin and construct_count > 1;
     }
 
     fn mixinConstructorHasSingleAnyRestParam(self: *Checker, ctor_node: NodeId) CheckError!bool {
@@ -45164,6 +45206,7 @@ pub const Checker = struct {
     ) CheckError!void {
         if (extends_expr == hir_mod.none_node_id or self.hir.kindOf(extends_expr) != .call_expr) return;
         if (self.diagnosticExists(class_node, TsCodes.class_static_side_incorrectly_extends_base)) return;
+        if (try self.constructorIntersectionUsesMixinMerge(parent_static_t)) return;
         const parent_instance_t = (try self.constructReturnType(parent_static_t)) orelse return;
         if (parent_instance_t >= self.interner.pool.typeCount() or
             !self.interner.pool.flagsOf(parent_instance_t).is_intersection) return;
@@ -47797,6 +47840,7 @@ pub const Checker = struct {
         defer construct_sigs.deinit(self.gpa);
         try self.collectConstructSignatures(static_t, &construct_sigs);
         if (construct_sigs.items.len == 0) return;
+        const uses_mixin_merge = try self.constructorIntersectionUsesMixinMerge(static_t);
 
         if (try self.constructReturnType(static_t)) |combined_ret| {
             if (combined_ret < self.interner.pool.typeCount() and
@@ -47843,7 +47887,7 @@ pub const Checker = struct {
             if (self.generic_signature_params.get(sig) != null) continue;
             if (first_ret == types.Primitive.none) {
                 first_ret = ret;
-            } else if (!self.baseConstructorReturnTypesMatch(first_ret, ret)) {
+            } else if (!uses_mixin_merge and !self.baseConstructorReturnTypesMatch(first_ret, ret)) {
                 try self.report(
                     extends_expr,
                     TsCodes.base_constructor_returns_mismatch,
@@ -77316,6 +77360,11 @@ pub const Checker = struct {
         }
 
         for (occurrences.items) |occurrence| {
+            if (self.hir.kindOf(decl_node) == .var_decl and
+                self.priorVarDeclWithSameNameExists(decl_node, occurrence.name))
+            {
+                continue;
+            }
             var direct_ref: ?NameRef = null;
             for (refs.items) |ref| {
                 if (ref.name == occurrence.name) {
@@ -96242,6 +96291,11 @@ pub const Checker = struct {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
                 if (self.unconstrainedTypeParameter(obj_t)) {
+                    if (!self.strict_flags.strict_null_checks) {
+                        if (try self.broadObjectPrototypeMember(m.name)) |t| {
+                            break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                        }
+                    }
                     try self.reportPropertyDoesNotExistOnType(node, m.name, obj_t);
                     break :blk types.Primitive.any;
                 }
@@ -109259,6 +109313,9 @@ pub const Checker = struct {
                 }
             } else {
                 ret_t = body_t;
+            }
+            if (f.flags.is_async and !f.flags.is_generator) {
+                ret_t = try self.buildStructuralPromise(ret_t);
             }
             if (!self.strict_flags.strict_null_checks and
                 (ret_t == types.Primitive.null_t or ret_t == types.Primitive.undefined_t))
@@ -140931,6 +140988,9 @@ pub const Checker = struct {
         }
         defer _ = self.signature_constituent_display_in_progress.remove(t);
 
+        if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_union) {
+            return try self.allocSimpleTypeName(t);
+        }
         if (self.typeIsArrayLikeObject(t) and self.actualTupleLength(t) == null) {
             const elem_t = self.interner.objectNumberIndex(t);
             const elem_name = (try self.allocSignatureConstituentDisplayName(elem_t)) orelse return null;
@@ -146729,7 +146789,7 @@ pub const Checker = struct {
                 ret_t = try self.functionExpressionInferenceSignature(f.body, ret_t, true);
             }
         }
-        if (f.flags.is_async) {
+        if (f.flags.is_async and !f.flags.is_generator) {
             const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.none;
             ret_t = if (self.promisePayloadType(source_ret) != null)
                 source_ret
@@ -146847,7 +146907,10 @@ pub const Checker = struct {
             try omittable.append(self.gpa, pp.flags.is_rest or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id);
         }
         if (param_ts.items.len == 0) return null;
-        const sig = self.interner.internSignature(param_ts.items, types.Primitive.void_t, false) catch return error.OutOfMemory;
+        const source_sig = self.hir.typeOf(arg_node);
+        const inferred_sig = try self.functionExpressionInferenceSignature(arg_node, source_sig, false);
+        const return_t = self.interner.signatureReturn(inferred_sig) orelse types.Primitive.void_t;
+        const sig = self.interner.internSignature(param_ts.items, return_t, false) catch return error.OutOfMemory;
         try self.recordSignatureMinArgs(sig, omittable.items);
         try self.recordSignatureParamNames(sig, fn_params);
         if (has_rest) try self.rest_signatures.put(self.gpa, sig, {});
@@ -197253,6 +197316,26 @@ test "checker: intersected mixin constructors validate static prototype and retu
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.base_constructor_returns_mismatch));
 }
 
+test "checker: mixin constructor intersections merge returns before heritage checks" {
+    const s = try newSetup(
+        \\type Constructor = abstract new (...args: any) => any;
+        \\declare function createMixin<C extends Constructor, B extends Constructor>(context: C, base: B): B & {
+        \\  new (...args: any[]): { context: InstanceType<C> };
+        \\};
+        \\class Context {}
+        \\class Base { method() {} }
+        \\class Derived extends createMixin(Context, Base) {
+        \\  override missing() {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.class_static_side_incorrectly_extends_base));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.base_constructor_returns_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.override_not_in_base));
+}
+
 test "checker: class-like expression heritage validates constructor type args and returns" {
     const s = try newSetup(
         \\interface Base<T, U> { x: T; y: U; }
@@ -200716,8 +200799,10 @@ test "checker: captured generic rest rejects a callback with an extra required p
         \\}
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     const diagnostic = for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.argument_type_mismatch) break d;
     } else return error.MissingDiagnostic;
@@ -200740,6 +200825,54 @@ test "checker: captured generic rest rejects a callback with an extra required p
         "Source provides no match for required element at position 0 in target.",
         diagnostic.chain[0].children[0].children[0].children[0].message,
     );
+}
+
+test "checker: generic rest inference preserves callback parameter and return types" {
+    const s = try newSetup(
+        \\declare function infer<T extends any[], U>(f: (...args: T) => U): (...args: T) => U;
+        \\infer((x, y) => 42);
+        \\infer((...args) => true);
+        \\declare function pipe<A extends any[], B, C>(f: (...args: A) => B, g: (x: B) => C): (...args: A) => C;
+        \\pipe((x, y) => 42, x => "" + x);
+        \\pipe((x: number, y) => 42, x => "" + x);
+        \\pipe((x: number, y: string) => 42, x => "" + x);
+        \\declare function collect<T, U extends ((x: T) => any)[]>(value: T, ...callbacks: U): U;
+        \\collect(42, x => "" + x, x => x + 1);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: async callbacks infer promise and async generator returns" {
+    const s = try newSetup(
+        \\declare function inferValue<const T>(create: () => T): T;
+        \\inferValue(async () => "value");
+        \\declare function inferGenerator<const T, const R>(create: () => AsyncGenerator<T, R>): [T, R];
+        \\inferGenerator(async function* () { yield 10; return "done"; });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: rest tuple union remains intact in assignment diagnostics" {
+    const s = try newSetup(
+        \\declare let target: (x: string, ...args: [string] | [number, boolean]) => void;
+        \\declare let source: (x: string, y: string) => void;
+        \\target = source;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '(x: string, y: string) => void' is not assignable to type '(x: string, ...args: [string] | [number, boolean]) => void'.",
+    ));
 }
 
 test "checker: generic bind inference slices tuple-backed rest signatures" {
@@ -231683,8 +231816,44 @@ test "checker: catch object rest rejects the unconstrained thrown value" {
         \\try {} catch ({ ...rest }) { rest; }
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .use_unknown_in_catch_variables = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.rest_types_object_only));
+}
+
+test "checker: non-strict catch object rest uses any" {
+    const s = try newSetup(
+        \\try {} catch ({ value, ...rest }) { value; rest; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{});
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.rest_types_object_only));
+}
+
+test "checker: non-strict unconstrained type parameters expose Object prototype members" {
+    const s = try newSetup(
+        \\function stringify<T>(value: T) {
+        \\  return value.toString() + value["toString"]();
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{});
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: redeclared var object rest uses the prior symbol in its initializer" {
+    const s = try newSetup(
+        \\var value = { a: 1, b: "two" };
+        \\let key = "b";
+        \\var { [key]: selected, ...value } = value;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{});
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.block_scoped_used_before_decl));
 }
 
 test "checker: required tuple suffix after variadic segment contributes minimum arity" {
