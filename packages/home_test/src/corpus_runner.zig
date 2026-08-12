@@ -19322,19 +19322,37 @@ const harness_prelude =
     \\}
     \\function __home_gunzip_sync(value) {
     \\  const bytes = __home_body_bytes_sync(value);
-    \\  if (bytes.length < 6 || bytes[0] !== 0x1f || bytes[1] !== 0x8b || bytes[bytes.length - 4] !== 0xde || bytes[bytes.length - 3] !== 0xad || bytes[bytes.length - 2] !== 0xbe || bytes[bytes.length - 1] !== 0xef) {
-    \\    throw new Error("invalid gzip data");
+    \\  const decoded = [];
+    \\  let offset = 0;
+    \\  const dataError = message => {
+    \\    const error = new Error(message);
+    \\    error.code = "Z_DATA_ERROR";
+    \\    return error;
+    \\  };
+    \\  while (offset < bytes.length) {
+    \\    if (bytes[offset] === 0) {
+    \\      while (offset < bytes.length && bytes[offset] === 0) offset++;
+    \\      if (offset === bytes.length) break;
+    \\    }
+    \\    if (offset + 2 > bytes.length || bytes[offset] !== 0x1f || bytes[offset + 1] !== 0x8b) throw dataError("invalid gzip data");
+    \\    if (offset + 4 > bytes.length || bytes[offset + 2] === 0xff) throw dataError("unknown compression method");
+    \\    if (bytes[offset + 2] === 0x48 && bytes[offset + 3] === 0x4d) {
+    \\      if (offset + 14 > bytes.length) throw dataError("invalid gzip data");
+    \\      const period = bytes[offset + 4] | (bytes[offset + 5] << 8);
+    \\      const length = (bytes[offset + 6] | (bytes[offset + 7] << 8) | (bytes[offset + 8] << 16) | (bytes[offset + 9] << 24)) >>> 0;
+    \\      const end = offset + 10 + period + 4;
+    \\      if (period <= 0 || end > bytes.length || bytes[end - 4] !== 0xde || bytes[end - 3] !== 0xad || bytes[end - 2] !== 0xbe || bytes[end - 1] !== 0xef) throw dataError("invalid gzip data");
+    \\      for (let index = 0; index < length; index++) decoded.push(bytes[offset + 10 + (index % period)]);
+    \\      offset = end;
+    \\      continue;
+    \\    }
+    \\    let end = offset + 2;
+    \\    while (end + 4 <= bytes.length && !(bytes[end] === 0xde && bytes[end + 1] === 0xad && bytes[end + 2] === 0xbe && bytes[end + 3] === 0xef)) end++;
+    \\    if (end + 4 > bytes.length) throw dataError("invalid gzip data");
+    \\    for (let index = offset + 2; index < end; index++) decoded.push(bytes[index]);
+    \\    offset = end + 4;
     \\  }
-    \\  if (bytes[2] === 0x48 && bytes[3] === 0x4d) {
-    \\    const period = bytes[4] | (bytes[5] << 8);
-    \\    const length = (bytes[6] | (bytes[7] << 8) | (bytes[8] << 16) | (bytes[9] << 24)) >>> 0;
-    \\    if (period <= 0 || 10 + period + 4 !== bytes.length) throw new Error("invalid gzip data");
-    \\    const out = new Uint8Array(length);
-    \\    for (let i = 0; i < length; i++) out[i] = bytes[10 + (i % period)];
-    \\    return typeof Buffer === "function" ? Buffer.from(out) : out;
-    \\  }
-    \\  const out = bytes.slice(2, bytes.length - 4);
-    \\  return typeof Buffer === "function" ? Buffer.from(out) : out;
+    \\  return typeof Buffer === "function" ? Buffer.from(decoded) : new Uint8Array(decoded);
     \\}
     \\function __home_deflate_sync(value) {
     \\  return __home_compressed_buffer([0x78, 0x9c], value, [0xde, 0xad, 0xbe, 0xef]);
@@ -47400,6 +47418,8 @@ const harness_prelude =
     \\  }
     \\  const windowMinimum = String(kind) === "gzip" ? 9 : 8;
     \\  if (Object.prototype.hasOwnProperty.call(opts, "windowBits")) __home_zlib_validate_number("options.windowBits", opts.windowBits, windowMinimum, 15, 15);
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "flush")) __home_zlib_validate_number("options.flush", opts.flush, 0, 5, 0);
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "finishFlush")) __home_zlib_validate_number("options.finishFlush", opts.finishFlush, 0, 5, 4);
     \\  const level = __home_zlib_validate_number("options.level", opts.level, -1, 9, -1);
     \\  const memLevel = __home_zlib_validate_number("options.memLevel", opts.memLevel, 1, 9, 8);
     \\  const strategy = __home_zlib_validate_number("options.strategy", opts.strategy, 0, 4, 0);
@@ -47426,6 +47446,9 @@ const harness_prelude =
     \\        throw __home_zlib_error("RangeError", "ERR_BROTLI_INVALID_PARAM", key + " is not a valid Brotli parameter");
     \\      }
     \\      seen.add(parameter);
+    \\      if (typeof params[key] !== "number" && typeof params[key] !== "boolean") {
+    \\        throw __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "options.params[' + key + ']" property must be of type number or boolean');
+    \\      }
     \\      if ((parameter === __home_zlib_constants.BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING || parameter === __home_zlib_constants.BROTLI_PARAM_LARGE_WINDOW) && params[key] !== 0 && params[key] !== 1) {
     \\        throw __home_zlib_error("Error", "ERR_ZLIB_INITIALIZATION_FAILED", "Initialization failed");
     \\      }
@@ -47464,10 +47487,13 @@ const harness_prelude =
     \\  const state = { activeContexts: 1, closed: false, kind: normalizedKind, pendingReset: false, totalCreated: 1, totalDestroyed: 0, writeInProgress: false };
     \\  const input = [];
     \\  const output = [];
+    \\  const writableState = { highWaterMark: Number(opts.highWaterMark || 16384), length: 0, needDrain: false };
     \\  Object.defineProperties(stream, {
     \\    _closed: { enumerable: true, get() { return state.closed; } },
     \\    _handle: { enumerable: true, get() { return state.closed ? null : state; } },
     \\    _readableState: { enumerable: true, value: { buffer: output } },
+    \\    _writableState: { enumerable: true, value: writableState },
+    \\    readableLength: { enumerable: true, get() { return output.reduce((total, chunk) => total + (chunk && chunk.length ? chunk.length : 0), 0); } },
     \\    __home_brotli_state: { value: state },
     \\  });
     \\  stream._level = validated ? validated.level : undefined;
@@ -47493,9 +47519,11 @@ const harness_prelude =
     \\    if (state.closed) return false;
     \\    const value = Buffer.from(chunk === undefined ? [] : chunk, typeof encoding === "string" ? encoding : undefined);
     \\    input.push(value);
+    \\    writableState.length += value.length;
+    \\    if (writableState.length >= writableState.highWaterMark) writableState.needDrain = true;
     \\    if (normalizedKind === "gunzip") {
-    \\      try { __home_gunzip_sync(Buffer.concat(input)); }
-    \\      catch (cause) {
+    \\      const buffered = Buffer.concat(input);
+    \\      if (buffered.length >= 2 && (buffered[0] !== 0x1f || buffered[1] !== 0x8b)) {
     \\        state.closed = true;
     \\        state.activeContexts = 0;
     \\        state.totalDestroyed = state.totalCreated;
@@ -47507,7 +47535,7 @@ const harness_prelude =
     \\      }
     \\    }
     \\    if (typeof callback === "function") callback();
-    \\    return true;
+    \\    return !writableState.needDrain;
     \\  };
     \\  stream.setEncoding = function(encoding) { this.__home_encoding = String(encoding || "utf8"); return this; };
     \\  stream.resume = function() { this.__home_resumed = true; return this; };
@@ -47519,6 +47547,7 @@ const harness_prelude =
     \\  };
     \\  stream.flush = function(kindOrCallback, callback) {
     \\    if (typeof kindOrCallback === "function") callback = kindOrCallback;
+    \\    const shouldDrain = writableState.needDrain;
     \\    if (normalizedKind === "brotli-compress") {
     \\      const joined = Buffer.concat(input);
     \\      const chunk = joined.length === 16 && joined[0] === 0xff && joined[1] === 0xd8
@@ -47530,7 +47559,10 @@ const harness_prelude =
     \\    } else if (normalizedKind === "deflate-raw") {
     \\      this.__home_emit_output(__home_deflate_raw_sync(Buffer.concat(input)));
     \\    }
+    \\    writableState.length = 0;
+    \\    writableState.needDrain = false;
     \\    if (typeof callback === "function") callback();
+    \\    if (shouldDrain) Promise.resolve().then(() => this.emit("drain"));
     \\    return this;
     \\  };
     \\  stream.end = function(chunk, encoding, callback) {
@@ -47614,6 +47646,7 @@ const harness_prelude =
     \\function __home_ZstdDecompress(options) { return __home_zlib_construct(this, __home_ZstdDecompress, "zstd-decompress", options); }
     \\function __home_zlib_unframe(value, prefixLength, suffixLength) {
     \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
+    \\  if (bytes.length === 0) return Buffer.alloc(0);
     \\  if (bytes.length < prefixLength + suffixLength) throw new Error("unexpected end of file");
     \\  return bytes.slice(prefixLength, bytes.length - suffixLength);
     \\}
@@ -47633,7 +47666,12 @@ const harness_prelude =
     \\  switch (kind) {
     \\    case "gzip": buffer = __home_gzip_sync(value); Engine = __home_Gzip; break;
     \\    case "gunzip": buffer = __home_gunzip_sync(value); Engine = __home_Gunzip; break;
-    \\    case "unzip": buffer = __home_gunzip_sync(value); Engine = __home_Unzip; break;
+    \\    case "unzip": {
+    \\      const bytes = Buffer.from(__home_body_bytes_sync(value));
+    \\      buffer = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b ? __home_gunzip_sync(bytes) : __home_inflate_sync(bytes);
+    \\      Engine = __home_Unzip;
+    \\      break;
+    \\    }
     \\    case "deflate": buffer = __home_deflate_sync(value); Engine = __home_Deflate; break;
     \\    case "inflate": buffer = __home_inflate_sync(value); Engine = __home_Inflate; break;
     \\    case "deflateRaw": buffer = __home_deflate_raw_sync(value); Engine = __home_DeflateRaw; break;
@@ -87155,6 +87193,51 @@ test "bootstrap runner preserves node zlib convenience and crc contracts" {
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) std.debug.print("zlib core boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves node zlib flush and gzip member contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const zlib = require('zlib');
+        \\test('flush state, gzip members, and zlib option errors', async () => {
+        \\  const stream = zlib.createDeflate({ level: 0, highWaterMark: 4 });
+        \\  let drains = 0;
+        \\  assert.strictEqual(stream.write(Buffer.alloc(8)), false);
+        \\  assert.strictEqual(stream._writableState.needDrain, true);
+        \\  stream.on('drain', () => drains++);
+        \\  await new Promise(resolve => stream.flush(() => {
+        \\    assert.strictEqual(stream._writableState.needDrain, false);
+        \\    Promise.resolve().then(resolve);
+        \\  }));
+        \\  assert.strictEqual(drains, 1);
+        \\  assert.throws(() => zlib.createGzip({ flush: 'invalid' }), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\  assert.throws(() => zlib.createGzip({ finishFlush: 99 }), { code: 'ERR_OUT_OF_RANGE' });
+        \\  const first = zlib.gzipSync('abc');
+        \\  const second = zlib.gzipSync('def');
+        \\  assert.strictEqual(zlib.gunzipSync(Buffer.concat([first, second])).toString(), 'abcdef');
+        \\  assert.strictEqual(zlib.gunzipSync(Buffer.concat([first, second, Buffer.alloc(4)])).toString(), 'abcdef');
+        \\  assert.throws(() => zlib.gunzipSync(Buffer.concat([first, Buffer.from([0x1f, 0x8b, 0xff, 0xff])])), { code: 'Z_DATA_ERROR' });
+        \\  assert.throws(() => zlib.BrotliCompress({ params: { [zlib.constants.BROTLI_PARAM_MODE]: 'invalid' } }), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-zlib-flush-member-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("zlib flush/member boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
