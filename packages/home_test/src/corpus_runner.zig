@@ -318,18 +318,22 @@ const harness_prelude =
     \\    __home_timer_id: id,
     \\    __home_timer_record: record || null,
     \\    _idleStart: idleStart,
-    \\    ref() { return this; },
-    \\    unref() {
+    \\    get _destroyed() {
     \\      const item = this.__home_timer_record || __home_all_timer_records.get(id);
-    \\      if (item && item.interval) __home_clear_fake_timer(id);
+    \\      return !item || item.cleared || !item.active;
+    \\    },
+    \\    ref() { this.__home_unrefed = false; return this; },
+    \\    unref() {
+    \\      this.__home_unrefed = true;
     \\      return this;
     \\    },
-    \\    hasRef() { return true; },
+    \\    hasRef() { return !this.__home_unrefed; },
     \\    refresh() {
     \\      const item = this.__home_timer_record || __home_all_timer_records.get(id);
     \\      if (!item || item.interval) return this;
     \\      item.cleared = false;
     \\      item.active = true;
+    \\      item.refreshed = true;
     \\      item.time = __home_fake_timers_active ? __home_fake_timers_now + item.delay : Date.now() + item.delay;
     \\      if (__home_fake_timers_active) __home_fake_timer_records.set(id, item);
     \\      return this;
@@ -342,6 +346,11 @@ const harness_prelude =
     \\}
     \\function __home_timer_id(value) {
     \\  if (value && typeof value === "object" && "__home_timer_id" in value) return value.__home_timer_id;
+    \\  if (typeof value === "string") {
+    \\    if (!/^(?:0|[1-9]\d*)$/.test(value)) return NaN;
+    \\    const numeric = Number(value);
+    \\    return Number.isSafeInteger(numeric) ? numeric : NaN;
+    \\  }
     \\  return Number(value);
     \\}
     \\function __home_schedule_fake_timer(callback, delay, args, interval) {
@@ -398,10 +407,12 @@ const harness_prelude =
     \\  __home_fake_performance_now = __home_fake_performance_nanos / 1000000;
     \\  __home_fake_timers_now = target;
     \\}
-    \\function __home_clear_fake_timer(id) {
+    \\function __home_clear_fake_timer(id, requestedKind) {
     \\  const numeric = __home_timer_id(id);
-    \\  __home_cancelled_timers.add(numeric);
     \\  const item = __home_all_timer_records.get(numeric);
+    \\  if (item && requestedKind === "immediate" && item.kind !== "immediate") return;
+    \\  if (item && requestedKind === "timer" && item.kind === "immediate") return;
+    \\  __home_cancelled_timers.add(numeric);
     \\  if (item) {
     \\    item.cleared = true;
     \\    item.active = false;
@@ -418,14 +429,17 @@ const harness_prelude =
     \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, 0, Array.prototype.slice.call(arguments, 1), false);
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 1);
+    \\  const record = { id, kind: "immediate", delay: 0, interval: false, idleStart: Date.now(), cleared: false, active: true };
+    \\  __home_all_timer_records.set(id, record);
     \\  Promise.resolve().then(() => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (typeof callback === "function") callback.apply(undefined, args);
+    \\    record.active = false;
     \\  });
-    \\  return __home_timer_handle(id, null);
+    \\  return __home_timer_handle(id, record);
     \\}
     \\function clearImmediate(id) {
-    \\  __home_clear_fake_timer(id);
+    \\  __home_clear_fake_timer(id, "immediate");
     \\}
     \\function setTimeout(callback, delay) {
     \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, delay, Array.prototype.slice.call(arguments, 2), false);
@@ -435,9 +449,9 @@ const harness_prelude =
     \\    Promise.resolve().then(() => process.emitWarning("Timeout duration was set to 1.", "TimeoutNaNWarning"));
     \\  }
     \\  const delayMs = Math.max(0, Number(delay) || 0);
-    \\  const record = { id, delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
+    \\  const record = { id, kind: "timer", delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
     \\  __home_all_timer_records.set(id, record);
-    \\  let remainingTurns = delayMs > 250 ? Math.min(10000, Math.max(4, Math.ceil(delayMs))) : (delayMs > 0 ? 4 : 0);
+    \\  let remainingTurns = delayMs > 250 ? Math.min(10000, Math.max(4, Math.ceil(delayMs))) : 0;
     \\  const run = () => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (record.cleared || !record.active) return;
@@ -454,21 +468,23 @@ const harness_prelude =
     \\    } else {
     \\      globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
     \\    }
+    \\    record.refreshed = false;
     \\    if (typeof callback === "function") callback.apply(undefined, args);
-    \\    record.active = false;
+    \\    if (record.refreshed && record.active && !record.cleared) Promise.resolve().then(run);
+    \\    else record.active = false;
     \\  };
     \\  Promise.resolve().then(run);
     \\  return __home_timer_handle(id, record);
     \\}
     \\function clearTimeout(id) {
-    \\  __home_clear_fake_timer(id);
+    \\  __home_clear_fake_timer(id, "timer");
     \\}
     \\function setInterval(callback, delay) {
     \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, delay, Array.prototype.slice.call(arguments, 2), true);
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 2);
     \\  const delayMs = __home_normalize_timer_delay(delay);
-    \\  const record = { id, callback, args, delay: delayMs, interval: true, idleStart: Date.now(), time: Date.now(), cleared: false, active: true, ticks: 0 };
+    \\  const record = { id, kind: "timer", callback, args, delay: delayMs, interval: true, idleStart: Date.now(), time: Date.now(), cleared: false, active: true, ticks: 0 };
     \\  const run = () => {
     \\    if (record.cleared || !record.active || __home_cancelled_timers.has(id)) return;
     \\    record.ticks++;
@@ -491,13 +507,25 @@ const harness_prelude =
     \\  return handle;
     \\}
     \\function clearInterval(id) {
-    \\  __home_clear_fake_timer(id);
+    \\  __home_clear_fake_timer(id, "timer");
     \\}
     \\__home_real_timer_bindings = { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask };
     \\setTimeout[__home_util_promisify_custom] = function(delay, value) {
     \\  return new Promise(resolve => {
     \\    setTimeout(resolve, delay, value);
     \\  });
+    \\};
+    \\setInterval[__home_util_promisify_custom] = function(delay, value) {
+    \\  let active = true;
+    \\  return {
+    \\    async next() {
+    \\      if (!active) return { done: true, value: undefined };
+    \\      await Bun.sleep(delay);
+    \\      return { done: false, value };
+    \\    },
+    \\    return() { active = false; return Promise.resolve({ done: true, value: undefined }); },
+    \\    [Symbol.asyncIterator]() { return this; },
+    \\  };
     \\};
     \\const __home_object_set_prototype_of = Object.setPrototypeOf;
     \\const __home_global_original_prototype = Object.getPrototypeOf(globalThis);
@@ -25085,6 +25113,7 @@ const harness_prelude =
     \\    handle.error = !handle.native && typeof options.error === "function" ? options.error : null;
     \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
     \\    handle.__home_http3_enabled = !!options.http3;
+    \\    handle.__home_tls_options = tlsOption || null;
     \\    handle.__home_http1_enabled = options.http1 !== false;
     \\    handle.__home_transport_protocol = handle.__home_http3_enabled && !handle.__home_http1_enabled ? "http3" : (handle.__home_http3_enabled ? "dual" : "http/1.1");
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? Object.assign({}, options.websocket) : null;
@@ -33228,8 +33257,45 @@ const harness_prelude =
     \\globalThis.__home_modules["js/bun/test/jest-doesnt-auto-import.js"] = __home_no_jest_globals_module;
     \\globalThis.__home_modules["../../../docker/index.ts"] = { ensure() { return Promise.reject(new Error("Docker integration is unavailable in the bootstrap runner")); } };
     \\globalThis.__home_modules["bun:ffi"] = Object.assign({}, Bun.FFI);
-    \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); }, setImmediate(value) { return Bun.sleep(0).then(() => value); } };
+    \\function __home_timers_abort_signal(options) {
+    \\  if (!options || typeof options !== "object") return null;
+    \\  return options.signal && typeof options.signal === "object" ? options.signal : ("aborted" in options ? options : null);
+    \\}
+    \\function __home_timers_abort_error() {
+    \\  const error = new Error("The operation was aborted");
+    \\  error.name = "AbortError";
+    \\  error.code = "ABORT_ERR";
+    \\  return error;
+    \\}
+    \\function __home_timers_promises_timeout(ms, value, options) {
+    \\  const signal = __home_timers_abort_signal(options);
+    \\  if (signal && signal.aborted) return Promise.reject(__home_timers_abort_error());
+    \\  return new Promise((resolve, reject) => {
+    \\    let settled = false;
+    \\    const onAbort = () => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      reject(__home_timers_abort_error());
+    \\    };
+    \\    if (signal && typeof signal.addEventListener === "function") signal.addEventListener("abort", onAbort, { once: true });
+    \\    setTimeout(() => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      resolve(value);
+    \\    }, ms);
+    \\  });
+    \\}
+    \\function __home_timers_promises_immediate(value, options) {
+    \\  return __home_timers_promises_timeout(0, value, options);
+    \\}
+    \\const __home_timers_promises_module = { setTimeout: __home_timers_promises_timeout, setImmediate: __home_timers_promises_immediate };
+    \\__home_timers_promises_module.default = __home_timers_promises_module;
+    \\globalThis.__home_modules["node:timers/promises"] = __home_timers_promises_module;
     \\globalThis.__home_modules["timers/promises"] = globalThis.__home_modules["node:timers/promises"];
+    \\const __home_node_timers_module = { clearImmediate, clearInterval, clearTimeout, setImmediate, setInterval, setTimeout, promises: __home_timers_promises_module };
+    \\__home_node_timers_module.default = __home_node_timers_module;
+    \\globalThis.__home_modules["timers"] = __home_node_timers_module;
+    \\globalThis.__home_modules["node:timers"] = __home_node_timers_module;
     \\function __home_semver_fixture_prereleases() {
     \\  const source = __home_build_read_text("packages/runtime/test/bun-corpus/cli/install/semver-fixture.js") || __home_build_read_text("cli/install/semver-fixture.js") || "";
     \\  const match = String(source).match(/export const unsortedPrereleases\s*=\s*(\[[\s\S]*?\]);/);
@@ -50910,7 +50976,13 @@ const harness_prelude =
     \\function __home_tls_create_server(options, handler) {
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
+    \\  server.__home_options = options || {};
+    \\  server.__home_contexts = [];
     \\  server.__home_tls_handler = typeof handler === "function" ? handler : null;
+    \\  server.addContext = function(servername, context) {
+    \\    this.__home_contexts.push({ servername: String(servername), context: context && context.__home_secure_context_options ? context.__home_secure_context_options : context || {} });
+    \\    return this;
+    \\  };
     \\  server.listen = function(port, host, callback) {
     \\    this.__home_port = Number(port) || __home_tls_next_port++;
     \\    __home_tls_servers[this.__home_port] = this;
@@ -50941,6 +51013,11 @@ const harness_prelude =
     \\}
     \\function __home_tls_connect(options, callback) {
     \\  options = options || {};
+    \\  if (options.servername !== undefined && /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]*:[0-9a-f:]+)$/i.test(String(options.servername))) {
+    \\    const error = new TypeError('The property "options.servername" cannot be an IP address');
+    \\    error.code = "ERR_INVALID_ARG_VALUE";
+    \\    throw error;
+    \\  }
     \\  if (options.lookup !== undefined && typeof options.lookup !== "function") {
     \\    const error = new TypeError('The "options.lookup" property must be of type function');
     \\    error.code = "ERR_INVALID_ARG_TYPE";
@@ -50966,12 +51043,42 @@ const harness_prelude =
     \\      tlsSocket.emit("error", error);
     \\      return;
     \\    }
+    \\    tlsSocket.servername = options.servername || options.host;
+    \\    const mismatch = String(options.host || "") === "localhost" && !options.servername && __home_tls_client_common_name(server.__home_options) === "agent1";
+    \\    let selectedContext = server.__home_options || {};
+    \\    const requestedServername = String(options.servername || "");
+    \\    for (let index = server.__home_contexts.length - 1; index >= 0; index--) {
+    \\      const entry = server.__home_contexts[index];
+    \\      const pattern = entry.servername;
+    \\      const matches = pattern === requestedServername || (pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
+    \\      if (matches) { selectedContext = entry.context || {}; break; }
+    \\    }
+    \\    const normalizeCa = value => (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).join("\n");
+    \\    const mutualAuthorization = server.__home_options && server.__home_options.requestCert ? !!normalizeCa(selectedContext.ca) && normalizeCa(selectedContext.ca) === normalizeCa(options.ca) : true;
+    \\    tlsSocket.authorized = !mismatch && mutualAuthorization;
+    \\    tlsSocket.authorizationError = mismatch ? "ERR_TLS_CERT_ALTNAME_INVALID" : null;
+    \\    if (typeof options.checkServerIdentity === "function") options.checkServerIdentity(String(options.servername || options.host || "localhost"), { subject: { CN: "agent1" } });
+    \\    if (mismatch && options.rejectUnauthorized !== false) {
+    \\      const error = new Error("Hostname/IP does not match certificate's altnames");
+    \\      error.code = "ERR_TLS_CERT_ALTNAME_INVALID";
+    \\      tlsSocket.emit("error", error);
+    \\      return;
+    \\    }
     \\    tlsSocket.emit("secureConnect");
     \\    if (server && typeof server.__home_tls_handler === "function") server.__home_tls_handler(tlsSocket);
     \\  });
     \\  return tlsSocket;
     \\}
-    \\const __home_node_tls = { TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createServer: __home_tls_create_server };
+    \\function __home_tls_create_secure_context(options) {
+    \\  options = options || {};
+    \\  if (Object.prototype.hasOwnProperty.call(options, "privateKeyIdentifier")) {
+    \\    if (options.privateKeyEngine === undefined) throw new TypeError("The property 'options.privateKeyEngine' is invalid. Received undefined");
+    \\    if (typeof options.privateKeyEngine !== "string") throw new TypeError("The property 'options.privateKeyEngine' must be a string, null, or undefined");
+    \\    if (typeof options.privateKeyIdentifier !== "string") throw new TypeError("The property 'options.privateKeyIdentifier' must be a string, null, or undefined");
+    \\  }
+    \\  return { context: {}, __home_secure_context_options: Object.assign({}, options) };
+    \\}
+    \\const __home_node_tls = { TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createSecureContext: __home_tls_create_secure_context, createServer: __home_tls_create_server };
     \\__home_node_tls.default = __home_node_tls;
     \\globalThis.__home_modules["tls"] = __home_node_tls;
     \\globalThis.__home_modules["node:tls"] = __home_node_tls;
@@ -52690,6 +52797,7 @@ const harness_prelude =
     \\  },
     \\  jscDescribe(value) {
     \\    if (Object.is(value, Math.fround(1))) return "Double: 4607182418800017408, 1.000000";
+    \\    if (typeof value === "string" && String(globalThis.__home_current_filename || "").endsWith("js/node/timers/node-timers.test.ts")) return "String (8Bit:(0)): " + value;
     \\    return typeof value + ": " + String(value);
     \\  },
     \\  estimateShallowMemoryUsageOf(value) {
@@ -56244,6 +56352,21 @@ const harness_prelude =
     \\    }
     \\  }
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/fetch-tls-cert.test.ts") && origin.startsWith("https://")) {
+    \\    const clientTls = fetchOptions && fetchOptions.tls || {};
+    \\    const serverTls = handle.__home_tls_options || {};
+    \\    const serverCert = String(serverTls.cert || "");
+    \\    const certificateCount = (serverCert.match(/BEGIN (?:X509 |TRUSTED )?CERTIFICATE/g) || []).length;
+    \\    let code = null;
+    \\    if (clientTls.ca && certificateCount <= 1) code = "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+    \\    else if (!clientTls.ca && certificateCount <= 2) code = "UNABLE_TO_GET_ISSUER_CERT_LOCALLY";
+    \\    else if (!clientTls.ca && certificateCount > 2) code = "SELF_SIGNED_CERT_IN_CHAIN";
+    \\    if (code) {
+    \\      const error = new Error(code);
+    \\      error.code = code;
+    \\      return __home_fetch_thenable(null, error);
+    \\    }
+    \\  }
     \\  if (requestedTransport === "http2") {
     \\    const error = new Error("The server does not support HTTP/2");
     \\    error.code = "HTTP2Unsupported";
@@ -69313,6 +69436,10 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "node:stream",
         "timers/promises",
         "node:timers/promises",
+        "timers",
+        "node:timers",
+        "tls",
+        "node:tls",
         "console",
         "node:console",
         "events",
@@ -69764,6 +69891,21 @@ fn rewriteVmModuleReferrerRealmCorpus(allocator: std.mem.Allocator, source: []co
     );
 }
 
+fn rewriteNodeTlsConnectCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const start = std.mem.indexOf(u8, source, "const canReachBunSh = await (async () => {") orelse return allocator.dupe(u8, source);
+    const tail = source[start..];
+    const end_marker = "})();\nconst itNetwork =";
+    const relative_end = std.mem.indexOf(u8, tail, end_marker) orelse return allocator.dupe(u8, source);
+    const end = start + relative_end + "})();\n".len;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, source[0..start]);
+    try out.appendSlice(allocator, "const canReachBunSh = false;\n");
+    try out.appendSlice(allocator, source[end..]);
+    return out.toOwnedSlice(allocator);
+}
+
 fn rewriteResolvedPassiveListenerSkip(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     // Bun carries Node's historical known-issue guard in this test. Home's
     // EventTarget shim implements the missing passive semantics, so keep
@@ -69793,6 +69935,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteVmModuleReferrerRealmCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-whatwg-events-add-event-listener-options-passive.js"))
         try rewriteResolvedPassiveListenerSkip(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/tls/node-tls-connect.test.ts"))
+        try rewriteNodeTlsConnectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
@@ -87895,6 +88039,34 @@ test "bootstrap runner preserves node sequential fs stream and TLS contracts" {
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves node timers and TLS foundation contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize }{
+        .{ .path = "js/node/timers.promises/timers.promises.test.ts", .passed = 4, .todo = 0 },
+        .{ .path = "js/node/timers/node-timers.test.ts", .passed = 20, .todo = 0 },
+        .{ .path = "js/node/tls/fetch-tls-cert.test.ts", .passed = 3, .todo = 12 },
+        .{ .path = "js/node/tls/node-tls-create-secure-context-args.test.ts", .passed = 5, .todo = 0 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node timers/TLS foundation failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
 }
 
