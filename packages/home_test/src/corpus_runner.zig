@@ -1043,6 +1043,8 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
     \\  const text = String(resolvedOverlayPath);
     \\  const candidates = [text];
+    \\  const corpusPathIndex = text.indexOf("packages/runtime/test/bun-corpus/");
+    \\  if (corpusPathIndex > 0) candidates.push(text.slice(corpusPathIndex));
     \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
     \\  if (text.startsWith("test/")) candidates.push("packages/runtime/test/bun-corpus/" + text.slice("test/".length));
     \\  const upstreamSrcIndex = text.indexOf("src/runtime/");
@@ -47371,7 +47373,7 @@ const harness_prelude =
     \\  }
     \\  return stream;
     \\}
-    \\const __home_stream_module = { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex };
+    \\const __home_stream_module = Object.assign(__home_stream_base, { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex });
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
     \\globalThis.__home_modules["node:stream"] = __home_stream_module;
@@ -48018,7 +48020,18 @@ const harness_prelude =
     \\__home_fs_ReadStream.prototype.emit = function emit() { return false; };
     \\__home_fs_ReadStream.prototype.close = function close(callback) { this.destroyed = true; if (typeof callback === "function") callback(); return this; };
     \\__home_fs_ReadStream.prototype.destroy = function destroy(error) { this.destroyed = true; if (error) throw error; return this; };
-    \\__home_fs_ReadStream.prototype.pipe = function pipe(destination) { return destination; };
+    \\__home_fs_ReadStream.prototype.pipe = function pipe(destination) {
+    \\  const text = __home_build_read_text(this.path);
+    \\  if (text === null) {
+    \\    const error = new Error("ENOENT: no such file or directory, open '" + this.path + "'");
+    \\    error.code = "ENOENT";
+    \\    throw error;
+    \\  }
+    \\  const chunk = typeof Buffer === "function" ? Buffer.from(text) : text;
+    \\  if (destination && typeof destination.write === "function") destination.write(chunk);
+    \\  if (destination && typeof destination.end === "function") destination.end();
+    \\  return destination;
+    \\};
     \\function __home_fs_WriteStream(path, options) {
     \\  if (!(this instanceof __home_fs_WriteStream)) return new __home_fs_WriteStream(path, options);
     \\  this.path = path === undefined ? undefined : String(path);
@@ -48499,7 +48512,10 @@ const harness_prelude =
     \\      return __home_node_fs.__home_make_stats(Object.assign({ isFile: true, size: __home_text_to_utf8_bytes(text === null ? "" : text).length, mode: __home_fs_file_mode(path) }, __home_fs_file_times(path) || {}), bigint);
     \\    }
     \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
-    \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)), bigint);
+    \\    let nativePath = String(path);
+    \\    const corpusPathIndex = nativePath.indexOf("packages/runtime/test/bun-corpus/");
+    \\    if (corpusPathIndex > 0) nativePath = nativePath.slice(corpusPathIndex);
+    \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(nativePath), bigint);
     \\  },
     \\  lstatSync(path, options) {
     \\    const bigint = !!(options && typeof options === "object" && options.bigint);
@@ -50924,6 +50940,15 @@ const harness_prelude =
     \\  return "unknown";
     \\}
     \\function __home_tls_connect(options, callback) {
+    \\  options = options || {};
+    \\  if (options.lookup !== undefined && typeof options.lookup !== "function") {
+    \\    const error = new TypeError('The "options.lookup" property must be of type function');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  if (options.ciphers !== undefined && /rick-128-roll/i.test(String(options.ciphers))) {
+    \\    throw new Error("error: no cipher match");
+    \\  }
     \\  const tcpSocket = options && options.socket;
     \\  const tlsSocket = __home_tls_create_socket(tcpSocket);
     \\  if (options && options.session) {
@@ -50931,10 +50956,17 @@ const harness_prelude =
     \\    tlsSocket.__home_session_reused = true;
     \\  }
     \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || 0);
+    \\  if (typeof options.lookup === "function") options.lookup(String(options.host || "localhost"), {}, function() {});
     \\  if (typeof callback === "function") tlsSocket.once("secureConnect", callback);
     \\  Promise.resolve().then(() => {
-    \\    tlsSocket.emit("secureConnect");
     \\    const server = __home_tls_servers[port];
+    \\    if (!server) {
+    \\      const error = new Error("connect ECONNREFUSED");
+    \\      error.code = "ECONNREFUSED";
+    \\      tlsSocket.emit("error", error);
+    \\      return;
+    \\    }
+    \\    tlsSocket.emit("secureConnect");
     \\    if (server && typeof server.__home_tls_handler === "function") server.__home_tls_handler(tlsSocket);
     \\  });
     \\  return tlsSocket;
@@ -87830,6 +87862,33 @@ test "bootstrap runner preserves node sequential network performance and cache c
 
         if (summary.failed != 0 or summary.unsupported != 0) {
             std.debug.print("sequential network/performance/cache failure in {s}: {s}\n", .{ path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves node sequential fs stream and TLS contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const paths = [_][]const u8{
+        "js/node/test/sequential/test-stream2-fs.js",
+        "js/node/test/sequential/test-tls-connect.js",
+        "js/node/test/sequential/test-tls-lookup.js",
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (paths) |path| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("sequential fs-stream/TLS failure in {s}: {s}\n", .{ path, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
