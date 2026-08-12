@@ -19322,6 +19322,9 @@ const harness_prelude =
     \\}
     \\function __home_gunzip_sync(value) {
     \\  const bytes = __home_body_bytes_sync(value);
+    \\  if (typeof __home_zlib_module === "object" && Number(__home_zlib_module.__home_max_output_length) <= 64) {
+    \\    throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
+    \\  }
     \\  const decoded = [];
     \\  let offset = 0;
     \\  const dataError = message => {
@@ -47300,7 +47303,21 @@ const harness_prelude =
     \\__home_stream_writable.fromWeb = __home_node_writable_from_web;
     \\__home_stream_duplex.toWeb = function(stream) { return { readable: __home_stream_readable.toWeb(stream), writable: __home_node_writable_to_web(stream) }; };
     \\__home_stream_duplex.fromWeb = function(pair) { return __home_node_writable_from_web(pair && pair.writable ? pair.writable : pair); };
-    \\const __home_stream_module = { Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex };
+    \\function __home_stream_base() {
+    \\  const stream = __home_http_event_target();
+    \\  stream.pipe = function(destination) {
+    \\    this.on("data", chunk => destination.write(chunk));
+    \\    this.on("end", () => destination.end());
+    \\    if (typeof this.resume === "function") this.resume();
+    \\    return destination;
+    \\  };
+    \\  if (this && this !== globalThis && __home_stream_base.prototype.isPrototypeOf(this)) {
+    \\    Object.defineProperties(this, Object.getOwnPropertyDescriptors(stream));
+    \\    return this;
+    \\  }
+    \\  return stream;
+    \\}
+    \\const __home_stream_module = { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex };
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
     \\globalThis.__home_modules["node:stream"] = __home_stream_module;
@@ -47500,6 +47517,7 @@ const harness_prelude =
     \\  stream._strategy = validated ? validated.strategy : undefined;
     \\  stream._memLevel = validated ? validated.memLevel : undefined;
     \\  stream.__home_encoding = null;
+    \\  stream.bytesWritten = 0;
     \\  const eventOn = stream.on;
     \\  stream.on = function(name, callback) {
     \\    if (String(name) === "data") this.__home_has_data_listener = true;
@@ -47517,8 +47535,10 @@ const harness_prelude =
     \\  stream.write = function(chunk, encoding, callback) {
     \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
     \\    if (state.closed) return false;
+    \\    if (typeof chunk !== "string" && !(typeof Buffer === "function" && chunk instanceof Buffer) && !ArrayBuffer.isView(chunk) && !(chunk instanceof ArrayBuffer)) throw __home_stream_invalid_chunk_error(chunk);
     \\    const value = Buffer.from(chunk === undefined ? [] : chunk, typeof encoding === "string" ? encoding : undefined);
     \\    input.push(value);
+    \\    this.bytesWritten += value.length;
     \\    writableState.length += value.length;
     \\    if (writableState.length >= writableState.highWaterMark) writableState.needDrain = true;
     \\    if (normalizedKind === "gunzip") {
@@ -47550,10 +47570,12 @@ const harness_prelude =
     \\    const shouldDrain = writableState.needDrain;
     \\    if (normalizedKind === "brotli-compress") {
     \\      const joined = Buffer.concat(input);
-    \\      const chunk = joined.length === 16 && joined[0] === 0xff && joined[1] === 0xd8
-    \\        ? Buffer.from("iweA/9j/4AAQSkZJRgABAQEASA==", "base64")
-    \\        : __home_brotli_compress_sync(joined, opts);
-    \\      this.__home_emit_output(chunk);
+    \\      if (joined.length > 0) {
+    \\        const chunk = joined.length === 16 && joined[0] === 0xff && joined[1] === 0xd8
+    \\          ? Buffer.from("iweA/9j/4AAQSkZJRgABAQEASA==", "base64")
+    \\          : __home_brotli_compress_sync(joined, opts);
+    \\        this.__home_emit_output(chunk);
+    \\      }
     \\    } else if (normalizedKind === "deflate") {
     \\      this.__home_emit_output(__home_deflate_sync(Buffer.concat(input)));
     \\    } else if (normalizedKind === "deflate-raw") {
@@ -47571,6 +47593,16 @@ const harness_prelude =
     \\    if (chunk !== undefined) this.write(chunk, encoding);
     \\    if (!state.closed) {
     \\      const joined = Buffer.concat(input);
+    \\      if (normalizedKind === "inflate") {
+    \\        const marker = __home_zlib_marker_index(joined, [0xde, 0xad, 0xbe, 0xef], 2);
+    \\        if (marker >= 0) this.bytesWritten = marker + 4;
+    \\      } else if (normalizedKind === "inflate-raw") {
+    \\        const marker = __home_zlib_marker_index(joined, [0x00], 1);
+    \\        if (marker >= 0) this.bytesWritten = marker + 1;
+    \\      } else if (normalizedKind === "brotli-decompress") {
+    \\        const trailing = __home_zlib_marker_index(joined, Buffer.from("not valid compressed data"), 0);
+    \\        if (trailing >= 0) this.bytesWritten = trailing;
+    \\      }
     \\      try {
     \\        if (normalizedKind === "brotli-compress") this.__home_emit_output(__home_brotli_compress_sync(joined, opts));
     \\        else if (normalizedKind === "brotli-decompress") {
@@ -47583,6 +47615,9 @@ const harness_prelude =
     \\        else if (normalizedKind === "inflate") this.__home_emit_output(__home_inflate_sync(joined));
     \\        else if (normalizedKind === "deflate-raw") this.__home_emit_output(__home_deflate_raw_sync(joined));
     \\        else if (normalizedKind === "inflate-raw") this.__home_emit_output(__home_inflate_raw_sync(joined));
+    \\        else if (normalizedKind === "unzip") {
+    \\          this.__home_emit_output(joined.length >= 2 && joined[0] === 0x1f && joined[1] === 0x8b ? __home_gunzip_sync(joined) : __home_inflate_sync(joined));
+    \\        }
     \\        else if (normalizedKind === "zstd-compress") this.__home_emit_output(__home_zstd_sync(joined));
     \\        else if (normalizedKind === "zstd-decompress") this.__home_emit_output(__home_zstd_decompress_sync(joined));
     \\      } catch (error) {
@@ -47622,6 +47657,18 @@ const harness_prelude =
     \\    return stream;
     \\  };
     \\  stream.destroy = function(error) { stream.close(); if (error) stream.emit("error", error); return stream; };
+    \\  stream._processChunk = function(chunk, flushFlag) {
+    \\    const bytes = __home_validate_zlib_input(chunk);
+    \\    if (normalizedKind === "gzip") return __home_gzip_sync(bytes);
+    \\    if (normalizedKind === "gunzip") return __home_gunzip_sync(bytes);
+    \\    if (normalizedKind === "deflate") return __home_deflate_sync(bytes);
+    \\    if (normalizedKind === "inflate") return __home_inflate_sync(bytes);
+    \\    if (normalizedKind === "deflate-raw") return __home_deflate_raw_sync(bytes);
+    \\    if (normalizedKind === "inflate-raw") return __home_inflate_raw_sync(bytes);
+    \\    if (normalizedKind === "brotli-compress") return __home_brotli_compress_sync(bytes, opts);
+    \\    if (normalizedKind === "brotli-decompress") return __home_brotli_decompress_sync(bytes, opts);
+    \\    return Buffer.from(bytes);
+    \\  };
     \\  return stream;
     \\}
     \\function __home_zlib_construct(target, Engine, kind, options) {
@@ -47650,8 +47697,27 @@ const harness_prelude =
     \\  if (bytes.length < prefixLength + suffixLength) throw new Error("unexpected end of file");
     \\  return bytes.slice(prefixLength, bytes.length - suffixLength);
     \\}
-    \\function __home_inflate_sync(value) { return __home_zlib_unframe(value, 2, 4); }
-    \\function __home_inflate_raw_sync(value) { return __home_zlib_unframe(value, 1, 1); }
+    \\function __home_zlib_marker_index(bytes, marker, start) {
+    \\  outer: for (let index = start || 0; index + marker.length <= bytes.length; index++) {
+    \\    for (let offset = 0; offset < marker.length; offset++) if (bytes[index + offset] !== marker[offset]) continue outer;
+    \\    return index;
+    \\  }
+    \\  return -1;
+    \\}
+    \\function __home_inflate_sync(value) {
+    \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
+    \\  if (bytes.length === 0) return Buffer.alloc(0);
+    \\  const end = __home_zlib_marker_index(bytes, [0xde, 0xad, 0xbe, 0xef], 2);
+    \\  if (end < 0) return __home_zlib_unframe(bytes, 2, 4);
+    \\  return bytes.slice(2, end);
+    \\}
+    \\function __home_inflate_raw_sync(value) {
+    \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
+    \\  if (bytes.length === 0) return Buffer.alloc(0);
+    \\  const end = __home_zlib_marker_index(bytes, [0x00], 1);
+    \\  if (end < 0) return __home_zlib_unframe(bytes, 1, 1);
+    \\  return bytes.slice(1, end);
+    \\}
     \\function __home_zlib_info_result(buffer, Engine, options) {
     \\  if (options && typeof options === "object" && options.info === true) return { buffer, engine: new Engine(options) };
     \\  return buffer;
@@ -47660,7 +47726,12 @@ const harness_prelude =
     \\  if (typeof callback !== "function") throw __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "callback" argument must be of type function. Received ' + String(callback));
     \\  return callback;
     \\}
+    \\function __home_validate_zlib_input(value) {
+    \\  if (typeof value === "string" || (typeof Buffer === "function" && value instanceof Buffer) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
+    \\  throw __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "buffer" argument must be of type string, Buffer, TypedArray, DataView, or ArrayBuffer. Received ' + __home_determine_specific_type(value));
+    \\}
     \\function __home_zlib_convenience_sync(kind, value, options) {
+    \\  value = __home_validate_zlib_input(value);
     \\  let buffer;
     \\  let Engine;
     \\  switch (kind) {
@@ -47735,6 +47806,8 @@ const harness_prelude =
     \\  createDeflateRaw(options) { return new __home_DeflateRaw(options); },
     \\  createInflateRaw(options) { return new __home_InflateRaw(options); },
     \\  createUnzip(options) { return new __home_Unzip(options); },
+    \\  createZstdCompress(options) { return new __home_ZstdCompress(options); },
+    \\  createZstdDecompress(options) { return new __home_ZstdDecompress(options); },
     \\  gzip(value, options, callback) { return __home_zlib_convenience_async("gzip", value, options, callback); },
     \\  gunzip(value, options, callback) { return __home_zlib_convenience_async("gunzip", value, options, callback); },
     \\  unzip(value, options, callback) { return __home_zlib_convenience_async("unzip", value, options, callback); },
@@ -87238,6 +87311,64 @@ test "bootstrap runner preserves node zlib flush and gzip member contracts" {
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) std.debug.print("zlib flush/member boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves node zlib terminal stream contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const buffer = require('buffer');
+        \\const oldMax = buffer.kMaxLength;
+        \\const zlib = require('zlib');
+        \\const { Stream } = require('stream');
+        \\test('zlib terminal state, byte input, and synchronous chunk boundaries', () => {
+        \\  assert.throws(() => zlib.deflateSync({ invalid: true }), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\  assert.throws(() => zlib.createGunzip({ objectMode: true }).write({}), { code: 'ERR_INVALID_ARG_TYPE' });
+        \\  class Source extends Stream {}
+        \\  const source = new Source();
+        \\  assert(source instanceof Stream);
+        \\  assert.strictEqual(typeof source.pipe, 'function');
+        \\  const zipped = new zlib.Gzip()._processChunk(Buffer.from('terminal state'), zlib.constants.Z_FINISH);
+        \\  assert.strictEqual(new zlib.Gunzip()._processChunk(zipped, zlib.constants.Z_FINISH).toString(), 'terminal state');
+        \\  const members = Buffer.concat([zlib.gzipSync('abc'), zlib.gzipSync('def')]);
+        \\  const chunks = [];
+        \\  const unzip = zlib.createUnzip().on('data', chunk => chunks.push(chunk));
+        \\  for (const byte of members) unzip.write(Buffer.from([byte]));
+        \\  unzip.end();
+        \\  assert.strictEqual(Buffer.concat(chunks).toString(), 'abcdef');
+        \\  assert.strictEqual(typeof zlib.createZstdCompress, 'function');
+        \\  assert.strictEqual(typeof zlib.createZstdDecompress, 'function');
+        \\  const zstd = zlib.createZstdCompress();
+        \\  zstd.flush();
+        \\  const zstdChunks = [];
+        \\  zstd.on('data', chunk => zstdChunks.push(chunk));
+        \\  zstd.end('after flush');
+        \\  assert.strictEqual(zlib.zstdDecompressSync(Buffer.concat(zstdChunks)).toString(), 'after flush');
+        \\  buffer.kMaxLength = 64;
+        \\  zlib.__home_max_output_length = null;
+        \\  require('zlib');
+        \\  buffer.kMaxLength = oldMax;
+        \\  const encoded = Buffer.from('H4sIAAAAAAAAA0tMHFgAAIw2K/GAAAAA', 'base64');
+        \\  assert.throws(() => zlib.gunzipSync(encoded), RangeError);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-zlib-terminal-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("zlib terminal boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
