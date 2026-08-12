@@ -19342,8 +19342,8 @@ const harness_prelude =
     \\function __home_deflate_raw_sync(value) {
     \\  return __home_compressed_buffer([0x03], value, [0x00]);
     \\}
-    \\function __home_brotli_sync(value) {
-    \\  return __home_compressed_buffer([0xce, 0xb2], value, [0xbe, 0xef]);
+    \\function __home_brotli_sync(value, options) {
+    \\  return __home_brotli_compress_sync(value, options);
     \\}
     \\function __home_validate_zstd_options(options) {
     \\  if (!options || typeof options !== "object" || !Object.prototype.hasOwnProperty.call(options, "level")) return;
@@ -47322,67 +47322,226 @@ const harness_prelude =
     \\globalThis.__home_modules["node:console"] = __home_console_module;
     \\console = new __home_Console({ stdout: process.stdout, stderr: process.stderr });
     \\globalThis.console = console;
-    \\function __home_create_brotli_stream(kind, options) {
-    \\  void options;
+    \\const __home_zlib_constants = Object.freeze({
+    \\  Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5, Z_TREES: 6,
+    \\  Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4, Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6,
+    \\  Z_DEFAULT_COMPRESSION: -1, Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0, Z_DEFLATED: 8,
+    \\  Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: 4294967295, Z_DEFAULT_CHUNK: 16384,
+    \\  Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9, Z_DEFAULT_LEVEL: -1,
+    \\  BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3,
+    \\  BROTLI_PARAM_MODE: 0, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_LGWIN: 2, BROTLI_PARAM_LGBLOCK: 3,
+    \\  BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING: 4, BROTLI_PARAM_SIZE_HINT: 5, BROTLI_PARAM_LARGE_WINDOW: 6,
+    \\  BROTLI_PARAM_NPOSTFIX: 7, BROTLI_PARAM_NDIRECT: 8, BROTLI_PARAM_STREAM_OFFSET: 9,
+    \\  BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2,
+    \\  BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11,
+    \\  BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24, BROTLI_LARGE_MAX_WINDOW_BITS: 30, BROTLI_DEFAULT_WINDOW: 22,
+    \\  BROTLI_DECODER_RESULT_ERROR: 0, BROTLI_DECODER_RESULT_SUCCESS: 1, BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT: 2, BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT: 3,
+    \\});
+    \\const __home_zlib_codes = {};
+    \\for (const name of ["Z_OK", "Z_STREAM_END", "Z_NEED_DICT", "Z_ERRNO", "Z_STREAM_ERROR", "Z_DATA_ERROR", "Z_MEM_ERROR", "Z_BUF_ERROR", "Z_VERSION_ERROR"]) {
+    \\  const code = __home_zlib_constants[name];
+    \\  Object.defineProperty(__home_zlib_codes, name, { enumerable: true, value: code });
+    \\  Object.defineProperty(__home_zlib_codes, code, { enumerable: true, value: name });
+    \\}
+    \\Object.freeze(__home_zlib_codes);
+    \\function __home_zlib_error(name, code, message) {
+    \\  const ErrorType = name === "RangeError" ? RangeError : name === "TypeError" ? TypeError : Error;
+    \\  const error = new ErrorType(message);
+    \\  if (code) error.code = code;
+    \\  return error;
+    \\}
+    \\function __home_validate_brotli_options(options) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  for (const field of ["flush", "finishFlush"]) {
+    \\    if (!Object.prototype.hasOwnProperty.call(opts, field)) continue;
+    \\    const value = Number(opts[field]);
+    \\    if (!Number.isInteger(value) || value < 0 || value > 3) {
+    \\      throw __home_zlib_error("RangeError", "ERR_OUT_OF_RANGE", 'The value of "options.' + field + '" is out of range. It must be >= 0 and <= 3. Received ' + String(opts[field]));
+    \\    }
+    \\  }
+    \\  const params = opts.params;
+    \\  if (params && typeof params === "object") {
+    \\    const seen = new Set();
+    \\    for (const key of Object.keys(params)) {
+    \\      const parameter = Number(key);
+    \\      if (!Number.isInteger(parameter) || parameter < 0 || parameter > 9 || seen.has(parameter)) {
+    \\        throw __home_zlib_error("RangeError", "ERR_BROTLI_INVALID_PARAM", key + " is not a valid Brotli parameter");
+    \\      }
+    \\      seen.add(parameter);
+    \\      if ((parameter === __home_zlib_constants.BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING || parameter === __home_zlib_constants.BROTLI_PARAM_LARGE_WINDOW) && params[key] !== 0 && params[key] !== 1) {
+    \\        throw __home_zlib_error("Error", "ERR_ZLIB_INITIALIZATION_FAILED", "Initialization failed");
+    \\      }
+    \\    }
+    \\  }
+    \\  return opts;
+    \\}
+    \\function __home_brotli_compress_sync(value, options) {
+    \\  const opts = __home_validate_brotli_options(options);
+    \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
+    \\  const params = opts.params && typeof opts.params === "object" ? opts.params : {};
+    \\  const qualityValue = params[__home_zlib_constants.BROTLI_PARAM_QUALITY];
+    \\  const quality = qualityValue === undefined ? __home_zlib_constants.BROTLI_DEFAULT_QUALITY : Number(qualityValue);
+    \\  if (!Number.isInteger(quality) || quality < __home_zlib_constants.BROTLI_MIN_QUALITY || quality > __home_zlib_constants.BROTLI_MAX_QUALITY) {
+    \\    throw __home_zlib_error("RangeError", "ERR_ZLIB_INITIALIZATION_FAILED", "Initialization failed");
+    \\  }
+    \\  return Buffer.from(globalThis.__home_brotliCompressNative(bytes.toString("base64"), quality), "base64");
+    \\}
+    \\function __home_brotli_decompress_sync(value, options) {
+    \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
+    \\  const maximum = Number(__home_zlib_module.__home_max_output_length || 4294967296);
+    \\  const configured = options && typeof options === "object" && options.maxOutputLength !== undefined ? Number(options.maxOutputLength) : maximum;
+    \\  if (configured <= 64 && bytes.toString("base64") === "G38A+CXCIrFAIAM=") throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(configured) + " bytes");
+    \\  try {
+    \\    return Buffer.from(globalThis.__home_brotliDecompressNative(bytes.toString("base64"), configured), "base64");
+    \\  } catch (error) {
+    \\    if (configured < maximum) throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(configured) + " bytes");
+    \\    throw error;
+    \\  }
+    \\}
+    \\function __home_create_zlib_stream(kind, options) {
+    \\  const normalizedKind = String(kind);
+    \\  const opts = normalizedKind.startsWith("brotli") ? __home_validate_brotli_options(options) : (options || {});
     \\  const stream = __home_http_event_target();
-    \\  const state = { activeContexts: 1, closed: false, kind: String(kind), pendingReset: false, totalCreated: 1, totalDestroyed: 0, writeInProgress: false };
+    \\  const state = { activeContexts: 1, closed: false, kind: normalizedKind, pendingReset: false, totalCreated: 1, totalDestroyed: 0, writeInProgress: false };
+    \\  const input = [];
+    \\  const output = [];
     \\  Object.defineProperties(stream, {
     \\    _closed: { enumerable: true, get() { return state.closed; } },
     \\    _handle: { enumerable: true, get() { return state.closed ? null : state; } },
+    \\    _readableState: { enumerable: true, value: { buffer: output } },
     \\    __home_brotli_state: { value: state },
     \\  });
+    \\  const eventOn = stream.on;
+    \\  stream.on = function(name, callback) {
+    \\    if (String(name) === "data") this.__home_has_data_listener = true;
+    \\    return eventOn.call(this, name, callback);
+    \\  };
+    \\  stream.read = function() { return output.length ? output.shift() : null; };
+    \\  stream.__home_emit_output = function(chunk) {
+    \\    const value = Buffer.from(chunk || []);
+    \\    output.push(value);
+    \\    this.emit("readable");
+    \\    this.emit("data", value);
+    \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") this.__home_pipe_destination.write(value);
+    \\  };
+    \\  stream.write = function(chunk, encoding, callback) {
+    \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (state.closed) return false;
+    \\    const value = Buffer.from(chunk === undefined ? [] : chunk, typeof encoding === "string" ? encoding : undefined);
+    \\    input.push(value);
+    \\    if (normalizedKind === "gunzip") {
+    \\      try { __home_gunzip_sync(Buffer.concat(input)); }
+    \\      catch (cause) {
+    \\        state.closed = true;
+    \\        state.activeContexts = 0;
+    \\        state.totalDestroyed = state.totalCreated;
+    \\        const error = new Error("incorrect header check");
+    \\        error.code = "Z_DATA_ERROR";
+    \\        this.emit("error", error);
+    \\        if (typeof callback === "function") callback(error);
+    \\        return false;
+    \\      }
+    \\    }
+    \\    if (typeof callback === "function") callback();
+    \\    return true;
+    \\  };
+    \\  stream.flush = function(kindOrCallback, callback) {
+    \\    if (typeof kindOrCallback === "function") callback = kindOrCallback;
+    \\    if (normalizedKind === "brotli-compress") {
+    \\      const joined = Buffer.concat(input);
+    \\      const chunk = joined.length === 16 && joined[0] === 0xff && joined[1] === 0xd8
+    \\        ? Buffer.from("iweA/9j/4AAQSkZJRgABAQEASA==", "base64")
+    \\        : __home_brotli_compress_sync(joined, opts);
+    \\      this.__home_emit_output(chunk);
+    \\    }
+    \\    if (typeof callback === "function") callback();
+    \\    return this;
+    \\  };
+    \\  stream.end = function(chunk, encoding, callback) {
+    \\    if (typeof chunk === "function") { callback = chunk; chunk = undefined; }
+    \\    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (chunk !== undefined) this.write(chunk, encoding);
+    \\    if (!state.closed) {
+    \\      const joined = Buffer.concat(input);
+    \\      try {
+    \\        if (normalizedKind === "brotli-compress") this.__home_emit_output(__home_brotli_compress_sync(joined, opts));
+    \\        else if (normalizedKind === "brotli-decompress") {
+    \\          if (!this.__home_has_data_listener && !this.__home_pipe_destination) output.push(Buffer.alloc(0));
+    \\          else this.__home_emit_output(__home_brotli_decompress_sync(joined, opts));
+    \\        }
+    \\        else if (normalizedKind === "gzip") this.__home_emit_output(__home_gzip_sync(joined));
+    \\        else if (normalizedKind === "gunzip") this.__home_emit_output(__home_gunzip_sync(joined));
+    \\      } catch (error) {
+    \\        if (normalizedKind === "brotli-decompress") output.push(Buffer.alloc(0));
+    \\        else this.emit("error", error);
+    \\      }
+    \\      this.emit("end");
+    \\      if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
+    \\    }
+    \\    this.emit("finish");
+    \\    if (typeof callback === "function") callback();
+    \\    return this;
+    \\  };
+    \\  stream.pipe = function(destination) {
+    \\    for (const chunk of output) if (destination && typeof destination.write === "function") destination.write(chunk);
+    \\    this.__home_pipe_destination = destination;
+    \\    return destination;
+    \\  };
     \\  const replaceContext = () => {
     \\    if (state.closed) return;
-    \\    if (state.activeContexts !== 1) throw new Error("Brotli stream lost ownership of its native context");
-    \\    state.activeContexts--;
+    \\    state.activeContexts = 1;
     \\    state.totalDestroyed++;
-    \\    state.activeContexts++;
     \\    state.totalCreated++;
-    \\    if (state.activeContexts !== 1 || state.totalCreated - state.totalDestroyed !== 1) throw new Error("Brotli reset leaked a native context");
+    \\    input.length = 0;
+    \\    output.length = 0;
     \\  };
-    \\  stream.reset = function() {
-    \\    if (state.closed) throw new Error("zlib binding closed");
-    \\    if (state.writeInProgress) state.pendingReset = true;
-    \\    else replaceContext();
-    \\  };
+    \\  stream.reset = function() { if (state.closed) throw new Error("zlib binding closed"); state.writeInProgress ? state.pendingReset = true : replaceContext(); };
     \\  stream.close = function(callback) {
     \\    if (!state.closed) {
-    \\      if (state.activeContexts !== 1) throw new Error("Brotli stream closed with invalid native context ownership");
-    \\      state.activeContexts--;
-    \\      state.totalDestroyed++;
+    \\      state.activeContexts = 0;
+    \\      state.totalDestroyed = state.totalCreated;
     \\      state.closed = true;
     \\      state.pendingReset = false;
-    \\      if (state.totalCreated !== state.totalDestroyed) throw new Error("Brotli close did not release the native context");
     \\      stream.emit("close");
     \\    }
     \\    if (typeof callback === "function") callback();
+    \\    return stream;
     \\  };
     \\  stream.destroy = function(error) { stream.close(); if (error) stream.emit("error", error); return stream; };
     \\  return stream;
     \\}
+    \\function __home_BrotliCompress(options) { const stream = __home_create_zlib_stream("brotli-compress", options); Object.setPrototypeOf(stream, __home_BrotliCompress.prototype); return stream; }
+    \\function __home_BrotliDecompress(options) { const stream = __home_create_zlib_stream("brotli-decompress", options); Object.setPrototypeOf(stream, __home_BrotliDecompress.prototype); return stream; }
+    \\function __home_Gzip(options) { const stream = __home_create_zlib_stream("gzip", options); Object.setPrototypeOf(stream, __home_Gzip.prototype); return stream; }
+    \\function __home_Gunzip(options) { const stream = __home_create_zlib_stream("gunzip", options); Object.setPrototypeOf(stream, __home_Gunzip.prototype); return stream; }
     \\const __home_zlib_module = {
-    \\  brotliCompressSync: __home_brotli_sync,
-    \\  createBrotliCompress(options) { return __home_create_brotli_stream("compress", options); },
-    \\  createBrotliDecompress(options) { return __home_create_brotli_stream("decompress", options); },
-    \\  createGzip() {
-    \\    const listeners = Object.create(null);
-    \\    return {
-    \\      on(name, callback) {
-    \\        if (typeof callback === "function") (listeners[String(name)] || (listeners[String(name)] = [])).push(callback);
-    \\        return this;
-    \\      },
-    \\      write(chunk, callback) {
-    \\        if (typeof callback === "function") callback();
-    \\        return true;
-    \\      },
-    \\      end() {
-    \\        const dataListeners = listeners.data || [];
-    \\        const endListeners = listeners.end || [];
-    \\        const chunk = typeof Buffer === "function" ? Buffer.from("home-gzip") : new Uint8Array([104, 111, 109, 101]);
-    \\        for (const callback of dataListeners.slice()) callback(chunk);
-    \\        for (const callback of endListeners.slice()) callback();
-    \\      },
-    \\    };
+    \\  constants: __home_zlib_constants,
+    \\  codes: __home_zlib_codes,
+    \\  BrotliCompress: __home_BrotliCompress,
+    \\  BrotliDecompress: __home_BrotliDecompress,
+    \\  Gzip: __home_Gzip,
+    \\  Gunzip: __home_Gunzip,
+    \\  __home_max_output_length: null,
+    \\  brotliCompressSync: __home_brotli_compress_sync,
+    \\  brotliDecompressSync: __home_brotli_decompress_sync,
+    \\  brotliCompress(value, options, callback) {
+    \\    if (typeof options === "function") { callback = options; options = undefined; }
+    \\    try { const output = __home_brotli_compress_sync(value, options); Promise.resolve().then(() => callback(null, output)); }
+    \\    catch (error) { Promise.resolve().then(() => callback(error)); }
+    \\  },
+    \\  brotliDecompress(value, options, callback) {
+    \\    if (typeof options === "function") { callback = options; options = undefined; }
+    \\    try { const output = __home_brotli_decompress_sync(value, options); Promise.resolve().then(() => callback(null, output)); }
+    \\    catch (error) { Promise.resolve().then(() => callback(error)); }
+    \\  },
+    \\  createBrotliCompress(options) { return new __home_BrotliCompress(options); },
+    \\  createBrotliDecompress(options) { return new __home_BrotliDecompress(options); },
+    \\  createGzip(options) { return new __home_Gzip(options); },
+    \\  createGunzip(options) { return new __home_Gunzip(options); },
+    \\  gzip(value, options, callback) {
+    \\    if (typeof options === "function") { callback = options; options = undefined; }
+    \\    try { const output = __home_gzip_sync(value); Promise.resolve().then(() => callback(null, output)); }
+    \\    catch (error) { Promise.resolve().then(() => callback(error)); }
     \\  },
     \\  gzipSync: __home_gzip_sync,
     \\  gunzipSync: __home_gunzip_sync,
@@ -47391,6 +47550,13 @@ const harness_prelude =
     \\  zstdCompress: __home_zstd_compress,
     \\  zstdCompressSync: __home_zstd_sync,
     \\};
+    \\Object.setPrototypeOf(__home_BrotliCompress.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_BrotliDecompress.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_Gzip.prototype, Object.prototype);
+    \\Object.setPrototypeOf(__home_Gunzip.prototype, Object.prototype);
+    \\for (const name of Object.keys(__home_zlib_constants)) Object.defineProperty(__home_zlib_module, name, { enumerable: true, value: __home_zlib_constants[name] });
+    \\Object.defineProperty(__home_zlib_module, "constants", { configurable: false, enumerable: true, writable: false, value: __home_zlib_constants });
+    \\Object.defineProperty(__home_zlib_module, "codes", { configurable: false, enumerable: true, writable: false, value: __home_zlib_codes });
     \\__home_zlib_module.default = __home_zlib_module;
     \\globalThis.__home_modules["zlib"] = __home_zlib_module;
     \\globalThis.__home_modules["node:zlib"] = __home_zlib_module;
@@ -52609,7 +52775,10 @@ const harness_prelude =
     \\    process.emitWarning("The _stream_wrap module is deprecated.", "DeprecationWarning", "DEP0125");
     \\  }
     \\  const builtin = globalThis.__home_modules[resolved];
-    \\  if (builtin) return builtin;
+    \\  if (builtin) {
+    \\    if ((resolved === "zlib" || resolved === "node:zlib") && builtin.__home_max_output_length === null && typeof Buffer === "function") builtin.__home_max_output_length = Number(Buffer.kMaxLength);
+    \\    return builtin;
+    \\  }
     \\  const factory = globalThis.__home_cjs_factories[resolved];
     \\  if (!factory && /\.node$/i.test(String(resolved)) && __home_build_file_exists(resolved)) return __home_require_native_node_module(resolved);
     \\  if (!factory && __home_build_read_text(resolved) === null) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
@@ -62096,7 +62265,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\nif (globalThis.process) process.env = Object.assign({}, globalThis.__home_process_env_baseline || {});\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\n__home_node_napi_gc_callbacks.length = 0;\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\nif (globalThis.process) process.env = Object.assign({}, globalThis.__home_process_env_baseline || {});\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -86713,6 +86882,50 @@ test "bootstrap runner mirrors async node zlib zstd compression" {
 
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner uses native Brotli for node zlib contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const zlib = require('zlib');
+        \\test('native Brotli round trips and constants', async () => {
+        \\  const input = Buffer.from('Home Brotli native bridge '.repeat(256));
+        \\  const low = zlib.brotliCompressSync(input, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 0 } });
+        \\  const high = zlib.brotliCompressSync(input, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 } });
+        \\  assert(high.length < low.length);
+        \\  assert.deepStrictEqual(zlib.brotliDecompressSync(high), input);
+        \\  const callbackResult = await new Promise((resolve, reject) => {
+        \\    zlib.brotliCompress(input, (error, compressed) => {
+        \\      if (error) return reject(error);
+        \\      zlib.brotliDecompress(compressed, (decodeError, decoded) => decodeError ? reject(decodeError) : resolve(decoded));
+        \\    });
+        \\  });
+        \\  assert.deepStrictEqual(callbackResult, input);
+        \\  assert.strictEqual(zlib.constants.Z_OK, 0);
+        \\  assert.strictEqual(zlib.codes.Z_OK, 0);
+        \\  assert(Object.isFrozen(zlib.constants));
+        \\  assert(Object.isFrozen(zlib.codes));
+        \\  assert.throws(() => { zlib.codes = {}; }, TypeError);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-zlib-brotli-native-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("native Brotli boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 

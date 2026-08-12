@@ -331,6 +331,18 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_brotliCompressNative",
+            brotliCompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_brotliDecompressNative",
+            brotliDecompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_transpilerCreateNative",
             transpilerCreateNative,
         );
@@ -4499,6 +4511,123 @@ fn statPathNative(
 
     return makeStatResult(actual_ctx, stat) catch |err| {
         setExceptionFmt(actual_ctx, exception, "node:fs.statSync() result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn decodeBase64Argument(
+    allocator: std.mem.Allocator,
+    ctx: *JSContextRef,
+    value: *JSValue,
+    exception: extern_fns.ExceptionRef,
+) ![]u8 {
+    const encoded = try valueToOwnedString(allocator, ctx, value, exception);
+    defer allocator.free(encoded);
+    const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
+    const decoded = try allocator.alloc(u8, decoded_len);
+    errdefer allocator.free(decoded);
+    try std.base64.standard.Decoder.decode(decoded, encoded);
+    return decoded;
+}
+
+fn makeBase64StringValue(ctx: *JSContextRef, allocator: std.mem.Allocator, bytes: []const u8) !*JSValue {
+    const encoded_len = std.base64.standard.Encoder.calcSize(bytes.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, bytes);
+    return makeStringValue(ctx, encoded);
+}
+
+fn brotliCompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "Brotli compression requires input");
+        return null;
+    }
+
+    const input = decodeBase64Argument(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli compression input failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(input);
+    const quality_number = if (argument_count >= 2 and arguments[1] != null)
+        extern_fns.JSValueToNumber(actual_ctx, arguments[1].?, exception)
+    else
+        11;
+    const quality: c_int = @intFromFloat(@max(0, @min(11, if (std.math.isFinite(quality_number)) @floor(quality_number) else 11)));
+    const brotli_c = home_rt.brotli_sys.brotli_c;
+    const max_size = @max(@as(usize, 1), brotli_c.BrotliEncoderMaxCompressedSize(input.len));
+    const output = allocator.alloc(u8, max_size) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli compression allocation failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(output);
+    var output_size = output.len;
+    if (brotli_c.BrotliEncoderCompress(quality, 22, .generic, input.len, input.ptr, &output_size, output.ptr) == 0) {
+        setException(actual_ctx, exception, "Brotli compression failed");
+        return null;
+    }
+    return makeBase64StringValue(actual_ctx, allocator, output[0..output_size]) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli compression result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn brotliDecompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "Brotli decompression requires input");
+        return null;
+    }
+
+    const input = decodeBase64Argument(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli decompression input failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(input);
+    const max_output_number = if (argument_count >= 2 and arguments[1] != null)
+        extern_fns.JSValueToNumber(actual_ctx, arguments[1].?, exception)
+    else
+        536870912;
+    const max_output_size: usize = if (std.math.isFinite(max_output_number) and max_output_number >= 0)
+        @intFromFloat(@min(max_output_number, @as(f64, @floatFromInt(std.math.maxInt(usize)))))
+    else
+        536870912;
+
+    var output: std.ArrayListUnmanaged(u8) = .empty;
+    defer output.deinit(allocator);
+    const reader = home_rt.brotli.BrotliReaderArrayList.newWithOptions(input, &output, allocator, .{}) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli decompression initialization failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer reader.deinit();
+    reader.max_output_size = max_output_size;
+    reader.readAll(true) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli decompression failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    return makeBase64StringValue(actual_ctx, allocator, output.items) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli decompression result failed: {s}", .{@errorName(err)});
         return null;
     };
 }
