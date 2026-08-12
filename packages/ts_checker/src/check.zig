@@ -26684,7 +26684,9 @@ pub const Checker = struct {
         if (rest_t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(rest_t).is_union) {
             const element_t = self.tupleElementType(rest_t, index);
-            return if (element_t == types.Primitive.none) null else element_t;
+            if (element_t != types.Primitive.none) return element_t;
+            const array_element_t = self.interner.objectNumberIndex(rest_t);
+            return if (array_element_t == types.Primitive.none) null else array_element_t;
         }
         var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
         defer candidates.deinit(self.gpa);
@@ -26934,15 +26936,15 @@ pub const Checker = struct {
     /// (`map` / `filter` / `forEach` / `some` / `every` / `find` /
     /// `findIndex` / `findLast` / `findLastIndex` / `flatMap` /
     /// `sort`). For `arr.map((x) => ÃÂ¢ÃÂÃÂ¦)` the callback's first
-    /// parameter is the array element type, exactly as tsc threads the
-    /// element type through `Array<T>.map`'s generic callback
-    /// signature. `sort` is the comparator-shaped exception: both
-    /// `(a, b)` parameters are `T`. This is what lets
+    /// callback receives `(value: T, index: number, array: T[])`, exactly
+    /// as tsc threads `Array<T>` through the method's callback signature.
+    /// `sort` is the comparator-shaped exception: both `(a, b)` parameters
+    /// are `T`. This is what lets
     /// `spreadNonObject1.ts` surface TS2698 and `arrayconcat.ts`
     /// surface TS18048 on optional properties inside a comparator.
     /// Returns `none` when the receiver isn't an array-like so callers
     /// fall back to the implicit-any path (and its TS7006 reporting).
-    fn arrayCallbackParameterElementType(
+    fn arrayCallbackParameterType(
         self: *Checker,
         fn_node: NodeId,
         param_index: usize,
@@ -26968,11 +26970,9 @@ pub const Checker = struct {
         const m = hir_mod.memberOf(self.hir, call.callee);
         if (m.object == hir_mod.none_node_id) return null;
         const method = self.string_interner.get(m.name);
-        if (std.mem.eql(u8, method, "sort")) {
-            if (param_index > 1) return null;
-        } else if (param_index != 0) {
-            return null;
-        }
+        const is_sort = std.mem.eql(u8, method, "sort");
+        if (is_sort and param_index > 1) return null;
+        if (!is_sort and param_index > 2) return null;
         const element_first = std.StaticStringMap(void).initComptime(.{
             .{"map"},       .{"filter"},   .{"forEach"},
             .{"some"},      .{"every"},    .{"find"},
@@ -26984,7 +26984,9 @@ pub const Checker = struct {
         if (recv_t >= self.interner.pool.typeCount()) return null;
         const elem_t = try self.contextualArrayElementType(recv_t);
         if (elem_t == types.Primitive.none) return null;
-        return elem_t;
+        if (is_sort or param_index == 0) return elem_t;
+        if (param_index == 1) return types.Primitive.number_t;
+        return recv_t;
     }
 
     fn iifeParameterTypeFromCallArgument(
@@ -30831,7 +30833,7 @@ pub const Checker = struct {
             // IIFE path takes precedence; otherwise this seeds `x`.
             const array_callback_context_t: ?TypeId = if (!has_anno and !is_this_param and
                 !pp.flags.is_rest and pp.default_value == hir_mod.none_node_id and iife_context_t == null)
-                try self.arrayCallbackParameterElementType(node, param_index)
+                try self.arrayCallbackParameterType(node, param_index)
             else
                 null;
             var inferred_object_binding_pattern = false;
@@ -31052,6 +31054,7 @@ pub const Checker = struct {
                 self.functionHasContextualCallableType(node);
             if (!has_anno and !has_jsdoc_param_type and jsdoc_context_param_t == null and
                 contextual_param_t == null and
+                array_callback_context_t == null and
                 !inferred_from_default and param_implicit_any_report and
                 !default_is_await_error_placeholder and
                 !default_is_yield_in_param_initializer and
@@ -95517,9 +95520,12 @@ pub const Checker = struct {
                                         .signature = effective_callee_t,
                                         .param_index = @intCast(i),
                                     });
-                                    try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
+                                    const suppress_generic_callback_inference = try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
                                     if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs)) {
-                                        if (self.signatureHasBareGenericRestParam(param_t)) {
+                                        if (suppress_generic_callback_inference) {
+                                            // The specialized pass handled all valid
+                                            // evidence from this callback shape.
+                                        } else if (self.signatureHasBareGenericRestParam(param_t)) {
                                             try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
                                         } else if (arg_types.items[i] < self.interner.pool.typeCount() and
                                             self.interner.pool.flagsOf(arg_types.items[i]).is_signature)
@@ -95576,9 +95582,12 @@ pub const Checker = struct {
                                             .signature = effective_callee_t,
                                             .param_index = @intCast(i),
                                         });
-                                        try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
+                                        const suppress_generic_callback_inference = try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
                                         if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs)) {
-                                            if (self.signatureHasBareGenericRestParam(param_t)) {
+                                            if (suppress_generic_callback_inference) {
+                                                // The specialized pass handled all valid
+                                                // evidence from this callback shape.
+                                            } else if (self.signatureHasBareGenericRestParam(param_t)) {
                                                 try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
                                             } else if (arg_types.items[i] < self.interner.pool.typeCount() and
                                                 self.interner.pool.flagsOf(arg_types.items[i]).is_signature)
@@ -109073,24 +109082,48 @@ pub const Checker = struct {
         param_sig: TypeId,
         arg_node: NodeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
-    ) CheckError!void {
-        if (param_sig >= self.interner.pool.typeCount()) return;
-        if (!self.interner.pool.flagsOf(param_sig).is_signature) return;
-        if (!self.containsFreeTypeParameter(param_sig)) return;
-        if (!self.isContextualFunctionExpressionLike(arg_node)) return;
+    ) CheckError!bool {
+        if (param_sig >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(param_sig).is_signature) return false;
+        if (!self.containsFreeTypeParameter(param_sig)) return false;
+        if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
 
         const target_params = self.interner.signatureParams(param_sig);
-        if (target_params.len == 0) return;
+        if (target_params.len == 0) return false;
         const target_has_rest = self.rest_signatures.contains(param_sig);
         const fixed_target_count = if (target_has_rest) target_params.len - 1 else target_params.len;
+
+        const params = hir_mod.fnParams(self.hir, arg_node);
+        var value_param_count: usize = 0;
+        var has_unannotated_rest_param = false;
+        var has_annotated_rest_before_fixed_target = false;
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            if (self.isThisParameter(p)) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.flags.is_rest and pp.type_annotation == hir_mod.none_node_id) has_unannotated_rest_param = true;
+            if (target_has_rest and pp.flags.is_rest and
+                pp.type_annotation != hir_mod.none_node_id and
+                value_param_count < fixed_target_count)
+            {
+                has_annotated_rest_before_fixed_target = true;
+            }
+            value_param_count += 1;
+        }
+        if (!target_has_rest and value_param_count > target_params.len) return false;
 
         // A bare generic rest target must collect the callback's complete
         // positional signature before per-annotation inference runs. If the
         // scalar pass binds `TS` from the first annotated parameter first,
         // `(...args: TS) => void` incorrectly becomes `...args: number`
-        // instead of `...args: [number, number]`.
+        // instead of `...args: [number, number]`. An annotated source rest
+        // that begins inside the target's fixed prefix is excluded: it is a
+        // compatibility check, not inference evidence for that prefix.
         const source_sig = self.hir.typeOf(arg_node);
-        if (source_sig < self.interner.pool.typeCount() and self.interner.isSignature(source_sig)) {
+        if (!has_annotated_rest_before_fixed_target and
+            source_sig < self.interner.pool.typeCount() and
+            self.interner.isSignature(source_sig))
+        {
             try self.inferRestTupleFromSignatureParams(
                 param_sig,
                 target_params,
@@ -109099,18 +109132,14 @@ pub const Checker = struct {
                 subs,
             );
         }
-
-        const params = hir_mod.fnParams(self.hir, arg_node);
-        var value_param_count: usize = 0;
-        var has_unannotated_rest_param = false;
-        for (params) |p| {
-            if (self.hir.kindOf(p) != .parameter) continue;
-            if (self.isThisParameter(p)) continue;
-            const pp = hir_mod.parameterOf(self.hir, p);
-            if (pp.flags.is_rest and pp.type_annotation == hir_mod.none_node_id) has_unannotated_rest_param = true;
-            value_param_count += 1;
+        if (has_annotated_rest_before_fixed_target) {
+            for (target_params) |target_param| {
+                const type_param = self.firstFreeTypeParameter(target_param) orelse continue;
+                if (subs.contains(type_param)) continue;
+                const constraint = self.typeParameterConstraint(type_param) orelse continue;
+                if (constraint != type_param) try subs.put(self.gpa, type_param, constraint);
+            }
         }
-        if (!target_has_rest and value_param_count > target_params.len) return;
 
         var value_index: usize = 0;
         for (params) |p| {
@@ -109126,6 +109155,13 @@ pub const Checker = struct {
             }
 
             if (pp.flags.is_rest) {
+                // A source rest that begins before the target's fixed
+                // prefix is checked against that prefix after inference; it
+                // does not contribute a scalar candidate for the target's
+                // type parameter. For `(x, ...ys: D[])` against
+                // `(a: T, b: T, ...rest: T[])`, T therefore falls back to
+                // its constraint instead of being fixed to D.
+                if (target_has_rest and value_index < fixed_target_count) continue;
                 const source_elem_t = self.interner.objectNumberIndex(source_t);
                 const rest_source_t = if (source_elem_t != types.Primitive.none) source_elem_t else source_t;
                 if (value_index < fixed_target_count) {
@@ -109151,6 +109187,7 @@ pub const Checker = struct {
                 try self.inferFromPair(if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_target_t, source_t, subs);
             }
         }
+        return has_annotated_rest_before_fixed_target;
     }
 
     fn genericInferenceFunctionArgumentType(self: *Checker, arg_node: NodeId, fallback: TypeId) CheckError!TypeId {
@@ -146289,11 +146326,34 @@ pub const Checker = struct {
         {
             return false;
         }
+        if (self.annotatedRestBeginsBeforeTargetFixedPrefix(arg_node, target_t)) {
+            const target_params = self.interner.signatureParams(target_t);
+            if (try self.partiallyAnnotatedFunctionDiagnosticSignature(arg_node, target_t, target_params)) |diagnostic_source| {
+                return try self.contextualFunctionSignatureAssignable(diagnostic_source, target_t);
+            }
+        }
         if (!self.containsFreeTypeParameter(target_t)) {
             if (try self.contextualFunctionExpressionReturnAssignable(arg_node, relation_source_t, target_t)) |ok| return ok;
         }
         if (self.engine.isAssignableTo(relation_source_t, target_t) catch false) return true;
         return self.contextualFunctionSignatureAssignable(relation_source_t, target_t) catch false;
+    }
+
+    fn annotatedRestBeginsBeforeTargetFixedPrefix(self: *Checker, fn_node: NodeId, target_t: TypeId) bool {
+        if (!self.isContextualFunctionExpressionLike(fn_node) or !self.rest_signatures.contains(target_t)) return false;
+        const target_params = self.interner.signatureParams(target_t);
+        if (target_params.len == 0) return false;
+        const fixed_target_count = target_params.len - 1;
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            if (param.flags.is_rest) {
+                return param.type_annotation != hir_mod.none_node_id and value_index < fixed_target_count;
+            }
+            value_index += 1;
+        }
+        return false;
     }
 
     fn functionExpressionRequiredValueParamCount(self: *Checker, fn_node: NodeId) usize {
@@ -146714,7 +146774,18 @@ pub const Checker = struct {
             const pp = hir_mod.parameterOf(self.hir, p);
             defer value_index += 1;
 
-            var param_t: TypeId = if (value_index < target_params.len) target_params[value_index] else types.Primitive.any;
+            var param_t: TypeId = if (target_has_rest and
+                target_params.len > 0 and
+                value_index >= target_params.len - 1 and
+                !pp.flags.is_rest)
+                self.contextualRestTupleElementType(
+                    target_params[target_params.len - 1],
+                    value_index - (target_params.len - 1),
+                ) orelse target_params[target_params.len - 1]
+            else if (value_index < target_params.len)
+                target_params[value_index]
+            else
+                types.Primitive.any;
             if (unannotated_rest_mismatch) {
                 if (pp.flags.is_rest and pp.type_annotation == hir_mod.none_node_id) {
                     param_t = if (prior_explicit_t != types.Primitive.none)
@@ -147199,8 +147270,11 @@ pub const Checker = struct {
         for (source_params, 0..) |source_param, i| {
             const target_param = if (i < fixed_count)
                 target_params[i]
-            else
-                self.tupleElementType(rest_t, i - fixed_count);
+            else blk: {
+                const tuple_element_t = self.tupleElementType(rest_t, i - fixed_count);
+                if (tuple_element_t != types.Primitive.none) break :blk tuple_element_t;
+                break :blk self.interner.objectNumberIndex(rest_t);
+            };
             if (target_param == types.Primitive.none) return false;
             if (!try self.contextualTargetParamAssignableToSource(target_param, source_param)) return false;
         }
@@ -154226,12 +154300,53 @@ pub const Checker = struct {
                 .{ src_param_name, tgt_param_name },
             );
             const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
-            const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
-            children[0] = try self.typeNotAssignableChainEntry(target_param, source_param, true);
+            const missing_member_elaboration = try self.signatureParameterMissingMemberChain(target_param, source_param);
+            const object_elaboration = if (missing_member_elaboration.len > 0)
+                missing_member_elaboration
+            else if (target_param < self.interner.pool.typeCount() and
+                source_param < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(target_param).is_object_type and
+                self.interner.pool.flagsOf(source_param).is_object_type)
+                try self.buildAssignabilityElaborationChain(target_param, source_param)
+            else
+                &.{};
+            const children = if (object_elaboration.len > 0) object_elaboration else blk: {
+                const fallback = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                fallback[0] = try self.typeNotAssignableChainEntry(target_param, source_param, true);
+                break :blk fallback;
+            };
             slice[0] = .{ .code = TsCodes.types_of_parameters_incompatible, .message = msg, .children = children };
             return slice;
         }
         return null;
+    }
+
+    fn signatureParameterMissingMemberChain(self: *Checker, source: TypeId, target: TypeId) CheckError![]const DiagnosticChainEntry {
+        const empty: []const DiagnosticChainEntry = &.{};
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return empty;
+        if (!self.interner.pool.flagsOf(source).is_object_type or
+            !self.interner.pool.flagsOf(target).is_object_type)
+        {
+            return empty;
+        }
+        for (self.interner.objectMembers(target)) |required| {
+            if (required.is_optional or (try self.lookupObjectMember(source, required.name)) != null) continue;
+            const source_name = (try self.allocSimpleTypeName(source)) orelse
+                (try self.allocObjectTypeShape(source)) orelse return empty;
+            const target_name = (try self.allocSimpleTypeName(target)) orelse
+                (try self.allocObjectTypeShape(target)) orelse return empty;
+            const entries = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+            entries[0] = .{
+                .code = TsCodes.property_missing_required,
+                .message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
+                    .{ self.string_interner.get(required.name), source_name, target_name },
+                ),
+            };
+            return entries;
+        }
+        return empty;
     }
 
     fn intersectionHasPrimitiveAndObjectMembers(self: *Checker, t: TypeId) bool {
@@ -227861,6 +227976,26 @@ test "checker: Array.prototype.map<U> infers number[] for an identity callback" 
     try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(t));
 }
 
+test "checker: recursive tuple array map contextually types every callback parameter" {
+    const b = try newBoundSetup(
+        \\interface Heading { id: string; }
+        \\type Tree = [Heading, Tree][];
+        \\function parse(node: Tree) {
+        \\  return node.map(([el, children], index, array) => {
+        \\    el.id;
+        \\    children.length;
+        \\    index.toFixed();
+        \\    return array.length;
+        \\  });
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(!checkerHasCode(b, TsCodes.binding_element_implicitly_any));
+    try T.expect(!checkerHasCode(b, TsCodes.parameter_implicitly_any));
+}
+
 test "checker: Array.prototype.reduce<U> infers result type from the initial value" {
     const s = try newSetup(
         \\const arr: number[] = [1, 2, 3];
@@ -230518,6 +230653,27 @@ test "checker: scalar candidates precede contextual callback inference" {
         b,
         TsCodes.argument_type_mismatch,
         "Argument of type '(a: number) => string' is not assignable to parameter of type '(a: number) => 1'.",
+    ));
+}
+
+test "checker: partially annotated callbacks index generic array rests by element" {
+    const b = try newBoundSetup(
+        \\class C { test: string; }
+        \\class D extends C { test2: string; }
+        \\declare function testRest<T extends C>(a: (t: T, t1: T, ...ts: T[]) => void): T;
+        \\testRest((t1, t2, t3) => {});
+        \\testRest((t1: D, t2, t3) => {});
+        \\testRest((t1, t2: D, t3) => {});
+        \\testRest((t2: D, ...t3) => {});
+        \\testRest((t2, ...t3: D[]) => {});
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '(t2: C, ...t3: D[]) => void' is not assignable to parameter of type '(t: C, t1: C, ...ts: C[]) => void'.",
     ));
 }
 
