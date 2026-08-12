@@ -2,22 +2,23 @@
 /**
  * Build and deploy the documentation site to home-lang.org.
  *
- * Why this is a script and not just `bunx @stacksjs/ts-cloud deploy`:
- * ts-cloud runs a secret scan over the whole working directory before it will
- * deploy, and its ignore list is hard-coded (.git, node_modules, dist, build,
- * vendor, pantry, ...). It has no entry for `_submodules`, so the vendored
- * TypeScript compiler test baselines under
- * `_submodules/typescript-go/testdata/baselines/` trip the "AWS Secret Key"
- * heuristic six times on the identifier `publicVarWithPrivateModulePropertyTypes`,
- * and the security policy blocks the deploy. Those are not secrets, and none of
- * that tree is shipped anyway.
+ * The build is the reason this is a script rather than a plain
+ * `bunx @stacksjs/ts-cloud deploy`. BunPress renders into a `.bunpress`
+ * SUBDIRECTORY of `--outdir`, so pointing a site `root` at the parent ships an
+ * EMPTY release and the box 404s while the deploy reports success. So build to
+ * a scratch directory, flatten `.bunpress` into `dist/docs`, and assert a
+ * non-zero page count before anything leaves this machine.
  *
- * So the deploy runs from a staging directory holding exactly what is
- * published: the built docs plus the cloud config. The scanner sees the same
- * files the box does.
+ * (The package scripts call bare `bunpress`, which has no runnable bin on npm.
+ * The engine these docs are written against is @stacksjs/bunpress.)
+ *
+ * The deploy itself is ordinary. `_submodules` is kept out of the
+ * pre-deployment secret scan by `infrastructure.security.scan.exclude` in
+ * cloud.config.ts, so no staging directory is needed.
  *
  * Usage:
  *   HCLOUD_TOKEN=… PORKBUN_API_KEY=… PORKBUN_SECRET_KEY=… bun scripts/deploy-docs.ts
+ *   bun scripts/deploy-docs.ts --build-only
  *   bun scripts/deploy-docs.ts --dry-run
  */
 import { cp, mkdir, rm } from 'node:fs/promises'
@@ -27,10 +28,10 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const docsOut = join(repoRoot, 'dist', 'docs')
-const stageDir = join(repoRoot, 'dist', '.deploy')
+const buildDir = join(repoRoot, 'dist', '.docs-build')
 const args = process.argv.slice(2)
 const buildOnly = args.includes('--build-only')
-const passthrough = args.filter(arg => arg !== '--build-only')
+const passthrough = args.filter((arg) => arg !== '--build-only')
 
 async function run(cmd: string[], cwd: string): Promise<void> {
   const proc = Bun.spawn(cmd, { cwd, stdout: 'inherit', stderr: 'inherit', env: process.env })
@@ -39,15 +40,8 @@ async function run(cmd: string[], cwd: string): Promise<void> {
     throw new Error(`${cmd.join(' ')} exited with ${code}`)
 }
 
-// 1. Build. The package scripts call bare `bunpress`, which has no runnable bin
-// on npm; the engine these docs are written against is @stacksjs/bunpress.
-//
-// It writes the rendered site into a `.bunpress` SUBDIRECTORY of --outdir, not
-// into --outdir itself. Shipping the parent therefore ships an empty release,
-// which is exactly what happened the first time. So build into a scratch dir
-// and flatten `.bunpress` into `dist/docs`, leaving the site root a plain
-// directory of real files with no dot-directory for the packager to skip.
-const buildDir = join(repoRoot, 'dist', '.docs-build')
+// 1. Build into a scratch directory, then flatten BunPress's `.bunpress` output
+// into the site root so `dist/docs` holds the pages themselves.
 await rm(buildDir, { recursive: true, force: true })
 await run(['bunx', '--bun', '@stacksjs/bunpress', 'build', '--dir', './docs', '--outdir', './dist/.docs-build'], repoRoot)
 
@@ -64,20 +58,12 @@ console.log(`Built ${pageCount} pages into dist/docs`)
 if (buildOnly)
   process.exit(0)
 
-// 2. Stage exactly what ships. `dist/` is on the scanner's ignore list, so the
-// nested dist/docs inside the staging directory is skipped there too, leaving
-// cloud.config.ts as the only file scanned.
-await rm(stageDir, { recursive: true, force: true })
-await mkdir(join(stageDir, 'dist'), { recursive: true })
-await cp(docsOut, join(stageDir, 'dist', 'docs'), { recursive: true })
-await cp(join(repoRoot, 'cloud.config.ts'), join(stageDir, 'cloud.config.ts'))
-
-// 3. Deploy. HOME_LANG_PREBUILT drops the config's `build` step: the site root
-// in the staging directory is already populated, and `docs/` is not staged.
+// 2. Deploy. HOME_LANG_PREBUILT drops the config's `build` step so ts-cloud does
+// not re-run this script from inside itself.
 process.env.HOME_LANG_PREBUILT = '1'
 await run(
-  ['bunx', '--bun', '@stacksjs/ts-cloud@0.7.111', 'deploy', '--env', 'production', '--yes', ...passthrough],
-  stageDir,
+  ['bunx', '--bun', '@stacksjs/ts-cloud@0.7.116', 'deploy', '--env', 'production', '--yes', ...passthrough],
+  repoRoot,
 )
 
 console.log('\nDeployed. Verify from the box, since a laptop cannot always resolve the public name:')

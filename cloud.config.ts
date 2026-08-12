@@ -54,6 +54,14 @@ const config: CloudConfig = {
   },
 
   infrastructure: {
+    // `_submodules` holds vendored upstreams (the typescript-go checkout), which
+    // this repo neither owns nor ships — the deploy artifact is `dist/docs`.
+    // Its compiler baselines contain identifiers long enough to trip the
+    // pre-deploy AWS-key heuristic (`publicVarWithPrivateModulePropertyTypes`
+    // matches six times), which blocked the deploy on code that is not ours and
+    // never leaves this machine.
+    security: { scan: { exclude: ['_submodules'] } },
+
     compute: {
       mode: 'server',
       size: 'small',
@@ -105,9 +113,8 @@ const config: CloudConfig = {
       // npm; the engine these docs are written against is @stacksjs/bunpress,
       // and it renders into a `.bunpress` SUBDIRECTORY of --outdir. Shipping
       // the parent therefore ships an empty release. `scripts/deploy-docs.ts`
-      // flattens that subdirectory into `dist/docs` and then deploys from a
-      // staging directory holding only the output, which is why the build step
-      // is dropped on that path. Always deploy with that script.
+      // flattens that subdirectory into `dist/docs` and then deploys, which is
+      // why the build step is dropped on that path. Always deploy with it.
       build: process.env.HOME_LANG_PREBUILT ? undefined : 'bun scripts/deploy-docs.ts --build-only',
       // Extensionless doc URLs resolve to <path>/index.html.
       pathRewriteStyle: 'directory',

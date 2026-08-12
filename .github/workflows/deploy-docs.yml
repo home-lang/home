@@ -1,0 +1,99 @@
+name: Deploy Docs
+
+# Push-to-deploy for home-lang.org + docs.home-lang.org.
+#
+# Only paths that can change the rendered site trigger it — the compiler and
+# runtime work in this repo lands constantly and must not redeploy a docs site
+# it cannot affect. Anything reachable from the BunPress build belongs here.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - '.config/docs.ts'
+      - 'bunpress.config.ts'
+      - 'cloud.config.ts'
+      - 'scripts/deploy-docs.ts'
+      - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one midway: the release is only atomic
+# once `current` is flipped, and a cancelled run can leave the box on a
+# half-swapped release.
+concurrency:
+  group: deploy-docs
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://home-lang.org
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+        # The docs build reads only `docs/`; the vendored submodules under
+        # `_submodules/` are large and are excluded from the secret scan anyway.
+        with:
+          submodules: false
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Use cached node_modules
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: node-modules-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            node-modules-
+
+      - name: Install Dependencies
+        run: bun install
+
+      - name: Prepare deploy SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "DEPLOY_SSH_KEY is not set — the deploy cannot reach the box." >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > ~/.ssh/id_ed25519.pub
+          chmod 644 ~/.ssh/id_ed25519.pub
+
+      - name: Build and deploy
+        # Always via the script: it flattens BunPress's `.bunpress` output into
+        # dist/docs and asserts a non-zero page count, because shipping the
+        # unflattened parent produces an empty release that still reports
+        # success.
+        run: bun scripts/deploy-docs.ts
+        env:
+          # This project attaches to the shared stacks box, so the deploy needs
+          # the Hetzner token to find it and the Porkbun credentials to
+          # reconcile home-lang.org's records.
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          PORKBUN_API_KEY: ${{ secrets.PORKBUN_API_KEY }}
+          PORKBUN_SECRET_KEY: ${{ secrets.PORKBUN_SECRET_KEY }}
+
+      - name: Verify the deployed site
+        # The runner cannot always resolve the public name, and a green deploy
+        # is not proof the box is serving: an empty release still exits 0. Ask
+        # the box itself, over its own loopback.
+        run: |
+          for host in home-lang.org docs.home-lang.org; do
+            code=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+              root@178.105.248.188 \
+              "curl -s -o /dev/null -w '%{http_code}' --resolve $host:443:127.0.0.1 https://$host/")
+            echo "$host -> $code"
+            [ "$code" = "200" ] || { echo "::error::$host returned $code"; exit 1; }
+          done
