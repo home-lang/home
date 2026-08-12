@@ -27295,6 +27295,23 @@ pub const Checker = struct {
         return has_mixin and construct_count > 1;
     }
 
+    fn constructorSignaturesHaveMismatchedReturns(self: *Checker, t: TypeId) CheckError!bool {
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        try self.collectConstructSignatures(t, &signatures);
+        var first_return: TypeId = types.Primitive.none;
+        for (signatures.items) |sig| {
+            if (self.generic_signature_params.get(sig) != null) continue;
+            const return_t = self.interner.signatureReturn(sig) orelse continue;
+            if (first_return == types.Primitive.none) {
+                first_return = return_t;
+            } else if (!self.baseConstructorReturnTypesMatch(first_return, return_t)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn mixinConstructorHasSingleAnyRestParam(self: *Checker, ctor_node: NodeId) CheckError!bool {
         if (ctor_node == hir_mod.none_node_id) return false;
         const params = hir_mod.fnParams(self.hir, ctor_node);
@@ -45207,6 +45224,8 @@ pub const Checker = struct {
         if (extends_expr == hir_mod.none_node_id or self.hir.kindOf(extends_expr) != .call_expr) return;
         if (self.diagnosticExists(class_node, TsCodes.class_static_side_incorrectly_extends_base)) return;
         if (try self.constructorIntersectionUsesMixinMerge(parent_static_t)) return;
+        if (!self.interner.pool.flagsOf(parent_static_t).is_intersection and
+            try self.constructorSignaturesHaveMismatchedReturns(parent_static_t)) return;
         const parent_instance_t = (try self.constructReturnType(parent_static_t)) orelse return;
         if (parent_instance_t >= self.interner.pool.typeCount() or
             !self.interner.pool.flagsOf(parent_instance_t).is_intersection) return;
@@ -96434,6 +96453,10 @@ pub const Checker = struct {
                         direct_string_idx
                     else
                         (try self.effectiveStringIndexType(access_obj_t)) orelse types.Primitive.none;
+                    if (self.memberNameIsEcmaPrivate(m.name) and !member_is_optional_chain) {
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
+                        break :blk types.Primitive.any;
+                    }
                     if (string_idx != types.Primitive.none) {
                         // `noPropertyAccessFromIndexSignature`:
                         // dot-access against a type whose only
@@ -136852,6 +136875,33 @@ pub const Checker = struct {
         );
     }
 
+    fn argumentMatchesImportedClassParameter(
+        self: *Checker,
+        sig: TypeId,
+        param_index: usize,
+        arg_t: TypeId,
+    ) CheckError!bool {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return false;
+        if (param_index >= param_nodes.len) return false;
+        const param_node = param_nodes[param_index];
+        if (param_node == hir_mod.none_node_id or self.hir.kindOf(param_node) != .parameter) return false;
+        const annotation = hir_mod.parameterOf(self.hir, param_node).type_annotation;
+        if (annotation == hir_mod.none_node_id or self.hir.kindOf(annotation) != .type_ref) return false;
+        const spec = self.importTypeModuleSpecifier(annotation) orelse return false;
+        if (!std.mem.startsWith(u8, spec, ".")) return false;
+
+        const arg_decl = self.class_decl_by_instance.get(arg_t) orelse return false;
+        const arg_name = self.declarationName(arg_decl) orelse return false;
+        if (arg_name != hir_mod.typeRefOf(self.hir, annotation).name) return false;
+        const arg_filename = self.virtualSectionFilenameForNode(arg_decl) orelse return false;
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(annotation, spec)) orelse return false;
+        defer self.gpa.free(resolved);
+        return virtualPathMatchesResolvedDisplay(
+            virtualPathTrimPrefix(arg_filename),
+            virtualPathTrimPrefix(resolved),
+        );
+    }
+
     fn checkArgsAgainstSignatureWithMode(
         self: *Checker,
         call_node: NodeId,
@@ -137272,7 +137322,10 @@ pub const Checker = struct {
                 self.contextualFunctionReturnDiagnosticAlreadyEmitted(args[i]);
             var argument_excess_property_diagnostic_emitted = false;
             const arg_diag_start = self.diagnostics.items.len;
-            const structurally_assignable = if (inferred_contextual_return_error)
+            const imported_class_parameter_match = try self.argumentMatchesImportedClassParameter(sig, fixed_pos, arg_t);
+            const structurally_assignable = if (imported_class_parameter_match)
+                true
+            else if (inferred_contextual_return_error)
                 false
             else if (inferred_generic_callback) blk: {
                 const diagnostic_source_t = (try self.contextualFunctionExpressionDiagnosticSignature(
@@ -197362,6 +197415,7 @@ test "checker: class-like expression heritage validates constructor type args an
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.base_constructor_type_arg_count));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.base_constructor_returns_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_signatures_for_type_arg_list));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.class_static_side_incorrectly_extends_base));
 }
 
 test "checker: abstract constructor assigned to non-abstract constructor emits TS2517 chain" {
@@ -232160,14 +232214,43 @@ test "checker: same-named classes in different files keep distinct private brand
         \\export class Foo {
         \\  #x;
         \\}
+        \\// @filename: main.ts
+        \\import { Foo as A } from "./a";
+        \\import { Foo as B } from "./b";
+        \\const a = new A();
+        \\const b = new B();
+        \\a.copy(b);
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.ecma_private_not_accessible_outside_class));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.ecma_private_not_accessible_outside_class,
         "Property '#x' is not accessible outside class 'Foo' because it has a private identifier.",
+    ));
+}
+
+test "checker: private identifiers do not resolve through string index signatures" {
+    const s = try newSetup(
+        \\class Indexed {
+        \\  [key: string]: any;
+        \\  #declared = 1;
+        \\  method() {
+        \\    this.#missing = 2;
+        \\    this["#declared"] = 3;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property '#missing' does not exist on type 'Indexed'.",
     ));
 }
 
