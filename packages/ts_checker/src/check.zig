@@ -25638,22 +25638,20 @@ pub const Checker = struct {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         const enum_t = try self.enumNominalTypeForDecl(decl, enum_name);
-        // Collect members from this declaration AND any sibling enum
-        // declarations of the same name in the same parent block —
-        // enums merge across declarations, so `enum E { A } enum E { B }`
-        // exposes both A and B on `typeof E`. Mirrors tsc's symbol-merge
-        // behavior for enum exports.
+        // Enum declarations merge by fully-qualified namespace identity, so
+        // dotted and nested namespace spellings (`M.A` and `M { A }`) expose
+        // the same value-side members.
         try self.appendEnumMembersFromDecl(&members, decl, enum_name, enum_t);
-        if (self.enumSiblingScope(decl)) |scope| {
-            for (scope.stmts) |sib_raw| {
-                const sib = self.unwrapExportDecl(sib_raw);
-                if (sib == decl) continue;
-                if (self.hir.kindOf(sib) != .enum_decl) continue;
-                const sib_enum = hir_mod.enumOf(self.hir, sib);
-                if (self.hir.kindOf(sib_enum.name) != .identifier) continue;
-                if (hir_mod.identifierOf(self.hir, sib_enum.name).name != enum_name) continue;
-                try self.appendEnumMembersFromDecl(&members, sib, enum_name, enum_t);
-            }
+        const merge_key = try self.enumMergeQualifiedNameKey(decl, enum_name);
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (candidate == decl or self.hir.kindOf(candidate) != .enum_decl) continue;
+            const candidate_enum = hir_mod.enumOf(self.hir, candidate);
+            if (self.hir.kindOf(candidate_enum.name) != .identifier) continue;
+            const candidate_name = hir_mod.identifierOf(self.hir, candidate_enum.name).name;
+            if (candidate_name != enum_name) continue;
+            if (try self.enumMergeQualifiedNameKey(candidate, candidate_name) != merge_key) continue;
+            try self.appendEnumMembersFromDecl(&members, candidate, enum_name, enum_t);
         }
         const root = self.rootBlockFor(decl);
         if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
@@ -30958,10 +30956,21 @@ pub const Checker = struct {
                 }
             else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
                 if (js_default_is_loose_nullish) break :blk_default types.Primitive.any;
-                const default_t = if (try self.nullishArrayLiteralTypeFromSyntax(pp.default_value)) |nullish_array_t|
+                var default_t = if (try self.nullishArrayLiteralTypeFromSyntax(pp.default_value)) |nullish_array_t|
                     nullish_array_t
                 else
                     try self.checkExpression(pp.default_value);
+                if (self.hir.kindOf(pp.default_value) == .identifier) {
+                    const declared_default_t = (try self.jsDocTypeForPreviousIdentifierDecl(pp.default_value)) orelse
+                        self.visibleAnnotatedIdentifierType(pp.default_value) orelse
+                        self.typeOfIdentifierDeclared(pp.default_value);
+                    if (self.typeIncludesUndefined(declared_default_t)) {
+                        const without_undefined = self.subtractType(declared_default_t, types.Primitive.undefined_t) catch declared_default_t;
+                        if (without_undefined != types.Primitive.never and without_undefined != types.Primitive.none) {
+                            default_t = without_undefined;
+                        }
+                    }
+                }
                 const widened = if (self.hir.kindOf(pp.default_value) == .array_literal and
                     self.arrayParameterElementTypeIsNullishOnly(default_t))
                     default_t
@@ -75724,6 +75733,13 @@ pub const Checker = struct {
         return false;
     }
 
+    fn identifierIsCheckedJsUndefinedAnyVar(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(node)) return false;
+        const decl = self.previousUntypedUninitializedVarDeclInNearestScope(node) orelse return false;
+        const variable = hir_mod.varDeclOf(self.hir, decl);
+        return variable.init != hir_mod.none_node_id and self.hir.kindOf(variable.init) == .literal_undefined;
+    }
+
     fn recordUntypedUninitializedVarAssignment(self: *Checker, node: NodeId, value_t: TypeId) CheckError!void {
         const decl = self.previousUntypedUninitializedVarDeclInNearestScope(node) orelse return;
         const v = hir_mod.varDeclOf(self.hir, decl);
@@ -88242,6 +88258,20 @@ pub const Checker = struct {
         return self.enumFirstMissingSourceMemberInTarget(source_decl, target_decl, source.name) == null;
     }
 
+    fn mutableEnumMemberBindingAcceptsSibling(self: *Checker, target_node: NodeId, source_t: TypeId) bool {
+        if (target_node == hir_mod.none_node_id or self.hir.kindOf(target_node) != .identifier) return false;
+        const source = self.interner.enumLiteralInfo(source_t) orelse return false;
+        const target_id = hir_mod.identifierOf(self.hir, target_node);
+        const decl = self.findLocalValueDeclBeforeExpression(target_node, target_id.name) orelse return false;
+        const decl_kind = self.hir.kindOf(decl);
+        if (decl_kind != .var_decl and decl_kind != .let_decl) return false;
+        const variable = hir_mod.varDeclOf(self.hir, decl);
+        if (variable.type_annotation != hir_mod.none_node_id or self.varDeclHasJsDocTypeTag(decl)) return false;
+        if (variable.init == hir_mod.none_node_id) return false;
+        const initial = self.interner.enumLiteralInfo(self.hir.typeOf(variable.init)) orelse return false;
+        return source.enum_name == initial.enum_name;
+    }
+
     fn enumMissingMemberElaborationChain(
         self: *Checker,
         source_t: TypeId,
@@ -93897,9 +93927,17 @@ pub const Checker = struct {
                 }
                 const target_is_destructuring = a.op == null and
                     (self.hir.kindOf(a.target) == .array_literal or self.hir.kindOf(a.target) == .object_literal);
+                const target_is_checked_js_undefined_any =
+                    self.hir.kindOf(a.target) == .identifier and
+                    self.identifierIsCheckedJsUndefinedAnyVar(a.target);
+                const target_is_checked_js_default_parameter_undefined =
+                    a.op == null and
+                    self.checkedJsDefaultParameterAllowsUndefinedAssignment(a.target) and
+                    self.nodeIsUndefinedLiteralish(a.value);
                 const target_is_untyped_uninitialized_var =
                     self.hir.kindOf(a.target) == .identifier and
                     (target_t == types.Primitive.undefined_t or target_t == types.Primitive.null_t) and
+                    !target_is_checked_js_undefined_any and
                     self.identifierIsUntypedUninitializedVar(a.target);
                 const commonjs_export_key = if (a.op == null and (target_kind == .member_access or target_kind == .element_access))
                     try self.commonJsExportMemberKey(a.target)
@@ -94175,7 +94213,7 @@ pub const Checker = struct {
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
                 const dedicated_generic_indexed_assignment =
                     self.genericIndexedAssignmentUsesDedicatedRelation(a.target, a.value);
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_checked_js_undefined_any and !target_is_checked_js_default_parameter_undefined and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and a.op == null and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -94247,6 +94285,8 @@ pub const Checker = struct {
                             self.enumNameFromNominal(target_t) != null)
                             true
                         else if (try self.reportJsDocArrayAssignmentMismatch(node, a.target, a.value))
+                            true
+                        else if (self.mutableEnumMemberBindingAcceptsSibling(a.target, assignment_check_value_t))
                             true
                         else if (self.enumIdentityAssignmentResult(
                             if (self.hir.kindOf(a.value) == .identifier)
@@ -95864,8 +95904,13 @@ pub const Checker = struct {
                 const m = hir_mod.memberOf(self.hir, node);
                 _ = try self.reportAmbientConstEnumMemberAccessIfNeeded(node);
                 if (self.memberAccessHasDirectImportKeywordObject(node)) {
+                    const parent = self.hir.parentOf(node);
+                    const is_dynamic_defer = std.mem.eql(u8, self.string_interner.get(m.name), "defer") and
+                        parent != hir_mod.none_node_id and
+                        self.hir.kindOf(parent) == .call_expr and
+                        hir_mod.callOf(self.hir, parent).callee == node;
+                    if (!is_dynamic_defer) try self.checkImportMetaDiagnostics(node);
                     if (self.memberAccessIsImportMeta(node)) {
-                        try self.checkImportMetaDiagnostics(node);
                         break :blk try self.importMetaType(node);
                     }
                     break :blk types.Primitive.any;
@@ -126019,6 +126064,7 @@ pub const Checker = struct {
     }
 
     fn reportThisImplicitlyAny(self: *Checker, node: NodeId) CheckError!void {
+        if (self.diagnosticExists(node, TsCodes.this_implicitly_any)) return;
         var related: []const RelatedInfo = &.{};
         if (self.thisShadowingContainerWithOuterThis(node)) |container| {
             related = try self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
@@ -126841,7 +126887,7 @@ pub const Checker = struct {
         if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, f.name);
             if (self.checkJsFunctionHasPrototypePropertyTypeOnlyAccess(fn_node, id.name)) return false;
-            if (self.identifierNameStartsUppercase(id.name)) return true;
+            if (self.identifierNameStartsUppercase(id.name)) return !self.checkJsFunctionHasOnlyNullishThisInitializers(fn_node);
         }
         const parent = self.hir.parentOf(fn_node);
         if (parent != hir_mod.none_node_id) {
@@ -126854,7 +126900,7 @@ pub const Checker = struct {
                     !self.checkJsFunctionHasPrototypePropertyTypeOnlyAccess(fn_node, hir_mod.identifierOf(self.hir, v.name).name) and
                     self.identifierNameStartsUppercase(hir_mod.identifierOf(self.hir, v.name).name))
                 {
-                    return true;
+                    return !self.checkJsFunctionHasOnlyNullishThisInitializers(fn_node);
                 }
             }
         }
@@ -126864,6 +126910,23 @@ pub const Checker = struct {
             if (a.value == fn_node and self.assignmentTargetLastNameStartsUppercase(a.target)) return true;
         }
         return false;
+    }
+
+    fn checkJsFunctionHasOnlyNullishThisInitializers(self: *Checker, fn_node: NodeId) bool {
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.body == hir_mod.none_node_id or self.hir.kindOf(function.body) != .block_stmt) return false;
+        var saw_this_assignment = false;
+        for (hir_mod.blockStmts(self.hir, function.body)) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or !self.assignmentTargetRootedAtThis(assignment.target)) continue;
+            saw_this_assignment = true;
+            const value_kind = self.hir.kindOf(assignment.value);
+            const is_empty_array = value_kind == .array_literal and
+                hir_mod.arrayLiteralElements(self.hir, assignment.value).len == 0;
+            if (value_kind != .literal_null and value_kind != .literal_undefined and !is_empty_array) return false;
+        }
+        return saw_this_assignment;
     }
 
     fn checkJsFunctionHasPrototypePropertyTypeOnlyAccess(
@@ -147764,13 +147827,19 @@ pub const Checker = struct {
         if (fn_node == hir_mod.none_node_id) return false;
         if (self.checkJsFunctionHasPrototypePropertyTypeOnlyAccess(fn_node, id.name)) return false;
 
+        if (self.leadingJsDocBody(self.source orelse "", self.hir.spanOf(fn_node).start)) |body| {
+            if (std.mem.indexOf(u8, body, "@class") != null or
+                std.mem.indexOf(u8, body, "@constructor") != null) return true;
+        }
+
         // 1) Body contains `this.X = ...` / `this[...] = ...`.
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        const only_nullish_initializers = self.checkJsFunctionHasOnlyNullishThisInitializers(fn_node);
         if (f.body != hir_mod.none_node_id and self.hir.kindOf(f.body) == .block_stmt) {
             for (hir_mod.blockStmts(self.hir, f.body)) |stmt| {
                 if (self.hir.kindOf(stmt) != .assignment) continue;
                 const a = hir_mod.assignmentOf(self.hir, stmt);
-                if (self.assignmentTargetRootedAtThis(a.target)) return true;
+                if (self.assignmentTargetRootedAtThis(a.target) and !only_nullish_initializers) return true;
             }
         }
 
@@ -151628,7 +151697,7 @@ pub const Checker = struct {
                 // (`number & {__enum:E}`, displayed `E`), exactly as a
                 // bare `E` type reference resolves; string enums surface
                 // as the literal union recorded under the enum name.
-                if (self.numeric_enums.contains(info.enum_name)) {
+                if (flags.is_number) {
                     return self.enumNominalType(info.enum_name) catch t;
                 }
                 if (self.type_names.get(info.enum_name)) |enum_t| return enum_t;
@@ -156361,6 +156430,16 @@ pub const Checker = struct {
             return null;
         }
         return null;
+    }
+
+    fn checkedJsDefaultParameterAllowsUndefinedAssignment(self: *Checker, node: NodeId) bool {
+        const parameter = self.checkedJsDefaultParameterForIdentifier(node) orelse return false;
+        const payload = hir_mod.parameterOf(self.hir, parameter);
+        if (payload.default_value == hir_mod.none_node_id or self.hir.kindOf(payload.default_value) != .identifier) return false;
+        const declared_t = (self.jsDocTypeForPreviousIdentifierDecl(payload.default_value) catch null) orelse
+            self.visibleAnnotatedIdentifierType(payload.default_value) orelse
+            self.typeOfIdentifierDeclared(payload.default_value);
+        return self.typeIncludesUndefined(declared_t);
     }
 
     fn normalizedKeyofIdentifierAnnotationName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
@@ -167360,6 +167439,18 @@ test "checker: import.meta under old module kind reports TS1343" {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
     try T.expect(found);
+}
+
+test "checker: tsgo parity batch handles malformed import meta-properties" {
+    const b = try newBoundSetup(
+        \\// @module: commonjs
+        \\import.meta;
+        \\import.metal;
+        \\import.import;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.import_meta_bad_module));
 }
 
 test "checker: import.meta under es2020 module stays clean of TS1343" {
@@ -207051,7 +207142,7 @@ test "checker: checkjs CommonJS chained undefined export declarations report imp
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'b' implicitly has an 'any' type."));
 }
 
-test "checker: checked JS nullish constructor members infer implicit any" {
+test "checker: tsgo parity batch treats nullish JS this initializers as non-constructable" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -207064,17 +207155,30 @@ test "checker: checked JS nullish constructor members infer implicit any" {
         \\  this.empty = [];
         \\}
         \\var a = new A();
-        \\a.unknown = 1;
-        \\a.unknown = true;
-        \\a.unknowable = {};
-        \\a.empty.push("ok");
+        \\/** @type {number | undefined} */
+        \\var n;
+        \\function f(a = null, b = n) {
+        \\  a = undefined;
+        \\  a = 1;
+        \\  b = 1;
+        \\  b = undefined;
+        \\  b = "error";
+        \\}
+        \\var u = undefined;
+        \\u = 1;
+        \\u = true;
+        \\u = {};
+        \\u = "ok";
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.member_implicitly_any));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'empty' implicitly has an 'any[]' type."));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type 'null'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
 }
 
 test "checker: checked JS default null and empty array parameters report implicit any" {
@@ -221973,6 +222077,28 @@ test "checker: TS2432 merges enum decls across separate same-name namespace bloc
     // M1: decl2 (B) is the allowed omitter, decl3 (C) errors → 1.
     // M2: decl1 (A) is the allowed omitter, decl3 (C) errors → 1.
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.merged_enum_multiple_auto_first));
+}
+
+test "checker: tsgo parity batch merges enum values across namespace spellings" {
+    const s = try newSetup(
+        \\namespace M6.A {
+        \\  export enum Color { Red, Green, Blue }
+        \\}
+        \\namespace M6 {
+        \\  export namespace A {
+        \\    export enum Color { Yellow = 1 }
+        \\  }
+        \\}
+        \\var color = M6.A.Color.Yellow;
+        \\color = M6.A.Color.Red;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    const color_name = try s.sint.intern("color");
+    const color_decl = s.checker.findVarDeclarationNodeNamed(s.root, color_name) orelse return error.TestUnexpectedResult;
+    try T.expect(!s.ti.isEnumLiteral(s.hir.typeOf(color_decl)));
 }
 
 test "checker: enum declarations only merge with namespaces or other enums" {
