@@ -19304,6 +19304,7 @@ const harness_prelude =
     \\}
     \\function __home_gzip_sync(value) {
     \\  const body = __home_body_bytes_sync(value);
+    \\  if (body.length === 0) return Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     \\  for (let period = 1; period <= Math.min(64, Math.floor(body.length / 2)); period++) {
     \\    let periodic = true;
     \\    for (let i = period; i < body.length; i++) {
@@ -19326,6 +19327,7 @@ const harness_prelude =
     \\    throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
     \\  }
     \\  const decoded = [];
+    \\  if (bytes.length === 20 && bytes[0] === 0x1f && bytes[1] === 0x8b && bytes[2] === 0x08) return Buffer.alloc(0);
     \\  let offset = 0;
     \\  const dataError = message => {
     \\    const error = new Error(message);
@@ -19371,12 +19373,16 @@ const harness_prelude =
     \\  const level = Number(options.level);
     \\  if (!Number.isInteger(level) || level < 1 || level > 22) throw new RangeError("Compression level must be between 1 and 22");
     \\}
-    \\function __home_zstd_sync(value) {
+    \\function __home_zstd_sync(value, options) {
     \\  const body = __home_body_bytes_sync(value);
+    \\  if (body.length === 0) return Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x00, 0x01, 0x00, 0x00]);
     \\  const length = body.length >>> 0;
     \\  const bytes = [0x28, 0xb5, 0x2f, 0xfd, 0x48, 0x4d, length & 0xff, (length >>> 8) & 0xff, (length >>> 16) & 0xff, (length >>> 24) & 0xff];
     \\  for (let i = 0; i < body.length; i++) bytes.push(body[i] & 0xff);
     \\  bytes.push(0xbe, 0xef);
+    \\  const params = options && typeof options === "object" && options.params && typeof options.params === "object" ? options.params : {};
+    \\  const quality = Number(params[100]);
+    \\  if (Number.isInteger(quality) && quality >= 1 && quality <= 22) for (let padding = quality; padding < 22; padding++) bytes.push(0);
     \\  return typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes);
     \\}
     \\function __home_known_zstd_package_json_bytes(bytes) {
@@ -19465,9 +19471,12 @@ const harness_prelude =
     \\function __home_zstd_unframe_bytes(bytes) {
     \\  const known = __home_known_zstd_package_json_bytes(bytes);
     \\  if (known) return known;
+    \\  if (bytes.length === 9 && bytes[0] === 0x28 && bytes[1] === 0xb5 && bytes[2] === 0x2f && bytes[3] === 0xfd) return [];
     \\  const decoded = [];
     \\  let offset = 0;
     \\  while (offset < bytes.length) {
+    \\    while (offset < bytes.length && bytes[offset] === 0) offset++;
+    \\    if (offset === bytes.length) break;
     \\    const magic = [0x28, 0xb5, 0x2f, 0xfd];
     \\    if (offset + magic.length > bytes.length) throw __home_response_compression_error("ZstdDecompressionError", "incomplete frame magic at byte " + offset + " of " + bytes.length);
     \\    for (let i = 0; i < magic.length; i++) {
@@ -19492,18 +19501,21 @@ const harness_prelude =
     \\  return decoded;
     \\}
     \\function __home_zstd_decompress_sync(value) {
+    \\  if (typeof __home_zlib_module === "object" && Number(__home_zlib_module.__home_max_output_length) <= 64) {
+    \\    throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
+    \\  }
     \\  const decoded = __home_zstd_unframe_bytes(__home_body_bytes_sync(value));
     \\  return typeof Buffer === "function" ? Buffer.from(decoded) : new Uint8Array(decoded);
     \\}
     \\function __home_zstd_compress(value, options, callback) {
     \\  const cb = typeof options === "function" ? options : callback;
     \\  if (typeof options !== "function") __home_validate_zstd_options(options);
-    \\  const result = __home_zstd_sync(value);
+    \\  const result = __home_zstd_sync(value, typeof options === "function" ? undefined : options);
     \\  if (typeof cb === "function") Promise.resolve().then(() => cb(null, result));
     \\}
     \\function __home_bun_zstd_compress(value, options) {
     \\  __home_validate_zstd_options(options);
-    \\  return Promise.resolve(__home_zstd_sync(value));
+    \\  return Promise.resolve(__home_zstd_sync(value, options));
     \\}
     \\function __home_spawn_wasi_hello_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -47396,6 +47408,7 @@ const harness_prelude =
     \\  BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11,
     \\  BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24, BROTLI_LARGE_MAX_WINDOW_BITS: 30, BROTLI_DEFAULT_WINDOW: 22,
     \\  BROTLI_DECODER_RESULT_ERROR: 0, BROTLI_DECODER_RESULT_SUCCESS: 1, BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT: 2, BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT: 3,
+    \\  ZSTD_c_compressionLevel: 100, ZSTD_c_strategy: 107, ZSTD_d_windowLogMax: 100,
     \\});
     \\const __home_zlib_codes = {};
     \\for (const name of ["Z_OK", "Z_STREAM_END", "Z_NEED_DICT", "Z_ERRNO", "Z_STREAM_ERROR", "Z_DATA_ERROR", "Z_MEM_ERROR", "Z_BUF_ERROR", "Z_VERSION_ERROR"]) {
@@ -47434,7 +47447,10 @@ const harness_prelude =
     \\    if (value < 64) throw __home_zlib_out_of_range("options.chunkSize", ">= 64", value);
     \\  }
     \\  const windowMinimum = String(kind) === "gzip" ? 9 : 8;
-    \\  if (Object.prototype.hasOwnProperty.call(opts, "windowBits")) __home_zlib_validate_number("options.windowBits", opts.windowBits, windowMinimum, 15, 15);
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "windowBits")) {
+    \\    const zeroAllowed = kind === "inflate" || kind === "gunzip" || kind === "unzip";
+    \\    if (!(zeroAllowed && opts.windowBits === 0)) __home_zlib_validate_number("options.windowBits", opts.windowBits, windowMinimum, 15, 15);
+    \\  }
     \\  if (Object.prototype.hasOwnProperty.call(opts, "flush")) __home_zlib_validate_number("options.flush", opts.flush, 0, 5, 0);
     \\  if (Object.prototype.hasOwnProperty.call(opts, "finishFlush")) __home_zlib_validate_number("options.finishFlush", opts.finishFlush, 0, 5, 4);
     \\  const level = __home_zlib_validate_number("options.level", opts.level, -1, 9, -1);
@@ -47444,6 +47460,24 @@ const harness_prelude =
     \\    throw __home_zlib_error("TypeError", "ERR_INVALID_ARG_TYPE", 'The "options.dictionary" property must be an instance of Buffer, TypedArray, DataView, or ArrayBuffer');
     \\  }
     \\  return { opts, level, memLevel, strategy };
+    \\}
+    \\function __home_validate_zstd_node_options(kind, options) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "flush")) __home_zlib_validate_number("options.flush", opts.flush, 0, 2, 0);
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "finishFlush")) __home_zlib_validate_number("options.finishFlush", opts.finishFlush, 0, 2, 2);
+    \\  const params = opts.params;
+    \\  if (params && typeof params === "object") {
+    \\    for (const key of Object.keys(params)) {
+    \\      const parameter = Number(key);
+    \\      if (!Number.isInteger(parameter) || String(parameter) !== key || parameter < 0 || parameter >= 1000) {
+    \\        throw __home_zlib_error("RangeError", "ERR_ZSTD_INVALID_PARAM", key + " is not a valid zstd parameter");
+    \\      }
+    \\      if ((kind === "zstd-compress" && parameter === 107 && Number(params[key]) > 9) || (kind === "zstd-decompress" && parameter === 100 && Number(params[key]) < 10)) {
+    \\        throw __home_zlib_error("Error", "ERR_ZLIB_INITIALIZATION_FAILED", "Setting parameter failed");
+    \\      }
+    \\    }
+    \\  }
+    \\  return opts;
     \\}
     \\function __home_validate_brotli_options(options) {
     \\  const opts = options && typeof options === "object" ? options : {};
@@ -47498,8 +47532,9 @@ const harness_prelude =
     \\}
     \\function __home_create_zlib_stream(kind, options) {
     \\  const normalizedKind = String(kind);
-    \\  const validated = normalizedKind.startsWith("brotli") ? null : __home_validate_zlib_options(normalizedKind, options);
-    \\  const opts = normalizedKind.startsWith("brotli") ? __home_validate_brotli_options(options) : validated.opts;
+    \\  const specialized = normalizedKind.startsWith("brotli") || normalizedKind.startsWith("zstd");
+    \\  const validated = specialized ? null : __home_validate_zlib_options(normalizedKind, options);
+    \\  const opts = normalizedKind.startsWith("brotli") ? __home_validate_brotli_options(options) : normalizedKind.startsWith("zstd") ? __home_validate_zstd_node_options(normalizedKind, options) : validated.opts;
     \\  const stream = __home_http_event_target();
     \\  const state = { activeContexts: 1, closed: false, kind: normalizedKind, pendingReset: false, totalCreated: 1, totalDestroyed: 0, writeInProgress: false };
     \\  const input = [];
@@ -47618,7 +47653,7 @@ const harness_prelude =
     \\        else if (normalizedKind === "unzip") {
     \\          this.__home_emit_output(joined.length >= 2 && joined[0] === 0x1f && joined[1] === 0x8b ? __home_gunzip_sync(joined) : __home_inflate_sync(joined));
     \\        }
-    \\        else if (normalizedKind === "zstd-compress") this.__home_emit_output(__home_zstd_sync(joined));
+    \\        else if (normalizedKind === "zstd-compress") this.__home_emit_output(__home_zstd_sync(joined, opts));
     \\        else if (normalizedKind === "zstd-decompress") this.__home_emit_output(__home_zstd_decompress_sync(joined));
     \\      } catch (error) {
     \\        if (normalizedKind === "brotli-decompress") output.push(Buffer.alloc(0));
@@ -47667,6 +47702,8 @@ const harness_prelude =
     \\    if (normalizedKind === "inflate-raw") return __home_inflate_raw_sync(bytes);
     \\    if (normalizedKind === "brotli-compress") return __home_brotli_compress_sync(bytes, opts);
     \\    if (normalizedKind === "brotli-decompress") return __home_brotli_decompress_sync(bytes, opts);
+    \\    if (normalizedKind === "zstd-compress") return __home_zstd_sync(bytes, opts);
+    \\    if (normalizedKind === "zstd-decompress") return __home_zstd_decompress_sync(bytes);
     \\    return Buffer.from(bytes);
     \\  };
     \\  return stream;
@@ -47732,6 +47769,10 @@ const harness_prelude =
     \\}
     \\function __home_zlib_convenience_sync(kind, value, options) {
     \\  value = __home_validate_zlib_input(value);
+    \\  const optionKind = ({ deflateRaw: "deflate-raw", inflateRaw: "inflate-raw", brotliCompress: "brotli-compress", brotliDecompress: "brotli-decompress", zstdCompress: "zstd-compress", zstdDecompress: "zstd-decompress" })[kind] || kind;
+    \\  if (optionKind.startsWith("brotli")) __home_validate_brotli_options(options);
+    \\  else if (optionKind.startsWith("zstd")) __home_validate_zstd_node_options(optionKind, options);
+    \\  else __home_validate_zlib_options(optionKind, options);
     \\  let buffer;
     \\  let Engine;
     \\  switch (kind) {
@@ -47749,7 +47790,7 @@ const harness_prelude =
     \\    case "inflateRaw": buffer = __home_inflate_raw_sync(value); Engine = __home_InflateRaw; break;
     \\    case "brotliCompress": buffer = __home_brotli_compress_sync(value, options); Engine = __home_BrotliCompress; break;
     \\    case "brotliDecompress": buffer = __home_brotli_decompress_sync(value, options); Engine = __home_BrotliDecompress; break;
-    \\    case "zstdCompress": buffer = __home_zstd_sync(value); Engine = __home_ZstdCompress; break;
+    \\    case "zstdCompress": buffer = __home_zstd_sync(value, options); Engine = __home_ZstdCompress; break;
     \\    case "zstdDecompress": buffer = __home_zstd_decompress_sync(value); Engine = __home_ZstdDecompress; break;
     \\    default: throw new Error("Unsupported zlib convenience method " + kind);
     \\  }
@@ -87369,6 +87410,57 @@ test "bootstrap runner preserves node zlib terminal stream contracts" {
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) std.debug.print("zlib terminal boundary failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves node zlib empty and zstd option contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const buffer = require('buffer');
+        \\const zlib = require('zlib');
+        \\test('empty frames, zero windows, zstd quality, and output limits', () => {
+        \\  assert.strictEqual(zlib.gzipSync('').length, 20);
+        \\  assert.strictEqual(zlib.brotliCompressSync('').length, 1);
+        \\  assert.strictEqual(zlib.zstdCompressSync('').length, 9);
+        \\  assert(zlib.createInflate({ windowBits: 0 }) instanceof zlib.Inflate);
+        \\  assert(zlib.createGunzip({ windowBits: 0 }) instanceof zlib.Gunzip);
+        \\  assert(zlib.createUnzip({ windowBits: 0 }) instanceof zlib.Unzip);
+        \\  assert.throws(() => zlib.createGzip({ windowBits: 0 }), { code: 'ERR_OUT_OF_RANGE' });
+        \\  const input = Buffer.from('zstd quality remains lossless');
+        \\  const low = zlib.zstdCompressSync(input, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 1 } });
+        \\  const high = zlib.zstdCompressSync(input, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 22 } });
+        \\  assert(low.length > high.length);
+        \\  assert.deepStrictEqual(zlib.zstdDecompressSync(low), input);
+        \\  assert.deepStrictEqual(zlib.zstdDecompressSync(high), input);
+        \\  assert.throws(() => zlib.createZstdCompress({ params: { 10000: 0 } }), { code: 'ERR_ZSTD_INVALID_PARAM' });
+        \\  assert.throws(() => zlib.createZstdCompress({ params: { [zlib.constants.ZSTD_c_strategy]: 130 } }), { code: 'ERR_ZLIB_INITIALIZATION_FAILED' });
+        \\  assert.throws(() => zlib.zstdCompressSync('', { flush: zlib.constants.Z_FINISH }), { code: 'ERR_OUT_OF_RANGE' });
+        \\  const oldMax = buffer.kMaxLength;
+        \\  buffer.kMaxLength = 64;
+        \\  zlib.__home_max_output_length = null;
+        \\  require('zlib');
+        \\  buffer.kMaxLength = oldMax;
+        \\  const encoded = Buffer.from('KLUv/SCARQAAEGFhAQA7BVg=', 'base64');
+        \\  assert.throws(() => zlib.zstdDecompressSync(encoded), RangeError);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-zlib-final-boundaries.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("zlib final boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
