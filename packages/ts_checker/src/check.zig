@@ -26471,6 +26471,13 @@ pub const Checker = struct {
                 .call_expr, .new_expr => {
                     const c = hir_mod.callOf(self.hir, cur);
                     if (c.callee == prev) return self.iifeParameterHasArgumentContext(fn_node, param_node);
+                    if (self.hir.kindOf(cur) == .new_expr and
+                        self.hir.kindOf(c.callee) == .identifier and
+                        std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, c.callee).name), "Promise"))
+                    {
+                        const args = hir_mod.callArgs(self.hir, cur);
+                        if (args.len > 0 and args[0] == fn_node) return true;
+                    }
                     if (self.callHasDirectFunctionCallee(cur)) return false;
                     if (self.callCalleeRootHasInvalidContextualType(c.callee)) return false;
                     const target_t = self.contextualTargetTypeForFunction(fn_node) orelse return false;
@@ -149470,7 +149477,10 @@ pub const Checker = struct {
 
     fn functionReturnMismatchAlreadyReported(self: *Checker, fn_node: NodeId) bool {
         for (self.diagnostics.items) |diagnostic| {
-            if (diagnostic.code == TsCodes.type_not_assignable and
+            if ((diagnostic.code == TsCodes.type_not_assignable or
+                diagnostic.code == TsCodes.async_return_not_promise_compatible_es5 or
+                diagnostic.code == TsCodes.async_return_must_be_promise_did_you_mean or
+                diagnostic.code == TsCodes.async_return_must_be_promise) and
                 self.nodeIsAncestorOf(fn_node, diagnostic.node))
             {
                 return true;
@@ -187371,6 +187381,19 @@ test "checker: async helpers validate Promise resolve T or PromiseLike T" {
     );
 }
 
+test "checker: Promise executor parameters are contextually typed under noImplicitAny" {
+    const s = try newSetup(
+        \\function returnsVoid(): Promise<void> {
+        \\  return new Promise(resolve => resolve(null));
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
 test "checker: async helpers retain ES5 IArguments for apply tuple checks" {
     const s = try newSetup(
         \\// @target: ES5, ES2015
@@ -202722,6 +202745,28 @@ test "checker: checked-JS async returns enforce direct and contextual Promise co
     try T.expectEqual(@as(usize, 2), checkerCountCode(es5, TsCodes.async_return_not_promise_compatible_es5));
     try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.async_return_must_be_promise));
     try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.argument_type_mismatch));
+}
+
+test "checker: contextual async JSDoc return errors suppress assignment cascades" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: /types.d.ts
+        \\declare class Thenable { then(): void; }
+        \\// @filename: /a.js
+        \\/**
+        \\ * @callback T3
+        \\ * @param {string} str
+        \\ * @returns {Thenable}
+        \\ */
+        \\/** @type {T3} */
+        \\const f5 = async str => str;
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: async return typed by an unresolved imported name does not emit TS1064" {

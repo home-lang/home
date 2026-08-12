@@ -2408,6 +2408,36 @@ test "conformance: visible @types ambient modules resolve from multiple node_mod
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: wildcard configured types expand without a literal missing-type diagnostic" {
+    const raw =
+        \\// @target: es2015
+        \\// @noImplicitReferences: true
+        \\// @currentDirectory: /
+        \\// @types: *
+        \\// @filename: /tsconfig.json
+        \\{ "files": "a.ts" }
+        \\// @filename: /node_modules/@types/jquery/index.d.ts
+        \\declare var $: { x: any };
+        \\// @filename: /a.ts
+        \\/// <reference types="JqUeRy" />
+        \\$.x;
+    ;
+    const c: Case = .{
+        .name = "typingsLookup3",
+        .source = "",
+        .path = "/a.ts",
+        .raw_source = raw,
+        .expected_errors =
+        \\/a.ts(1,23): error TS2688: Cannot find type definition file for 'JqUeRy'.
+        \\/tsconfig.json(1,12): error TS5024: Compiler option 'files' requires a value of type Array.
+        ,
+        .strict_flags = .{},
+    };
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: relative module augmentation virtual fixture routes through program" {
     const raw =
         \\// @filename: map.ts
@@ -2892,7 +2922,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const current_directory = directiveValue(directive_source, "currentDirectory") orelse "/";
     const configured_type_names = try resolver.expandTypeDirectiveNames(
         gpa,
-        raw_configured_type_names,
+        explicit_type_names,
         current_directory,
     );
     defer freeStringList(gpa, configured_type_names);
@@ -3048,7 +3078,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .module_kind = module_kind_label,
         .known_reference_paths = known_reference_paths.items,
         .known_type_reference_names = known_type_reference_names.items,
-        .compiler_type_reference_names = explicit_type_names,
+        .compiler_type_reference_names = configured_type_names,
         .program_umd_globals = known_umd_globals.items,
         .deduplicate_packages = c.deduplicate_packages,
     };
@@ -3265,7 +3295,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     actual_count += try appendExplicitRootDirDiagnostics(gpa, virtual_files.items, tsconfig_options, &actual_lines);
     actual_count += try appendMissingConfiguredTypeDiagnostics(
         gpa,
-        explicit_type_names,
+        configured_type_names,
         known_type_reference_names.items,
         &actual_lines,
     );
