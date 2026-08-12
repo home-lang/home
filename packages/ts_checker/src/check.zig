@@ -96364,7 +96364,11 @@ pub const Checker = struct {
                             }
                         }
                     }
-                    const string_idx = self.interner.objectStringIndex(access_obj_t);
+                    const direct_string_idx = self.interner.objectStringIndex(access_obj_t);
+                    const string_idx = if (direct_string_idx != types.Primitive.none)
+                        direct_string_idx
+                    else
+                        (try self.effectiveStringIndexType(access_obj_t)) orelse types.Primitive.none;
                     if (string_idx != types.Primitive.none) {
                         // `noPropertyAccessFromIndexSignature`:
                         // dot-access against a type whose only
@@ -122503,6 +122507,10 @@ pub const Checker = struct {
         const obj_t = self.hir.typeOf(member.object);
         if (obj_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(obj_t).is_type_parameter) return false;
+        // Polymorphic class `this` is constrained to the completed instance
+        // shape, so writes through its declared index signature are ordinary
+        // class writes rather than generic-constraint writes.
+        if (self.isThisTypeParameter(obj_t)) return false;
         const constraint = self.typeParameterBaseConstraint(obj_t) orelse return false;
         if (!self.constraintHasIndexSignatureForProperty(constraint, member.name)) return false;
         if (self.constraintHasConcreteProperty(constraint, member.name, 0)) return false;
@@ -122950,6 +122958,19 @@ pub const Checker = struct {
         if (self.typeIsPropertyKeyTarget(constraint) and
             (self.typeNodeKeyofBaseName(arg_node, 0) != null or
                 self.typeNodeDerivesFromPropertyKey(arg_node, 0))) return;
+        // `Record<string, any>` is deliberately open: every object shape
+        // satisfies it, even when the source has no explicit string index
+        // signature. This is the constraint relation used by utility aliases
+        // such as `UndefinedKeys<{ a: string }>`.
+        if (constraint < self.interner.pool.typeCount() and
+            arg_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(constraint).is_object_type and
+            self.interner.pool.flagsOf(arg_t).is_object_type and
+            self.interner.objectMembers(constraint).len == 0 and
+            self.interner.objectStringIndex(constraint) == types.Primitive.any)
+        {
+            return;
+        }
         // Free type parameters as type-arguments (e.g. `infer U`,
         // a generic alias body referring to its own outer
         // parameters) need full inference machinery to classify;
@@ -127282,7 +127303,9 @@ pub const Checker = struct {
     }
 
     fn classThisTypeForNode(self: *Checker, class_node: NodeId, instance_t: TypeId) CheckError!TypeId {
-        if (self.class_this_types.get(class_node)) |t| return t;
+        if (self.class_this_types.get(class_node)) |t| {
+            if (self.typeParameterConstraint(t) == instance_t) return t;
+        }
         const this_t = try self.classThisType(instance_t);
         try self.class_this_types.put(self.gpa, class_node, this_t);
         return this_t;
@@ -190165,11 +190188,28 @@ test "checker: indexed conditional never diagnostics preserve literal sources" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
     try T.expect(checkerHasCodeAndMessage(
         s,
         TsCodes.type_not_assignable,
         "Type '\"a\"' is not assignable to type 'never'.",
     ));
+}
+
+test "checker: class string index signature permits dotted property access" {
+    const b = try newBoundSetup(
+        \\export class C {
+        \\  [key: string]: string;
+        \\  constructor() {
+        \\    this.value = "ok";
+        \\    this["other"] = "ok";
+        \\  }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_does_not_exist));
 }
 
 test "checker: mapped Pick and Record enforce property key constraints" {
