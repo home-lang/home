@@ -26164,7 +26164,25 @@ pub const Checker = struct {
                         const param = hir_mod.parameterOf(self.hir, param_nodes[ai]);
                         if (param.type_annotation != hir_mod.none_node_id) {
                             if (self.tupleAnnotationSourceNode(param.type_annotation)) |tuple_node| {
-                                return try self.tupleAnnotationElementTypeAt(tuple_node, idx, elements.len);
+                                const raw_target = try self.tupleAnnotationElementTypeAt(tuple_node, idx, elements.len);
+                                const existing_t = self.hir.typeOf(fn_node);
+                                if (self.firstSignatureType(existing_t)) |existing_sig| {
+                                    if (self.signatureHasConcreteContextualParameters(existing_sig) and
+                                        !self.signatureHasConcreteContextualParameters(raw_target))
+                                    {
+                                        return existing_sig;
+                                    }
+                                    if (self.containsFreeTypeParameter(raw_target)) {
+                                        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                                        defer subs.deinit(self.gpa);
+                                        try self.inferFromPair(raw_target, existing_sig, &subs);
+                                        const resolved_target = self.substituteType(raw_target, &subs) catch raw_target;
+                                        if (self.signatureHasConcreteContextualParameters(resolved_target)) {
+                                            return resolved_target;
+                                        }
+                                    }
+                                }
+                                return raw_target;
                             }
                         }
                     }
@@ -26181,6 +26199,18 @@ pub const Checker = struct {
                 return try self.contextualArrayElementType(target_t);
             },
         }
+    }
+
+    fn signatureHasConcreteContextualParameters(self: *Checker, t: TypeId) bool {
+        const sig = self.firstSignatureType(t) orelse return false;
+        const params = self.interner.signatureParams(sig);
+        if (params.len == 0) return false;
+        for (params) |param_t| {
+            if (param_t == types.Primitive.any or
+                param_t == types.Primitive.unknown or
+                self.containsFreeTypeParameter(param_t)) return false;
+        }
+        return true;
     }
 
     fn contextualTupleElementTargetForFunction(self: *Checker, fn_node: NodeId) CheckError!?TypeId {
@@ -86827,6 +86857,9 @@ pub const Checker = struct {
                     if (try self.repeatedObjectLiteralEvolvingNullCompatible(node, prior, final_type)) {
                         break :blk true;
                     }
+                    if (self.repeatedVarLooseNullArrayCompatible(prior, final_type, 0)) {
+                        break :blk true;
+                    }
                 }
                 if (self.repeatedVarCallableParameterCountMismatch(prior, final_type)) break :blk false;
                 if ((self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) and
@@ -87052,6 +87085,80 @@ pub const Checker = struct {
             current_element != types.Primitive.none and
             prior_element != current_element and
             !(self.engine.isIdenticalTo(prior_element, current_element) catch false);
+    }
+
+    /// With `strictNullChecks` disabled, empty, null-only, and
+    /// undefined-only array literals are widening types. That widening is
+    /// recursive, so all of `[]`, `[[]]`, and `[[[null]]]` can contribute
+    /// to one hoisted `var` binding without producing TS2403.
+    fn repeatedVarLooseNullArrayCompatible(
+        self: *Checker,
+        prior: TypeId,
+        current: TypeId,
+        depth: u8,
+    ) bool {
+        if (self.strict_flags.strict_null_checks or depth >= 32) return false;
+        if (prior == current) return true;
+        if (self.looseNullArrayLeaf(prior) and self.looseNullArrayLeaf(current)) return true;
+        if (prior < self.interner.pool.typeCount() and self.interner.pool.flagsOf(prior).is_union) {
+            for (self.interner.unionMembers(prior)) |member| {
+                if (!self.repeatedVarLooseNullArrayCompatible(member, current, depth + 1) and
+                    !self.looseNullArraySubtree(member, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (current < self.interner.pool.typeCount() and self.interner.pool.flagsOf(current).is_union) {
+            for (self.interner.unionMembers(current)) |member| {
+                if (!self.repeatedVarLooseNullArrayCompatible(prior, member, depth + 1) and
+                    !self.looseNullArraySubtree(member, depth + 1)) return false;
+            }
+            return true;
+        }
+        const prior_element = self.arrayLikeElementType(prior);
+        const current_element = self.arrayLikeElementType(current);
+        if (prior_element != null or current_element != null) {
+            if (prior_element == null or current_element == null) return false;
+            return self.repeatedVarLooseNullArrayCompatible(
+                prior_element.?,
+                current_element.?,
+                depth + 1,
+            );
+        }
+        return false;
+    }
+
+    fn looseNullArraySubtree(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth >= 32) return false;
+        if (self.looseNullArrayLeaf(t)) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.looseNullArraySubtree(member, depth + 1)) return false;
+            }
+            return true;
+        }
+        const element = self.arrayLikeElementType(t) orelse return false;
+        return self.looseNullArraySubtree(element, depth + 1);
+    }
+
+    fn looseNullArrayLeaf(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or
+            t == types.Primitive.never or
+            t == types.Primitive.null_t or
+            t == types.Primitive.undefined_t)
+        {
+            return true;
+        }
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        const members = self.interner.unionMembers(t);
+        if (members.len == 0) return false;
+        for (members) |member| {
+            if (!self.looseNullArrayLeaf(member)) return false;
+        }
+        return true;
     }
 
     fn repeatedVarObjectMembersIdentical(self: *Checker, prior: TypeId, current: TypeId) CheckError!bool {
@@ -100693,6 +100800,12 @@ pub const Checker = struct {
                 .is_readonly = false,
                 .is_method = false,
             });
+            // Each context-sensitive attribute is an intra-expression
+            // inference site. Commit its evidence before contextualizing
+            // the next attribute so `<Foo a={() => 1} b={x => ...} />`
+            // checks `x` with T = number.
+            try self.inferFromPair(prop_t, inferred_sig, &subs);
+            effective_target = self.substituteType(target, &subs) catch effective_target;
         }
 
         if (all_evidence.items.len > 0) {
@@ -102032,6 +102145,7 @@ pub const Checker = struct {
         const params = hir_mod.fnParams(self.hir, fn_node);
         const param_ts = self.interner.signatureParams(sig);
         self.removeImplicitAnyDiagnosticsWithin(fn_node);
+        self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         const n = @min(params.len, param_ts.len);
@@ -102128,6 +102242,51 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    fn removeContextualParameterUnknownDiagnostics(
+        self: *Checker,
+        fn_node: NodeId,
+        params: []const NodeId,
+        param_ts: []const TypeId,
+    ) void {
+        const count = @min(params.len, param_ts.len);
+        var write_i: usize = 0;
+        for (self.diagnostics.items) |diagnostic| {
+            var remove = false;
+            if (diagnostic.code == TsCodes.unknown_catch_variable and
+                self.nodeIsAncestorOf(fn_node, diagnostic.node))
+            {
+                if (self.contextualDiagnosticRootName(diagnostic.node)) |diagnostic_name| {
+                    for (params[0..count], param_ts[0..count]) |param_node, param_t| {
+                        if (param_t == types.Primitive.unknown or param_t == types.Primitive.any) continue;
+                        if (self.hir.kindOf(param_node) != .parameter) continue;
+                        const param = hir_mod.parameterOf(self.hir, param_node);
+                        if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier) continue;
+                        if (hir_mod.identifierOf(self.hir, param.name).name == diagnostic_name) {
+                            remove = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (remove) continue;
+            self.diagnostics.items[write_i] = diagnostic;
+            write_i += 1;
+        }
+        self.diagnostics.shrinkRetainingCapacity(write_i);
+    }
+
+    fn contextualDiagnosticRootName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        return switch (self.hir.kindOf(node)) {
+            .identifier => hir_mod.identifierOf(self.hir, node).name,
+            .member_access => blk: {
+                const member = hir_mod.memberOf(self.hir, node);
+                if (member.object == hir_mod.none_node_id) break :blk null;
+                break :blk self.contextualDiagnosticRootName(member.object);
+            },
+            else => null,
+        };
     }
 
     fn contextualFunctionBodyExpressionType(
@@ -104752,6 +104911,27 @@ pub const Checker = struct {
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
+            if (k == .for_in_stmt or k == .for_of_stmt) {
+                const loop = hir_mod.forInOf(self.hir, cur);
+                const target = loop.target;
+                if (target != hir_mod.none_node_id) {
+                    const target_kind = self.hir.kindOf(target);
+                    if (target_kind == .var_decl or target_kind == .let_decl or target_kind == .const_decl) {
+                        const variable = hir_mod.varDeclOf(self.hir, target);
+                        if (variable.name != hir_mod.none_node_id and
+                            self.bindingPatternDeclaresName(variable.name, id.name))
+                        {
+                            // Loop declarations live on the for-statement,
+                            // outside the body's statement list. Treat them
+                            // as lexical shadows before falling back to the
+                            // global prior-parameter annotation index.
+                            const declared_t = (self.lowerActiveValueTypeAnnotation(id.name, variable.type_annotation) catch types.Primitive.any) orelse return null;
+                            if (self.hir.kindOf(variable.name) == .identifier) return declared_t;
+                            return self.typeOfPatternBinding(variable.name, declared_t, id.name);
+                        }
+                    }
+                }
+            }
             if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
                 for (hir_mod.fnParams(self.hir, cur)) |p| {
                     if (self.hir.kindOf(p) != .parameter) continue;
@@ -108877,9 +109057,14 @@ pub const Checker = struct {
                 arg_target = arg_pred.target_type;
             }
         }
+        if (arg_target == null and self.isContextualFunctionExpressionLike(arg_node)) {
+            if (try self.predicateForFnNode(arg_node)) |arg_pred| {
+                arg_target = arg_pred.target_type;
+            }
+        }
         const target = arg_target orelse return false;
         if (self.containsFreeTypeParameter(target)) return false;
-        try self.inferFromPair(param_pred.target_type, target, subs);
+        try self.inferFromPairPreserveLiteral(param_pred.target_type, target, subs);
         return true;
     }
 
@@ -134022,6 +134207,13 @@ pub const Checker = struct {
             try self.inferFromObjectLiteralArgument(param_t, arg_t, arg_node, subs);
             return;
         }
+        if (self.hir.kindOf(arg_node) == .array_literal and
+            self.isTupleShapedTarget(param_t) and
+            self.arrayLiteralHasContextSensitiveFunction(arg_node))
+        {
+            try self.inferFromArrayLiteralArgument(param_t, arg_node, subs);
+            return;
+        }
         if (try self.inferFromConstructSignatureArgument(param_t, arg_t, subs)) return;
         try self.inferStableIndexedElementArgument(param_t, arg_t, arg_node, subs);
         if (nested_array_inference_fixed) return;
@@ -134158,12 +134350,13 @@ pub const Checker = struct {
             for (param_members.items) |param_member| {
                 const value_node = self.findObjectLiteralPropValue(arg_node, param_member.name) orelse continue;
                 const defer_contextual = self.contextualFunctionParametersContainFreeType(value_node, param_member.type);
-                if ((phase == 0) == defer_contextual) continue;
+                if (phase == 1 and !defer_contextual) continue;
 
                 const collect_const_candidate = param_member.type < self.interner.pool.typeCount() and
                     self.interner.pool.flagsOf(param_member.type).is_type_parameter and
                     self.interner.typeParameterIsConst(param_member.type) and
                     subs.contains(param_member.type);
+                try self.extendInferenceSubstitutionsByName(param_member.type, subs);
                 const substituted_param_t = if (collect_const_candidate)
                     param_member.type
                 else
@@ -134186,12 +134379,20 @@ pub const Checker = struct {
                         self.hir.typeOf(value_node)
                     else
                         try self.checkExpression(value_node);
-                if (self.functionExpressionHasContextSensitiveParameters(value_node) and
+                if ((!defer_contextual or phase == 1) and
+                    self.expressionHasContextSensitiveFunction(value_node) and
                     !self.signatureParametersContainFreeType(effective_param_t))
                 {
-                    if (self.firstSignatureType(effective_param_t)) |target_sig| {
-                        try self.checkFunctionWithContextualSignatureMode(value_node, target_sig, false, &source_t);
-                    }
+                    source_t = try self.contextualizeInferenceExpression(value_node, effective_param_t, source_t);
+                }
+                if (self.firstSignatureType(param_member.type)) |predicate_target_sig| {
+                    _ = try self.inferFromPredicateSignatureArgument(
+                        predicate_target_sig,
+                        null,
+                        value_node,
+                        source_t,
+                        subs,
+                    );
                 }
                 try self.inferFromArgument(effective_param_t, source_t, value_node, subs);
             }
@@ -134213,6 +134414,47 @@ pub const Checker = struct {
             try self.inferFromObjectLiteralArgument(param_t, spread_t, spread_expr, subs);
         }
         try self.inferFromObjectLiteralIndexTypes(param_t, arg_t, subs);
+    }
+
+    fn inferFromArrayLiteralArgument(
+        self: *Checker,
+        param_t: TypeId,
+        arg_node: NodeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const elements = hir_mod.arrayLiteralElements(self.hir, arg_node);
+        for (0..2) |phase| {
+            for (elements, 0..) |element, index| {
+                if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
+                const raw_target = self.tupleElementType(param_t, index);
+                if (raw_target == types.Primitive.none) continue;
+                const defer_contextual = self.contextualFunctionParametersContainFreeType(element, raw_target);
+                if (phase == 1 and !defer_contextual) continue;
+
+                try self.extendInferenceSubstitutionsByName(raw_target, subs);
+                const effective_target = self.substituteType(raw_target, subs) catch raw_target;
+                var source_t = if (self.hir.typeOf(element) != types.Primitive.none)
+                    self.hir.typeOf(element)
+                else
+                    try self.checkExpression(element);
+                if ((!defer_contextual or phase == 1) and
+                    self.expressionHasContextSensitiveFunction(element) and
+                    !self.signatureParametersContainFreeType(effective_target))
+                {
+                    source_t = try self.contextualizeInferenceExpression(element, effective_target, source_t);
+                }
+                try self.inferFromArgument(effective_target, source_t, element, subs);
+            }
+        }
+    }
+
+    fn arrayLiteralHasContextSensitiveFunction(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .array_literal) return false;
+        for (hir_mod.arrayLiteralElements(self.hir, node)) |element| {
+            if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
+            if (self.expressionHasContextSensitiveFunction(element)) return true;
+        }
+        return false;
     }
 
     fn inferFromObjectLiteralIndexTypes(
@@ -134531,12 +134773,65 @@ pub const Checker = struct {
         value_node: NodeId,
         target_t: TypeId,
     ) bool {
-        if (!self.functionExpressionHasContextSensitiveParameters(value_node)) return false;
+        if (!self.expressionHasContextSensitiveFunction(value_node)) return false;
         const target_sig = self.firstSignatureType(target_t) orelse return false;
         for (self.interner.signatureParams(target_sig)) |param| {
             if (self.containsFreeTypeParameter(param)) return true;
         }
         return false;
+    }
+
+    fn extendInferenceSubstitutionsByName(
+        self: *Checker,
+        root: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        if (subs.count() == 0) return;
+        var type_params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer type_params.deinit(self.gpa);
+        var keys = subs.keyIterator();
+        while (keys.next()) |key| try type_params.append(self.gpa, key.*);
+        try self.extendSubstitutionsByMatchingTypeParamNames(root, type_params.items, subs);
+    }
+
+    fn expressionHasContextSensitiveFunction(self: *Checker, node: NodeId) bool {
+        if (self.functionExpressionHasContextSensitiveParameters(node)) return true;
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .conditional) return false;
+        const conditional = hir_mod.conditionalOf(self.hir, node);
+        return self.expressionHasContextSensitiveFunction(conditional.then_branch) or
+            self.expressionHasContextSensitiveFunction(conditional.else_branch);
+    }
+
+    fn contextualizeInferenceExpression(
+        self: *Checker,
+        node: NodeId,
+        target_t: TypeId,
+        fallback: TypeId,
+    ) CheckError!TypeId {
+        if (self.isContextualFunctionExpressionLike(node)) {
+            const target_sig = self.firstSignatureType(target_t) orelse return fallback;
+            var inferred = fallback;
+            try self.checkFunctionWithContextualSignatureMode(node, target_sig, false, &inferred);
+            return inferred;
+        }
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .conditional) return fallback;
+        const conditional = hir_mod.conditionalOf(self.hir, node);
+        const then_fallback = if (self.hir.typeOf(conditional.then_branch) != types.Primitive.none)
+            self.hir.typeOf(conditional.then_branch)
+        else
+            try self.checkExpression(conditional.then_branch);
+        const else_fallback = if (self.hir.typeOf(conditional.else_branch) != types.Primitive.none)
+            self.hir.typeOf(conditional.else_branch)
+        else
+            try self.checkExpression(conditional.else_branch);
+        const then_t = try self.contextualizeInferenceExpression(conditional.then_branch, target_t, then_fallback);
+        const else_t = try self.contextualizeInferenceExpression(conditional.else_branch, target_t, else_fallback);
+        const result = if (then_t == else_t)
+            then_t
+        else
+            self.interner.internUnion(&.{ then_t, else_t }) catch return error.OutOfMemory;
+        self.hir.setType(node, result);
+        return result;
     }
 
     fn inferFromArgumentToTrailingMappedVariadic(
@@ -145918,6 +146213,11 @@ pub const Checker = struct {
     fn functionExpressionAssignableToSignatureTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) CheckError!bool {
         if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
         if (target_t >= self.interner.pool.typeCount()) return false;
+        const source_t = if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_signature)
+            arg_t
+        else
+            self.hir.typeOf(arg_node);
+        if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_signature) return false;
         const target_flags = self.interner.pool.flagsOf(target_t);
         if (target_flags.is_union) {
             for (self.interner.unionMembers(target_t)) |member| {
@@ -145930,16 +146230,34 @@ pub const Checker = struct {
             defer target_sigs.deinit(self.gpa);
             try self.collectCallSignatures(target_t, &target_sigs);
             if (target_sigs.items.len == 0) return false;
+            if (self.generic_signature_params.get(source_t) != null and target_sigs.items.len > 1) {
+                for (target_sigs.items) |target_sig| {
+                    if (!try self.genericSourceSatisfiesOverloadedTarget(source_t, target_sig)) return false;
+                }
+                return true;
+            }
+            if (target_sigs.items.len > 1) {
+                const source_required = self.signatureMinRequiredArgs(
+                    source_t,
+                    self.interner.signatureParams(source_t),
+                );
+                for (target_sigs.items) |target_sig| {
+                    if (!self.rest_signatures.contains(target_sig) and
+                        source_required > self.interner.signatureParams(target_sig).len)
+                    {
+                        return false;
+                    }
+                    if (try self.checkerAssignableTo(source_t, target_sig)) continue;
+                    if (try self.contextualFunctionSignatureAssignable(source_t, target_sig)) continue;
+                    return false;
+                }
+                return true;
+            }
             for (target_sigs.items) |target_sig| {
                 if (!try self.functionExpressionAssignableToSignatureTarget(arg_node, arg_t, target_sig)) return false;
             }
             return true;
         }
-        const source_t = if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_signature)
-            arg_t
-        else
-            self.hir.typeOf(arg_node);
-        if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_signature) return false;
         var relation_source_t = source_t;
         if (!self.containsFreeTypeParameter(target_t) and
             self.containsFreeTypeParameter(source_t) and
@@ -182801,6 +183119,24 @@ test "checker: loose-null array binding elements widen for later assignment" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: loose-null nested array redeclarations share a widening type" {
+    const s = try newSetup(
+        \\var a = [];
+        \\var a = [null, undefined];
+        \\var b = [[], [null]];
+        \\var b = [[undefined]];
+        \\var c = [[[]]];
+        \\var c = [[[null]], [undefined]];
+        \\var fixed: undefined = undefined;
+        \\var d = [fixed];
+        \\var d = [, fixed];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: noImplicitAny reports inferred nullish tuple return" {
@@ -230110,10 +230446,14 @@ test "checker: contextual functions cover every overloaded parameter signature" 
         \\foo4(x => x);
         \\declare function foo7<T>(x: T, cb: { (x: T): string; (x: T, y?: T): string }): void;
         \\foo7(1, x => x);
+        \\foo7(1, <U>(x: U) => x);
+        \\declare function foo6<T>(cb: { (x: T): string; (x: T, y?: T): string }): void;
+        \\foo6(<U>(x: U, y: U) => "");
     );
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
-    try T.expect(!checkerHasCode(b, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
 }
 
 test "checker: optional signature diagnostics follow strict nullability" {
@@ -230185,12 +230525,21 @@ test "checker: union inference accepts homomorphic recursion and renders impossi
     const b = try newBoundSetup(
         \\declare function f4<T>(x: string & T): T;
         \\f4(42);
+        \\declare function f2<T>(value: [string, T]): T;
         \\const containsPromises: unique symbol = Symbol();
+        \\interface ObjectConstructor {
+        \\  values<T>(o: { [s: string]: T } | ArrayLike<T>): T[];
+        \\  values(o: {}): any[];
+        \\}
         \\type DeepPromised<T> =
         \\  { [containsPromises]?: true } &
         \\  { [K in keyof T]: T[K] | DeepPromised<T[K]> | Promise<DeepPromised<T[K]>> };
-        \\async function fun<T>(value: DeepPromised<T>) {
-        \\  const indexed: DeepPromised<{ [name: string]: {} | null | undefined }> = value;
+        \\async function fun<T>(deepPromised: DeepPromised<T>) {
+        \\  const deepPromisedWithIndexer: DeepPromised<{ [name: string]: {} | null | undefined }> = deepPromised;
+        \\  for (const value of Object.values(deepPromisedWithIndexer)) {
+        \\    const awaitedValue = await value;
+        \\    if (awaitedValue) await fun(awaitedValue);
+        \\  }
         \\}
         \\type Deep<T> = { [K in keyof T]: T[K] | Deep<T[K]> };
         \\declare function baz<T>(dp: Deep<T>): T;
@@ -230254,6 +230603,38 @@ test "checker: intra-expression inference fixes contextual object members and sp
         \\    b: (arg) => { arg.toString(); },
         \\  },
         \\});
+        \\declare function callIt<T>(obj: {
+        \\  produce: (n: number) => T;
+        \\  consume: (x: T) => void;
+        \\}): void;
+        \\callIt({ produce: () => 0, consume: n => n.toFixed() });
+        \\callIt({ produce() { return 0; }, consume: n => n.toFixed() });
+        \\declare function callItT<T>(obj: [(n: number) => T, (x: T) => void]): void;
+        \\callItT([() => 0, n => n.toFixed()]);
+        \\callItT([value => 0, n => n.toFixed()]);
+        \\interface Options<P, D, M> {
+        \\  fetch: (params: P, extra: number) => D;
+        \\  map: (data: D) => M;
+        \\}
+        \\declare function example<P, D, M>(options: Options<P, D, M>): void;
+        \\interface Params { value: number; }
+        \\example({ fetch: (params: Params, extra) => 123, map: value => String(value) });
+        \\declare const branch:
+        \\  <T, U extends T>(arg: { test: T; if: (t: T) => t is U; then: (u: U) => void }) => void;
+        \\declare const branchValue: "a" | "b";
+        \\branch({
+        \\  test: branchValue,
+        \\  if: (t): t is "a" => t === "a",
+        \\  then: u => { const narrowed: "a" = u; },
+        \\});
+        \\declare function conditional<T, U>(obj: {
+        \\  produce: (value: string) => T;
+        \\  consume: (value: T) => U;
+        \\}): void;
+        \\conditional({
+        \\  produce: value => [value],
+        \\  consume: Math.random() ? value => value.join(",") : value => value.join(";"),
+        \\});
     );
     defer destroyBoundSetup(b);
     b.base.checker.setStrictFlags(.{
@@ -230262,7 +230643,6 @@ test "checker: intra-expression inference fixes contextual object members and sp
         .strict_function_types = true,
     });
     try b.base.checker.checkSourceFile(b.base.root);
-
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
     try T.expect(checkerHasCodeWithMessage(
         b,
@@ -230271,6 +230651,7 @@ test "checker: intra-expression inference fixes contextual object members and sp
     ));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, 7006));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.unknown_catch_variable));
 }
 
 test "checker: inferred async generators satisfy async iterator return types" {
@@ -231477,6 +231858,27 @@ test "checker: JSX React intrinsic class attributes accept ref callbacks" {
         TsCodes.type_not_assignable,
         "Type '{ prop1: string; }' is not assignable to type 'IntrinsicAttributes & IntrinsicClassAttributes<BigGreeter> & { children?: ReactNode | undefined; }'.",
     ));
+}
+
+test "checker: JSX intra-expression callback evidence flows left to right" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\interface Props<T> {
+        \\  a: (x: string) => T;
+        \\  b: (arg: T) => void;
+        \\}
+        \\declare function Foo<T>(props: Props<T>): JSX.Element;
+        \\const value = <Foo a={() => 10} b={(arg) => arg.toString()} />;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .no_implicit_any = true,
+        .strict_function_types = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 7006));
 }
 
 test "checker: ES5 for-of distinguishes arrays from arbitrary iterables" {
