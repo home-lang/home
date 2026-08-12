@@ -56216,7 +56216,7 @@ fn resolveTsCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8) !?TsCorp
     const root_slice = tsSuiteRootSlice();
     const cases = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/cases/{s}", .{ root_slice, family });
     errdefer gpa.free(cases);
-    const baselines = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/baselines/reference", .{root_slice});
+    const baselines = try std.fmt.allocPrint(gpa, "{s}/testdata/baselines/reference/submodule/{s}", .{ root_slice, family });
     errdefer gpa.free(baselines);
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -56232,6 +56232,16 @@ fn resolveTsCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8) !?TsCorp
         return null;
     };
     return .{ .cases = cases, .baselines = baselines };
+}
+
+test "conformance: tsgo submodule cases use tsgo-generated baselines" {
+    const paths = (try resolveTsCaseFamilyPaths(T.allocator, "conformance")) orelse return;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+    try T.expect(std.mem.endsWith(u8, paths.cases, "/_submodules/TypeScript/tests/cases/conformance"));
+    try T.expect(std.mem.endsWith(u8, paths.baselines, "/testdata/baselines/reference/submodule/conformance"));
 }
 
 fn resolveTsgoTestdataCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8) !?TsCorpusPaths {
