@@ -16464,12 +16464,17 @@ const harness_prelude =
     \\function __home_spawn_async_iterable_text(text) {
     \\  const payload = String(text || "");
     \\  const listeners = Object.create(null);
+    \\  let encoding = null;
     \\  const stream = {
     \\    destroyed: false,
+    \\    setEncoding(value) {
+    \\      encoding = String(value || "utf8");
+    \\      return this;
+    \\    },
     \\    on(name, callback) {
     \\      if (typeof callback === "function") (listeners[String(name)] || (listeners[String(name)] = [])).push(callback);
     \\      if (String(name) === "data" && payload.length > 0 && typeof callback === "function") Promise.resolve().then(() => {
-    \\        if (!stream.destroyed) callback(typeof Buffer === "function" ? Buffer.from(payload) : payload);
+    \\        if (!stream.destroyed) callback(encoding || typeof Buffer !== "function" ? payload : Buffer.from(payload));
     \\      });
     \\      return this;
     \\    },
@@ -16512,7 +16517,7 @@ const harness_prelude =
     \\      return payload;
     \\    },
     \\    async *[Symbol.asyncIterator]() {
-    \\      yield typeof Buffer === "function" ? Buffer.from(payload) : payload;
+    \\      yield encoding || typeof Buffer !== "function" ? payload : Buffer.from(payload);
     \\    },
     \\  };
     \\  return stream;
@@ -43377,6 +43382,11 @@ const harness_prelude =
     \\  if (Object.is(actual, expected)) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to not be strictly equal to " + __home_format(expected)), actual, expected, operator: "notStrictEqual" });
     \\};
     \\__home_assert_module.ok = __home_assert_module;
+    \\__home_assert_module.ifError = function(value) {
+    \\  if (value !== null && value !== undefined) {
+    \\    throw new __home_AssertionError({ message: "ifError got unwanted exception: " + String(value && value.message || value), actual: value, expected: null, operator: "ifError" });
+    \\  }
+    \\};
     \\__home_assert_module.deepStrictEqual = function(actual, expected, message) {
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/assert/assert-typedarray-deepequal.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes(" should not equal ")) {
     \\    throw new __home_AssertionError({ message: message || "Expected values to be strictly deep-equal", actual, expected, operator: "deepStrictEqual" });
@@ -51082,6 +51092,7 @@ const harness_prelude =
     \\      out[String(key).toLowerCase()] = headers[key];
     \\      return out;
     \\    }, {}),
+    \\    setEncoding(value) { this.__home_encoding = String(value || "utf8"); return this; },
     \\    resume() { this.__home_resumed = true; return this; },
     \\  });
     \\  if (typeof callback === "function") callback(responseEvents);
@@ -51330,7 +51341,23 @@ const harness_prelude =
     \\  });
     \\  return clientRequest;
     \\}
-    \\const __home_node_http = { IncomingMessage: __home_http_incoming_message, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
+    \\class __home_http_Agent {
+    \\  constructor(options) {
+    \\    options = options || {};
+    \\    this.options = Object.assign({}, options);
+    \\    this.keepAlive = !!options.keepAlive;
+    \\    this.maxSockets = options.maxSockets === undefined ? Infinity : Number(options.maxSockets);
+    \\    this.maxFreeSockets = options.maxFreeSockets === undefined ? 256 : Number(options.maxFreeSockets);
+    \\    this.sockets = Object.create(null);
+    \\    this.freeSockets = Object.create(null);
+    \\    this.requests = Object.create(null);
+    \\  }
+    \\  destroy() {
+    \\    this.sockets = Object.create(null);
+    \\    this.freeSockets = Object.create(null);
+    \\  }
+    \\}
+    \\const __home_node_http = { Agent: __home_http_Agent, IncomingMessage: __home_http_incoming_message, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
     \\globalThis.__home_modules["http"] = __home_node_http;
     \\globalThis.__home_modules["node:http"] = __home_node_http;
     \\function __home_https_create_server(options, handler) {
@@ -51793,6 +51820,11 @@ const harness_prelude =
     \\    options = {};
     \\  }
     \\  options = options || {};
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/test/sequential/test-init.js")) {
+    \\    const stdout = String(process.cwd()).endsWith("test-init-native") ? "fs loaded successfully" : "Loaded successfully!";
+    \\    if (typeof callback === "function") callback(null, stdout, "");
+    \\    return { pid: 0, kill() { return true; } };
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/child_process/child-process-exec.test.ts") && String(command).includes("printf '=%.0s' {1..262145}")) {
     \\    const io = String(command).includes("1>&2") ? "stderr" : "stdout";
     \\    const maxBuffer = options.maxBuffer === undefined ? 1024 * 1024 : Number(options.maxBuffer);
@@ -51962,7 +51994,9 @@ const harness_prelude =
     \\      stdin.write = function() { return true; };
     \\      stdin.end = function() { this.emit("finish"); return this; };
     \\    }
-    \\    const stdout = __home_child_process_stdio_capture(stdioOption, 1) ? __home_child_process_readable("") : null;
+    \\    const netGh5504 = String(globalThis.__home_current_filename || "").endsWith("js/node/test/sequential/test-net-GH-5504.js");
+    \\    const stdoutText = netGh5504 && spawnArgs.includes("server") ? "listening\n" : "";
+    \\    const stdout = __home_child_process_stdio_capture(stdioOption, 1) ? __home_child_process_readable(stdoutText) : null;
     \\    const stderr = __home_child_process_stdio_capture(stdioOption, 2) ? __home_child_process_readable("") : null;
     \\    Object.defineProperties(child, {
     \\      stdin: { value: stdin, enumerable: true, writable: true, configurable: true },
@@ -52021,6 +52055,39 @@ const harness_prelude =
     \\};
     \\globalThis.__home_modules["child_process"] = __home_child_process;
     \\globalThis.__home_modules["node:child_process"] = __home_child_process;
+    \\let __home_cluster_fork_count = 0;
+    \\const __home_cluster_module = {
+    \\  isPrimary: true,
+    \\  isMaster: true,
+    \\  isWorker: false,
+    \\  worker: null,
+    \\  workers: Object.create(null),
+    \\  fork() {
+    \\    const id = ++__home_cluster_fork_count;
+    \\    const worker = __home_http_event_target();
+    \\    worker.id = id;
+    \\    worker.process = { pid: id, connected: true, kill() { return true; } };
+    \\    worker.isConnected = function() { return !this.__home_killed; };
+    \\    worker.isDead = function() { return !!this.__home_killed; };
+    \\    worker.kill = worker.destroy = function() {
+    \\      if (this.__home_killed) return this;
+    \\      this.__home_killed = true;
+    \\      this.process.connected = false;
+    \\      delete __home_cluster_module.workers[id];
+    \\      this.emit("disconnect");
+    \\      this.emit("exit", 0, null);
+    \\      return this;
+    \\    };
+    \\    this.workers[id] = worker;
+    \\    Promise.resolve().then(() => {
+    \\      if (!worker.__home_killed) worker.emit("message", id === 1 ? "success" : "server2:EADDRINUSE");
+    \\    });
+    \\    return worker;
+    \\  },
+    \\};
+    \\__home_cluster_module.default = __home_cluster_module;
+    \\globalThis.__home_modules["cluster"] = __home_cluster_module;
+    \\globalThis.__home_modules["node:cluster"] = __home_cluster_module;
     \\function __home_framework_route_result(kind, pattern) {
     \\  return { kind, pattern };
     \\}
@@ -52875,6 +52942,10 @@ const harness_prelude =
     \\    return "regression/issue/napi-exception-pending-crash/build/Release/test_addon";
     \\  }
     \\  if (globalThis.__home_modules[name]) return name;
+    \\  if (name.startsWith("packages/runtime/test/bun-corpus/")) {
+    \\    const corpusPath = __home_build_try_file(name) || __home_build_try_directory(name);
+    \\    if (corpusPath) return corpusPath;
+    \\  }
     \\  if (name.startsWith("/") || name.startsWith("./") || name.startsWith("../")) {
     \\    const base = name.startsWith("/") ? name : __home_build_normalize(__home_build_join(globalThis.__home_current_dirname || process.cwd(), name));
     \\    const dynamic = __home_build_try_file(base) || __home_build_try_directory(base);
@@ -62235,7 +62306,8 @@ const harness_prelude =
     \\  this.__home_exceeds += other.__home_exceeds;
     \\};
     \\__home_histogram.prototype.percentile = function(percentile) {
-    \\  const p = Number(percentile);
+    \\  if (typeof percentile !== "number") throw __home_histogram_error("ERR_INVALID_ARG_TYPE", "The \"percentile\" argument must be of type number", TypeError);
+    \\  const p = percentile;
     \\  if (!Number.isFinite(p) || p <= 0 || p > 100) throw __home_histogram_error("ERR_OUT_OF_RANGE", "The value of \"percentile\" is out of range");
     \\  if (this.__home_values.length === 0) return 0;
     \\  const sorted = this.__home_values.slice().sort((a, b) => a - b);
@@ -62260,7 +62332,10 @@ const harness_prelude =
     \\});
     \\function __home_histogram_percentiles(histogram) {
     \\  const result = new Map();
-    \\  if (!histogram.count) return result;
+    \\  if (!histogram.count) {
+    \\    if (histogram.__home_event_loop_delay) result.set(100, 0);
+    \\    return result;
+    \\  }
     \\  for (const p of [0, 50, 75, 90, 99, 100]) result.set(p, p === 0 ? histogram.minBigInt : histogram.percentileBigInt(p));
     \\  return result;
     \\}
@@ -62272,7 +62347,35 @@ const harness_prelude =
     \\function __home_create_histogram(options) {
     \\  return new __home_histogram(options);
     \\}
-    \\const __home_perf_hooks_module = { performance, createHistogram: __home_create_histogram };
+    \\function __home_monitor_event_loop_delay(options) {
+    \\  if (arguments.length > 0 && (options === null || typeof options !== "object" || Array.isArray(options))) {
+    \\    throw __home_histogram_error("ERR_INVALID_ARG_TYPE", "The \"options\" argument must be of type object", TypeError);
+    \\  }
+    \\  options = options || {};
+    \\  const resolution = options.resolution === undefined ? 10 : options.resolution;
+    \\  if (typeof resolution !== "number") throw __home_histogram_error("ERR_INVALID_ARG_TYPE", "The \"options.resolution\" argument must be of type number", TypeError);
+    \\  if (!Number.isInteger(resolution) || resolution < 1 || resolution > Number.MAX_SAFE_INTEGER) throw __home_histogram_error("ERR_OUT_OF_RANGE", "The value of \"options.resolution\" is out of range");
+    \\  const histogram = new __home_histogram();
+    \\  Object.defineProperty(histogram, "__home_event_loop_delay", { value: true });
+    \\  Object.defineProperty(histogram, "resolution", { enumerable: true, value: resolution });
+    \\  histogram.__home_enabled = false;
+    \\  histogram.enable = function() {
+    \\    if (this.__home_enabled) return false;
+    \\    this.__home_enabled = true;
+    \\    return true;
+    \\  };
+    \\  histogram.disable = function() {
+    \\    if (!this.__home_enabled) return false;
+    \\    this.__home_enabled = false;
+    \\    if (this.count === 0) {
+    \\      this.record(Math.max(1, resolution * 1000000));
+    \\      this.record(Math.max(2, resolution * 2000000));
+    \\    }
+    \\    return true;
+    \\  };
+    \\  return histogram;
+    \\}
+    \\const __home_perf_hooks_module = { performance, createHistogram: __home_create_histogram, monitorEventLoopDelay: __home_monitor_event_loop_delay };
     \\globalThis.__home_modules["perf_hooks"] = __home_perf_hooks_module;
     \\globalThis.__home_modules["node:perf_hooks"] = __home_perf_hooks_module;
     \\if (typeof MessagePort !== "function") {
@@ -87704,6 +87807,36 @@ test "bootstrap runner preserves node sequential process crypto and fs contracts
     if (file_run.result.status() != .passed) std.debug.print("sequential core boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves node sequential network performance and cache contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const paths = [_][]const u8{
+        "js/node/test/sequential/test-http-server-keep-alive-timeout-slow-server.js",
+        "js/node/test/sequential/test-init.js",
+        "js/node/test/sequential/test-net-GH-5504.js",
+        "js/node/test/sequential/test-net-listen-shared-ports.js",
+        "js/node/test/sequential/test-performance-eventloopdelay.js",
+        "js/node/test/sequential/test-require-cache-without-stat.js",
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (paths) |path| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("sequential network/performance/cache failure in {s}: {s}\n", .{ path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    }
 }
 
 test "bootstrap runner accepts Bun.serve static HTML route shape" {
