@@ -5227,6 +5227,7 @@ pub const Checker = struct {
         try self.checkJsDocTemplateDeclarations(root);
         try self.checkJSDocTypedefTypeTags(root);
         try self.checkJSDocUnsupportedNamepathTypes(root);
+        try self.checkJSDocClosureFunctionTypes(root);
         try self.checkJSDocTagTokensInTypeExpressions(root);
         try self.checkJSDocUnsupportedTypedefWrapping(root);
         try self.checkJSDocMalformedSatisfiesTags(root);
@@ -6100,6 +6101,41 @@ pub const Checker = struct {
                     });
                 }
                 i = open + type_len;
+            }
+        }
+    }
+
+    fn checkJSDocClosureFunctionTypes(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..comment_end];
+            var scan: usize = 0;
+            while (std.mem.indexOfScalarPos(u8, body, scan, '{')) |open| {
+                const type_len = jsDocBalancedBraceLen(body[open..]);
+                if (type_len == 0) {
+                    scan = open + 1;
+                    continue;
+                }
+                const inner = body[open + 1 .. open + type_len - 1];
+                if (jsDocClosureFunctionOpen(inner)) |paren| {
+                    const pos: u32 = @intCast(body_start + open + 1 + paren);
+                    if (!self.hasDiagnosticAtPosition(TsCodes.expected_close_brace, pos)) {
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = root,
+                            .pos = pos,
+                            .code = TsCodes.expected_close_brace,
+                            .message = "'}' expected.",
+                        });
+                    }
+                }
+                scan = open + type_len;
             }
         }
     }
@@ -16164,7 +16200,15 @@ pub const Checker = struct {
         for (tags) |tag| {
             if (tag.kind != .type_tag) continue;
             const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
-            if (jsDocFunctionOpenParen(type_text) != null) return;
+            if (jsDocFunctionOpenParen(type_text) != null) {
+                try self.reportAt(
+                    node,
+                    self.sliceStartPos(src, tag.type_text),
+                    TsCodes.jsdoc_function_type_mismatch,
+                    "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
+                );
+                return;
+            }
             if (try self.jsDocTypeTextToTypeAt(src, type_text, node)) |declared_t| {
                 if (self.callableSignatureCount(declared_t) > 1 or
                     self.jsDocTypeMismatchesFunctionDeclaration(node, declared_t))
@@ -30720,7 +30764,11 @@ pub const Checker = struct {
         var param_nullish_array_defaults: std.ArrayListUnmanaged(bool) = .empty;
         defer param_nullish_array_defaults.deinit(self.gpa);
         const params = hir_mod.fnParams(self.hir, node);
-        const jsdoc_context_sig = try self.jsDocContextualSignatureForFunction(node);
+        const malformed_closure_jsdoc_type = self.functionOrOwnerHasMalformedClosureJsDocTypeTag(node);
+        const jsdoc_context_sig = if (malformed_closure_jsdoc_type)
+            null
+        else
+            try self.jsDocContextualSignatureForFunction(node);
         const has_jsdoc_type_tag = try self.jsDocFunctionHasTypeTag(node);
         var has_rest_param = false;
         var explicit_this_t: TypeId = types.Primitive.none;
@@ -30869,6 +30917,7 @@ pub const Checker = struct {
             const contextual_param_t: ?TypeId = if (!has_anno and
                 !has_jsdoc_param_type and
                 !is_this_param and
+                !malformed_closure_jsdoc_type and
                 pp.default_value == hir_mod.none_node_id)
             blk: {
                 const parent = self.hir.parentOf(node);
@@ -31162,7 +31211,7 @@ pub const Checker = struct {
                     !self.fnIsJsDocConstructorOverloadImplementation(node)) and
                 !self.functionIsPrivateAmbientClassMember(node) and
                 !rest_has_contextual_signature and
-                !self.parameterHasContextualType(node, p))
+                (!self.parameterHasContextualType(node, p) or malformed_closure_jsdoc_type))
             {
                 // Binding-pattern parameters (`function f([a, b]) {}` /
                 // `function f({a, b}) {}`) ÃÂ¢ÃÂÃÂ tsc reports one TS7031
@@ -79299,6 +79348,7 @@ pub const Checker = struct {
             if (tag.kind != .type_tag) continue;
             saw_type_tag = true;
             const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+            if (jsDocClosureFunctionOpen(type_text) != null) continue;
             // The broad builtins describe an untyped callable rather than a
             // contextual signature, so their parameters still owe TS7006.
             if (std.mem.eql(u8, type_text, "Function") or
@@ -79306,6 +79356,18 @@ pub const Checker = struct {
             return true;
         }
         return has_type_marker and !saw_type_tag;
+    }
+
+    fn functionOrOwnerHasMalformedClosureJsDocTypeTag(self: *Checker, fn_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .type_tag) continue;
+            if (jsDocClosureFunctionOpen(std.mem.trim(u8, tag.type_text, " \t\r\n")) != null) return true;
+        }
+        return false;
     }
 
     fn checkUnmatchedJsDocParameters(self: *Checker, fn_node: NodeId) CheckError!void {
@@ -83104,6 +83166,7 @@ pub const Checker = struct {
     fn jsDocTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
         const trimmed = jsDocTrimOuterParens(std.mem.trim(u8, type_text, " \t\r\n"));
         if (trimmed.len == 0) return null;
+        if (jsDocClosureFunctionOpen(trimmed) != null) return types.Primitive.any;
         if (std.mem.eql(u8, trimmed, "this") and self.jsDocTypeTextIsInCheckedJsContext()) {
             const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
             return self.lookupNarrow(this_id) orelse types.Primitive.any;
@@ -84889,6 +84952,7 @@ pub const Checker = struct {
     }
 
     fn jsDocFunctionType(self: *Checker, type_text: []const u8) CheckError!?TypeId {
+        if (std.mem.indexOf(u8, type_text, "=>") == null and jsDocClosureFunctionOpen(type_text) != null) return null;
         if (std.mem.indexOf(u8, type_text, "=>")) |arrow| {
             var params_part = std.mem.trim(u8, type_text[0..arrow], " \t\r\n");
             var inline_type_params: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -85345,6 +85409,19 @@ pub const Checker = struct {
         var open = prefix.len;
         while (open < type_text.len and std.ascii.isWhitespace(type_text[open])) : (open += 1) {}
         return if (open < type_text.len and type_text[open] == '(') open else null;
+    }
+
+    fn jsDocClosureFunctionOpen(type_text: []const u8) ?usize {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, type_text, search_start, "function")) |start| {
+            search_start = start + "function".len;
+            if (start > 0 and isJsDocIdentChar(type_text[start - 1])) continue;
+            if (search_start < type_text.len and isJsDocIdentChar(type_text[search_start])) continue;
+            var open = search_start;
+            while (open < type_text.len and std.ascii.isWhitespace(type_text[open])) : (open += 1) {}
+            if (open < type_text.len and type_text[open] == '(') return open;
+        }
+        return null;
     }
 
     fn jsDocCallbackSignature(self: *Checker, src: []const u8, wanted_name: []const u8) CheckError!?TypeId {
@@ -202936,31 +203013,52 @@ test "checker: checked-JS async returns enforce direct and contextual Promise co
         \\ */
         \\/** @returns {string} */
         \\const direct = async () => "";
-        \\/** @type {function(): string} */
-        \\const inline = async () => "";
         \\/** @type {ReturnsString} */
         \\const contextual = async () => "";
-        \\/** @type {function(function(): string): void} */
-        \\const takesString = (callback) => {};
-        \\takesString(async () => 0);
     ;
 
     const native = try newSetup(source);
     defer destroySetup(native);
     try native.checker.checkSourceFile(native.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(native, TsCodes.async_return_must_be_promise_did_you_mean));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.async_return_must_be_promise_did_you_mean));
     try T.expectEqual(@as(usize, 0), checkerCountCode(native, TsCodes.async_return_must_be_promise));
     try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.type_not_assignable));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.argument_type_mismatch));
 
     const es5 = try newSetup(source);
     defer destroySetup(es5);
     es5.checker.setTargetEmitEs5(true);
     try es5.checker.checkSourceFile(es5.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(es5, TsCodes.async_return_not_promise_compatible_es5));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.async_return_not_promise_compatible_es5));
     try T.expectEqual(@as(usize, 0), checkerCountCode(es5, TsCodes.async_return_must_be_promise));
     try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.type_not_assignable));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.argument_type_mismatch));
+}
+
+test "checker: checked-JS Closure function type syntax reports parse errors without semantic cascades" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: file.js
+        \\/** @type {function(): string} */
+        \\const a = () => 0;
+        \\/** @type {function(): string} */
+        \\const b = async () => 0;
+        \\/** @type {function(): string} */
+        \\const c = async () => { return 0; };
+        \\/** @type {function(): string} */
+        \\const d = async () => { return ""; };
+        \\/** @type {function(function(): string): void} */
+        \\const f = (p) => {};
+        \\f(async () => 0);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.expected_close_brace));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.async_return_must_be_promise_did_you_mean));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: contextual async JSDoc callbacks compare inferred Promise returns" {
@@ -206520,7 +206618,7 @@ test "checker: checkjs self-referential JSDoc type on function emits TS8030" {
     try T.expect(found);
 }
 
-test "checker: checkjs JSDoc function @type return participates in TS2355" {
+test "checker: checkjs Closure-style function @type reports TS8030 and TS1005" {
     const source =
         \\// @allowJs: true
         \\// @checkJs: true
@@ -206532,15 +206630,14 @@ test "checker: checkjs JSDoc function @type return participates in TS2355" {
     const s = try newSetup(source);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.fn_must_return_value) {
-            found = true;
-            try T.expect(d.pos != null);
-            try T.expectEqual(@as(u8, 'n'), source[d.pos.?]);
-        }
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsdoc_function_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_close_brace));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.fn_must_return_value));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.jsdoc_function_type_mismatch,
+        "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
+    ));
 }
 
 test "checker: JSDoc callback return tags do not annotate the host function" {
