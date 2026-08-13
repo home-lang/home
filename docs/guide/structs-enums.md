@@ -431,5 +431,5 @@ print("x = {x}")
 ## Next Steps
 
 - [Traits](/guide/traits) - Define shared behavior for types
-- [Error Handling](/guide/error-handling) - Using Result and Option types
-- [Memory Safety](/guide/memory) - Ownership and borrowing
+- [Error Handling](/advanced/error-handling) - Using Result and Option types
+- [Memory Safety](/advanced/memory) - Ownership and borrowing

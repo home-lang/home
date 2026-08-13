@@ -361,5 +361,5 @@ fn describe(status: Status): string {
 ## Next Steps
 
 - [Structs and Enums](/guide/structs-enums) - Custom data types
-- [Error Handling](/guide/error-handling) - Result types and the ? operator
+- [Error Handling](/advanced/error-handling) - Result types and the ? operator
 - [Pattern Matching in Traits](/guide/traits) - Advanced matching

@@ -1,0 +1,571 @@
+/**
+ * Home site theme.
+ *
+ * Two parts: the brand tokens that retint the whole documentation theme, and
+ * the landing-page sections used by docs/index.md.
+ *
+ * Shape system, applied everywhere: pills for interactive controls, 12px for
+ * panels and cards, 8px for small inline chips. Nothing else.
+ */
+
+/* --------------------------------------------------------------------------
+ * Brand tokens
+ *
+ * Ember against warm neutrals. Home is a hearth, and the accent is the one
+ * warm thing in an otherwise stone-grey page. Both modes are defined here
+ * because themeConfig.colors can only set one value for both.
+ * -------------------------------------------------------------------------- */
+
+:root {
+  --bp-c-brand-1: #c2410c;
+  --bp-c-brand-2: #9a3412;
+  --bp-c-brand-3: #ea580c;
+  --bp-c-brand-soft: rgba(194, 65, 12, 0.1);
+  --bp-c-brand: var(--bp-c-brand-1);
+  --bp-button-brand-text: #ffffff;
+
+  --bp-c-bg: #fdfcfb;
+  --bp-c-bg-alt: #f5f3f1;
+  --bp-c-bg-elv: #ffffff;
+  --bp-c-bg-soft: #f5f3f1;
+
+  --bp-c-border: #d6d3d1;
+  --bp-c-divider: #e7e5e4;
+  --bp-c-gutter: #e7e5e4;
+
+  --bp-c-text-1: #1c1917;
+  --bp-c-text-2: #57534e;
+  --bp-c-text-3: #8a827c;
+
+  --bp-code-block-bg: #f5f3f1;
+
+  /* Landing-page tints. Kept as tokens so the two modes stay in step. */
+  --hl-band: #f7f5f3;
+  --hl-panel: #ffffff;
+  --hl-glow: rgba(194, 65, 12, 0.07);
+}
+
+.dark {
+  --bp-c-brand-1: #fb923c;
+  --bp-c-brand-2: #fdba74;
+  --bp-c-brand-3: #f97316;
+  --bp-c-brand-soft: rgba(251, 146, 60, 0.14);
+  --bp-button-brand-text: #1c1211;
+
+  --bp-c-bg: #131211;
+  --bp-c-bg-alt: #1a1817;
+  --bp-c-bg-elv: #1f1c1a;
+  --bp-c-bg-soft: #1a1817;
+
+  --bp-c-border: #453f3b;
+  --bp-c-divider: #2c2927;
+  --bp-c-gutter: #0c0b0a;
+
+  --bp-c-text-1: #f5f3f1;
+  --bp-c-text-2: #a8a29e;
+  --bp-c-text-3: #78716c;
+
+  --bp-code-block-bg: #1a1817;
+
+  --hl-band: #171514;
+  --hl-panel: #1a1817;
+  --hl-glow: rgba(251, 146, 60, 0.08);
+}
+
+/* The headline shares the hero with a code panel, so it is sized for a half
+ * column, not a full one. At the theme default it wrapped to four lines. */
+.BPHero-text {
+  font-size: clamp(30px, 5vw, 46px);
+  letter-spacing: -0.03em;
+}
+
+.BPHero-tagline {
+  max-width: 46ch;
+}
+
+/* --------------------------------------------------------------------------
+ * Landing sections (docs/index.md)
+ * -------------------------------------------------------------------------- */
+
+.BPHome-content .container {
+  max-width: none;
+  padding: 0;
+}
+
+.hl .hl-section {
+  padding: 72px 24px;
+  border-top: 1px solid var(--bp-c-divider);
+}
+
+.hl .hl-inner {
+  max-width: 1152px;
+  margin: 0 auto;
+}
+
+.hl .hl-title {
+  margin: 0;
+  font-size: clamp(26px, 3.4vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--bp-c-text-1);
+}
+
+.hl .hl-lead {
+  max-width: 62ch;
+  margin: 14px 0 0;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--bp-c-text-2);
+}
+
+@media (min-width: 960px) {
+  .hl .hl-section {
+    padding: 96px 64px;
+  }
+}
+
+/* --- Measured status band ------------------------------------------------ */
+
+.hl .hl-metrics {
+  padding: 28px 24px;
+  border-top: 1px solid var(--bp-c-divider);
+  background: var(--hl-band);
+}
+
+.hl .hl-metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+  max-width: 1152px;
+  margin: 0 auto;
+}
+
+.hl .hl-metric-value {
+  display: block;
+  font-family: var(--bp-font-family-mono, ui-monospace, monospace);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--bp-c-text-1);
+}
+
+.hl .hl-metric-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--bp-c-text-2);
+}
+
+.hl .hl-metrics-note {
+  max-width: 1152px;
+  margin: 20px auto 0;
+  font-size: 12px;
+  color: var(--bp-c-text-3);
+}
+
+.hl .hl-metrics-note a {
+  color: var(--bp-c-text-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.hl .hl-metrics-note a:hover {
+  color: var(--bp-c-brand-1);
+}
+
+@media (min-width: 640px) {
+  .hl .hl-metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 32px;
+  }
+}
+
+@media (min-width: 960px) {
+  .hl .hl-metrics {
+    padding: 32px 64px;
+  }
+  .hl .hl-metrics-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 40px;
+  }
+}
+
+/* --- Bento tinting -------------------------------------------------------
+ * Two of the four cells carry a tinted ground so the grid reads as a
+ * composition rather than four identical boxes. */
+
+.BPFeature[style*="--bp-feature-span:2"] {
+  background-image: radial-gradient(120% 140% at 0% 0%, var(--hl-glow), transparent 60%);
+}
+
+/* --- TypeScript band ----------------------------------------------------- */
+
+.hl .hl-band {
+  padding: 72px 24px;
+  border-top: 1px solid var(--bp-c-divider);
+  background: var(--hl-band);
+}
+
+.hl .hl-band-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 32px;
+  align-items: center;
+  max-width: 1152px;
+  margin: 0 auto;
+}
+
+.hl .hl-band-points {
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hl .hl-band-points li {
+  position: relative;
+  padding: 10px 0 10px 26px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--bp-c-text-2);
+}
+
+.hl .hl-band-points li + li {
+  border-top: 1px solid var(--bp-c-divider);
+}
+
+.hl .hl-band-points li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 18px;
+  width: 9px;
+  height: 9px;
+  border: 1.6px solid var(--bp-c-brand-1);
+  border-radius: 3px;
+}
+
+.hl .hl-band-points strong {
+  color: var(--bp-c-text-1);
+  font-weight: 600;
+}
+
+@media (min-width: 960px) {
+  .hl .hl-band {
+    padding: 96px 64px;
+  }
+  .hl .hl-band-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 64px;
+  }
+}
+
+/* --- Code panel reused outside the hero ---------------------------------- */
+
+.hl .hl-code {
+  border: 1px solid var(--bp-c-divider);
+  border-radius: 12px;
+  background: var(--bp-code-block-bg);
+  overflow: hidden;
+}
+
+.hl .hl-code-head {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--bp-c-divider);
+  font-family: var(--bp-font-family-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--bp-c-text-3);
+}
+
+.hl .hl-code pre {
+  margin: 0;
+  padding: 18px 20px;
+  overflow-x: auto;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.hl .hl-code code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+
+/* Home has no grammar in the highlighter yet, so samples are fenced as the
+ * closest one. The corner label would then announce the wrong language. */
+.hl .hl-code pre[data-lang]::before {
+  content: none;
+}
+
+.hl .hl-code-head:empty {
+  display: none;
+}
+
+/* --- Use-case directory --------------------------------------------------- */
+
+.hl .hl-cases {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  margin-top: 40px;
+  border: 1px solid var(--bp-c-divider);
+  border-radius: 12px;
+  background: var(--bp-c-divider);
+  overflow: hidden;
+}
+
+.hl .hl-case {
+  display: flex;
+  gap: 14px;
+  padding: 22px;
+  background: var(--bp-c-bg);
+  text-decoration: none;
+  transition: background-color 0.25s;
+}
+
+.hl .hl-case:hover {
+  background: var(--bp-c-bg-soft);
+}
+
+.hl .hl-case-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--bp-c-brand-soft);
+  color: var(--bp-c-brand-1);
+}
+
+.hl .hl-case-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.hl .hl-case-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--bp-c-text-1);
+}
+
+.hl .hl-case:hover .hl-case-title {
+  color: var(--bp-c-brand-1);
+}
+
+.hl .hl-case-text {
+  display: block;
+  margin-top: 4px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--bp-c-text-2);
+}
+
+@media (min-width: 720px) {
+  .hl .hl-cases {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* --- Steps ---------------------------------------------------------------- */
+
+.hl .hl-steps {
+  display: grid;
+  gap: 28px;
+  margin-top: 44px;
+}
+
+.hl .hl-step {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.hl .hl-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.hl .hl-step-index {
+  font-family: var(--bp-font-family-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--bp-c-brand-1);
+}
+
+.hl .hl-step-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--bp-c-text-1);
+}
+
+.hl .hl-step-text {
+  margin: 8px 0 0;
+  max-width: 46ch;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--bp-c-text-2);
+}
+
+@media (min-width: 860px) {
+  .hl .hl-step {
+    grid-template-columns: 320px 1fr;
+    gap: 40px;
+  }
+}
+
+/* --- Status rows ---------------------------------------------------------- */
+
+.hl .hl-status {
+  margin-top: 40px;
+  border-top: 1px solid var(--bp-c-divider);
+}
+
+.hl .hl-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--bp-c-divider);
+}
+
+.hl .hl-status-name {
+  flex: 1 1 220px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--bp-c-text-1);
+}
+
+.hl .hl-status-note {
+  flex: 2 1 320px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--bp-c-text-2);
+}
+
+.hl .hl-pill {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.hl .hl-pill.is-ready {
+  background: var(--bp-c-brand-soft);
+  color: var(--bp-c-brand-1);
+}
+
+.hl .hl-pill.is-progress {
+  background: var(--bp-c-bg-soft);
+  color: var(--bp-c-text-2);
+  border: 1px solid var(--bp-c-divider);
+}
+
+.hl .hl-status-link {
+  display: inline-block;
+  margin-top: 24px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bp-c-brand-1);
+}
+
+.hl .hl-status-link:hover {
+  text-decoration: underline;
+}
+
+/* --- Closing call to action ----------------------------------------------- */
+
+.hl .hl-close {
+  padding: 88px 24px;
+  border-top: 1px solid var(--bp-c-divider);
+  background: var(--hl-band);
+  text-align: center;
+}
+
+.hl .hl-close .hl-lead {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.hl .hl-close-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 32px;
+}
+
+/* Buttons inside the markdown body are still <a> to the prose stylesheet,
+ * which paints every link in the brand colour. On the brand button that was
+ * ember text on an ember fill: a button with no readable label. */
+.hl .BPButton {
+  text-decoration: none;
+}
+
+.hl .BPButton-brand {
+  color: var(--bp-button-brand-text);
+}
+
+.hl .BPButton-brand:hover {
+  color: var(--bp-button-brand-text);
+}
+
+.hl .BPButton-alt {
+  color: var(--bp-c-text-1);
+}
+
+.hl .BPButton-alt:hover {
+  color: var(--bp-c-brand-1);
+}
+
+/* --------------------------------------------------------------------------
+ * Motion
+ *
+ * One effect: the hero settles in on load, so the eye takes the announcement,
+ * headline, subtext and buttons in that order. Everything else moves only in
+ * response to the pointer.
+ *
+ * A scroll-reveal on the sections was tried and removed. A view() timeline
+ * measures progress across the whole element, so a section taller than the
+ * viewport is still at 0% when it is already on screen, and the content sat
+ * invisible. A reveal that can hide the page is worse than no reveal.
+ * -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  .BPHomeHero .hero-content > * {
+    animation: hl-rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation-delay: calc(var(--hl-i, 0) * 70ms);
+  }
+
+  .BPHomeHero .hero-content > :nth-child(2) { --hl-i: 1; }
+  .BPHomeHero .hero-content > :nth-child(3) { --hl-i: 2; }
+  .BPHomeHero .hero-content > :nth-child(4) { --hl-i: 3; }
+
+  .BPHomeHero .BPHeroCode {
+    animation: hl-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+  }
+
+}
+
+@keyframes hl-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

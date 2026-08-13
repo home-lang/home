@@ -185,7 +185,7 @@ Now that you have Home installed, explore these topics:
 - [Variables and Types](/guide/variables) - Learn about Home's type system
 - [Functions](/guide/functions) - Define and call functions
 - [Control Flow](/guide/control-flow) - Conditionals and loops
-- [Error Handling](/guide/error-handling) - Work with Result types
+- [Error Handling](/advanced/error-handling) - Work with Result types
 
 ## Troubleshooting
 

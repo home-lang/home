@@ -539,6 +539,6 @@ let absolute = Path.new("./relative").canonicalize()?
 ## See Also
 
 - [Getting Started](/guide/getting-started) - Installation and setup
-- [Error Handling](/guide/error-handling) - Working with Result types
-- [Async Programming](/guide/async) - Async I/O patterns
+- [Error Handling](/advanced/error-handling) - Working with Result types
+- [Async Programming](/advanced/async) - Async I/O patterns
 - [HomeOS Documentation](https://github.com/home-lang/homeos) - OS-level APIs
