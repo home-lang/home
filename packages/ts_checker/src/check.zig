@@ -102050,7 +102050,7 @@ pub const Checker = struct {
         const source_name = (try self.normalizedRelationDisplayName(source)) orelse return false;
 
         if (missing_total == 1) {
-            const prop_text = try self.formatMissingPropertyNameForDiagnostic(
+            const prop_text = self.formatMissingPropertyNameForDiagnostic(
                 self.string_interner.get(missing[0]),
                 target_name,
             );
@@ -154994,9 +154994,9 @@ pub const Checker = struct {
                 if (declared.len > 0 and declared[0] >= '0' and declared[0] <= '9')
                     declared
                 else
-                    try self.formatMissingPropertyNameForDiagnostic(self.string_interner.get(first_missing_name), target_name)
+                    self.formatMissingPropertyNameForDiagnostic(self.string_interner.get(first_missing_name), target_name)
             else
-                try self.formatMissingPropertyNameForDiagnostic(self.string_interner.get(first_missing_name), target_name);
+                self.formatMissingPropertyNameForDiagnostic(self.string_interner.get(first_missing_name), target_name);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
@@ -155105,30 +155105,12 @@ pub const Checker = struct {
         return std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}'", .{name}) catch name;
     }
 
-    fn formatMissingPropertyNameForDiagnostic(self: *Checker, name: []const u8, target_name: []const u8) CheckError![]const u8 {
-        if (try self.enumRecordMissingPropertyName(name, target_name)) |display| return display;
-        return self.formatPropertyNameForDiagnostic(name);
-    }
-
-    fn enumRecordMissingPropertyName(self: *Checker, name: []const u8, target_name: []const u8) CheckError!?[]const u8 {
-        if (!std.mem.startsWith(u8, target_name, "Record<")) return null;
-        const args = target_name["Record<".len..];
-        const comma = std.mem.indexOfScalar(u8, args, ',') orelse return null;
-        const enum_text = std.mem.trim(u8, args[0..comma], " \t\r\n");
-        if (!isSimpleTypeAliasName(enum_text)) return null;
-        const enum_name = self.string_interner.intern(enum_text) catch return error.OutOfMemory;
-        const value = std.fmt.parseFloat(f64, name) catch return null;
-        var it = self.enum_member_values.iterator();
-        while (it.next()) |entry| {
-            if (entry.key_ptr.obj_name != enum_name) continue;
-            if (entry.value_ptr.* != value) continue;
-            return try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "[{s}.{s}]",
-                .{ enum_text, self.string_interner.get(entry.key_ptr.prop_name) },
-            );
+    fn formatMissingPropertyNameForDiagnostic(self: *Checker, name: []const u8, target_name: []const u8) []const u8 {
+        if (std.mem.startsWith(u8, target_name, "Record<")) {
+            _ = std.fmt.parseFloat(f64, name) catch return self.formatPropertyNameForDiagnostic(name);
+            return name;
         }
-        return null;
+        return self.formatPropertyNameForDiagnostic(name);
     }
 
     /// Render a structural object type as `{ k: T; ÃÂ¢ÃÂÃÂ¦ }`. Used by
@@ -185178,7 +185160,7 @@ test "checker: Record over numeric enum requires enum value keys" {
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.property_missing_required,
-        "Property '[E.A]' is missing in type '{}' but required in type 'Record<E, any>'.",
+        "Property '0' is missing in type '{}' but required in type 'Record<E, any>'.",
     ));
 }
 
