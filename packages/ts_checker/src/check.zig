@@ -15346,7 +15346,9 @@ pub const Checker = struct {
         const f = hir_mod.fnDeclOf(self.hir, node);
         if (f.return_type == hir_mod.none_node_id) {
             if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
-                try self.refineSignatureReturn(node, jsdoc_return.type);
+                if (jsdoc_return.origin != .contextual_type) {
+                    try self.refineSignatureReturn(node, jsdoc_return.type);
+                }
             }
         }
         try self.checkJsDocFunctionTypeTag(node);
@@ -15572,15 +15574,10 @@ pub const Checker = struct {
 
     fn checkAsyncJsDocReturnType(self: *Checker, node: NodeId, jsdoc_return: JsDocDeclaredReturn) CheckError!void {
         if (self.promisePayloadType(jsdoc_return.type) != null) return;
-        if (jsdoc_return.origin == .contextual_type) {
-            try self.reportAt(
-                node,
-                jsdoc_return.pos,
-                TsCodes.async_return_must_be_promise,
-                "The return type of an async function or method must be the global Promise<T> type.",
-            );
-            return;
-        }
+        // A named callable supplied through `@type` is a contextual target,
+        // not an explicit return annotation. Infer the async Promise return
+        // and let ordinary function assignability compare it with the target.
+        if (jsdoc_return.origin == .contextual_type) return;
         if (self.target_emit_es5) {
             const display = (try self.allocSimpleTypeName(jsdoc_return.type)) orelse "unknown";
             const msg = try std.fmt.allocPrint(
@@ -16499,8 +16496,10 @@ pub const Checker = struct {
                 self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type) catch types.Primitive.none
             else blk: {
                 if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
-                    declared_from_jsdoc = true;
-                    break :blk jsdoc_return.type;
+                    if (!(f.flags.is_async and jsdoc_return.origin == .contextual_type)) {
+                        declared_from_jsdoc = true;
+                        break :blk jsdoc_return.type;
+                    }
                 }
                 if (self.pairedSetterContextualReturnType(node)) |setter_t| {
                     declared_from_paired_setter = true;
@@ -24875,6 +24874,7 @@ pub const Checker = struct {
         const optional_any = self.interner.internUnion(&any_or_undefined_members) catch return error.OutOfMemory;
         const then_params = [_]TypeId{ cb_sig, optional_any };
         const then_sig = self.interner.internSignature(&then_params, types.Primitive.any, false) catch return error.OutOfMemory;
+        try self.signature_min_args.put(self.gpa, then_sig, 0);
         const finally_cb_sig = self.interner.internSignature(&[_]TypeId{}, types.Primitive.any, false) catch return error.OutOfMemory;
         const finally_sig = self.interner.internSignature(&[_]TypeId{finally_cb_sig}, types.Primitive.any, false) catch return error.OutOfMemory;
         // `catch(onrejected?: (reason: any) => any): Promise<any>` — modeled
@@ -26078,8 +26078,12 @@ pub const Checker = struct {
             self.interner.signatureReturn(source_t) orelse types.Primitive.any
         else
             types.Primitive.any;
+        const effective_source_ret = if (f.flags.is_async and contextual_predicate == null)
+            try self.buildStructuralPromise(source_ret)
+        else
+            source_ret;
         const target_params = self.interner.signatureParams(target_sig);
-        const sig = self.interner.internSignature(target_params, source_ret, false) catch return error.OutOfMemory;
+        const sig = self.interner.internSignature(target_params, effective_source_ret, false) catch return error.OutOfMemory;
         if (self.rest_signatures.contains(target_sig)) try self.rest_signatures.put(self.gpa, sig, {});
         if (self.signature_min_args.get(target_sig)) |min_args| try self.signature_min_args.put(self.gpa, sig, min_args);
         if (contextual_predicate) |predicate| {
@@ -31335,6 +31339,13 @@ pub const Checker = struct {
         if (f.return_type != hir_mod.none_node_id) {
             try self.reportUnresolvedBodylessSignatureTypeRefs(f.return_type, type_params);
         }
+        const contextual_jsdoc_is_async_target = if (f.flags.is_async)
+            if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return|
+                jsdoc_return.origin == .contextual_type
+            else
+                false
+        else
+            false;
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
             (if (is_predicate)
                 types.Primitive.boolean_t
@@ -31343,7 +31354,10 @@ pub const Checker = struct {
             else
                 try self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type))
         else if (jsdoc_context_sig) |sig|
-            self.interner.signatureReturn(sig) orelse types.Primitive.any
+            if (contextual_jsdoc_is_async_target)
+                types.Primitive.any
+            else
+                self.interner.signatureReturn(sig) orelse types.Primitive.any
         else
             types.Primitive.any;
         if (f.body == hir_mod.none_node_id and f.return_type == hir_mod.none_node_id) {
@@ -85336,7 +85350,9 @@ pub const Checker = struct {
     fn jsDocCallbackSignature(self: *Checker, src: []const u8, wanted_name: []const u8) CheckError!?TypeId {
         var type_params: std.ArrayListUnmanaged(TypeId) = .empty;
         defer type_params.deinit(self.gpa);
-        return try self.jsDocCallbackSignatureWithTypeParams(src, wanted_name, &type_params);
+        const sig = (try self.jsDocCallbackSignatureWithTypeParams(src, wanted_name, &type_params)) orelse return null;
+        try self.registerAliasDisplayText(sig, wanted_name);
+        return sig;
     }
 
     fn jsDocCallbackSignatureWithTypeParams(
@@ -147406,7 +147422,28 @@ pub const Checker = struct {
         {
             return false;
         }
+        if (self.promisePayloadType(source_ret) != null and
+            try self.contextualPromiseMembersAssignable(source_ret, target_ret))
+        {
+            return true;
+        }
         return try self.presentObjectMembersAssignable(source_ret, target_ret);
+    }
+
+    fn contextualPromiseMembersAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        for (self.interner.objectMembers(target)) |target_member| {
+            const source_member_t = self.interner.objectMember(source, target_member.name) orelse {
+                if (target_member.is_optional) continue;
+                return false;
+            };
+            const assignable = if (self.interner.isSignature(source_member_t) and self.interner.isSignature(target_member.type))
+                try self.contextualFunctionSignatureAssignable(source_member_t, target_member.type)
+            else
+                self.heritageAssignable(source_member_t, target_member.type) catch false;
+            if (!assignable) return false;
+        }
+        return true;
     }
 
     fn contextualReturnLacksRequiredObjectShape(self: *Checker, source_ret: TypeId, target_ret: TypeId) CheckError!bool {
@@ -149842,7 +149879,7 @@ pub const Checker = struct {
             if (ret.value == hir_mod.none_node_id) return .{ .return_mismatch = target_t };
             break :blk ret.value;
         } else f.body;
-        if (self.hir.kindOf(body_expr) == .identifier) {
+        if (!f.flags.is_async and self.hir.kindOf(body_expr) == .identifier) {
             const body_id = hir_mod.identifierOf(self.hir, body_expr);
             for (hir_mod.fnParams(self.hir, fn_node), 0..) |param, i| {
                 if (self.hir.kindOf(param) != .parameter) continue;
@@ -149855,7 +149892,7 @@ pub const Checker = struct {
                 }
             }
         }
-        if (self.hir.kindOf(body_expr) == .call_expr) {
+        if (!f.flags.is_async and self.hir.kindOf(body_expr) == .call_expr) {
             const call = hir_mod.callOf(self.hir, body_expr);
             if (call.callee != hir_mod.none_node_id and self.hir.kindOf(call.callee) == .identifier) {
                 const callee_id = hir_mod.identifierOf(self.hir, call.callee);
@@ -149923,14 +149960,18 @@ pub const Checker = struct {
             const body_t = self.hir.typeOf(body_expr);
             break :checked_body if (body_t != types.Primitive.none) body_t else try self.checkExpression(body_expr);
         };
-        if (try self.literalExpressionAssignableToTarget(body_expr, target_ret)) return .assignable;
-        if (checked_body_t < types.Primitive.first_dynamic and
+        const source_ret = if (f.flags.is_async)
+            try self.buildStructuralPromise(checked_body_t)
+        else
+            checked_body_t;
+        if (!f.flags.is_async and try self.literalExpressionAssignableToTarget(body_expr, target_ret)) return .assignable;
+        if (source_ret < types.Primitive.first_dynamic and
             target_ret < types.Primitive.first_dynamic and
-            !(self.engine.isAssignableTo(checked_body_t, target_ret) catch false))
+            !(self.engine.isAssignableTo(source_ret, target_ret) catch false))
         {
             return .{ .return_mismatch = target_t };
         }
-        if (try self.contextualFunctionReturnAssignable(checked_body_t, target_ret)) return .assignable;
+        if (try self.contextualFunctionReturnAssignable(source_ret, target_ret)) return .assignable;
         return .{ .return_mismatch = target_t };
     }
 
@@ -202908,7 +202949,8 @@ test "checker: checked-JS async returns enforce direct and contextual Promise co
     defer destroySetup(native);
     try native.checker.checkSourceFile(native.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(native, TsCodes.async_return_must_be_promise_did_you_mean));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(native, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(native, TsCodes.argument_type_mismatch));
 
     const es5 = try newSetup(source);
@@ -202916,11 +202958,12 @@ test "checker: checked-JS async returns enforce direct and contextual Promise co
     es5.checker.setTargetEmitEs5(true);
     try es5.checker.checkSourceFile(es5.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(es5, TsCodes.async_return_not_promise_compatible_es5));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(es5, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.argument_type_mismatch));
 }
 
-test "checker: contextual async JSDoc return errors suppress assignment cascades" {
+test "checker: contextual async JSDoc callbacks compare inferred Promise returns" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -202928,18 +202971,37 @@ test "checker: contextual async JSDoc return errors suppress assignment cascades
         \\declare class Thenable { then(): void; }
         \\// @filename: /a.js
         \\/**
+        \\ * @callback T1
+        \\ * @param {string} str
+        \\ * @returns {string}
+        \\ */
+        \\/**
+        \\ * @callback T2
+        \\ * @param {string} str
+        \\ * @returns {Promise<string>}
+        \\ */
+        \\/**
         \\ * @callback T3
         \\ * @param {string} str
         \\ * @returns {Thenable}
         \\ */
+        \\/** @type {T1} */
+        \\const f2 = async str => str;
+        \\/** @type {T2} */
+        \\const f4 = async str => str;
         \\/** @type {T3} */
         \\const f5 = async str => str;
     );
     defer destroySetup(s);
     s.checker.setTargetEmitEs5(true);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.async_return_must_be_promise));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.async_return_must_be_promise));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '(str: string) => Promise<string>' is not assignable to type 'T1'.",
+    ));
 }
 
 test "checker: async return typed by an unresolved imported name does not emit TS1064" {
