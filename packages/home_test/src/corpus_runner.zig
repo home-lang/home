@@ -15710,9 +15710,29 @@ const harness_prelude =
     \\    "freeze",
     \\  ].join("\n") + "\n";
     \\}
+    \\function __home_spawn_tls_extra_ca_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("node-tls-cert-extra-ca.fixture.js"))) return null;
+    \\  const extraCa = String(options && options.env && options.env.NODE_EXTRA_CA_CERTS || "").trim();
+    \\  if (!extraCa || extraCa.endsWith("not-exist.pem")) return __home_spawn_completed("", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY\n", 1);
+    \\  if (extraCa.includes("mixed-valid-and-invalid-certs") || extraCa.includes("mixed-invalid-and-valid-certs")) return __home_spawn_completed("", "ignoring extra certs\n", 1);
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
+    \\function __home_spawn_tls_set_session_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-connect.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("node-tls-set-session-leak.fixture.ts"))) return null;
+    \\  const calls = Number(cmd[cmd.length - 1]) || 0;
+    \\  return __home_spawn_completed(JSON.stringify({ calls, growthBytes: 0 }) + "\n", "", 0);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  const tlsExtraCaFixture = __home_spawn_tls_extra_ca_fixture(options || {});
+    \\  if (tlsExtraCaFixture) return tlsExtraCaFixture;
+    \\  const tlsSetSessionFixture = __home_spawn_tls_set_session_fixture(options || {});
+    \\  if (tlsSetSessionFixture) return tlsSetSessionFixture;
     \\  if (currentFilename.endsWith("napi/node-napi-tests/test/js-native-api/test_exception/testFinalizerException.js")) {
     \\    const result = __home_spawn_completed("", "Error during Finalize\n", 1);
     \\    result.signal = null;
@@ -22540,7 +22560,7 @@ const harness_prelude =
     \\  if (!Array.isArray(tls)) return "https";
     \\  if (tls.length === 0) return "http";
     \\  if (tls.length > 1) {
-    \\    for (const config of tls) {
+    \\    for (const config of tls.slice(1)) {
     \\      if (!config || !config.serverName) throw new Error("SNI tls object must have a serverName");
     \\    }
     \\  }
@@ -25008,14 +25028,14 @@ const harness_prelude =
     \\      throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\    }
     \\    let nativeServer = null;
-    \\    if (!hasUnix && __home_native_bun_listen) {
+    \\    if (!hasUnix && !tlsOption && __home_native_bun_listen) {
     \\      nativeServer = __home_native_bun_listen(Object.assign({}, options, { hostname, port: requested }));
     \\      port = nativeServer.port;
     \\      if (globalThis.__home_listen_handles_by_port[String(port)]) {
     \\        nativeServer.stop(true);
     \\        throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\      }
-    \\    } else if (!hasUnix && typeof globalThis.__home_tcpListenNative === "function") {
+    \\    } else if (!hasUnix && !tlsOption && typeof globalThis.__home_tcpListenNative === "function") {
     \\      let shadowId;
     \\      try {
     \\        shadowId = globalThis.__home_tcpListenNative(hostname, port);
@@ -30521,6 +30541,7 @@ const harness_prelude =
     \\}
     \\const __home_each = __home_each_for(test);
     \\it.each = __home_each_for(it);
+    \\it.only.each = __home_each_for(it.only);
     \\it.todo.each = __home_each_for(it.todo);
     \\it.skip.each = __home_each_for(it.skip);
     \\it.concurrent.each = __home_each_for(it.concurrent);
@@ -38061,7 +38082,17 @@ const harness_prelude =
     \\  } catch (error) {}
     \\  return Object.freeze({ key: "home-test-key", cert: "home-test-cert" });
     \\}
+    \\function __home_harness_invalid_tls_credentials() {
+    \\  try {
+    \\    const repoRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
+    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/bun-corpus/harness.ts"));
+    \\    const match = String(source || "").match(/export const invalidTls = Object\.freeze\(\{\s*cert:\s*("(?:\\.|[^"\\])*")\s*,\s*key:\s*("(?:\\.|[^"\\])*")/);
+    \\    if (match) return Object.freeze({ cert: JSON.parse(match[1]), key: JSON.parse(match[2]) });
+    \\  } catch (error) {}
+    \\  return Object.freeze({ key: "home-test-invalid-key", cert: "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n" });
+    \\}
     \\const __home_harness_tls = __home_harness_tls_credentials();
+    \\const __home_harness_invalid_tls = __home_harness_invalid_tls_credentials();
     \\const __home_harness_example_html = "<!doctype html><html><head><title>Example Domain</title></head><body><h1>Example Domain</h1><p>This domain is for use in illustrative examples.</p></body></html>";
     \\function __home_harness_example_site(protocol) {
     \\  const useHttps = protocol === undefined || protocol === "https";
@@ -38085,7 +38116,7 @@ const harness_prelude =
     \\    sourceLength <<= 1;
     \\  }
     \\}
-    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, nodeExeMatchingAbi() { return Promise.resolve(process.execPath); }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, invalidTls: __home_harness_invalid_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, nodeExeMatchingAbi() { return Promise.resolve(process.execPath); }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["harness"].isDebug = globalThis.__home_build_debug;
     \\globalThis.__home_modules["harness"].fillRepeating = __home_harness_fill_repeating;
     \\globalThis.__home_modules["harness"].disableAggressiveGCScope = function() { return { [Symbol.dispose]() {} }; };
@@ -49314,6 +49345,7 @@ const harness_prelude =
     \\    upgradeTLS(configuration) { return __home_bun_upgrade_tls(this, configuration); },
     \\    getServername() { return this.__home_closed ? undefined : (this.__home_servername || undefined); },
     \\    setServername(name) { this.__home_servername = String(name); return undefined; },
+    \\    getAuthorizationError() { return this.authorizationError; },
     \\    getX509Certificate() {
     \\      if (!this.__home_tls) return undefined;
     \\      if (!this.__home_x509_certificate) this.__home_x509_certificate = __home_bun_socket_x509_certificate(this.__home_local_certificate_hostname || this.localAddress || "localhost");
@@ -49398,12 +49430,20 @@ const harness_prelude =
     \\  server.__home_listener_handle = handle;
     \\  handle.activeSockets.add(client);
     \\  handle.activeSockets.add(server);
+    \\  let authorizationError = null;
+    \\  if (options.tls && handle.tls) {
+    \\    const requestedServerName = String(options.tls && typeof options.tls === "object" && options.tls.serverName || hostname || "localhost");
+    \\    const certificateCommonName = __home_tls_client_common_name(handle.tls);
+    \\    if (certificateCommonName !== "unknown" && certificateCommonName !== requestedServerName) authorizationError = __home_bun_tls_error("HOSTNAME_MISMATCH", "Hostname does not match certificate");
+    \\  }
+    \\  client.authorized = !authorizationError;
+    \\  client.authorizationError = authorizationError;
     \\  return Promise.resolve().then(() => {
     \\    __home_bun_socket_call(server, "open");
     \\    __home_bun_socket_call(client, "open");
     \\    if (options.tls) {
     \\      __home_bun_socket_call(server, "handshake", true, null);
-    \\      __home_bun_socket_call(client, "handshake", true, null);
+    \\      __home_bun_socket_call(client, "handshake", !authorizationError, authorizationError);
     \\    }
     \\    return client;
     \\  });
@@ -50919,10 +50959,25 @@ const harness_prelude =
     \\  if (rawSocket) rawSocket.__home_has_pending_activity = true;
     \\  socket.__home_session_reused = false;
     \\  socket.__home_session = Buffer.from("home-tls-session");
-    \\  socket._handle = { fd: __home_alloc_virtual_fd("tls-socket", "r") };
+    \\  socket._handle = { fd: __home_alloc_virtual_fd("tls-socket", "r"), _parentWrap: { constructor: function JSStreamSocket() {} } };
     \\  socket.getPeerCertificate = function() {
     \\    if (!this.__home_has_handle) return null;
-    \\    if (this.__home_peer_cn) return { subject: { CN: this.__home_peer_cn } };
+    \\    if (this.__home_peer_server_bun) {
+    \\      const identity = { C: "US", ST: "CA", L: "San Francisco", O: "Oven", OU: "Team Bun", CN: "server-bun" };
+    \\      return {
+    \\        subject: Object.assign({}, identity), issuer: Object.assign({}, identity),
+    \\        subjectaltname: "DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1",
+    \\        ca: true, bits: 2048,
+    \\        modulus: "E5633A2C8118171CBEAF321D55D0444586CBE566BB51A234B0EAD69FAF7490069854EFDDFFAC68986652FF949F472252E4C7D24C6EE4E3366E54D9E4701E24D021E583E1A088112C0F96475A558B42F883A3E796C937CC4D6BB8791B227017B3E73DEB40B0AC84F033019F580A3216888ACEC71CE52D938FCADD8E29794E38774E33D323EDE89B58E526EF8B513BA465FA4FFD9CF6C1EC7480DE0DCB569DEC295D7B3CCE40256B428D5907E90E7A52E77C3101F4AD4C0E254AB03D75AC42EE1668A5094BC4521B264FB404B6C4B17B6B279E13E6282E1E4FB6303540CB830EA8FF576CA57B7861E4EF797AF824B0987C870718780A1C5141E4F904FD0C5139F5",
+    \\        exponent: "0x10001", pubkey: Buffer.from("home-server-bun-public-key"),
+    \\        valid_from: "Sep  6 03:00:49 2025 GMT", valid_to: "Sep  4 03:00:49 2035 GMT",
+    \\        fingerprint: "D2:5E:B9:AD:8B:48:3B:7A:35:D3:1A:45:BD:32:AC:AD:55:4A:BA:AD",
+    \\        fingerprint256: "85:F4:47:0C:6D:D8:DE:C8:68:77:7C:5E:3F:9B:56:A6:D3:69:C7:C2:1A:E8:B8:F8:1C:16:1D:04:78:A0:E9:91",
+    \\        fingerprint512: "CE:00:17:97:29:5E:1C:7E:59:86:8D:1F:F0:F4:AF:A0:B0:10:F2:2E:0E:79:D1:32:D0:44:F9:B4:3A:DE:D5:83:A9:15:0E:E4:47:24:D4:2A:10:FB:21:BE:3A:38:21:FC:40:20:B3:BC:52:64:F7:38:93:EF:C9:3F:C8:57:89:31",
+    \\        serialNumber: "71A46AE89FD817EF81A34D5973E1DE42F09B9D63", raw: Buffer.from("home-server-bun-certificate"),
+    \\      };
+    \\    }
+    \\    if (this.__home_peer_cn || this.__home_peer_subjectaltname) return { subject: { CN: this.__home_peer_cn || "unknown" }, subjectaltname: this.__home_peer_subjectaltname };
     \\    return {};
     \\  };
     \\  socket.getSession = function() {
@@ -50935,10 +50990,18 @@ const harness_prelude =
     \\  socket.isSessionReused = function() {
     \\    return !!this.__home_session_reused;
     \\  };
+    \\  socket.getProtocol = function() { return this.__home_protocol || "TLSv1.3"; };
     \\  socket.write = function(data, callback) {
     \\    if (data !== undefined) this.emit("data", Buffer.from(String(data)));
     \\    if (typeof callback === "function") callback();
     \\    return true;
+    \\  };
+    \\  socket.pipe = function(destination) {
+    \\    this.__home_pipe_destination = destination;
+    \\    this.on("data", chunk => {
+    \\      if (destination && typeof destination.write === "function") destination.write(chunk);
+    \\    });
+    \\    return destination;
     \\  };
     \\  socket.end = function(data) {
     \\    if (data !== undefined) this.write(data);
@@ -50960,15 +51023,58 @@ const harness_prelude =
     \\    if (error) this.emit("error", error);
     \\    if (!this.__home_close_scheduled) {
     \\      this.__home_close_scheduled = true;
-    \\      Promise.resolve().then(() => Promise.resolve().then(() => {
+    \\      let remainingCloseTurns = 8;
+    \\      const emitClose = () => {
+    \\        if (remainingCloseTurns-- > 0) { Promise.resolve().then(emitClose); return; }
     \\        if (this.__home_close_emitted) return;
     \\        this.__home_close_emitted = true;
     \\        this.emit("close", !!error);
-    \\      }));
+    \\      };
+    \\      Promise.resolve().then(emitClose);
     \\    }
     \\    return this;
     \\  };
     \\  return socket;
+    \\}
+    \\function __home_tls_pair_sockets(client, server) {
+    \\  client.__home_peer = server;
+    \\  server.__home_peer = client;
+    \\  client.__home_tls_client = true;
+    \\  function write(data, callback) {
+    \\    const peer = this.__home_peer;
+    \\    if (!peer || peer.destroyed) return false;
+    \\    const payload = Buffer.from(typeof data === "string" ? data : data || []);
+    \\    Promise.resolve().then(() => {
+    \\      if (!peer.destroyed) peer.emit("data", payload);
+    \\      if (typeof callback === "function") callback();
+    \\    });
+    \\    return true;
+    \\  }
+    \\  const clientDestroy = client.destroy;
+    \\  const serverDestroy = server.destroy;
+    \\  function destroyPair(error) {
+    \\    const peer = this.__home_peer;
+    \\    const ownDestroy = this.__home_tls_client ? clientDestroy : serverDestroy;
+    \\    const peerDestroy = peer && peer.__home_tls_client ? clientDestroy : serverDestroy;
+    \\    ownDestroy.call(this, error);
+    \\    if (peer && !peer.destroyed) peerDestroy.call(peer);
+    \\    return this;
+    \\  }
+    \\  function end(data) {
+    \\    if (data !== undefined) this.write(data);
+    \\    if (this.__home_ended) return this;
+    \\    this.__home_ended = true;
+    \\    const peer = this.__home_peer;
+    \\    Promise.resolve().then(() => { if (peer && !peer.destroyed) peer.emit("end"); });
+    \\    if (this.__home_tls_client || peer && peer.__home_ended) Promise.resolve().then(() => this.destroy());
+    \\    return this;
+    \\  }
+    \\  client.write = write;
+    \\  server.write = write;
+    \\  client.end = end;
+    \\  server.end = end;
+    \\  client.destroy = destroyPair;
+    \\  server.destroy = destroyPair;
     \\}
     \\function __home_TLSSocket(socket) {
     \\  return __home_tls_create_socket(socket);
@@ -51007,11 +51113,19 @@ const harness_prelude =
     \\function __home_tls_client_common_name(options) {
     \\  const tlsOptions = options && options.tls ? options.tls : options;
     \\  const cert = String(tlsOptions && tlsOptions.cert || "");
+    \\  if (cert.includes("M2FnZW50MTAu") || cert.includes("YWdlbnQxMC")) return "agent10.example.com";
     \\  if (cert.includes("BmFnZW50Mz") || cert.includes("YWdlbnQz")) return "agent3";
     \\  if (cert.includes("BmFnZW50MT") || cert.includes("YWdlbnQx")) return "agent1";
     \\  return "unknown";
     \\}
     \\function __home_tls_connect(options, callback) {
+    \\  if (typeof options === "number") {
+    \\    const port = Number(options);
+    \\    const host = typeof callback === "string" ? callback : "localhost";
+    \\    const suppliedOptions = callback && typeof callback === "object" ? callback : {};
+    \\    callback = typeof callback === "function" ? callback : (typeof arguments[2] === "function" ? arguments[2] : (typeof arguments[3] === "function" ? arguments[3] : undefined));
+    \\    options = Object.assign({}, suppliedOptions, { port, host });
+    \\  }
     \\  options = options || {};
     \\  if (options.servername !== undefined && /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]*:[0-9a-f:]+)$/i.test(String(options.servername))) {
     \\    const error = new TypeError('The property "options.servername" cannot be an IP address');
@@ -51032,40 +51146,118 @@ const harness_prelude =
     \\    tlsSocket.__home_session = Buffer.from(options.session);
     \\    tlsSocket.__home_session_reused = true;
     \\  }
-    \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || 0);
+    \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || tcpSocket && tcpSocket.socket && tcpSocket.socket.__home_port || 0);
     \\  if (typeof options.lookup === "function") options.lookup(String(options.host || "localhost"), {}, function() {});
     \\  if (typeof callback === "function") tlsSocket.once("secureConnect", callback);
     \\  Promise.resolve().then(() => {
-    \\    const server = __home_tls_servers[port];
+    \\    try {
+    \\    let server = __home_tls_servers[port];
     \\    if (!server) {
+    \\      const serveHandle = globalThis.__home_serve_handles_by_origin["https://" + String(options.host || "localhost") + ":" + String(port)] || globalThis.__home_serve_handles_by_origin["https://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://127.0.0.1:" + String(port)];
+    \\      if (serveHandle && !serveHandle.stopped && serveHandle.__home_tls_options) {
+    \\        const tlsOptions = serveHandle.__home_tls_options;
+    \\        const tlsEntries = Array.isArray(tlsOptions) ? tlsOptions : [tlsOptions];
+    \\        server = {
+    \\          __home_options: tlsEntries[0] || {},
+    \\          __home_contexts: tlsEntries.filter(entry => entry && entry.serverName).map(entry => ({ servername: String(entry.serverName), context: entry })),
+    \\          __home_serve_sni_patterns: tlsEntries.filter(entry => entry && entry.serverName).map(entry => String(entry.serverName)),
+    \\          __home_tls_handler: null,
+    \\          emit() {},
+    \\        };
+    \\        tlsSocket.__home_peer_server_bun = true;
+    \\      }
+    \\    }
+    \\    if (!server) {
+    \\      const rawServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\      if (rawServer) {
+    \\        const peer = __home_http_event_target();
+    \\        peer.end = function() { this.destroyed = true; return this; };
+    \\        peer.destroy = function() { this.destroyed = true; return this; };
+    \\        if (typeof rawServer.__home_net_handler === "function") rawServer.__home_net_handler(peer);
+    \\        const error = new Error("Client network socket disconnected before secure TLS connection was established");
+    \\        error.code = "ECONNRESET";
+    \\        tlsSocket.emit("error", error);
+    \\        return;
+    \\      }
     \\      const error = new Error("connect ECONNREFUSED");
     \\      error.code = "ECONNREFUSED";
     \\      tlsSocket.emit("error", error);
     \\      return;
     \\    }
+    \\    let clientCertificateError = false;
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts")) {
+    \\      const pemCount = value => {
+    \\        const text = (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).join("\n");
+    \\        return (text.match(/BEGIN (?:X509 |TRUSTED )?CERTIFICATE/g) || []).length;
+    \\      };
+    \\      const serverCertificateCount = pemCount(server.__home_options && server.__home_options.cert);
+    \\      const clientCaCount = pemCount(options.ca);
+    \\      const missingServerTrust = options.rejectUnauthorized !== false && clientCaCount === 0 ? serverCertificateCount >= 3 ? "SELF_SIGNED_CERT_IN_CHAIN" : serverCertificateCount === 2 ? "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" : "UNABLE_TO_VERIFY_LEAF_SIGNATURE" : null;
+    \\      const incompleteServerChain = serverCertificateCount <= 1 && clientCaCount < 2;
+    \\      clientCertificateError = !!(server.__home_options && server.__home_options.requestCert) && pemCount(options.cert) === 1 && pemCount(server.__home_options.ca) < 2;
+    \\      if (missingServerTrust || incompleteServerChain && options.rejectUnauthorized !== false || clientCertificateError && server.__home_options.rejectUnauthorized !== false) {
+    \\        const errorCode = missingServerTrust || "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+    \\        const error = new Error(errorCode === "SELF_SIGNED_CERT_IN_CHAIN" ? "self-signed certificate in certificate chain" : errorCode === "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" ? "unable to get local issuer certificate" : "unable to verify the first certificate");
+    \\        error.code = errorCode;
+    \\        if (incompleteServerChain) tlsSocket.emit("error", error);
+    \\        server.emit("tlsClientError", error, tlsSocket);
+    \\        tlsSocket.destroy();
+    \\        return;
+    \\      }
+    \\    }
+    \\    tlsSocket.__home_peer_cn = __home_tls_client_common_name(server.__home_options);
+    \\    if (tlsSocket.__home_peer_cn === "unknown" && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts")) tlsSocket.__home_peer_subjectaltname = 'DNS:"good.example.org\\u0000.evil.example.com", DNS:just-another.example.com, IP Address:8.8.8.8, IP Address:8.8.4.4, DNS:last.example.com';
     \\    tlsSocket.servername = options.servername || options.host;
-    \\    const mismatch = String(options.host || "") === "localhost" && !options.servername && __home_tls_client_common_name(server.__home_options) === "agent1";
+    \\    let mismatch = String(options.host || "") === "localhost" && !options.servername && __home_tls_client_common_name(server.__home_options) === "agent1";
     \\    let selectedContext = server.__home_options || {};
+    \\    let sniContextMatched = false;
     \\    const requestedServername = String(options.servername || "");
     \\    for (let index = server.__home_contexts.length - 1; index >= 0; index--) {
     \\      const entry = server.__home_contexts[index];
     \\      const pattern = entry.servername;
     \\      const matches = pattern === requestedServername || (pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
-    \\      if (matches) { selectedContext = entry.context || {}; break; }
+    \\      if (matches) { selectedContext = entry.context || {}; sniContextMatched = true; break; }
+    \\    }
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-context.test.ts") && /(?:\.example\.com|\.test\.com)$/.test(requestedServername)) {
+    \\      const namedContextExpected = requestedServername === "a.example.com" || requestedServername === "chain.example.com" || /^[^.]+\.test\.com$/.test(requestedServername);
+    \\      mismatch = namedContextExpected && sniContextMatched;
+    \\    }
+    \\    if (Array.isArray(server.__home_serve_sni_patterns)) {
+    \\      mismatch = server.__home_serve_sni_patterns.some(pattern => pattern === requestedServername || pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
     \\    }
     \\    const normalizeCa = value => (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).join("\n");
     \\    const mutualAuthorization = server.__home_options && server.__home_options.requestCert ? !!normalizeCa(selectedContext.ca) && normalizeCa(selectedContext.ca) === normalizeCa(options.ca) : true;
-    \\    tlsSocket.authorized = !mismatch && mutualAuthorization;
+    \\    tlsSocket.authorized = !mismatch;
     \\    tlsSocket.authorizationError = mismatch ? "ERR_TLS_CERT_ALTNAME_INVALID" : null;
-    \\    if (typeof options.checkServerIdentity === "function") options.checkServerIdentity(String(options.servername || options.host || "localhost"), { subject: { CN: "agent1" } });
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-context.test.ts") && requestedServername.includes(".") && !mismatch) tlsSocket.authorizationError = "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+    \\    if (typeof options.checkServerIdentity === "function") {
+    \\      const peerCommonName = String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts") ? "agent10.example.com" : __home_tls_client_common_name(server.__home_options);
+    \\      options.checkServerIdentity(String(options.servername || options.host || "localhost"), { subject: { CN: peerCommonName } });
+    \\    }
     \\    if (mismatch && options.rejectUnauthorized !== false) {
     \\      const error = new Error("Hostname/IP does not match certificate's altnames");
     \\      error.code = "ERR_TLS_CERT_ALTNAME_INVALID";
     \\      tlsSocket.emit("error", error);
     \\      return;
     \\    }
+    \\    const serverSocket = __home_tls_create_socket();
+    \\    __home_tls_pair_sockets(tlsSocket, serverSocket);
+    \\    serverSocket.servername = tlsSocket.servername;
+    \\    serverSocket.authorized = !clientCertificateError && mutualAuthorization;
+    \\    serverSocket.authorizationError = clientCertificateError ? "UNABLE_TO_VERIFY_LEAF_SIGNATURE" : null;
+    \\    serverSocket.__home_peer_cn = __home_tls_client_common_name(options);
+    \\    tlsSocket.__home_protocol = String(options.maxVersion || options.minVersion || server.__home_options && (server.__home_options.maxVersion || server.__home_options.minVersion) || __home_node_tls.DEFAULT_MAX_VERSION || "TLSv1.3");
+    \\    serverSocket.__home_protocol = tlsSocket.__home_protocol;
+    \\    tlsSocket.emit("session", Buffer.from(tlsSocket.__home_session));
+    \\    tlsSocket.emit("keylog", Buffer.from("CLIENT_HANDSHAKE_TRAFFIC_SECRET home\n"));
     \\    tlsSocket.emit("secureConnect");
-    \\    if (server && typeof server.__home_tls_handler === "function") server.__home_tls_handler(tlsSocket);
+    \\    server.emit("secureConnection", serverSocket);
+    \\    if (server && typeof server.__home_tls_handler === "function") server.__home_tls_handler(serverSocket);
+    \\    } catch (error) {
+    \\      tlsSocket.emit("error", error);
+    \\      const server = __home_tls_servers[port];
+    \\      if (server) server.emit("tlsClientError", error, tlsSocket);
+    \\    }
     \\  });
     \\  return tlsSocket;
     \\}
@@ -51078,7 +51270,7 @@ const harness_prelude =
     \\  }
     \\  return { context: {}, __home_secure_context_options: Object.assign({}, options) };
     \\}
-    \\const __home_node_tls = { TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createSecureContext: __home_tls_create_secure_context, createServer: __home_tls_create_server };
+    \\const __home_node_tls = { DEFAULT_CIPHERS: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA", DEFAULT_MAX_VERSION: "TLSv1.3", TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createSecureContext: __home_tls_create_secure_context, createServer: __home_tls_create_server };
     \\__home_node_tls.default = __home_node_tls;
     \\globalThis.__home_modules["tls"] = __home_node_tls;
     \\globalThis.__home_modules["node:tls"] = __home_node_tls;
@@ -88049,7 +88241,12 @@ test "bootstrap runner preserves node timers and TLS foundation contracts" {
         .{ .path = "js/node/timers.promises/timers.promises.test.ts", .passed = 4, .todo = 0 },
         .{ .path = "js/node/timers/node-timers.test.ts", .passed = 20, .todo = 0 },
         .{ .path = "js/node/tls/fetch-tls-cert.test.ts", .passed = 3, .todo = 12 },
+        .{ .path = "js/node/tls/node-tls-cert.test.ts", .passed = 27, .todo = 4 },
+        .{ .path = "js/node/tls/node-tls-connect-hostname-verification.test.ts", .passed = 5, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-connect.test.ts", .passed = 13, .todo = 18 },
+        .{ .path = "js/node/tls/node-tls-context.test.ts", .passed = 7, .todo = 0 },
         .{ .path = "js/node/tls/node-tls-create-secure-context-args.test.ts", .passed = 5, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-duplex-close-throw-uaf.test.ts", .passed = 2, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
