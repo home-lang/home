@@ -4511,6 +4511,7 @@ pub const Checker = struct {
     private_identifier_downlevel_collision_enabled: bool = true,
     target_emit_es5: bool = false,
     target_es5_baseline: bool = false,
+    target_selection_explicit: bool = false,
     /// True when the entire compilation unit is a `.d.ts` /
     /// `.d.mts` / `.d.cts` declaration file (set from outside via
     /// `setIsDeclarationFile`). Used by `virtualSectionIsDeclaration
@@ -4848,10 +4849,12 @@ pub const Checker = struct {
 
     pub fn setTargetEs5Baseline(self: *Checker, enabled: bool) void {
         self.target_es5_baseline = enabled;
+        self.target_selection_explicit = true;
     }
 
     pub fn setTargetEmitEs5(self: *Checker, enabled: bool) void {
         self.target_emit_es5 = enabled;
+        self.target_selection_explicit = true;
     }
 
     pub fn setPrivateIdentifierDownlevelCollisionEnabled(self: *Checker, enabled: bool) void {
@@ -21013,6 +21016,9 @@ pub const Checker = struct {
     /// that helper's `startsWith("//")` check otherwise refuses the
     /// BOM-prefixed first line and silently drops the directive.
     fn sourceTargetMentionsEs5(self: *Checker) bool {
+        if (self.target_selection_explicit) {
+            return self.target_emit_es5 or self.target_es5_baseline;
+        }
         const raw = self.source orelse return false;
         const src = if (raw.len >= 3 and raw[0] == 0xEF and raw[1] == 0xBB and raw[2] == 0xBF)
             raw[3..]
@@ -215286,6 +215292,24 @@ test "checker: TS2522 reports arguments in ES5 async non-arrow functions" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.arguments_in_async_es5));
     const message = checkerFirstMessageForCode(s, TsCodes.arguments_in_async_es5) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("The 'arguments' object cannot be referenced in an async function or method in ES5. Consider using a standard function or method.", message);
+}
+
+test "checker: selected modern target overrides multi-target ES5 directive" {
+    const s = try newSetup(
+        \\// @target: es5, es2015
+        \\class Base { static value = 1; }
+        \\class Derived extends Base {
+        \\  static value = super.value;
+        \\  static { super.value; }
+        \\}
+        \\async function f() { return arguments; }
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(false);
+    s.checker.setTargetEs5Baseline(false);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.super_only_methods_accessible));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arguments_in_async_es5));
 }
 
 test "checker: TS2815 covers arguments in class field initializers and static blocks" {

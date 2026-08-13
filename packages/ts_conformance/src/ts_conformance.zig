@@ -3339,7 +3339,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             actual_count += 1;
         }
     }
-    actual_count += try appendTsconfigSyntaxDiagnostics(gpa, virtual_files.items, &actual_lines);
+    actual_count += try appendTsconfigParseDiagnostics(gpa, virtual_files.items, &actual_lines);
     actual_count += try appendExplicitRootDirDiagnostics(gpa, virtual_files.items, tsconfig_options, &actual_lines);
     actual_count += try appendMissingConfiguredTypeDiagnostics(
         gpa,
@@ -7072,7 +7072,7 @@ fn appendTsconfigPathsValidationDiagnostics(
     return count;
 }
 
-fn appendTsconfigSyntaxDiagnostics(
+fn appendTsconfigParseDiagnostics(
     gpa: std.mem.Allocator,
     virtual_files: []const VirtualFile,
     actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
@@ -7107,8 +7107,50 @@ fn appendTsconfigSyntaxDiagnostics(
             });
             count += 1;
         }
+        for (config.option_parse_diagnostics) |diagnostic| {
+            if (diagnostic.code != 5024) continue;
+            const value_offset = jsonOptionValueOffset(file.source, diagnostic.option) orelse continue;
+            const pos = ts_diagnostics.positionToLineCol(file.source, @intCast(value_offset));
+            const message = try std.fmt.allocPrint(
+                gpa,
+                "Compiler option '{s}' requires a value of type {s}.",
+                .{ diagnostic.option, diagnostic.expected_type },
+            );
+            defer gpa.free(message);
+            const formatted = try ts_diagnostics.formatDefault(gpa, .{
+                .file = diag_path,
+                .line = pos.line,
+                .col = pos.col,
+                .code = diagnostic.code,
+                .code_prefix = .TS,
+                .severity = .err,
+                .message = message,
+                .span_len = @intCast(@max(@as(usize, 1), jsonValueSpanLen(file.source, value_offset))),
+            });
+            try actual_lines.append(gpa, .{
+                .file = diag_path,
+                .line = pos.line,
+                .col = pos.col,
+                .code = diagnostic.code,
+                .order = actual_lines.items.len,
+                .text = formatted,
+            });
+            count += 1;
+        }
     }
     return count;
+}
+
+fn jsonOptionValueOffset(source: []const u8, option: []const u8) ?usize {
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, source, search_from, option)) |name_start| {
+        search_from = name_start + option.len;
+        if (name_start == 0 or source[name_start - 1] != '"') continue;
+        if (search_from >= source.len or source[search_from] != '"') continue;
+        const colon = std.mem.indexOfScalarPos(u8, source, search_from + 1, ':') orelse return null;
+        return skipJsonTrivia(source, colon + 1);
+    }
+    return null;
 }
 
 fn appendExplicitRootDirDiagnostics(

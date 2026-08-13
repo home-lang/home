@@ -1685,13 +1685,25 @@ pub fn parseString(
     }
 
     if (root.get("files")) |v| {
-        cfg.files = try parseStringArray(arena, v);
+        if (v.asArray() != null) {
+            cfg.files = try parseStringArray(arena, v);
+        } else {
+            try recordOptionTypeMismatch(arena, &config_diags, "files", "Array");
+        }
     }
     if (root.get("include")) |v| {
-        cfg.include = try parseStringArray(arena, v);
+        if (v.asArray() != null) {
+            cfg.include = try parseStringArray(arena, v);
+        } else {
+            try recordOptionTypeMismatch(arena, &config_diags, "include", "Array");
+        }
     }
     if (root.get("exclude")) |v| {
-        cfg.exclude = try parseStringArray(arena, v);
+        if (v.asArray() != null) {
+            cfg.exclude = try parseStringArray(arena, v);
+        } else {
+            try recordOptionTypeMismatch(arena, &config_diags, "exclude", "Array");
+        }
     }
     if (root.get("references")) |v| {
         if (v.asArray()) |refs| {
@@ -3826,6 +3838,20 @@ test "tsconfig.validate: list option given non-array reports TS5024" {
     try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
     const d = findCode(diags, 5024).?;
     try t.expectEqualStrings("Compiler option 'lib' requires a value of type Array.", d.message);
+}
+
+test "tsconfig.validate: root list options given non-arrays report TS5024" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "files": "a.ts", "include": true, "exclude": 42 }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), countCode(diags, 5024));
+    try t.expectEqual(@as(?[][]const u8, null), cfg.files);
+    try t.expectEqual(@as(?[][]const u8, null), cfg.include);
+    try t.expectEqual(@as(?[][]const u8, null), cfg.exclude);
 }
 
 test "tsconfig.validate: paths substitution wrong type reports TS5064" {
