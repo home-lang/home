@@ -40,6 +40,7 @@ const hir_mod = @import("hir");
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
     ambient_modules: []const AmbientModuleResolution = &.{},
+    allow_js: bool = false,
 
     const TypeOnlyExportInfo = struct {
         path: []const u8,
@@ -155,6 +156,20 @@ const CheckerResolverAdapter = struct {
         const ambient = self.ambientModuleExportQuery(specifier, containing, name);
         if (resolved == null and ambient == null) return null;
         const module_path = if (resolved) |r| r.path else ambient.?.path;
+        // JavaScript implementation files outside an allowJs project are
+        // untyped modules. Their export surface is `any`, so a syntactically
+        // empty JS module must not reject arbitrary named imports.
+        if (resolved) |r| {
+            if (!self.allow_js and !r.is_declaration and isJsLikeVirtualFile(r.path)) {
+                const arena = self.resolver.arena.allocator();
+                return .{
+                    .module_name = ts_program.renderModuleDisplayName(arena, module_path) catch return null,
+                    .exported_type = true,
+                    .exported_value = true,
+                    .module_is_external = true,
+                };
+            }
+        }
         // Read the resolved module's source and parse+bind it to query
         // its top-level export table. The resolver's arena outlives the
         // checker calls, so the rendered module name borrowed by the
@@ -1493,7 +1508,7 @@ fn rawSourceHasTypeReferenceProgramRoute(raw: []const u8) bool {
 }
 
 fn rawSourceHasNodeModulesDeclarationAndBareImport(raw: []const u8) bool {
-    var saw_node_modules_dts = false;
+    var saw_node_modules_declaration = false;
     var saw_non_node_modules_bare_import = false;
     var current_non_node_modules_code = false;
     var lines = std.mem.splitScalar(u8, raw, '\n');
@@ -1502,8 +1517,8 @@ fn rawSourceHasNodeModulesDeclarationAndBareImport(raw: []const u8) bool {
         if (virtualFilename(line)) |path| {
             const is_code = isCodeVirtualFile(path);
             const in_node_modules = isNodeModulesVirtualPath(path);
-            if (is_code and in_node_modules and std.mem.endsWith(u8, path, ".d.ts")) {
-                saw_node_modules_dts = true;
+            if (is_code and in_node_modules and isDeclarationFilePath(path)) {
+                saw_node_modules_declaration = true;
             }
             current_non_node_modules_code = is_code and !in_node_modules;
             continue;
@@ -1511,7 +1526,7 @@ fn rawSourceHasNodeModulesDeclarationAndBareImport(raw: []const u8) bool {
         if (!current_non_node_modules_code) continue;
         if (sourceLineHasBareImportSpecifier(line)) saw_non_node_modules_bare_import = true;
     }
-    return saw_node_modules_dts and saw_non_node_modules_bare_import;
+    return saw_node_modules_declaration and saw_non_node_modules_bare_import;
 }
 
 fn sourceLineHasBareImportSpecifier(line: []const u8) bool {
@@ -1526,6 +1541,12 @@ fn sourceLineHasBareImportSpecifier(line: []const u8) bool {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (std.mem.startsWith(u8, trimmed, "import")) {
         if (quotedBareSpecifierAfter(trimmed["import".len..])) return true;
+    }
+    search_start = 0;
+    while (std.mem.indexOfPos(u8, line, search_start, "import(")) |idx| {
+        search_start = idx + "import(".len;
+        if (idx > 0 and isIdentifierContinue(line[idx - 1])) continue;
+        if (quotedBareSpecifierAfter(line[search_start..])) return true;
     }
     return false;
 }
@@ -2365,6 +2386,32 @@ test "conformance: clean ancestor node_modules declaration fixture routes throug
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: clean conditional @types import types route through program" {
+    const raw =
+        \\// @module: esnext
+        \\// @moduleResolution: bundler, classic
+        \\// @filename: /node_modules/@types/foo/package.json
+        \\{ "exports": { ".": { "import": "./index.d.mts" } } }
+        \\// @filename: /node_modules/@types/foo/index.d.mts
+        \\export declare const x: "module";
+        \\// @filename: /app.ts
+        \\type X = typeof import("foo").x;
+    ;
+    const c: Case = .{
+        .name = "resolutionModeImportType1",
+        .source = "",
+        .path = "/app.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    };
+    try T.expect(rawSourceHasNodeModulesDeclarationAndBareImport(raw));
+    try T.expect(shouldRouteThroughProgram(c));
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: visible @types ambient modules resolve from multiple node_modules roots" {
     const raw =
         \\// @module: commonjs
@@ -3037,9 +3084,11 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const ambient_modules = try collectAmbientModules(gpa, virtual_files.items);
     defer freeAmbientModuleResolutions(gpa, ambient_modules);
 
+    const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
     var resolver_adapter = CheckerResolverAdapter{
         .resolver = &resolver,
         .ambient_modules = ambient_modules,
+        .allow_js = allow_js_project,
     };
     const external = ts_checker.ExternalResolver{
         .ptr = &resolver_adapter,
@@ -3052,7 +3101,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .nodenext => "nodenext",
         .bundler => "bundler",
     };
-    const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
     var compile_options = ts_driver.CompileOptions{
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
@@ -53983,7 +54031,7 @@ test "conformance: nonPrimitiveAndEmptyObject passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-test "conformance: nonPrimitiveAssignError matches TS2322/TS2741 baseline" {
+test "conformance: nonPrimitiveAssignError matches tsgo TS2322 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "nonPrimitiveAssignError",
         .path = "nonPrimitiveAssignError.ts",
@@ -54019,7 +54067,7 @@ test "conformance: nonPrimitiveAssignError matches TS2322/TS2741 baseline" {
         ,
         .expects_error = true,
         .expected_errors =
-        \\nonPrimitiveAssignError.ts(5,1): error TS2741: Property 'foo' is missing in type '{}' but required in type '{ foo: string; }'.
+        \\nonPrimitiveAssignError.ts(5,1): error TS2322: Type 'object' is not assignable to type '{ foo: string; }'.
         \\nonPrimitiveAssignError.ts(13,1): error TS2322: Type 'number' is not assignable to type 'object'.
         \\nonPrimitiveAssignError.ts(14,1): error TS2322: Type 'boolean' is not assignable to type 'object'.
         \\nonPrimitiveAssignError.ts(15,1): error TS2322: Type 'string' is not assignable to type 'object'.
@@ -54032,9 +54080,6 @@ test "conformance: nonPrimitiveAssignError matches TS2322/TS2741 baseline" {
     defer {
         T.allocator.free(result.name);
         if (result.detail.len > 0) T.allocator.free(result.detail);
-    }
-    if (result.outcome != .passed) {
-        std.debug.print("nonPrimitiveAssignError detail:\n{s}\n", .{result.detail});
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }

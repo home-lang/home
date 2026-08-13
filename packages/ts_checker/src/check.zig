@@ -50411,8 +50411,9 @@ pub const Checker = struct {
     /// ("Did you mean to set the 'moduleResolution' option to
     /// 'nodenext'ÃÂ¢ÃÂÃÂ¦?") for bare module imports that fall through.
     fn moduleResolutionIsClassic(self: *Checker) bool {
-        if (self.module_resolution.len > 0 and
-            std.ascii.eqlIgnoreCase(self.module_resolution, "classic")) return true;
+        if (self.module_resolution.len > 0) {
+            return std.ascii.eqlIgnoreCase(self.module_resolution, "classic");
+        }
         return self.sourceDirectiveValueMentions("moduleResolution", "classic") or
             self.sourceDirectiveValueMentions("ModuleResolution", "classic");
     }
@@ -50754,9 +50755,19 @@ pub const Checker = struct {
             self.importer_path
         else
             self.virtualSectionFilenameForNode(node) orelse return false;
-        return std.mem.endsWith(u8, importer, ".mts") or
+        if (std.mem.endsWith(u8, importer, ".mts") or
             std.mem.endsWith(u8, importer, ".mjs") or
-            std.mem.endsWith(u8, importer, ".d.mts");
+            std.mem.endsWith(u8, importer, ".d.mts")) return true;
+        if (std.mem.endsWith(u8, importer, ".cts") or
+            std.mem.endsWith(u8, importer, ".cjs") or
+            std.mem.endsWith(u8, importer, ".d.cts")) return false;
+        if (self.module_kind.len == 0) return true;
+        return std.ascii.eqlIgnoreCase(self.module_kind, "es2015") or
+            std.ascii.eqlIgnoreCase(self.module_kind, "es6") or
+            std.ascii.eqlIgnoreCase(self.module_kind, "es2020") or
+            std.ascii.eqlIgnoreCase(self.module_kind, "es2022") or
+            std.ascii.eqlIgnoreCase(self.module_kind, "esnext") or
+            std.ascii.eqlIgnoreCase(self.module_kind, "preserve");
     }
 
     fn nodeEsmRelativeImportSuggestedSpecifier(self: *Checker, node: NodeId, spec: []const u8) CheckError!?[]u8 {
@@ -56630,12 +56641,12 @@ pub const Checker = struct {
             }
             return false;
         }
-        if (self.source) |src| {
-            if (std.mem.indexOf(u8, src, "@moduleResolution: classic") != null or
-                std.mem.indexOf(u8, src, "@moduleResolution: bundler, classic") != null)
-            {
-                return false;
-            }
+        if (self.external_resolver) |resolver| {
+            const containing = if (self.importer_path.len > 0)
+                self.importer_path
+            else
+                self.virtualSectionFilenameForNode(anchor) orelse "/__root__.ts";
+            if (resolver.resolve(spec, containing) != null) return true;
         }
         return try self.isKnownAmbientModuleName(anchor, spec);
     }
@@ -154791,12 +154802,11 @@ pub const Checker = struct {
 
         // Source-side gate: either the value is a literal object
         // (empty or otherwise) OR the resolved source is an object
-        // type whose members we can enumerate, OR the resolved
-        // source is the broad `object` primitive (which upstream
-        // tsc widens to `{}` for the missing-property error).
-        // tsc fires TS2741 in the empty-source (`{}` flowing into
-        // `{ x: T }`), partial-source (`{ s: string }` into
-        // `{ b: boolean; s: string }`), and broad-object cases.
+        // type whose members we can enumerate. tsc fires TS2741 in
+        // the empty-source (`{}` flowing into `{ x: T }`) and
+        // partial-source (`{ s: string }` into `{ b: boolean;
+        // s: string }`) cases. The broad `object` primitive stays
+        // generic and falls through to TS2322.
         const source_is_primitive_object_intersection = self.intersectionHasPrimitiveAndObjectMembers(source);
         const source_is_object_intersection = self.intersectionHasOnlyObjectMembers(source);
         const source_is_object_shaped = blk: {
@@ -154805,7 +154815,6 @@ pub const Checker = struct {
             {
                 break :blk true;
             }
-            if (source == types.Primitive.object_t) break :blk true;
             if (self.class_name_by_instance.contains(source)) break :blk true;
             if (source_is_primitive_object_intersection) break :blk true;
             if (source_is_object_intersection) break :blk true;
@@ -154943,12 +154952,7 @@ pub const Checker = struct {
             try self.missingPrivatePropertyApparentSourceName(source, value_node)
         else
             null;
-        // Upstream tsc renders the broad `object` primitive as `{}`
-        // in this missing-property error ÃÂ¢ÃÂÃÂ see
-        // `nonPrimitiveAssignError.ts(5,1)`.
-        const source_name = if (source == types.Primitive.object_t)
-            "{}"
-        else if (source_is_primitive_object_intersection)
+        const source_name = if (source_is_primitive_object_intersection)
             (try self.allocIntersectionNameWithPrimitiveWrappers(source)) orelse
                 (try self.allocSimpleTypeName(source)) orelse
                 (try self.allocObjectTypeShape(source)) orelse "{}"

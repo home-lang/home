@@ -5134,6 +5134,31 @@ test "Resolver: @types/<pkg> fallback — bare pkg with no types resolves throug
     try T.expect(res.is_declaration);
 }
 
+test "Resolver: @types-only package resolves conditional declaration exports" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/@types/foo/package.json",
+        \\{
+        \\  "name": "@types/foo",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./index.d.mts",
+        \\      "require": "./index.d.cts"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/@types/foo/index.d.mts", "export declare const x: 'module';");
+    try vfs.addFile("/node_modules/@types/foo/index.d.cts", "export declare const x: 'script';");
+    try vfs.addFile("/app.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler, .module_kind = "esnext" });
+    defer r.deinit();
+    const res = try r.resolve("foo", "/app.ts");
+    try T.expectEqualStrings("/node_modules/@types/foo/index.d.mts", res.path);
+    try T.expect(res.is_declaration);
+}
+
 test "Resolver: @types package typings entries accept TypeScript source files" {
     var vfs = VirtualFs.init(T.allocator);
     defer vfs.deinit();
