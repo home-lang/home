@@ -2443,65 +2443,6 @@ fn appendMissingImportedHelperDiagnostics(
     };
     try appendImportedPrivateHelperArityDiagnostics(gpa, c, source, tslib_source);
     if (commonjs_module) try appendMissingCommonJsInteropHelperDiagnostics(gpa, c, tslib_source);
-    var search_from: usize = 0;
-    while (findStage3DecoratedClassExpression(source, search_from)) |decorated| {
-        const helpers = [_][]const u8{ "__esDecorate", "__propKey", "__runInitializers", "__setFunctionName" };
-        for (helpers) |helper| {
-            if (std.mem.eql(u8, helper, "__setFunctionName") and !decorated.requires_set_function_name) continue;
-            if (std.mem.eql(u8, helper, "__propKey") and !decorated.requires_prop_key) continue;
-            if (std.mem.indexOf(u8, tslib_source, helper) != null) continue;
-            const msg = try std.fmt.allocPrint(
-                gpa,
-                "This syntax requires an imported helper named '{s}' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.",
-                .{helper},
-            );
-            try c.diagnostics.append(gpa, .{
-                .phase = .bind,
-                .pos = @intCast(decorated.at_pos),
-                .line = 0,
-                .span_len = @intCast(decorated.span_len),
-                .code = 2343,
-                .message = msg,
-            });
-            c.has_errors = true;
-        }
-        search_from = decorated.at_pos + 1;
-    }
-
-    // Stage-3 decorators on class MEMBERS (`@dec static #foo() {}`) also need
-    // the decorator emit helpers, but the scan above only matches decorators
-    // on the class itself. When the source has no class decorator yet does
-    // decorate a member, emit the missing-helper diagnostic for that member
-    // too. The `tslib has helper` guard keeps fixtures with a complete tslib
-    // clean, and gating to "no class decorator" avoids disturbing the
-    // class-decorator exact baselines. Mirrors tsc emitting TS2343 per
-    // required helper on the decorated member (e.g. the
-    // `esDecorators-classDeclaration-missingEmitHelpers-*` fixtures, whose
-    // `tslib.d.ts` is empty).
-    if (findStage3DecoratedClassExpression(source, 0) == null) {
-        if (findStage3DecoratedMember(source, 0)) |member| {
-            const helpers = [_][]const u8{ "__esDecorate", "__propKey", "__runInitializers", "__setFunctionName" };
-            for (helpers) |helper| {
-                if (std.mem.eql(u8, helper, "__propKey") and !member.requires_prop_key) continue;
-                if (std.mem.eql(u8, helper, "__setFunctionName") and !member.requires_set_function_name) continue;
-                if (std.mem.indexOf(u8, tslib_source, helper) != null) continue;
-                const msg = try std.fmt.allocPrint(
-                    gpa,
-                    "This syntax requires an imported helper named '{s}' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.",
-                    .{helper},
-                );
-                try c.diagnostics.append(gpa, .{
-                    .phase = .bind,
-                    .pos = @intCast(member.at_pos),
-                    .line = 0,
-                    .span_len = @intCast(member.span_len),
-                    .code = 2343,
-                    .message = msg,
-                });
-                c.has_errors = true;
-            }
-        }
-    }
 }
 
 fn helperDiagnosticsUseCommonJsModule(source: []const u8, options: CompileOptions) bool {
@@ -2521,149 +2462,6 @@ fn moduleKindLowersToCommonJs(module: []const u8) bool {
         std.ascii.eqlIgnoreCase(module, "amd") or
         std.ascii.eqlIgnoreCase(module, "system") or
         std.ascii.eqlIgnoreCase(module, "umd");
-}
-
-const DecoratedMember = struct {
-    at_pos: usize,
-    span_len: usize,
-    requires_prop_key: bool,
-    requires_set_function_name: bool,
-};
-
-/// Finds a stage-3 decorator applied to a class *member* (`@dec static #foo`),
-/// as opposed to the class itself. Used to flag missing decorator emit helpers
-/// under `importHelpers`. A match requires an `@name` decorator that is not a
-/// class decorator (no nearby `class` keyword) and that sits inside a class
-/// body (some `class` keyword precedes it). Conservative on purpose — callers
-/// are already gated on `importHelpers && !experimentalDecorators`.
-fn findStage3DecoratedMember(source: []const u8, start: usize) ?DecoratedMember {
-    var i = start;
-    while (std.mem.indexOfScalarPos(u8, source, i, '@')) |at| {
-        if (positionInLineComment(source, at) or positionInBlockComment(source, at)) {
-            i = at + 1;
-            continue;
-        }
-        const name_start = skipTrivia(source, at + 1);
-        if (name_start >= source.len or !isIdentifierStart(source[name_start])) {
-            i = at + 1;
-            continue;
-        }
-        // Class decorators are handled by findStage3DecoratedClassExpression.
-        if (findKeywordNearby(source, at + 1, "class") != null) {
-            i = at + 1;
-            continue;
-        }
-        // Only a member decorator if it appears inside a class body.
-        if (lastClassKeywordBefore(source, at) == null) {
-            i = at + 1;
-            continue;
-        }
-        var name_end = name_start;
-        while (name_end < source.len and isIdentifierContinue(source[name_end])) name_end += 1;
-        const requirements = decoratedMemberHelperRequirements(source, name_end);
-        return .{
-            .at_pos = at,
-            .span_len = name_end - at,
-            .requires_prop_key = requirements.requires_prop_key,
-            .requires_set_function_name = requirements.requires_set_function_name,
-        };
-    }
-    return null;
-}
-
-const DecoratedMemberHelperRequirements = struct {
-    requires_prop_key: bool = false,
-    requires_set_function_name: bool = false,
-};
-
-fn decoratedMemberHelperRequirements(source: []const u8, after_decorator_name: usize) DecoratedMemberHelperRequirements {
-    const limit = @min(source.len, after_decorator_name + 256);
-    var i = skipTrivia(source, after_decorator_name);
-    if (i < limit and source[i] == '(') {
-        var depth: usize = 1;
-        i += 1;
-        while (i < limit and depth > 0) : (i += 1) {
-            if (source[i] == '(') depth += 1;
-            if (source[i] == ')') depth -= 1;
-        }
-    }
-    i = skipTrivia(source, i);
-
-    var private_callable = false;
-    while (i < limit and isIdentifierStart(source[i])) {
-        var word_end = i + 1;
-        while (word_end < limit and isIdentifierContinue(source[word_end])) word_end += 1;
-        const word = source[i..word_end];
-        if (std.mem.eql(u8, word, "get") or
-            std.mem.eql(u8, word, "set") or
-            std.mem.eql(u8, word, "accessor"))
-        {
-            private_callable = true;
-        } else if (!std.mem.eql(u8, word, "static") and
-            !std.mem.eql(u8, word, "abstract") and
-            !std.mem.eql(u8, word, "declare") and
-            !std.mem.eql(u8, word, "override") and
-            !std.mem.eql(u8, word, "public") and
-            !std.mem.eql(u8, word, "protected") and
-            !std.mem.eql(u8, word, "private") and
-            !std.mem.eql(u8, word, "readonly"))
-        {
-            break;
-        }
-        i = skipTrivia(source, word_end);
-    }
-
-    if (i < limit and source[i] == '[') return .{ .requires_prop_key = true };
-    if (i >= limit or source[i] != '#') return .{};
-
-    i += 1;
-    if (i >= limit or !isIdentifierStart(source[i])) return .{};
-    i += 1;
-    while (i < limit and isIdentifierContinue(source[i])) i += 1;
-    i = skipTrivia(source, i);
-    return .{ .requires_set_function_name = private_callable or (i < limit and source[i] == '(') };
-}
-
-fn decoratedClassHasTransformableStaticElement(source: []const u8, class_pos: usize) bool {
-    const body_start = std.mem.indexOfScalarPos(u8, source, class_pos + "class".len, '{') orelse return false;
-    var depth: usize = 1;
-    var i = body_start + 1;
-    while (i < source.len and depth > 0) : (i += 1) {
-        if (positionInLineComment(source, i) or positionInBlockComment(source, i)) continue;
-        switch (source[i]) {
-            '{' => depth += 1,
-            '}' => depth -= 1,
-            '@' => if (depth == 1) return true,
-            else => {},
-        }
-        if (depth != 1 or i + "static".len > source.len) continue;
-        if (!std.mem.eql(u8, source[i .. i + "static".len], "static")) continue;
-        if (i > body_start + 1 and isIdentifierContinue(source[i - 1])) continue;
-        if (i + "static".len < source.len and isIdentifierContinue(source[i + "static".len])) continue;
-        const after_static = skipTrivia(source, i + "static".len);
-        if (after_static < source.len and (source[after_static] == '#' or source[after_static] == '{')) return true;
-    }
-    return false;
-}
-
-/// Position of the last `class` keyword (as a whole word, not in a comment)
-/// strictly before `pos`, or null if none.
-fn lastClassKeywordBefore(source: []const u8, pos: usize) ?usize {
-    var search: usize = 0;
-    var found: ?usize = null;
-    while (std.mem.indexOfPos(u8, source, search, "class")) |c| {
-        if (c >= pos) break;
-        const before_ok = c == 0 or !isIdentifierContinue(source[c - 1]);
-        const after = c + "class".len;
-        const after_ok = after >= source.len or !isIdentifierContinue(source[after]);
-        if (before_ok and after_ok and
-            !positionInLineComment(source, c) and !positionInBlockComment(source, c))
-        {
-            found = c;
-        }
-        search = c + 1;
-    }
-    return found;
 }
 
 fn appendImportedPrivateHelperArityDiagnostics(
@@ -2843,7 +2641,6 @@ fn sourceExternalEmitHelperPosition(
     lower_resource_declarations: bool,
 ) ?usize {
     var best: ?usize = null;
-    if (findStage3DecoratedClassExpression(source, 0)) |decorated| best = decorated.at_pos;
     if (firstPrivateIdentifierHash(source)) |hash| best = minOptionalPos(best, hash);
     if (lower_resource_declarations) {
         if (firstResourceDeclarationPosition(&c.hir)) |using_pos| best = minOptionalPos(best, using_pos);
@@ -2942,81 +2739,6 @@ fn helperParameterCount(tslib_source: []const u8, name: []const u8) ?usize {
         if (c_param == ',') count += 1;
     }
     return count;
-}
-
-const DecoratedClass = struct {
-    at_pos: usize,
-    span_len: usize,
-    requires_prop_key: bool,
-    requires_set_function_name: bool,
-};
-
-fn findStage3DecoratedClassExpression(source: []const u8, start: usize) ?DecoratedClass {
-    var i = start;
-    while (std.mem.indexOfScalarPos(u8, source, i, '@')) |at| {
-        if (positionInLineComment(source, at) or positionInBlockComment(source, at)) {
-            i = at + 1;
-            continue;
-        }
-        const class_pos = findKeywordNearby(source, at + 1, "class") orelse {
-            i = at + 1;
-            continue;
-        };
-        const after_class = skipTrivia(source, class_pos + "class".len);
-        const has_name = after_class < source.len and isIdentifierStart(source[after_class]);
-        return .{
-            .at_pos = at,
-            .span_len = class_pos + "class".len - at,
-            .requires_prop_key = decoratedClassHasComputedNameContext(source, at),
-            .requires_set_function_name = !has_name or
-                (decoratedClassLooksLikeDeclaration(source, at) and
-                    decoratedClassHasTransformableStaticElement(source, class_pos)),
-        };
-    }
-    return null;
-}
-
-fn decoratedClassLooksLikeDeclaration(source: []const u8, at: usize) bool {
-    var line_start = at;
-    while (line_start > 0 and source[line_start - 1] != '\n' and source[line_start - 1] != '\r') : (line_start -= 1) {}
-    const prefix = std.mem.trim(u8, source[line_start..at], " \t");
-    return prefix.len == 0 or
-        std.mem.eql(u8, prefix, "export") or
-        std.mem.eql(u8, prefix, "export default") or
-        std.mem.eql(u8, prefix, "default");
-}
-
-fn decoratedClassHasComputedNameContext(source: []const u8, at: usize) bool {
-    const open_brace = std.mem.lastIndexOfScalar(u8, source[0..at], '{') orelse 0;
-    const semicolon = std.mem.lastIndexOfScalar(u8, source[0..at], ';') orelse 0;
-    const start = @max(open_brace, semicolon);
-    const close = std.mem.lastIndexOfScalar(u8, source[start..at], ']') orelse return false;
-    const suffix = std.mem.trim(u8, source[start + close + 1 .. at], " \t\r\n");
-    return std.mem.eql(u8, suffix, ":") or std.mem.eql(u8, suffix, "=");
-}
-
-fn findKeywordNearby(source: []const u8, start: usize, keyword: []const u8) ?usize {
-    const max = @min(source.len, start + 256);
-    var i = start;
-    var paren_depth: u32 = 0;
-    while (i < max) : (i += 1) {
-        switch (source[i]) {
-            '(' => paren_depth += 1,
-            ')' => {
-                if (paren_depth > 0) paren_depth -= 1;
-            },
-            ';' => if (paren_depth == 0) return null,
-            else => {},
-        }
-        if (i + keyword.len <= source.len and
-            std.mem.eql(u8, source[i .. i + keyword.len], keyword) and
-            (i == 0 or !isIdentifierContinue(source[i - 1])) and
-            (i + keyword.len == source.len or !isIdentifierContinue(source[i + keyword.len])))
-        {
-            return i;
-        }
-    }
-    return null;
 }
 
 fn skipTrivia(source: []const u8, start: usize) usize {
@@ -4889,55 +4611,16 @@ test "driver: let-array parse recovery suppresses grammar diagnostics" {
     try T.expect(saw_1181 and saw_1005 and saw_1128);
 }
 
-test "driver: importHelpers reports missing Stage 3 decorator helpers from virtual tslib" {
+test "driver: importHelpers does not diagnose Stage 3 decorator helpers" {
     const source =
         \\// @target: es2022
         \\// @importHelpers: true
         \\// @module: commonjs
         \\// @moduleResolution: classic
-        \\// @noTypesAndSymbols: true
         \\// @filename: main.ts
         \\export {};
         \\declare var dec: any;
-        \\var C;
-        \\C = @dec class {};
-        \\
-        \\// @filename: tslib.d.ts
-        \\export {}
-    ;
-    try T.expect(directiveBool(source, "importHelpers") orelse false);
-    try T.expect(tslibDeclarationSource(source) != null);
-    try T.expect(findStage3DecoratedClassExpression(source, 0) != null);
-    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
-    defer {
-        c.deinit();
-        T.allocator.destroy(c);
-    }
-
-    var seen_es_decorate = false;
-    var seen_run_initializers = false;
-    var seen_set_function_name = false;
-    for (c.diagnostics.items) |d| {
-        if (d.code != 2343) continue;
-        if (std.mem.indexOf(u8, d.message, "'__esDecorate'") != null) seen_es_decorate = true;
-        if (std.mem.indexOf(u8, d.message, "'__runInitializers'") != null) seen_run_initializers = true;
-        if (std.mem.indexOf(u8, d.message, "'__setFunctionName'") != null) seen_set_function_name = true;
-    }
-    try T.expect(seen_es_decorate);
-    try T.expect(seen_run_initializers);
-    try T.expect(seen_set_function_name);
-}
-
-test "driver: importHelpers selects computed member decorator helpers" {
-    const source =
-        \\// @target: es2022
-        \\// @importHelpers: true
-        \\// @module: commonjs
-        \\// @filename: main.ts
-        \\export {};
-        \\declare var dec: any;
-        \\declare var x: any;
-        \\class C { @dec static get [x]() { return 1; } }
+        \\@dec class C { @dec static #method() {} }
         \\// @filename: tslib.d.ts
         \\export {}
     ;
@@ -4946,169 +4629,11 @@ test "driver: importHelpers selects computed member decorator helpers" {
         c.deinit();
         T.allocator.destroy(c);
     }
-    var seen_prop_key = false;
+
     for (c.diagnostics.items) |d| {
-        if (d.code != 2343) continue;
-        if (std.mem.indexOf(u8, d.message, "'__propKey'") != null) seen_prop_key = true;
-        try T.expect(std.mem.indexOf(u8, d.message, "'__setFunctionName'") == null);
+        try T.expect(d.code != 2343);
+        try T.expect(d.code != 2354);
     }
-    try T.expect(seen_prop_key);
-}
-
-test "driver: importHelpers omits naming helpers for private decorated members" {
-    const source =
-        \\// @target: es2022
-        \\// @importHelpers: true
-        \\// @module: commonjs
-        \\// @filename: main.ts
-        \\export {};
-        \\declare var dec: any;
-        \\class C { @dec #x: any; }
-        \\// @filename: tslib.d.ts
-        \\export {}
-    ;
-    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
-    defer {
-        c.deinit();
-        T.allocator.destroy(c);
-    }
-    for (c.diagnostics.items) |d| {
-        if (d.code != 2343) continue;
-        try T.expect(std.mem.indexOf(u8, d.message, "'__propKey'") == null);
-        try T.expect(std.mem.indexOf(u8, d.message, "'__setFunctionName'") == null);
-    }
-}
-
-test "driver: importHelpers requires setFunctionName for decorated private callables" {
-    const declarations = [_][]const u8{
-        "class C { @dec #method() {} }",
-        "class C { @dec static #method() {} }",
-        "class C { @dec get #value() { return 1; } }",
-        "class C { @dec static get #value() { return 1; } }",
-        "class C { @dec set #value(value: number) {} }",
-        "class C { @dec static set #value(value: number) {} }",
-        "class C { @dec accessor #value: number; }",
-        "class C { @dec static accessor #value: number; }",
-        "@dec class C { static #method() {} }",
-    };
-    for (declarations) |declaration| {
-        const source = try std.fmt.allocPrint(T.allocator,
-            \\// @target: es2022
-            \\// @importHelpers: true
-            \\// @module: commonjs
-            \\// @filename: main.ts
-            \\export {{}};
-            \\declare var dec: any;
-            \\{s}
-            \\// @filename: tslib.d.ts
-            \\export {{}}
-        , .{declaration});
-        defer T.allocator.free(source);
-
-        var c = try compileSource(T.allocator, source, .{ .no_emit = true });
-        defer {
-            c.deinit();
-            T.allocator.destroy(c);
-        }
-
-        var seen_set_name = false;
-        for (c.diagnostics.items) |d| {
-            if (d.code == 2343 and std.mem.indexOf(u8, d.message, "'__setFunctionName'") != null) {
-                seen_set_name = true;
-            }
-        }
-        try T.expect(seen_set_name);
-    }
-}
-
-test "driver: importHelpers includes propKey for computed class expression names" {
-    const source =
-        \\// @target: es2022
-        \\// @importHelpers: true
-        \\// @module: commonjs
-        \\// @filename: main.ts
-        \\export {};
-        \\declare var dec: any;
-        \\declare var x: any;
-        \\({ [x]: @dec class {} });
-        \\// @filename: tslib.d.ts
-        \\export {}
-    ;
-    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
-    defer {
-        c.deinit();
-        T.allocator.destroy(c);
-    }
-    var seen_prop_key = false;
-    var seen_set_name = false;
-    for (c.diagnostics.items) |d| {
-        if (d.code != 2343) continue;
-        if (std.mem.indexOf(u8, d.message, "'__propKey'") != null) seen_prop_key = true;
-        if (std.mem.indexOf(u8, d.message, "'__setFunctionName'") != null) seen_set_name = true;
-    }
-    try T.expect(seen_prop_key);
-    try T.expect(seen_set_name);
-}
-
-test "driver: importHelpers omits propKey for class defaults in destructuring" {
-    const expressions = [_][]const u8{
-        "[C = @dec class {}] = [];",
-        "({ [x]: C = @dec class {} } = {});",
-    };
-    for (expressions) |expression| {
-        const source = try std.fmt.allocPrint(T.allocator,
-            \\// @target: es2022
-            \\// @importHelpers: true
-            \\// @module: commonjs
-            \\// @filename: main.ts
-            \\export {{}};
-            \\declare var dec: any;
-            \\declare var x: any;
-            \\var C;
-            \\{s}
-            \\// @filename: tslib.d.ts
-            \\export {{}}
-        , .{expression});
-        defer T.allocator.free(source);
-
-        var c = try compileSource(T.allocator, source, .{ .no_emit = true });
-        defer {
-            c.deinit();
-            T.allocator.destroy(c);
-        }
-
-        var seen_set_name = false;
-        for (c.diagnostics.items) |d| {
-            if (d.code != 2343) continue;
-            try T.expect(std.mem.indexOf(u8, d.message, "'__propKey'") == null);
-            if (std.mem.indexOf(u8, d.message, "'__setFunctionName'") != null) seen_set_name = true;
-        }
-        try T.expect(seen_set_name);
-    }
-}
-
-test "driver: importHelpers reports missing tslib module for helper syntax" {
-    const source =
-        \\// @target: es2022
-        \\// @importHelpers: true
-        \\export {};
-        \\declare var dec: any;
-        \\var C;
-        \\C = @dec class {};
-    ;
-    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
-    defer {
-        c.deinit();
-        T.allocator.destroy(c);
-    }
-
-    var saw_2354 = false;
-    for (c.diagnostics.items) |d| {
-        if (d.code == 2354 and std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null) {
-            saw_2354 = true;
-        }
-    }
-    try T.expect(saw_2354);
 }
 
 test "driver: importHelpers detects lowered resource declarations" {
