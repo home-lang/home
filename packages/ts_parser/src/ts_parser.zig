@@ -12942,6 +12942,9 @@ pub const Parser = struct {
             }
             // Allow string-literal property names: `"foo": T`.
             const name_id = try self.internPropertyName(name_tok, name_span);
+            const source_display_name = self.interner.intern(
+                self.source[name_span.start..name_span.end],
+            ) catch return error.OutOfMemory;
             const is_optional = self.match(.question);
 
             // Method shorthand: `name<T>(p: T): R` / `name(p: T): R`.
@@ -13023,7 +13026,7 @@ pub const Parser = struct {
                 }
                 try duplicate_members.append(self.gpa, .{
                     .name = name_id,
-                    .display_name = name_id,
+                    .display_name = source_display_name,
                     .span = name_span,
                     .kind = .method,
                     .is_computed = false,
@@ -13074,7 +13077,7 @@ pub const Parser = struct {
             );
             try duplicate_members.append(self.gpa, .{
                 .name = name_id,
-                .display_name = name_id,
+                .display_name = source_display_name,
                 .span = name_span,
                 .kind = .property,
                 .is_computed = false,
@@ -13088,6 +13091,7 @@ pub const Parser = struct {
             var property_count: usize = 0;
             var method_count: usize = 0;
             var computed_display_name: ?hir_mod.StringId = null;
+            var plain_property_display_name: ?hir_mod.StringId = null;
             var has_plain_property = false;
             for (duplicate_members.items) |member| {
                 if (member.name != candidate.name) continue;
@@ -13096,7 +13100,12 @@ pub const Parser = struct {
                     .setter => setter_count += 1,
                     .property => {
                         property_count += 1;
-                        if (!member.is_computed) has_plain_property = true;
+                        if (!member.is_computed) {
+                            has_plain_property = true;
+                            if (plain_property_display_name == null) {
+                                plain_property_display_name = member.display_name;
+                            }
+                        }
                     },
                     .method => method_count += 1,
                 }
@@ -13148,7 +13157,7 @@ pub const Parser = struct {
                 const display_name = if (!has_plain_property)
                     computed_display_name orelse candidate.display_name
                 else
-                    candidate.name;
+                    plain_property_display_name orelse candidate.display_name;
                 try self.reportDuplicateIdentifierNamed(
                     candidate.span.start,
                     self.lineAt(candidate.span.start),
@@ -23845,6 +23854,24 @@ test "parser: computed accessor duplicate groups preserve bracket display names"
     }
     try T.expectEqual(@as(usize, 3), bracketed);
     try T.expectEqual(@as(usize, 3), plain);
+}
+
+test "parser: duplicate type members use the first source spelling" {
+    var s = try newTestSetup(
+        \\interface I {
+        \\  "1": number;
+        \\  1.0: string;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var duplicate_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 2300) continue;
+        duplicate_count += 1;
+        try T.expectEqualStrings("Duplicate identifier '\"1\"'.", d.message);
+    }
+    try T.expectEqual(@as(usize, 2), duplicate_count);
 }
 
 test "parser: same-line object type members require separator" {

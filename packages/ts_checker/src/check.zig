@@ -3052,6 +3052,7 @@ const ClassMethodSeen = struct {
 const ConstructorParamPropertyMerge = struct {
     first_name_node: NodeId,
     first_modifier_key: u8,
+    first_duplicate_reported: bool = false,
     first_modifier_mismatch_reported: bool = false,
 };
 
@@ -38887,6 +38888,10 @@ pub const Checker = struct {
             return;
         }
 
+        if (!gop.value_ptr.first_duplicate_reported) {
+            try self.reportDuplicateIdentifierAtNode(gop.value_ptr.first_name_node, name);
+            gop.value_ptr.first_duplicate_reported = true;
+        }
         try self.reportDuplicateIdentifierAtNode(pp.name, name);
         if (gop.value_ptr.first_modifier_key == modifier_key) return;
         if (!gop.value_ptr.first_modifier_mismatch_reported) {
@@ -40636,9 +40641,9 @@ pub const Checker = struct {
     }
 
     /// Emit a TS2300 with a custom display string (e.g. `"a b"` for a
-    /// quoted-string key, `1.0` for a numeric key as it appears in
-    /// source). Used by `detectClassMemberDuplicates` so the message
-    /// mirrors tsc's "second occurrence's source text" baseline shape.
+    /// quoted-string key or the canonical spelling selected for a
+    /// duplicate group). Used by `detectClassMemberDuplicates` so the
+    /// message mirrors tsc's symbol display.
     fn reportDuplicateIdentifierWithDisplay(
         self: *Checker,
         node: NodeId,
@@ -40676,10 +40681,9 @@ pub const Checker = struct {
     /// `#name` collisions are TS18007 not TS2300 and are skipped here.
     /// Two methods with bodies are flagged elsewhere as TS2393.
     ///
-    /// The display string in the message uses the second occurrence's
-    /// source key text (verbatim ÃÂ¢ÃÂÃÂ `"a b"` keeps its quotes, `1.0`
-    /// keeps the trailing zero) so the rendered baseline matches
-    /// tsc's behavior for these fixtures.
+    /// The display string in the message uses the first declaration's
+    /// source key text. That is the symbol spelling selected by tsc, so
+    /// `"1"` followed by `1.0` reports `"1"` at both declarations.
     fn detectClassMemberDuplicates(self: *Checker, members: []const NodeId) CheckError!void {
         if (members.len < 2) return;
 
@@ -40800,9 +40804,9 @@ pub const Checker = struct {
         //  - getter+setter exact pair ÃÂ¢ÃÂÃÂ no error
         //  - all methods in a group ÃÂ¢ÃÂÃÂ skip (TS2393 emits separately
         //    for two implementations; overload signatures are valid)
-        //  - everything else ÃÂ¢ÃÂÃÂ emit TS2300 once per group at the
-        //    SECOND occurrence's name node with that occurrence's
-        //    source key text (matches tsc's render shape for the
+        //  - everything else ÃÂ¢ÃÂÃÂ emit TS2300 for the declarations
+        //    selected below, using the first occurrence's source key
+        //    text (matches tsc's render shape for the
         //    `stringNamedPropertyDuplicates` / `numericNamed*` and
         //    `class { foo; foo; }`-style fixtures)
         var processed: std.AutoHashMapUnmanaged(usize, void) = .empty;
@@ -40850,9 +40854,8 @@ pub const Checker = struct {
             }
             if (all_methods) continue;
 
-            // A run of class fields is bound declaration-by-declaration.
-            // Once the first field owns the canonical key, every later field
-            // is a duplicate, not merely the second declaration in the run.
+            // A duplicate field symbol is diagnosed at every declaration,
+            // including the declaration that first established the symbol.
             // This matters for numerically equivalent spellings such as
             // `1`, `1.0`, `1.`, and `1.00`.
             var all_fields = true;
@@ -40863,9 +40866,9 @@ pub const Checker = struct {
                 }
             }
             if (all_fields) {
-                for (group_idx.items[1..]) |idx| {
+                for (group_idx.items) |idx| {
                     const e = entries.items[idx];
-                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, a.display);
                 }
                 continue;
             }
@@ -40889,13 +40892,13 @@ pub const Checker = struct {
                 if (std.mem.startsWith(u8, canonical_name, "Symbol.")) {
                     for (group_idx.items[1..]) |idx| {
                         const e = entries.items[idx];
-                        try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                        try self.reportDuplicateIdentifierWithDisplay(e.name_node, a.display);
                     }
                     continue;
                 }
                 for (group_idx.items) |idx| {
                     const e = entries.items[idx];
-                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, a.display);
                 }
                 continue;
             }
@@ -40915,12 +40918,12 @@ pub const Checker = struct {
             if (has_field and has_non_field) {
                 for (group_idx.items) |idx| {
                     const e = entries.items[idx];
-                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, a.display);
                 }
                 continue;
             }
             const second = entries.items[group_idx.items[1]];
-            try self.reportDuplicateIdentifierWithDisplay(second.name_node, second.display);
+            try self.reportDuplicateIdentifierWithDisplay(second.name_node, a.display);
         }
     }
 
@@ -98262,8 +98265,8 @@ pub const Checker = struct {
                     if (dist_eligible) {
                         try dist_segments.append(self.gpa, .{ .is_spread = false, .name = k.name, .member_t = vt, .is_method = op_is_method });
                     }
-                    if (op_is_method and self.objectLiteralHasDuplicateMethodWithLiteralParam(members.items, k.name, op.value)) {
-                        try self.reportDuplicateIdentifier(p, k.name);
+                    if (op_is_method and !current_is_accessor and self.objectLiteralHasPriorMethod(members.items, k.name)) {
+                        try self.reportObjectLiteralDuplicateMethods(props, k.name);
                     }
                     // Accessor-pair duplication: two `get foo` or two
                     // `set foo` accessors on the same identifier name
@@ -119151,49 +119154,41 @@ pub const Checker = struct {
         return false;
     }
 
-    fn objectLiteralHasDuplicateMethodWithLiteralParam(
+    fn objectLiteralHasPriorMethod(
         self: *Checker,
         members: []const types.ObjectMember,
         name: hir_mod.StringId,
-        value: NodeId,
     ) bool {
-        var saw_method = false;
+        _ = self;
         for (members) |member| {
-            if (member.name == name and member.is_method) {
-                saw_method = true;
-                break;
-            }
+            if (member.name == name and member.is_method) return true;
         }
-        return saw_method and self.fnLikeHasLiteralParameterType(value);
+        return false;
     }
 
-    fn fnLikeHasLiteralParameterType(self: *Checker, value: NodeId) bool {
-        return switch (self.hir.kindOf(value)) {
-            .fn_decl, .fn_expr, .arrow_fn => blk: {
-                const f = hir_mod.fnDeclOf(self.hir, value);
-                for (self.hir.childSlice(f.params_start, @intCast(f.params_len))) |param| {
-                    if (self.hir.kindOf(param) != .parameter) continue;
-                    const p = hir_mod.parameterOf(self.hir, param);
-                    if (self.typeNodeIsLiteralType(p.type_annotation)) break :blk true;
-                }
-                break :blk false;
-            },
-            else => false,
-        };
-    }
-
-    fn typeNodeIsLiteralType(self: *Checker, node: NodeId) bool {
-        if (node == hir_mod.none_node_id) return false;
-        return switch (self.hir.kindOf(node)) {
-            .type_literal => true,
-            .union_type => blk: {
-                for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
-                    if (self.typeNodeIsLiteralType(member)) break :blk true;
-                }
-                break :blk false;
-            },
-            else => false,
-        };
+    fn reportObjectLiteralDuplicateMethods(
+        self: *Checker,
+        props: []const NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        for (props) |prop_node| {
+            if (self.hir.kindOf(prop_node) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, prop_node);
+            if (prop.is_computed or self.hir.kindOf(prop.key) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, prop.key).name != name) continue;
+            const value_kind = self.hir.kindOf(prop.value);
+            if (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) {
+                const f = hir_mod.fnDeclOf(self.hir, prop.value);
+                if (f.flags.is_getter or f.flags.is_setter) continue;
+            }
+            const is_method = prop.is_method or
+                ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
+                    self.memberSourceLooksMethod(prop_node));
+            if (!is_method) continue;
+            const pos = self.hir.spanOf(prop.key).start;
+            if (self.hasDiagnosticAtPosition(TsCodes.duplicate_identifier, pos)) continue;
+            try self.reportDuplicateIdentifier(prop.key, name);
+        }
     }
 
     fn builtinMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
@@ -212616,9 +212611,36 @@ test "checker: numeric literal duplicate keys collide regardless of formatting" 
     try s.checker.checkSourceFile(s.root);
     var dup_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+        if (d.code == TsCodes.duplicate_identifier) {
+            dup_count += 1;
+            try T.expectEqualStrings("Duplicate identifier '1'.", d.message);
+        }
     }
-    try T.expectEqual(@as(usize, 3), dup_count);
+    try T.expectEqual(@as(usize, 4), dup_count);
+}
+
+test "checker: duplicate constructor parameter properties report every declaration" {
+    const s = try newSetup(
+        \\class C {
+        \\  constructor(public x: number);
+        \\  constructor(public x: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+}
+
+test "checker: duplicate object methods report every declaration" {
+    const s = try newSetup(
+        \\const value = {
+        \\  foo(x: "a") {},
+        \\  foo(x: "b") {},
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
 test "checker: string-named class fields collide with TS2300" {
