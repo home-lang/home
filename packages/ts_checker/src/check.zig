@@ -37335,6 +37335,7 @@ pub const Checker = struct {
                     // must carry both `static` and `readonly`. Skip
                     // methods/accessors; anchor at the field node.
                     if (!op.is_method and
+                        !self.virtualSectionIsJsLike(m) and
                         (self.typeAnnotationIsUniqueSymbol(op.type_annotation) or
                             self.leadingJsDocTypeIsUniqueSymbol(m)) and
                         !(op.is_static and is_field_readonly))
@@ -40738,7 +40739,7 @@ pub const Checker = struct {
                         self.nodeIsBracketedComputedName(op.key) or
                         self.memberSourceLooksComputed(m);
                     const computed_duplicate_name = if (is_computed)
-                        try self.classComputedSymbolDuplicateName(op.key)
+                        try self.classComputedSymbolDuplicateName(op.key, false)
                     else
                         null;
                     const canonical = if (computed_duplicate_name) |dup|
@@ -41023,13 +41024,13 @@ pub const Checker = struct {
         };
     }
 
-    fn classComputedSymbolDuplicateName(self: *Checker, key: NodeId) CheckError!?ComputedDuplicateName {
+    fn classComputedSymbolDuplicateName(self: *Checker, key: NodeId, allow_call: bool) CheckError!?ComputedDuplicateName {
         const raw = std.mem.trim(u8, self.nodeSourceTextOrEmpty(key), " \t\r\n");
         if (raw.len == 0) return null;
         const qualifies = switch (self.hir.kindOf(key)) {
             .identifier => self.sourceHasUniqueSymbolDeclaration(raw) or self.sourceHasConstSymbolLikeInit(raw),
             .member_access => self.sourceHasUniqueSymbolDeclaration(raw) or try self.computedMemberAccessHasUniqueSymbolType(key),
-            .call_expr => try self.sourceCallReturnsTypeofSymbolLike(raw),
+            .call_expr => allow_call and try self.sourceCallReturnsTypeofSymbolLike(raw),
             else => false,
         };
         if (!qualifies) return null;
@@ -48199,7 +48200,8 @@ pub const Checker = struct {
             var new_members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new_members.deinit(self.gpa);
             for (members) |member| try new_members.append(self.gpa, try self.substituteTypeNoCyclesInner(member, subs, visited));
-            return self.interner.internIntersection(new_members.items) catch return t;
+            const result = self.interner.internIntersection(new_members.items) catch return t;
+            return try self.finishSubstitutedMappedType(t, result, subs);
         }
         if (flags.is_indexed_access) {
             const indexed = self.indexedAccessPayloadOrNull(t) orelse return t;
@@ -98100,7 +98102,7 @@ pub const Checker = struct {
                             });
                         } else if (key_is_symbol_like) {
                             if (!op_is_method) {
-                                if (try self.classComputedSymbolDuplicateName(op.key)) |identity| {
+                                if (try self.classComputedSymbolDuplicateName(op.key, true)) |identity| {
                                     const gop = try computed_unique_symbol_data_seen.getOrPut(self.gpa, identity.canonical);
                                     if (gop.found_existing) {
                                         try self.report(p, TsCodes.object_literal_duplicate_property, "An object literal cannot have multiple properties with the same name.");
@@ -136077,7 +136079,8 @@ pub const Checker = struct {
                 const subbed = try self.substituteType(m, subs);
                 try new.append(self.gpa, if (subbed < self.interner.pool.typeCount()) subbed else types.Primitive.unknown);
             }
-            return self.interner.internIntersection(new.items) catch return t;
+            const result = self.interner.internIntersection(new.items) catch return t;
+            return try self.finishSubstitutedMappedType(t, result, subs);
         }
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
@@ -154859,6 +154862,7 @@ pub const Checker = struct {
         // generic and falls through to TS2322.
         const source_is_primitive_object_intersection = self.intersectionHasPrimitiveAndObjectMembers(source);
         const source_is_object_intersection = self.intersectionHasOnlyObjectMembers(source);
+        if (source_is_primitive_object_intersection) return false;
         const source_is_object_shaped = blk: {
             if (value_node != hir_mod.none_node_id and
                 self.hir.kindOf(value_node) == .object_literal)
@@ -164817,18 +164821,15 @@ test "checker: intersection source assigned to weak target emits TS2559" {
     try T.expect(found);
 }
 
-test "checker: branded primitive intersection elaborates missing object target properties" {
-    // Mirrors intersectionAsWeakTypeSource.ts(18,7): the source is an
-    // intersection of a primitive and an object brand, but tsc still uses
-    // the multi-property TS2739 surface diagnostic and renders the primitive
-    // constituent as `Number`.
+test "checker: branded primitive intersection preserves alias assignment diagnostic" {
     const b = try newBoundSetup(
         \\interface ViewStyle {
         \\  view: number
         \\  styleMedia: string
         \\}
         \\type Brand<T> = number & { __brand: T }
-        \\declare const wrapped: { first: Brand<{ view: number; styleMedia: string; }> };
+        \\declare function create<T extends { [s: string]: ViewStyle }>(styles: T): { [P in keyof T]: Brand<T[P]> };
+        \\const wrapped = create({ first: { view: 0, styleMedia: "???" } });
         \\const vs: ViewStyle = wrapped.first;
     );
     defer destroyBoundSetup(b);
@@ -164836,10 +164837,10 @@ test "checker: branded primitive intersection elaborates missing object target p
 
     try T.expect(checkerHasCodeAndMessage(
         b.base,
-        TsCodes.type_missing_properties,
-        "Type 'Number & { __brand: { view: number; styleMedia: string; }; }' is missing the following properties from type 'ViewStyle': view, styleMedia",
+        TsCodes.type_not_assignable,
+        "Type 'Brand<{ view: number; styleMedia: string; }>' is not assignable to type 'ViewStyle'.",
     ));
-    try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+    try T.expect(!checkerHasCode(b, TsCodes.type_missing_properties));
 }
 
 test "checker: weak anonymous optional target omits undefined in TS2559" {
@@ -212707,6 +212708,20 @@ test "checker: string-named class fields collide with TS2300" {
     try T.expect(dup_count >= 1);
 }
 
+test "checker: computed call class keys are not duplicate symbols" {
+    const s = try newSetup(
+        \\const key = Symbol();
+        \\function getKey(): typeof key { return key; }
+        \\class C {
+        \\  [getKey()] = 1;
+        \\  [getKey()] = 2;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+}
+
 test "checker: accessor modifier does not cross newline" {
     const s = try newSetup(
         \\class C {
@@ -223738,7 +223753,7 @@ test "checker: TS1331 fires for class unique-symbol props missing static+readonl
     }
 }
 
-test "checker: TS1331 honors checkjs JSDoc unique symbol class fields" {
+test "checker: TS1331 skips checkjs JSDoc unique symbol class fields" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -223755,7 +223770,7 @@ test "checker: TS1331 honors checkjs JSDoc unique symbol class fields" {
     defer destroySetup(s);
     s.checker.setCheckJsEnabled(true);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.unique_symbol_class_prop_must_be_static_readonly));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unique_symbol_class_prop_must_be_static_readonly));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
 }
 
