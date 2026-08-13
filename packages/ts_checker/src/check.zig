@@ -107711,6 +107711,15 @@ pub const Checker = struct {
                 if (!saw_this_param) return;
             }
         }
+        // Relate a structurally incomplete receiver through the same
+        // missing-property elaboration used by assignments. TypeScript
+        // prefers TS2741 here when exactly one required `this` member is
+        // absent, while incompatible existing members retain TS2684.
+        if (unmet_this.items.len == 1 and
+            try self.tryReportSinglePropertyMissing(call_node, m.object, receiver_t, unmet_this.items[0]))
+        {
+            return;
+        }
         // Prefer the upstream-shaped TS2684 with both `of type 'X'`
         // and `of type 'Y'` clauses when we can name both sides.
         // Falls back to the generic wording when the engine lacks a
@@ -229844,6 +229853,25 @@ test "checker: TS2684 formats object receiver annotations like tsc" {
         TsCodes.this_context_not_assignable,
         "The 'this' context of type '{ y: string; f: (this: { y: number; }, x: number) => number; }' is not assignable to method's 'this' of type '{ y: number; }'.",
     ));
+}
+
+test "checker: missing explicit this receiver member elaborates as TS2741" {
+    const b = try newBoundSetup(
+        \\function explicitStructural(this: { y: number }, x: number): number {
+        \\  return x + this.y;
+        \\}
+        \\let wrongPropertyName: {wrongName: number, f: (this: { y: number }, x: number) => number} = { wrongName: 12, explicitStructural };
+        \\wrongPropertyName.f(13);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.property_missing_required,
+        "Property 'y' is missing in type '{ wrongName: number; f: (this: { y: number; }, x: number) => number; }' but required in type '{ y: number; }'.",
+    ));
+    try T.expect(!checkerHasCode(b, TsCodes.this_context_not_assignable));
 }
 
 test "checker: this:void parameter forbids property access (TS2339 on void)" {
