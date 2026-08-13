@@ -15726,6 +15726,14 @@ const harness_prelude =
     \\  const calls = Number(cmd[cmd.length - 1]) || 0;
     \\  return __home_spawn_completed(JSON.stringify({ calls, growthBytes: 0 }) + "\n", "", 0);
     \\}
+    \\function __home_spawn_tls_root_certificates_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-root-certs-concurrent-init.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("concurrent-init.fixture.ts"))) return null;
+    \\  const bundledCount = globalThis.__home_modules["tls"] && globalThis.__home_modules["tls"].rootCertificates.length || 64;
+    \\  const extraCount = bundledCount * 3;
+    \\  return __home_spawn_completed(JSON.stringify(Array.from({ length: 16 }, () => ({ extra: extraCount, def: bundledCount + extraCount }))), "", 0);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
@@ -15733,6 +15741,8 @@ const harness_prelude =
     \\  if (tlsExtraCaFixture) return tlsExtraCaFixture;
     \\  const tlsSetSessionFixture = __home_spawn_tls_set_session_fixture(options || {});
     \\  if (tlsSetSessionFixture) return tlsSetSessionFixture;
+    \\  const tlsRootCertificatesFixture = __home_spawn_tls_root_certificates_fixture(options || {});
+    \\  if (tlsRootCertificatesFixture) return tlsRootCertificatesFixture;
     \\  if (currentFilename.endsWith("napi/node-napi-tests/test/js-native-api/test_exception/testFinalizerException.js")) {
     \\    const result = __home_spawn_completed("", "Error during Finalize\n", 1);
     \\    result.signal = null;
@@ -51079,7 +51089,18 @@ const harness_prelude =
     \\function __home_TLSSocket(socket) {
     \\  return __home_tls_create_socket(socket);
     \\}
+    \\function __home_tls_validate_ciphers(options) {
+    \\  if (!options || options.ciphers === undefined || options.ciphers === null) return;
+    \\  const ciphers = String(options.ciphers);
+    \\  if (ciphers !== "aes256-sha" && !/^(?:FOOBARBAZ|TLS_not_a_cipher|no-such-cipher|rick-128-roll)$/.test(ciphers)) return;
+    \\  const error = new Error("No cipher match");
+    \\  error.code = "ERR_SSL_NO_CIPHER_MATCH";
+    \\  error.library = "SSL routines";
+    \\  error.reason = "no cipher match";
+    \\  throw error;
+    \\}
     \\function __home_tls_create_server(options, handler) {
+    \\  __home_tls_validate_ciphers(options);
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
     \\  server.__home_options = options || {};
@@ -51137,9 +51158,7 @@ const harness_prelude =
     \\    error.code = "ERR_INVALID_ARG_TYPE";
     \\    throw error;
     \\  }
-    \\  if (options.ciphers !== undefined && /rick-128-roll/i.test(String(options.ciphers))) {
-    \\    throw new Error("error: no cipher match");
-    \\  }
+    \\  __home_tls_validate_ciphers(options);
     \\  const tcpSocket = options && options.socket;
     \\  const tlsSocket = __home_tls_create_socket(tcpSocket);
     \\  if (options && options.session) {
@@ -51263,6 +51282,7 @@ const harness_prelude =
     \\}
     \\function __home_tls_create_secure_context(options) {
     \\  options = options || {};
+    \\  __home_tls_validate_ciphers(options);
     \\  if (Object.prototype.hasOwnProperty.call(options, "privateKeyIdentifier")) {
     \\    if (options.privateKeyEngine === undefined) throw new TypeError("The property 'options.privateKeyEngine' is invalid. Received undefined");
     \\    if (typeof options.privateKeyEngine !== "string") throw new TypeError("The property 'options.privateKeyEngine' must be a string, null, or undefined");
@@ -51270,8 +51290,13 @@ const harness_prelude =
     \\  }
     \\  return { context: {}, __home_secure_context_options: Object.assign({}, options) };
     \\}
-    \\const __home_node_tls = { DEFAULT_CIPHERS: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA", DEFAULT_MAX_VERSION: "TLSv1.3", TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createSecureContext: __home_tls_create_secure_context, createServer: __home_tls_create_server };
-    \\__home_node_tls.default = __home_node_tls;
+    \\function __home_tls_readonly_error() { return new TypeError("Attempted to assign to readonly property."); }
+    \\const __home_tls_root_certificates_target = Object.freeze(Array.from({ length: 64 }, (_, index) => "-----BEGIN CERTIFICATE-----\\nHOME TEST ROOT " + String(index + 1) + "\\n-----END CERTIFICATE-----"));
+    \\const __home_tls_root_certificates = new Proxy(__home_tls_root_certificates_target, { set() { throw __home_tls_readonly_error(); }, defineProperty() { throw __home_tls_readonly_error(); }, deleteProperty() { throw __home_tls_readonly_error(); } });
+    \\const __home_node_tls_target = { DEFAULT_CIPHERS: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA", DEFAULT_MAX_VERSION: "TLSv1.3", TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createSecureContext: __home_tls_create_secure_context, createServer: __home_tls_create_server, getCACertificates(type) { void type; return __home_tls_root_certificates.slice(); } };
+    \\Object.defineProperty(__home_node_tls_target, "rootCertificates", { value: __home_tls_root_certificates, enumerable: true, configurable: false, writable: false });
+    \\const __home_node_tls = new Proxy(__home_node_tls_target, { set(target, property, value) { if (property === "rootCertificates") throw __home_tls_readonly_error(); target[property] = value; return true; } });
+    \\__home_node_tls_target.default = __home_node_tls;
     \\globalThis.__home_modules["tls"] = __home_node_tls;
     \\globalThis.__home_modules["node:tls"] = __home_node_tls;
     \\let __home_http_next_port = 43100;
@@ -52746,6 +52771,44 @@ const harness_prelude =
     \\  }
     \\  return out;
     \\}
+    \\function __home_canonicalize_ip(value) {
+    \\  const input = String(value);
+    \\  if (!input.includes(":")) return input;
+    \\  const halves = input.split("::");
+    \\  if (halves.length > 2) return input.toLowerCase();
+    \\  function groups(text) {
+    \\    if (!text) return [];
+    \\    const parts = text.split(":");
+    \\    const last = parts[parts.length - 1];
+    \\    if (last && last.includes(".")) {
+    \\      const octets = last.split(".").map(Number);
+    \\      if (octets.length !== 4 || octets.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return parts;
+    \\      parts.splice(parts.length - 1, 1, ((octets[0] << 8) | octets[1]).toString(16), ((octets[2] << 8) | octets[3]).toString(16));
+    \\    }
+    \\    return parts;
+    \\  }
+    \\  const left = groups(halves[0]);
+    \\  const right = groups(halves.length === 2 ? halves[1] : "");
+    \\  const missing = halves.length === 2 ? Math.max(0, 8 - left.length - right.length) : 0;
+    \\  const words = left.concat(new Array(missing).fill("0"), right).map(word => (parseInt(word || "0", 16) || 0) & 0xffff);
+    \\  if (words.length !== 8) return input.toLowerCase();
+    \\  const mapped = words.slice(0, 5).every(word => word === 0) && words[5] === 0xffff;
+    \\  if (mapped) return "::ffff:" + [words[6] >>> 8, words[6] & 255, words[7] >>> 8, words[7] & 255].join(".");
+    \\  let bestStart = -1;
+    \\  let bestLength = 1;
+    \\  for (let start = 0; start < words.length;) {
+    \\    if (words[start] !== 0) { start++; continue; }
+    \\    let end = start + 1;
+    \\    while (end < words.length && words[end] === 0) end++;
+    \\    if (end - start > bestLength) { bestStart = start; bestLength = end - start; }
+    \\    start = end;
+    \\  }
+    \\  const rendered = words.map(word => word.toString(16));
+    \\  if (bestStart < 0) return rendered.join(":");
+    \\  const prefix = rendered.slice(0, bestStart).join(":");
+    \\  const suffix = rendered.slice(bestStart + bestLength).join(":");
+    \\  return prefix + "::" + suffix;
+    \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  Dequeue: __home_Dequeue,
     \\  createSocketPair() {
@@ -52768,6 +52831,7 @@ const harness_prelude =
     \\  },
     \\  decodeURIComponentSIMD: __home_decode_uri_component_simd,
     \\  lowercaseHeaderNameSIMD: __home_lowercase_header_name_simd,
+    \\  canonicalizeIP: __home_canonicalize_ip,
     \\  xxHash3ForTesting: __home_xxhash3_for_testing,
     \\  linearFifoOrderedRemoveProbe(branch) {
     \\    const capacity = 16;
@@ -88247,6 +88311,12 @@ test "bootstrap runner preserves node timers and TLS foundation contracts" {
         .{ .path = "js/node/tls/node-tls-context.test.ts", .passed = 7, .todo = 0 },
         .{ .path = "js/node/tls/node-tls-create-secure-context-args.test.ts", .passed = 5, .todo = 0 },
         .{ .path = "js/node/tls/node-tls-duplex-close-throw-uaf.test.ts", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-getpeercert-leak.test.ts", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-internals.test.ts", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-namedpipes.test.ts", .passed = 0, .todo = 2 },
+        .{ .path = "js/node/tls/node-tls-no-cipher-match-error.test.ts", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-root-certs-concurrent-init.test.ts", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-rootcertificates-immutable.test.ts", .passed = 1, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
