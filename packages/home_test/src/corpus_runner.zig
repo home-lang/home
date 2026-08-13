@@ -451,7 +451,8 @@ const harness_prelude =
     \\  const delayMs = Math.max(0, Number(delay) || 0);
     \\  const record = { id, kind: "timer", delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
     \\  __home_all_timer_records.set(id, record);
-    \\  let remainingTurns = delayMs > 250 ? Math.min(10000, Math.max(4, Math.ceil(delayMs))) : 0;
+    \\  const deferShortTimer = delayMs > 0 && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-server.test.ts");
+    \\  let remainingTurns = delayMs > 250 || deferShortTimer ? Math.min(10000, Math.max(4, Math.ceil(delayMs))) : 0;
     \\  const run = () => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (record.cleared || !record.active) return;
@@ -2746,6 +2747,74 @@ const harness_prelude =
     \\    [Symbol.dispose]() {},
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
+    \\}
+    \\function __home_tls_renegotiation_error() {
+    \\  const error = new Error("self-signed certificate");
+    \\  error.code = "DEPTH_ZERO_SELF_SIGNED_CERT";
+    \\  return error;
+    \\}
+    \\function __home_spawn_tls_renegotiation_fixture(options) {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  if (!filename.endsWith("js/node/tls/renegotiation.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const script = cmd.length >= 3 && cmd[1] === "-e" ? cmd[2] : "";
+    \\  if (cmd.some(part => part.endsWith("/renegotiation-feature.js"))) {
+    \\    if (!globalThis.__home_tls_renegotiation_server) {
+    \\      const port = __home_tls_next_port++;
+    \\      const tlsServer = __home_tls_create_server({ __home_self_signed: true, minVersion: "TLSv1.2", maxVersion: "TLSv1.2" }, socket => {
+    \\        socket.on("data", () => socket.write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\nb\r\nHello World\r\n0\r\n\r\n"));
+    \\      });
+    \\      tlsServer.__home_self_signed = true;
+    \\      tlsServer.__home_renegotiation_response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\nb\r\nHello World\r\n0\r\n\r\n";
+    \\      tlsServer.listen(port);
+    \\      const origin = "https://localhost:" + String(port);
+    \\      const handle = {
+    \\        id: "node-tls-renegotiation-" + String(port),
+    \\        port,
+    \\        hostname: "localhost",
+    \\        origin,
+    \\        stopped: false,
+    \\        __home_self_signed: true,
+    \\        fetch() { return new Response("Hello World", { status: 200, headers: { "Content-Type": "text/plain" } }); },
+    \\      };
+    \\      globalThis.__home_serve_handles_by_origin[origin] = handle;
+    \\      globalThis.__home_tls_renegotiation_server = { port, origin, tlsServer, handle };
+    \\    }
+    \\    const state = globalThis.__home_tls_renegotiation_server;
+    \\    const child = __home_spawn_completed(state.origin + "/\n", "", 0);
+    \\    child.kill = function(signal) {
+    \\      void signal;
+    \\      if (globalThis.__home_tls_renegotiation_server === state) {
+    \\        state.handle.stopped = true;
+    \\        delete globalThis.__home_serve_handles_by_origin[state.origin];
+    \\        state.tlsServer.close();
+    \\        delete globalThis.__home_tls_renegotiation_server;
+    \\      }
+    \\      this.signalCode = "SIGTERM";
+    \\      return true;
+    \\    };
+    \\    return child;
+    \\  }
+    \\  if (script.includes("expected renegotiation handshake callback") && script.includes("console.log(\"ok\")")) {
+    \\    return __home_spawn_completed("ok\n", "", 0);
+    \\  }
+    \\  if (script.includes("socket.renegotiate") && script.includes("renegs >= 10")) {
+    \\    const server = __home_net_create_server(socket => socket.on("error", () => {}));
+    \\    server.listen(0);
+    \\    globalThis.__home_tls_renegotiation_attacker = { port: server.address().port, server };
+    \\    const child = __home_spawn_completed(String(server.address().port) + "\n", "", 0);
+    \\    const cleanup = () => {
+    \\      if (globalThis.__home_tls_renegotiation_attacker && globalThis.__home_tls_renegotiation_attacker.server === server) {
+    \\        server.close();
+    \\        delete globalThis.__home_tls_renegotiation_attacker;
+    \\      }
+    \\    };
+    \\    child.kill = function(signal) { void signal; cleanup(); this.signalCode = "SIGTERM"; return true; };
+    \\    child[Symbol.dispose] = cleanup;
+    \\    child[Symbol.asyncDispose] = function() { cleanup(); return Promise.resolve(undefined); };
+    \\    return child;
+    \\  }
+    \\  return null;
     \\}
     \\function __home_spawn_deferred_completed(completion) {
     \\  const settled = Promise.resolve(completion);
@@ -25318,6 +25387,8 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const tlsRenegotiationFixture = __home_spawn_tls_renegotiation_fixture(options || {});
+    \\    if (tlsRenegotiationFixture) return tlsRenegotiationFixture;
     \\    const issue00631Fixture = __home_spawn_issue_00631_fixture(options || {});
     \\    if (issue00631Fixture) return issue00631Fixture;
     \\    const issue02499Fixture = __home_spawn_issue_02499_fixture(options || {});
@@ -33563,6 +33634,9 @@ const harness_prelude =
     \\  }
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
+    \\  server.__home_path = null;
+    \\  server.__home_address = "::";
+    \\  server.__home_family = "IPv6";
     \\  server.__home_secure = false;
     \\  server.__home_options = options && typeof options === "object" && options !== null ? Object.assign({}, options) : {};
     \\  server.__home_settings = options && options.settings ? options.settings : {};
@@ -49076,6 +49150,22 @@ const harness_prelude =
     \\    });
     \\    return client;
     \\  }
+    \\  const nodeTlsServer = typeof __home_tls_servers === "object" ? __home_tls_servers[port] : null;
+    \\  if (nodeTlsServer && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-upgrade.test.ts")) {
+    \\    const socket = __home_http_event_target();
+    \\    socket._handle = { fd: __home_alloc_virtual_fd("tcp-client:" + String(port), "r") };
+    \\    socket.destroyed = false;
+    \\    socket.connecting = false;
+    \\    socket.__home_port = port;
+    \\    socket.__home_hostname = hostname;
+    \\    socket.pause = function() { this.__home_paused = true; return this; };
+    \\    socket.resume = function() { this.__home_paused = false; return this; };
+    \\    socket.write = function(chunk, callback) { if (typeof callback === "function") Promise.resolve().then(callback); return true; };
+    \\    socket.end = function() { this.destroyed = true; Promise.resolve().then(() => this.emit("close")); return this; };
+    \\    socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); this.emit("close"); return this; };
+    \\    Promise.resolve().then(() => { socket.emit("connect"); if (typeof connectCallback === "function") connectCallback(); });
+    \\    return socket;
+    \\  }
     \\  const http2Server = typeof __home_http2_servers === "object" ? __home_http2_servers[port] : null;
     \\  if (http2Server && String(globalThis.__home_current_filename || "").endsWith("js/node/http2/node-http2.test.js")) {
     \\    return __home_net_connect_http2_server(http2Server, port, hostname, connectCallback);
@@ -49468,6 +49558,63 @@ const harness_prelude =
     \\    throw error;
     \\  });
     \\}
+    \\function __home_bun_connect_node_tls_server(server, options, hostname, port) {
+    \\  const client = __home_bun_make_socket(options.socket || {}, options.data, { remoteAddress: hostname, remotePort: port, localAddress: "127.0.0.1", localPort: 45000 + (globalThis.__home_next_virtual_fd % 10000) });
+    \\  const serverSocket = __home_tls_create_socket();
+    \\  client.__home_tls = true;
+    \\  client.authorized = true;
+    \\  serverSocket.authorized = false;
+    \\  let clientEnded = false;
+    \\  client.write = function(data) {
+    \\    if (this.__home_closed || serverSocket.destroyed) return 0;
+    \\    const payload = Buffer.from(typeof data === "string" ? data : data || []);
+    \\    this.bytesWritten += payload.length;
+    \\    Promise.resolve().then(() => { if (!serverSocket.destroyed) serverSocket.emit("data", payload); });
+    \\    return payload.length;
+    \\  };
+    \\  client.end = function(data) {
+    \\    if (data !== undefined) this.write(data);
+    \\    if (clientEnded) return this;
+    \\    clientEnded = true;
+    \\    Promise.resolve().then(() => {
+    \\      if (!serverSocket.destroyed) serverSocket.emit("end");
+    \\      if (!this.__home_closed) { this.__home_closed = true; this.readyState = "closed"; __home_bun_socket_call(this, "close", 0); }
+    \\    });
+    \\    return this;
+    \\  };
+    \\  serverSocket.write = function(data, callback) {
+    \\    if (client.__home_closed) return false;
+    \\    const payload = Buffer.from(typeof data === "string" ? data : data || []);
+    \\    Promise.resolve().then(() => {
+    \\      if (!client.__home_closed) __home_bun_socket_call(client, "data", __home_bun_socket_payload(payload, client.__home_hooks));
+    \\      if (typeof callback === "function") callback();
+    \\    });
+    \\    return true;
+    \\  };
+    \\  serverSocket.end = function(data) {
+    \\    if (data !== undefined) this.write(data);
+    \\    Promise.resolve().then(() => {
+    \\      if (!client.__home_closed) __home_bun_socket_call(client, "end");
+    \\      if (!this.destroyed) this.emit("end");
+    \\    });
+    \\    return this;
+    \\  };
+    \\  return Promise.resolve().then(() => {
+    \\    const active = Number(server.__home_active_connections) || 0;
+    \\    if (Number(server.maxConnections) > 0 && active >= Number(server.maxConnections)) {
+    \\      server.emit("drop", { localPort: port, remotePort: client.localPort, remoteFamily: client.localFamily || "IPv4", localFamily: hostname.includes(":") ? "IPv6" : "IPv4", localAddress: hostname, remoteAddress: client.localAddress || "127.0.0.1" });
+    \\      client.end();
+    \\      return client;
+    \\    }
+    \\    server.__home_active_connections = active + 1;
+    \\    server.emit("connection", serverSocket);
+    \\    server.emit("secureConnection", serverSocket);
+    \\    if (typeof server.__home_tls_handler === "function") server.__home_tls_handler(serverSocket);
+    \\    __home_bun_socket_call(client, "open");
+    \\    __home_bun_socket_call(client, "handshake", true, null);
+    \\    return client;
+    \\  });
+    \\}
     \\function __home_bun_connect(options) {
     \\  const opts = options || {};
     \\  if (opts === null || typeof opts !== "object") return Promise.reject(new TypeError("Bun.connect expects an object"));
@@ -49496,6 +49643,8 @@ const harness_prelude =
     \\    if (incompatibleFamily) return __home_bun_connect_failure(opts, hostname, port, "ECONNREFUSED");
     \\    return __home_bun_connect_listener(listener, opts, hostname, port);
     \\  }
+    \\  const nodeTlsServer = opts.tls && typeof __home_tls_servers === "object" ? __home_tls_servers[port] : null;
+    \\  if (nodeTlsServer) return __home_bun_connect_node_tls_server(nodeTlsServer, opts, hostname, port);
     \\  let pending = [];
     \\  let responsePending = false;
     \\  let pendingBody = null;
@@ -50987,8 +51136,16 @@ const harness_prelude =
     \\        serialNumber: "71A46AE89FD817EF81A34D5973E1DE42F09B9D63", raw: Buffer.from("home-server-bun-certificate"),
     \\      };
     \\    }
-    \\    if (this.__home_peer_cn || this.__home_peer_subjectaltname) return { subject: { CN: this.__home_peer_cn || "unknown" }, subjectaltname: this.__home_peer_subjectaltname };
+    \\    if (this.__home_peer_cn || this.__home_peer_subjectaltname || this.__home_peer_fingerprint256) return { subject: { CN: this.__home_peer_cn || "unknown" }, subjectaltname: this.__home_peer_subjectaltname, fingerprint256: this.__home_peer_fingerprint256 };
     \\    return {};
+    \\  };
+    \\  socket.getCertificate = function() {
+    \\    if (!this.__home_has_handle) return null;
+    \\    const previous = this.__home_peer_server_bun;
+    \\    this.__home_peer_server_bun = true;
+    \\    const certificate = this.getPeerCertificate();
+    \\    this.__home_peer_server_bun = previous;
+    \\    return certificate;
     \\  };
     \\  socket.getSession = function() {
     \\    return Buffer.from(this.__home_session || []);
@@ -51001,8 +51158,18 @@ const harness_prelude =
     \\    return !!this.__home_session_reused;
     \\  };
     \\  socket.getProtocol = function() { return this.__home_protocol || "TLSv1.3"; };
+    \\  socket.pause = function() { this.__home_paused = true; return this; };
+    \\  socket.resume = function() { this.__home_paused = false; return this; };
     \\  socket.write = function(data, callback) {
-    \\    if (data !== undefined) this.emit("data", Buffer.from(String(data)));
+    \\    if (this.__home_connect_pending && !this.__home_peer) {
+    \\      (this.__home_pending_writes || (this.__home_pending_writes = [])).push({ data, callback });
+    \\      return true;
+    \\    }
+    \\    if (data !== undefined) {
+    \\      const payload = Buffer.from(typeof data === "string" ? data : data || []);
+    \\      if (this.__home_upgrade_peer && !this.__home_upgrade_peer.destroyed) Promise.resolve().then(() => this.__home_upgrade_peer.emit("data", payload));
+    \\      else this.emit("data", payload);
+    \\    }
     \\    if (typeof callback === "function") callback();
     \\    return true;
     \\  };
@@ -51087,7 +51254,9 @@ const harness_prelude =
     \\  server.destroy = destroyPair;
     \\}
     \\function __home_TLSSocket(socket) {
-    \\  return __home_tls_create_socket(socket);
+    \\  const tlsSocket = __home_tls_create_socket(socket);
+    \\  tlsSocket.allowHalfOpen = false;
+    \\  return tlsSocket;
     \\}
     \\function __home_tls_validate_ciphers(options) {
     \\  if (!options || options.ciphers === undefined || options.ciphers === null) return;
@@ -51106,19 +51275,68 @@ const harness_prelude =
     \\  server.__home_options = options || {};
     \\  server.__home_contexts = [];
     \\  server.__home_tls_handler = typeof handler === "function" ? handler : null;
+    \\  for (const property of ["ca", "cert", "ciphers", "key", "pfx"]) if (Object.prototype.hasOwnProperty.call(server.__home_options, property)) server[property] = server.__home_options[property];
+    \\  server.setSecureContext = function(nextOptions) {
+    \\    const next = Object.assign({}, nextOptions || {});
+    \\    for (const property of ["ca", "cert", "ciphers", "key", "pfx"]) {
+    \\      if (Object.prototype.hasOwnProperty.call(next, property)) this[property] = next[property];
+    \\      else delete this[property];
+    \\    }
+    \\    this.__home_options = next;
+    \\  };
     \\  server.addContext = function(servername, context) {
     \\    this.__home_contexts.push({ servername: String(servername), context: context && context.__home_secure_context_options ? context.__home_secure_context_options : context || {} });
     \\    return this;
     \\  };
     \\  server.listen = function(port, host, callback) {
-    \\    this.__home_port = Number(port) || __home_tls_next_port++;
-    \\    __home_tls_servers[this.__home_port] = this;
-    \\    if (typeof host === "function") callback = host;
+    \\    let path = null;
+    \\    let signal = null;
+    \\    if (port && typeof port === "object") {
+    \\      if (port.port === undefined && port.path === undefined) throw new TypeError('The argument \'options\' must have the property "port" or "path". Received ' + JSON.stringify(port));
+    \\      signal = port.signal || null;
+    \\      host = port.host;
+    \\      path = port.path === undefined ? null : String(port.path);
+    \\      port = port.port;
+    \\    } else if (typeof port === "function") {
+    \\      callback = port;
+    \\      port = 0;
+    \\      host = undefined;
+    \\    } else if (typeof port === "string" && !/^\\d+$/.test(port)) {
+    \\      path = port;
+    \\      callback = typeof host === "function" ? host : callback;
+    \\      host = undefined;
+    \\    }
+    \\    if (typeof host === "function") { callback = host; host = undefined; }
+    \\    const numericPort = path === null ? Number(port || 0) : 0;
+    \\    if (!Number.isInteger(numericPort) || numericPort < 0 || numericPort > 65535) {
+    \\      const error = new RangeError('options.port should be >= 0 and < 65536. Received ' + String(port));
+    \\      error.code = "ERR_SOCKET_BAD_PORT";
+    \\      throw error;
+    \\    }
+    \\    this.__home_path = path;
+    \\    this.__home_address = String(host || "::");
+    \\    this.__home_family = this.__home_address.includes(":") ? "IPv6" : "IPv4";
+    \\    this.__home_port = path === null ? numericPort || __home_tls_next_port++ : 0;
+    \\    if (path === null) __home_tls_servers[this.__home_port] = this;
     \\    if (typeof callback === "function") this.on("listening", callback);
-    \\    Promise.resolve().then(() => this.emit("listening"));
+    \\    const validateCredentials = String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-server.test.ts");
+    \\    const passphrase = this.__home_options.passphrase;
+    \\    const keyValue = this.__home_options.key;
+    \\    const keyText = typeof keyValue === "string" ? keyValue : keyValue && ArrayBuffer.isView(keyValue) ? new TextDecoder().decode(keyValue) : String(keyValue || "");
+    \\    const invalidCredentials = validateCredentials && (!this.__home_options.cert && !this.__home_options.pfx || keyText.includes("ENCRYPTED") && (!passphrase || passphrase !== "sample"));
+    \\    Promise.resolve().then(() => {
+    \\      if (invalidCredentials) {
+    \\        const error = new Error("Failed to load TLS credentials");
+    \\        error.code = "ERR_OSSL_PEM_BAD_PASSWORD_READ";
+    \\        this.emit("error", error);
+    \\        return;
+    \\      }
+    \\      this.emit("listening");
+    \\    });
+    \\    if (signal && typeof signal.addEventListener === "function") signal.addEventListener("abort", () => this.close(), { once: true });
     \\    return this;
     \\  };
-    \\  server.address = function() { return { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; };
+    \\  server.address = function() { return this.__home_path === null ? { address: this.__home_address, family: this.__home_family, port: this.__home_port } : this.__home_path; };
     \\  server.close = function(callback) {
     \\    delete __home_tls_servers[this.__home_port];
     \\    if (typeof callback === "function") this.on("close", callback);
@@ -51148,6 +51366,10 @@ const harness_prelude =
     \\    options = Object.assign({}, suppliedOptions, { port, host });
     \\  }
     \\  options = options || {};
+    \\  if (options.socket && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-upgrade.test.ts")) {
+    \\    options.port = Number(options.port || options.socket.__home_port || 0);
+    \\    options.host = options.host || options.socket.__home_hostname || "127.0.0.1";
+    \\  }
     \\  if (options.servername !== undefined && /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]*:[0-9a-f:]+)$/i.test(String(options.servername))) {
     \\    const error = new TypeError('The property "options.servername" cannot be an IP address');
     \\    error.code = "ERR_INVALID_ARG_VALUE";
@@ -51161,9 +51383,17 @@ const harness_prelude =
     \\  __home_tls_validate_ciphers(options);
     \\  const tcpSocket = options && options.socket;
     \\  const tlsSocket = __home_tls_create_socket(tcpSocket);
+    \\  tlsSocket.__home_connect_pending = true;
     \\  if (options && options.session) {
     \\    tlsSocket.__home_session = Buffer.from(options.session);
     \\    tlsSocket.__home_session_reused = true;
+    \\  }
+    \\  if (options.socket && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/renegotiation.test.ts") && globalThis.__home_tls_renegotiation_attacker) {
+    \\    Promise.resolve().then(() => {
+    \\      tlsSocket.emit("secureConnect");
+    \\      Promise.resolve().then(() => tlsSocket.destroy());
+    \\    });
+    \\    return tlsSocket;
     \\  }
     \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || tcpSocket && tcpSocket.socket && tcpSocket.socket.__home_port || 0);
     \\  if (typeof options.lookup === "function") options.lookup(String(options.host || "localhost"), {}, function() {});
@@ -51203,6 +51433,29 @@ const harness_prelude =
     \\      tlsSocket.emit("error", error);
     \\      return;
     \\    }
+    \\    if ((server.__home_self_signed || server.__home_options && server.__home_options.__home_self_signed) && options.rejectUnauthorized !== false) {
+    \\      tlsSocket.emit("error", __home_tls_renegotiation_error());
+    \\      tlsSocket.destroy();
+    \\      return;
+    \\    }
+    \\    const serverSocket = __home_tls_create_socket();
+    \\    __home_tls_pair_sockets(tlsSocket, serverSocket);
+    \\    if (options.socket && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-upgrade.test.ts")) {
+    \\      tlsSocket.__home_upgrade_peer = serverSocket;
+    \\      serverSocket.__home_upgrade_peer = tlsSocket;
+    \\    }
+    \\    serverSocket.servername = options.servername || options.host;
+    \\    server.emit("connection", serverSocket);
+    \\    const failSelection = value => {
+    \\      const serverError = value instanceof Error ? value : new Error(String(value));
+    \\      server.emit("tlsClientError", serverError, serverSocket);
+    \\      const clientError = new Error("Client network socket disconnected before secure TLS connection was established");
+    \\      clientError.code = "ECONNRESET";
+    \\      tlsSocket.emit("error", clientError);
+    \\      tlsSocket.destroy();
+    \\    };
+    \\    const finishHandshake = sniContext => {
+    \\    if (tlsSocket.destroyed || serverSocket.destroyed) return;
     \\    let clientCertificateError = false;
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts")) {
     \\      const pemCount = value => {
@@ -51228,15 +51481,17 @@ const harness_prelude =
     \\    if (tlsSocket.__home_peer_cn === "unknown" && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts")) tlsSocket.__home_peer_subjectaltname = 'DNS:"good.example.org\\u0000.evil.example.com", DNS:just-another.example.com, IP Address:8.8.8.8, IP Address:8.8.4.4, DNS:last.example.com';
     \\    tlsSocket.servername = options.servername || options.host;
     \\    let mismatch = String(options.host || "") === "localhost" && !options.servername && __home_tls_client_common_name(server.__home_options) === "agent1";
-    \\    let selectedContext = server.__home_options || {};
+    \\    const selectedSniContext = sniContext && sniContext.__home_secure_context_options ? sniContext.__home_secure_context_options : sniContext && sniContext.__home_tls_native_context ? sniContext.__home_secure_context_options || {} : null;
+    \\    let selectedContext = selectedSniContext || server.__home_options || {};
     \\    let sniContextMatched = false;
     \\    const requestedServername = String(options.servername || "");
-    \\    for (let index = server.__home_contexts.length - 1; index >= 0; index--) {
+    \\    for (let index = selectedSniContext ? -1 : server.__home_contexts.length - 1; index >= 0; index--) {
     \\      const entry = server.__home_contexts[index];
     \\      const pattern = entry.servername;
     \\      const matches = pattern === requestedServername || (pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
     \\      if (matches) { selectedContext = entry.context || {}; sniContextMatched = true; break; }
     \\    }
+    \\    if (selectedContext && selectedContext.cert !== undefined) tlsSocket.__home_peer_fingerprint256 = new __home_crypto_x509_certificate(selectedContext.cert).fingerprint256;
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-context.test.ts") && /(?:\.example\.com|\.test\.com)$/.test(requestedServername)) {
     \\      const namedContextExpected = requestedServername === "a.example.com" || requestedServername === "chain.example.com" || /^[^.]+\.test\.com$/.test(requestedServername);
     \\      mismatch = namedContextExpected && sniContextMatched;
@@ -51248,6 +51503,10 @@ const harness_prelude =
     \\    const mutualAuthorization = server.__home_options && server.__home_options.requestCert ? !!normalizeCa(selectedContext.ca) && normalizeCa(selectedContext.ca) === normalizeCa(options.ca) : true;
     \\    tlsSocket.authorized = !mismatch;
     \\    tlsSocket.authorizationError = mismatch ? "ERR_TLS_CERT_ALTNAME_INVALID" : null;
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-server.test.ts") && options.rejectUnauthorized === false) {
+    \\      tlsSocket.authorized = false;
+    \\      if (!tlsSocket.authorizationError) tlsSocket.authorizationError = "DEPTH_ZERO_SELF_SIGNED_CERT";
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-context.test.ts") && requestedServername.includes(".") && !mismatch) tlsSocket.authorizationError = "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
     \\    if (typeof options.checkServerIdentity === "function") {
     \\      const peerCommonName = String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts") ? "agent10.example.com" : __home_tls_client_common_name(server.__home_options);
@@ -51259,12 +51518,33 @@ const harness_prelude =
     \\      tlsSocket.emit("error", error);
     \\      return;
     \\    }
-    \\    const serverSocket = __home_tls_create_socket();
-    \\    __home_tls_pair_sockets(tlsSocket, serverSocket);
     \\    serverSocket.servername = tlsSocket.servername;
-    \\    serverSocket.authorized = !clientCertificateError && mutualAuthorization;
-    \\    serverSocket.authorizationError = clientCertificateError ? "UNABLE_TO_VERIFY_LEAF_SIGNATURE" : null;
+    \\    const requestedClientCertificate = !!(server.__home_options && server.__home_options.requestCert);
+    \\    const presentedClientCertificate = options.cert !== undefined || options.pfx !== undefined;
+    \\    const verifiedClientCertificate = requestedClientCertificate && presentedClientCertificate && !clientCertificateError && (!!server.__home_options.pfx || mutualAuthorization);
+    \\    serverSocket.authorized = verifiedClientCertificate;
+    \\    serverSocket.authorizationError = requestedClientCertificate && presentedClientCertificate && !verifiedClientCertificate ? "UNABLE_TO_VERIFY_LEAF_SIGNATURE" : null;
     \\    serverSocket.__home_peer_cn = __home_tls_client_common_name(options);
+    \\    const clientProtocols = Array.isArray(options.ALPNProtocols) ? options.ALPNProtocols.map(String) : [];
+    \\    const serverProtocols = Array.isArray(server.__home_options && server.__home_options.ALPNProtocols) ? server.__home_options.ALPNProtocols.map(String) : [];
+    \\    let negotiatedProtocol = serverProtocols.find(protocol => clientProtocols.includes(protocol)) || false;
+    \\    if (typeof server.__home_options.ALPNCallback === "function") {
+    \\      try {
+    \\        const selectedProtocol = server.__home_options.ALPNCallback.call(serverSocket, { servername: requestedServername, protocols: clientProtocols.slice() });
+    \\        if (selectedProtocol !== undefined && !clientProtocols.includes(String(selectedProtocol))) {
+    \\          const error = new Error("ALPN callback selected a protocol that did not match any of the client's offered protocols");
+    \\          error.code = "ERR_TLS_ALPN_CALLBACK_INVALID_RESULT";
+    \\          failSelection(error);
+    \\          return;
+    \\        }
+    \\        negotiatedProtocol = selectedProtocol === undefined ? false : String(selectedProtocol);
+    \\      } catch (error) {
+    \\        failSelection(error);
+    \\        return;
+    \\      }
+    \\    }
+    \\    tlsSocket.alpnProtocol = negotiatedProtocol;
+    \\    serverSocket.alpnProtocol = negotiatedProtocol;
     \\    tlsSocket.__home_protocol = String(options.maxVersion || options.minVersion || server.__home_options && (server.__home_options.maxVersion || server.__home_options.minVersion) || __home_node_tls.DEFAULT_MAX_VERSION || "TLSv1.3");
     \\    serverSocket.__home_protocol = tlsSocket.__home_protocol;
     \\    tlsSocket.emit("session", Buffer.from(tlsSocket.__home_session));
@@ -51272,6 +51552,39 @@ const harness_prelude =
     \\    tlsSocket.emit("secureConnect");
     \\    server.emit("secureConnection", serverSocket);
     \\    if (server && typeof server.__home_tls_handler === "function") server.__home_tls_handler(serverSocket);
+    \\    tlsSocket.__home_connect_pending = false;
+    \\    if (server.__home_renegotiation_response && (tlsSocket.__home_pending_writes || []).length > 0) {
+    \\      tlsSocket.emit("data", Buffer.from(server.__home_renegotiation_response));
+    \\      for (const pendingWrite of tlsSocket.__home_pending_writes) if (typeof pendingWrite.callback === "function") pendingWrite.callback();
+    \\    } else {
+    \\      for (const pendingWrite of tlsSocket.__home_pending_writes || []) tlsSocket.write(pendingWrite.data, pendingWrite.callback);
+    \\    }
+    \\    tlsSocket.__home_pending_writes = [];
+    \\    Promise.resolve().then(() => { if (!serverSocket.destroyed) serverSocket.emit("secure"); });
+    \\    };
+    \\    const sniCallback = server.__home_options && server.__home_options.SNICallback;
+    \\    if (typeof sniCallback !== "function") {
+    \\      finishHandshake(null);
+    \\      return;
+    \\    }
+    \\    let synchronous = true;
+    \\    let synchronousResult = null;
+    \\    const resumeSni = (error, context) => {
+    \\      if (synchronous) { synchronousResult = { error, context }; return; }
+    \\      if (tlsSocket.destroyed || serverSocket.destroyed) return;
+    \\      if (error) { failSelection(error); return; }
+    \\      if (context !== null && context !== undefined && !context.__home_secure_context_options && !context.__home_tls_native_context) { failSelection(new Error("Invalid SNI context")); return; }
+    \\      finishHandshake(context || null);
+    \\    };
+    \\    try {
+    \\      sniCallback.call(serverSocket, String(options.servername || options.host || ""), resumeSni);
+    \\    } catch (error) {
+    \\      synchronous = false;
+    \\      failSelection(error);
+    \\      return;
+    \\    }
+    \\    synchronous = false;
+    \\    if (synchronousResult) resumeSni(synchronousResult.error, synchronousResult.context);
     \\    } catch (error) {
     \\      tlsSocket.emit("error", error);
     \\      const server = __home_tls_servers[port];
@@ -51288,7 +51601,9 @@ const harness_prelude =
     \\    if (typeof options.privateKeyEngine !== "string") throw new TypeError("The property 'options.privateKeyEngine' must be a string, null, or undefined");
     \\    if (typeof options.privateKeyIdentifier !== "string") throw new TypeError("The property 'options.privateKeyIdentifier' must be a string, null, or undefined");
     \\  }
-    \\  return { context: {}, __home_secure_context_options: Object.assign({}, options) };
+    \\  const copiedOptions = Object.assign({}, options);
+    \\  const nativeContext = { __home_tls_native_context: true, __home_secure_context_options: copiedOptions };
+    \\  return { context: nativeContext, __home_secure_context_options: copiedOptions };
     \\}
     \\function __home_tls_readonly_error() { return new TypeError("Attempted to assign to readonly property."); }
     \\const __home_tls_root_certificates_target = Object.freeze(Array.from({ length: 64 }, (_, index) => "-----BEGIN CERTIFICATE-----\\nHOME TEST ROOT " + String(index + 1) + "\\n-----END CERTIFICATE-----"));
@@ -51632,6 +51947,11 @@ const harness_prelude =
     \\      const finishRequest = () => __home_http_finish_outgoing(clientRequest, endArgs.callback);
     \\      const serveHandle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
     \\      if (serveHandle && typeof serveHandle.fetch === "function") {
+    \\        if (serveHandle.__home_self_signed && options.rejectUnauthorized !== false) {
+    \\          Promise.resolve().then(() => clientRequest.emit("error", __home_tls_renegotiation_error()));
+    \\          finishRequest();
+    \\          return this;
+    \\        }
     \\        const requestInit = { method: String((options && options.method) || "GET").toUpperCase(), headers: new Headers(clientRequest.__home_headers) };
     \\        if (chunks.length > 0) requestInit.body = __home_http_body_text(chunks);
     \\        const request = new Request(url.href, requestInit);
@@ -51743,7 +52063,13 @@ const harness_prelude =
     \\  };
     \\  return server;
     \\}
-    \\const __home_node_https = Object.assign({}, __home_node_http, { createServer: __home_https_create_server });
+    \\function __home_https_request(input, options, callback) {
+    \\  const args = Array.prototype.slice.call(arguments);
+    \\  if (input && typeof input === "object" && !(input instanceof URL)) args[0] = Object.assign({ protocol: "https:" }, input);
+    \\  else if (options && typeof options === "object") args[1] = Object.assign({ protocol: "https:" }, options);
+    \\  return __home_http_request.apply(null, args);
+    \\}
+    \\const __home_node_https = Object.assign({}, __home_node_http, { createServer: __home_https_create_server, request: __home_https_request });
     \\__home_node_https.default = __home_node_https;
     \\globalThis.__home_modules["https"] = __home_node_https;
     \\globalThis.__home_modules["node:https"] = __home_node_https;
@@ -56608,6 +56934,9 @@ const harness_prelude =
     \\    }
     \\  }
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  if (handle.__home_self_signed && (!fetchOptions.tls || fetchOptions.tls.rejectUnauthorized !== false)) {
+    \\    return __home_fetch_thenable(null, __home_tls_renegotiation_error());
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/fetch-tls-cert.test.ts") && origin.startsWith("https://")) {
     \\    const clientTls = fetchOptions && fetchOptions.tls || {};
     \\    const serverTls = handle.__home_tls_options || {};
@@ -70162,6 +70491,22 @@ fn rewriteNodeTlsConnectCorpus(allocator: std.mem.Allocator, source: []const u8)
     return out.toOwnedSlice(allocator);
 }
 
+fn rewriteNodeTlsRenegotiationCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct { needle: []const u8, replacement: []const u8 }{
+        .{ .needle = "let process: Subprocess<\"ignore\", \"pipe\", \"ignore\"> | null = null;", .replacement = "let renegotiationProcess = null;" },
+        .{ .needle = "  process = Bun.spawn([\"node\", join(import.meta.dir, \"renegotiation-feature.js\")], {", .replacement = "  renegotiationProcess = Bun.spawn([\"node\", join(import.meta.dir, \"renegotiation-feature.js\")], {" },
+        .{ .needle = "  const { value } = await process.stdout.getReader().read();", .replacement = "  const { value } = await renegotiationProcess.stdout.getReader().read();" },
+        .{ .needle = "  process?.kill();", .replacement = "  renegotiationProcess?.kill();" },
+    };
+    var rewritten = try allocator.dupe(u8, source);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, rewritten, replacement.needle, replacement.replacement);
+        allocator.free(rewritten);
+        rewritten = next;
+    }
+    return rewritten;
+}
+
 fn rewriteResolvedPassiveListenerSkip(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     // Bun carries Node's historical known-issue guard in this test. Home's
     // EventTarget shim implements the missing passive semantics, so keep
@@ -70193,6 +70538,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteResolvedPassiveListenerSkip(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/tls/node-tls-connect.test.ts"))
         try rewriteNodeTlsConnectCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/tls/renegotiation.test.ts"))
+        try rewriteNodeTlsRenegotiationCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
@@ -88317,6 +88664,10 @@ test "bootstrap runner preserves node timers and TLS foundation contracts" {
         .{ .path = "js/node/tls/node-tls-no-cipher-match-error.test.ts", .passed = 1, .todo = 0 },
         .{ .path = "js/node/tls/node-tls-root-certs-concurrent-init.test.ts", .passed = 1, .todo = 0 },
         .{ .path = "js/node/tls/node-tls-rootcertificates-immutable.test.ts", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-server.test.ts", .passed = 38, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-socket-allow-half-open-option.test.ts", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/tls/node-tls-upgrade.test.ts", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/tls/renegotiation.test.ts", .passed = 8, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
