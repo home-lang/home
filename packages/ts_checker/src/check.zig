@@ -123165,6 +123165,7 @@ pub const Checker = struct {
         if (try self.symbolicTupleLayoutsAssignable(arg_t, constraint)) |tuple_ok| {
             if (tuple_ok) return;
         }
+        if (try self.tryReportSinglePropertyMissing(arg_node, arg_node, arg_t, constraint)) return;
         const signature_constraint = self.typeArgSignatureConstraint(constraint);
         const allow_signature_display = signature_constraint != null;
         const arg_text = (try self.typeArgConstraintTypeNameAtNode(arg_node, arg_t, allow_signature_display)) orelse return;
@@ -137648,6 +137649,17 @@ pub const Checker = struct {
                     if (display_param_t == types.Primitive.never) {
                         diagnostic_arg_t = self.expressionLiteralType(args[i], diagnostic_arg_t) catch diagnostic_arg_t;
                     }
+                    const missing_relation_target = try self.missingPropertyRelationTarget(display_param_t);
+                    if (try self.tryReportSinglePropertyMissingWithDisplayTarget(
+                        args[i],
+                        args[i],
+                        diagnostic_arg_t,
+                        missing_relation_target,
+                        display_param_t,
+                    )) {
+                        stop_after_arg_mismatch = true;
+                        continue;
+                    }
                     if (try self.sameEnclosingTypeParameterDisplay(args[i], diagnostic_arg_t, display_param_t)) continue;
                     const exact_optional_msg = try self.formatExactOptionalArgumentNotAssignable(diagnostic_arg_t, display_param_t);
                     const generator_msg = try self.formatGeneratorFunctionArgumentNotAssignable(args[i], diagnostic_arg_t, display_param_t);
@@ -138816,6 +138828,7 @@ pub const Checker = struct {
                 {
                     continue;
                 }
+                if (try self.tryReportSinglePropertyMissing(args[i], args[i], arg_t, constraint)) continue;
                 const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                     try self.formatArgumentNotAssignable(arg_t, constraint, i);
                 try self.diagnostics.append(self.gpa, .{
@@ -138833,6 +138846,7 @@ pub const Checker = struct {
             {
                 continue;
             }
+            if (try self.tryReportSinglePropertyMissing(args[i], args[i], arg_t, constraint)) continue;
             const msg = (try self.formatGenericKeyofConstraintArgumentNotAssignable(
                 raw_constraint,
                 args,
@@ -154782,6 +154796,38 @@ pub const Checker = struct {
         source: TypeId,
         target: TypeId,
     ) !bool {
+        return self.tryReportSinglePropertyMissingWithDisplayTarget(
+            diag_node,
+            value_node,
+            source,
+            target,
+            target,
+        );
+    }
+
+    fn missingPropertyRelationTarget(self: *Checker, display_target: TypeId) CheckError!TypeId {
+        const constrained = self.restRelationTarget(display_target, 0);
+        if (constrained < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(constrained).is_object_type and
+            self.interner.objectMembers(constrained).len > 0)
+        {
+            return constrained;
+        }
+        const display = (try self.missingPropertyTypeName(display_target)) orelse return constrained;
+        const base = if (std.mem.indexOfScalar(u8, display, '<')) |open| display[0..open] else display;
+        if (!isSimpleTypeAliasName(base)) return constrained;
+        const name = self.string_interner.intern(base) catch return error.OutOfMemory;
+        return self.type_names.get(name) orelse constrained;
+    }
+
+    fn tryReportSinglePropertyMissingWithDisplayTarget(
+        self: *Checker,
+        diag_node: NodeId,
+        value_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+        display_target: TypeId,
+    ) !bool {
         if (target == types.Primitive.none or target == types.Primitive.any or
             target == types.Primitive.unknown)
         {
@@ -154951,7 +154997,7 @@ pub const Checker = struct {
             return false;
         }
 
-        const target_name = (try self.missingPropertyTypeName(target)) orelse return false;
+        const target_name = (try self.missingPropertyTypeName(display_target)) orelse return false;
         const private_source_name = if (self.memberNameIsEcmaPrivate(first_missing_name))
             try self.missingPrivatePropertyApparentSourceName(source, value_node)
         else
@@ -185162,6 +185208,26 @@ test "checker: Record over numeric enum requires enum value keys" {
         TsCodes.property_missing_required,
         "Property '0' is missing in type '{}' but required in type 'Record<E, any>'.",
     ));
+}
+
+test "checker: calls and type constraints elaborate one missing property" {
+    const s = try newSetup(
+        \\class Base { foo: string; }
+        \\class Derived extends Base { bar: string; }
+        \\declare const base: Base;
+        \\declare function accept(value: Derived): void;
+        \\accept(base);
+        \\function infer<T, U extends T>(first: T, second: U) {}
+        \\declare const derived: Derived;
+        \\infer(derived, base);
+        \\type Box<T extends Derived> = T;
+        \\type Invalid = Box<Base>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: const enum literal unions assign to enum annotations" {
