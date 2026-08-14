@@ -508,6 +508,6 @@ impl<T: Clone> Repository<T> for InMemoryRepository<T> {
 
 ## Next Steps
 
-- [Generics](/guide/functions#generic-functions) - Generic programming
-- [Error Handling](/advanced/error-handling) - Error traits
-- [Standard Library](/reference/stdlib) - Built-in traits
+- [Generics](/docs/guide/functions#generic-functions) - Generic programming
+- [Error Handling](/docs/advanced/error-handling) - Error traits
+- [Standard Library](/docs/reference/stdlib) - Built-in traits

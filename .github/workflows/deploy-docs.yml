@@ -1,6 +1,6 @@
 name: Deploy Docs
 
-# Push-to-deploy for home-lang.org + docs.home-lang.org.
+# Push-to-deploy for home-lang.org.
 #
 # Only paths that can change the rendered site trigger it — the compiler and
 # runtime work in this repo lands constantly and must not redeploy a docs site
@@ -11,10 +11,9 @@ on:
       - main
     paths:
       - 'docs/**'
-      - '.config/docs.ts'
+      - '.config/**'
       - 'bunpress.config.ts'
       - 'cloud.config.ts'
-      - 'scripts/deploy-docs.ts'
       - '.github/workflows/deploy-docs.yml'
   workflow_dispatch:
 
@@ -45,16 +44,12 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Use cached node_modules
-        uses: actions/cache@v5
-        with:
-          path: node_modules
-          key: node-modules-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            node-modules-
-
-      - name: Install Dependencies
-        run: bun install
+      # No `bun install` step. Both tools are fetched on demand by `bunx`, and
+      # the only imports the two config files make are type-only or a relative
+      # file, so nothing here needs node_modules. The repo's package.json also
+      # lists Pantry packages (`zig-dtsx`, `ziglang.org`) that do not resolve on
+      # npm, so an install step would fail this job on dependencies the docs
+      # never touch.
 
       - name: Prepare deploy SSH key
         env:
@@ -72,11 +67,10 @@ jobs:
           chmod 644 ~/.ssh/id_ed25519.pub
 
       - name: Build and deploy
-        # Always via the script: it flattens BunPress's `.bunpress` output into
-        # dist/docs and asserts a non-zero page count, because shipping the
-        # unflattened parent produces an empty release that still reports
-        # success.
-        run: bun scripts/deploy-docs.ts
+        # Everything is in cloud.config.ts: ts-cloud runs the BunPress build,
+        # packages `dist/docs/.bunpress`, ships it, reconciles DNS and reloads
+        # the gateway. Pinned so a deploy is reproducible.
+        run: bunx --bun @stacksjs/ts-cloud@0.7.121 deploy --env production --yes
         env:
           # This project attaches to the shared stacks box, so the deploy needs
           # the Hetzner token to find it and the Porkbun credentials to
@@ -86,14 +80,21 @@ jobs:
           PORKBUN_SECRET_KEY: ${{ secrets.PORKBUN_SECRET_KEY }}
 
       - name: Verify the deployed site
-        # The runner cannot always resolve the public name, and a green deploy
-        # is not proof the box is serving: an empty release still exits 0. Ask
-        # the box itself, over its own loopback.
+        # The runner cannot always resolve the public name, so ask the box
+        # itself over its own loopback. `/docs` is checked as well as `/`,
+        # because the landing page and the documentation are now one release
+        # and a wrong site root would serve one without the other.
         run: |
-          for host in home-lang.org docs.home-lang.org; do
+          check() {
             code=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
               root@178.105.248.188 \
-              "curl -s -o /dev/null -w '%{http_code}' --resolve $host:443:127.0.0.1 https://$host/")
-            echo "$host -> $code"
-            [ "$code" = "200" ] || { echo "::error::$host returned $code"; exit 1; }
-          done
+              "curl -s -o /dev/null -w '%{http_code}' --resolve $1:443:127.0.0.1 https://$1$2")
+            echo "$1$2 -> $code (expected $3)"
+            [ "$code" = "$3" ] || { echo "::error::$1$2 returned $code, expected $3"; exit 1; }
+          }
+
+          check home-lang.org / 200
+          check home-lang.org /docs 200
+          check home-lang.org /docs/guide/getting-started 200
+          # The old docs host is a redirect now, not a second copy of the site.
+          check docs.home-lang.org / 301

@@ -75,7 +75,7 @@ auto-import completion does not yet search the cross-file interner.
 
 ## Packages and toolchain
 
-Home reuses [Pantry](/PANTRY_INTEGRATION) rather than growing a second
+Home reuses [Pantry](/docs/PANTRY_INTEGRATION) rather than growing a second
 ecosystem manager:
 
 ```bash
@@ -99,6 +99,6 @@ through `home lsp`. Any editor with a language-server client can be pointed at
 
 ## Related
 
-- [DX commands](/DX_COMMANDS), the full command reference
-- [TypeScript compiler](/features/typescript), the front end behind the server
-- [Package management](/PACKAGE-MANAGEMENT), how Pantry is used
+- [DX commands](/docs/DX_COMMANDS), the full command reference
+- [TypeScript compiler](/docs/features/typescript), the front end behind the server
+- [Package management](/docs/PACKAGE-MANAGEMENT), how Pantry is used

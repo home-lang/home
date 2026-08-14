@@ -63,7 +63,7 @@ fn load_profile(id: int) -> Result<Profile, ApiError> {
 ```
 
 No exception unwinds through the connection handler, and no failure is
-silently swallowed. See [error handling](/advanced/error-handling).
+silently swallowed. See [error handling](/docs/advanced/error-handling).
 
 ## Making outbound calls
 
@@ -75,12 +75,12 @@ let users: [User] = response.json()?
 ```
 
 Timeouts, retries and POST bodies are covered in the
-[standard library reference](/reference/stdlib).
+[standard library reference](/docs/reference/stdlib).
 
 ## Concurrency
 
 Handlers are `async`, and awaiting one request does not block the others. See
-[async](/advanced/async) for tasks, channels and the structure of the
+[async](/docs/advanced/async) for tasks, channels and the structure of the
 scheduler.
 
 ## The TypeScript side
@@ -93,8 +93,8 @@ home tsc --noEmit
 home build src/hot-path.home -o hot-path
 ```
 
-See [TypeScript migration](/use-cases/typescript-migration) for the staged
-version of that, and [the TypeScript compiler](/features/typescript) for what
+See [TypeScript migration](/docs/use-cases/typescript-migration) for the staged
+version of that, and [the TypeScript compiler](/docs/features/typescript) for what
 `home tsc` covers.
 
 ## Status
@@ -103,12 +103,12 @@ version of that, and [the TypeScript compiler](/features/typescript) for what
 The Bun-compatible runtime, which is what makes the JavaScript side of a mixed
 service run on Home's own JavaScriptCore realm, is maturing: 24 `node:*`
 modules are callable so far and the default `home run` still delegates to
-Pantry's `bun`. See [Bun parity](/PARITY-BUN) and
-[Node parity](/PARITY-NODE) for the module-by-module picture.
+Pantry's `bun`. See [Bun parity](/docs/PARITY-BUN) and
+[Node parity](/docs/PARITY-NODE) for the module-by-module picture.
 
 ## Related
 
-- [Standard library](/reference/stdlib)
-- [Async](/advanced/async)
-- [TypeScript migration](/use-cases/typescript-migration)
-- [CLI tools](/use-cases/cli-tools)
+- [Standard library](/docs/reference/stdlib)
+- [Async](/docs/advanced/async)
+- [TypeScript migration](/docs/use-cases/typescript-migration)
+- [CLI tools](/docs/use-cases/cli-tools)

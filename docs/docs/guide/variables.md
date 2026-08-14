@@ -319,6 +319,6 @@ let right = a >> 2 // 3
 
 ## Next Steps
 
-- [Functions](/guide/functions) - Define and call functions
-- [Control Flow](/guide/control-flow) - Conditionals and loops
-- [Structs and Enums](/guide/structs-enums) - Custom data types
+- [Functions](/docs/guide/functions) - Define and call functions
+- [Control Flow](/docs/guide/control-flow) - Conditionals and loops
+- [Structs and Enums](/docs/guide/structs-enums) - Custom data types

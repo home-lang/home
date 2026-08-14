@@ -43,7 +43,7 @@ tsc --noEmit && home tsc --noEmit
 Coarse conformance against the upstream corpus is saturated at 5,907 cases, so
 disagreements about which diagnostics fire are rare. Byte-for-byte exact
 matching is at roughly 88.6%, so differences in exact wording are still
-possible. See [the TypeScript compiler](/features/typescript) for how both
+possible. See [the TypeScript compiler](/docs/features/typescript) for how both
 numbers are produced.
 
 ## Stage three: move one hot path
@@ -70,7 +70,7 @@ home test           # run the suite
 home lsp --stdio    # the editor endpoint
 ```
 
-See [editor and CLI tooling](/features/tooling).
+See [editor and CLI tooling](/docs/features/tooling).
 
 ## What to expect from each stage
 
@@ -93,14 +93,14 @@ Be clear about what is not ready before planning around it:
   through Home's own JavaScriptCore realm, and the default `home run` still
   delegates to Pantry's `bun`.
 
-The [capability matrix](/CAPABILITY_MATRIX) and the parity pages for
-[TypeScript](/PARITY-TYPESCRIPT), [Node](/PARITY-NODE) and
-[Bun](/PARITY-BUN) are kept current and are the right thing to read before
+The [capability matrix](/docs/CAPABILITY_MATRIX) and the parity pages for
+[TypeScript](/docs/PARITY-TYPESCRIPT), [Node](/docs/PARITY-NODE) and
+[Bun](/docs/PARITY-BUN) are kept current and are the right thing to read before
 committing.
 
 ## Related
 
-- [TypeScript compiler](/features/typescript)
-- [TypeScript parity](/PARITY-TYPESCRIPT)
-- [Web services](/use-cases/web-services)
-- [Getting started](/guide/getting-started)
+- [TypeScript compiler](/docs/features/typescript)
+- [TypeScript parity](/docs/PARITY-TYPESCRIPT)
+- [Web services](/docs/use-cases/web-services)
+- [Getting started](/docs/guide/getting-started)

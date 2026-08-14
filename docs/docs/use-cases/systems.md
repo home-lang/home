@@ -9,7 +9,7 @@ is there.
 
 **No collector, no runtime.** Ownership and borrowing settle every lifetime at
 compile time. There is no collector to pause your process and nothing to ship
-alongside the binary. See [the memory model](/advanced/memory).
+alongside the binary. See [the memory model](/docs/advanced/memory).
 
 **Native code through LLVM.** `home build` produces a native executable. The
 optimiser sees monomorphized generics and comptime-resolved constants, not a
@@ -17,7 +17,7 @@ dynamic dispatch table.
 
 **Errors as values.** Nothing unwinds the stack behind your back. A function
 that can fail says so in its type, and `?` propagates without hiding control
-flow. See [error handling](/advanced/error-handling).
+flow. See [error handling](/docs/advanced/error-handling).
 
 **Direct memory access when you need it.** Pointers, slices, alignment control
 and inline assembly are available, and are the exception rather than the
@@ -73,7 +73,7 @@ runtime that a hand-written C version would not also pay.
 ## Compile-time work
 
 Anything you can compute before the program runs, you can compute in
-[comptime](/advanced/comptime). Lookup tables, protocol tables and dispatch
+[comptime](/docs/advanced/comptime). Lookup tables, protocol tables and dispatch
 tables become constants in the binary:
 
 ```home
@@ -96,7 +96,7 @@ extern "C" {
 }
 ```
 
-See [FFI](/features/ffi) for struct layout, callbacks and ownership across the
+See [FFI](/docs/features/ffi) for struct layout, callbacks and ownership across the
 boundary.
 
 ## Status
@@ -104,12 +104,12 @@ boundary.
 The front end, type inference and the interpreter are usable today. Native
 code generation goes through LLVM and handles single-entrypoint builds;
 whole-module-graph bundling and cross-target builds are still in progress.
-Check the [capability matrix](/CAPABILITY_MATRIX) before committing a project
+Check the [capability matrix](/docs/CAPABILITY_MATRIX) before committing a project
 to a specific feature.
 
 ## Related
 
-- [Memory model](/advanced/memory)
-- [Performance](/advanced/performance)
-- [Operating systems](/use-cases/operating-systems)
-- [FFI](/features/ffi)
+- [Memory model](/docs/advanced/memory)
+- [Performance](/docs/advanced/performance)
+- [Operating systems](/docs/use-cases/operating-systems)
+- [FFI](/docs/features/ffi)

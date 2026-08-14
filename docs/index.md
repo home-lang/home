@@ -8,11 +8,11 @@ hero:
   announcement:
     tag: Parity
     text: See how Home measures against tsc, Node and Bun
-    link: /CAPABILITY_MATRIX
+    link: /docs/CAPABILITY_MATRIX
   actions:
     - theme: brand
       text: Get started
-      link: /guide/getting-started
+      link: /docs/guide/getting-started
     - theme: alt
       text: GitHub
       link: https://github.com/home-lang/home
@@ -71,23 +71,23 @@ features:
     span: 2
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 10h4M10 10v5M14 15h3v-5h-3"/></svg>'
     details: Home compiles Home. It also parses, type-checks and emits TypeScript, so a mixed codebase needs one toolchain instead of two.
-    link: /features/typescript
+    link: /docs/features/typescript
     linkText: How the TypeScript path works
   - title: Every case, or it does not compile
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h5l3 5 3-5h5M4 17h5l3-5"/></svg>'
     details: Exhaustive match over enums, tuples and ranges, with guards and bindings. A missing branch is a compile error, not a runtime surprise.
-    link: /features/pattern-matching
+    link: /docs/features/pattern-matching
     linkText: See pattern matching
   - title: Memory without a collector
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="10" rx="2"/><path d="M8 7V5M12 7V5M16 7V5M8 19v-2M12 19v-2M16 19v-2"/></svg>'
     details: Ownership and borrowing settle lifetimes at compile time. No pauses, no hand-rolled arenas, no runtime to ship beside the binary.
-    link: /advanced/memory
+    link: /docs/advanced/memory
     linkText: See the memory model
   - title: Compile time is just code
     span: 2
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>'
     details: Comptime runs real Home during compilation. Build lookup tables, specialise generics and validate configuration before the binary exists.
-    link: /advanced/comptime
+    link: /docs/advanced/comptime
     linkText: See comptime
 ---
 
@@ -112,7 +112,7 @@ features:
       <span class="hl-metric-label">Tests in the compiler suite</span>
     </div>
   </div>
-  <p class="hl-metrics-note">Every figure is a file-count or row-count measurement against an external baseline, refreshed 2026-07-13. <a href="/PARITY-TYPESCRIPT">Read how each one is produced</a>.</p>
+  <p class="hl-metrics-note">Every figure is a file-count or row-count measurement against an external baseline, refreshed 2026-07-13. <a href="/docs/PARITY-TYPESCRIPT">Read how each one is produced</a>.</p>
 </section>
 
 <section class="hl-band">
@@ -151,42 +151,42 @@ home explain TS2345
     <h2 class="hl-title">What people build with it</h2>
     <p class="hl-lead">Home targets the places where a runtime is a liability: fixed frame budgets, freestanding binaries, and services that have to start instantly.</p>
     <div class="hl-cases">
-      <a class="hl-case" href="/use-cases/systems">
+      <a class="hl-case" href="/docs/use-cases/systems">
         <span class="hl-case-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
         <span>
           <span class="hl-case-title">Systems programming</span>
           <span class="hl-case-text">Native binaries with predictable latency and direct access to the machine.</span>
         </span>
       </a>
-      <a class="hl-case" href="/use-cases/games">
+      <a class="hl-case" href="/docs/use-cases/games">
         <span class="hl-case-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="10" rx="4"/><path d="M7 11v2M6 12h2M16 11h.01M18 13h.01"/></svg></span>
         <span>
           <span class="hl-case-title">Game development</span>
           <span class="hl-case-text">A 16ms budget survives when nothing decides to collect garbage mid-frame.</span>
         </span>
       </a>
-      <a class="hl-case" href="/use-cases/web-services">
+      <a class="hl-case" href="/docs/use-cases/web-services">
         <span class="hl-case-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/></svg></span>
         <span>
           <span class="hl-case-title">Web services</span>
           <span class="hl-case-text">HTTP routing, database access and JSON in the standard library, in one binary.</span>
         </span>
       </a>
-      <a class="hl-case" href="/use-cases/cli-tools">
+      <a class="hl-case" href="/docs/use-cases/cli-tools">
         <span class="hl-case-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></span>
         <span>
           <span class="hl-case-title">CLI tools</span>
           <span class="hl-case-text">One file to ship, no interpreter to install, and start-up you can measure in microseconds.</span>
         </span>
       </a>
-      <a class="hl-case" href="/use-cases/operating-systems">
+      <a class="hl-case" href="/docs/use-cases/operating-systems">
         <span class="hl-case-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11"/></svg></span>
         <span>
           <span class="hl-case-title">Operating systems</span>
           <span class="hl-case-text">Freestanding builds with no allocator and no runtime assumed underneath.</span>
         </span>
       </a>
-      <a class="hl-case" href="/use-cases/typescript-migration">
+      <a class="hl-case" href="/docs/use-cases/typescript-migration">
         <span class="hl-case-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h12l-3-3M20 16H8l3 3"/></svg></span>
         <span>
           <span class="hl-case-title">TypeScript migration</span>
@@ -288,7 +288,7 @@ fn main() {
         <span class="hl-status-note">JavaScript runs through Home's own JavaScriptCore realm, with 24 node modules callable so far.</span>
       </div>
     </div>
-    <a class="hl-status-link" href="/CAPABILITY_MATRIX">Read the full capability matrix</a>
+    <a class="hl-status-link" href="/docs/CAPABILITY_MATRIX">Read the full capability matrix</a>
   </div>
 </section>
 
@@ -296,8 +296,8 @@ fn main() {
   <h2 class="hl-title">Try it on something small</h2>
   <p class="hl-lead">A CLI tool, a parser, one service. Half an hour is enough to know whether the language fits your head.</p>
   <div class="hl-close-actions">
-    <a class="BPButton BPButton-brand" href="/guide/getting-started">Get started</a>
-    <a class="BPButton BPButton-alt" href="/features/typescript">Read the TypeScript story</a>
+    <a class="BPButton BPButton-brand" href="/docs/guide/getting-started">Get started</a>
+    <a class="BPButton BPButton-alt" href="/docs/features/typescript">Read the TypeScript story</a>
   </div>
 </section>
 

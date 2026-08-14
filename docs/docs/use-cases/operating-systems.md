@@ -34,8 +34,8 @@ Kernel.asm.outb(0x3F8, 'A');          // write to the serial port
 const data = Kernel.asm.inw(0x1F0);   // read a word from disk
 ```
 
-See [kernel features](/KERNEL_FEATURES) for the full surface and
-[kernel architecture](/KERNEL_ARCHITECTURE) for how the pieces fit together.
+See [kernel features](/docs/KERNEL_FEATURES) for the full surface and
+[kernel architecture](/docs/KERNEL_ARCHITECTURE) for how the pieces fit together.
 
 ## Why the type system helps here
 
@@ -48,15 +48,15 @@ place that has to care.
 
 **Errors as values.** A page-table walk that can fail returns a `Result`. There
 is no unwinding through a fault handler, because there is nothing to unwind
-with. See [error handling](/advanced/error-handling).
+with. See [error handling](/docs/advanced/error-handling).
 
 **Ownership without an allocator.** Ownership is a compile-time property, so it
 works the same before you have a heap as after. See
-[the memory model](/advanced/memory).
+[the memory model](/docs/advanced/memory).
 
 **Comptime tables.** Descriptor tables, page-table constants and interrupt
 vectors can be built during compilation and land in the binary as data. See
-[comptime](/advanced/comptime).
+[comptime](/docs/advanced/comptime).
 
 ## HomeOS
 
@@ -71,11 +71,11 @@ The kernel package targets x86_64 today. The primitives are in place; the
 language underneath them is still maturing, and native code generation handles
 single-entrypoint builds with module-graph bundling in progress. This is the
 most experimental use case on this site, and worth treating as such. The
-[capability matrix](/CAPABILITY_MATRIX) is the honest reference.
+[capability matrix](/docs/CAPABILITY_MATRIX) is the honest reference.
 
 ## Related
 
-- [Kernel features](/KERNEL_FEATURES)
-- [Kernel architecture](/KERNEL_ARCHITECTURE)
-- [Memory model](/advanced/memory)
-- [Systems programming](/use-cases/systems)
+- [Kernel features](/docs/KERNEL_FEATURES)
+- [Kernel architecture](/docs/KERNEL_ARCHITECTURE)
+- [Memory model](/docs/advanced/memory)
+- [Systems programming](/docs/use-cases/systems)

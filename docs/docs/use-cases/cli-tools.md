@@ -52,7 +52,7 @@ fn main() {
 
 Slice patterns handle the argument shapes directly, and the compiler will not
 let a new `Command` variant go unhandled. See
-[pattern matching](/features/pattern-matching).
+[pattern matching](/docs/features/pattern-matching).
 
 ## Reading files and streaming
 
@@ -66,7 +66,7 @@ fn count_lines(path: string) -> Result<int, Error> {
 ```
 
 `?` returns early on a missing file, and the caller decides what the user
-sees. See [the standard library](/reference/stdlib) for the file, process and
+sees. See [the standard library](/docs/reference/stdlib) for the file, process and
 formatting APIs.
 
 ## Exit codes and output
@@ -79,7 +79,7 @@ and diagnostics go to stderr while data goes to stdout.
 
 Home's toolchain is the best worked example. `home fix`, `home symbols`,
 `home explain`, `home size` and `home api-diff` are all built this way and are
-described in [DX commands](/DX_COMMANDS). If you want to see how a
+described in [DX commands](/docs/DX_COMMANDS). If you want to see how a
 non-trivial CLI is structured, that is the code to read.
 
 ## Status
@@ -88,11 +88,11 @@ The interpreter runs CLI programs today. Native single-entrypoint builds work
 through LLVM on arm64 and x86-64 macOS and Linux; bundling an imported module
 graph into one binary is still in progress, so a multi-file tool is not yet a
 single-file distribution. See the
-[capability matrix](/CAPABILITY_MATRIX).
+[capability matrix](/docs/CAPABILITY_MATRIX).
 
 ## Related
 
-- [Getting started](/guide/getting-started)
-- [DX commands](/DX_COMMANDS)
-- [Pattern matching](/features/pattern-matching)
-- [Standard library](/reference/stdlib)
+- [Getting started](/docs/guide/getting-started)
+- [DX commands](/docs/DX_COMMANDS)
+- [Pattern matching](/docs/features/pattern-matching)
+- [Standard library](/docs/reference/stdlib)

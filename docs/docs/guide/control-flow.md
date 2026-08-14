@@ -360,6 +360,6 @@ fn describe(status: Status): string {
 
 ## Next Steps
 
-- [Structs and Enums](/guide/structs-enums) - Custom data types
-- [Error Handling](/advanced/error-handling) - Result types and the ? operator
-- [Pattern Matching in Traits](/guide/traits) - Advanced matching
+- [Structs and Enums](/docs/guide/structs-enums) - Custom data types
+- [Error Handling](/docs/advanced/error-handling) - Result types and the ? operator
+- [Pattern Matching in Traits](/docs/guide/traits) - Advanced matching

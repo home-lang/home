@@ -1,12 +1,16 @@
 import type { CloudConfig } from '@stacksjs/ts-cloud'
 
 /**
- * ts-cloud deployment config for the Home documentation site.
+ * ts-cloud deployment config for home-lang.org.
  *
- * Ships the BunPress build of `docs/` to the shared Stacks Hetzner box as
- * `home-lang.org` and `docs.home-lang.org`. Both hosts serve the same build:
- * the apex is the site, and `docs.` is kept because every og:url and outbound
- * link in `.config/docs.ts` already points at it.
+ * One BunPress build serves everything: the landing page at the apex and the
+ * documentation under `/docs`, which is why every doc page is a file under
+ * `docs/docs/`. `docs.home-lang.org` is kept as a redirect so old links land
+ * on the equivalent page rather than a dead host.
+ *
+ * The whole deploy is this file. There is deliberately no wrapper script:
+ * `bunx @stacksjs/ts-cloud deploy --env production --yes` builds, packages,
+ * ships, reconciles DNS and reloads the gateway on its own.
  *
  * Two rules come with being a TENANT on a box owned by another project
  * (`cloud.attachTo`), and both have caused outages on this box before:
@@ -89,42 +93,36 @@ const config: CloudConfig = {
   },
 
   sites: {
-    // server-static: built locally, shipped to /var/www/home-lang-docs/current,
+    // server-static: built locally, shipped to /var/www/home-lang-site/current,
     // served by the shared rpx gateway's file_server. No `start`/`port`.
     //
     // `www.home-lang.org` is NOT declared here: ts-cloud's autoWww adds the
     // redirect to the apex for every two-label domain, and skips the
     // three-label `docs.` host, which is exactly the shape wanted.
-    //
-    // Both hosts serve the same build, but as TWO sites rather than one site
-    // with `domain: [...]`. ts-cloud routes an array fine, then its
-    // post-deploy DNS/certificate step slugifies `site.domain` with
-    // `.replace(...)` and throws `.replace is not a function` on an array. The
-    // release ships before that step, so the symptom is a deploy that
-    // publishes correctly and still exits 1.
-    //
-    // The build runs once, on `site`. `docs` reuses the same `root`, so it
-    // needs no build of its own.
     site: {
       deploy: 'server',
-      root: 'dist/docs',
       domain: 'home-lang.org',
-      // The package scripts call bare `bunpress`, which has no runnable bin on
-      // npm; the engine these docs are written against is @stacksjs/bunpress,
-      // and it renders into a `.bunpress` SUBDIRECTORY of --outdir. Shipping
-      // the parent therefore ships an empty release. `scripts/deploy-docs.ts`
-      // flattens that subdirectory into `dist/docs` and then deploys, which is
-      // why the build step is dropped on that path. Always deploy with it.
-      build: process.env.HOME_LANG_PREBUILT ? undefined : 'bun scripts/deploy-docs.ts --build-only',
+      // BunPress renders into a `.bunpress` SUBDIRECTORY of `--outdir`, so the
+      // site root is that subdirectory, not the outdir. Pointing at the parent
+      // ships a release whose pages are all one level too deep and 404s every
+      // URL; ts-cloud now refuses that at package time and names this path.
+      root: 'dist/docs/.bunpress',
+      // `bunpress` has no runnable bin on npm — the engine these docs are
+      // written against is @stacksjs/bunpress. Pinned so a deploy is
+      // reproducible; the build wipes its own outdir, so no clean step here.
+      build: 'bunx --bun @stacksjs/bunpress@0.2.3 build --dir ./docs --outdir ./dist/docs',
       // Extensionless doc URLs resolve to <path>/index.html.
       pathRewriteStyle: 'directory',
     },
 
+    // The docs used to be a site of their own on this host. They are a path on
+    // the apex now, so the host becomes a redirect: it ships nothing, keeps its
+    // place in the gateway's TLS set, and `preservePath` carries the rest of
+    // the URL over, so `docs.home-lang.org/guide/x` lands on
+    // `home-lang.org/docs/guide/x`.
     docs: {
-      deploy: 'server',
-      root: 'dist/docs',
       domain: 'docs.home-lang.org',
-      pathRewriteStyle: 'directory',
+      redirect: { to: 'https://home-lang.org/docs', status: 301, preservePath: true },
     },
   },
 }

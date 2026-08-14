@@ -98,3 +98,4 @@ app-with-resources
 .native/
 /.survey
 /.zig-global-cache-home-test
+/.ts-cloud

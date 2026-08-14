@@ -364,7 +364,7 @@ print(add*then*double(5))  // 12 = (5 + 1) * 2
 
 ## Async Functions
 
-See the [Async Programming](/advanced/async) guide for details on async functions:
+See the [Async Programming](/docs/advanced/async) guide for details on async functions:
 
 ```home
 fn fetch*data(): async Result<Data> {
@@ -375,6 +375,6 @@ fn fetch*data(): async Result<Data> {
 
 ## Next Steps
 
-- [Control Flow](/guide/control-flow) - Conditionals and loops
-- [Error Handling](/advanced/error-handling) - Result types and error propagation
-- [Traits](/guide/traits) - Define shared behavior
+- [Control Flow](/docs/guide/control-flow) - Conditionals and loops
+- [Error Handling](/docs/advanced/error-handling) - Result types and error propagation
+- [Traits](/docs/guide/traits) - Define shared behavior

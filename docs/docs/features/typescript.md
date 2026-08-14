@@ -71,7 +71,7 @@ backlog: roughly 455 are dead in the reference compiler, meaning wording it
 never actually produces, and 4 are gated behind subsystems that are not wired
 yet. Counted against the codes `tsgo` really emits, the reachable set is
 complete. See
-[TypeScript diagnostic reachability](/TS_DIAGNOSTIC_REACHABILITY) for the
+[TypeScript diagnostic reachability](/docs/TS_DIAGNOSTIC_REACHABILITY) for the
 per-code breakdown.
 
 ## Editor support
@@ -86,7 +86,7 @@ home lsp --stdio
 76 of roughly 80 protocol methods are routed, including hover, completion,
 signature help, semantic tokens, inlay hints, code actions, rename, call and
 type hierarchies, and pull-based diagnostics. See
-[Editor and CLI tooling](/features/tooling) for the full list and the gaps.
+[Editor and CLI tooling](/docs/features/tooling) for the full list and the gaps.
 
 ## Emit
 
@@ -121,6 +121,6 @@ JavaScriptCore-enabled Home compiler plus LLVM on `PATH`.
 
 ## Related
 
-- [TypeScript parity](/PARITY-TYPESCRIPT), feature by feature
-- [TypeScript migration](/use-cases/typescript-migration), the adoption path
-- [Capability matrix](/CAPABILITY_MATRIX), every row with status
+- [TypeScript parity](/docs/PARITY-TYPESCRIPT), feature by feature
+- [TypeScript migration](/docs/use-cases/typescript-migration), the adoption path
+- [Capability matrix](/docs/CAPABILITY_MATRIX), every row with status
