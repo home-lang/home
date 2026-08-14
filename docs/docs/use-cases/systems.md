@@ -30,18 +30,18 @@ codebase:
 
 ```home
 struct Ring<T> {
-  items: [T],
+  items: []T,
   head: int,
   tail: int,
   len: int,
 }
 
 impl<T> Ring<T> {
-  fn with_capacity(cap: int) -> Ring<T> {
+  fn with_capacity(cap: int): Ring<T> {
     Ring { items: Array.with_capacity(cap), head: 0, tail: 0, len: 0 }
   }
 
-  fn push(mut self, value: T) -> Result<(), Full> {
+  fn push(mut self, value: T): Result<(), Full> {
     if (self.len == self.items.len()) {
       return Err(Full)
     }
@@ -52,7 +52,7 @@ impl<T> Ring<T> {
     Ok(())
   }
 
-  fn pop(mut self) -> Option<T> {
+  fn pop(mut self): Option<T> {
     match self.len {
       0 => None,
       _ => {
@@ -92,7 +92,7 @@ generator:
 
 ```home
 extern "C" {
-  fn clock_gettime(clock: int, ts: *TimeSpec) -> int
+  fn clock_gettime(clock: int, ts: *TimeSpec): int
 }
 ```
 

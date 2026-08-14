@@ -53,7 +53,7 @@ Every fallible step in a handler returns a `Result`, so the error path is
 written once and reads in order:
 
 ```home
-fn load_profile(id: int) -> Result<Profile, ApiError> {
+fn load_profile(id: int): Result<Profile, ApiError> {
   let user = database.find_user(id)?
   let prefs = database.find_preferences(user.id)?
   let avatar = storage.signed_url(user.avatar_key)?
@@ -71,7 +71,7 @@ silently swallowed. See [error handling](/docs/advanced/error-handling).
 import std::http
 
 let response = await http.get("https://api.example.com/users")?
-let users: [User] = response.json()?
+let users: []User = response.json()?
 ```
 
 Timeouts, retries and POST bodies are covered in the

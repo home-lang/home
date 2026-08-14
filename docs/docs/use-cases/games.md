@@ -29,9 +29,9 @@ tables can be resolved during compilation. See [comptime](/docs/advanced/comptim
 
 ```home
 struct World {
-  positions: [Vec2],
-  velocities: [Vec2],
-  alive: [bool],
+  positions: []Vec2,
+  velocities: []Vec2,
+  alive: []bool,
 }
 
 fn integrate(mut world: World, dt: float) {
@@ -64,7 +64,7 @@ enum Phase {
   GameOver(int),
 }
 
-fn update(phase: Phase, dt: float) -> Phase {
+fn update(phase: Phase, dt: float): Phase {
   match phase {
     Phase.Loading(progress) => {
       let next = progress + dt

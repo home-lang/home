@@ -28,7 +28,7 @@ enum Command {
   Version,
 }
 
-fn parse_args(args: [string]) -> Result<Command, UsageError> {
+fn parse_args(args: []string): Result<Command, UsageError> {
   match args {
     ["build", path] => Ok(Command.Build(path)),
     ["check", path] => Ok(Command.Check(path)),
@@ -59,7 +59,7 @@ let a new `Command` variant go unhandled. See
 ```home
 import std::fs
 
-fn count_lines(path: string) -> Result<int, Error> {
+fn count_lines(path: string): Result<int, Error> {
   let contents = fs.read_to_string(path)?
   Ok(contents.lines().count())
 }

@@ -17,55 +17,51 @@ hero:
       text: GitHub
       link: https://github.com/home-lang/home
   code:
-    - file: config.home
+    - file: users.home
       lang: home
       content: |
-        struct Config {
-          host: string,
-          port: int,
+        struct User {
+          id: int,
+          name: string,
         }
 
-        fn parse(raw: string) -> Result<Config, Error> {
-          let doc = json.parse(raw)?
-          Ok(Config { host: doc.host, port: doc.port })
+        async fn users(): Result<[]User, Error> {
+          let res = await http.get("/api/users")?
+          return await res.json()
         }
 
-        fn main() {
-          match parse(env.read("HOME_CONFIG")) {
-            Ok(c) => print("listening on {c.host}:{c.port}"),
-            Err(e) => print("bad config: {e}"),
+        async fn main() {
+          match await users() {
+            Ok(list) => print("{list.len()} users"),
+            Err(e) => print("failed: {e}"),
           }
         }
-    - file: server.home
-      lang: home
+    - file: server.ts
+      lang: ts
       content: |
-        import std::http::{Server, Response}
+        // Plain TypeScript, run by the same binary.
+        import { readFile } from 'node:fs/promises'
 
-        fn main(): async {
-          let server = Server.bind(":3000")
-
-          server.get("/users/:id", async |req| {
-            let id = req.param("id").parse::<int>()?
-
-            match await db.find_user(id) {
-              Some(user) => Response.json(user),
-              None => Response.status(404).text("Not found"),
-            }
-          })
-
-          await server.listen()
+        interface Config {
+          host: string
+          port: number
         }
+
+        const raw = await readFile('home.json', 'utf8')
+        const config: Config = JSON.parse(raw)
+
+        console.log(`${config.host}:${config.port}`)
     - file: terminal
       lang: bash
       content: |
-        # A Home program becomes a native binary
+        # A native binary, with no runtime beside it
         home build src/main.home -o app
 
-        # The same compiler checks the TypeScript next to it
+        # The same compiler checks your TypeScript
         home tsc --noEmit
 
-        # And runs both test suites
-        home test
+        # And runs it on Home's own JS runtime
+        home run server.ts
 features:
   - title: One compiler, two languages
     span: 2
@@ -89,6 +85,12 @@ features:
     details: Comptime runs real Home during compilation. Build lookup tables, specialise generics and validate configuration before the binary exists.
     link: /docs/advanced/comptime
     linkText: See comptime
+  - title: A Bun and Node compatible runtime, in progress
+    span: 3
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>'
+    details: JavaScript runs through Home's own JavaScriptCore realm rather than a bundled Node. 24 of 47 node modules are callable today, alongside a broad Bun API surface, and the work is tracked module by module in the open.
+    link: /docs/PARITY-BUN
+    linkText: Follow the runtime port
 ---
 
 <div class="hl">
@@ -100,8 +102,8 @@ features:
       <span class="hl-metric-label">TypeScript conformance corpus, coarse mode</span>
     </div>
     <div>
-      <span class="hl-metric-value">0</span>
-      <span class="hl-metric-label">Reachable TypeScript diagnostic codes left to implement</span>
+      <span class="hl-metric-value">24 / 47</span>
+      <span class="hl-metric-label">node modules callable on Home's own runtime</span>
     </div>
     <div>
       <span class="hl-metric-value">76 / ~80</span>

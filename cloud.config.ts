@@ -110,7 +110,7 @@ const config: CloudConfig = {
       // `bunpress` has no runnable bin on npm — the engine these docs are
       // written against is @stacksjs/bunpress. Pinned so a deploy is
       // reproducible; the build wipes its own outdir, so no clean step here.
-      build: 'bunx --bun @stacksjs/bunpress@0.2.3 build --dir ./docs --outdir ./dist/docs',
+      build: 'bunx --bun @stacksjs/bunpress@0.2.4 build --dir ./docs --outdir ./dist/docs',
       // Extensionless doc URLs resolve to <path>/index.html.
       pathRewriteStyle: 'directory',
     },

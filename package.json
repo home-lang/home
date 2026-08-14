@@ -40,7 +40,7 @@
     "release": "bunx --bun bumpx -r --all"
   },
   "devDependencies": {
-    "@stacksjs/bunpress": "^0.2.3",
+    "@stacksjs/bunpress": "^0.2.4",
     "zig-dtsx": "^0.9.31",
     "@types/bun": "^1.3.9",
     "better-dx": "^0.2.15"
