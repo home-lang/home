@@ -2107,6 +2107,7 @@ const CheckerResolverAdapter = struct {
             .export_pos = type_only_pos orelse 0,
             .export_assignment_type_only = facts.export_assignment_type_only,
             .default_export_member_readonly = facts.default_export_member_readonly,
+            .call_only_function = facts.call_only_function,
             .module_is_external = facts.module_is_external,
         };
     }

@@ -3875,6 +3875,7 @@ pub const ModuleExportFacts = struct {
     export_assignment_type_only: bool = false,
     default_export_member_readonly: bool = false,
     generic_function: bool = false,
+    call_only_function: bool = false,
     module_is_external: bool = false,
 };
 
@@ -4016,6 +4017,12 @@ fn moduleExportFactsFromResolvedModuleDepth(
         &compilation.interner,
         compilation.root,
     );
+    facts.call_only_function = moduleRootExportsCallOnlyFunction(
+        &compilation.hir,
+        &compilation.interner,
+        compilation.root,
+        name,
+    );
     if (name.len == 0) {
         for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
             if (compilation.hir.kindOf(stmt) != .export_decl) continue;
@@ -4087,6 +4094,7 @@ fn moduleExportFactsFromResolvedModuleDepth(
                     facts.exported_value = facts.exported_value or nested.exported_value;
                     facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
                     facts.generic_function = facts.generic_function or nested.generic_function;
+                    facts.call_only_function = facts.call_only_function or nested.call_only_function;
                 }
             }
         }
@@ -4106,8 +4114,73 @@ fn moduleExportFactsFromResolvedModuleDepth(
         facts.exported_value = facts.exported_value or nested.exported_value;
         facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
         facts.generic_function = facts.generic_function or nested.generic_function;
+        facts.call_only_function = facts.call_only_function or nested.call_only_function;
     }
     return facts;
+}
+
+fn moduleRootExportsCallOnlyFunction(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    name: []const u8,
+) bool {
+    const name_id = interner.lookup(name) orelse return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        if (hir.kindOf(raw) == .assignment) {
+            const assignment = hir_mod_ns.assignmentOf(hir, raw);
+            const export_name = commonJsExportAssignmentName(hir, interner, assignment.target) orelse continue;
+            if (export_name != name_id or assignment.value == hir_mod_ns.none_node_id) continue;
+            if (moduleRootValueIsFunction(hir, root, assignment.value)) return true;
+            continue;
+        }
+        if (hir.kindOf(raw) != .export_decl) continue;
+        const export_decl = hir_mod_ns.exportOf(hir, raw);
+        if (export_decl.decl != hir_mod_ns.none_node_id and
+            declarationName(hir, export_decl.decl) == name_id and
+            hir.kindOf(export_decl.decl) == .fn_decl)
+        {
+            return true;
+        }
+        if (interner.get(export_decl.module).len != 0) continue;
+        for (hir_mod_ns.exportNamed(hir, raw)) |specifier| {
+            if (hir.kindOf(specifier) != .import_specifier) continue;
+            const exported = hir_mod_ns.importSpecifierOf(hir, specifier);
+            if (exported.local != name_id) continue;
+            if (moduleRootNamedValueIsFunction(hir, root, exported.imported)) return true;
+        }
+    }
+    return false;
+}
+
+fn moduleRootValueIsFunction(
+    hir: *const hir_mod_ns.Hir,
+    root: hir_mod_ns.NodeId,
+    value: hir_mod_ns.NodeId,
+) bool {
+    const kind = hir.kindOf(value);
+    if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) return true;
+    if (kind != .identifier) return false;
+    return moduleRootNamedValueIsFunction(hir, root, hir_mod_ns.identifierOf(hir, value).name);
+}
+
+fn moduleRootNamedValueIsFunction(
+    hir: *const hir_mod_ns.Hir,
+    root: hir_mod_ns.NodeId,
+    name: hir_mod_ns.StringId,
+) bool {
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        const decl = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (decl == hir_mod_ns.none_node_id or declarationName(hir, decl) != name) continue;
+        if (hir.kindOf(decl) == .fn_decl) return true;
+        const kind = hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+        const init = hir_mod_ns.varDeclOf(hir, decl).init;
+        if (init == hir_mod_ns.none_node_id) continue;
+        const init_kind = hir.kindOf(init);
+        if (init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn) return true;
+    }
+    return false;
 }
 
 fn moduleRootDeclaresGenericFunction(

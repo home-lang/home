@@ -296,6 +296,10 @@ pub const ExternalResolver = struct {
         /// explicit type arguments even when the foreign signature has not
         /// been interned into the importing checker's type pool.
         generic_function: bool = false,
+        /// True when the exported value is callable but has no construct
+        /// signature. Checked-JavaScript `new ns.fn()` uses this cross-file
+        /// fact to preserve TS7009 instead of treating the member as `any`.
+        call_only_function: bool = false,
         /// True when the exported value is an ambient const enum. Under
         /// isolatedModules-like flags (including verbatimModuleSyntax),
         /// TypeScript rejects value imports/re-exports of these symbols with
@@ -95101,7 +95105,8 @@ pub const Checker = struct {
                     }
                 }
                 var suppressed_ts2350_via_ts7009 = false;
-                const checked_js_bare_function = if (self.sourceHasCheckJsDirective() and
+                const checked_js_bare_function = (try self.newCalleeIsImportedCallOnlyFunction(c.callee)) or
+                    if (self.sourceHasCheckJsDirective() and
                     self.hir.kindOf(c.callee) == .identifier)
                 blk_bare: {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
@@ -108311,6 +108316,43 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn newCalleeIsImportedCallOnlyFunction(self: *Checker, callee: NodeId) CheckError!bool {
+        if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, callee);
+        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return false;
+        const local_name = hir_mod.identifierOf(self.hir, member.object).name;
+        const spec = self.namespaceImportSpecifierForLocal(local_name, callee) orelse
+            self.requireSpecifierForLocal(local_name, callee) orelse return false;
+        const resolver = self.external_resolver orelse return false;
+        const containing = if (self.importer_path.len > 0)
+            self.importer_path
+        else
+            self.virtualSectionFilenameForNode(callee) orelse "/__root__.ts";
+        const info = resolver.moduleExport(spec, containing, self.string_interner.get(member.name)) orelse return false;
+        return info.call_only_function;
+    }
+
+    fn requireSpecifierForLocal(
+        self: *Checker,
+        local_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) ?[]const u8 {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.virtualSectionStartForNode(stmt) != section) continue;
+            const decl = self.unwrapExportDecl(stmt);
+            const kind = self.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != local_name) continue;
+            return self.requireCallSpecifier(variable.init);
+        }
+        return null;
     }
 
     /// Namespace and qualified-member resolution can finalize TS2339 after
