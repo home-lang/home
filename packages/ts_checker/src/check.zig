@@ -25221,8 +25221,6 @@ pub const Checker = struct {
                 }
                 if (try self.commonJsExportsAssignmentMember(raw)) |member| {
                     try self.upsertObjectMember(&members, member);
-                } else if (try self.commonJsNestedExportsAssignmentMember(raw)) |nested| {
-                    try self.upsertNestedCommonJsExportMember(&members, nested);
                 }
                 continue;
             }
@@ -25444,25 +25442,6 @@ pub const Checker = struct {
         const object = self.propertyAccessObject(node) orelse return null;
         if (!self.nodeIsCommonJsExportsObject(object)) return null;
         return prop_name;
-    }
-
-    fn commonJsNestedExportsAssignmentMember(self: *Checker, node: NodeId) CheckError!?CommonJsNestedExportMember {
-        const asg = hir_mod.assignmentOf(self.hir, node);
-        if (asg.op != null) return null;
-        const member_name = self.propertyAccessName(asg.target) orelse return null;
-        const exported_object = self.propertyAccessObject(asg.target) orelse return null;
-        const export_name = self.commonJsExportsObjectPropertyName(exported_object) orelse return null;
-        const value_t = try self.checkExpression(asg.value);
-        return .{
-            .export_name = export_name,
-            .member = .{
-                .name = member_name,
-                .type = if (value_t != types.Primitive.none) value_t else types.Primitive.any,
-                .is_optional = false,
-                .is_readonly = false,
-                .is_method = false,
-            },
-        };
     }
 
     fn commonJsExportsObjectPropertyName(self: *Checker, node: NodeId) ?hir_mod.StringId {
@@ -55452,11 +55431,6 @@ pub const Checker = struct {
                     else
                         try self.commonJsExportAssignmentValueType(a.value);
                     try self.appendCommonJsExportEntry(&entries, prop_name, value_t, raw, true);
-                    continue;
-                }
-                if (try self.commonJsNestedExportsAssignmentMember(raw)) |nested| {
-                    if (in_target_section and direct_export_t != types.Primitive.none) continue;
-                    try self.upsertNestedCommonJsExportEntry(&entries, nested, raw, true);
                     continue;
                 }
                 if (export_alias) |alias_name| {
@@ -94218,6 +94192,7 @@ pub const Checker = struct {
                 } else try self.checkExpression(a.value);
                 if (a.op == null) {
                     try self.reportUnsupportedJsPrototypeAssignedFunctionThisMembers(node, a);
+                    try self.reportUnsupportedNestedCommonJsFunctionThisMembers(a);
                 }
                 try self.reportExpandoAssignmentInferenceErrors(node, a, target_t);
                 if (a.op == null) {
@@ -96537,6 +96512,9 @@ pub const Checker = struct {
                     if (self.checkjs_object_expando_narrows.get(key)) |nt| {
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
                     }
+                    if (try self.checkJsObjectExpandoAssignmentValueType(key.obj_name, m.name, node)) |nt| {
+                        break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                    }
                 }
                 if (try self.reportGlobalThisMissingOrReadonlyMember(node, m.object, access_obj_t, m.name)) {
                     break :blk types.Primitive.any;
@@ -96912,6 +96890,7 @@ pub const Checker = struct {
                             if (self.memberNameIsEcmaPrivate(m.name) or
                                 (self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t) and
                                     !void_expando_declaration) or
+                                self.commonJsExportsObjectPropertyName(m.object) != null or
                                 (try self.checkJsAssignmentTargetsImportedClassPrototype(m.object)) or
                                 (self.nodeIsThisReference(m.object) and
                                     (self.checkJsPrototypeAssignmentThisType(m.object) != null or
@@ -127230,7 +127209,11 @@ pub const Checker = struct {
             const property = hir_mod.objectPropertyOf(self.hir, property_node);
             if (property.value == hir_mod.none_node_id) continue;
             const value_kind = self.hir.kindOf(property.value);
-            if (value_kind != .fn_decl and value_kind != .fn_expr) continue;
+            if (value_kind != .fn_decl and value_kind != .fn_expr and
+                !(value_kind == .arrow_fn and (property.is_method or self.memberSourceLooksMethod(property_node))))
+            {
+                continue;
+            }
             try self.reportFunctionThisMembersMissingFromType(property.value, object_t);
         }
     }
@@ -127249,6 +127232,19 @@ pub const Checker = struct {
         }
         const prototype_t = (try self.priorPrototypeObjectAssignmentType(assignment_node, assignment.target)) orelse return;
         try self.reportFunctionThisMembersMissingFromType(assignment.value, prototype_t);
+    }
+
+    fn reportUnsupportedNestedCommonJsFunctionThisMembers(
+        self: *Checker,
+        assignment: hir_mod.AssignmentPayload,
+    ) CheckError!void {
+        if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(assignment.target) != .member_access) return;
+        const target = hir_mod.memberOf(self.hir, assignment.target);
+        if (self.commonJsExportsObjectPropertyName(target.object) == null) return;
+        const value_kind = self.hir.kindOf(assignment.value);
+        if (value_kind != .fn_decl and value_kind != .fn_expr) return;
+        const receiver_t = try self.checkExpression(target.object);
+        try self.reportFunctionThisMembersMissingFromType(assignment.value, receiver_t);
     }
 
     fn reportFunctionThisMembersMissingFromType(self: *Checker, function_node: NodeId, receiver_t: TypeId) CheckError!void {
@@ -127274,7 +127270,14 @@ pub const Checker = struct {
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const kind = self.hir.kindOf(cur);
-            if (kind == .arrow_fn) continue;
+            if (kind == .arrow_fn) {
+                if (self.hir.kindOf(function_node) == .arrow_fn) {
+                    const span = self.hir.spanOf(cur);
+                    return cur == function_node or
+                        (span.start == expected_span.start and span.end == expected_span.end);
+                }
+                continue;
+            }
             if (kind == .fn_decl or kind == .fn_expr) {
                 const span = self.hir.spanOf(cur);
                 return cur == function_node or
