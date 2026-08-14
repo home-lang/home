@@ -25207,6 +25207,8 @@ pub const Checker = struct {
         if (self.importDeclIsRequireAssignment(parent)) {
             if (try self.virtualExportAssignmentExpressionType(parent, imp.module)) |expr_t| return expr_t;
             if (try self.virtualExportAssignmentTargetStaticType(parent, imp.module)) |static_t| return static_t;
+            if (try self.virtualCommonJsRepeatedWholeObjectExportType(parent, imp.module)) |whole_t| return whole_t;
+            if (try self.virtualCommonJsModuleExportObjectType(parent, spec)) |commonjs_t| return commonjs_t;
         }
         return try self.moduleNamespaceTypeForSpecifier(imp.module, parent);
     }
@@ -25229,6 +25231,8 @@ pub const Checker = struct {
             if (self.importDeclIsRequireAssignment(stmt)) {
                 if (try self.virtualExportAssignmentExpressionType(stmt, imp.module)) |expr_t| return expr_t;
                 if (try self.virtualExportAssignmentTargetStaticType(stmt, imp.module)) |static_t| return static_t;
+                if (try self.virtualCommonJsRepeatedWholeObjectExportType(stmt, imp.module)) |whole_t| return whole_t;
+                if (try self.virtualCommonJsModuleExportObjectType(stmt, self.string_interner.get(imp.module))) |commonjs_t| return commonjs_t;
             }
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
@@ -55519,6 +55523,54 @@ pub const Checker = struct {
         return null;
     }
 
+    fn virtualCommonJsRepeatedWholeObjectExportType(
+        self: *Checker,
+        anchor: NodeId,
+        specifier: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        const spec = self.string_interner.get(specifier);
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
+        defer self.gpa.free(resolved);
+        var whole_count: usize = 0;
+        var has_empty_object = false;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (!self.virtualSectionMatchesResolvedModule(node, resolved, spec) or
+                self.hir.kindOf(node) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id or
+                !self.nodeIsModuleExportsAccess(assignment.target)) continue;
+            whole_count += 1;
+            if (self.hir.kindOf(assignment.value) == .object_literal and
+                hir_mod.objectLiteralProps(self.hir, assignment.value).len == 0) has_empty_object = true;
+        }
+        if (whole_count < 2 or !has_empty_object) return null;
+        return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+    }
+
+    fn repeatedCommonJsWholeExportTypeForRequireBinding(
+        self: *Checker,
+        object: NodeId,
+    ) CheckError!?TypeId {
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, object).name;
+        const root = self.rootBlockFor(object);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(object) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (self.sourceHasVirtualFilenameSections() and
+                self.virtualSectionStartForNode(statement) != section) continue;
+            if (self.hir.kindOf(statement) != .import_decl or !self.importDeclIsRequireAssignment(statement)) continue;
+            const imp = hir_mod.importOf(self.hir, statement);
+            if (imp.default_binding == hir_mod.none_node_id or
+                self.hir.kindOf(imp.default_binding) != .identifier or
+                hir_mod.identifierOf(self.hir, imp.default_binding).name != name) continue;
+            return try self.virtualCommonJsRepeatedWholeObjectExportType(statement, imp.module);
+        }
+        return null;
+    }
+
     fn virtualCommonJsModuleExportObjectType(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!?TypeId {
         const src = self.source orelse return null;
         const root = self.rootBlockFor(anchor);
@@ -55833,7 +55885,6 @@ pub const Checker = struct {
         const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) orelse return null;
         const value_t = (try self.lookupObjectMember(module_t, leaf)) orelse return null;
         if (space == .value) return value_t;
-        if (space == .jsdoc_type) return try self.commonJsValueExportAsJsDocType(value_t);
         try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
         return types.Primitive.any;
     }
@@ -55951,6 +56002,19 @@ pub const Checker = struct {
     fn commonJsExportAssignmentValueType(self: *Checker, value: NodeId) CheckError!TypeId {
         if (self.hir.kindOf(value) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, value);
+            if (try self.checkJsCommonJsExportedFunctionStaticType(value, id.name)) |function_t| return function_t;
+            const assignment = self.hir.parentOf(value);
+            if (assignment != hir_mod.none_node_id and self.hir.kindOf(assignment) == .assignment) {
+                const outer = self.hir.parentOf(assignment);
+                if (outer != hir_mod.none_node_id and self.hir.kindOf(outer) == .assignment) {
+                    if (self.jsConstructorFunctionDeclForName(value, id.name)) |fn_node| {
+                        return try self.checkJsSourceFunctionDisplaySignature(
+                            fn_node,
+                            try self.preRegisterFunctionSignature(fn_node),
+                        );
+                    }
+                }
+            }
             if (try self.jsConstructorStaticTypeForHeritage(value, id.name)) |constructor_t| return constructor_t;
             if (try self.jsConstructorStaticTypeForExportValue(value, id.name)) |constructor_t| return constructor_t;
         }
@@ -55959,6 +56023,57 @@ pub const Checker = struct {
             .literal_number => try self.expressionLiteralType(value, raw_t),
             else => try self.flowTypeForAssignmentValue(value, raw_t),
         };
+    }
+
+    fn checkJsCommonJsExportedFunctionStaticType(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse return null;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try self.collectJsConstructorStaticMembers(name, anchor, &members);
+        if (members.items.len == 0) return null;
+        var signature = self.hir.typeOf(fn_node);
+        if (signature == types.Primitive.none or signature >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(signature).is_signature)
+        {
+            signature = try self.preRegisterFunctionSignature(fn_node);
+        }
+        signature = try self.checkJsSourceFunctionDisplaySignature(fn_node, signature);
+        const call_name = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        try members.insert(self.gpa, 0, .{
+            .name = call_name,
+            .type = signature,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = true,
+        });
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn checkJsSourceFunctionDisplaySignature(
+        self: *Checker,
+        fn_node: NodeId,
+        signature: TypeId,
+    ) CheckError!TypeId {
+        if (fn_node == hir_mod.none_node_id or
+            (self.hir.kindOf(fn_node) != .fn_decl and self.hir.kindOf(fn_node) != .fn_expr and
+                self.hir.kindOf(fn_node) != .arrow_fn)) return signature;
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.body == hir_mod.none_node_id or self.fnBodyHasReturnValueSyntax(function.body)) return signature;
+        const display_sig = self.interner.internSignature(
+            self.interner.signatureParams(signature),
+            types.Primitive.void_t,
+            false,
+        ) catch return error.OutOfMemory;
+        if (self.rest_signatures.contains(signature)) try self.rest_signatures.put(self.gpa, display_sig, {});
+        if (self.signature_min_args.get(signature)) |minimum| try self.signature_min_args.put(self.gpa, display_sig, minimum);
+        try self.copySignatureParamNames(display_sig, signature);
+        if (self.generic_signature_params.get(signature)) |params| try self.recordGenericSignatureParams(display_sig, params);
+        return display_sig;
     }
 
     fn appendCommonJsExportEntry(
@@ -94574,7 +94689,9 @@ pub const Checker = struct {
                 // Home otherwise resolves module.exports to a cross-file-conflated type
                 // and spuriously diagnoses. Mirrors moduleExportsTypeNoExcessProperty
                 // CheckFromContainedLiteral (#57460).
-                const target_is_commonjs_export_assignment = (commonjs_export_key != null and commonjs_export_declared_t == null) or
+                const target_is_commonjs_export_assignment = (commonjs_export_key != null and
+                    commonjs_export_declared_t == null and
+                    !self.commonJsSectionHasWholeExportAssignment(node)) or
                     (target_kind == .member_access and
                         self.memberAccessIsModuleExports(a.target) and
                         !target_has_explicit_jsdoc_module_exports_type);
@@ -96720,6 +96837,13 @@ pub const Checker = struct {
                 if (self.expressionRootHasUnresolvedAnnotation(m.object)) {
                     break :blk types.Primitive.any;
                 }
+                if (try self.repeatedCommonJsWholeExportTypeForRequireBinding(m.object)) |whole_t| {
+                    if (try self.lookupObjectMember(whole_t, m.name)) |member_t| {
+                        break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
+                    }
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, whole_t);
+                    break :blk types.Primitive.any;
+                }
                 // TS2341: legacy `private` member access from
                 // outside the declaring class body. Runs before
                 // narrowing/index lookups so the diagnostic fires
@@ -96803,6 +96927,13 @@ pub const Checker = struct {
                 }
                 if (try self.checkJsObjectLiteralExpandoMemberKey(node)) |key| {
                     if (self.checkjs_object_expando_narrows.get(key)) |nt| {
+                        if (self.interner.pool.flagsOf(nt).is_signature and
+                            self.scriptObjectExpandoHasPrototypeAssignment(key.obj_name, m.name, node))
+                        {
+                            if (try self.programScriptObjectExpandoStaticType(key.obj_name, m.name, node)) |static_t| {
+                                break :blk try self.optionalChainResult(static_t, member_is_optional_chain);
+                            }
+                        }
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
                     }
                     if (try self.checkJsObjectExpandoAssignmentValueType(key.obj_name, m.name, node)) |nt| {
@@ -96825,6 +96956,9 @@ pub const Checker = struct {
                 if (try self.reportCheckJsReboundExportsMember(node, m.object, m.name)) {
                     break :blk types.Primitive.any;
                 }
+                if (try self.reportCheckJsWholeExportAliasMissingMember(node, m.object, m.name)) {
+                    break :blk types.Primitive.any;
+                }
                 if (try self.commonJsExportMemberKey(node)) |key| {
                     const whole_export_blocks_expando = self.nodeIsModuleExportsAccess(m.object) and
                         self.commonJsSectionHasWholeExportAssignment(node);
@@ -96839,7 +96973,12 @@ pub const Checker = struct {
                     // `module.exports.X` against the assigned value.
                     if (self.isInAssignmentTargetChain(node)) {
                         if (whole_export_blocks_expando) {
-                            if (self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey())) |exports_t| {
+                            const exports_t = self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey()) orelse
+                                (try self.commonJsWholeExportTypeInSection(node)) orelse types.Primitive.none;
+                            if (exports_t != types.Primitive.none) {
+                                if (try self.lookupObjectMember(exports_t, m.name)) |member_t| {
+                                    break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
+                                }
                                 try self.reportPropertyDoesNotExistOnType(node, m.name, exports_t);
                             } else {
                                 try self.reportCommonJsExportMissingMember(node, m.name);
@@ -96948,6 +97087,14 @@ pub const Checker = struct {
                         self.sourceHasSymbolConstructorMember(m.name))
                     {
                         break :blk types.Primitive.symbol_t;
+                    }
+                }
+                if (try self.checkJsCallableDeclaredInOtherVirtualSectionType(m.object)) |declared_t| {
+                    if ((try self.lookupObjectMember(declared_t, m.name)) == null and
+                        (try self.signaturePrototypeMember(declared_t, m.name)) == null)
+                    {
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, declared_t);
+                        break :blk types.Primitive.any;
                     }
                 }
                 // Optional chaining (`obj?.x`) widens the result to
@@ -105230,6 +105377,23 @@ pub const Checker = struct {
             if (assignment.op == null and self.nodeIsModuleExportsAccess(assignment.target)) return true;
         }
         return false;
+    }
+
+    fn commonJsWholeExportTypeInSection(self: *Checker, anchor: NodeId) CheckError!?TypeId {
+        const section = self.virtualSectionStartForNode(anchor);
+        var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer candidates.deinit(self.gpa);
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node)) continue;
+            if (self.virtualSectionStartForNode(node) != section) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id or
+                !self.nodeIsModuleExportsAccess(assignment.target)) continue;
+            try candidates.append(self.gpa, try self.commonJsExportAssignmentValueType(assignment.value));
+        }
+        if (candidates.items.len == 0) return null;
+        return try self.mergeCommonJsWholeExportTypes(candidates.items);
     }
 
     fn commonJsExportDeclaredType(self: *Checker, anchor: NodeId, key: MemberKey) CheckError!?TypeId {
@@ -127979,6 +128143,10 @@ pub const Checker = struct {
             if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return false;
             return !self.nodeIsThisReference(hir_mod.memberOf(self.hir, node).object);
         }
+        if (self.class_name_by_instance.contains(receiver_t)) {
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return false;
+            return !self.nodeIsThisReference(hir_mod.memberOf(self.hir, node).object);
+        }
         const builtin = self.builtin_object_names.get(receiver_t) orelse return false;
         return std.mem.eql(u8, builtin, "Event");
     }
@@ -128006,9 +128174,10 @@ pub const Checker = struct {
             if (variable.init == hir_mod.none_node_id) continue;
             const init_kind = self.hir.kindOf(variable.init);
             if (init_kind != .fn_expr and init_kind != .arrow_fn) continue;
-            const declared_t = self.hir.typeOf(variable.init);
-            if (declared_t != types.Primitive.none and declared_t != types.Primitive.unknown) return declared_t;
-            return try self.checkExpression(variable.init);
+            return try self.checkJsSourceFunctionDisplaySignature(
+                variable.init,
+                try self.preRegisterFunctionSignature(variable.init),
+            );
         }
         return null;
     }
@@ -161739,6 +161908,12 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         const decl = self.checkJsAmbientNamespaceMemberDeclaration(namespace_name, member_name, anchor) orelse return null;
         if (self.hir.kindOf(decl) != .interface_decl) return null;
+        if (self.hir.kindOf(anchor) == .member_access) {
+            const object = hir_mod.memberOf(self.hir, anchor).object;
+            if (object != hir_mod.none_node_id and self.hir.kindOf(object) == .identifier) {
+                try self.reportNamespaceAsValue(object, namespace_name);
+            }
+        }
         if (self.isAssignmentTarget(anchor)) return types.Primitive.any;
         try self.checkInterfaceDecl(decl);
         const instance_t = self.hir.typeOf(decl);
@@ -161807,6 +161982,40 @@ pub const Checker = struct {
             member_name,
             try self.currentCommonJsModuleTypeName(node),
         );
+        return true;
+    }
+
+    fn reportCheckJsWholeExportAliasMissingMember(
+        self: *Checker,
+        node: NodeId,
+        object_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or object_node == hir_mod.none_node_id or
+            self.hir.kindOf(object_node) != .identifier) return false;
+        const object = hir_mod.identifierOf(self.hir, object_node);
+        if (!std.mem.eql(u8, self.string_interner.get(object.name), "exports")) return false;
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(node);
+        var rebound_to_whole_export = false;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .assignment or
+                self.virtualSectionStartForNode(candidate) != section) continue;
+            const outer = hir_mod.assignmentOf(self.hir, candidate);
+            if (outer.target == hir_mod.none_node_id or self.hir.kindOf(outer.target) != .identifier or
+                hir_mod.identifierOf(self.hir, outer.target).name != object.name or
+                outer.value == hir_mod.none_node_id or self.hir.kindOf(outer.value) != .assignment) continue;
+            if (self.nodeIsModuleExportsAccess(hir_mod.assignmentOf(self.hir, outer.value).target)) {
+                rebound_to_whole_export = true;
+                break;
+            }
+        }
+        if (!rebound_to_whole_export) return false;
+        const exports_t = (try self.commonJsWholeExportTypeInSection(node)) orelse return false;
+        if ((try self.lookupObjectMember(exports_t, member_name)) != null) return false;
+        try self.reportPropertyDoesNotExistOnType(node, member_name, exports_t);
         return true;
     }
 
