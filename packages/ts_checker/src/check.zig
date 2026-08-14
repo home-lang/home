@@ -5279,6 +5279,8 @@ pub const Checker = struct {
         try self.checkUsedBeforeAssignment(stmts);
         try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
         try self.checkExpandoPropertyCircularInference(stmts);
+        try self.checkUnsupportedJsPrototypeReplacementMembers();
+        try self.checkJsDocConstructTargetAssignments();
         try self.checkIsolatedDeclarationsExpandoFunctions(stmts);
         try self.checkClassUsedBeforeDeclaration(stmts);
         try self.checkWeakMapSetPrivateIdentifierDownlevelCollisions();
@@ -5300,6 +5302,85 @@ pub const Checker = struct {
         // doesn't trip on ordering alone.
         self.sortDiagnosticsByPosition();
         if (self.source != null) try self.applyDirectives(root);
+    }
+
+    fn checkUnsupportedJsPrototypeReplacementMembers(self: *Checker) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.value) != .object_literal) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start >= span.end or span.end > src.len) continue;
+            const text = src[span.start..span.end];
+            const equals = std.mem.indexOfScalar(u8, text, '=') orelse continue;
+            const target_text = std.mem.trim(u8, text[0..equals], " \t\r\n");
+            if (!std.mem.endsWith(u8, target_text, ".prototype") and
+                !std.mem.endsWith(u8, target_text, "[\"prototype\"]") and
+                !std.mem.endsWith(u8, target_text, "['prototype']")) continue;
+            var object_t = self.hir.typeOf(assignment.value);
+            if (object_t == types.Primitive.none or object_t == types.Primitive.unknown) {
+                object_t = try self.checkExpression(assignment.value);
+            }
+            object_t = try self.prototypeReplacementDiagnosticType(assignment.value, object_t);
+            try self.reportObjectLiteralThisMembersMissingFromExplicitShape(assignment.value, object_t);
+        }
+    }
+
+    fn prototypeReplacementDiagnosticType(self: *Checker, object_node: NodeId, object_t: TypeId) CheckError!TypeId {
+        if (object_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(object_t).is_object_type) return object_t;
+        const object_source = self.nodeSourceTextOrEmpty(object_node);
+        const has_jsdoc_this_return = std.mem.indexOf(u8, object_source, "@return {this}") != null or
+            std.mem.indexOf(u8, object_source, "@returns {this}") != null;
+        const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(object_t));
+        defer self.gpa.free(members);
+        var changed = false;
+        for (members) |*member| {
+            if (!member.is_method or !self.interner.isSignature(member.type)) continue;
+            const return_t = self.interner.signatureReturn(member.type) orelse types.Primitive.any;
+            const recursive_return = return_t == object_t or
+                (has_jsdoc_this_return and return_t < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(return_t).is_object_type);
+            if (!recursive_return) continue;
+            member.type = self.interner.internSignature(
+                self.interner.signatureParams(member.type),
+                types.Primitive.any,
+                self.signatureIsConstruct(member.type),
+            ) catch return error.OutOfMemory;
+            changed = true;
+        }
+        if (!changed) return object_t;
+        return self.interner.internObjectType(members) catch return error.OutOfMemory;
+    }
+
+    fn checkJsDocConstructTargetAssignments(self: *Checker) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            const kind = self.hir.kindOf(candidate);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const declaration = hir_mod.varDeclOf(self.hir, candidate);
+            if (declaration.name == hir_mod.none_node_id or self.hir.kindOf(declaration.name) != .identifier or
+                declaration.init == hir_mod.none_node_id or self.hir.kindOf(declaration.init) != .identifier) continue;
+            const type_text = self.varDeclLeadingJsDocTypeText(candidate) orelse continue;
+            const target_text = std.mem.trim(u8, type_text, " \t\r\n");
+            if (!std.mem.startsWith(u8, target_text, "new ")) continue;
+            const init_name = hir_mod.identifierOf(self.hir, declaration.init).name;
+            if (self.checkJsFunctionVariableInitializer(declaration.init, init_name) == null) continue;
+            if (self.diagnosticExists(declaration.name, TsCodes.type_not_assignable)) continue;
+            const init_t = self.hir.typeOf(declaration.init);
+            const source_name = (try self.allocSimpleTypeName(init_t)) orelse
+                (try self.allocObjectTypeShapeWithUndefined(init_t)) orelse continue;
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, target_text },
+            );
+            try self.report(declaration.name, TsCodes.type_not_assignable, message);
+        }
     }
 
     fn normalizeNamespaceLocalSuggestionOrder(self: *Checker) CheckError!void {
@@ -18010,7 +18091,10 @@ pub const Checker = struct {
             if (try self.jsDocTypeForLeadingNode(anchor)) |jsdoc_t| return jsdoc_t;
         }
         const value_t = self.hir.typeOf(a.value);
-        return if (value_t == types.Primitive.none) types.Primitive.any else value_t;
+        return if (value_t == types.Primitive.none or value_t == types.Primitive.unknown)
+            try self.checkExpression(a.value)
+        else
+            value_t;
     }
 
     fn reportExpandoAssignmentInferenceErrors(
@@ -68267,6 +68351,10 @@ pub const Checker = struct {
                                 return types.Primitive.any;
                             }
                         }
+                        if (self.checkJsFunctionVariableInitializer(type_node, r.name)) |_| {
+                            try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
+                            return self.lowerer.lower(type_node);
+                        }
                     }
                     if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
                         return self.lowerer.lower(type_node);
@@ -69356,7 +69444,7 @@ pub const Checker = struct {
         anchor: NodeId,
         root_name: hir_mod.StringId,
     ) bool {
-        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(anchor)) return false;
+        if (!self.sourceHasCheckJsDirective()) return false;
         if (self.localNameIsImportBinding(root_name, anchor)) return false;
         if (self.ambientGlobalNamespaceRootExists(root_name) or
             self.findUmdNamespaceExportSection(root_name, anchor) != null or
@@ -69364,11 +69452,6 @@ pub const Checker = struct {
         {
             return false;
         }
-        const root_text = self.string_interner.get(root_name);
-        for (self.script_object_expandos) |expando| {
-            if (std.mem.eql(u8, expando.root, root_text)) return false;
-        }
-
         var saw_value_decl = false;
         const root = self.rootBlockFor(anchor);
         if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
@@ -69376,7 +69459,8 @@ pub const Checker = struct {
                 const decl = self.unwrapExportDecl(raw);
                 if ((self.declarationName(decl) orelse continue) != root_name) continue;
                 switch (self.hir.kindOf(decl)) {
-                    .namespace_decl, .module_decl, .enum_decl, .fn_decl, .class_decl, .class_expr => return false,
+                    .namespace_decl, .module_decl, .enum_decl, .class_decl, .class_expr => return false,
+                    .fn_decl => saw_value_decl = true,
                     .var_decl, .let_decl, .const_decl => {
                         saw_value_decl = true;
                         const variable = hir_mod.varDeclOf(self.hir, decl);
@@ -83069,6 +83153,10 @@ pub const Checker = struct {
         const leaf_text = trimmed[dot_pos + 1 ..];
         const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
         const leaf_name = self.string_interner.intern(leaf_text) catch return error.OutOfMemory;
+        if (self.checkJsQualifiedTypeRootLacksNamespaceMeaning(at_node, root_name)) {
+            try self.reportJsDocCannotFindNamespace(src, root_text, at_node);
+            return types.Primitive.unknown;
+        }
         const base_pos = self.sliceStartPos(src, trimmed);
         const leaf_pos = if (base_pos) |base| base + @as(u32, @intCast(dot_pos + 1)) else null;
         if (try self.checkJsObjectExpandoQualifiedType(root_name, leaf_name, at_node)) |t| return t;
@@ -83140,6 +83228,13 @@ pub const Checker = struct {
         if (root_dot == 0 or member_dot <= root_dot + 1) return null;
         const root_text = trimmed[0..root_dot];
         const member_text = trimmed[root_dot + 1 .. member_dot];
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id) return null;
+        const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+        if (self.checkJsQualifiedTypeRootLacksNamespaceMeaning(anchor, root_name)) {
+            try self.reportJsDocCannotFindNamespace(src, root_text, anchor);
+            return types.Primitive.unknown;
+        }
         if (!try self.jsDocKnownNamespaceRoot(root_text)) return null;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -83151,8 +83246,6 @@ pub const Checker = struct {
         for (self.diagnostics.items) |d| {
             if (d.code == TsCodes.namespace_no_exported_member and d.pos == member_pos) return types.Primitive.unknown;
         }
-        const anchor = self.jsdoc_diagnostic_anchor;
-        if (anchor == hir_mod.none_node_id) return null;
         try self.diagnostics.append(self.gpa, .{
             .node = anchor,
             .pos = member_pos,
@@ -83160,6 +83253,29 @@ pub const Checker = struct {
             .message = msg,
         });
         return types.Primitive.unknown;
+    }
+
+    fn reportJsDocCannotFindNamespace(
+        self: *Checker,
+        src: []const u8,
+        root_text: []const u8,
+        anchor: NodeId,
+    ) CheckError!void {
+        const pos = self.sliceStartPos(src, root_text);
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == TsCodes.cannot_find_namespace and diagnostic.pos == pos) return;
+        }
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find namespace '{s}'.",
+            .{root_text},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = pos,
+            .code = TsCodes.cannot_find_namespace,
+            .message = message,
+        });
     }
 
     fn jsDocNamespaceDisplayName(self: *Checker, root_text: []const u8) CheckError![]const u8 {
@@ -83272,6 +83388,7 @@ pub const Checker = struct {
         if (try self.jsDocTypeofTextToType(trimmed)) |typeof_t| return typeof_t;
         if (try self.jsDocKeyofTextToType(src, trimmed)) |keyof_t| return keyof_t;
         if (try self.jsDocIndexedAccessTextToType(src, trimmed)) |indexed_t| return indexed_t;
+        if (try self.jsDocQualifiedValueRootCannotFindNamespace(src, trimmed)) return types.Primitive.unknown;
         if (try self.jsDocQualifiedNamespaceTextToType(src, trimmed)) |qualified_t| return qualified_t;
         var tuple_text = trimmed;
         var tuple_readonly = false;
@@ -83304,6 +83421,13 @@ pub const Checker = struct {
         // An arrow signature's return type extends through a following union:
         // `(x: T) => A | B` is one signature, not a union containing one.
         if (std.mem.indexOf(u8, trimmed, "=>") != null) {
+            if (std.mem.startsWith(u8, trimmed, "new ")) {
+                const arrow = std.mem.lastIndexOf(u8, trimmed, "=>") orelse unreachable;
+                const result_text = std.mem.trim(u8, trimmed[arrow + 2 ..], " \t\r\n");
+                if (result_text.len > 0 and std.mem.indexOfScalar(u8, result_text, '.') == null) {
+                    _ = try self.reportJsDocBareFunctionUsedAsType(src, result_text);
+                }
+            }
             if (try self.jsDocFunctionType(trimmed)) |sig| return sig;
         }
         if (jsDocSplitTopLevelAny(trimmed, '|')) {
@@ -83384,6 +83508,23 @@ pub const Checker = struct {
         return self.sourcePositionIsJsLike(span.start);
     }
 
+    fn jsDocQualifiedValueRootCannotFindNamespace(
+        self: *Checker,
+        src: []const u8,
+        type_text: []const u8,
+    ) CheckError!bool {
+        const dot = std.mem.indexOfScalar(u8, type_text, '.') orelse return false;
+        if (dot == 0) return false;
+        const root_text = type_text[0..dot];
+        for (root_text) |c| if (!isJsDocIdentChar(c)) return false;
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id) return false;
+        const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+        if (!self.checkJsQualifiedTypeRootLacksNamespaceMeaning(anchor, root_name)) return false;
+        try self.reportJsDocCannotFindNamespace(src, root_text, anchor);
+        return true;
+    }
+
     fn jsDocThisTypeComesFromReturnTag(self: *Checker, src: []const u8, type_text: []const u8) bool {
         const pos = self.sliceStartPos(src, type_text) orelse return false;
         const start: usize = if (pos > 96) pos - 96 else 0;
@@ -83417,7 +83558,8 @@ pub const Checker = struct {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
         const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
-        const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse return false;
+        const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse
+            self.checkJsFunctionVariableInitializer(anchor, name) orelse return false;
         if (self.fnLooksLikeCheckJsConstructor(fn_node)) return false;
         const pos = self.sliceStartPos(src, name_text);
         for (self.diagnostics.items) |diagnostic| {
@@ -83460,8 +83602,15 @@ pub const Checker = struct {
                 const parameter = hir_mod.parameterOf(self.hir, element);
                 if (!self.bindingPatternDeclaresName(parameter.name, name)) continue;
                 const imported_name = (try self.objectBindingElementKeyName(element, parameter.name)) orelse name;
+                const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
+                const virtual_value = if (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) |module_t|
+                    try self.lookupObjectMember(module_t, imported_name)
+                else
+                    null;
                 const is_value = (try self.programCommonJsModuleExportsName(anchor, spec, imported_name)) or
-                    self.externalModuleNamedExportRuntimeStatus(anchor, spec, imported_name) == .value;
+                    self.externalModuleNamedExportRuntimeStatus(anchor, spec, imported_name) == .value or
+                    (try self.virtualRelativeModuleExportValueType(anchor, spec_id, imported_name)) != null or
+                    virtual_value != null;
                 if (!is_value) return false;
                 const pos = self.sliceStartPos(src, name_text);
                 const message = try std.fmt.allocPrint(
@@ -87383,7 +87532,11 @@ pub const Checker = struct {
             }
             return;
         }
-        try self.var_decl_types.put(self.gpa, key, final_type);
+        const stored_type = if (self.sourceHasCheckJsDirective() and self.virtualSectionIsJsLike(node))
+            try self.expandoAugmentedFunctionValueType(id.name, node, final_type)
+        else
+            final_type;
+        try self.var_decl_types.put(self.gpa, key, stored_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation or self_ref_inferred_any);
         if (current_jsdoc_type_name) |name| try self.var_decl_jsdoc_type_names.put(self.gpa, key, name);
         if (has_annotation) try self.var_decl_annotation_nodes.put(self.gpa, key, v.type_annotation);
@@ -96515,6 +96668,9 @@ pub const Checker = struct {
                     if (try self.checkJsObjectExpandoAssignmentValueType(key.obj_name, m.name, node)) |nt| {
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
                     }
+                }
+                if (try self.reportUnsupportedNestedCommonJsImportMember(node)) {
+                    break :blk types.Primitive.any;
                 }
                 if (try self.reportGlobalThisMissingOrReadonlyMember(node, m.object, access_obj_t, m.name)) {
                     break :blk types.Primitive.any;
@@ -108413,6 +108569,13 @@ pub const Checker = struct {
         const local_name = hir_mod.identifierOf(self.hir, member.object).name;
         const spec = self.namespaceImportSpecifierForLocal(local_name, callee) orelse
             self.requireSpecifierForLocal(local_name, callee) orelse return false;
+        if (try self.virtualCommonJsExportIsCallOnlyFunction(callee, spec, member.name)) return true;
+        if (self.sourceHasVirtualFilenameSections() and std.mem.startsWith(u8, spec, ".")) {
+            const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
+            if (try self.virtualRelativeModuleExportValueType(callee, spec_id, member.name)) |value_t| {
+                if (self.nonConstructCallSignatureOfType(value_t) != null) return true;
+            }
+        }
         const resolver = self.external_resolver orelse return false;
         const containing = if (self.importer_path.len > 0)
             self.importer_path
@@ -108420,6 +108583,68 @@ pub const Checker = struct {
             self.virtualSectionFilenameForNode(callee) orelse "/__root__.ts";
         const info = resolver.moduleExport(spec, containing, self.string_interner.get(member.name)) orelse return false;
         return info.call_only_function;
+    }
+
+    fn reportUnsupportedNestedCommonJsImportMember(self: *Checker, node: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(node) != .member_access) return false;
+        const outer = hir_mod.memberOf(self.hir, node);
+        if (outer.object == hir_mod.none_node_id or self.hir.kindOf(outer.object) != .member_access) return false;
+        const inner = hir_mod.memberOf(self.hir, outer.object);
+        if (inner.object == hir_mod.none_node_id or self.hir.kindOf(inner.object) != .identifier) return false;
+        const local_name = hir_mod.identifierOf(self.hir, inner.object).name;
+        const spec = self.namespaceImportSpecifierForLocal(local_name, node) orelse return false;
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(node, spec)) orelse return false;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        var saw_direct_object = false;
+        var saw_nested_member = false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec) or self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null) continue;
+            if (self.commonJsExportsObjectPropertyName(assignment.target) == inner.name and
+                assignment.value != hir_mod.none_node_id and self.hir.kindOf(assignment.value) == .object_literal)
+            {
+                saw_direct_object = true;
+            }
+            if (assignment.target == hir_mod.none_node_id or self.hir.kindOf(assignment.target) != .member_access) continue;
+            const target = hir_mod.memberOf(self.hir, assignment.target);
+            if (target.name == outer.name and self.commonJsExportsObjectPropertyName(target.object) == inner.name) {
+                saw_nested_member = true;
+            }
+        }
+        if (!saw_direct_object or !saw_nested_member) return false;
+        const empty_object = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        try self.reportPropertyDoesNotExistOnType(node, outer.name, empty_object);
+        return true;
+    }
+
+    fn virtualCommonJsExportIsCallOnlyFunction(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        export_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (!self.sourceHasVirtualFilenameSections() or !std.mem.startsWith(u8, spec, ".")) return false;
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return false;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec) or self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or self.commonJsExportsObjectPropertyName(assignment.target) != export_name) continue;
+            if (assignment.value == hir_mod.none_node_id) continue;
+            const value_kind = self.hir.kindOf(assignment.value);
+            if (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) return true;
+            if (value_kind != .identifier) continue;
+            const value_name = hir_mod.identifierOf(self.hir, assignment.value).name;
+            const declaration = self.findNamedDeclInVirtualSection(stmt, value_name) orelse continue;
+            const declaration_kind = self.hir.kindOf(declaration);
+            if (declaration_kind == .fn_decl or declaration_kind == .fn_expr or declaration_kind == .arrow_fn) return true;
+        }
+        return false;
     }
 
     fn requireSpecifierForLocal(
@@ -127218,6 +127443,25 @@ pub const Checker = struct {
         }
     }
 
+    fn objectLiteralExplicitlyDeclaresMember(
+        self: *Checker,
+        object_node: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |property_node| {
+            if (self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            if (property.key == hir_mod.none_node_id) continue;
+            const property_name: ?hir_mod.StringId = switch (self.hir.kindOf(property.key)) {
+                .identifier => hir_mod.identifierOf(self.hir, property.key).name,
+                .literal_string => hir_mod.literalStringOf(self.hir, property.key).value,
+                else => null,
+            };
+            if (property_name == name) return true;
+        }
+        return false;
+    }
+
     fn reportUnsupportedJsPrototypeAssignedFunctionThisMembers(
         self: *Checker,
         assignment_node: NodeId,
@@ -127232,6 +127476,28 @@ pub const Checker = struct {
         }
         const prototype_t = (try self.priorPrototypeObjectAssignmentType(assignment_node, assignment.target)) orelse return;
         try self.reportFunctionThisMembersMissingFromType(assignment.value, prototype_t);
+    }
+
+    fn reportObjectLiteralThisMembersMissingFromExplicitShape(
+        self: *Checker,
+        object_node: NodeId,
+        object_t: TypeId,
+    ) CheckError!void {
+        const object_span = self.hir.spanOf(object_node);
+        const section = self.virtualSectionStartForNode(object_node);
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .member_access) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start < object_span.start or span.end > object_span.end) continue;
+            if (self.virtualSectionStartForNode(candidate) != section) continue;
+            const member = hir_mod.memberOf(self.hir, candidate);
+            if (!self.nodeIsThisReference(member.object) and
+                !std.mem.eql(u8, std.mem.trim(u8, self.nodeSourceTextOrEmpty(member.object), " \t\r\n"), "this")) continue;
+            if (self.objectLiteralExplicitlyDeclaresMember(object_node, member.name)) continue;
+            if (self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) continue;
+            try self.reportPropertyDoesNotExistOnType(candidate, member.name, object_t);
+        }
     }
 
     fn reportUnsupportedNestedCommonJsFunctionThisMembers(
@@ -148677,6 +148943,22 @@ pub const Checker = struct {
         }
         if (self.findFunctionDeclForNameNearNode(anchor, name)) |fn_node| return fn_node;
         return self.findCheckJsVirtualSourceFunctionDeclForName(anchor, name);
+    }
+
+    fn checkJsFunctionVariableInitializer(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        const decl = self.findLocalValueDeclBeforeExpression(anchor, name) orelse return null;
+        const kind = self.hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return null;
+        const initializer = hir_mod.varDeclOf(self.hir, decl).init;
+        if (initializer == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(initializer)) {
+            .fn_decl, .fn_expr, .arrow_fn => initializer,
+            else => null,
+        };
     }
 
     fn findFunctionDeclForNameNearNode(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?NodeId {
