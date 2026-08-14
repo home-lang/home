@@ -13093,7 +13093,7 @@ pub const Checker = struct {
         var by_section: std.AutoHashMapUnmanaged(usize, ExportAssignmentSection) = .empty;
         var commonjs_export_assignments: std.AutoHashMapUnmanaged(usize, NodeId) = .empty;
         var commonjs_whole_exports: std.AutoHashMapUnmanaged(usize, std.ArrayListUnmanaged(NodeId)) = .empty;
-        var commonjs_typedef_property_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
+        var commonjs_property_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
         defer {
             var it = by_section.valueIterator();
             while (it.next()) |v| v.all_export_assignments.deinit(self.gpa);
@@ -13102,40 +13102,31 @@ pub const Checker = struct {
             var commonjs_it = commonjs_whole_exports.valueIterator();
             while (commonjs_it.next()) |nodes| nodes.deinit(self.gpa);
             commonjs_whole_exports.deinit(self.gpa);
-            commonjs_typedef_property_sections.deinit(self.gpa);
+            commonjs_property_sections.deinit(self.gpa);
         }
 
         // The declaration transformer collects nested CommonJS assignments,
         // including writes inside control-flow branches. Scan the flat HIR so
         // those declarations are not lost merely because they are not direct
         // source-file statements.
-        if (self.strict_flags.declaration) {
-            var node: NodeId = 1;
-            while (node < self.hir.nodeCount()) : (node += 1) {
-                if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node)) continue;
-                const assignment = hir_mod.assignmentOf(self.hir, node);
-                if (assignment.op != null or !self.nodeIsModuleExportsAccess(assignment.target)) continue;
-                const section = self.virtualSectionStartForNode(node);
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node)) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null) continue;
+            const section = self.virtualSectionStartForNode(node);
+            if (self.nodeIsModuleExportsAccess(assignment.target)) {
                 const gop = try commonjs_whole_exports.getOrPut(self.gpa, section);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(self.gpa, node);
                 try commonjs_export_assignments.put(self.gpa, section, node);
+            } else if (self.commonJsExportsAssignmentName(node) != null) {
+                try commonjs_property_sections.put(self.gpa, section, {});
             }
         }
 
         for (stmts) |stmt| {
             if (self.hir.kindOf(stmt) == .assignment) {
-                const assignment = hir_mod.assignmentOf(self.hir, stmt);
-                if (assignment.op == null and self.hir.kindOf(assignment.target) == .member_access) {
-                    const section = self.virtualSectionStartForNode(stmt);
-                    if (self.memberAccessIsModuleExports(assignment.target)) {
-                        try commonjs_export_assignments.put(self.gpa, section, stmt);
-                    } else if (self.commonJsModuleExportsPropertyName(assignment.target)) |property_name| {
-                        if (self.visibleJsDocTypedefNameExistsAt(assignment.target, property_name)) {
-                            try commonjs_typedef_property_sections.put(self.gpa, section, {});
-                        }
-                    }
-                }
                 continue;
             }
             if (self.hir.kindOf(stmt) != .export_decl) continue;
@@ -13152,18 +13143,20 @@ pub const Checker = struct {
                 if (try self.exportDeclContributesTypeOrNamespace(stmt)) gop.value_ptr.has_type_or_namespace_export = true;
             }
         }
-        var whole_export_it = commonjs_whole_exports.valueIterator();
-        while (whole_export_it.next()) |nodes| {
-            if (nodes.items.len < 2) continue;
-            for (nodes.items) |node| {
-                try self.report(
-                    node,
-                    TsCodes.multiple_module_exports_declaration_emit,
-                    "Multiple 'module.exports' assignments cannot be serialized for declaration emit.",
-                );
+        if (self.strict_flags.declaration) {
+            var whole_export_it = commonjs_whole_exports.valueIterator();
+            while (whole_export_it.next()) |nodes| {
+                if (nodes.items.len < 2) continue;
+                for (nodes.items) |whole_export| {
+                    try self.report(
+                        whole_export,
+                        TsCodes.multiple_module_exports_declaration_emit,
+                        "Multiple 'module.exports' assignments cannot be serialized for declaration emit.",
+                    );
+                }
             }
         }
-        var commonjs_it = commonjs_typedef_property_sections.keyIterator();
+        var commonjs_it = commonjs_property_sections.keyIterator();
         while (commonjs_it.next()) |section| {
             const export_assignment = commonjs_export_assignments.get(section.*) orelse continue;
             try self.report(export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
@@ -25078,10 +25071,10 @@ pub const Checker = struct {
         return result_t;
     }
 
-    /// True when `obj` is an identifier bound by an `import x = require(...)`
-    /// declaration in the same virtual section. Used to scope the
-    /// signature-receiver TS2339 to import-equals bindings (whose target
-    /// module value has a fixed shape), leaving expando functions alone.
+    /// True when `obj` is an identifier bound by `import x = require(...)` or
+    /// a JavaScript variable initialized by `require(...)` in the same
+    /// virtual section. These imported module values have a fixed public
+    /// shape; local function values may still gain expandos.
     fn memberAccessReceiverIsRequireAssignmentBinding(self: *Checker, obj: NodeId) bool {
         if (self.hir.kindOf(obj) != .identifier) return false;
         const name = hir_mod.identifierOf(self.hir, obj).name;
@@ -25090,12 +25083,21 @@ pub const Checker = struct {
         const has_sections = self.sourceHasVirtualFilenameSections();
         const obj_section = if (has_sections) self.virtualSectionStartForNode(obj) else 0;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            if (self.hir.kindOf(stmt) != .import_decl) continue;
             if (has_sections and self.virtualSectionStartForNode(stmt) != obj_section) continue;
-            if (!self.importDeclIsRequireAssignment(stmt)) continue;
-            const imp = hir_mod.importOf(self.hir, stmt);
-            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, imp.default_binding).name == name) return true;
+            if (self.hir.kindOf(stmt) == .import_decl) {
+                if (!self.importDeclIsRequireAssignment(stmt)) continue;
+                const imp = hir_mod.importOf(self.hir, stmt);
+                if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, imp.default_binding).name == name) return true;
+                continue;
+            }
+            const decl = self.unwrapExportDecl(stmt);
+            const kind = self.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
+            if (self.requireCallSpecifier(variable.init) != null) return true;
         }
         return false;
     }
@@ -55429,12 +55431,14 @@ pub const Checker = struct {
                     continue;
                 }
                 if (self.commonJsExportsAssignmentName(raw)) |prop_name| {
+                    if (in_target_section and direct_export_t != types.Primitive.none) continue;
                     if (self.expressionIsVoidValue(a.value)) continue;
                     const value_t = try self.commonJsExportAssignmentValueType(a.value);
                     try self.appendCommonJsExportEntry(&entries, prop_name, value_t, raw, true);
                     continue;
                 }
                 if (try self.commonJsNestedExportsAssignmentMember(raw)) |nested| {
+                    if (in_target_section and direct_export_t != types.Primitive.none) continue;
                     try self.upsertNestedCommonJsExportEntry(&entries, nested, raw, true);
                     continue;
                 }
@@ -55447,10 +55451,12 @@ pub const Checker = struct {
                 continue;
             }
             if (try self.commonJsDefinePropertyExportMember(raw)) |defined| {
+                if (in_target_section and direct_export_t != types.Primitive.none) continue;
                 try self.appendCommonJsExportEntry(&entries, defined.member.name, defined.member.type, raw, defined.is_module_write);
                 continue;
             }
             if (try self.commonJsDefinePropertyNestedExportMember(raw)) |nested| {
+                if (in_target_section and direct_export_t != types.Primitive.none) continue;
                 try self.upsertNestedCommonJsExportEntry(&entries, nested.member, raw, nested.is_module_write);
             }
         }
@@ -96306,17 +96312,26 @@ pub const Checker = struct {
                     break :blk types.Primitive.any;
                 }
                 if (try self.commonJsExportMemberKey(node)) |key| {
-                    if (self.lookupCommonJsExportNarrow(key)) |nt| {
-                        break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                    const whole_export_blocks_expando = self.nodeIsModuleExportsAccess(m.object) and
+                        self.commonJsSectionHasWholeExportAssignment(node);
+                    if (!whole_export_blocks_expando) {
+                        if (self.lookupCommonJsExportNarrow(key)) |nt| {
+                            break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                        }
                     }
-                    // `module.exports.X = …` / `exports.X = …` *defines* a
-                    // CommonJS expando export property. The assignment target
-                    // is a definition, not a property access that must
-                    // pre-exist on the exports value (which may itself be a
-                    // function — `module.exports = fn; module.exports.X = …`),
-                    // so don't report TS2339. Mirrors `moduleExportAssignment2`
-                    // and `commonJSAliasedExport`.
+                    // A property write defines a CommonJS expando only when
+                    // the section has no whole export assignment. Current
+                    // tsgo diagnoses the mixed form and checks
+                    // `module.exports.X` against the assigned value.
                     if (self.isInAssignmentTargetChain(node)) {
+                        if (whole_export_blocks_expando) {
+                            if (self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey())) |exports_t| {
+                                try self.reportPropertyDoesNotExistOnType(node, m.name, exports_t);
+                            } else {
+                                try self.reportCommonJsExportMissingMember(node, m.name);
+                            }
+                            break :blk types.Primitive.any;
+                        }
                         if (self.assignmentTargetValueIsVoidExpression(node)) {
                             if ((try self.futureCommonJsExportAssignmentValue(node, key)) == null) {
                                 try self.reportCommonJsExportMissingMember(node, m.name);
@@ -96979,11 +96994,6 @@ pub const Checker = struct {
                     }
                 }
                 if (self.checking_element_write_target) {
-                    if (self.elementAccessLiteralStringName(e.index) != null and
-                        self.checkJsGlobalPropertyAssignmentDefinesMember(node, e.object))
-                    {
-                        break :blk types.Primitive.any;
-                    }
                     if (!self.nodeIsThisReference(e.object)) {
                         if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
                             break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
@@ -104559,6 +104569,7 @@ pub const Checker = struct {
         if (self.virtualSectionFilenameForNode(type_node)) |filename| {
             if (try self.virtualCommonJsModuleExportObjectType(type_node, filename)) |exports_t| {
                 if (exports_t >= types.Primitive.first_dynamic and exports_t < self.interner.pool.typeCount() and
+                    !self.commonJsSectionHasWholeExportAssignment(type_node) and
                     !self.alias_display_names.contains(exports_t))
                 {
                     try self.alias_display_names.put(self.gpa, exports_t, try self.currentCommonJsModuleTypeName(type_node));
@@ -104568,6 +104579,7 @@ pub const Checker = struct {
         }
         const exports_t = self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey()) orelse return null;
         if (exports_t >= types.Primitive.first_dynamic and exports_t < self.interner.pool.typeCount() and
+            !self.commonJsSectionHasWholeExportAssignment(type_node) and
             !self.alias_display_names.contains(exports_t))
         {
             try self.alias_display_names.put(self.gpa, exports_t, try self.currentCommonJsModuleTypeName(type_node));
@@ -104609,6 +104621,18 @@ pub const Checker = struct {
             return .{ .obj_name = module_exports, .prop_name = prop_name };
         }
         return null;
+    }
+
+    fn commonJsSectionHasWholeExportAssignment(self: *Checker, anchor: NodeId) bool {
+        const section = self.virtualSectionStartForNode(anchor);
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node)) continue;
+            if (self.virtualSectionStartForNode(node) != section) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op == null and self.nodeIsModuleExportsAccess(assignment.target)) return true;
+        }
+        return false;
     }
 
     fn commonJsExportDeclaredType(self: *Checker, anchor: NodeId, key: MemberKey) CheckError!?TypeId {
@@ -104748,10 +104772,7 @@ pub const Checker = struct {
         if (!self.sourceHasCheckJsDirective()) return null;
         const prop_name = self.propertyAccessName(node) orelse return null;
         const object = self.propertyAccessObject(node) orelse return null;
-        if (self.memberAccessObjectIsGlobalThisThis(object)) {
-            const this_name = self.string_interner.intern("this") catch return error.OutOfMemory;
-            return .{ .obj_name = this_name, .prop_name = prop_name };
-        }
+        if (self.memberAccessObjectIsGlobalThisThis(object)) return null;
         if (self.hir.kindOf(object) != .identifier) return null;
         const obj_id = hir_mod.identifierOf(self.hir, object);
         const obj_name = self.string_interner.get(obj_id.name);
@@ -126416,17 +126437,22 @@ pub const Checker = struct {
             self.rootHasFunctionDeclarationNamed(anchor, name);
     }
 
-    fn checkJsGlobalPropertyAssignmentDefinesMember(self: *Checker, node: NodeId, object_node: NodeId) bool {
-        return (self.check_js_enabled or self.sourceHasCheckJsDirective()) and
-            self.virtualSectionIsJsLike(node) and
-            self.isInAssignmentTargetChain(node) and
-            self.memberAccessObjectIsGlobalThisThis(object_node);
-    }
-
     fn globalWindowReceiverIncludesGlobalProperties(self: *Checker, object_node: NodeId) bool {
         if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .identifier) return false;
         const raw = self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name);
         return std.mem.eql(u8, raw, "window") or std.mem.eql(u8, raw, "self");
+    }
+
+    fn globalTopReceiverHasProgramProperty(self: *Checker, node: NodeId, object_node: NodeId, name: hir_mod.StringId) bool {
+        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .identifier) return false;
+        const receiver = self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name);
+        if (!std.mem.eql(u8, receiver, "top")) return false;
+        const raw = self.string_interner.get(name);
+        for (self.program_global_var_names) |program_name| {
+            if (std.mem.eql(u8, program_name, raw)) return true;
+        }
+        return self.rootHasVarDeclarationNamed(node, name) or
+            self.rootHasFunctionDeclarationNamed(node, name);
     }
 
     fn reportGlobalThisMissingProperty(self: *Checker, node: NodeId, name: hir_mod.StringId, target: []const u8) CheckError!void {
@@ -126471,6 +126497,7 @@ pub const Checker = struct {
         const object_is_global_this_receiver = object_is_global_this or self.memberAccessObjectIsGlobalThisThis(object_node);
         const annotation_mentions_global = self.identifierAnnotationMentionsGlobalThis(object_node);
         if (self.globalWindowReceiverIncludesGlobalProperties(object_node) and self.globalThisHasProperty(node, name)) return true;
+        if (self.globalTopReceiverHasProgramProperty(node, object_node, name)) return true;
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
         if (object_is_global_this and
             std.mem.eql(u8, self.string_interner.get(name), "globalThis") and
@@ -126484,11 +126511,10 @@ pub const Checker = struct {
             });
             return true;
         }
-        if (self.checkJsGlobalPropertyAssignmentDefinesMember(node, object_node)) return true;
         if (self.globalThisHasProperty(node, name)) return false;
         if (object_is_global_this_receiver and
             !self.sourceHasBlockScopedGlobalDeclarationText(name) and
-            self.strict_flags.no_implicit_any)
+            (self.strict_flags.no_implicit_any or self.sourceHasCheckJsDirective()))
         {
             try self.reportGlobalThisNoIndexSignature(node);
             return true;
@@ -126511,8 +126537,8 @@ pub const Checker = struct {
         _ = obj_t;
         const annotation_mentions_global = self.identifierAnnotationMentionsGlobalThis(object_node);
         if (self.globalWindowReceiverIncludesGlobalProperties(object_node) and self.globalThisHasProperty(node, name)) return true;
+        if (self.globalTopReceiverHasProgramProperty(node, object_node, name)) return true;
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
-        if (self.checkJsGlobalPropertyAssignmentDefinesMember(node, object_node)) return true;
         if (self.globalThisHasProperty(node, name)) return false;
         if (object_is_global_this_receiver and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
         if (object_is_global_this and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
@@ -177133,7 +177159,7 @@ test "checker: typeof globalThis excludes ambient external modules" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
-test "checker: checked JS global property assignments define expandos" {
+test "checker: checked JS global property assignments require declared members" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -177150,7 +177176,21 @@ test "checker: checked JS global property assignments define expandos" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+}
+
+test "checker: top exposes sibling global var declarations" {
+    const s = try newSetup(
+        \\top.a;
+        \\top.b;
+        \\top.missing;
+    );
+    defer destroySetup(s);
+    const names = [_][]const u8{ "a", "b" };
+    s.checker.setProgramGlobalVarNames(&names);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: top is nullable Window without global var properties" {
@@ -232190,11 +232230,34 @@ test "checker: CommonJS typedef export property conflicts with export assignment
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expect(checkerHasCodeAndMessage(
         s,
         TsCodes.property_does_not_exist,
         "Property 'T' does not exist on type 'typeof ModuleGraphConnection'.",
+    ));
+}
+
+test "checker: checked JS whole CommonJS exports reject later expandos" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: function.js
+        \\module.exports = function () {};
+        \\module.exports.f = function () {};
+        \\// @filename: alias.js
+        \\module.exports = window.missing;
+        \\exports.foo = missing;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'f' does not exist",
     ));
 }
 
@@ -233560,7 +233623,7 @@ test "checker: class and JavaScript values merge across virtual files" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
-test "checker: CommonJS export writes union with direct export properties" {
+test "checker: CommonJS whole exports reject property writes" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -233580,10 +233643,9 @@ test "checker: CommonJS export writes union with direct export properties" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
-    for (s.checker.diagnostics.items) |diagnostic| {
-        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
-        try T.expect(std.mem.indexOf(u8, diagnostic.message, "number | \"string\"") != null);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'before' does not exist"));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'after' does not exist"));
 }
 
 test "checker: future CommonJS value assignment suppresses implicit any" {
@@ -233776,7 +233838,7 @@ test "checker: checked JavaScript this assignments declare only direct propertie
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.element_implicitly_any));
 }
 
 test "checker: TypeScript expandos require function declarations or const bindings" {
