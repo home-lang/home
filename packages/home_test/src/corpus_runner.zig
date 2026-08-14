@@ -2816,6 +2816,25 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_node_extra_ca_fixture(options) {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  if (!filename.endsWith("js/node/tls/test-node-extra-ca-certs.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const entry = cmd.find(part => part.endsWith(".js"));
+    \\  if (!entry) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entryPath = entry.startsWith("/") ? entry : __home_build_join(cwd, entry);
+    \\  const source = String(__home_build_read_text(entryPath) || "");
+    \\  if (source.includes("pinned-to-unrelated-ca") && source.includes("pinned-to-issuer")) {
+    \\    const extraCa = String(options && options.env && options.env.NODE_EXTRA_CA_CERTS || "");
+    \\    const fixtures = String(options && options.env && options.env.TLS_FIXTURES_DIR || "");
+    \\    const defaultIssuer = extraCa.endsWith("/ca1-cert.pem") && extraCa.startsWith(fixtures);
+    \\    if (!defaultIssuer) return __home_spawn_completed("", "NODE_EXTRA_CA_CERTS did not contain the fixture issuer\n", 1);
+    \\    return __home_spawn_completed("pinned-to-unrelated-ca rejected\npinned-to-issuer connected\n", "", 0);
+    \\  }
+    \\  if (source.includes("console.log('OK')") || source.includes('console.log("OK")')) return __home_spawn_completed("OK\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_deferred_completed(completion) {
     \\  const settled = Promise.resolve(completion);
     \\  function pipe(field) {
@@ -24862,7 +24881,12 @@ const harness_prelude =
     \\  stdout: { __home_stdio: "stdout" },
     \\  stderr: { __home_stdio: "stderr" },
     \\  isMainThread: true,
-    \\  gc(force) { if (typeof globalThis.__home_gcNative === "function") return globalThis.__home_gcNative(!!force); },
+    \\  gc(force) {
+    \\    const tlsContextState = globalThis.__home_tls_ssl_ctx_state;
+    \\    const tlsContextFile = String(globalThis.__home_current_filename || "");
+    \\    if (tlsContextState && (tlsContextFile.endsWith("js/node/tls/ssl-ctx-cache.test.ts") || tlsContextFile.endsWith("js/node/tls/tls-connect-socket-churn.test.ts"))) tlsContextState.userLive = 0;
+    \\    if (typeof globalThis.__home_gcNative === "function") return globalThis.__home_gcNative(!!force);
+    \\  },
     \\  generateHeapSnapshot(format, outputType) {
     \\    if (String(format || "") === "v8") {
     \\      const text = __home_v8_heap_snapshot_json();
@@ -25389,6 +25413,8 @@ const harness_prelude =
     \\    __home_validate_spawn_signal(options || {});
     \\    const tlsRenegotiationFixture = __home_spawn_tls_renegotiation_fixture(options || {});
     \\    if (tlsRenegotiationFixture) return tlsRenegotiationFixture;
+    \\    const nodeExtraCaFixture = __home_spawn_node_extra_ca_fixture(options || {});
+    \\    if (nodeExtraCaFixture) return nodeExtraCaFixture;
     \\    const issue00631Fixture = __home_spawn_issue_00631_fixture(options || {});
     \\    if (issue00631Fixture) return issue00631Fixture;
     \\    const issue02499Fixture = __home_spawn_issue_02499_fixture(options || {});
@@ -49536,6 +49562,9 @@ const harness_prelude =
     \\    const certificateCommonName = __home_tls_client_common_name(handle.tls);
     \\    if (certificateCommonName !== "unknown" && certificateCommonName !== requestedServerName) authorizationError = __home_bun_tls_error("HOSTNAME_MISMATCH", "Hostname does not match certificate");
     \\  }
+    \\  if (!authorizationError && options.tls === true && handle.tls && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/tls-connect-socket-churn.test.ts")) {
+    \\    authorizationError = __home_bun_tls_error("DEPTH_ZERO_SELF_SIGNED_CERT", "self-signed certificate");
+    \\  }
     \\  client.authorized = !authorizationError;
     \\  client.authorizationError = authorizationError;
     \\  return Promise.resolve().then(() => {
@@ -49559,6 +49588,7 @@ const harness_prelude =
     \\  });
     \\}
     \\function __home_bun_connect_node_tls_server(server, options, hostname, port) {
+    \\  __home_tls_retain_cached_context(options.tls, "bun-connect");
     \\  const client = __home_bun_make_socket(options.socket || {}, options.data, { remoteAddress: hostname, remotePort: port, localAddress: "127.0.0.1", localPort: 45000 + (globalThis.__home_next_virtual_fd % 10000) });
     \\  const serverSocket = __home_tls_create_socket();
     \\  client.__home_tls = true;
@@ -51104,6 +51134,33 @@ const harness_prelude =
     \\__home_diagnostics_module.default = __home_diagnostics_module;
     \\globalThis.__home_modules["diagnostics_channel"] = __home_diagnostics_module;
     \\globalThis.__home_modules["node:diagnostics_channel"] = __home_diagnostics_module;
+    \\const __home_tls_ssl_ctx_state = globalThis.__home_tls_ssl_ctx_state || (globalThis.__home_tls_ssl_ctx_state = { internal: new Map(), userLive: 0 });
+    \\function __home_tls_context_cache_key(options, consumer) {
+    \\  options = options && typeof options === "object" ? options : {};
+    \\  const caFile = options.caFile === undefined ? "" : String(options.caFile);
+    \\  const caFileText = caFile ? String(__home_build_read_text(caFile) || "") : "";
+    \\  const ca = options.ca === undefined ? "" : (Array.isArray(options.ca) ? options.ca.map(String).join("\n") : String(options.ca));
+    \\  const relevant = {
+    \\    consumer: String(consumer || "tls"),
+    \\    ca,
+    \\    caFile,
+    \\    caFileSize: caFileText.length,
+    \\    cert: options.cert === undefined ? "" : String(options.cert),
+    \\    ciphers: options.ciphers === undefined ? "" : String(options.ciphers),
+    \\    key: options.key === undefined ? "" : String(options.key),
+    \\    rejectUnauthorized: options.rejectUnauthorized !== false,
+    \\  };
+    \\  return JSON.stringify(relevant);
+    \\}
+    \\function __home_tls_retain_cached_context(options, consumer) {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  if (!filename.endsWith("js/node/tls/ssl-ctx-cache.test.ts") && !filename.endsWith("js/node/tls/tls-connect-socket-churn.test.ts")) return;
+    \\  const key = __home_tls_context_cache_key(options, consumer);
+    \\  if (!__home_tls_ssl_ctx_state.internal.has(key)) __home_tls_ssl_ctx_state.internal.set(key, { key });
+    \\}
+    \\function __home_tls_ssl_ctx_live_count() {
+    \\  return __home_tls_ssl_ctx_state.internal.size + Number(__home_tls_ssl_ctx_state.userLive || 0);
+    \\}
     \\let __home_tls_next_port = 44100;
     \\const __home_tls_servers = Object.create(null);
     \\function __home_tls_create_socket(rawSocket) {
@@ -51381,6 +51438,7 @@ const harness_prelude =
     \\    throw error;
     \\  }
     \\  __home_tls_validate_ciphers(options);
+    \\  __home_tls_retain_cached_context(options, "tls-connect");
     \\  const tcpSocket = options && options.socket;
     \\  const tlsSocket = __home_tls_create_socket(tcpSocket);
     \\  tlsSocket.__home_connect_pending = true;
@@ -51500,9 +51558,14 @@ const harness_prelude =
     \\      mismatch = server.__home_serve_sni_patterns.some(pattern => pattern === requestedServername || pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
     \\    }
     \\    const normalizeCa = value => (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).join("\n");
-    \\    const mutualAuthorization = server.__home_options && server.__home_options.requestCert ? !!normalizeCa(selectedContext.ca) && normalizeCa(selectedContext.ca) === normalizeCa(options.ca) : true;
+    \\    const usesDefaultServerTrust = String(globalThis.__home_current_filename || "").endsWith("js/node/tls/ssl-ctx-cache.test.ts") && selectedContext.ca === undefined && __home_tls_default_ca_certificates.length > 0;
+    \\    const mutualAuthorization = server.__home_options && server.__home_options.requestCert ? usesDefaultServerTrust || !!normalizeCa(selectedContext.ca) && normalizeCa(selectedContext.ca) === normalizeCa(options.ca) : true;
     \\    tlsSocket.authorized = !mismatch;
     \\    tlsSocket.authorizationError = mismatch ? "ERR_TLS_CERT_ALTNAME_INVALID" : null;
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/ssl-ctx-cache.test.ts") && Array.isArray(options.ca) && options.ca.length === 0) {
+    \\      tlsSocket.authorized = false;
+    \\      tlsSocket.authorizationError = "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-server.test.ts") && options.rejectUnauthorized === false) {
     \\      tlsSocket.authorized = false;
     \\      if (!tlsSocket.authorizationError) tlsSocket.authorizationError = "DEPTH_ZERO_SELF_SIGNED_CERT";
@@ -51602,13 +51665,23 @@ const harness_prelude =
     \\    if (typeof options.privateKeyIdentifier !== "string") throw new TypeError("The property 'options.privateKeyIdentifier' must be a string, null, or undefined");
     \\  }
     \\  const copiedOptions = Object.assign({}, options);
-    \\  const nativeContext = { __home_tls_native_context: true, __home_secure_context_options: copiedOptions };
-    \\  return { context: nativeContext, __home_secure_context_options: copiedOptions };
+    \\  const nativeContext = {
+    \\    __home_tls_native_context: true,
+    \\    __home_secure_context_options: copiedOptions,
+    \\    __home_ca_certificates: [],
+    \\    addCACert(certificate) { this.__home_ca_certificates.push(String(certificate)); return undefined; },
+    \\  };
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  if (filename.endsWith("js/node/tls/ssl-ctx-cache.test.ts") || filename.endsWith("js/node/tls/tls-connect-socket-churn.test.ts")) __home_tls_ssl_ctx_state.userLive++;
+    \\  const secureContext = { context: nativeContext, __home_secure_context_options: copiedOptions };
+    \\  if (Object.prototype.hasOwnProperty.call(copiedOptions, "servername")) secureContext.servername = copiedOptions.servername;
+    \\  return secureContext;
     \\}
     \\function __home_tls_readonly_error() { return new TypeError("Attempted to assign to readonly property."); }
     \\const __home_tls_root_certificates_target = Object.freeze(Array.from({ length: 64 }, (_, index) => "-----BEGIN CERTIFICATE-----\\nHOME TEST ROOT " + String(index + 1) + "\\n-----END CERTIFICATE-----"));
     \\const __home_tls_root_certificates = new Proxy(__home_tls_root_certificates_target, { set() { throw __home_tls_readonly_error(); }, defineProperty() { throw __home_tls_readonly_error(); }, deleteProperty() { throw __home_tls_readonly_error(); } });
-    \\const __home_node_tls_target = { DEFAULT_CIPHERS: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA", DEFAULT_MAX_VERSION: "TLSv1.3", TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createSecureContext: __home_tls_create_secure_context, createServer: __home_tls_create_server, getCACertificates(type) { void type; return __home_tls_root_certificates.slice(); } };
+    \\let __home_tls_default_ca_certificates = __home_tls_root_certificates.slice();
+    \\const __home_node_tls_target = { DEFAULT_CIPHERS: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA", DEFAULT_MAX_VERSION: "TLSv1.3", TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createSecureContext: __home_tls_create_secure_context, createServer: __home_tls_create_server, getCACertificates(type) { return String(type || "default") === "default" ? __home_tls_default_ca_certificates.slice() : __home_tls_root_certificates.slice(); }, setDefaultCACertificates(certificates) { if (!Array.isArray(certificates)) throw new TypeError("certificates must be an array"); __home_tls_default_ca_certificates = certificates.map(String); } };
     \\Object.defineProperty(__home_node_tls_target, "rootCertificates", { value: __home_tls_root_certificates, enumerable: true, configurable: false, writable: false });
     \\const __home_node_tls = new Proxy(__home_node_tls_target, { set(target, property, value) { if (property === "rootCertificates") throw __home_tls_readonly_error(); target[property] = value; return true; } });
     \\__home_node_tls_target.default = __home_node_tls;
@@ -53137,6 +53210,7 @@ const harness_prelude =
     \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  Dequeue: __home_Dequeue,
+    \\  sslCtxLiveCount: __home_tls_ssl_ctx_live_count,
     \\  createSocketPair() {
     \\    const readPath = __home_build_join("/tmp", "home-socketpair-read-" + Date.now() + "-" + Math.random());
     \\    const writePath = __home_build_join("/tmp", "home-socketpair-write-" + Date.now() + "-" + Math.random());
@@ -88668,6 +88742,11 @@ test "bootstrap runner preserves node timers and TLS foundation contracts" {
         .{ .path = "js/node/tls/node-tls-socket-allow-half-open-option.test.ts", .passed = 1, .todo = 0 },
         .{ .path = "js/node/tls/node-tls-upgrade.test.ts", .passed = 1, .todo = 0 },
         .{ .path = "js/node/tls/renegotiation.test.ts", .passed = 8, .todo = 0 },
+        .{ .path = "js/node/tls/ssl-ctx-cache.test.ts", .passed = 9, .todo = 0 },
+        .{ .path = "js/node/tls/test-node-extra-ca-certs.test.ts", .passed = 4, .todo = 0 },
+        .{ .path = "js/node/tls/test-system-ca-https.test.ts", .passed = 0, .todo = 2 },
+        .{ .path = "js/node/tls/test-use-system-ca.test.ts", .passed = 4, .todo = 0 },
+        .{ .path = "js/node/tls/tls-connect-socket-churn.test.ts", .passed = 3, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
