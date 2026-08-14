@@ -70,7 +70,7 @@ jobs:
         # Everything is in cloud.config.ts: ts-cloud runs the BunPress build,
         # packages `dist/docs/.bunpress`, ships it, reconciles DNS and reloads
         # the gateway. Pinned so a deploy is reproducible.
-        run: bunx --bun @stacksjs/ts-cloud@0.7.121 deploy --env production --yes
+        run: bunx --bun @stacksjs/ts-cloud@0.7.125 deploy --env production --yes
         env:
           # This project attaches to the shared stacks box, so the deploy needs
           # the Hetzner token to find it and the Porkbun credentials to
