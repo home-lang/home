@@ -2089,6 +2089,11 @@ const CheckerResolverAdapter = struct {
         const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
         defer self.resolver.gpa.free(src);
         const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        const export_assignment_class_name = if (name.len == 0)
+            ts_program.moduleCommonJsExportAssignmentClassName(self.resolver.gpa, src, is_tsx)
+        else
+            null;
+        defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
         const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, r.path, name);
         const exported = facts.exported_type;
         const cannot_be_named = !exported and
@@ -2106,6 +2111,10 @@ const CheckerResolverAdapter = struct {
             .export_path = export_path,
             .export_pos = type_only_pos orelse 0,
             .export_assignment_type_only = facts.export_assignment_type_only,
+            .export_assignment_class_name = if (export_assignment_class_name) |class_name|
+                arena.dupe(u8, class_name) catch return null
+            else
+                "",
             .default_export_member_readonly = facts.default_export_member_readonly,
             .call_only_function = facts.call_only_function,
             .module_is_external = facts.module_is_external,

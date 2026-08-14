@@ -7105,9 +7105,8 @@ pub const Parser = struct {
             mods.declare_token,
             mods.abstract_token,
             mods.override_token,
-            if (is_property) mods.invalid_class_element_modifier else null,
-            if (is_property) mods.async_token else null,
         };
+        _ = is_property;
         for (candidates) |candidate| {
             const modifier = candidate orelse continue;
             const name = self.source[modifier.span.start..modifier.span.end];

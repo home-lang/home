@@ -3879,6 +3879,68 @@ pub const ModuleExportFacts = struct {
     module_is_external: bool = false,
 };
 
+/// Return the class name from a direct JavaScript
+/// `module.exports = new ClassName()` assignment. The caller owns the result.
+pub fn moduleCommonJsExportAssignmentClassName(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    is_tsx: bool,
+) ?[]u8 {
+    var compilation = ts_driver.compileSource(gpa, source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return null;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    if (compilation.interner.lookup("module")) |module_name| {
+        if (compilation.interner.lookup("exports")) |exports_name| {
+            var node: hir_mod_ns.NodeId = 1;
+            while (node < compilation.hir.nodeCount()) : (node += 1) {
+                if (compilation.hir.kindOf(node) != .assignment) continue;
+                const assignment = hir_mod_ns.assignmentOf(&compilation.hir, node);
+                if (assignment.op != null or assignment.target == hir_mod_ns.none_node_id or
+                    compilation.hir.kindOf(assignment.target) != .member_access or
+                    assignment.value == hir_mod_ns.none_node_id or
+                    compilation.hir.kindOf(assignment.value) != .new_expr) continue;
+                const target = hir_mod_ns.memberOf(&compilation.hir, assignment.target);
+                if (target.name != exports_name or target.object == hir_mod_ns.none_node_id or
+                    compilation.hir.kindOf(target.object) != .identifier or
+                    hir_mod_ns.identifierOf(&compilation.hir, target.object).name != module_name) continue;
+                const callee = hir_mod_ns.callOf(&compilation.hir, assignment.value).callee;
+                if (callee == hir_mod_ns.none_node_id or compilation.hir.kindOf(callee) != .identifier) continue;
+                const class_name = compilation.interner.get(hir_mod_ns.identifierOf(&compilation.hir, callee).name);
+                return gpa.dupe(u8, class_name) catch null;
+            }
+        }
+    }
+
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, source, search_start, "module.exports")) |export_pos| {
+        var cursor = export_pos + "module.exports".len;
+        search_start = cursor;
+        while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor >= source.len or source[cursor] != '=' or
+            (cursor + 1 < source.len and (source[cursor + 1] == '=' or source[cursor + 1] == '>'))) continue;
+        cursor += 1;
+        while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (!std.mem.startsWith(u8, source[cursor..], "new")) continue;
+        cursor += "new".len;
+        if (cursor >= source.len or !std.ascii.isWhitespace(source[cursor])) continue;
+        while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor >= source.len or
+            !(std.ascii.isAlphabetic(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) continue;
+        const name_start = cursor;
+        cursor += 1;
+        while (cursor < source.len and
+            (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) : (cursor += 1) {}
+        return gpa.dupe(u8, source[name_start..cursor]) catch null;
+    }
+    return null;
+}
+
 /// Return the first private top-level type referenced by a module's
 /// `export =` value annotation. The returned name is owned by `gpa`.
 pub fn moduleExportAssignmentPrivateTypeName(

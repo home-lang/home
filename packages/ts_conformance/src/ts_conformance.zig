@@ -162,10 +162,22 @@ const CheckerResolverAdapter = struct {
         if (resolved) |r| {
             if (!self.allow_js and !r.is_declaration and isJsLikeVirtualFile(r.path)) {
                 const arena = self.resolver.arena.allocator();
+                const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
+                defer self.resolver.gpa.free(src);
+                const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+                const export_assignment_class_name = if (name.len == 0)
+                    ts_program.moduleCommonJsExportAssignmentClassName(self.resolver.gpa, src, is_tsx)
+                else
+                    null;
+                defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
                 return .{
                     .module_name = ts_program.renderModuleDisplayName(arena, module_path) catch return null,
                     .exported_type = true,
                     .exported_value = true,
+                    .export_assignment_class_name = if (export_assignment_class_name) |class_name|
+                        arena.dupe(u8, class_name) catch return null
+                    else
+                        "",
                     .module_is_external = true,
                 };
             }
@@ -178,6 +190,11 @@ const CheckerResolverAdapter = struct {
         const src = self.resolver.fs.readFile(self.resolver.gpa, module_path) catch return null;
         defer self.resolver.gpa.free(src);
         const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or std.mem.endsWith(u8, module_path, ".jsx");
+        const export_assignment_class_name = if (name.len == 0)
+            ts_program.moduleCommonJsExportAssignmentClassName(self.resolver.gpa, src, is_tsx)
+        else
+            null;
+        defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
         const resolved_facts = if (resolved != null)
             ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, module_path, name)
         else
@@ -220,6 +237,10 @@ const CheckerResolverAdapter = struct {
             .export_path = export_path,
             .export_pos = effective_type_only_pos orelse 0,
             .export_assignment_type_only = resolved_facts.export_assignment_type_only,
+            .export_assignment_class_name = if (export_assignment_class_name) |class_name|
+                arena.dupe(u8, class_name) catch return null
+            else
+                "",
             .default_export_member_readonly = resolved_facts.default_export_member_readonly,
             .generic_function = resolved_facts.generic_function,
             .call_only_function = resolved_facts.call_only_function,
