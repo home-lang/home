@@ -40002,6 +40002,47 @@ pub const Checker = struct {
         return assigned_in_method;
     }
 
+    fn checkJsInferredClassMemberWrite(self: *Checker, target: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(target) or
+            target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return false;
+        const access = hir_mod.memberOf(self.hir, target);
+        if (!self.nodeIsThisReference(access.object)) return false;
+        if (!self.thisHasClassLexicalBinding(target)) return false;
+        const class_node = self.enclosingClassNode(target);
+        if (class_node == hir_mod.none_node_id) return false;
+
+        var containing_member = hir_mod.none_node_id;
+        var cur = self.hir.parentOf(target);
+        while (cur != hir_mod.none_node_id and cur != class_node) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            containing_member = cur;
+            if (kind != .arrow_fn and hir_mod.fnDeclOf(self.hir, cur).flags.is_constructor) return false;
+        }
+        if (containing_member == hir_mod.none_node_id) return false;
+
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            switch (self.hir.kindOf(member)) {
+                .object_property => {
+                    const property = hir_mod.objectPropertyOf(self.hir, member);
+                    const name = (try self.classMemberNameFromPropertyKey(
+                        property.key,
+                        property.is_computed or self.nodeIsBracketedComputedName(property.key),
+                    )) orelse continue;
+                    if (name == access.name) return false;
+                },
+                .fn_decl, .fn_expr => {
+                    const function = hir_mod.fnDeclOf(self.hir, member);
+                    if (function.flags.is_constructor) continue;
+                    const name = (try self.classMemberNameFromFunctionName(function.name)) orelse continue;
+                    if (name == access.name) return false;
+                },
+                else => {},
+            }
+        }
+        return true;
+    }
+
     fn nodeContainsDirectThisMemberAssignment(
         self: *Checker,
         node: NodeId,
@@ -55915,7 +55956,7 @@ pub const Checker = struct {
         }
         const raw_t = try self.checkExpression(value);
         return switch (self.hir.kindOf(value)) {
-            .literal_number => raw_t,
+            .literal_number => try self.expressionLiteralType(value, raw_t),
             else => try self.flowTypeForAssignmentValue(value, raw_t),
         };
     }
@@ -69490,7 +69531,9 @@ pub const Checker = struct {
         root_name: hir_mod.StringId,
     ) bool {
         if (!self.sourceHasCheckJsDirective()) return false;
-        if (self.localNameIsImportBinding(root_name, anchor)) return false;
+        if (self.localNameIsImportBinding(root_name, anchor)) {
+            return !self.localNameIsNamespaceImportBinding(root_name, anchor);
+        }
         if (self.ambientGlobalNamespaceRootExists(root_name) or
             self.findUmdNamespaceExportSection(root_name, anchor) != null or
             self.programHasUmdGlobalName(root_name))
@@ -69556,7 +69599,9 @@ pub const Checker = struct {
         type_node: NodeId,
         root_name: hir_mod.StringId,
     ) CheckError!bool {
-        const decl = self.findVisibleNamedTypeDecl(type_node, root_name) orelse return false;
+        const decl = self.findVisibleNamedTypeDecl(type_node, root_name) orelse
+            self.findNamedClassDeclInAnyVirtualSection(type_node, root_name) orelse
+            return false;
         const decl_kind = self.hir.kindOf(decl);
         if (decl_kind == .class_decl or decl_kind == .class_expr) {
             const root_text = self.string_interner.get(root_name);
@@ -69588,6 +69633,23 @@ pub const Checker = struct {
             .message = msg,
         });
         return true;
+    }
+
+    fn findNamedClassDeclInAnyVirtualSection(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        if (!self.sourceHasCheckJsDirective() or !self.sourceHasVirtualFilenameSections()) return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const declaration = self.unwrapExportDecl(raw);
+            const kind = self.hir.kindOf(declaration);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            if ((self.declarationName(declaration) orelse continue) == name) return declaration;
+        }
+        return null;
     }
 
     /// Emit TS2339 on `<ns>.<leaf>` when `<ns>` is a known *ambient*
@@ -83322,7 +83384,9 @@ pub const Checker = struct {
     ) CheckError!void {
         const pos = self.sliceStartPos(src, root_text);
         const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
-        if (self.findVisibleNamedTypeDecl(anchor, root_name)) |decl| {
+        if (self.findVisibleNamedTypeDecl(anchor, root_name) orelse
+            self.findNamedClassDeclInAnyVirtualSection(anchor, root_name)) |decl|
+        {
             const kind = self.hir.kindOf(decl);
             if (kind == .class_decl or kind == .class_expr) {
                 const message = try std.fmt.allocPrint(
@@ -94519,6 +94583,8 @@ pub const Checker = struct {
                     try self.checkJsContainerPrototypeObjectAssignment(node, a.target, a.value);
                 const target_is_js_namespace_declaration_initialization = a.op == null and
                     self.checkJsNamespaceDeclarationValueInitialization(a.target);
+                const target_is_inferred_checkjs_class_member = a.op == null and
+                    try self.checkJsInferredClassMemberWrite(a.target);
                 if (target_is_js_container_prototype_object_assignment) {
                     self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
                     self.removePriorDiagnosticsInNodeSpan(a.target, TsCodes.property_does_not_exist);
@@ -94775,7 +94841,7 @@ pub const Checker = struct {
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
                 const dedicated_generic_indexed_assignment =
                     self.genericIndexedAssignmentUsesDedicatedRelation(a.target, a.value);
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_checked_js_undefined_any and !target_is_checked_js_default_parameter_undefined and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_checked_js_undefined_any and !target_is_checked_js_default_parameter_undefined and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and !target_is_inferred_checkjs_class_member and a.op == null and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -96553,7 +96619,6 @@ pub const Checker = struct {
                 }
                 const member_is_optional_chain = m.optional or self.expressionIsOptionalChain(m.object);
                 const is_instanceof_fallthrough_receiver = try self.identifierHasInstanceofFallthroughJoin(m.object);
-                const object_was_possibly_nullish = self.typeIsPossiblyNullishStrict(obj_t);
                 if (self.strict_flags.strict_null_checks and
                     self.memberNameIsEcmaPrivate(m.name) and
                     !m.optional and
@@ -96587,11 +96652,6 @@ pub const Checker = struct {
                         obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                     }
                 } else if (member_is_optional_chain) {
-                    obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
-                }
-                if (!object_was_possibly_nullish and
-                    try self.reportCheckJsConstructorNullableMemberRead(m.object))
-                {
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 }
                 if (obj_t == types.Primitive.unknown and self.hir.kindOf(m.object) == .identifier) {
@@ -96672,6 +96732,9 @@ pub const Checker = struct {
                     obj_t
                 else
                     access_obj_t;
+                if (try self.reportCheckJsFutureObjectExpandoStaticAssignment(node)) {
+                    break :blk types.Primitive.any;
+                }
                 if (try self.reportInvalidTypeScriptExpandoMember(node, m.object, m.name, access_obj_t)) {
                     break :blk types.Primitive.any;
                 }
@@ -96743,13 +96806,14 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
                     }
                     if (try self.checkJsObjectExpandoAssignmentValueType(key.obj_name, m.name, node)) |nt| {
+                        if (self.interner.pool.flagsOf(nt).is_signature and
+                            self.scriptObjectExpandoHasPrototypeAssignment(key.obj_name, m.name, node))
+                        {
+                            if (try self.programScriptObjectExpandoStaticType(key.obj_name, m.name, node)) |static_t| {
+                                break :blk try self.optionalChainResult(static_t, member_is_optional_chain);
+                            }
+                        }
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
-                    }
-                }
-                if (self.hir.kindOf(m.object) == .identifier) {
-                    const root_name = hir_mod.identifierOf(self.hir, m.object).name;
-                    if (self.programScriptObjectExpandoValueExists(root_name, m.name)) {
-                        break :blk try self.optionalChainResult(types.Primitive.any, member_is_optional_chain);
                     }
                 }
                 if (try self.reportUnsupportedNestedCommonJsImportMember(node)) {
@@ -96923,6 +96987,16 @@ pub const Checker = struct {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
+                    if (self.hir.kindOf(m.object) == .identifier and
+                        self.interner.pool.flagsOf(t).is_signature)
+                    {
+                        const root_name = hir_mod.identifierOf(self.hir, m.object).name;
+                        if (self.scriptObjectExpandoHasPrototypeAssignment(root_name, m.name, node)) {
+                            if (try self.programScriptObjectExpandoStaticType(root_name, m.name, node)) |static_t| {
+                                break :blk try self.optionalChainResult(static_t, member_is_optional_chain);
+                            }
+                        }
+                    }
                     const recovered_t = if (t == types.Primitive.unknown or self.containsFreeTypeParameter(t))
                         (try self.concretePairedGetterType(obj_t, m.name)) orelse t
                     else
@@ -96935,6 +97009,17 @@ pub const Checker = struct {
                     else
                         substituted_t;
                     break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
+                }
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const root_name = hir_mod.identifierOf(self.hir, m.object).name;
+                    if (try self.programScriptObjectExpandoStaticType(root_name, m.name, node)) |static_t| {
+                        if (self.isInAssignmentTargetChain(node) and
+                            self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t))
+                        {
+                            try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                        }
+                        break :blk try self.optionalChainResult(static_t, member_is_optional_chain);
+                    }
                 }
                 if (try self.typeParameterSyntaxConstraintMember(obj_t, m.object, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
@@ -97087,6 +97172,9 @@ pub const Checker = struct {
                     else
                         (try self.effectiveStringIndexType(access_obj_t)) orelse types.Primitive.none;
                     if (self.memberNameIsEcmaPrivate(m.name) and !member_is_optional_chain) {
+                        if (try self.reportUncheckedJsUndeclaredPrivateName(node, m.name)) {
+                            break :blk types.Primitive.any;
+                        }
                         try self.reportPropertyDoesNotExistOnType(node, m.name, missing_access_obj_t);
                         break :blk types.Primitive.any;
                     }
@@ -97141,6 +97229,12 @@ pub const Checker = struct {
                             }
                             break :blk types.Primitive.any;
                         }
+                    }
+                    if (self.sourceHasCheckJsDirective() and
+                        !self.isInAssignmentTargetChain(node) and
+                        self.checkJsProgramObjectExpandoStaticType(access_obj_t))
+                    {
+                        break :blk types.Primitive.any;
                     }
                     const check_js_prototype_this = self.sourceHasCheckJsDirective() and
                         self.nodeIsThisReference(m.object) and
@@ -97296,9 +97390,7 @@ pub const Checker = struct {
                     // not exist on type 'void'`). Mirrors upstream
                     // tsc, which prints the receiver type literally.
                     try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
-                } else if (self.interner.pool.flagsOf(access_obj_t).is_signature and
-                    self.memberAccessReceiverIsRequireAssignmentBinding(m.object))
-                {
+                } else if (self.interner.pool.flagsOf(access_obj_t).is_signature) {
                     // A function-typed `import x = require("./m")` binding
                     // (where `./m` is `export = function(){}`) exposes only
                     // `Function.prototype` members, already resolved above.
@@ -97308,7 +97400,11 @@ pub const Checker = struct {
                     // so expando-function member access (`foo.x` after
                     // `foo.x = 1`) is left untouched. Mirrors
                     // `modulePreserve4`'s `d2.default()`.
-                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                    if (self.memberAccessReceiverIsRequireAssignmentBinding(m.object)) {
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                    } else if (try self.checkJsCallableDeclaredInOtherVirtualSectionType(m.object)) |declared_t| {
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, declared_t);
+                    }
                 }
                 break :blk types.Primitive.any;
             },
@@ -105342,6 +105438,154 @@ pub const Checker = struct {
         return false;
     }
 
+    fn programScriptObjectExpandoStaticType(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        if (!self.programScriptObjectExpandoValueExists(root_name, member_name) and
+            !self.scriptObjectExpandoAssignmentExists(root_name, member_name)) return null;
+        if (!self.isInAssignmentTargetChain(anchor) and
+            self.scriptObjectExpandoAssignmentBefore(root_name, member_name, anchor))
+        {
+            return types.Primitive.any;
+        }
+        const any_array = self.interner.internArrayType(
+            self.string_interner,
+            types.Primitive.any,
+        ) catch return error.OutOfMemory;
+        const construct_sig = self.interner.internSignature(
+            &.{any_array},
+            types.Primitive.any,
+            true,
+        ) catch return error.OutOfMemory;
+        try self.rest_signatures.put(self.gpa, construct_sig, {});
+        try self.signature_min_args.put(self.gpa, construct_sig, 0);
+        const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        const static_t = self.interner.internObjectType(&.{.{
+            .name = construct_name,
+            .type = construct_sig,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = true,
+        }}) catch return error.OutOfMemory;
+        try self.class_name_by_static.put(self.gpa, static_t, member_name);
+        return static_t;
+    }
+
+    fn scriptObjectExpandoAssignmentBefore(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const anchor_start = self.hir.spanOf(anchor).start;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const statement = self.unwrapExportDecl(raw);
+            if (self.hir.spanOf(statement).start >= anchor_start or self.hir.kindOf(statement) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, statement);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const target = hir_mod.memberOf(self.hir, assignment.target);
+            if (target.name != member_name or target.object == hir_mod.none_node_id or
+                self.hir.kindOf(target.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, target.object).name == root_name) return true;
+        }
+        return false;
+    }
+
+    fn scriptObjectExpandoAssignmentExists(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        if (!self.sourceHasCheckJsDirective() or self.hir.nodeCount() <= 1) return false;
+        const root = self.rootBlockFor(1);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const statement = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(statement) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, statement);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const target = hir_mod.memberOf(self.hir, assignment.target);
+            if (target.name != member_name or target.object == hir_mod.none_node_id or
+                self.hir.kindOf(target.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, target.object).name != root_name) continue;
+            if (assignment.value == hir_mod.none_node_id) return true;
+            const value_kind = self.hir.kindOf(assignment.value);
+            if (value_kind == .fn_expr or value_kind == .arrow_fn or
+                value_kind == .class_expr or value_kind == .class_decl) return true;
+        }
+        return false;
+    }
+
+    fn scriptObjectExpandoHasPrototypeAssignment(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const prototype_name = self.string_interner.intern("prototype") catch return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const statement = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(statement) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, statement);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const target = hir_mod.memberOf(self.hir, assignment.target);
+            if (target.name != prototype_name or target.object == hir_mod.none_node_id or
+                self.hir.kindOf(target.object) != .member_access) continue;
+            const owner = hir_mod.memberOf(self.hir, target.object);
+            if (owner.name != member_name or owner.object == hir_mod.none_node_id or
+                self.hir.kindOf(owner.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, owner.object).name == root_name) return true;
+        }
+        return false;
+    }
+
+    fn reportCheckJsFutureObjectExpandoStaticAssignment(self: *Checker, node: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or node == hir_mod.none_node_id or
+            self.hir.kindOf(node) != .member_access) return false;
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment or
+            hir_mod.assignmentOf(self.hir, parent).target != node) return false;
+        const access = hir_mod.memberOf(self.hir, node);
+        if (access.object == hir_mod.none_node_id or self.hir.kindOf(access.object) != .member_access) return false;
+        const owner = hir_mod.memberOf(self.hir, access.object);
+        if (owner.object == hir_mod.none_node_id or self.hir.kindOf(owner.object) != .identifier) return false;
+        const root_name = hir_mod.identifierOf(self.hir, owner.object).name;
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const node_start = self.hir.spanOf(node).start;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const statement = self.unwrapExportDecl(raw);
+            if (self.hir.spanOf(statement).start <= node_start or self.hir.kindOf(statement) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, statement);
+            if (assignment.target == hir_mod.none_node_id or self.hir.kindOf(assignment.target) != .member_access) continue;
+            const target = hir_mod.memberOf(self.hir, assignment.target);
+            if (target.name != owner.name or target.object == hir_mod.none_node_id or
+                self.hir.kindOf(target.object) != .identifier or
+                hir_mod.identifierOf(self.hir, target.object).name != root_name) continue;
+            if (assignment.value == hir_mod.none_node_id) continue;
+            const value_kind = self.hir.kindOf(assignment.value);
+            if (value_kind != .class_expr and value_kind != .class_decl) continue;
+            const display = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "typeof {s}",
+                .{self.string_interner.get(owner.name)},
+            );
+            try self.reportPropertyDoesNotExistOnTypeText(node, access.name, display);
+            return true;
+        }
+        return false;
+    }
+
     fn checkJsObjectExpandoAssignmentValueType(
         self: *Checker,
         root_name: hir_mod.StringId,
@@ -113311,6 +113555,7 @@ pub const Checker = struct {
             {
                 return types.Primitive.undefined_t;
             }
+            if (self.thisInsideFunctionAssignedToThisMember(node)) return types.Primitive.any;
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
                 !self.thisHasClassLexicalBinding(node) and
@@ -126844,6 +127089,22 @@ pub const Checker = struct {
         });
     }
 
+    fn thisInsideFunctionAssignedToThisMember(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind == .arrow_fn) continue;
+            if (kind != .fn_decl and kind != .fn_expr) continue;
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return false;
+            const assignment = hir_mod.assignmentOf(self.hir, parent);
+            if (assignment.value != cur or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) return false;
+            return self.nodeIsThisReference(hir_mod.memberOf(self.hir, assignment.target).object);
+        }
+        return false;
+    }
+
     fn thisShadowingContainerWithOuterThis(self: *Checker, node: NodeId) ?NodeId {
         const container = self.nearestPlainNonArrowFunction(node) orelse return null;
         if (self.functionContainerHasOuterThis(container)) return container;
@@ -127679,58 +127940,6 @@ pub const Checker = struct {
         return self.string_interner.intern(prefix[owner_start..proto_pos]) catch null;
     }
 
-    fn reportCheckJsConstructorNullableMemberRead(self: *Checker, object_node: NodeId) CheckError!bool {
-        if (!self.sourceHasCheckJsDirective() or !self.strict_flags.strict_null_checks) return false;
-        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .member_access) return false;
-        const member = hir_mod.memberOf(self.hir, object_node);
-        if (!self.nodeIsThisReference(member.object)) return false;
-        if (self.checkJsThisMemberReadHasNonNullGuard(object_node, member.name)) return false;
-        const owner = self.checkJsPrototypeAssignmentOwnerName(object_node) orelse return false;
-        const fn_node = self.jsConstructorFunctionDeclForName(object_node, owner) orelse return false;
-        const function = hir_mod.fnDeclOf(self.hir, fn_node);
-        if (function.body == hir_mod.none_node_id or self.hir.kindOf(function.body) != .block_stmt) return false;
-        var saw_null = false;
-        var saw_non_null = false;
-        for (hir_mod.blockStmts(self.hir, function.body)) |stmt| {
-            if (self.hir.kindOf(stmt) != .assignment) continue;
-            const assignment = hir_mod.assignmentOf(self.hir, stmt);
-            if ((self.directThisPropertyName(assignment.target) orelse continue) != member.name) continue;
-            if (assignment.value == hir_mod.none_node_id) continue;
-            if (self.hir.kindOf(assignment.value) == .literal_null) {
-                saw_null = true;
-            } else {
-                saw_non_null = true;
-            }
-        }
-        if (!saw_null or !saw_non_null) return false;
-        try self.report(object_node, TsCodes.object_possibly_null_2531, "Object is possibly 'null'.");
-        return true;
-    }
-
-    fn checkJsThisMemberReadHasNonNullGuard(
-        self: *Checker,
-        node: NodeId,
-        member_name: hir_mod.StringId,
-    ) bool {
-        const src = self.source orelse return false;
-        var cur = self.hir.parentOf(node);
-        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
-            if (self.hir.kindOf(cur) != .if_stmt) continue;
-            const statement = hir_mod.ifOf(self.hir, cur);
-            if (!self.nodeIsAncestorOf(statement.then_branch, node)) continue;
-            const span = self.hir.spanOf(statement.cond);
-            if (span.start >= span.end or span.end > src.len) continue;
-            const condition = src[span.start..span.end];
-            if (std.mem.indexOf(u8, condition, "!= null") == null and
-                std.mem.indexOf(u8, condition, "!== null") == null)
-            {
-                continue;
-            }
-            if (std.mem.indexOf(u8, condition, self.string_interner.get(member_name)) != null) return true;
-        }
-        return false;
-    }
-
     fn checkJsPrototypeObjectLiteralAssignmentOwnerNameForFunction(self: *Checker, fn_node: NodeId) ?hir_mod.StringId {
         if (!self.sourceHasCheckJsDirective()) return null;
         const fn_kind = self.hir.kindOf(fn_node);
@@ -127766,8 +127975,62 @@ pub const Checker = struct {
 
     fn checkJsAssignmentTargetShouldReportMissingMember(self: *Checker, node: NodeId, receiver_t: TypeId) bool {
         if (self.assignmentTargetValueIsVoidExpression(node)) return true;
+        if (self.class_name_by_static.contains(receiver_t)) {
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return false;
+            return !self.nodeIsThisReference(hir_mod.memberOf(self.hir, node).object);
+        }
         const builtin = self.builtin_object_names.get(receiver_t) orelse return false;
         return std.mem.eql(u8, builtin, "Event");
+    }
+
+    fn checkJsCallableDeclaredInOtherVirtualSectionType(self: *Checker, object: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective() or !self.sourceHasVirtualFilenameSections() or
+            object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, object).name;
+        const root = self.rootBlockFor(object);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = self.virtualSectionStartForNode(object);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (self.virtualSectionStartForNode(raw) == section) continue;
+            const declaration = self.unwrapExportDecl(raw);
+            if ((self.declarationName(declaration) orelse continue) != name) continue;
+            if (self.hir.kindOf(declaration) == .fn_decl) {
+                const declared_t = self.hir.typeOf(declaration);
+                if (declared_t != types.Primitive.none and declared_t != types.Primitive.unknown) return declared_t;
+                return try self.preRegisterFunctionSignature(declaration);
+            }
+            if (self.hir.kindOf(declaration) != .var_decl and
+                self.hir.kindOf(declaration) != .let_decl and
+                self.hir.kindOf(declaration) != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, declaration);
+            if (variable.init == hir_mod.none_node_id) continue;
+            const init_kind = self.hir.kindOf(variable.init);
+            if (init_kind != .fn_expr and init_kind != .arrow_fn) continue;
+            const declared_t = self.hir.typeOf(variable.init);
+            if (declared_t != types.Primitive.none and declared_t != types.Primitive.unknown) return declared_t;
+            return try self.checkExpression(variable.init);
+        }
+        return null;
+    }
+
+    fn checkJsProgramObjectExpandoStaticType(self: *Checker, receiver_t: TypeId) bool {
+        const class_name = self.class_name_by_static.get(receiver_t) orelse return false;
+        const member_text = self.string_interner.get(class_name);
+        for (self.script_object_expandos) |expando| {
+            if (std.mem.eql(u8, expando.member, member_text)) return true;
+        }
+        if (self.hir.nodeCount() <= 1) return false;
+        const root = self.rootBlockFor(1);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const statement = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(statement) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, statement);
+            if (assignment.target == hir_mod.none_node_id or self.hir.kindOf(assignment.target) != .member_access) continue;
+            const target = hir_mod.memberOf(self.hir, assignment.target);
+            if (std.mem.eql(u8, self.string_interner.get(target.name), member_text)) return true;
+        }
+        return false;
     }
 
     fn reportCheckJsPrototypeThisMissingMemberAssignment(self: *Checker, target: NodeId) CheckError!bool {
@@ -161567,6 +161830,22 @@ pub const Checker = struct {
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.local == local_name) return true;
             }
+        }
+        return false;
+    }
+
+    fn localNameIsNamespaceImportBinding(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.namespace_binding == hir_mod.none_node_id or
+                self.hir.kindOf(imp.namespace_binding) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, imp.namespace_binding).name == local_name) return true;
         }
         return false;
     }
@@ -234758,7 +235037,7 @@ test "checker: checked JavaScript constructors aggregate prototype property writ
 
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.member_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_null_2531));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null_2531));
 }
 
 test "checker: checked JavaScript this assignments declare only direct properties" {
