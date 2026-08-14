@@ -857,11 +857,6 @@ pub const Program = struct {
                     &compilation.interner,
                     assignment.target,
                 ) orelse continue;
-                if (compilation.hir.kindOf(assignment.value) == .unary_op and
-                    hir_mod_ns.unaryOf(&compilation.hir, assignment.value).op == .void_)
-                {
-                    continue;
-                }
                 const name_text = compilation.interner.get(name);
                 var duplicate = false;
                 for (out.items) |existing| {
@@ -6561,7 +6556,7 @@ test "module export facts parse JSX-bearing JavaScript modules" {
     try T.expect(facts.exported_value);
 }
 
-test "Program: collects only non-void CommonJS exports" {
+test "Program: collects CommonJS exports assigned void" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile(
@@ -6595,7 +6590,7 @@ test "Program: collects only non-void CommonJS exports" {
         if (std.mem.eql(u8, item.name, "k")) saw_k = true;
     }
     try T.expect(saw_j);
-    try T.expect(!saw_k);
+    try T.expect(saw_k);
 }
 
 test "Program: collects private export-assignment declaration types" {
