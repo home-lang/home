@@ -17007,13 +17007,27 @@ const harness_prelude =
     \\  };
     \\}
     \\function __home_spawn_terminal_fixture(options) {
-    \\  const terminal = options && options.terminal;
-    \\  if (!terminal || typeof terminal.__home_emit_data !== "function") return null;
+    \\  const terminalOptions = options && options.terminal;
+    \\  if (!terminalOptions || typeof terminalOptions !== "object") return null;
+    \\  const terminal = terminalOptions instanceof __home_Terminal ? terminalOptions : new __home_Terminal(terminalOptions);
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  if (!cmd.includes("-e") || !cmd.some(part => part.includes("console.log") && part.includes("Hello"))) return null;
+    \\  if (!cmd.includes("-e")) return null;
+    \\  const evalSource = cmd.join("\n");
+    \\  let output = null;
+    \\  if (evalSource.includes("process.stdin.setRawMode(true)")) {
+    \\    const stdin = __home_tty_stream(0, true);
+    \\    const before = stdin.isRaw;
+    \\    const ret = stdin.setRawMode(true);
+    \\    const afterTrue = stdin.isRaw;
+    \\    stdin.setRawMode(false);
+    \\    output = "RESULT " + JSON.stringify({ isTTY: stdin.isTTY, before, afterTrue, afterFalse: stdin.isRaw, returnsThis: ret === stdin });
+    \\  } else if (evalSource.includes("console.log") && evalSource.includes("Hello")) {
+    \\    output = "Hello\n";
+    \\  }
+    \\  if (output === null) return null;
     \\  const exited = Promise.withResolvers();
     \\  Promise.resolve().then(() => {
-    \\    terminal.__home_emit_data(Buffer.from("Hello\n"));
+    \\    terminal.__home_emit_data(Buffer.from(output));
     \\    exited.resolve(0);
     \\  });
     \\  return {
@@ -17023,6 +17037,7 @@ const harness_prelude =
     \\    exitCode: 0,
     \\    signalCode: null,
     \\    killed: false,
+    \\    terminal,
     \\    ref() { return this; },
     \\    unref() { return this; },
     \\    kill() { this.killed = true; return true; },
@@ -29059,17 +29074,59 @@ const harness_prelude =
     \\  stream.ref = function() { return this; };
     \\  stream.unref = function() { return this; };
     \\  stream.destroy = function() { this.destroyed = true; return this; };
+    \\  stream.isRaw = false;
     \\  stream.setRawMode = function(value) { this.isRaw = !!value; return this; };
     \\  return stream;
     \\}
     \\function __home_tty_ReadStream(fd) {
     \\  if (!(this instanceof __home_tty_ReadStream)) return new __home_tty_ReadStream(fd);
-    \\  return __home_tty_stream(fd, true);
+    \\  const stream = __home_tty_stream(fd, true);
+    \\  Object.setPrototypeOf(stream, __home_tty_ReadStream.prototype);
+    \\  return stream;
     \\}
     \\function __home_tty_WriteStream(fd) {
     \\  if (!(this instanceof __home_tty_WriteStream)) return new __home_tty_WriteStream(fd);
-    \\  return __home_tty_stream(fd, false);
+    \\  const stream = __home_tty_stream(fd, false);
+    \\  Object.setPrototypeOf(stream, __home_tty_WriteStream.prototype);
+    \\  return stream;
     \\}
+    \\function __home_tty_get_color_depth(env) {
+    \\  env = env || process.env || {};
+    \\  const forceColor = env.FORCE_COLOR;
+    \\  if (forceColor !== undefined) {
+    \\    if (forceColor === "" || forceColor === "1" || forceColor === "true") return 4;
+    \\    if (forceColor === "2") return 8;
+    \\    if (forceColor === "3") return 24;
+    \\    return 1;
+    \\  }
+    \\  if (env.NODE_DISABLE_COLORS !== undefined || env.NO_COLOR !== undefined || env.TERM === "dumb") return 1;
+    \\  if (process.platform === "win32") return 24;
+    \\  if (env.TMUX) return 8;
+    \\  if (env.CI) {
+    \\    const knownCI = ["APPVEYOR", "BUILDKITE", "CIRCLECI", "DRONE", "GITHUB_ACTIONS", "GITLAB_CI", "TRAVIS"];
+    \\    return knownCI.some(name => name in env) || env.CI_NAME === "codeship" ? 8 : 1;
+    \\  }
+    \\  if (env.TEAMCITY_VERSION) return /^(9\\.(0*[1-9]\\d*)\\.|\\d{2,}\\.)/.test(String(env.TEAMCITY_VERSION)) ? 4 : 1;
+    \\  if (env.TERM_PROGRAM === "iTerm.app") return !env.TERM_PROGRAM_VERSION || /^[0-2]\\./.test(String(env.TERM_PROGRAM_VERSION)) ? 8 : 24;
+    \\  if (env.TERM_PROGRAM === "HyperTerm" || env.TERM_PROGRAM === "ghostty" || env.TERM_PROGRAM === "WezTerm" || env.TERM_PROGRAM === "MacTerm") return 24;
+    \\  if (env.TERM_PROGRAM === "Apple_Terminal") return 8;
+    \\  if (env.COLORTERM === "truecolor" || env.COLORTERM === "24bit") return 24;
+    \\  if (env.TERM) {
+    \\    const term = String(env.TERM).toLowerCase();
+    \\    if (term.startsWith("xterm-256")) return 8;
+    \\    const depths = { eterm: 4, cons25: 4, console: 4, cygwin: 4, dtterm: 4, gnome: 4, hurd: 4, jfbterm: 4, konsole: 4, kterm: 4, mlterm: 4, mosh: 24, putty: 4, st: 4, "rxvt-unicode-24bit": 24, terminator: 24 };
+    \\    if (depths[term]) return depths[term];
+    \\    if ([/ansi/, /color/, /linux/, /^con[0-9]*x[0-9]/, /^rxvt/, /^screen/, /^xterm/, /^vt100/].some(pattern => pattern.test(term))) return 4;
+    \\  }
+    \\  return env.COLORTERM ? 4 : 1;
+    \\}
+    \\__home_tty_WriteStream.prototype.getColorDepth = function(env) { return __home_tty_get_color_depth(env); };
+    \\__home_tty_WriteStream.prototype.hasColors = function(count, env) {
+    \\  if (env === undefined && (count === undefined || (typeof count === "object" && count !== null))) { env = count; count = 16; }
+    \\  if (!Number.isInteger(count) || count < 2) throw new RangeError("count must be an integer greater than or equal to 2");
+    \\  return count <= 2 ** this.getColorDepth(env);
+    \\};
+    \\__home_tty_WriteStream.prototype.getWindowSize = function() { return [this.columns, this.rows]; };
     \\const __home_node_tty = { ReadStream: __home_tty_ReadStream, WriteStream: __home_tty_WriteStream, isatty(fd) { const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[Number(fd)]; return Number(fd) === 0 || Number(fd) === 1 || Number(fd) === 2 || !!(entry && entry.path === "/dev/tty"); } };
     \\__home_node_tty.default = __home_node_tty;
     \\if (!process.stdin) process.stdin = __home_process_stream(0, "stdin");
@@ -64259,6 +64316,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)", .replacement = ")" },
         .{ .needle = "(bytes: Uint8Array): string", .replacement = "(bytes)" },
+        .{ .needle = "chunk: Uint8Array)", .replacement = "chunk)" },
         .{ .needle = "(binaryString: string)", .replacement = "(binaryString)" },
         .{ .needle = ": TestEntry, component: Component): string", .replacement = ", component)" },
         .{ .needle = ": TestEntry,\n  component: Component,\n): { input: string; groups: Record<string, string | undefined> }", .replacement = ",\n  component,\n)" },
@@ -67504,6 +67562,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const tty = globalThis.__home_import(\"node:tty\");",
         },
         .{
+            .needle = "import { WriteStream } from \"node:tty\";",
+            .replacement = "const { WriteStream } = globalThis.__home_import(\"node:tty\");",
+        },
+        .{
             .needle = "import http from \"node:http\";",
             .replacement = "const http = globalThis.__home_import(\"node:http\");",
         },
@@ -67938,6 +68000,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe } from \"harness\";",
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, isWindows } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isWindows } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunEnv, bunExe, isWindows, tempDir } from \"harness\";",
@@ -88747,6 +88813,7 @@ test "bootstrap runner preserves node timers and TLS foundation contracts" {
         .{ .path = "js/node/tls/test-system-ca-https.test.ts", .passed = 0, .todo = 2 },
         .{ .path = "js/node/tls/test-use-system-ca.test.ts", .passed = 4, .todo = 0 },
         .{ .path = "js/node/tls/tls-connect-socket-churn.test.ts", .passed = 3, .todo = 0 },
+        .{ .path = "js/node/tty.test.ts", .passed = 4, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
