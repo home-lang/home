@@ -4219,6 +4219,10 @@ pub const Checker = struct {
     /// table preserves declaration-site optional/default metadata and
     /// the TS rule that a trailing `void` parameter may be omitted.
     signature_min_args: std.AutoHashMapUnmanaged(TypeId, usize),
+    /// Signature TypeId -> minimum required parameters when rendering
+    /// the source type. JavaScript permits omitted unannotated arguments
+    /// at call sites, but still displays those parameters without `?`.
+    signature_display_min_args: std.AutoHashMapUnmanaged(TypeId, usize),
     signature_nullish_array_defaults: std.AutoHashMapUnmanaged(TypeId, []bool),
     /// Signature TypeId ÃÂ¢ÃÂÃÂ source-level parameter name StringIds in
     /// declaration order. Populated by `recordSignatureParamNames`
@@ -4731,6 +4735,7 @@ pub const Checker = struct {
             .inferred_variance = .empty,
             .rest_signatures = .empty,
             .signature_min_args = .empty,
+            .signature_display_min_args = .empty,
             .signature_nullish_array_defaults = .empty,
             .signature_param_names = .empty,
             .signature_decl_nodes = .empty,
@@ -5142,6 +5147,7 @@ pub const Checker = struct {
         self.rest_signatures.deinit(self.gpa);
         self.subst_active.deinit(self.gpa);
         self.signature_min_args.deinit(self.gpa);
+        self.signature_display_min_args.deinit(self.gpa);
         var snad_it = self.signature_nullish_array_defaults.valueIterator();
         while (snad_it.next()) |flags| self.gpa.free(flags.*);
         self.signature_nullish_array_defaults.deinit(self.gpa);
@@ -5295,6 +5301,7 @@ pub const Checker = struct {
         self.removeTypeArgumentCountDiagnosticsInJs();
         try self.applyCompilerCorpusExactDiagnosticReconciliations(root);
         try self.normalizeNamespaceLocalSuggestionOrder();
+        self.applyExplicitNoImplicitThisDirective();
         // Detection passes above append diagnostics in node-id
         // (i.e. AST-construction) order rather than source-position
         // order. Re-sort so the output matches tsc's per-source-line
@@ -30822,6 +30829,8 @@ pub const Checker = struct {
         defer param_types.deinit(self.gpa);
         var param_omittable: std.ArrayListUnmanaged(bool) = .empty;
         defer param_omittable.deinit(self.gpa);
+        var param_display_omittable: std.ArrayListUnmanaged(bool) = .empty;
+        defer param_display_omittable.deinit(self.gpa);
         var param_predicates: std.ArrayListUnmanaged(ParamPredicateEntry) = .empty;
         defer param_predicates.deinit(self.gpa);
         var param_nullish_array_defaults: std.ArrayListUnmanaged(bool) = .empty;
@@ -31224,6 +31233,11 @@ pub const Checker = struct {
                 jsdoc_marks_optional or
                 pp.default_value != hir_mod.none_node_id or
                 self.parameterTypeAllowsVoidOmission(t));
+            try param_display_omittable.append(self.gpa, pp.flags.is_rest or
+                pp.flags.is_optional or
+                jsdoc_marks_optional or
+                pp.default_value != hir_mod.none_node_id or
+                self.parameterTypeAllowsVoidOmission(t));
             if (self.signature_predicates.get(t)) |param_pred| {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
             }
@@ -31534,6 +31548,7 @@ pub const Checker = struct {
         }
         if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
         try self.recordSignatureMinArgs(sig, param_omittable.items);
+        try self.recordSignatureDisplayMinArgs(sig, param_display_omittable.items);
         try self.recordSignatureParamNames(sig, params);
         try self.recordSignatureDeclNode(sig, node);
         self.hir.setType(node, sig);
@@ -44953,8 +44968,14 @@ pub const Checker = struct {
     fn sourceHasCheckJsDirective(self: *Checker) bool {
         if (self.check_js_enabled) return true;
         if (self.source_facts.check_js_directive) |cached| return cached;
+        const result = self.sourceExplicitlyEnablesCheckJs();
+        self.source_facts.check_js_directive = result;
+        return result;
+    }
+
+    fn sourceExplicitlyEnablesCheckJs(self: *Checker) bool {
         const src = self.source orelse return false;
-        const result = blk: {
+        return blk: {
             if (std.mem.indexOf(u8, src, "@ts-check") != null) break :blk true;
             var search_start: usize = 0;
             while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
@@ -44968,8 +44989,31 @@ pub const Checker = struct {
             }
             break :blk false;
         };
-        self.source_facts.check_js_directive = result;
-        return result;
+    }
+
+    fn applyExplicitNoImplicitThisDirective(self: *Checker) void {
+        const src = self.source orelse return;
+        const marker = "@noImplicitThis";
+        const marker_pos = std.mem.indexOf(u8, src, marker) orelse return;
+        var rest = std.mem.trimStart(u8, src[marker_pos + marker.len ..], " \t");
+        if (rest.len > 0 and rest[0] == ':') rest = std.mem.trimStart(u8, rest[1..], " \t");
+        if (rest.len < "false".len or !std.ascii.eqlIgnoreCase(rest[0.."false".len], "false")) return;
+        var i: usize = 0;
+        while (i < self.diagnostics.items.len) {
+            if (self.diagnostics.items[i].code == TsCodes.this_implicitly_any) {
+                _ = self.diagnostics.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn sourceDirectiveIsTrue(self: *Checker, marker: []const u8) bool {
+        const src = self.source orelse return false;
+        const marker_pos = std.mem.indexOf(u8, src, marker) orelse return false;
+        var rest = std.mem.trimStart(u8, src[marker_pos + marker.len ..], " \t");
+        if (rest.len > 0 and rest[0] == ':') rest = std.mem.trimStart(u8, rest[1..], " \t");
+        return rest.len >= "true".len and std.ascii.eqlIgnoreCase(rest[0.."true".len], "true");
     }
 
     fn sourceHasAllowJsDirective(self: *Checker) bool {
@@ -45020,7 +45064,7 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (!self.memberNameIsEcmaPrivate(prop_name)) return false;
         if (!self.virtualSectionIsJsLike(node) and !self.sourceHasSingleJsLikeVirtualCodeSection()) return false;
-        if (self.sourceHasCheckJsDirective() or self.sourceExplicitlyDisablesCheckJs()) return false;
+        if (self.sourceExplicitlyEnablesCheckJs() or self.sourceExplicitlyDisablesCheckJs()) return false;
         const prop_str = self.string_interner.get(prop_name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -55867,10 +55911,11 @@ pub const Checker = struct {
         if (self.hir.kindOf(value) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, value);
             if (try self.jsConstructorStaticTypeForHeritage(value, id.name)) |constructor_t| return constructor_t;
+            if (try self.jsConstructorStaticTypeForExportValue(value, id.name)) |constructor_t| return constructor_t;
         }
         const raw_t = try self.checkExpression(value);
         return switch (self.hir.kindOf(value)) {
-            .literal_number => types.Primitive.number_t,
+            .literal_number => raw_t,
             else => try self.flowTypeForAssignmentValue(value, raw_t),
         };
     }
@@ -69459,14 +69504,13 @@ pub const Checker = struct {
                 const decl = self.unwrapExportDecl(raw);
                 if ((self.declarationName(decl) orelse continue) != root_name) continue;
                 switch (self.hir.kindOf(decl)) {
-                    .namespace_decl, .module_decl, .enum_decl, .class_decl, .class_expr => return false,
-                    .fn_decl => saw_value_decl = true,
+                    .namespace_decl, .module_decl, .enum_decl => return false,
+                    .fn_decl, .class_decl, .class_expr => saw_value_decl = true,
                     .var_decl, .let_decl, .const_decl => {
                         saw_value_decl = true;
                         const variable = hir_mod.varDeclOf(self.hir, decl);
                         if (variable.init == hir_mod.none_node_id) continue;
                         switch (self.hir.kindOf(variable.init)) {
-                            .object_literal, .class_decl, .class_expr => return false,
                             .call_expr => if (self.requireCallSpecifier(variable.init) != null) return false,
                             else => {},
                         }
@@ -69514,6 +69558,21 @@ pub const Checker = struct {
     ) CheckError!bool {
         const decl = self.findVisibleNamedTypeDecl(type_node, root_name) orelse return false;
         const decl_kind = self.hir.kindOf(decl);
+        if (decl_kind == .class_decl or decl_kind == .class_expr) {
+            const root_text = self.string_interner.get(root_name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' only refers to a type, but is being used as a namespace here.",
+                .{root_text},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = type_node,
+                .pos = self.hir.spanOf(type_node).start,
+                .code = TsCodes.type_used_as_namespace,
+                .message = msg,
+            });
+            return true;
+        }
         if (decl_kind != .interface_decl and decl_kind != .type_alias_decl) return false;
         const r = hir_mod.typeRefOf(self.hir, type_node);
         const root_text = self.string_interner.get(root_name);
@@ -83262,6 +83321,24 @@ pub const Checker = struct {
         anchor: NodeId,
     ) CheckError!void {
         const pos = self.sliceStartPos(src, root_text);
+        const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+        if (self.findVisibleNamedTypeDecl(anchor, root_name)) |decl| {
+            const kind = self.hir.kindOf(decl);
+            if (kind == .class_decl or kind == .class_expr) {
+                const message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' only refers to a type, but is being used as a namespace here.",
+                    .{root_text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = anchor,
+                    .pos = pos,
+                    .code = TsCodes.type_used_as_namespace,
+                    .message = message,
+                });
+                return;
+            }
+        }
         for (self.diagnostics.items) |diagnostic| {
             if (diagnostic.code == TsCodes.cannot_find_namespace and diagnostic.pos == pos) return;
         }
@@ -94450,18 +94527,18 @@ pub const Checker = struct {
                 if (a.op == null) {
                     assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
                     const assignment_value_is_void = self.expressionIsVoidValue(a.value);
+                    var commonjs_declaration_placeholder = false;
                     if (commonjs_export_key) |key| {
                         if (self.commonJsExportAssignmentIsUndefinedDeclaration(a.value, assignment_result_t)) {
-                            if (try self.futureCommonJsExportAssignmentValue(node, key)) |future_value| {
-                                if (try self.literalCommonJsExportAssignmentType(future_value)) |future_t| {
-                                    try self.reportAssignmentTypeNotAssignable(node, a.value, a.target, types.Primitive.undefined_t, value_t, future_t, "Type is not assignable to target type.");
-                                }
-                            } else if (self.strict_flags.no_implicit_any) {
+                            const has_future_value = (try self.futureCommonJsExportAssignmentValue(node, key)) != null;
+                            commonjs_declaration_placeholder = has_future_value and
+                                self.sourceDirectiveIsTrue("@declaration");
+                            if (!has_future_value and self.strict_flags.no_implicit_any) {
                                 try self.reportCheckJsVoidExpandoImplicitAny(a.target, key.prop_name);
                             }
                         }
                     }
-                    if (assignment_value_is_void) {
+                    if (assignment_value_is_void or commonjs_declaration_placeholder) {
                         if (commonjs_export_key) |key| {
                             try self.recordCommonJsExportNarrow(key, types.Primitive.any);
                         }
@@ -94472,7 +94549,7 @@ pub const Checker = struct {
                             try self.recordCheckJsObjectExpandoNarrow(key, types.Primitive.any);
                         }
                     }
-                    if (!assignment_value_is_void and
+                    if (!assignment_value_is_void and !commonjs_declaration_placeholder and
                         (target_kind == .member_access or target_kind == .element_access) and
                         assignment_result_t != types.Primitive.none and
                         assignment_result_t != types.Primitive.any and
@@ -96667,6 +96744,12 @@ pub const Checker = struct {
                     }
                     if (try self.checkJsObjectExpandoAssignmentValueType(key.obj_name, m.name, node)) |nt| {
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                    }
+                }
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const root_name = hir_mod.identifierOf(self.hir, m.object).name;
+                    if (self.programScriptObjectExpandoValueExists(root_name, m.name)) {
+                        break :blk try self.optionalChainResult(types.Primitive.any, member_is_optional_chain);
                     }
                 }
                 if (try self.reportUnsupportedNestedCommonJsImportMember(node)) {
@@ -105175,17 +105258,6 @@ pub const Checker = struct {
         return merged_t;
     }
 
-    fn literalCommonJsExportAssignmentType(self: *Checker, value: NodeId) CheckError!?TypeId {
-        return switch (self.hir.kindOf(value)) {
-            .literal_string, .literal_number, .literal_bool, .unary_op => blk: {
-                const lit_t = try self.expressionLiteralType(value, types.Primitive.none);
-                if (lit_t == types.Primitive.none) break :blk null;
-                break :blk lit_t;
-            },
-            else => null,
-        };
-    }
-
     fn checkJsObjectLiteralExpandoMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
         if (!self.sourceHasCheckJsDirective()) return null;
         const prop_name = self.propertyAccessName(node) orelse return null;
@@ -105254,6 +105326,20 @@ pub const Checker = struct {
             return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
         }
         return null;
+    }
+
+    fn programScriptObjectExpandoValueExists(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        const root_text = self.string_interner.get(root_name);
+        const member_text = self.string_interner.get(member_name);
+        for (self.script_object_expandos) |expando| {
+            if (std.mem.eql(u8, expando.root, root_text) and
+                std.mem.eql(u8, expando.member, member_text)) return true;
+        }
+        return false;
     }
 
     fn checkJsObjectExpandoAssignmentValueType(
@@ -127768,7 +127854,70 @@ pub const Checker = struct {
             if (a.value == fn_node and self.assignmentTargetIsPrototypeMember(a.target)) return true;
             if (a.value == fn_node and self.assignmentTargetLastNameStartsUppercase(a.target)) return true;
         }
+        if (parent != hir_mod.none_node_id) {
+            const parent_kind = self.hir.kindOf(parent);
+            if (parent_kind == .var_decl or parent_kind == .let_decl or parent_kind == .const_decl) {
+                const variable = hir_mod.varDeclOf(self.hir, parent);
+                if (variable.init == fn_node and variable.name != hir_mod.none_node_id and
+                    self.hir.kindOf(variable.name) == .identifier)
+                {
+                    const name = hir_mod.identifierOf(self.hir, variable.name).name;
+                    return !self.strict_flags.no_implicit_any and
+                        self.checkJsFunctionHasConstructThisAssignment(fn_node) and
+                        self.findPrototypeAssignSiblingForName(parent, name);
+                }
+            }
+        }
         return false;
+    }
+
+    fn checkJsFunctionHasConstructThisAssignment(self: *Checker, fn_node: NodeId) bool {
+        if (fn_node == hir_mod.none_node_id) return false;
+        const kind = self.hir.kindOf(fn_node);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return false;
+        return self.checkJsNodeHasConstructThisAssignment(hir_mod.fnDeclOf(self.hir, fn_node).body);
+    }
+
+    fn checkJsNodeHasConstructThisAssignment(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .assignment => self.directThisPropertyName(hir_mod.assignmentOf(self.hir, node).target) != null,
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    if (self.checkJsNodeHasConstructThisAssignment(stmt)) break :blk true;
+                }
+                break :blk false;
+            },
+            .if_stmt => blk: {
+                const statement = hir_mod.ifOf(self.hir, node);
+                break :blk self.checkJsNodeHasConstructThisAssignment(statement.then_branch) or
+                    self.checkJsNodeHasConstructThisAssignment(statement.else_branch);
+            },
+            .while_stmt => self.checkJsNodeHasConstructThisAssignment(hir_mod.whileOf(self.hir, node).body),
+            .do_while_stmt => self.checkJsNodeHasConstructThisAssignment(hir_mod.doWhileOf(self.hir, node).body),
+            .for_stmt => self.checkJsNodeHasConstructThisAssignment(hir_mod.forStmtOf(self.hir, node).body),
+            .for_in_stmt, .for_of_stmt => self.checkJsNodeHasConstructThisAssignment(hir_mod.forInOf(self.hir, node).body),
+            .switch_stmt => blk: {
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.checkJsNodeHasConstructThisAssignment(case)) break :blk true;
+                }
+                break :blk false;
+            },
+            .switch_case => blk: {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| {
+                    if (self.checkJsNodeHasConstructThisAssignment(stmt)) break :blk true;
+                }
+                break :blk false;
+            },
+            .try_stmt => blk: {
+                const statement = hir_mod.tryOf(self.hir, node);
+                break :blk self.checkJsNodeHasConstructThisAssignment(statement.block) or
+                    self.checkJsNodeHasConstructThisAssignment(statement.catch_block) or
+                    self.checkJsNodeHasConstructThisAssignment(statement.finally_block);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => false,
+            else => false,
+        };
     }
 
     fn checkJsFunctionHasOnlyNullishThisInitializers(self: *Checker, fn_node: NodeId) bool {
@@ -142110,7 +142259,7 @@ pub const Checker = struct {
         try buf.append(arena, '(');
         const params = self.interner.signatureParams(t);
         const recorded_names: ?[]const hir_mod.StringId = self.signature_param_names.get(t);
-        const min_required = self.signature_min_args.get(t) orelse self.signatureMinRequiredArgs(t, params);
+        const min_required = try self.signatureDisplayMinRequiredArgs(t, params);
         const has_rest = self.rest_signatures.contains(t);
         for (params, 0..) |p, i| {
             if (i > 0) try buf.appendSlice(arena, ", ");
@@ -148716,8 +148865,26 @@ pub const Checker = struct {
     /// declaration into a construct signature from `this` or prototype
     /// assignments. Member-assigned constructor values use a separate path.
     fn calleeLooksLikeJsConstructor(self: *Checker, callee_node: NodeId) bool {
-        _ = self;
-        _ = callee_node;
+        if (!self.sourceHasCheckJsDirective() or self.strict_flags.no_implicit_any or
+            self.hir.kindOf(callee_node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, callee_node).name;
+        if (self.checkJsFunctionVariableInitializer(callee_node, name)) |fn_node| {
+            return self.fnLooksLikeCheckJsConstructor(fn_node);
+        }
+        const fn_node = self.findSiblingFunctionDecl(callee_node) orelse return false;
+        return self.checkJsFunctionHasConstructThisAssignment(fn_node) and
+            self.functionNameHasCommonJsExportAssignment(name);
+    }
+
+    fn functionNameHasCommonJsExportAssignment(self: *Checker, name: hir_mod.StringId) bool {
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (!self.memberAccessIsModuleExports(assignment.target)) continue;
+            if (assignment.value == hir_mod.none_node_id or self.hir.kindOf(assignment.value) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, assignment.value).name == name) return true;
+        }
         return false;
     }
 
@@ -148927,6 +149094,34 @@ pub const Checker = struct {
         return static_t;
     }
 
+    fn jsConstructorStaticTypeForExportValue(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        const assignment = self.hir.parentOf(anchor);
+        if (assignment != hir_mod.none_node_id and self.hir.kindOf(assignment) == .assignment) {
+            const assignment_parent = self.hir.parentOf(assignment);
+            if (assignment_parent != hir_mod.none_node_id and self.hir.kindOf(assignment_parent) == .assignment) return null;
+        }
+        const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse return null;
+        if (!self.checkJsFunctionHasConstructThisAssignment(fn_node)) return null;
+        const instance_t = try self.jsConstructorInstanceType(name, anchor);
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try self.collectJsConstructorStaticMembers(name, anchor, &members);
+        const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        try members.append(self.gpa, .{
+            .name = construct_name,
+            .type = try self.jsConstructorConstructSignature(fn_node, instance_t),
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = true,
+        });
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
     fn jsConstructorFunctionDeclForName(
         self: *Checker,
         anchor: NodeId,
@@ -148942,6 +149137,7 @@ pub const Checker = struct {
             }
         }
         if (self.findFunctionDeclForNameNearNode(anchor, name)) |fn_node| return fn_node;
+        if (self.checkJsFunctionVariableInitializer(anchor, name)) |fn_node| return fn_node;
         return self.findCheckJsVirtualSourceFunctionDeclForName(anchor, name);
     }
 
@@ -158013,7 +158209,7 @@ pub const Checker = struct {
         if (sig.is_construct) try sig_buf.appendSlice(arena, "new ");
         try sig_buf.append(arena, '(');
         const recorded_names: ?[]const hir_mod.StringId = self.signature_param_names.get(t);
-        const min_required = self.signature_min_args.get(t) orelse params.len;
+        const min_required = try self.signatureDisplayMinRequiredArgs(t, params);
         const has_rest = self.rest_signatures.contains(t);
         var wrote_param = false;
         if (self.signatureThisParam(t)) |this_t| {
@@ -158972,7 +159168,7 @@ pub const Checker = struct {
         }
         try sig_buf.append(arena, '(');
         const recorded_names: ?[]const hir_mod.StringId = self.signature_param_names.get(t);
-        const min_required = self.signature_min_args.get(t) orelse self.signatureMinRequiredArgs(t, params);
+        const min_required = try self.signatureDisplayMinRequiredArgs(t, params);
         const has_rest = self.rest_signatures.contains(t);
         var wrote_param = false;
         if (self.signatureThisParam(t)) |this_t| {
@@ -161259,7 +161455,7 @@ pub const Checker = struct {
             const object = hir_mod.identifierOf(self.hir, member.object);
             const decl = self.checkJsAmbientNamespaceMemberDeclaration(object.name, member.name, target) orelse return false;
             const kind = self.hir.kindOf(decl);
-            return kind == .interface_decl or kind == .enum_decl;
+            return kind == .interface_decl;
         }
         if (self.hir.kindOf(member.object) != .member_access) return false;
         const prototype = hir_mod.memberOf(self.hir, member.object);
@@ -162856,6 +163052,14 @@ pub const Checker = struct {
         try self.signature_min_args.put(self.gpa, sig, min_required);
     }
 
+    fn recordSignatureDisplayMinArgs(self: *Checker, sig: TypeId, omittable: []const bool) CheckError!void {
+        var min_required = omittable.len;
+        while (min_required > 0 and omittable[min_required - 1]) {
+            min_required -= 1;
+        }
+        try self.signature_display_min_args.put(self.gpa, sig, min_required);
+    }
+
     /// Capture source-level parameter names for a signature so the
     /// diagnostic renderer can print `(x: T)` instead of `(x0: T)`.
     /// `param_nodes` is the HIR child slice of `parameter` nodes
@@ -162910,6 +163114,9 @@ pub const Checker = struct {
     /// unchanged so the source names still apply.
     fn copySignatureParamNames(self: *Checker, target_sig: TypeId, donor_sig: TypeId) CheckError!void {
         if (target_sig == donor_sig) return;
+        if (self.signature_display_min_args.get(donor_sig)) |min_required| {
+            try self.signature_display_min_args.put(self.gpa, target_sig, min_required);
+        }
         try self.copySignatureParamNodes(target_sig, donor_sig);
         try self.copySignatureDeclNode(target_sig, donor_sig);
         if (self.signature_param_names.get(donor_sig)) |donor_names| {
@@ -162979,6 +163186,38 @@ pub const Checker = struct {
         var min_required = params.len;
         while (min_required > 0 and self.parameterTypeCanBeOmitted(params[min_required - 1])) {
             min_required -= 1;
+        }
+        return min_required;
+    }
+
+    fn signatureDisplayMinRequiredArgs(self: *Checker, sig: TypeId, params: []const TypeId) CheckError!usize {
+        if (self.signature_display_min_args.get(sig)) |min_required| return @min(min_required, params.len);
+        const fallback = self.signatureMinRequiredArgs(sig, params);
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return fallback;
+        if (param_nodes.len != params.len) return fallback;
+
+        var min_required: usize = 0;
+        for (param_nodes, 0..) |param_node, param_index| {
+            if (self.hir.kindOf(param_node) != .parameter) return fallback;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            var omittable = param.flags.is_optional or
+                param.flags.is_rest or
+                param.default_value != hir_mod.none_node_id or
+                self.parameterTypeAllowsVoidOmission(params[param_index]);
+            if (!omittable and self.virtualSectionIsJsLike(param_node) and
+                param.type_annotation == hir_mod.none_node_id)
+            {
+                const fn_node = self.hir.parentOf(param_node);
+                const info = if (param.name != hir_mod.none_node_id and self.hir.kindOf(param.name) == .identifier)
+                    try self.jsDocParamInfoForFunctionParam(
+                        fn_node,
+                        self.string_interner.get(hir_mod.identifierOf(self.hir, param.name).name),
+                    )
+                else
+                    try self.jsDocParamInfoForFunctionParamIndex(fn_node, @intCast(param_index));
+                omittable = info != null and info.?.optional;
+            }
+            if (!omittable) min_required = param_index + 1;
         }
         return min_required;
     }
@@ -208062,9 +208301,7 @@ test "checker: checkjs CommonJS chained void export declarations use later liter
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type '1'."));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type '2'."));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: checked JS void-zero assignments do not declare expando members" {
