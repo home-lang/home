@@ -4315,10 +4315,6 @@ pub const Checker = struct {
     /// explicit type annotation. TS distinguishes `var a: any` from an
     /// unannotated `var a = ...` for subsequent declaration checks.
     var_decl_explicit: std.AutoHashMapUnmanaged(VarDeclKey, bool),
-    /// Whether the first repeated global `var` came from JavaScript.
-    /// Checked-JS callable containers keep their expando shape when a
-    /// TypeScript declaration contributes another initializer.
-    var_decl_js_like: std.AutoHashMapUnmanaged(VarDeclKey, bool),
     /// Raw leading JSDoc `@type` spelling for repeated script `var`
     /// declarations whose lowered types may intentionally share an id.
     var_decl_jsdoc_type_names: std.AutoHashMapUnmanaged(VarDeclKey, hir_mod.StringId),
@@ -4753,7 +4749,6 @@ pub const Checker = struct {
             .numeric_enums = .empty,
             .var_decl_types = .empty,
             .var_decl_explicit = .empty,
-            .var_decl_js_like = .empty,
             .var_decl_jsdoc_type_names = .empty,
             .var_decl_annotation_nodes = .empty,
             .this_type_markers = .empty,
@@ -5173,7 +5168,6 @@ pub const Checker = struct {
         self.numeric_enums.deinit(self.gpa);
         self.var_decl_types.deinit(self.gpa);
         self.var_decl_explicit.deinit(self.gpa);
-        self.var_decl_js_like.deinit(self.gpa);
         self.var_decl_jsdoc_type_names.deinit(self.gpa);
         self.var_decl_annotation_nodes.deinit(self.gpa);
         self.this_type_markers.deinit(self.gpa);
@@ -87112,7 +87106,6 @@ pub const Checker = struct {
         const current_asserted_inferred = !has_annotation and self.varDeclInitializerPinsRepeatedVarType(node);
         if (self.var_decl_types.get(key)) |prior| {
             const prior_explicit = self.var_decl_explicit.get(key) orelse false;
-            const prior_js_like = self.var_decl_js_like.get(key) orelse false;
             const prior_annotation = self.var_decl_annotation_nodes.get(key) orelse hir_mod.none_node_id;
             const prior_jsdoc_type_name = self.var_decl_jsdoc_type_names.get(key);
             const qualified_private_text_mismatch = try self.sameTailQualifiedAnnotationMismatch(prior_annotation, v.type_annotation);
@@ -87132,11 +87125,6 @@ pub const Checker = struct {
             // identical ÃÂ¢ÃÂÃÂ no diag), so unconditionally falling through
             // is safe and unlocks the typeGuards conformance cluster.
             const compatible = blk: {
-                const merges_checkjs_callable_container =
-                    prior_js_like != self.virtualSectionIsJsLike(node) and
-                    self.sourceHasCheckJsDirective() and
-                    self.nonConstructCallSignatureOfType(prior) != null;
-                if (merges_checkjs_callable_container) break :blk true;
                 if (prior_jsdoc_type_name) |prior_name| {
                     if (current_jsdoc_type_name) |current_name| {
                         const prior_text = self.string_interner.get(prior_name);
@@ -87302,7 +87290,6 @@ pub const Checker = struct {
         }
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation or self_ref_inferred_any);
-        try self.var_decl_js_like.put(self.gpa, key, self.virtualSectionIsJsLike(node));
         if (current_jsdoc_type_name) |name| try self.var_decl_jsdoc_type_names.put(self.gpa, key, name);
         if (has_annotation) try self.var_decl_annotation_nodes.put(self.gpa, key, v.type_annotation);
     }
@@ -208491,7 +208478,7 @@ test "checker: checkjs object declaration conflicting with ambient class reports
     try T.expect(found);
 }
 
-test "checker: checked JS callable container merges with TypeScript var declaration" {
+test "checker: checked JS callable container conflicts with TypeScript var declaration" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -208503,9 +208490,12 @@ test "checker: checked JS callable container merges with TypeScript var declarat
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    const message = checkerFirstMessageForCode(s, TsCodes.subsequent_var_type_mismatch) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Subsequent variable declarations must have the same type.  Variable 'x' must be of type '{ (): void; a: () => void; }', but here has type 'number'.",
+        message,
+    );
 }
 
 test "checker: checked JS prototype assignment extends an ambient namespace container" {
