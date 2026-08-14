@@ -68284,6 +68284,16 @@ pub const Checker = struct {
                     if (self.generic_aliases.contains(r.name)) {
                         return try self.lowererLowerWithTypeParams(type_node);
                     }
+                    if (self.sourceHasCheckJsDirective()) {
+                        if (self.jsConstructorFunctionDeclForName(type_node, r.name)) |function_node| {
+                            if (!self.fnLooksLikeCheckJsConstructor(function_node) and
+                                !self.fnHasJsDocClassOrConstructorTag(function_node))
+                            {
+                                try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
+                                return types.Primitive.any;
+                            }
+                        }
+                    }
                     if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
                         return self.lowerer.lower(type_node);
                     }
@@ -69304,7 +69314,10 @@ pub const Checker = struct {
         const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
         if (qualifiers.len == 0 or self.hir.kindOf(qualifiers[0]) != .identifier) return;
         const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
-        if (self.qualifiedTypeRefRootNamespaceExists(type_node, root_name) catch false) {
+        const checkjs_root_lacks_namespace = self.checkJsQualifiedTypeRootLacksNamespaceMeaning(type_node, root_name);
+        if (!checkjs_root_lacks_namespace and
+            (self.qualifiedTypeRefRootNamespaceExists(type_node, root_name) catch false))
+        {
             // Root namespace exists, but the qualified-type lookup
             // came back empty ÃÂ¢ÃÂÃÂ emit TS2339 `Property '<leaf>' does
             // not exist on type 'typeof <ns>'.` matching upstream
@@ -69318,7 +69331,9 @@ pub const Checker = struct {
             }
             return;
         }
-        if (self.qualifiedTypeRefQualifierNamespaceExists(type_node) catch false) {
+        if (!checkjs_root_lacks_namespace and
+            (self.qualifiedTypeRefQualifierNamespaceExists(type_node) catch false))
+        {
             return;
         }
         if (try self.reportCannotAccessTypeAsNamespace(type_node, root_name)) return;
@@ -69360,6 +69375,50 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    fn checkJsQualifiedTypeRootLacksNamespaceMeaning(
+        self: *Checker,
+        anchor: NodeId,
+        root_name: hir_mod.StringId,
+    ) bool {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(anchor)) return false;
+        if (self.localNameIsImportBinding(root_name, anchor)) return false;
+        if (self.ambientGlobalNamespaceRootExists(root_name) or
+            self.findUmdNamespaceExportSection(root_name, anchor) != null or
+            self.programHasUmdGlobalName(root_name))
+        {
+            return false;
+        }
+        const root_text = self.string_interner.get(root_name);
+        for (self.script_object_expandos) |expando| {
+            if (std.mem.eql(u8, expando.root, root_text)) return false;
+        }
+
+        var saw_value_decl = false;
+        const root = self.rootBlockFor(anchor);
+        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+            for (hir_mod.blockStmts(self.hir, root)) |raw| {
+                const decl = self.unwrapExportDecl(raw);
+                if ((self.declarationName(decl) orelse continue) != root_name) continue;
+                switch (self.hir.kindOf(decl)) {
+                    .namespace_decl, .module_decl, .enum_decl, .fn_decl, .class_decl, .class_expr => return false,
+                    .var_decl, .let_decl, .const_decl => {
+                        saw_value_decl = true;
+                        const variable = hir_mod.varDeclOf(self.hir, decl);
+                        if (variable.init == hir_mod.none_node_id) continue;
+                        switch (self.hir.kindOf(variable.init)) {
+                            .object_literal, .class_decl, .class_expr => return false,
+                            .call_expr => if (self.requireCallSpecifier(variable.init) != null) return false,
+                            else => {},
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        if (saw_value_decl) return true;
+        return self.module != null and self.module.?.root.namespaces.get(root_name) != null;
     }
 
     fn hasCannotFindModuleDiagnosticForSpecifier(self: *Checker, spec: []const u8) bool {
@@ -83111,7 +83170,7 @@ pub const Checker = struct {
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Namespace '{s}' has no exported member '{s}'.",
-            .{ root_text, member_text },
+            .{ try self.jsDocNamespaceDisplayName(root_text), member_text },
         );
         const base_pos = self.sliceStartPos(src, trimmed);
         const member_pos = if (base_pos) |base| base + @as(u32, @intCast(root_dot + 1)) else null;
@@ -83127,6 +83186,23 @@ pub const Checker = struct {
             .message = msg,
         });
         return types.Primitive.unknown;
+    }
+
+    fn jsDocNamespaceDisplayName(self: *Checker, root_text: []const u8) CheckError![]const u8 {
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id) return root_text;
+        const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+        const spec = self.namespaceImportSpecifierForLocal(root_name, anchor) orelse return root_text;
+        var trimmed = spec;
+        while (std.mem.startsWith(u8, trimmed, "./")) trimmed = trimmed[2..];
+        while (std.mem.startsWith(u8, trimmed, "../")) trimmed = trimmed[3..];
+        const exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
+        for (exts) |ext| {
+            if (!std.mem.endsWith(u8, trimmed, ext)) continue;
+            trimmed = trimmed[0 .. trimmed.len - ext.len];
+            break;
+        }
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{trimmed});
     }
 
     fn jsDocKnownNamespaceRoot(self: *Checker, root_text: []const u8) CheckError!bool {
@@ -83303,6 +83379,7 @@ pub const Checker = struct {
         }
         const base = jsDocTypeBaseName(trimmed);
         if (base.len == 0) return null;
+        if (try self.reportJsDocDestructuredRequireValueUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportUnsupportedJsConstructorTemplateReference(src, base)) return types.Primitive.any;
         if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
@@ -83384,6 +83461,50 @@ pub const Checker = struct {
             .message = message,
         });
         return true;
+    }
+
+    fn reportJsDocDestructuredRequireValueUsedAsType(
+        self: *Checker,
+        src: []const u8,
+        name_text: []const u8,
+    ) CheckError!bool {
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
+        const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.virtualSectionStartForNode(stmt) != self.virtualSectionStartForNode(anchor)) continue;
+            const decl = self.unwrapExportDecl(stmt);
+            const kind = self.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .object_pattern) continue;
+            const spec = self.requireCallSpecifier(variable.init) orelse continue;
+            for (hir_mod.patternElements(self.hir, variable.name)) |element| {
+                if (self.hir.kindOf(element) != .parameter) continue;
+                const parameter = hir_mod.parameterOf(self.hir, element);
+                if (!self.bindingPatternDeclaresName(parameter.name, name)) continue;
+                const imported_name = (try self.objectBindingElementKeyName(element, parameter.name)) orelse name;
+                const is_value = (try self.programCommonJsModuleExportsName(anchor, spec, imported_name)) or
+                    self.externalModuleNamedExportRuntimeStatus(anchor, spec, imported_name) == .value;
+                if (!is_value) return false;
+                const pos = self.sliceStartPos(src, name_text);
+                const message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' refers to a value, but is being used as a type here. Did you mean 'typeof {s}'?",
+                    .{ name_text, name_text },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = anchor,
+                    .pos = pos,
+                    .code = TsCodes.value_used_as_type_did_you_mean_typeof,
+                    .message = message,
+                });
+                return true;
+            }
+        }
+        return false;
     }
 
     fn reportUnsupportedJsConstructorTemplateReference(self: *Checker, src: []const u8, name_text: []const u8) CheckError!bool {
@@ -104957,6 +105078,7 @@ pub const Checker = struct {
         const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
         if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
         const root_id = hir_mod.identifierOf(self.hir, qualifiers[0]);
+        if (self.checkJsQualifiedTypeRootLacksNamespaceMeaning(type_node, root_id.name)) return null;
         return try self.checkJsObjectExpandoQualifiedType(root_id.name, r.name, type_node);
     }
 
@@ -206595,7 +206717,7 @@ test "checker: checkjs JSDoc numeric literal typedef members resolve" {
     }
 }
 
-test "checker: checkjs JSDoc qualified value namespace miss reports TS2694" {
+test "checker: checkjs JSDoc IIFE value is not a namespace" {
     const s = try newSetup(
         \\// @checkJs: true
         \\// @noImplicitAny: true
@@ -206608,11 +206730,11 @@ test "checker: checkjs JSDoc qualified value namespace miss reports TS2694" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.namespace_no_exported_member and
-            std.mem.indexOf(u8, d.message, "Namespace 'ns' has no exported member 'NotFound'.") != null)
+        if (d.code == TsCodes.cannot_find_namespace and
+            std.mem.indexOf(u8, d.message, "Cannot find namespace 'ns'.") != null)
         {
             found = true;
-            if (d.pos) |pos| try T.expectEqual(@as(u8, 'N'), s.checker.source.?[pos]);
+            if (d.pos) |pos| try T.expectEqual(@as(u8, 'n'), s.checker.source.?[pos]);
         }
         try T.expect(d.code != TsCodes.variable_implicitly_any_declaration);
     }
