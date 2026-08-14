@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Home social card</title>
+<!--
+  Source for docs/public/og.png. Regenerate with:
+
+      ./scripts/build-og.sh
+
+  The mark is cropped out of .github/art/banner.jpg rather than kept as a
+  second copy, so the card follows the brand asset if it is ever redrawn.
+-->
+<style>
+  /* Social card, 1200x630. Same palette and type as the site's light mode.
+   * The mark is cropped out of .github/art/banner.jpg with background-position
+   * rather than a separate asset, and `mix-blend-mode: multiply` drops the
+   * JPEG's white ground onto the card's own. */
+  :root {
+    --bg: #fdfcfb;
+    --text: #1c1917;
+    --muted: #57534e;
+    --accent: #c2410c;
+    --divider: #e7e5e4;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+  }
+
+  body {
+    position: relative;
+    background: var(--bg);
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Warm ground behind the mark, so the right half is not empty white. */
+  .glow {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(58% 78% at 88% 34%, rgba(244, 96, 32, 0.13), transparent 62%);
+  }
+
+  .card {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 40px;
+    height: 100%;
+    padding: 56px 76px 118px;
+  }
+
+  .wordmark {
+    font-size: 25px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--accent);
+  }
+
+  /* Sized so the headline lands on exactly two lines beside the mark. */
+  h1 {
+    margin-top: 22px;
+    font-size: 58px;
+    font-weight: 800;
+    line-height: 1.08;
+    letter-spacing: -0.035em;
+    color: var(--text);
+  }
+
+  .sub {
+    margin-top: 22px;
+    max-width: 34ch;
+    font-size: 26px;
+    line-height: 1.45;
+    color: var(--muted);
+  }
+
+  .foot {
+    position: absolute;
+    left: 76px;
+    right: 76px;
+    bottom: 60px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-top: 22px;
+    border-top: 1px solid var(--divider);
+    font-family: ui-monospace, 'Menlo', monospace;
+    font-size: 21px;
+    color: var(--muted);
+  }
+
+  .foot .url { color: var(--accent); }
+
+  /* Cropped from the 2000x400 banner. Scale 0.98, so the source box
+   * x 1592..1948 / y 62..332 lands at this size. */
+  .mark {
+    width: 332px;
+    height: 252px;
+    background-image: url('../../.github/art/banner.jpg');
+    background-repeat: no-repeat;
+    background-size: 1866px 373px;
+    background-position: -1485px -58px;
+    mix-blend-mode: multiply;
+    align-self: center;
+  }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="card">
+    <div>
+      <div class="wordmark">Home</div>
+      <h1>Systems code that reads like TypeScript</h1>
+      <p class="sub">Native binaries, no garbage collector, one toolchain for Home and TypeScript.</p>
+    </div>
+    <div class="mark"></div>
+  </div>
+  <div class="foot">
+    <span>home build main.home -o app</span>
+    <span class="url">home-lang.org</span>
+  </div>
+</body>
+</html>

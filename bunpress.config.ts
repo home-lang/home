@@ -32,16 +32,13 @@ export default {
   lang: 'en-US',
   base: '/',
 
-  head: [
-    ['meta', { name: 'theme-color', content: '#c2410c' }],
-    ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:title', content: 'Home Programming Language' }],
-    ['meta', { property: 'og:description', content: 'The control of Zig, the safety of Rust, the joy of TypeScript. One compiler for Home and TypeScript.' }],
-    ['meta', { property: 'og:url', content: 'https://docs.home-lang.org/' }],
-    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-    ['meta', { name: 'twitter:title', content: 'Home Programming Language' }],
-    ['meta', { name: 'twitter:description', content: 'Zig speed. Rust safety. TypeScript joy.' }],
-  ],
+  // Canonical URLs, Open Graph tags and JSON-LD are all generated from this
+  // base, and none of them are emitted without it. The docs deploy to the
+  // apex, per scripts/deploy-docs.ts.
+  sitemap: {
+    enabled: true,
+    baseUrl: 'https://home-lang.org',
+  },
 
   markdown: {
     // Home has no grammar in the highlighter yet. Rust is the closest fit for
@@ -50,6 +47,17 @@ export default {
     languageAliases: {
       home: 'rust',
       hm: 'rust',
+    },
+
+    // Social cards. og:title, og:description and og:url are derived per page,
+    // so only the parts that are site-wide live here. The image is built from
+    // .config/og/card.html by scripts/build-og.sh; it has to be absolute,
+    // because a crawler resolves it without the page for context.
+    meta: {
+      'theme-color': '#c2410c',
+      'og:image': 'https://home-lang.org/og.png',
+      'twitter:card': 'summary_large_image',
+      'twitter:image': 'https://home-lang.org/og.png',
     },
   },
 
