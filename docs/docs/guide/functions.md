@@ -42,6 +42,27 @@ fn say*hello() {
 }
 ```
 
+### The `.hm` arrow variant
+
+Everything on this site is written in the `: ReturnType` form, which is what
+`.home` files use. Home also accepts a variant that writes the return type
+after an arrow, and files using it take the `.hm` extension:
+
+```hm
+// fibonacci.hm — the same function, arrow form
+fn fib(n: int) -> int {
+  if n <= 1 {
+    return n
+  }
+  return fib(n - 1) + fib(n - 2)
+}
+```
+
+The two are the same language and the same compiler; only the return-type
+position and the parentheses around conditions differ. If you have no reason
+to prefer the arrow, use `.home` and the colon form: it is what the guide,
+the standard library and the examples are written in.
+
 ## Parameters
 
 ### Required Parameters

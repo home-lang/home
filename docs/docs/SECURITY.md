@@ -119,13 +119,13 @@ Please report security vulnerabilities by:
 2. **Use Result types** for error handling
 
    ```home
-   fn read_file(path: string) -> Result<string, Error>
+   fn read_file(path: string): Result<string, Error>
    ```
 
 3. **Validate external data** at system boundaries
 
    ```home
-   fn handle_request(data: []u8) -> Result<Response, Error> {
+   fn handle_request(data: []u8): Result<Response, Error> {
        let validated = try validate(data);
        // ...
    }

@@ -78,7 +78,7 @@ print("{s1}, {s2}")  // Both valid
 ### Immutable Borrows
 
 ```home
-fn calculate_length(s: &string) -> usize {
+fn calculate_length(s: &string): usize {
     s.len()
 }  // s goes out of scope, but doesn't drop (it's borrowed)
 
@@ -131,7 +131,7 @@ fn main() {
 
 ```home
 // Return reference must live as long as input
-fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+fn longest<'a>(x: &'a str, y: &'a str): &'a str {
     if x.len() > y.len() { x } else { y }
 }
 
@@ -155,11 +155,11 @@ Common patterns have implicit lifetimes:
 
 ```home
 // These are equivalent:
-fn first_word(s: &str) -> &str
-fn first_word<'a>(s: &'a str) -> &'a str
+fn first_word(s: &str): &str
+fn first_word<'a>(s: &'a str): &'a str
 
 // Multiple references with different lifetimes:
-fn pick_first<'a, 'b>(x: &'a str, y: &'b str) -> &'a str {
+fn pick_first<'a, 'b>(x: &'a str, y: &'b str): &'a str {
     x
 }
 ```
@@ -173,11 +173,11 @@ struct Parser<'input> {
 }
 
 impl<'input> Parser<'input> {
-    fn new(source: &'input str) -> Self {
+    fn new(source: &'input str): Self {
         Parser { source, position: 0 }
     }
 
-    fn remaining(&self) -> &'input str {
+    fn remaining(&self): &'input str {
         &self.source[self.position..]
     }
 }
@@ -247,7 +247,7 @@ struct BumpAllocator {
 }
 
 impl Allocator for BumpAllocator {
-    fn allocate(&mut self, layout: Layout) -> Result<_mut u8, AllocError> {
+    fn allocate(&mut self, layout: Layout): Result<_mut u8, AllocError> {
         let aligned_offset = align_up(self.offset, layout.align())
         let end = aligned_offset + layout.size()
 
@@ -438,7 +438,7 @@ fn main() {
 
 ```home
 // Raw pointer operations
-unsafe fn deref_raw(ptr: _const i32) -> i32 {
+unsafe fn deref_raw(ptr: _const i32): i32 {
     _ptr
 }
 
@@ -456,7 +456,7 @@ fn use_raw_pointer() {
 ### Unsafe Blocks
 
 ```home
-fn split_at_mut(slice: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {
+fn split_at_mut(slice: &mut [i32], mid: usize): (&mut [i32], &mut [i32]) {
     let len = slice.len()
     let ptr = slice.as_mut_ptr()
 
@@ -481,7 +481,7 @@ pub struct SafeBuffer {
 }
 
 impl SafeBuffer {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize): Self {
         let layout = Layout.array::<u8>(capacity).unwrap()
         let ptr = unsafe { std.alloc.alloc(layout) }
 
@@ -500,7 +500,7 @@ impl SafeBuffer {
         self.len += 1
     }
 
-    pub fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self): &[u8] {
         unsafe {
             std.slice.from_raw_parts(self.ptr, self.len)
         }
@@ -523,7 +523,7 @@ impl Drop for SafeBuffer {
 
    ```home
    // Encapsulate unsafe in small, well-audited functions
-   fn safe_wrapper(data: &[u8]) -> u32 {
+   fn safe_wrapper(data: &[u8]): u32 {
        unsafe { internal_unsafe_operation(data.as_ptr(), data.len()) }
    }
    ```
@@ -532,10 +532,10 @@ impl Drop for SafeBuffer {
 
    ```home
    // Good: Only borrows what it needs
-   fn analyze(data: &[Point]) -> Summary
+   fn analyze(data: &[Point]): Summary
 
    // Avoid: Takes ownership unnecessarily
-   fn analyze(data: Vec<Point>) -> Summary
+   fn analyze(data: Vec<Point>): Summary
    ```
 
 3. **Use appropriate smart pointers**:
@@ -557,7 +557,7 @@ impl Drop for SafeBuffer {
    /// Returns a reference to the first matching element.
    ///
    /// The returned reference is valid as long as `items` is not modified.
-   fn find<'a>(items: &'a [Item], predicate: fn(&Item) -> bool) -> ?&'a Item
+   fn find<'a>(items: &'a [Item], predicate: fn(&Item): bool): ?&'a Item
    ```
 
 5. **Use RAII for resource management**:

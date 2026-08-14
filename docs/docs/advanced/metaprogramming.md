@@ -17,7 +17,7 @@ Home's metaprogramming facilities include:
 ### Type Introspection
 
 ```home
-const fn describe_type<T>() -> TypeDescription {
+const fn describe_type<T>(): TypeDescription {
     TypeDescription {
         name: type_name::<T>(),
         size: size_of::<T>(),
@@ -78,14 +78,14 @@ fn print_fields() {
 
 ```home
 trait Service {
-    fn start(&mut self) -> Result<(), Error>
-    fn stop(&mut self) -> Result<(), Error>
-    fn status(&self) -> Status
+    fn start(&mut self): Result<(), Error>
+    fn stop(&mut self): Result<(), Error>
+    fn status(&self): Status
 }
 
 const SERVICE_METHODS: []MethodInfo = methods_of::<dyn Service>()
 
-fn generate_proxy<T: Service>() -> ServiceProxy<T> {
+fn generate_proxy<T: Service>(): ServiceProxy<T> {
     comptime {
         for method in SERVICE_METHODS {
             // Generate proxy method that adds logging
@@ -100,7 +100,7 @@ fn generate_proxy<T: Service>() -> ServiceProxy<T> {
 ### Generating Structs
 
 ```home
-const fn generate_dto<T>(prefix: &str) -> Type {
+const fn generate_dto<T>(prefix: &str): Type {
     comptime {
         let fields = fields_of::<T>()
 
@@ -143,7 +143,7 @@ const fn generate_getters<T>() {
     comptime {
         for field in fields_of::<T>() {
             // Generate getter method
-            fn get_{field.name}(&self) -> &{field.ty} {
+            fn get_{field.name}(&self): &{field.ty} {
                 &self.{field.name}
             }
 
@@ -177,7 +177,7 @@ impl Config {
 const fn generate_error_enum(
     name: &str,
     variants: [](&str, &str)
-) -> Type {
+): Type {
     comptime {
         let enum_variants = variants.map(|(name, message)| {
             VariantDef {
@@ -206,7 +206,7 @@ type NetworkError = generate_error_enum!("NetworkError", [
 const fn derive_serialize<T>() {
     comptime {
         impl Serialize for T {
-            fn serialize(&self, serializer: &mut Serializer) -> Result<(), Error> {
+            fn serialize(&self, serializer: &mut Serializer): Result<(), Error> {
                 serializer.begin_object(type_name::<T>())?;
 
                 $(
@@ -250,7 +250,7 @@ const fn derive_clone_if_possible<T>() {
 
         if all_fields_clone {
             impl Clone for T {
-                fn clone(&self) -> Self {
+                fn clone(&self): Self {
                     Self {
                         $(
                             {field.name}: self.{field.name}.clone()
@@ -283,7 +283,7 @@ macro query($($tokens:tt)_) {
     }
 }
 
-fn get_users() -> Vec<User> {
+fn get_users(): Vec<User> {
     query! {
         SELECT _ FROM users
         WHERE active = true
@@ -342,7 +342,7 @@ macro builder($struct:ty) {
         }
 
         impl {$struct}Builder {
-            fn new() -> Self {
+            fn new(): Self {
                 Self {
                     $(
                         {field.name}: None
@@ -351,13 +351,13 @@ macro builder($struct:ty) {
             }
 
             $(
-                fn {field.name}(mut self, value: {field.ty}) -> Self {
+                fn {field.name}(mut self, value: {field.ty}): Self {
                     self.{field.name} = Some(value)
                     self
                 }
             )_
 
-            fn build(self) -> Result<{$struct}, BuilderError> {
+            fn build(self): Result<{$struct}, BuilderError> {
                 Ok({$struct} {
                     $(
                         {field.name}: self.{field.name}
@@ -430,7 +430,7 @@ fn generate_country_codes() {
 
     code += "}\n\n"
     code += "impl Country {\n"
-    code += "    pub fn name(&self) -> &'static str {\n"
+    code += "    pub fn name(&self): &'static str {\n"
     code += "        match self {\n"
 
     for country in countries {
@@ -455,11 +455,11 @@ const fn newtype_wrapper<T, Name: &str>() {
         struct {Name}(T);
 
         impl {Name} {
-            fn new(value: T) -> Self {
+            fn new(value: T): Self {
                 {Name}(value)
             }
 
-            fn into_inner(self) -> T {
+            fn into_inner(self): T {
                 self.0
             }
         }
@@ -467,19 +467,19 @@ const fn newtype_wrapper<T, Name: &str>() {
         impl Deref for {Name} {
             type Target = T
 
-            fn deref(&self) -> &T {
+            fn deref(&self): &T {
                 &self.0
             }
         }
 
         impl From<T> for {Name} {
-            fn from(value: T) -> Self {
+            fn from(value: T): Self {
                 {Name}(value)
             }
         }
 
         impl Into<T> for {Name} {
-            fn into(self) -> T {
+            fn into(self): T {
                 self.0
             }
         }
@@ -492,8 +492,8 @@ newtype_wrapper!(u64, "OrderId")
 newtype_wrapper!(string, "Email")
 
 // Type system prevents mixing them up
-fn get_user(id: UserId) -> User { /_ ... _/ }
-fn get_order(id: OrderId) -> Order { /_ ... _/ }
+fn get_user(id: UserId): User { /_ ... _/ }
+fn get_order(id: OrderId): Order { /_ ... _/ }
 ```
 
 ### Aspect-Oriented Programming
@@ -504,7 +504,7 @@ macro aspect($aspect:ident, $($method:ident),_) {
         $(
             let original = get_method::<Self>($method)
 
-            fn $method($(original.params)_) -> $(original.return_type) {
+            fn $method($(original.params)_): $(original.return_type) {
                 $aspect::before(stringify!($method))
                 let result = original.call($(original.param_names)_)
                 $aspect::after(stringify!($method), &result)
@@ -554,7 +554,7 @@ macro register_plugins($($plugin:ty),_) {
             ),*
         ];
 
-        pub fn load_plugins(context: &PluginContext) -> Vec<Box<dyn Plugin>> {
+        pub fn load_plugins(context: &PluginContext): Vec<Box<dyn Plugin>> {
             PLUGINS.iter()
                 .map(|info| {
                     let mut plugin = (info.create)();

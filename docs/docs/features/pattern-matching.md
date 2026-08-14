@@ -222,7 +222,7 @@ enum Config {
     Default,
 }
 
-fn load_config(primary: Config, fallback: Config) -> string {
+fn load_config(primary: Config, fallback: Config): string {
     if let Config.File(path) = primary {
         read_file(path)
     } else if let Config.Env(var) = primary {
@@ -264,7 +264,7 @@ while let Some(n) = iter.next() {
 Destructure or diverge:
 
 ```home
-fn process_user(data: ?UserData) -> Result<User, Error> {
+fn process_user(data: ?UserData): Result<User, Error> {
     let Some(user_data) = data else {
         return Err(Error.new("no user data"))
     }
@@ -281,7 +281,7 @@ fn process_user(data: ?UserData) -> Result<User, Error> {
 
 ```home
 // Destructure in parameters
-fn distance((x1, y1): (f64, f64), (x2, y2): (f64, f64)) -> f64 {
+fn distance((x1, y1): (f64, f64), (x2, y2): (f64, f64)): f64 {
     let dx = x2 - x1
     let dy = y2 - y1
     (dx _ dx + dy _ dy).sqrt()
@@ -390,7 +390,7 @@ match nested {
 ```home
 enum Never {}
 
-fn handle_never(n: Never) -> i32 {
+fn handle_never(n: Never): i32 {
     // No patterns needed - type has no inhabitants
     match n {}
 }

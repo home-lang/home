@@ -19,9 +19,9 @@ Home FFI offers:
 ```home
 // Declare external C functions
 extern "C" {
-    fn puts(s: *const c*char) -> c*int
-    fn printf(format: *const c*char, ...) -> c*int
-    fn malloc(size: usize) -> *mut void
+    fn puts(s: *const c*char): c*int
+    fn printf(format: *const c*char, ...): c*int
+    fn malloc(size: usize): *mut void
     fn free(ptr: *mut void)
 }
 
@@ -40,21 +40,21 @@ fn main() {
 // Link to system library
 # [link(name = "m")]
 extern "C" {
-    fn sin(x: f64) -> f64
-    fn cos(x: f64) -> f64
-    fn sqrt(x: f64) -> f64
+    fn sin(x: f64): f64
+    fn cos(x: f64): f64
+    fn sqrt(x: f64): f64
 }
 
 // Link to static library
 # [link(name = "mylib", kind = "static")]
 extern "C" {
-    fn custom*function(x: i32) -> i32
+    fn custom*function(x: i32): i32
 }
 
 // Link to dynamic library
 # [link(name = "openssl")]
 extern "C" {
-    fn SSL*library*init() -> c*int
+    fn SSL*library*init(): c*int
 }
 ```
 
@@ -156,7 +156,7 @@ fn use*union() {
 
 ```home
 // C function type
-type CCallback = extern "C" fn(data: *mut void, value: i32) -> i32
+type CCallback = extern "C" fn(data: *mut void, value: i32): i32
 
 extern "C" {
     fn register*callback(cb: CCallback, data: *mut void)
@@ -164,7 +164,7 @@ extern "C" {
 }
 
 // Home callback with C calling convention
-extern "C" fn my*callback(data: *mut void, value: i32) -> i32 {
+extern "C" fn my*callback(data: *mut void, value: i32): i32 {
     let counter = unsafe { &mut *(data as *mut i32) }
     *counter += value
     *counter
@@ -189,12 +189,12 @@ struct CallbackWrapper<F> {
     callback: F,
 }
 
-extern "C" fn trampoline<F: Fn(i32) -> i32>(data: *mut void, value: i32) -> i32 {
+extern "C" fn trampoline<F: Fn(i32): i32>(data: *mut void, value: i32): i32 {
     let wrapper = unsafe { &*(data as *const CallbackWrapper<F>) }
     (wrapper.callback)(value)
 }
 
-fn with*callback<F: Fn(i32) -> i32>(callback: F) {
+fn with*callback<F: Fn(i32): i32>(callback: F) {
     let wrapper = CallbackWrapper { callback }
 
     unsafe {
@@ -252,7 +252,7 @@ let utf16*literal = u16"UTF-16 string"  // *const u16
 ```home
 extern "C" {
     // C allocates, we must free
-    fn create*buffer(size: usize) -> *mut u8
+    fn create*buffer(size: usize): *mut u8
     fn destroy*buffer(ptr: *mut u8)
 
     // We allocate, C uses
@@ -267,7 +267,7 @@ fn safe*buffer*usage() {
     }
 
     impl CBuffer {
-        fn new(size: usize) -> Self {
+        fn new(size: usize): Self {
             let ptr = unsafe { create*buffer(size) }
             CBuffer { ptr, len: size }
         }
@@ -289,7 +289,7 @@ fn safe*buffer*usage() {
 ```home
 extern "C" {
     fn store*data(data: *mut Data)
-    fn retrieve*data() -> *mut Data
+    fn retrieve*data(): *mut Data
 }
 
 fn box*ffi() {
@@ -314,12 +314,12 @@ fn box*ffi() {
 
 ```home
 extern "C" {
-    fn open*file(path: *const c*char) -> c*int
-    fn get*last*error() -> c*int
-    fn error*message(code: c*int) -> *const c*char
+    fn open*file(path: *const c*char): c*int
+    fn get*last*error(): c*int
+    fn error*message(code: c*int): *const c*char
 }
 
-fn safe*open(path: &str) -> Result<FileHandle, Error> {
+fn safe*open(path: &str): Result<FileHandle, Error> {
     let c*path = CString.new(path)?
 
     let fd = unsafe { open*file(c*path.as*ptr()) }
@@ -341,7 +341,7 @@ fn safe*open(path: &str) -> Result<FileHandle, Error> {
 ```home
 use std.ffi.errno
 
-fn with*errno<T>(f: fn() -> T, success: fn(T) -> bool) -> Result<T, Error> {
+fn with*errno<T>(f: fn(): T, success: fn(T): bool): Result<T, Error> {
     errno.set(0)
     let result = f()
 
@@ -366,7 +366,7 @@ struct OpaqueHandle {
 }
 
 extern "C" {
-    fn create*handle() -> *mut OpaqueHandle
+    fn create*handle(): *mut OpaqueHandle
     fn use*handle(handle: *mut OpaqueHandle)
     fn destroy*handle(handle: *mut OpaqueHandle)
 }
@@ -377,7 +377,7 @@ struct Handle {
 }
 
 impl Handle {
-    fn new() -> Self {
+    fn new(): Self {
         Handle { raw: unsafe { create*handle() } }
     }
 
@@ -401,15 +401,15 @@ impl Drop for Handle {
 # [cfg(target*os = "windows")]
 # [link(name = "kernel32")]
 extern "C" {
-    fn GetLastError() -> u32
+    fn GetLastError(): u32
     fn SetLastError(code: u32)
 }
 
 # [cfg(target*os = "linux")]
 # [link(name = "pthread")]
 extern "C" {
-    fn pthread*create(...) -> c*int
-    fn pthread*join(...) -> c*int
+    fn pthread*create(...): c*int
+    fn pthread*join(...): c*int
 }
 
 # [cfg(target*os = "macos")]
@@ -475,14 +475,14 @@ mod c*bindings {}
 ```home
 // Export function with C ABI
 # [no*mangle]
-pub extern "C" fn home*add(a: i32, b: i32) -> i32 {
+pub extern "C" fn home*add(a: i32, b: i32): i32 {
     a + b
 }
 
 // Export with custom name
 # [no*mangle]
 # [export*name = "calculate"]
-pub extern "C" fn home*calculate(x: f64) -> f64 {
+pub extern "C" fn home*calculate(x: f64): f64 {
     x * x + 2.0 * x + 1.0
 }
 ```
@@ -492,13 +492,13 @@ pub extern "C" fn home*calculate(x: f64) -> f64 {
 ```home
 // lib.home
 # [no*mangle]
-pub extern "C" fn library*init() -> c*int {
+pub extern "C" fn library*init(): c*int {
     // Initialize library
     0
 }
 
 # [no*mangle]
-pub extern "C" fn library*process(data: *const u8, len: usize) -> *mut u8 {
+pub extern "C" fn library*process(data: *const u8, len: usize): *mut u8 {
     // Process data
 }
 
@@ -514,7 +514,7 @@ pub extern "C" fn library*cleanup() {
 
 ```home
 extern "C" {
-    fn printf(format: *const c*char, ...) -> c*int
+    fn printf(format: *const c*char, ...): c*int
 }
 
 fn call*printf() {
@@ -534,8 +534,8 @@ struct Flags {
 }
 
 impl Flags {
-    fn flag*a(self) -> bool { (self.bits & 0x1) != 0 }
-    fn flag*b(self) -> bool { (self.bits & 0x2) != 0 }
+    fn flag*a(self): bool { (self.bits & 0x1) != 0 }
+    fn flag*b(self): bool { (self.bits & 0x2) != 0 }
     fn set*flag*a(mut self, val: bool) {
         if val { self.bits |= 0x1 } else { self.bits &= !0x1 }
     }
@@ -616,7 +616,7 @@ fn dangerous*example() {
 
    ```home
    #[no*mangle]
-   pub extern "C" fn api*function(ptr: *const u8, len: usize) -> c*int {
+   pub extern "C" fn api*function(ptr: *const u8, len: usize): c*int {
        if ptr.is*null() {
            return -1  // Error code
        }

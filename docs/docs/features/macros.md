@@ -115,7 +115,7 @@ let n = count!(a b c d e)  // 5
 
 ```home
 # [proc*macro]
-fn sql(input: TokenStream) -> TokenStream {
+fn sql(input: TokenStream): TokenStream {
     let query = parse*sql(input)
     let validated = validate*query(query)
     generate*query*code(validated)
@@ -131,7 +131,7 @@ let users = sql!(SELECT * FROM users WHERE age > 18)
 use home.proc*macro.{TokenStream, TokenTree, Literal, Ident, Punct}
 
 # [proc*macro]
-fn json(input: TokenStream) -> TokenStream {
+fn json(input: TokenStream): TokenStream {
     let parsed = parse*json*tokens(input)
 
     let mut output = TokenStream.new()
@@ -166,14 +166,14 @@ struct Point {
 
 ```home
 # [proc*macro*derive(Serialize)]
-fn derive*serialize(input: TokenStream) -> TokenStream {
+fn derive*serialize(input: TokenStream): TokenStream {
     let ast = parse*derive*input(input)
     let name = ast.ident
     let fields = get*fields(ast)
 
     quote! {
         impl Serialize for #name {
-            fn serialize(&self, serializer: &mut Serializer) -> Result<(), Error> {
+            fn serialize(&self, serializer: &mut Serializer): Result<(), Error> {
                 serializer.begin*object()?
                 #(
                     serializer.field(stringify!(#fields), &self.#fields)?
@@ -189,7 +189,7 @@ fn derive*serialize(input: TokenStream) -> TokenStream {
 
 ```home
 # [proc*macro*derive(Serialize, attributes(serde))]
-fn derive*serialize*with*attrs(input: TokenStream) -> TokenStream {
+fn derive*serialize*with*attrs(input: TokenStream): TokenStream {
     // Can now process #[serde(...)] attributes on fields
 }
 
@@ -213,7 +213,7 @@ struct User {
 
 ```home
 # [proc*macro*attribute]
-fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
+fn route(attr: TokenStream, item: TokenStream): TokenStream {
     let route*path = parse*route*path(attr)
     let function = parse*fn(item)
 
@@ -232,7 +232,7 @@ fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 // Usage
 # [route("/api/users")]
-fn get*users() -> Response {
+fn get*users(): Response {
     // ...
 }
 ```
@@ -241,7 +241,7 @@ fn get*users() -> Response {
 
 ```home
 # [proc*macro*attribute]
-fn async*trait(*attr: TokenStream, item: TokenStream) -> TokenStream {
+fn async*trait(*attr: TokenStream, item: TokenStream): TokenStream {
     let trait*def = parse*trait(item)
 
     // Transform async fn to return BoxFuture
@@ -290,7 +290,7 @@ print(answer)  // 42 - accessible because we used the caller's identifier
 
 ```home
 # [proc*macro]
-fn with*span(input: TokenStream) -> TokenStream {
+fn with*span(input: TokenStream): TokenStream {
     let span = input.span()  // Preserve source location
 
     quote*spanned! { span =>
@@ -495,7 +495,7 @@ macro deeply*recursive($n:expr) {
 
    ```home
    // Use function
-   fn add(a: i32, b: i32) -> i32 { a + b }
+   fn add(a: i32, b: i32): i32 { a + b }
 
    // Use macro only when needed (variadic, syntax extension, etc.)
    macro sum($($n:expr),+) { 0 $(+ $n)+ }

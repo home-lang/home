@@ -17,7 +17,7 @@ Home's generic system provides:
 ### Basic Generic Functions
 
 ```home
-fn identity<T>(value: T) -> T {
+fn identity<T>(value: T): T {
     value
 }
 
@@ -28,7 +28,7 @@ let str_val = identity("hello")   // T = string
 ### Multiple Type Parameters
 
 ```home
-fn pair<A, B>(first: A, second: B) -> (A, B) {
+fn pair<A, B>(first: A, second: B): (A, B) {
     (first, second)
 }
 
@@ -40,7 +40,7 @@ let p = pair(1, "one")  // (i32, string)
 The compiler infers type parameters when possible:
 
 ```home
-fn first<T>(items: []T) -> ?T {
+fn first<T>(items: []T): ?T {
     if items.len() > 0 {
         Some(items[0])
     } else {
@@ -57,7 +57,7 @@ let f = first(numbers)  // T inferred as i32
 When inference is insufficient:
 
 ```home
-fn create<T: Default>() -> T {
+fn create<T: Default>(): T {
     T.default()
 }
 
@@ -80,15 +80,15 @@ struct Box<T> {
 }
 
 impl<T> Box<T> {
-    fn new(value: T) -> Self {
+    fn new(value: T): Self {
         Box { value }
     }
 
-    fn get(self) -> T {
+    fn get(self): T {
         self.value
     }
 
-    fn get_ref(&self) -> &T {
+    fn get_ref(&self): &T {
         &self.value
     }
 }
@@ -106,11 +106,11 @@ struct Pair<A, B> {
 }
 
 impl<A, B> Pair<A, B> {
-    fn new(first: A, second: B) -> Self {
+    fn new(first: A, second: B): Self {
         Pair { first, second }
     }
 
-    fn swap(self) -> Pair<B, A> {
+    fn swap(self): Pair<B, A> {
         Pair { first: self.second, second: self.first }
     }
 }
@@ -133,14 +133,14 @@ enum Result<T, E> {
 }
 
 impl<T, E> Result<T, E> {
-    fn is_ok(self) -> bool {
+    fn is_ok(self): bool {
         match self {
             Result.Ok(_) => true,
             Result.Err(_) => false,
         }
     }
 
-    fn map<U>(self, f: fn(T) -> U) -> Result<U, E> {
+    fn map<U>(self, f: fn(T): U): Result<U, E> {
         match self {
             Result.Ok(value) => Result.Ok(f(value)),
             Result.Err(error) => Result.Err(error),
@@ -155,7 +155,7 @@ impl<T, E> Result<T, E> {
 
 ```home
 trait Display {
-    fn to_string(self) -> string
+    fn to_string(self): string
 }
 
 fn print_value<T: Display>(value: T) {
@@ -177,7 +177,7 @@ fn clone_and_print<T: Clone + Display>(value: T) {
 For complex bounds, use where clauses:
 
 ```home
-fn process<T, U>(a: T, b: U) -> T
+fn process<T, U>(a: T, b: U): T
 where
     T: Clone + From<U>,
     U: Display + Into<T>,
@@ -215,15 +215,15 @@ impl<T: Ord> SortedList<T> {
 trait Iterator {
     type Item
 
-    fn next(mut self) -> ?Self.Item
+    fn next(mut self): ?Self.Item
 }
 
 trait Container {
     type Element
     type Iter: Iterator<Item = Self.Element>
 
-    fn iter(&self) -> Self.Iter
-    fn len(&self) -> usize
+    fn iter(&self): Self.Iter
+    fn len(&self): usize
 }
 ```
 
@@ -238,7 +238,7 @@ struct Counter {
 impl Iterator for Counter {
     type Item = i32
 
-    fn next(mut self) -> ?i32 {
+    fn next(mut self): ?i32 {
         if self.current < self.max {
             let value = self.current
             self.current += 1
@@ -253,7 +253,7 @@ impl Iterator for Counter {
 ### Associated Type Bounds
 
 ```home
-fn sum_iterator<I>(iter: I) -> i32
+fn sum_iterator<I>(iter: I): i32
 where
     I: Iterator<Item = i32>,
 {
@@ -275,15 +275,15 @@ struct Array<T, const N: usize> {
 }
 
 impl<T: Default + Copy, const N: usize> Array<T, N> {
-    fn new() -> Self {
+    fn new(): Self {
         Array { data: [T.default(); N] }
     }
 
-    fn len(self) -> usize {
+    fn len(self): usize {
         N
     }
 
-    fn get(&self, index: usize) -> ?&T {
+    fn get(&self, index: usize): ?&T {
         if index < N {
             Some(&self.data[index])
         } else {
@@ -302,7 +302,7 @@ assert(arr.len() == 5)
 fn concat<T, const A: usize, const B: usize>(
     first: [T; A],
     second: [T; B]
-) -> [T; A + B] {
+): [T; A + B] {
     let mut result: [T; A + B] = undefined
 
     for i in 0..A {
@@ -336,7 +336,7 @@ where
     const R > 0,
     const C > 0,
 {
-    fn identity() -> Self where T: From<i32>, const R == C {
+    fn identity(): Self where T: From<i32>, const R == C {
         let mut data = [[T.default(); C]; R]
         for i in 0..R {
             data[i][i] = T.from(1)
@@ -352,16 +352,16 @@ where
 
 ```home
 trait From<T> {
-    fn from(value: T) -> Self
+    fn from(value: T): Self
 }
 
 trait Into<T> {
-    fn into(self) -> T
+    fn into(self): T
 }
 
 // Blanket implementation
 impl<T, U: From<T>> Into<U> for T {
-    fn into(self) -> U {
+    fn into(self): U {
         U.from(self)
     }
 }
@@ -371,11 +371,11 @@ impl<T, U: From<T>> Into<U> for T {
 
 ```home
 trait Convertible {
-    fn convert<T>(self) -> T where Self: Into<T>
+    fn convert<T>(self): T where Self: Into<T>
 }
 
 impl<U> Convertible for U {
-    fn convert<T>(self) -> T where Self: Into<T> {
+    fn convert<T>(self): T where Self: Into<T> {
         self.into()
     }
 }
@@ -391,13 +391,13 @@ While Home doesn't have first-class HKTs, patterns can achieve similar results:
 trait Functor {
     type Inner
 
-    fn map<U>(self, f: fn(Self.Inner) -> U) -> Self with Inner = U
+    fn map<U>(self, f: fn(Self.Inner): U): Self with Inner = U
 }
 
 impl<T> Functor for Option<T> {
     type Inner = T
 
-    fn map<U>(self, f: fn(T) -> U) -> Option<U> {
+    fn map<U>(self, f: fn(T): U): Option<U> {
         match self {
             Some(value) => Some(f(value)),
             None => None,
@@ -410,16 +410,16 @@ impl<T> Functor for Option<T> {
 
 ```home
 trait Monad: Functor {
-    fn pure(value: Self.Inner) -> Self
-    fn flat_map<U>(self, f: fn(Self.Inner) -> Self with Inner = U) -> Self with Inner = U
+    fn pure(value: Self.Inner): Self
+    fn flat_map<U>(self, f: fn(Self.Inner): Self with Inner = U): Self with Inner = U
 }
 
 impl<T> Monad for Option<T> {
-    fn pure(value: T) -> Option<T> {
+    fn pure(value: T): Option<T> {
         Some(value)
     }
 
-    fn flat_map<U>(self, f: fn(T) -> Option<U>) -> Option<U> {
+    fn flat_map<U>(self, f: fn(T): Option<U>): Option<U> {
         match self {
             Some(value) => f(value),
             None => None,
@@ -443,8 +443,8 @@ struct Order {}
 type UserId = Id<u64, User>
 type OrderId = Id<u64, Order>
 
-fn get_user(id: UserId) -> User { /_ ... _/ }
-fn get_order(id: OrderId) -> Order { /_ ... _/ }
+fn get_user(id: UserId): User { /_ ... _/ }
+fn get_order(id: OrderId): Order { /_ ... _/ }
 
 let user_id: UserId = Id { value: 1 }
 let order_id: OrderId = Id { value: 1 }
@@ -464,7 +464,7 @@ struct Wrapper<T> {
 
 // Always available
 impl<T> Wrapper<T> {
-    fn new(value: T) -> Self {
+    fn new(value: T): Self {
         Wrapper { value }
     }
 }
@@ -478,7 +478,7 @@ impl<T: Display> Wrapper<T> {
 
 // Only for numeric types
 impl<T: Add<Output = T> + Copy> Wrapper<T> {
-    fn double(&self) -> T {
+    fn double(&self): T {
         self.value + self.value
     }
 }
@@ -488,19 +488,19 @@ impl<T: Add<Output = T> + Copy> Wrapper<T> {
 
 ```home
 trait Process {
-    fn process(self) -> string
+    fn process(self): string
 }
 
 // Default implementation
 impl<T: Display> Process for T {
-    fn process(self) -> string {
+    fn process(self): string {
         self.to_string()
     }
 }
 
 // Specialized for specific types
 impl Process for i32 {
-    fn process(self) -> string {
+    fn process(self): string {
         "integer: " + self.to_string()
     }
 }
@@ -512,7 +512,7 @@ impl Process for i32 {
 
 ```home
 trait Comparable<T> {
-    fn compare(self, other: T) -> Ordering
+    fn compare(self, other: T): Ordering
 }
 
 // Self-referential bound
@@ -526,7 +526,7 @@ impl<T: Comparable<T>> Sortable for Vec<T> {
 ### Inference Limitations
 
 ```home
-fn problematic<T, U>(value: T) -> U
+fn problematic<T, U>(value: T): U
 where
     T: Into<U>,
 {
@@ -541,7 +541,7 @@ let result: f64 = problematic(42i32)
 
 ```home
 // Good: most important/frequently specified first
-fn collect<T, I: Iterator<Item = T>>(iter: I) -> Vec<T>
+fn collect<T, I: Iterator<Item = T>>(iter: I): Vec<T>
 
 // Usage: only need to specify T
 let v = collect::<i32, _>(iter)
@@ -553,12 +553,12 @@ let v = collect::<i32, _>(iter)
 
    ```home
    // Only bound what you actually use
-   fn process<T: Clone>(value: T) -> T {
+   fn process<T: Clone>(value: T): T {
        value.clone()
    }
 
    // Don't over-constrain
-   fn just_hold<T>(value: T) -> T {
+   fn just_hold<T>(value: T): T {
        value  // No bounds needed
    }
    ```
@@ -569,12 +569,12 @@ let v = collect::<i32, _>(iter)
    // Good: each Iterator has one Item type
    trait Iterator {
        type Item
-       fn next(mut self) -> ?Self.Item
+       fn next(mut self): ?Self.Item
    }
 
    // Use generic params for multiple implementations
    trait From<T> {
-       fn from(value: T) -> Self
+       fn from(value: T): Self
    }
    ```
 

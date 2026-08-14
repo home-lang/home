@@ -32,7 +32,7 @@ const APP*NAME: &str = concat!("MyApp v", VERSION)
 ### Const Functions
 
 ```home
-const fn factorial(n: u64) -> u64 {
+const fn factorial(n: u64): u64 {
     if n <= 1 {
         1
     } else {
@@ -42,7 +42,7 @@ const fn factorial(n: u64) -> u64 {
 
 const FACT*10: u64 = factorial(10)  // Computed at compile time
 
-const fn fibonacci(n: u32) -> u64 {
+const fn fibonacci(n: u32): u64 {
     match n {
         0 => 0,
         1 => 1,
@@ -58,7 +58,7 @@ const FIB*20: u64 = fibonacci(20)  // 6765, computed at compile time
 ### Const in Generics
 
 ```home
-const fn array*size<T>() -> usize {
+const fn array*size<T>(): usize {
     std.mem.size*of::<T>() * 8
 }
 
@@ -91,7 +91,7 @@ fn main() {
 ### Comptime Type Generation
 
 ```home
-fn generate*wrapper<T>() -> Type {
+fn generate*wrapper<T>(): Type {
     comptime {
         struct Wrapper {
             value: T,
@@ -109,7 +109,7 @@ type StringWrapper = generate*wrapper::<string>()
 ### Comptime Loops
 
 ```home
-const fn generate*powers*of*two() -> [u64; 64] {
+const fn generate*powers*of*two(): [u64; 64] {
     comptime {
         let mut result = [0u64; 64]
         for i in 0..64 {
@@ -146,7 +146,7 @@ static*assert!(offset*of!(Header, version) == 4, "version must be at offset 4")
 ### Compile-Time Invariants
 
 ```home
-const fn validate*config(config: &Config) -> bool {
+const fn validate*config(config: &Config): bool {
     config.max*connections > 0 &&
     config.max*connections <= 10000 &&
     config.timeout*ms >= 100
@@ -163,11 +163,11 @@ static*assert!(validate*config(&CONFIG), "Invalid configuration")
 ### Type Constraints
 
 ```home
-const fn is*power*of*two(n: usize) -> bool {
+const fn is*power*of*two(n: usize): bool {
     n > 0 && (n & (n - 1)) == 0
 }
 
-fn create*buffer<const SIZE: usize>() -> Buffer<SIZE>
+fn create*buffer<const SIZE: usize>(): Buffer<SIZE>
 where
     const is*power*of*two(SIZE),
 {
@@ -186,7 +186,7 @@ let buf = create*buffer::<1024>()
 ### Computing Types
 
 ```home
-const fn select*storage*type(max*value: u64) -> Type {
+const fn select*storage*type(max*value: u64): Type {
     if max*value <= 255 {
         u8
     } else if max*value <= 65535 {
@@ -209,7 +209,7 @@ let large: Counter<1000000> = Counter { value: 0u32 } // Uses u32
 ### Type Lists
 
 ```home
-const fn type*list<T...>() -> []Type {
+const fn type*list<T...>(): []Type {
     comptime {
         [$(T),*]
     }
@@ -217,7 +217,7 @@ const fn type*list<T...>() -> []Type {
 
 const NUMERIC*TYPES: []Type = type*list::<i8, i16, i32, i64, f32, f64>()
 
-const fn generate*parsers() -> []Parser {
+const fn generate*parsers(): []Parser {
     comptime {
         NUMERIC*TYPES.map(|T| Parser.for*type::<T>())
     }
@@ -229,7 +229,7 @@ const fn generate*parsers() -> []Parser {
 ### Type Information
 
 ```home
-const fn type*info<T>() -> TypeInfo {
+const fn type*info<T>(): TypeInfo {
     TypeInfo {
         name: type*name::<T>(),
         size: size*of::<T>(),
@@ -239,7 +239,7 @@ const fn type*info<T>() -> TypeInfo {
     }
 }
 
-const fn generate*serializer<T>() -> Serializer {
+const fn generate*serializer<T>(): Serializer {
     comptime {
         let info = type*info::<T>()
         match info.kind {
@@ -257,7 +257,7 @@ const fn generate*serializer<T>() -> Serializer {
 ### Field Iteration
 
 ```home
-const fn generate*debug<T>() -> fn(&T) -> string {
+const fn generate*debug<T>(): fn(&T): string {
     comptime {
         |value: &T| {
             let mut result = type*name::<T>() + " { "
@@ -279,7 +279,7 @@ const fn generate*debug<T>() -> fn(&T) -> string {
 ### String Manipulation
 
 ```home
-const fn to*snake*case(s: &str) -> string {
+const fn to*snake*case(s: &str): string {
     comptime {
         let mut result = String.new()
         for (i, c) in s.chars().enumerate() {
@@ -298,7 +298,7 @@ const TABLE*NAME: &str = to*snake*case("UserProfile")  // "user*profile"
 ### Parse at Compile Time
 
 ```home
-const fn parse*version(s: &str) -> (u32, u32, u32) {
+const fn parse*version(s: &str): (u32, u32, u32) {
     comptime {
         let parts: []&str = s.split('.')
         (
@@ -323,7 +323,7 @@ macro derive*arithmetic($name:ident) {
         impl Add for $name {
             type Output = Self
 
-            fn add(self, other: Self) -> Self {
+            fn add(self, other: Self): Self {
                 Self {
                     $(
                         $field: self.$field + other.$field
@@ -335,7 +335,7 @@ macro derive*arithmetic($name:ident) {
         impl Sub for $name {
             type Output = Self
 
-            fn sub(self, other: Self) -> Self {
+            fn sub(self, other: Self): Self {
                 Self {
                     $(
                         $field: self.$field - other.$field
@@ -379,7 +379,7 @@ generate*property*tests::<User>()
 ### Validate at Compile Time
 
 ```home
-const fn validate*regex(pattern: &str) -> Result<(), &str> {
+const fn validate*regex(pattern: &str): Result<(), &str> {
     comptime {
         let mut paren*depth = 0
         for c in pattern.chars() {
@@ -414,7 +414,7 @@ const PATTERN: Regex = comptime {
 ### Validate SQL at Compile Time
 
 ```home
-const fn validate*sql(query: &str) -> Result<Query, SqlError> {
+const fn validate*sql(query: &str): Result<Query, SqlError> {
     comptime {
         let parsed = parse*sql(query)?
         validate*table*names(parsed)?
@@ -451,7 +451,7 @@ const CRC32*TABLE: [u32; 256] = comptime {
     table
 }
 
-fn crc32(data: &[u8]) -> u32 {
+fn crc32(data: &[u8]): u32 {
     let mut crc = 0xFFFFFFFF
     for byte in data {
         let index = ((crc ^ *byte as u32) & 0xFF) as usize
@@ -464,7 +464,7 @@ fn crc32(data: &[u8]) -> u32 {
 ### Constant Folding
 
 ```home
-const fn optimize*expression() -> i32 {
+const fn optimize*expression(): i32 {
     // All of this is evaluated at compile time
     let a = 10 * 20
     let b = a + 50
@@ -521,7 +521,7 @@ const RESULT: i32 = optimize*expression()  // 90, no runtime computation
    /// # Compile-Time Requirements
    /// - SIZE must be a power of 2
    /// - SIZE must be <= 65536
-   const fn create*table<const SIZE: usize>() -> [u8; SIZE]
+   const fn create*table<const SIZE: usize>(): [u8; SIZE]
    where
        const is*power*of*two(SIZE),
        const SIZE <= 65536,

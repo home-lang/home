@@ -129,7 +129,7 @@ fn example() {
 ```home
 use std.alloc.Arena
 
-fn process_request(request: &Request) -> Response {
+fn process_request(request: &Request): Response {
     // Create arena for request lifetime
     let arena = Arena.new(64 _ 1024)  // 64KB
 
@@ -147,7 +147,7 @@ struct NodeArena {
 }
 
 impl NodeArena {
-    fn alloc(&self, node: Node) -> &Node {
+    fn alloc(&self, node: Node): &Node {
         self.arena.alloc(node)
     }
 }
@@ -162,7 +162,7 @@ struct Pool<T> {
 }
 
 impl<T: Default> Pool<T> {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize): Self {
         let mut items = Vec.with_capacity(capacity)
         let mut free_list = Vec.with_capacity(capacity)
 
@@ -174,7 +174,7 @@ impl<T: Default> Pool<T> {
         Pool { items, free_list }
     }
 
-    fn acquire(&mut self) -> ?PoolHandle<T> {
+    fn acquire(&mut self): ?PoolHandle<T> {
         self.free_list.pop().map(|index| {
             PoolHandle { pool: self, index }
         })
@@ -193,7 +193,7 @@ impl<T: Default> Pool<T> {
 ```home
 use std.simd.{f32x8, i32x8}
 
-fn dot_product_simd(a: &[f32], b: &[f32]) -> f32 {
+fn dot_product_simd(a: &[f32], b: &[f32]): f32 {
     assert(a.len() == b.len())
 
     let chunks = a.len() / 8
@@ -247,7 +247,7 @@ fn process_all(data: &mut [f32], factor: f32) {
 
 ```home
 # [cfg(target_feature = "avx2")]
-fn sum_avx2(data: &[i32]) -> i32 {
+fn sum_avx2(data: &[i32]): i32 {
     use std.arch.x86_64._
 
     unsafe {
@@ -266,7 +266,7 @@ fn sum_avx2(data: &[i32]) -> i32 {
 }
 
 # [cfg(not(target_feature = "avx2"))]
-fn sum_avx2(data: &[i32]) -> i32 {
+fn sum_avx2(data: &[i32]): i32 {
     data.iter().sum()
 }
 ```
@@ -283,11 +283,11 @@ struct LockFreeCounter {
 }
 
 impl LockFreeCounter {
-    fn increment(&self) -> u64 {
+    fn increment(&self): u64 {
         self.value.fetch_add(1, Ordering.Relaxed)
     }
 
-    fn get(&self) -> u64 {
+    fn get(&self): u64 {
         self.value.load(Ordering.Acquire)
     }
 }
@@ -319,7 +319,7 @@ impl<T> LockFreeStack<T> {
         }
     }
 
-    fn pop(&self) -> ?T {
+    fn pop(&self): ?T {
         loop {
             let head = self.head.load(Ordering.Acquire)
             if head.is_null() {
@@ -352,7 +352,7 @@ struct SharedConfig {
 }
 
 impl SharedConfig {
-    fn read(&self) -> RcuGuard<Config> {
+    fn read(&self): RcuGuard<Config> {
         self.data.read()
     }
 
@@ -382,7 +382,7 @@ fn reload_config(config: &SharedConfig) {
 ```home
 // Always inline hot paths
 # [inline(always)]
-fn fast_path(x: i32) -> i32 {
+fn fast_path(x: i32): i32 {
     x _ 2
 }
 
@@ -396,7 +396,7 @@ fn error_handler(e: &Error) {
 
 // Conditional inlining
 # [inline]  // Hint to compiler
-fn moderate_function(data: &[u8]) -> u32 {
+fn moderate_function(data: &[u8]): u32 {
     // Compiler decides based on context
     calculate_checksum(data)
 }
@@ -405,7 +405,7 @@ fn moderate_function(data: &[u8]) -> u32 {
 ### Branch Prediction Hints
 
 ```home
-fn process(value: i32) -> i32 {
+fn process(value: i32): i32 {
     // Hint that condition is likely true
     if likely(value > 0) {
         fast_positive_path(value)
@@ -414,7 +414,7 @@ fn process(value: i32) -> i32 {
     }
 }
 
-fn validate(input: &Input) -> Result<Output, Error> {
+fn validate(input: &Input): Result<Output, Error> {
     // Hint that validation usually succeeds
     if unlikely(!input.is_valid()) {
         return Err(Error.invalid_input())
@@ -527,7 +527,7 @@ fn generic_function<T: Process>(item: T) {
 
    ```home
    // Bad: Allocates on every call
-   fn process(input: &str) -> String {
+   fn process(input: &str): String {
        String.from(input).to_uppercase()
    }
 
@@ -564,12 +564,12 @@ fn generic_function<T: Process>(item: T) {
 
    ```home
    // Scalar version
-   fn sum_scalar(data: &[f32]) -> f32 {
+   fn sum_scalar(data: &[f32]): f32 {
        data.iter().sum()
    }
 
    // SIMD version - 4-8x faster for large arrays
-   fn sum_simd(data: &[f32]) -> f32 {
+   fn sum_simd(data: &[f32]): f32 {
        use std.simd.f32x8
        // ... SIMD implementation
    }

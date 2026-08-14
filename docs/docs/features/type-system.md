@@ -118,7 +118,7 @@ let z = "hello"      // string
 let list = [1, 2, 3] // [i32; 3]
 
 // Inference through function calls
-fn double(n: i32) -> i32 {
+fn double(n: i32): i32 {
     n _ 2
 }
 
@@ -126,7 +126,7 @@ let result = double(21)  // result: i32
 
 // Inference in closures
 let add = |a, b| a + b
-let sum = add(1, 2)  // Inferred as (i32, i32) -> i32
+let sum = add(1, 2)  // Inferred as (i32, i32): i32
 ```
 
 ## Type Aliases
@@ -138,7 +138,7 @@ type UserId = u64
 type Point2D = (f64, f64)
 type Matrix4x4 = [[f64; 4]; 4]
 type Result<T> = Result<T, Error>
-type Callback<T> = fn(T) -> void
+type Callback<T> = fn(T): void
 
 // Usage
 let id: UserId = 12345
@@ -197,7 +197,7 @@ trait Printable {
 }
 
 trait Serializable {
-    fn serialize(self) -> []u8
+    fn serialize(self): []u8
 }
 
 // Type must implement both traits
@@ -214,17 +214,17 @@ The `never` type represents computations that never complete:
 
 ```home
 // Functions that never return
-fn infinite_loop() -> never {
+fn infinite_loop(): never {
     loop {}
 }
 
-fn panic(message: string) -> never {
+fn panic(message: string): never {
     print("PANIC: {message}")
     std.process.exit(1)
 }
 
 // Useful in match expressions
-fn unwrap_or_panic<T>(opt: ?T) -> T {
+fn unwrap_or_panic<T>(opt: ?T): T {
     match opt {
         Some(value) => value,
         None => panic("unwrap failed"),  // never coerces to T
@@ -244,7 +244,7 @@ struct Meters<phantom T> {
 struct Validated {}
 struct Unvalidated {}
 
-fn validate(input: Meters<Unvalidated>) -> ?Meters<Validated> {
+fn validate(input: Meters<Unvalidated>): ?Meters<Validated> {
     if input.value >= 0.0 {
         Some(Meters { value: input.value })
     } else {
@@ -274,7 +274,7 @@ fn process<T: Clone + Debug + Send>(value: T) {
 }
 
 // Where clauses for complex constraints
-fn complex<T, U>(a: T, b: U) -> T
+fn complex<T, U>(a: T, b: U): T
 where
     T: From<U> + Default,
     U: Into<T>,
@@ -295,7 +295,7 @@ Types defined within traits:
 trait Iterator {
     type Item
 
-    fn next(mut self) -> ?Self.Item
+    fn next(mut self): ?Self.Item
 }
 
 struct Counter {
@@ -306,7 +306,7 @@ struct Counter {
 impl Iterator for Counter {
     type Item = i32
 
-    fn next(mut self) -> ?i32 {
+    fn next(mut self): ?i32 {
         if self.current < self.max {
             let value = self.current
             self.current += 1
@@ -324,7 +324,7 @@ Hide concrete types behind abstract interfaces:
 
 ```home
 // Return type is hidden
-fn make_iterator() -> impl Iterator<Item = i32> {
+fn make_iterator(): impl Iterator<Item = i32> {
     Counter { current: 0, max: 10 }
 }
 
@@ -345,11 +345,11 @@ struct Array<T, const N: usize> {
 }
 
 impl<T, const N: usize> Array<T, N> {
-    fn new(default: T) -> Self where T: Copy {
+    fn new(default: T): Self where T: Copy {
         Array { data: [default; N] }
     }
 
-    fn len(self) -> usize {
+    fn len(self): usize {
         N
     }
 }
@@ -410,7 +410,7 @@ struct Cell<T> {
 }
 
 // Contravariant in argument position
-type Consumer<T> = fn(T) -> void
+type Consumer<T> = fn(T): void
 ```
 
 ## Best Practices
@@ -429,17 +429,17 @@ type Consumer<T> = fn(T) -> void
 
    ```home
    type HttpHeaders = HashMap<string, []string>
-   type ResponseHandler = fn(Response) -> Result<void, Error>
+   type ResponseHandler = fn(Response): Result<void, Error>
    ```
 
 3. **Prefer optionals over sentinel values**:
 
    ```home
    // Good
-   fn find(items: []Item, id: u64) -> ?Item
+   fn find(items: []Item, id: u64): ?Item
 
    // Avoid
-   fn find(items: []Item, id: u64) -> Item  // Returns "empty" Item if not found
+   fn find(items: []Item, id: u64): Item  // Returns "empty" Item if not found
    ```
 
 4. **Use newtypes for type safety**:
@@ -449,18 +449,18 @@ type Consumer<T> = fn(T) -> void
    struct OrderId(u64)
 
    // Prevents accidentally mixing IDs
-   fn get_user(id: UserId) -> User
-   fn get_order(id: OrderId) -> Order
+   fn get_user(id: UserId): User
+   fn get_order(id: OrderId): Order
    ```
 
 5. **Constrain generics appropriately**: Only require what you need
 
    ```home
    // Too restrictive
-   fn count<T: Clone + Debug + Eq + Hash>(items: []T) -> usize
+   fn count<T: Clone + Debug + Eq + Hash>(items: []T): usize
 
    // Just right
-   fn count<T>(items: []T) -> usize {
+   fn count<T>(items: []T): usize {
        items.len()
    }
    ```

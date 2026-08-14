@@ -16,7 +16,7 @@ Home's async model features:
 ### Basic Async Functions
 
 ```home
-async fn fetch_data(url: string) -> Result<string, Error> {
+async fn fetch_data(url: string): Result<string, Error> {
     let response = http.get(url).await?
     let body = response.text().await?
     Ok(body)
@@ -34,7 +34,7 @@ async fn main() {
 ### Async Closures
 
 ```home
-let fetch = async |url: string| -> Result<string, Error> {
+let fetch = async |url: string|: Result<string, Error> {
     let resp = http.get(url).await?
     resp.text().await
 }
@@ -45,7 +45,7 @@ let result = fetch("https://example.com").await?
 ### Async Blocks
 
 ```home
-fn start_operation() -> impl Future<Output = i32> {
+fn start_operation(): impl Future<Output = i32> {
     async {
         let a = compute_a().await
         let b = compute_b().await
@@ -62,7 +62,7 @@ fn start_operation() -> impl Future<Output = i32> {
 trait Future {
     type Output
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self.Output>
+    fn poll(self: Pin<&mut Self>, cx: &mut Context): Poll<Self.Output>
 }
 
 enum Poll<T> {
@@ -81,7 +81,7 @@ struct Delay {
 impl Future for Delay {
     type Output = ()
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context): Poll<()> {
         if Instant.now() >= self.when {
             Poll.Ready(())
         } else {
@@ -111,7 +111,7 @@ async fn delay(duration: Duration) {
 ```home
 use async.join
 
-async fn fetch_all() -> (User, Posts, Comments) {
+async fn fetch_all(): (User, Posts, Comments) {
     // All three requests run concurrently
     let (user, posts, comments) = join!(
         fetch_user(user_id),
@@ -131,7 +131,7 @@ use async.select
 async fn with_timeout<T>(
     future: impl Future<Output = T>,
     timeout: Duration,
-) -> Result<T, TimeoutError> {
+): Result<T, TimeoutError> {
     select! {
         result = future => Ok(result),
         _ = delay(timeout) => Err(TimeoutError),
@@ -144,7 +144,7 @@ async fn with_timeout<T>(
 ```home
 use async.try_join
 
-async fn fetch_data() -> Result<(A, B, C), Error> {
+async fn fetch_data(): Result<(A, B, C), Error> {
     // If any fails, others are cancelled
     let (a, b, c) = try_join!(
         fetch_a(),
@@ -199,7 +199,7 @@ async fn process_items(items: []Item) {
 }
 
 // CPU-bound work on blocking thread pool
-async fn hash_file(path: string) -> Hash {
+async fn hash_file(path: string): Hash {
     spawn_blocking(move || {
         let data = std.fs.read(path).unwrap()
         compute_hash(&data)
@@ -298,7 +298,7 @@ async fn pub_sub() {
 ```home
 use async.stream.{Stream, StreamExt}
 
-async fn generate_numbers() -> impl Stream<Item = i32> {
+async fn generate_numbers(): impl Stream<Item = i32> {
     async_stream! {
         for i in 0..10 {
             delay(Duration.from_millis(100)).await
@@ -359,7 +359,7 @@ struct SharedState {
 }
 
 impl SharedState {
-    async fn get(&self, key: &str) -> ?i32 {
+    async fn get(&self, key: &str): ?i32 {
         let guard = self.data.lock().await
         guard.get(key).copied()
     }
@@ -381,7 +381,7 @@ struct Cache {
 }
 
 impl Cache {
-    async fn get(&self, key: &str) -> ?Value {
+    async fn get(&self, key: &str): ?Value {
         // Multiple readers allowed
         let guard = self.data.read().await
         guard.get(key).cloned()
@@ -405,13 +405,13 @@ struct RateLimiter {
 }
 
 impl RateLimiter {
-    fn new(max_concurrent: usize) -> Self {
+    fn new(max_concurrent: usize): Self {
         RateLimiter {
             semaphore: Semaphore.new(max_concurrent),
         }
     }
 
-    async fn acquire(&self) -> SemaphoreGuard {
+    async fn acquire(&self): SemaphoreGuard {
         self.semaphore.acquire().await.unwrap()
     }
 }
@@ -430,7 +430,7 @@ async fn limited_operation(limiter: &RateLimiter) {
 ```home
 use async.CancellationToken
 
-async fn long_running_task(cancel: CancellationToken) -> Result<Data, Error> {
+async fn long_running_task(cancel: CancellationToken): Result<Data, Error> {
     loop {
         select! {
             _ = cancel.cancelled() => {
@@ -583,7 +583,7 @@ fn main() {
 5. **Use timeouts for external operations**:
 
    ```home
-   async fn fetch_with_timeout(url: string) -> Result<Response, Error> {
+   async fn fetch_with_timeout(url: string): Result<Response, Error> {
        with_timeout(
            http.get(url),
            Duration.from_secs(30),

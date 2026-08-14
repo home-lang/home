@@ -21,7 +21,7 @@ enum Result<T, E> {
     Err(E),
 }
 
-fn parse_number(s: string) -> Result<i32, ParseError> {
+fn parse_number(s: string): Result<i32, ParseError> {
     // Implementation
 }
 
@@ -40,7 +40,7 @@ fn main() {
 Propagate errors concisely with the `?` operator:
 
 ```home
-fn read_config() -> Result<Config, Error> {
+fn read_config(): Result<Config, Error> {
     let file = File.open("config.json")?  // Returns early if Err
     let contents = file.read_to_string()?
     let config = json.parse(contents)?
@@ -94,7 +94,7 @@ enum FileErrorKind {
 }
 
 impl Error for FileError {
-    fn message(&self) -> string {
+    fn message(&self): string {
         match self.kind {
             FileErrorKind.NotFound => "File not found: {self.path}",
             FileErrorKind.PermissionDenied => "Permission denied: {self.path}",
@@ -103,7 +103,7 @@ impl Error for FileError {
         }
     }
 
-    fn source(&self) -> ?&dyn Error {
+    fn source(&self): ?&dyn Error {
         self.source.as_deref()
     }
 }
@@ -120,7 +120,7 @@ enum DatabaseError {
 }
 
 impl Error for DatabaseError {
-    fn message(&self) -> string {
+    fn message(&self): string {
         match self {
             DatabaseError.ConnectionFailed { host, port } => {
                 "Failed to connect to {host}:{port}"
@@ -143,10 +143,10 @@ impl Error for DatabaseError {
 
 ```home
 trait Error {
-    fn message(&self) -> string
-    fn source(&self) -> ?&dyn Error { null }
+    fn message(&self): string
+    fn source(&self): ?&dyn Error { null }
 
-    fn chain(&self) -> ErrorChain {
+    fn chain(&self): ErrorChain {
         ErrorChain { current: Some(self) }
     }
 }
@@ -158,7 +158,7 @@ struct ErrorChain<'a> {
 impl Iterator for ErrorChain<'_> {
     type Item = &dyn Error
 
-    fn next(mut self) -> ?Self.Item {
+    fn next(mut self): ?Self.Item {
         let current = self.current?
         self.current = current.source()
         Some(current)
@@ -172,19 +172,19 @@ impl Iterator for ErrorChain<'_> {
 
 ```home
 impl From<IoError> for AppError {
-    fn from(e: IoError) -> AppError {
+    fn from(e: IoError): AppError {
         AppError.Io(e)
     }
 }
 
 impl From<ParseError> for AppError {
-    fn from(e: ParseError) -> AppError {
+    fn from(e: ParseError): AppError {
         AppError.Parse(e)
     }
 }
 
 // Now ? automatically converts
-fn process_file(path: &str) -> Result<Data, AppError> {
+fn process_file(path: &str): Result<Data, AppError> {
     let file = File.open(path)?        // IoError -> AppError
     let text = file.read_to_string()?  // IoError -> AppError
     let data = parse(text)?            // ParseError -> AppError
@@ -217,11 +217,11 @@ enum ServiceError {
 
 ```home
 trait ResultExt<T, E> {
-    fn context(self, msg: string) -> Result<T, ContextError<E>>
-    fn with_context<F: Fn() -> string>(self, f: F) -> Result<T, ContextError<E>>
+    fn context(self, msg: string): Result<T, ContextError<E>>
+    fn with_context<F: Fn(): string>(self, f: F): Result<T, ContextError<E>>
 }
 
-fn read_config(path: &str) -> Result<Config, Error> {
+fn read_config(path: &str): Result<Config, Error> {
     let contents = std.fs.read_to_string(path)
         .context("Failed to read config file")?
 
@@ -235,7 +235,7 @@ fn read_config(path: &str) -> Result<Config, Error> {
 ### Error Chains
 
 ```home
-fn load_user(id: u64) -> Result<User, Error> {
+fn load_user(id: u64): Result<User, Error> {
     let row = database.query("SELECT _ FROM users WHERE id = ?", id)
         .context("Failed to query database")?
 
@@ -257,7 +257,7 @@ fn load_user(id: u64) -> Result<User, Error> {
 
 ```home
 // Use panic for programming errors, not runtime errors
-fn get_element(arr: []i32, index: usize) -> i32 {
+fn get_element(arr: []i32, index: usize): i32 {
     if index >= arr.len() {
         panic("Index {index} out of bounds for array of length {arr.len()}")
     }
@@ -265,7 +265,7 @@ fn get_element(arr: []i32, index: usize) -> i32 {
 }
 
 // Assertions for invariants
-fn process_positive(n: i32) -> i32 {
+fn process_positive(n: i32): i32 {
     assert(n > 0, "Expected positive number, got {n}")
     n * 2
 }
@@ -303,7 +303,7 @@ fn main() {
 
 ```home
 # [panic_handler]
-fn custom_panic(info: &PanicInfo) -> never {
+fn custom_panic(info: &PanicInfo): never {
     // Log the panic
     log.error("PANIC: {info}")
 
@@ -321,7 +321,7 @@ fn custom_panic(info: &PanicInfo) -> never {
 ### Explicit Try Scopes
 
 ```home
-fn process() -> Result<Output, Error> {
+fn process(): Result<Output, Error> {
     let result = try {
         let a = operation_a()?
         let b = operation_b(a)?
@@ -345,7 +345,7 @@ fn process() -> Result<Output, Error> {
 ### Try Blocks with Different Error Types
 
 ```home
-fn mixed_errors() -> Result<Data, AppError> {
+fn mixed_errors(): Result<Data, AppError> {
     // Convert errors within try block
     let data = try {
         let file_content = read_file()?  // IoError
@@ -363,7 +363,7 @@ fn mixed_errors() -> Result<Data, AppError> {
 ### The Option Type
 
 ```home
-fn find_user(id: u64) -> ?User {
+fn find_user(id: u64): ?User {
     database.users.get(id)
 }
 
@@ -408,7 +408,7 @@ let transposed: Result<?i32, Error> = nested.transpose()  // Ok(Some(42))
 ### Error Aggregation
 
 ```home
-fn validate_all(items: []Item) -> Result<[], Vec<ValidationError>> {
+fn validate_all(items: []Item): Result<[], Vec<ValidationError>> {
     let mut errors = Vec.new()
 
     for item in items {
@@ -431,8 +431,8 @@ fn validate_all(items: []Item) -> Result<[], Vec<ValidationError>> {
 fn retry<T, E>(
     attempts: u32,
     delay: Duration,
-    operation: fn() -> Result<T, E>
-) -> Result<T, E> {
+    operation: fn(): Result<T, E>
+): Result<T, E> {
     let mut last_error: ?E = null
 
     for attempt in 1..=attempts {
@@ -456,7 +456,7 @@ fn retry<T, E>(
 ### Fallback Chains
 
 ```home
-fn get_config() -> Result<Config, Error> {
+fn get_config(): Result<Config, Error> {
     read_from_file("config.json")
         .or_else(|_| read_from_env())
         .or_else(|_| read_from_defaults())
@@ -468,14 +468,14 @@ fn get_config() -> Result<Config, Error> {
 ### With Async Code
 
 ```home
-async fn fetch_data(url: &str) -> Result<Data, Error> {
+async fn fetch_data(url: &str): Result<Data, Error> {
     let response = http.get(url).await?
     let body = response.text().await?
     let data = json.parse(body)?
     Ok(data)
 }
 
-async fn fetch_with_fallback(urls: []&str) -> Result<Data, Error> {
+async fn fetch_with_fallback(urls: []&str): Result<Data, Error> {
     for url in urls {
         match fetch_data(url).await {
             Ok(data) => return Ok(data),
@@ -489,7 +489,7 @@ async fn fetch_with_fallback(urls: []&str) -> Result<Data, Error> {
 ### With Resources
 
 ```home
-fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Error> {
+fn with_transaction<T>(f: fn(&Transaction): Result<T, Error>): Result<T, Error> {
     let tx = database.begin_transaction()?
 
     match f(&tx) {
@@ -511,10 +511,10 @@ fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Err
 
    ```home
    // Good: File might not exist
-   fn read_file(path: &str) -> Result<string, IoError>
+   fn read_file(path: &str): Result<string, IoError>
 
    // Good: Index out of bounds is a bug
-   fn get(arr: []T, i: usize) -> T {
+   fn get(arr: []T, i: usize): T {
        assert(i < arr.len())
        arr[i]
    }
@@ -531,7 +531,7 @@ fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Err
    }
 
    // Avoid: Generic errors
-   fn get_user() -> Result<User, string>
+   fn get_user(): Result<User, string>
    ```
 
 3. **Provide context at error sites**:
@@ -556,7 +556,7 @@ fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Err
 5. **Use early returns for clarity**:
 
    ```home
-   fn process(input: Input) -> Result<Output, Error> {
+   fn process(input: Input): Result<Output, Error> {
        if !input.is_valid() {
            return Err(Error.invalid_input())
        }
