@@ -31104,9 +31104,7 @@ pub const Checker = struct {
         var explicit_this_t: TypeId = types.Primitive.none;
         var value_param_index: u16 = 0;
         var previous_jsdoc_optional_param = false;
-        if (params.len == 0 and self.sourceHasCheckJsDirective()) {
-            try self.applyArgumentsJsDocParamTags(node, &param_types, &param_omittable, &has_rest_param);
-        }
+        if (params.len == 0 and self.sourceHasCheckJsDirective()) try self.applyArgumentsJsDocParamTags(node);
         // Pre-scan: if this is an accessor (`get`/`set`) and any
         // parameter is a `this:` param (which is invalid ÃÂ¢ÃÂÃÂ TS2784
         // already fires), upstream tsc also suppresses TS7006 for any
@@ -56452,12 +56450,48 @@ pub const Checker = struct {
         if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .element_access) return;
         const e = hir_mod.elementOf(self.hir, target);
         if (!self.nodeIsCommonJsExportsObject(e.object)) return;
+        const index_kind = self.hir.kindOf(e.index);
+        if (index_kind == .literal_string or index_kind == .literal_number) return;
         const idx_t = try self.checkExpression(e.index);
         const idx_flags = self.interner.pool.flagsOf(idx_t);
         if (!self.typeMaybeStringLike(idx_t) and !self.typeMaybeNumberIndexLike(idx_t) and !idx_flags.is_symbol) return;
         const idx_name = try self.elementAccessIndexTypeName(e.index, idx_t, null);
         const target_name = try self.currentCommonJsModuleTypeName(target);
         try self.reportElementImplicitAnyMissingIndexSignature(target, idx_t, idx_name, target_name);
+    }
+
+    fn reportClosedCommonJsElementExportMemberAssignmentIfNeeded(self: *Checker, target: NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(target) != .member_access) return;
+        const member = hir_mod.memberOf(self.hir, target);
+        if (member.object == hir_mod.none_node_id) return;
+        const key = (try self.commonJsExportMemberKey(member.object)) orelse return;
+        const object_t = (try self.commonJsExportDeclaredType(target, key)) orelse
+            (try self.priorCommonJsExportInitializerType(target, key)) orelse
+            try self.checkExpression(member.object);
+        if (object_t == types.Primitive.any or object_t == types.Primitive.unknown or
+            object_t == types.Primitive.none or object_t >= self.interner.pool.typeCount()) return;
+        if ((try self.lookupObjectMember(object_t, member.name)) != null) return;
+        try self.reportPropertyDoesNotExistOnType(target, member.name, object_t);
+    }
+
+    fn priorCommonJsExportInitializerType(self: *Checker, anchor: NodeId, key: MemberKey) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        const anchor_start = self.hir.spanOf(anchor).start;
+        var initializer_t: ?TypeId = null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.spanOf(stmt).start >= anchor_start) continue;
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != section) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
+            const candidate = (try self.commonJsExportMemberKey(assignment.target)) orelse continue;
+            if (candidate.obj_name != key.obj_name or candidate.prop_name != key.prop_name) continue;
+            initializer_t = try self.checkExpression(assignment.value);
+        }
+        return initializer_t;
     }
 
     fn nodeIsCommonJsExportsObject(self: *Checker, node: NodeId) bool {
@@ -80788,6 +80822,7 @@ pub const Checker = struct {
     const JsDocParamInfo = struct {
         typ: ?TypeId,
         optional: bool,
+        optional_from_type_suffix: bool,
     };
 
     fn jsDocParamDottedMemberName(tag: ts_parser.jsdoc.Tag, parent_name: []const u8) ?[]const u8 {
@@ -80966,6 +81001,7 @@ pub const Checker = struct {
             found = .{
                 .typ = t,
                 .optional = tag.optional,
+                .optional_from_type_suffix = tag.optional_from_type_suffix,
             };
         }
         return found;
@@ -81003,11 +81039,34 @@ pub const Checker = struct {
                 return .{
                     .typ = t,
                     .optional = tag.optional,
+                    .optional_from_type_suffix = tag.optional_from_type_suffix,
                 };
             }
             current += 1;
         }
         return null;
+    }
+
+    fn signatureParamUsesJsDocOptionalTypeSuffix(
+        self: *Checker,
+        sig: TypeId,
+        param_index: u16,
+    ) CheckError!bool {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return false;
+        if (param_index >= param_nodes.len) return false;
+        const param_node = param_nodes[param_index];
+        if (self.hir.kindOf(param_node) != .parameter) return false;
+        const parameter = hir_mod.parameterOf(self.hir, param_node);
+        const fn_node = self.hir.parentOf(param_node);
+        if (fn_node == hir_mod.none_node_id) return false;
+        const info = if (parameter.name != hir_mod.none_node_id and self.hir.kindOf(parameter.name) == .identifier)
+            try self.jsDocParamInfoForFunctionParam(
+                fn_node,
+                self.string_interner.get(hir_mod.identifierOf(self.hir, parameter.name).name),
+            )
+        else
+            try self.jsDocParamInfoForFunctionParamIndex(fn_node, param_index);
+        return info != null and info.?.optional_from_type_suffix;
     }
 
     fn jsDocParamTypeForFunctionParam(self: *Checker, fn_node: NodeId, param_name: []const u8) CheckError!?TypeId {
@@ -81142,9 +81201,6 @@ pub const Checker = struct {
     fn applyArgumentsJsDocParamTags(
         self: *Checker,
         fn_node: NodeId,
-        param_types: *std.ArrayListUnmanaged(TypeId),
-        param_omittable: *std.ArrayListUnmanaged(bool),
-        has_rest_param: *bool,
     ) CheckError!void {
         const src = self.source orelse return;
         const span = self.hir.spanOf(fn_node);
@@ -81155,15 +81211,7 @@ pub const Checker = struct {
         for (tags) |tag| {
             if (tag.kind != .param_tag) continue;
             const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
-            if (std.mem.startsWith(u8, type_text, "...")) {
-                const elem_text = std.mem.trim(u8, type_text[3..], " \t\r\n");
-                const elem_t = (try self.jsDocTypeTextToTypeAt(src, elem_text, fn_node)) orelse types.Primitive.any;
-                const array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
-                try param_types.append(self.gpa, array_t);
-                try param_omittable.append(self.gpa, true);
-                has_rest_param.* = true;
-                return;
-            }
+            if (std.mem.startsWith(u8, type_text, "...")) return;
             if (!uses_arguments) continue;
             if (tag.name.len == 0) continue;
             const pos = if (std.mem.indexOf(u8, jsdoc.body, tag.name)) |rel|
@@ -95207,6 +95255,9 @@ pub const Checker = struct {
                 if (a.op == null and target_kind == .element_access) {
                     try self.reportCommonJsDynamicExportElementAccessIfNeeded(a.target);
                 }
+                if (a.op == null and target_kind == .member_access) {
+                    try self.reportClosedCommonJsElementExportMemberAssignmentIfNeeded(a.target);
+                }
                 const target_is_eval = target_kind == .identifier and
                     std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, a.target).name), "eval");
                 var target_t = if (target_is_eval)
@@ -108510,7 +108561,9 @@ pub const Checker = struct {
             if (try self.sameEnclosingTypeParameterDisplay(arg, arg_t, param_t)) continue;
             if (self.engine.isAssignableTo(arg_t, param_t) catch false) continue;
 
-            const raw_display_param_t = if (fixed_pos >= min_required and self.typeIncludesUndefined(param_t)) blk: {
+            const raw_display_param_t = if (fixed_pos >= min_required and
+                self.typeIncludesUndefined(param_t) and
+                !try self.signatureParamUsesJsDocOptionalTypeSuffix(sig, @intCast(fixed_pos))) blk: {
                 const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
                 break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
                     param_t
@@ -140446,7 +140499,8 @@ pub const Checker = struct {
                 }
                 if (!emitted) {
                     const raw_display_param_t = if ((union_composite or fixed_pos >= fixed_min_required) and
-                        self.typeIncludesUndefined(param_t))
+                        self.typeIncludesUndefined(param_t) and
+                        !try self.signatureParamUsesJsDocOptionalTypeSuffix(sig, @intCast(fixed_pos)))
                     blk: {
                         const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
                         break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
