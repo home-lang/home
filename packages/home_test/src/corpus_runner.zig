@@ -26915,6 +26915,55 @@ const harness_prelude =
     \\  },
     \\  inspect(value, options) {
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
+    \\    if (!options || typeof options !== "object") options = { colors: options === true, depth: arguments.length >= 3 ? arguments[2] : undefined };
+    \\    if (options.depth !== undefined && Number(options.depth) < 0) throw new RangeError("The value of depth is out of range");
+    \\    if (options.depth === Infinity) {
+    \\      const probeSeen = new Set();
+    \\      const probeDepth = item => {
+    \\        if (!item || (typeof item !== "object" && typeof item !== "function") || probeSeen.has(item)) return;
+    \\        probeSeen.add(item);
+    \\        for (const key of Object.getOwnPropertyNames(item)) {
+    \\          const descriptor = Object.getOwnPropertyDescriptor(item, key);
+    \\          if (descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value")) probeDepth(descriptor.value);
+    \\        }
+    \\        const probeConstructorName = item && item.constructor && item.constructor.name;
+    \\        if (/Error$/.test(String(item.name || probeConstructorName || "")) && item.object !== undefined) probeDepth(item.object);
+    \\      };
+    \\      probeDepth(value);
+    \\    }
+    \\    if (value && (typeof value === "object" || typeof value === "function")) {
+    \\      const custom = value[__home_util_inspect_custom];
+    \\      if (typeof custom === "function" && custom !== Bun.inspect) {
+    \\        const depth = options && options.depth !== undefined ? Number(options.depth) : 2;
+    \\        const inspected = custom.call(value, depth, options || {}, Bun.inspect);
+    \\        if (inspected !== value) return typeof inspected === "string" ? inspected : Bun.inspect(inspected, options);
+    \\      }
+    \\    }
+    \\    if (options.depth === Infinity || Number(options.depth) >= 0x10000) {
+    \\      let errorCursor = value;
+    \\      let errorDepth = 0;
+    \\      while (errorCursor && typeof errorCursor === "object") {
+    \\        const errorConstructorName = errorCursor.constructor && errorCursor.constructor.name;
+    \\        if (!/Error$/.test(String(errorCursor.name || errorConstructorName || "")) || errorCursor.object === undefined) break;
+    \\        if (++errorDepth >= 8192) throw new RangeError("Maximum call stack size exceeded.");
+    \\        errorCursor = errorCursor.object;
+    \\      }
+    \\      const deepSeen = new Set();
+    \\      const inspectDeep = item => {
+    \\        if (item === null) return "null";
+    \\        if (typeof item === "string") return JSON.stringify(item);
+    \\        if (typeof item === "number" || typeof item === "boolean" || typeof item === "bigint" || item === undefined) return String(item);
+    \\        if (typeof item === "function") return "[Function" + (item.name ? ": " + item.name : "") + "]";
+    \\        if (deepSeen.has(item)) return "[Circular]";
+    \\        deepSeen.add(item);
+    \\        const constructorName = item && item.constructor && item.constructor.name;
+    \\        if (/Error$/.test(String(item.name || constructorName || ""))) return String(item.name || constructorName || "Error") + ": " + String(item.message || "");
+    \\        if (Array.isArray(item)) return "[ " + item.map(inspectDeep).join(", ") + " ]";
+    \\        const keys = Object.keys(item);
+    \\        return "{ " + keys.map(key => inspectKey(key) + ": " + inspectDeep(item[key])).join(", ") + " }";
+    \\      };
+    \\      return inspectDeep(value);
+    \\    }
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
     \\    if (value && value.__home_timer_record && typeof value.valueOf === "function") {
     \\      return "Timeout (#" + String(+value) + (value.__home_timer_record.interval ? ", repeats" : "") + ")";
@@ -27188,15 +27237,15 @@ const harness_prelude =
     \\      // Bun quotes object keys that aren't valid identifier names.
     \\      return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
     \\    }
-    \\    function inspectArray(item) {
+    \\    function inspectArray(item, level) {
     \\      const extraKeys = Object.keys(item).filter(key => !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= item.length);
     \\      const sparse = Array.from({ length: item.length }, (_, index) => Object.prototype.hasOwnProperty.call(item, index)).some(has => !has);
-    \\      if (!sparse && extraKeys.length === 0) return item.length === 0 ? "[]" : "[ " + item.map(inspectSimple).join(", ") + " ]";
+    \\      if (!sparse && extraKeys.length === 0) return item.length === 0 ? "[]" : "[ " + item.map(entry => inspectSimple(entry, level + 1)).join(", ") + " ]";
     \\      const parts = [];
     \\      let index = 0;
     \\      while (index < item.length) {
     \\        if (Object.prototype.hasOwnProperty.call(item, index)) {
-    \\          parts.push(inspectSimple(item[index]));
+    \\          parts.push(inspectSimple(item[index], level + 1));
     \\          index++;
     \\          continue;
     \\        }
@@ -27205,29 +27254,37 @@ const harness_prelude =
     \\        parts.push(String(end - index) + " x empty items");
     \\        index = end;
     \\      }
-    \\      for (const key of extraKeys) parts.push(inspectKey(key) + ": " + inspectSimple(item[key]));
+    \\      for (const key of extraKeys) parts.push(inspectKey(key) + ": " + inspectSimple(item[key], level + 1));
     \\      return "[\n  " + parts.join(", ") + "\n]";
     \\    }
-    \\    function inspectSimple(item) {
+    \\    function inspectSimple(item, level) {
+    \\      level = level || 0;
     \\      if (item === null) return "null";
     \\      if (item && typeof item.__home_inspect === "string") return item.__home_inspect;
     \\      if (typeof item === "function") return Bun.inspect(item);
     \\      if (typeof item === "string") return JSON.stringify(item);
-    \\      if (typeof item === "number" || typeof item === "boolean") return String(item);
+    \\      if (typeof item === "number") return options.colors ? "\x1b[33m" + String(item) + "\x1b[0m" : String(item);
+    \\      if (typeof item === "boolean") return options.colors ? "\x1b[36m" + String(item) + "\x1b[0m" : String(item);
     \\      if (typeof item === "bigint") return String(item) + "n";
     \\      if (item === undefined) return "undefined";
+    \\      if (typeof item === "object" && options.depth !== undefined && Number.isFinite(Number(options.depth)) && level > Number(options.depth)) return "[Object ...]";
+    \\      const itemTag = Object.prototype.toString.call(item);
+    \\      const itemConstructorName = item && item.constructor && item.constructor.name;
+    \\      if (item instanceof Error || itemTag === "[object Error]" || /Error$/.test(String(item.name || itemConstructorName || ""))) {
+    \\        return String(item.stack || (String(item.name || "Error") + ": " + String(item.message || "")));
+    \\      }
     \\      if (item instanceof Date) return Number.isFinite(item.getTime()) ? item.toISOString() : "Invalid Date";
     \\      if (item instanceof RegExp) return String(item);
-    \\      if (Array.isArray(item)) return inspectArray(item);
+    \\      if (Array.isArray(item)) return inspectArray(item, level);
     \\      if (ArrayBuffer.isView(item)) {
     \\        const name = item && item.constructor && item.constructor.name ? item.constructor.name : "TypedArray";
-    \\        return name + "(" + String(item.length || 0) + ") [" + (item.length === 0 ? "]" : " " + Array.from(item).map(inspectSimple).join(", ") + " ]");
+    \\        return name + "(" + String(item.length || 0) + ") [" + (item.length === 0 ? "]" : " " + Array.from(item).map(entry => inspectSimple(entry, level + 1)).join(", ") + " ]");
     \\      }
     \\      if (item instanceof Map) {
     \\        const entries = Array.from(item.entries());
     \\        if (entries.length === 0) return "Map {}";
     \\        const lines = ["Map(" + entries.length + ") {"];
-    \\        for (const entry of entries) lines.push("  " + inspectSimple(entry[0]) + ": " + inspectSimple(entry[1]) + ",");
+    \\        for (const entry of entries) lines.push("  " + inspectSimple(entry[0], level + 1) + ": " + inspectSimple(entry[1], level + 1) + ",");
     \\        lines.push("}");
     \\        return lines.join("\n");
     \\      }
@@ -27235,14 +27292,14 @@ const harness_prelude =
     \\        const entries = Array.from(item.values());
     \\        if (entries.length === 0) return "Set {}";
     \\        const lines = ["Set(" + entries.length + ") {"];
-    \\        for (const entry of entries) lines.push("  " + inspectSimple(entry) + ",");
+    \\        for (const entry of entries) lines.push("  " + inspectSimple(entry, level + 1) + ",");
     \\        lines.push("}");
     \\        return lines.join("\n");
     \\      }
     \\      if (typeof Headers === "function" && item instanceof Headers) return Bun.inspect(item);
     \\      if (typeof URL === "function" && item instanceof URL) return item.href;
-    \\      if (Object.prototype.toString.call(item) === "[object Arguments]") return "[ " + Array.prototype.map.call(item, inspectSimple).join(", ") + " ]";
-    \\      if (Object.getPrototypeOf(item) === null) return "[Object: null prototype] " + (Object.keys(item).length === 0 ? "{}" : inspectSimple(Object.assign({}, item)));
+    \\      if (Object.prototype.toString.call(item) === "[object Arguments]") return "[ " + Array.prototype.map.call(item, entry => inspectSimple(entry, level + 1)).join(", ") + " ]";
+    \\      if (Object.getPrototypeOf(item) === null) return "[Object: null prototype] " + (Object.keys(item).length === 0 ? "{}" : inspectSimple(Object.assign({}, item), level + 1));
     \\      if (typeof item === "object") {
     \\        const objectKeys = Object.keys(item);
     \\        if (objectKeys.length === 0) return "{}";
@@ -27253,10 +27310,12 @@ const harness_prelude =
     \\          if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
     \\            rendered = descriptor.get && descriptor.set ? "[Getter/Setter]" : (descriptor.get ? "[Getter]" : "[Setter]");
     \\          } else {
-    \\            rendered = inspectSimple(descriptor ? descriptor.value : item[key]);
+    \\            rendered = inspectSimple(descriptor ? descriptor.value : item[key], level + 1);
     \\          }
+    \\          rendered = String(rendered).replace(/\n/g, "\n  ");
     \\          lines.push("  " + inspectKey(key) + ": " + rendered + ",");
     \\        }
+    \\        if (options.compact === true) return "{ " + lines.slice(1).map(line => line.trim().replace(/,$/, "")).join(", ") + " }";
     \\        lines.push("}");
     \\        return lines.join("\n");
     \\      }
@@ -88871,6 +88930,32 @@ test "bootstrap runner preserves node URL contracts" {
 
         if (summary.failed != 0 or summary.unsupported != 0) {
             std.debug.print("node URL contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves node util foundation contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize }{
+        .{ .path = "js/node/util/bun-inspect.test.ts", .passed = 12, .todo = 0 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node util foundation failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
