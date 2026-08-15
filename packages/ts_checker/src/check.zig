@@ -17323,55 +17323,7 @@ pub const Checker = struct {
             (!has_contextual_return_value_body or f.flags.is_generator))
         {
             if (f.flags.is_generator) {
-                // Generator return-type inference.
-                // Walk the body for `yield` expressions, collect their
-                // value types into T, then synthesize a structural
-                // `Generator<T, void, unknown>` shape. The shape has a
-                // `[i: number]: T` indexer so `for (const x of g())`
-                // discovers the element type via the existing for-of
-                // path that consults `objectNumberIndex`.
-                var yield_types: std.ArrayListUnmanaged(TypeId) = .empty;
-                defer yield_types.deinit(self.gpa);
-                var next_types: std.ArrayListUnmanaged(TypeId) = .empty;
-                defer next_types.deinit(self.gpa);
-                try self.collectYieldTypes(f.body, &yield_types, &next_types, f.flags.is_async);
-                const yield_t: TypeId = if (yield_types.items.len == 0)
-                    types.Primitive.never
-                else if (yield_types.items.len == 1)
-                    yield_types.items[0]
-                else
-                    self.interner.internUnion(yield_types.items) catch return error.OutOfMemory;
-                if (yield_types.items.len > 1) {
-                    try self.registerDiagnosticUnionDisplayName(yield_t, yield_types.items);
-                }
-                var gen_ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
-                defer gen_ret_types.deinit(self.gpa);
-                try self.collectReturnTypes(f.body, &gen_ret_types);
-                const gen_return_t: TypeId = if (gen_ret_types.items.len == 0)
-                    types.Primitive.void_t
-                else if (gen_ret_types.items.len == 1)
-                    gen_ret_types.items[0]
-                else
-                    self.interner.internUnion(gen_ret_types.items) catch return error.OutOfMemory;
-                if (self.sourceLibDirectiveNeedsIterableIterator()) {
-                    const missing_iter_name = if (f.flags.is_async) "AsyncIterableIterator" else "IterableIterator";
-                    try self.reportMissingGlobalTypeOnce(node, missing_iter_name);
-                }
-                const parent = self.hir.parentOf(node);
-                const parent_kind = self.hir.kindOf(parent);
-                const is_contextual_call_argument = if (parent_kind == .call_expr or parent_kind == .new_expr)
-                    hir_mod.callOf(self.hir, parent).callee != node
-                else
-                    false;
-                const next_t = if (next_types.items.len == 0)
-                    (if (is_contextual_call_argument) types.Primitive.any else types.Primitive.unknown)
-                else if (next_types.items.len == 1)
-                    next_types.items[0]
-                else if (std.mem.indexOfScalar(TypeId, next_types.items, types.Primitive.any) != null)
-                    types.Primitive.any
-                else
-                    self.interner.internIntersection(next_types.items) catch return error.OutOfMemory;
-                const gen_t = try self.synthesizeGeneratorTypeFull(yield_t, gen_return_t, next_t, f.flags.is_async);
+                const gen_t = try self.inferredGeneratorTypeForFunction(node, f, true);
                 try self.refineSignatureReturn(node, gen_t);
             } else {
                 var ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -26986,7 +26938,9 @@ pub const Checker = struct {
         if (source_t != types.Primitive.none and !self.interner.isSignature(source_t)) return source_t;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         const contextual_predicate = self.signature_predicates.get(target_sig);
-        const source_ret = if (contextual_predicate != null)
+        const source_ret = if (f.flags.is_generator)
+            try self.inferredGeneratorTypeForFunction(fn_node, f, false)
+        else if (contextual_predicate != null)
             self.interner.signatureReturn(target_sig) orelse types.Primitive.boolean_t
         else if (f.body != hir_mod.none_node_id and self.hir.kindOf(f.body) == .block_stmt) blk: {
             var ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -27005,7 +26959,7 @@ pub const Checker = struct {
             self.interner.signatureReturn(source_t) orelse types.Primitive.any
         else
             types.Primitive.any;
-        const effective_source_ret = if (f.flags.is_async and contextual_predicate == null)
+        const effective_source_ret = if (f.flags.is_async and !f.flags.is_generator and contextual_predicate == null)
             try self.buildStructuralPromise(source_ret)
         else
             source_ret;
@@ -29334,6 +29288,61 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn inferredGeneratorTypeForFunction(
+        self: *Checker,
+        node: NodeId,
+        f: hir_mod.FnDeclPayload,
+        report_missing_global: bool,
+    ) CheckError!TypeId {
+        var yield_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer yield_types.deinit(self.gpa);
+        var next_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer next_types.deinit(self.gpa);
+        try self.collectYieldTypes(f.body, &yield_types, &next_types, f.flags.is_async);
+
+        const yield_t: TypeId = if (yield_types.items.len == 0)
+            types.Primitive.never
+        else if (yield_types.items.len == 1)
+            yield_types.items[0]
+        else
+            self.interner.internUnion(yield_types.items) catch return error.OutOfMemory;
+        if (yield_types.items.len > 1) {
+            try self.registerDiagnosticUnionDisplayName(yield_t, yield_types.items);
+        }
+
+        var return_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer return_types.deinit(self.gpa);
+        try self.collectReturnTypes(f.body, &return_types);
+        const return_t: TypeId = if (return_types.items.len == 0)
+            types.Primitive.void_t
+        else if (return_types.items.len == 1)
+            return_types.items[0]
+        else
+            self.interner.internUnion(return_types.items) catch return error.OutOfMemory;
+
+        if (report_missing_global and self.sourceLibDirectiveNeedsIterableIterator()) {
+            const missing_name = if (f.flags.is_async) "AsyncIterableIterator" else "IterableIterator";
+            try self.reportMissingGlobalTypeOnce(node, missing_name);
+        }
+
+        const parent = self.hir.parentOf(node);
+        const parent_kind = self.hir.kindOf(parent);
+        const is_contextual_call_argument = if (parent_kind == .call_expr or parent_kind == .new_expr)
+            hir_mod.callOf(self.hir, parent).callee != node
+        else
+            false;
+        const next_t = if (next_types.items.len == 0)
+            (if (is_contextual_call_argument) types.Primitive.any else types.Primitive.unknown)
+        else if (next_types.items.len == 1)
+            next_types.items[0]
+        else if (std.mem.indexOfScalar(TypeId, next_types.items, types.Primitive.any) != null)
+            types.Primitive.any
+        else
+            self.interner.internIntersection(next_types.items) catch return error.OutOfMemory;
+
+        return try self.synthesizeGeneratorTypeFull(yield_t, return_t, next_t, f.flags.is_async);
     }
 
     fn reportImplicitAnyYieldOperands(self: *Checker, node: NodeId) CheckError!void {
@@ -37517,11 +37526,6 @@ pub const Checker = struct {
                     var computed_op_key_t: TypeId = types.Primitive.none;
                     if (is_mapped_member_syntax) {
                         try self.report(m, 7061, "A mapped type may not declare properties or methods.");
-                        const binary = hir_mod.binopOf(self.hir, op.key);
-                        const lhs = hir_mod.identifierOf(self.hir, binary.lhs);
-                        const rhs = hir_mod.identifierOf(self.hir, binary.rhs);
-                        try self.reportCannotFindNamePlain(binary.lhs, lhs.name);
-                        try self.reportTypeOnlyUsedAsValueOnce(binary.rhs, rhs.name);
                     } else if (op_is_computed) {
                         const tp_ref_node = self.computedNameTypeParamReferenceNode(op.key, type_params);
                         if (tp_ref_node != hir_mod.none_node_id) {
@@ -48088,9 +48092,11 @@ pub const Checker = struct {
         const sf = self.interner.pool.flagsOf(source);
         const tf = self.interner.pool.flagsOf(target);
         if (!sf.is_object_type or !tf.is_object_type) return false;
+        const source_string_index = self.interner.objectStringIndex(source);
+        const source_number_index = self.interner.objectNumberIndex(source);
         const index_pairs = [_]struct { source: TypeId, target: TypeId }{
-            .{ .source = self.interner.objectStringIndex(source), .target = self.interner.objectStringIndex(target) },
-            .{ .source = self.interner.objectNumberIndex(source), .target = self.interner.objectNumberIndex(target) },
+            .{ .source = source_string_index, .target = self.interner.objectStringIndex(target) },
+            .{ .source = if (source_number_index != types.Primitive.none) source_number_index else source_string_index, .target = self.interner.objectNumberIndex(target) },
             .{ .source = self.interner.objectSymbolIndex(source), .target = self.interner.objectSymbolIndex(target) },
         };
         for (index_pairs) |pair| {
@@ -89543,6 +89549,16 @@ pub const Checker = struct {
                         annotation_text_mismatch = texts;
                         break :blk false;
                     }
+                    if ((self.hir.kindOf(prior_annotation) == .union_type) !=
+                        (self.hir.kindOf(v.type_annotation) == .union_type))
+                    {
+                        const prior_text = self.annotationSourceText(prior_annotation);
+                        const current_text = self.annotationSourceText(v.type_annotation);
+                        if (prior_text != null and current_text != null) {
+                            annotation_text_mismatch = .{ .prior = prior_text.?, .current = current_text.? };
+                            break :blk false;
+                        }
+                    }
                 }
                 // Identical interned types are trivially the same type —
                 // no TS2403 mismatch is possible. This must precede the
@@ -126782,7 +126798,6 @@ pub const Checker = struct {
         if (try self.symbolicTupleLayoutsAssignable(arg_t, constraint)) |tuple_ok| {
             if (tuple_ok) return;
         }
-        if (try self.tryReportSinglePropertyMissing(arg_node, arg_node, arg_t, constraint)) return;
         const signature_constraint = self.typeArgSignatureConstraint(constraint);
         const allow_signature_display = signature_constraint != null;
         const arg_text = (try self.typeArgConstraintTypeNameAtNode(arg_node, arg_t, allow_signature_display)) orelse return;
@@ -142313,11 +142328,11 @@ pub const Checker = struct {
         const anchor = if (fixed_count < args.len) args[fixed_count] else call_node;
         try self.report(
             anchor,
-            TsCodes.argument_type_mismatch,
+            TsCodes.property_missing_required,
             try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
-                "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
-                .{ source_name, target_name },
+                "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
+                .{ self.string_interner.get(missing_name.?), source_name, target_name },
             ),
         );
         return true;
@@ -159137,6 +159152,44 @@ pub const Checker = struct {
         return try self.normalizedTypeAnnotationText(text);
     }
 
+    fn visibleAliasAnnotationHasConcreteIndexSignature(self: *Checker, node: NodeId) CheckError!bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return false;
+        const alias_name: hir_mod.StringId = switch (self.hir.kindOf(annotation)) {
+            .identifier => hir_mod.identifierOf(self.hir, annotation).name,
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, annotation);
+                if (ref.qualifier_len != 0 or ref.args_len != 0) break :blk 0;
+                break :blk ref.name;
+            },
+            else => 0,
+        };
+        if (alias_name == 0) return false;
+        const decl = self.findVisibleNamedTypeDecl(annotation, alias_name) orelse return false;
+        if (self.hir.kindOf(decl) != .type_alias_decl) return false;
+        const alias = hir_mod.typeAliasOf(self.hir, decl);
+        if (alias.aliased == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(alias.aliased) != .type_ref) return false;
+        const ref = hir_mod.typeRefOf(self.hir, alias.aliased);
+        if (ref.qualifier_len != 0 or ref.args_len == 0) return false;
+        var has_concrete_arg = false;
+        for (hir_mod.typeRefArgs(self.hir, alias.aliased)) |arg| {
+            if (!self.typeNodeIsBareName(arg, "any")) {
+                has_concrete_arg = true;
+                break;
+            }
+        }
+        if (!has_concrete_arg) return false;
+        if (self.findVisibleNamedTypeDecl(alias.aliased, ref.name)) |referenced_decl| {
+            if (self.hir.kindOf(referenced_decl) == .interface_decl) {
+                for (hir_mod.interfaceMembers(self.hir, referenced_decl)) |member| {
+                    if (self.hir.kindOf(member) == .index_signature) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn allocIntersectionNameWithPrimitiveWrappers(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         if (t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(t).is_intersection) return null;
@@ -159439,6 +159492,8 @@ pub const Checker = struct {
             (self.interner.objectStringIndex(source) != types.Primitive.none or
                 self.interner.objectNumberIndex(source) != types.Primitive.none or
                 self.interner.objectSymbolIndex(source) != types.Primitive.none);
+        const source_annotation_has_concrete_index_signature = try self.visibleAliasAnnotationHasConcreteIndexSignature(value_node);
+        if (missing_total >= 2 and source_annotation_has_concrete_index_signature) return false;
         if (missing_total >= 2 and
             !(value_node != hir_mod.none_node_id and self.hir.kindOf(value_node) == .object_literal) and
             !class_shape_mismatch and
@@ -175592,6 +175647,24 @@ test "checker: TS2739 lists 2-5 missing properties from an object literal" {
     try T.expect(!checkerHasCode(b, TsCodes.property_missing_required));
 }
 
+test "checker: an indexed source alias keeps the general TS2322 relation" {
+    const s = try newSetup(
+        \\interface NumberTo<T> { [x: number]: T; }
+        \\type NumberToNumber = NumberTo<number>;
+        \\interface Obj { hello: string; world: number; }
+        \\declare let source: NumberToNumber;
+        \\let target: Obj = source;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'NumberToNumber' is not assignable to type 'Obj'.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+}
+
 test "checker: TS2740 truncates >5 missing properties with 'and N more'" {
     const b = try newBoundSetup("const x: { a: number; b: number; c: number; d: number; e: number; f: number } = {};");
     defer destroyBoundSetup(b);
@@ -183602,6 +183675,22 @@ test "checker: class implements interface treats method parameters bivariantly" 
     }
 }
 
+test "checker: class string index satisfies compatible numeric index requirements" {
+    const s = try newSetup(
+        \\interface Base { foo: string; }
+        \\interface Derived extends Base { bar: string; }
+        \\interface Derived2 extends Derived { baz: string; }
+        \\interface A<T extends Base> { [x: number]: T; }
+        \\class GoodConcrete implements A<Derived> { [x: string]: Derived2; }
+        \\class GoodBase implements A<Base> { [x: string]: Derived; }
+        \\class BadConcrete implements A<Derived> { [x: string]: Base; }
+        \\class BadGeneric<T extends Derived> implements A<T> { [x: string]: Derived; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
+}
+
 test "checker: generic implements compares method type parameter constraints" {
     const s = try newSetup(
         \\class A { a; }
@@ -189917,9 +190006,9 @@ test "checker: calls and type constraints elaborate one missing property" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_missing_required));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: const enum literal unions assign to enum annotations" {
@@ -233987,21 +234076,21 @@ test "checker: custom array rests check the synthesized argument-list type" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.property_missing_required));
     try T.expect(checkerHasCodeAndMessage(
         s,
-        TsCodes.argument_type_mismatch,
-        "Argument of type '[]' is not assignable to parameter of type 'CoolArray<never>'.",
+        TsCodes.property_missing_required,
+        "Property 'hello' is missing in type '[]' but required in type 'CoolArray<never>'.",
     ));
     try T.expect(checkerHasCodeAndMessage(
         s,
-        TsCodes.argument_type_mismatch,
-        "Argument of type '[number, number]' is not assignable to parameter of type 'CoolArray<unknown>'.",
+        TsCodes.property_missing_required,
+        "Property 'hello' is missing in type '[number, number]' but required in type 'CoolArray<unknown>'.",
     ));
     try T.expect(checkerHasCodeAndMessage(
         s,
-        TsCodes.argument_type_mismatch,
-        "Argument of type 'number[]' is not assignable to parameter of type 'CoolArray<number>'.",
+        TsCodes.property_missing_required,
+        "Property 'hello' is missing in type 'number[]' but required in type 'CoolArray<number>'.",
     ));
 }
 
@@ -238113,8 +238202,8 @@ test "checker: mapped syntax in class fields uses TS7061" {
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, 7061));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, 1166));
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.cannot_find_name));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_only_used_as_value));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_used_as_value));
 }
 
 test "checker: standard class decorator arity uses TS1238 diagnostic heads" {
