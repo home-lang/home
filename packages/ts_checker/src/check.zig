@@ -5327,7 +5327,30 @@ pub const Checker = struct {
         // emission and the conformance ratchet's exact-baseline diff
         // doesn't trip on ordering alone.
         self.sortDiagnosticsByPosition();
-        if (self.source != null) try self.applyDirectives(root);
+        if (self.source != null) {
+            try self.applyDirectives(root);
+            try self.restoreJsNamespaceSyntaxDiagnostics(root);
+            self.sortDiagnosticsByPosition();
+        }
+    }
+
+    fn restoreJsNamespaceSyntaxDiagnostics(self: *Checker, node: NodeId) CheckError!void {
+        const statements = self.containerStatements(node) orelse return;
+        for (statements) |raw| {
+            const declaration = self.unwrapExportDecl(raw);
+            if (declaration == hir_mod.none_node_id or self.hir.kindOf(declaration) != .namespace_decl) continue;
+            const namespace = hir_mod.namespaceOf(self.hir, declaration);
+            if (!self.namespaceNameIsStringLiteral(namespace.name) and
+                self.sourcePositionIsJsLike(self.hir.spanOf(declaration).start))
+            {
+                const anchor = if (namespace.name != hir_mod.none_node_id) namespace.name else declaration;
+                const pos = self.hir.spanOf(anchor).start;
+                if (!self.hasDiagnosticAtPosition(TsCodes.ts_only_decl_in_js, pos)) {
+                    try self.reportAt(anchor, pos, TsCodes.ts_only_decl_in_js, "'namespace' declarations can only be used in TypeScript files.");
+                }
+            }
+            try self.restoreJsNamespaceSyntaxDiagnostics(declaration);
+        }
     }
 
     fn anchorJsDocValueUsedAsTypeDiagnostics(self: *Checker) CheckError!void {
@@ -10036,9 +10059,9 @@ pub const Checker = struct {
         try self.checkGlobalAugmentationDiagnostics(node);
         try self.walkNamespaceForCrossFileMergeMismatch(node);
         const ns = hir_mod.namespaceOf(self.hir, node);
-        // Skip TS8006 for ambient `declare module "fs" { ... }` forms ÃÂ¢ÃÂÃÂ
-        // upstream tsc only fires on plain `namespace` declarations.
-        if (!self.namespaceIsAmbient(node) and !self.namespaceNameIsStringLiteral(ns.name)) {
+        // String-literal external modules do not use namespace syntax.
+        // Identifier-named declarations still receive TS8006 when ambient.
+        if (!self.namespaceNameIsStringLiteral(ns.name)) {
             try self.checkTsOnlyDeclInJs(node, "namespace", ns.name);
         }
         // `declare namespace M { function foo(); }` puts every inner
@@ -21450,6 +21473,28 @@ pub const Checker = struct {
         return false;
     }
 
+    fn sourceHasReferenceTypesDirective(self: *Checker, wanted: []const u8) bool {
+        const src = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            const reference_at = std.mem.indexOf(u8, line, "<reference") orelse continue;
+            const tail = line[reference_at + "<reference".len ..];
+            const types_at = jsDocWordIndex(tail, "types") orelse continue;
+            var pos = types_at + "types".len;
+            while (pos < tail.len and std.ascii.isWhitespace(tail[pos])) : (pos += 1) {}
+            if (pos >= tail.len or tail[pos] != '=') continue;
+            pos += 1;
+            while (pos < tail.len and std.ascii.isWhitespace(tail[pos])) : (pos += 1) {}
+            if (pos >= tail.len or (tail[pos] != '"' and tail[pos] != '\'')) continue;
+            const quote = tail[pos];
+            const value_start = pos + 1;
+            const value_end = std.mem.indexOfScalarPos(u8, tail, value_start, quote) orelse continue;
+            if (std.ascii.eqlIgnoreCase(tail[value_start..value_end], wanted)) return true;
+        }
+        return false;
+    }
+
     fn referenceLibNameIsKnown(name: []const u8) bool {
         inline for (reference_lib_names) |candidate| {
             if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
@@ -31448,6 +31493,16 @@ pub const Checker = struct {
             const jsdoc_param_t: ?TypeId = if (jsdoc_param_info) |info| info.typ else null;
             const jsdoc_marks_optional = if (jsdoc_param_info) |info| info.optional else false;
             const has_jsdoc_param_type = jsdoc_param_t != null;
+            if (f.flags.is_setter and jsdoc_marks_optional) {
+                const jsdoc = self.leadingJsDocBodyWithStart(self.source orelse "", self.hir.spanOf(node).start);
+                const pos: ?u32 = if (jsdoc) |body|
+                    @intCast(body.start + (std.mem.indexOf(u8, body.body, "@param") orelse 0))
+                else
+                    null;
+                if (pos == null or !self.hasDiagnosticAtPosition(1051, pos.?)) {
+                    try self.reportAt(node, pos, 1051, "A 'set' accessor cannot have an optional parameter.");
+                }
+            }
             if (pp.name != hir_mod.none_node_id and
                 (self.hir.kindOf(pp.name) == .object_pattern or self.hir.kindOf(pp.name) == .array_pattern) and
                 jsdoc_marks_optional and
@@ -37943,12 +37998,14 @@ pub const Checker = struct {
                     }
                     if (self.strict_flags.strict_property_initialization and
                         !op.is_static and
-                        op.type_annotation != hir_mod.none_node_id and
+                        (op.type_annotation != hir_mod.none_node_id or jsdoc_field_t != null) and
                         op.value == hir_mod.none_node_id and
-                        !self.typeAnnotationContainsUnresolvedRef(op.type_annotation) and
+                        (op.type_annotation == hir_mod.none_node_id or
+                            !self.typeAnnotationContainsUnresolvedRef(op.type_annotation)) and
                         !self.typeExplicitlyIncludesUndefined(field_t) and
                         !(self.classFieldTypeIsAnyOrUnknown(field_t) and
-                            self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) and
+                            (op.type_annotation == hir_mod.none_node_id or
+                                self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation))) and
                         !self.classFieldHasDefiniteAssertion(m) and
                         !self.classFieldHasOptionalToken(m) and
                         !is_abstract_property and
@@ -84468,7 +84525,16 @@ pub const Checker = struct {
 
         for (tags) |tag| {
             if (tag.kind != .type_tag) continue;
-            if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) |t| return t;
+            if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) |t| {
+                const raw_type = jsDocBlockTagBracedTypeText(jsdoc_body, "@type");
+                if (raw_type) |raw| {
+                    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+                    if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '=') {
+                        return try self.unionWithUndefined(t);
+                    }
+                }
+                return t;
+            }
             if (try self.jsDocQualifiedNameTypeForNode(src, tag.type_text, node)) |t| return t;
         }
         return null;
@@ -84903,6 +84969,13 @@ pub const Checker = struct {
     fn jsDocTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
         const trimmed = jsDocTrimOuterParens(std.mem.trim(u8, type_text, " \t\r\n"));
         if (trimmed.len == 0) return null;
+        if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '=') {
+            const inner_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t\r\n");
+            if (inner_text.len > 0) {
+                const inner_t = (try self.jsDocTypeTextToType(src, inner_text)) orelse return null;
+                return try self.unionWithUndefined(inner_t);
+            }
+        }
         if (jsDocClosureFunctionOpen(trimmed) != null) return types.Primitive.any;
         if (std.mem.eql(u8, trimmed, "this") and self.jsDocTypeTextIsInCheckedJsContext()) {
             if (self.jsDocThisTypeComesFromReturnTag(src, trimmed)) {
@@ -116337,6 +116410,7 @@ pub const Checker = struct {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
+                if (self.sourceHasReferenceTypesDirective("node")) return types.Primitive.any;
                 // In JS-like CommonJS script files, `module` /
                 // `require` are part of the implicit environment under
                 // tsc's `--allowJs` policy. Once the same `.js` section

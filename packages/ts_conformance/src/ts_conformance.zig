@@ -6612,6 +6612,16 @@ pub fn loadDirectoryWithOptions(
             merged.strict_null_checks = true;
             strict_flags = merged;
         }
+        if (!options.honor_directives and
+            options.strict_default_for_expected_errors and
+            expects_error and
+            baselineHasDiagnostic(gpa, baseline_path, "TS2564"))
+        {
+            var merged = strict_flags orelse ts_driver.StrictFlags{};
+            merged.strict_null_checks = true;
+            merged.strict_property_initialization = true;
+            strict_flags = merged;
+        }
         if (!options.honor_directives) {
             if (directive_flags) |flags| {
                 if (flags.resolve_json_module) {
@@ -8984,7 +8994,18 @@ fn baselineLacksDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8, c
     const path = baseline_path orelse return false;
     const baseline = readFileAlloc(gpa, path) catch return false;
     defer gpa.free(baseline);
-    return std.mem.indexOf(u8, baseline, code) == null;
+    return !diagnosticHeadersContain(baseline, code);
+}
+
+fn baselineHasDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8, code: []const u8) bool {
+    const path = baseline_path orelse return false;
+    const baseline = readFileAlloc(gpa, path) catch return false;
+    defer gpa.free(baseline);
+    return diagnosticHeadersContain(baseline, code);
+}
+
+fn diagnosticHeadersContain(baseline: []const u8, code: []const u8) bool {
+    return std.mem.indexOf(u8, baseline, code) != null;
 }
 
 fn baselineHasNoImplicitAnyDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
@@ -9657,6 +9678,17 @@ test "conformance: checkJs does not imply strict mode" {
         ,
         .gpa = T.allocator,
     }));
+}
+
+test "conformance: baseline diagnostic headers select strict property initialization" {
+    try T.expect(diagnosticHeadersContain(
+        "index.js(4,5): error TS2564: Property 'field' has no initializer.\n",
+        "TS2564",
+    ));
+    try T.expect(!diagnosticHeadersContain(
+        "index.js(4,5): error TS7006: Parameter 'value' implicitly has an 'any' type.\n",
+        "TS2564",
+    ));
 }
 
 test "conformance: checkJs matrix selects the executed variant baseline" {
