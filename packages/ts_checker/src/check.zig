@@ -5810,6 +5810,7 @@ pub const Checker = struct {
             const comment_end = body_start + close_rel;
             search_start = comment_end + 2;
             if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            if (!self.jsDocCommentHasFollowingStatement(root, comment_start)) continue;
             const body = src[body_start..comment_end];
             const missing = jsDocTypedefMissingTypeTag(body, body_start) orelse continue;
             try self.diagnostics.append(self.gpa, .{
@@ -5924,6 +5925,7 @@ pub const Checker = struct {
             const comment_end = body_start + close_rel;
             search_start = comment_end + 2;
             if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            if (!self.jsDocCommentHasFollowingStatement(root, comment_start)) continue;
             const body = src[body_start..comment_end];
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
@@ -6025,6 +6027,20 @@ pub const Checker = struct {
             if (span.start <= comment_start and comment_start < span.end) return stmt;
         }
         return root;
+    }
+
+    fn jsDocCommentHasFollowingStatement(self: *Checker, root: NodeId, comment_start: usize) bool {
+        if (self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForPos(comment_start);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const span = self.hir.spanOf(stmt);
+            if (span.start <= comment_start and comment_start < span.end) return true;
+            if (span.start <= comment_start) continue;
+            if (self.sourceHasVirtualFilenameSections() and
+                self.virtualSectionStartForNode(stmt) != section) continue;
+            return true;
+        }
+        return false;
     }
 
     fn jsDocHasInvalidTemplatePlacement(body: []const u8) bool {
@@ -19163,10 +19179,24 @@ pub const Checker = struct {
             !self.varDeclTypeIncludesExplicitUndefined(node) and
             !self.varDeclHasDefiniteAssertion(node) and
             !self.isGlobalSymbolConstructorVarDecl(node) and
+            !self.varDeclHasFailedJsDocNamespaceType(node) and
             (v.type_annotation == hir_mod.none_node_id or !self.typeAnnotationReferencesGenericWithoutArgs(v.type_annotation)) and
             (v.type_annotation == hir_mod.none_node_id or !self.typeAnnotationRootIsUnresolved(v.type_annotation)) and
             v.name != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier;
+    }
+
+    fn varDeclHasFailedJsDocNamespaceType(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        const src = self.source orelse return false;
+        const node_start = self.hir.spanOf(node).start;
+        const jsdoc = self.leadingJsDocBodyWithStart(src, node_start) orelse return false;
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != TsCodes.cannot_find_namespace) continue;
+            const pos = diagnostic.pos orelse self.hir.spanOf(diagnostic.node).start;
+            if (pos >= jsdoc.start and pos < node_start) return true;
+        }
+        return false;
     }
 
     fn identifierHasPendingUsedBeforeAssignmentDecl(self: *Checker, ident_node: NodeId) bool {
@@ -96062,6 +96092,7 @@ pub const Checker = struct {
                     null;
                 const target_is_explicit_jsdoc_function_expando_declaration =
                     target_has_explicit_jsdoc_property_type and
+                    !target_has_explicit_jsdoc_prototype_type and
                     (try self.expandoFunctionMemberKey(a.target)) != null;
                 // Direct `module.exports = <expr>` defines the CommonJS exports just
                 // like the expando `module.exports.foo = ...` form; both must skip the
@@ -96081,6 +96112,7 @@ pub const Checker = struct {
                 const target_is_js_namespace_declaration_initialization = a.op == null and
                     self.checkJsNamespaceDeclarationValueInitialization(a.target);
                 const target_is_inferred_checkjs_class_member = a.op == null and
+                    !target_has_explicit_jsdoc_prototype_type and
                     try self.checkJsInferredClassMemberWrite(a.target);
                 if (target_is_js_container_prototype_object_assignment) {
                     self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
@@ -171828,6 +171860,22 @@ test "checker: TS2454 is suppressed after parse diagnostics" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(recovered, TsCodes.used_before_assignment));
 }
 
+test "checker: failed JSDoc namespace type suppresses TS2454" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\var Workspace = {};
+        \\/** @type {Workspace.Project} */
+        \\var p;
+        \\p.isServiceProject();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_namespace));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
 test "checker: TS2518 this predicate kind mismatch is nested under TS1226" {
     const s = try newSetup(
         \\declare const f: () => this is string;
@@ -208709,6 +208757,21 @@ test "checker: checkjs JSDoc typedef merges with CommonJS export object key" {
         }
     }
     try T.expectEqual(@as(usize, 0), duplicate_count);
+}
+
+test "checker: unattached EOF JSDoc typedef does not resolve its type" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: eof.js
+        \\/**
+        \\ * @typedef {Array<bad>} ShouldNotAttach
+        \\ */
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: checkjs JSDoc typedef collides with exported alias object class key" {
