@@ -2165,6 +2165,7 @@ pub const TsCodes = struct {
     /// operand of `??` when it is syntactically always `null`/`undefined`.
     pub const always_nullish: u32 = 2871;
     pub const unknown_catch_variable: u32 = 18046;
+    pub const catch_variable_annotation_must_be_any_or_unknown: u32 = 1196;
     pub const redeclare_identifier_in_catch_clause: u32 = 2492;
     pub const object_possibly_null: u32 = 18047;
     pub const object_possibly_undefined_18048: u32 = 18048;
@@ -4131,6 +4132,9 @@ pub const Checker = struct {
     /// Call inference uses this provenance to apply JSDoc's constraint
     /// fallback without changing inference for ordinary TypeScript generics.
     jsdoc_constrained_type_params: std.AutoHashMapUnmanaged(TypeId, void),
+    /// Preserves the source alias spelling of each constrained JSDoc type
+    /// parameter for TS2344 diagnostics (`Foo`, not its expanded object body).
+    jsdoc_constraint_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
     /// Signature TypeId ÃÂ¢ÃÂÃÂ explicit `this` parameter type. The `this`
     /// parameter is not a call argument, but method calls on union
     /// receivers must still prove the receiver satisfies it.
@@ -4736,6 +4740,7 @@ pub const Checker = struct {
             .generic_fns = .empty,
             .generic_signature_params = .empty,
             .jsdoc_constrained_type_params = .empty,
+            .jsdoc_constraint_display_names = .empty,
             .signature_this_params = .empty,
             .constructor_signature_visibility = .empty,
             .fn_predicates = .empty,
@@ -5143,6 +5148,7 @@ pub const Checker = struct {
         while (gsig_it.next()) |params| self.gpa.free(params.*);
         self.generic_signature_params.deinit(self.gpa);
         self.jsdoc_constrained_type_params.deinit(self.gpa);
+        self.jsdoc_constraint_display_names.deinit(self.gpa);
         self.signature_this_params.deinit(self.gpa);
         self.constructor_signature_visibility.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
@@ -8195,14 +8201,19 @@ pub const Checker = struct {
                 if (ts.block != hir_mod.none_node_id) try self.checkStatement(ts.block);
                 if (ts.catch_param != hir_mod.none_node_id) {
                     const ck = self.hir.kindOf(ts.catch_param);
+                    const annotated_t = try self.checkJsDocCatchParameterType(ts.catch_param);
+                    const catch_t = annotated_t orelse if (self.strict_flags.use_unknown_in_catch_variables)
+                        types.Primitive.unknown
+                    else
+                        types.Primitive.any;
                     if (ck == .identifier) {
-                        self.hir.setType(
-                            ts.catch_param,
-                            if (self.strict_flags.use_unknown_in_catch_variables) types.Primitive.unknown else types.Primitive.any,
-                        );
+                        self.hir.setType(ts.catch_param, catch_t);
                     } else if (ck == .object_pattern or ck == .array_pattern) {
-                        self.hir.setType(ts.catch_param, types.Primitive.any);
-                        if (self.strict_flags.use_unknown_in_catch_variables and
+                        self.hir.setType(ts.catch_param, catch_t);
+                        if (ck == .object_pattern and catch_t == types.Primitive.unknown) {
+                            try self.reportUnknownCatchObjectPatternProperties(ts.catch_param);
+                        }
+                        if (catch_t == types.Primitive.unknown and
                             ck == .object_pattern and
                             self.objectBindingPatternHasRest(ts.catch_param))
                         {
@@ -8210,7 +8221,26 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (ts.catch_block != hir_mod.none_node_id) try self.checkStatement(ts.catch_block);
+                if (ts.catch_block != hir_mod.none_node_id) {
+                    if (ts.catch_param != hir_mod.none_node_id) {
+                        try self.pushNarrowScope();
+                        {
+                            defer self.popNarrowScope();
+                            const catch_t = if (self.hir.typeOf(ts.catch_param) != types.Primitive.none)
+                                self.hir.typeOf(ts.catch_param)
+                            else
+                                types.Primitive.any;
+                            if (self.hir.kindOf(ts.catch_param) == .identifier) {
+                                try self.recordNarrow(hir_mod.identifierOf(self.hir, ts.catch_param).name, catch_t);
+                            } else {
+                                try self.recordDependentBindings(ts.catch_param, catch_t);
+                            }
+                            try self.checkStatement(ts.catch_block);
+                        }
+                    } else {
+                        try self.checkStatement(ts.catch_block);
+                    }
+                }
                 if (ts.finally_block != hir_mod.none_node_id) try self.checkStatement(ts.finally_block);
                 try self.checkUnusedCatchParam(node);
                 try self.checkCatchClauseRedeclaration(ts.catch_param, ts.catch_block);
@@ -18495,27 +18525,34 @@ pub const Checker = struct {
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, stmt);
                 if (a.op != null) return;
-                if (a.target == hir_mod.none_node_id or self.hir.kindOf(a.target) != .member_access) return;
-                const m = hir_mod.memberOf(self.hir, a.target);
-                if (m.optional) return;
-                if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return;
-                if (hir_mod.identifierOf(self.hir, m.object).name != name) return;
-                if (a.value == hir_mod.none_node_id) return;
-                const prop_t = try self.expandoAssignmentPropertyType(stmt, a);
-                if (seen.contains(m.name)) {
-                    for (members.items) |*existing| {
-                        if (existing.name == m.name) existing.type = prop_t;
+                if (a.target != hir_mod.none_node_id and self.hir.kindOf(a.target) == .member_access) {
+                    const m = hir_mod.memberOf(self.hir, a.target);
+                    if (!m.optional and
+                        m.object != hir_mod.none_node_id and
+                        self.hir.kindOf(m.object) == .identifier and
+                        hir_mod.identifierOf(self.hir, m.object).name == name and
+                        a.value != hir_mod.none_node_id)
+                    {
+                        const prop_t = try self.expandoAssignmentPropertyType(stmt, a);
+                        if (seen.contains(m.name)) {
+                            for (members.items) |*existing| {
+                                if (existing.name == m.name) existing.type = prop_t;
+                            }
+                        } else {
+                            try seen.put(self.gpa, m.name, {});
+                            try members.append(self.gpa, .{
+                                .name = m.name,
+                                .type = prop_t,
+                                .is_optional = false,
+                                .is_readonly = false,
+                                .is_method = false,
+                            });
+                        }
                     }
-                    return;
                 }
-                try seen.put(self.gpa, m.name, {});
-                try members.append(self.gpa, .{
-                    .name = m.name,
-                    .type = prop_t,
-                    .is_optional = false,
-                    .is_readonly = false,
-                    .is_method = false,
-                });
+                if (a.value != hir_mod.none_node_id and self.hir.kindOf(a.value) == .assignment) {
+                    try self.collectExpandoMembersFromStmt(name, a.value, members, seen);
+                }
             },
             .block_stmt => for (hir_mod.blockStmts(self.hir, stmt)) |s| try self.collectExpandoMembersFromStmt(name, s, members, seen),
             .var_decl, .let_decl, .const_decl => {
@@ -22407,6 +22444,53 @@ pub const Checker = struct {
                 .{self.string_interner.get(caught_name)},
             );
             try self.report(v.name, TsCodes.redeclare_identifier_in_catch_clause, msg);
+        }
+    }
+
+    fn checkJsDocCatchParameterType(self: *Checker, catch_param: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        const src = self.source orelse return null;
+        const jsdoc = self.leadingJsDocBodyWithStart(src, self.hir.spanOf(catch_param).start) orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, jsdoc.body) catch return null;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .type_tag) continue;
+            const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+            const catch_t = if (std.mem.eql(u8, type_text, "Error"))
+                self.lowerBuiltinObjectType("Error") orelse types.Primitive.object_t
+            else
+                (try self.jsDocTypeTextToTypeAt(src, tag.type_text, catch_param)) orelse types.Primitive.any;
+            if (catch_t != types.Primitive.any and catch_t != types.Primitive.unknown) {
+                try self.reportAt(
+                    catch_param,
+                    self.sliceStartPos(src, tag.type_text),
+                    TsCodes.catch_variable_annotation_must_be_any_or_unknown,
+                    "Catch clause variable type annotation must be 'any' or 'unknown' if specified.",
+                );
+                return types.Primitive.any;
+            }
+            return catch_t;
+        }
+        return null;
+    }
+
+    fn reportUnknownCatchObjectPatternProperties(self: *Checker, pattern_node: NodeId) CheckError!void {
+        for (hir_mod.patternElements(self.hir, pattern_node)) |element| {
+            if (self.hir.kindOf(element) != .parameter) continue;
+            const parameter = hir_mod.parameterOf(self.hir, element);
+            if (parameter.flags.is_rest or parameter.name == hir_mod.none_node_id) continue;
+            const key_name = (try self.objectBindingElementKeyName(element, parameter.name)) orelse continue;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' does not exist on type 'unknown'.",
+                .{self.string_interner.get(key_name)},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = parameter.name,
+                .pos = self.objectBindingElementPropertyPosition(element, parameter.name),
+                .code = TsCodes.property_does_not_exist,
+                .message = msg,
+            });
         }
     }
 
@@ -48943,13 +49027,17 @@ pub const Checker = struct {
         const raw_name = std.mem.trim(u8, extends_text[0..open], " \t\r\n");
         if (!std.mem.eql(u8, raw_name, self.string_interner.get(parent_name))) return null;
 
-        const fn_node = self.jsConstructorFunctionDeclForName(extends_expr, parent_name) orelse return null;
-        var sig = self.hir.typeOf(fn_node);
-        if (sig == types.Primitive.none or sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) {
-            sig = try self.checkFnSignatureOnly(fn_node);
-            if (hir_mod.fnTypeParams(self.hir, fn_node).len > 0 or self.fnHasJsDocTemplateTags(fn_node)) self.popNarrowScope();
-        }
-        const type_params = self.generic_signature_params.get(sig) orelse return null;
+        const type_params = if (self.generic_aliases.get(parent_name)) |info|
+            info.params
+        else blk: {
+            const fn_node = self.jsConstructorFunctionDeclForName(extends_expr, parent_name) orelse return null;
+            var sig = self.hir.typeOf(fn_node);
+            if (sig == types.Primitive.none or sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) {
+                sig = try self.checkFnSignatureOnly(fn_node);
+                if (hir_mod.fnTypeParams(self.hir, fn_node).len > 0 or self.fnHasJsDocTemplateTags(fn_node)) self.popNarrowScope();
+            }
+            break :blk self.generic_signature_params.get(sig) orelse return null;
+        };
         if (type_params.len == 0) return null;
 
         const trimmed = std.mem.trim(u8, extends_text, " \t\r\n");
@@ -48964,6 +49052,9 @@ pub const Checker = struct {
         while (arg_split.next()) |arg_text| : (i += 1) {
             if (i >= type_params.len) break;
             const arg_t = (try self.jsDocTypeTextToType(src, arg_text)) orelse types.Primitive.any;
+            const diagnostic_start = self.diagnostics.items.len;
+            try self.checkTypeArgSatisfiesConstraint(class_node, type_params[i], arg_t);
+            self.relocateJsDocTypeArgConstraintDiagnostics(diagnostic_start, self.sliceStartPos(src, arg_text));
             try subs.put(self.gpa, type_params[i], arg_t);
         }
         if (subs.count() == 0) return null;
@@ -81347,6 +81438,9 @@ pub const Checker = struct {
                         (try self.jsDocTypeTextToTypeAt(src, constraint_text, fn_node)) orelse types.Primitive.unknown
                     else
                         types.Primitive.unknown;
+                    if (parameter_index == 0 and constraint_text.len > 0) {
+                        try self.preferJsDocConstraintAliasDisplay(constraint_t, constraint_text);
+                    }
                     const default_t = try self.jsDocTemplateDefaultType(src, body, default_text, fn_node);
                     const fresh = self.interner.internFreshTypeParameterWithFlags(
                         name,
@@ -81361,6 +81455,8 @@ pub const Checker = struct {
                 try captured_tp_ids.append(self.gpa, tp_id);
                 if (parameter_index == 0 and constraint_text.len > 0) {
                     try self.jsdoc_constrained_type_params.put(self.gpa, tp_id, {});
+                    const display = try self.diag_arena.allocator().dupe(u8, constraint_text);
+                    try self.jsdoc_constraint_display_names.put(self.gpa, tp_id, display);
                 }
                 parameter_index += 1;
                 while (pos < rest.len and (rest[pos] == ' ' or rest[pos] == '\t')) : (pos += 1) {}
@@ -87081,6 +87177,21 @@ pub const Checker = struct {
         try self.alias_display_names.put(self.gpa, t, display);
     }
 
+    fn preferJsDocConstraintAliasDisplay(self: *Checker, t: TypeId, text: []const u8) !void {
+        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        if (trimmed.len == 0 or !isJsDocIdentStart(trimmed[0])) return self.registerAliasDisplayText(t, trimmed);
+        for (trimmed[1..]) |c| {
+            if (!isJsDocIdentChar(c)) return self.registerAliasDisplayText(t, trimmed);
+        }
+        const name = self.string_interner.intern(trimmed) catch return error.OutOfMemory;
+        if (self.type_names.get(name) == null or t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) {
+            return self.registerAliasDisplayText(t, trimmed);
+        }
+        _ = self.alias_display_names.remove(t);
+        const display = try self.diag_arena.allocator().dupe(u8, trimmed);
+        try self.alias_display_names.put(self.gpa, t, display);
+    }
+
     fn relocateJsDocTypeArgConstraintDiagnostics(self: *Checker, diagnostic_start: usize, pos: ?u32) void {
         const source_pos = pos orelse return;
         for (self.diagnostics.items[diagnostic_start..]) |*diagnostic| {
@@ -87789,9 +87900,16 @@ pub const Checker = struct {
             return null;
         }
         if (parent_kind == .assignment) {
-            const assignment = hir_mod.assignmentOf(self.hir, parent);
-            if (assignment.value != fn_node) return null;
-            return self.leadingJsDocBodyWithStart(src, self.hir.spanOf(parent).start);
+            var value = fn_node;
+            var assignment_node = parent;
+            while (assignment_node != hir_mod.none_node_id and self.hir.kindOf(assignment_node) == .assignment) {
+                const assignment = hir_mod.assignmentOf(self.hir, assignment_node);
+                if (assignment.value != value) return null;
+                if (self.leadingJsDocBodyWithStart(src, self.hir.spanOf(assignment_node).start)) |jsdoc| return jsdoc;
+                value = assignment_node;
+                assignment_node = self.hir.parentOf(assignment_node);
+            }
+            return null;
         }
         return null;
     }
@@ -115659,6 +115777,9 @@ pub const Checker = struct {
         // baselines like `typeOfThisInStaticMembers2` (which explicitly
         // marks `static foo = this;` as `// ok`).
 
+        if (is_this) {
+            if (self.assignedFunctionExpressionEffectiveThis(node)) |this_t| return this_t;
+        }
         if (is_this and
             !self.sourceHasStrictFalseDirective() and
             self.thisInsideClassFieldFunctionExpression(node) and
@@ -115666,9 +115787,6 @@ pub const Checker = struct {
         {
             self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.") catch {};
             return types.Primitive.any;
-        }
-        if (is_this) {
-            if (self.assignedFunctionExpressionEffectiveThis(node)) |this_t| return this_t;
         }
 
         // Narrowed binding from an enclosing type-guard takes
@@ -116250,13 +116368,20 @@ pub const Checker = struct {
                     if (ck == .identifier) {
                         const cid = hir_mod.identifierOf(self.hir, ts.catch_param);
                         if (cid.name == id.name) {
-                            return if (self.strict_flags.use_unknown_in_catch_variables)
+                            const catch_t = self.hir.typeOf(ts.catch_param);
+                            return if (catch_t != types.Primitive.none)
+                                catch_t
+                            else if (self.strict_flags.use_unknown_in_catch_variables)
                                 types.Primitive.unknown
                             else
                                 types.Primitive.any;
                         }
                     } else if (ck == .object_pattern or ck == .array_pattern) {
-                        if (self.typeOfPatternBinding(ts.catch_param, types.Primitive.any, id.name)) |bt| {
+                        const catch_t = if (self.hir.typeOf(ts.catch_param) != types.Primitive.none)
+                            self.hir.typeOf(ts.catch_param)
+                        else
+                            types.Primitive.any;
+                        if (self.typeOfPatternBinding(ts.catch_param, catch_t, id.name)) |bt| {
                             return bt;
                         }
                     }
@@ -126397,6 +126522,8 @@ pub const Checker = struct {
         if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (self.containsFreeTypeParameter(arg_t)) return;
         if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
+        if (self.jsdoc_constrained_type_params.contains(param_t) and
+            try self.checkerAssignableTo(arg_t, constraint)) return;
         // Deferred indexed-access argument over a generic parameter
         // (`Foo<Source[Key], ÃÂ¢ÃÂÃÂ¦>` inside the body of a generic alias
         // `Foo<Source extends object, ÃÂ¢ÃÂÃÂ¦>`). When the type argument is
@@ -126420,7 +126547,9 @@ pub const Checker = struct {
         const signature_constraint = self.typeArgSignatureConstraint(constraint);
         const allow_signature_display = signature_constraint != null;
         const arg_text = (try self.typeArgConstraintTypeNameAtNode(arg_node, arg_t, allow_signature_display)) orelse return;
-        const constraint_text = if (signature_constraint) |info|
+        const constraint_text = if (self.jsdoc_constraint_display_names.get(param_t)) |display|
+            display
+        else if (signature_constraint) |info|
             (try self.allocTypeArgSignatureConstraintHeaderName(info)) orelse return
         else
             (try self.typeArgConstraintTypeName(constraint, false)) orelse return;
@@ -129527,6 +129656,17 @@ pub const Checker = struct {
             if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return null;
             const a = hir_mod.assignmentOf(self.hir, parent);
             if (a.value != cur) return null;
+            if (self.sourceHasCheckJsDirective() and self.hir.kindOf(a.target) == .member_access) {
+                const member = hir_mod.memberOf(self.hir, a.target);
+                const receiver_t = self.checkExpression(member.object) catch types.Primitive.none;
+                if (receiver_t != types.Primitive.none and
+                    receiver_t != types.Primitive.any and
+                    receiver_t != types.Primitive.unknown)
+                {
+                    self.removePriorDiagnosticForNode(node, TsCodes.this_implicitly_any);
+                    return receiver_t;
+                }
+            }
             var target_t = self.hir.typeOf(a.target);
             if (target_t == types.Primitive.none) {
                 target_t = self.checkExpression(a.target) catch types.Primitive.none;
@@ -152808,11 +152948,14 @@ pub const Checker = struct {
             }
             return;
         }
-        if (a.value != hir_mod.none_node_id and self.hir.kindOf(a.value) == .assignment) {
-            try self.collectJsConstructorPrototypeMembersFromNode(name, a.value, members);
+        const prop_name_opt = self.prototypeAssignmentPropertyName(a.target, name);
+        if (prop_name_opt == null) {
+            if (a.value != hir_mod.none_node_id and self.hir.kindOf(a.value) == .assignment) {
+                try self.collectJsConstructorPrototypeMembersFromNode(name, a.value, members);
+            }
             return;
         }
-        const prop_name = self.prototypeAssignmentPropertyName(a.target, name) orelse return;
+        const prop_name = prop_name_opt.?;
         const value_t = if (a.value != hir_mod.none_node_id)
             try self.prototypeMemberAssignmentValueType(a.value)
         else
@@ -152829,6 +152972,9 @@ pub const Checker = struct {
         }
         if (a.value != hir_mod.none_node_id) {
             try self.collectJsPrototypeLexicalThisMembersFromNode(a.value, a.value, members);
+            if (self.hir.kindOf(a.value) == .assignment) {
+                try self.collectJsConstructorPrototypeMembersFromNode(name, a.value, members);
+            }
         }
     }
 
@@ -152918,11 +153064,24 @@ pub const Checker = struct {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            if (self.hir.kindOf(stmt) != .assignment) continue;
-            const a = hir_mod.assignmentOf(self.hir, stmt);
-            if (a.op != null) continue;
-            const prop_name = self.staticAssignmentPropertyName(a.target, name) orelse continue;
-            const value_t = if (a.value != hir_mod.none_node_id) try self.checkExpression(a.value) else types.Primitive.any;
+            try self.collectJsConstructorStaticMembersFromNode(name, stmt, members);
+        }
+    }
+
+    fn collectJsConstructorStaticMembersFromNode(
+        self: *Checker,
+        name: hir_mod.StringId,
+        node: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .assignment) return;
+        const assignment = hir_mod.assignmentOf(self.hir, node);
+        if (assignment.op != null) return;
+        if (self.staticAssignmentPropertyName(assignment.target, name)) |prop_name| {
+            const value_t = if (assignment.value != hir_mod.none_node_id)
+                try self.checkExpression(assignment.value)
+            else
+                types.Primitive.any;
             try self.appendOrReplaceObjectMember(members, .{
                 .name = prop_name,
                 .type = value_t,
@@ -152930,6 +153089,9 @@ pub const Checker = struct {
                 .is_readonly = false,
                 .is_method = false,
             });
+        }
+        if (assignment.value != hir_mod.none_node_id and self.hir.kindOf(assignment.value) == .assignment) {
+            try self.collectJsConstructorStaticMembersFromNode(name, assignment.value, members);
         }
     }
 
@@ -153556,6 +153718,15 @@ pub const Checker = struct {
             self.hir.typeOf(fn_node),
             target_t,
         )) return true;
+        if (self.functionExpressionIsChainedAssignmentValue(fn_node)) {
+            const source_sig = self.firstSignatureType(self.hir.typeOf(fn_node));
+            const target_sig = self.firstSignatureType(target_t);
+            if (source_sig != null and target_sig != null) {
+                const source_name = try self.allocCallableSignatureName(source_sig.?);
+                const target_name = try self.allocCallableSignatureName(target_sig.?);
+                if (source_name != null and target_name != null and std.mem.eql(u8, source_name.?, target_name.?)) return true;
+            }
+        }
         return switch (try self.functionExpressionTargetResult(fn_node, target_t)) {
             .assignable => true,
             .not_contextual => blk: {
@@ -153565,6 +153736,16 @@ pub const Checker = struct {
             },
             else => false,
         };
+    }
+
+    fn functionExpressionIsChainedAssignmentValue(self: *Checker, fn_node: NodeId) bool {
+        const inner = self.hir.parentOf(fn_node);
+        if (inner == hir_mod.none_node_id or self.hir.kindOf(inner) != .assignment) return false;
+        if (hir_mod.assignmentOf(self.hir, inner).value != fn_node) return false;
+        const outer = self.hir.parentOf(inner);
+        return outer != hir_mod.none_node_id and
+            self.hir.kindOf(outer) == .assignment and
+            hir_mod.assignmentOf(self.hir, outer).value == inner;
     }
 
     fn functionReturnMismatchAlreadyReported(self: *Checker, fn_node: NodeId) bool {
@@ -164341,7 +164522,13 @@ pub const Checker = struct {
             const ts = hir_mod.tryOf(self.hir, cur);
             if (ts.catch_param == hir_mod.none_node_id or self.hir.kindOf(ts.catch_param) != .identifier) continue;
             const catch_id = hir_mod.identifierOf(self.hir, ts.catch_param);
-            if (catch_id.name == id.name) return self.strict_flags.use_unknown_in_catch_variables;
+            if (catch_id.name == id.name) {
+                const catch_t = self.hir.typeOf(ts.catch_param);
+                return if (catch_t != types.Primitive.none)
+                    catch_t == types.Primitive.unknown
+                else
+                    self.strict_flags.use_unknown_in_catch_variables;
+            }
         }
         return false;
     }
@@ -192723,6 +192910,23 @@ test "checker: catch unknown property access reports TS18046" {
     try T.expectEqual(@as(usize, 2), unknown_refs);
 }
 
+test "checker: checked-js catch JSDoc annotations preserve any and unknown semantics" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/** @typedef {unknown} Unknown */
+        \\try {} catch (/** @type {unknown} */ err) { err.foo; }
+        \\try {} catch (/** @type {Unknown} */ { x }) { console.log(x); }
+        \\try {} catch (/** @type {Error} */ err) {}
+        \\try {} catch (/** @type {any} */ err) { err.foo; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.catch_variable_annotation_must_be_any_or_unknown));
+}
+
 test "checker: reassignment invalidates conditional aliases referencing name" {
     const s = try newSetup(
         \\try {}
@@ -208646,6 +208850,33 @@ test "checker: checkjs class JSDoc @extends suppresses TS8026 heritage diagnosti
     }
 }
 
+test "checker: checkjs class JSDoc @extends enforces class template constraints" {
+    const source =
+        \\// @checkjs: true
+        \\/** @typedef {{ a: string, b: boolean | string[] }} Foo */
+        \\/** @template {Foo} T */
+        \\class A {
+        \\  /** @param {T} value */
+        \\  constructor(value) {}
+        \\}
+        \\/** @extends {A<{ a: string, b: string }>} */
+        \\class Bad extends A {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_does_not_satisfy_constraint) {
+            try T.expectEqual(
+                @as(u32, @intCast(std.mem.indexOf(u8, source, "{ a: string, b: string }") orelse unreachable)),
+                d.pos.?,
+            );
+        }
+    }
+}
+
 test "checker: cached JavaScript constructor heritage applies JSDoc type arguments" {
     const s = try newSetup(
         \\// @checkjs: true
@@ -211883,6 +212114,31 @@ test "checker: checkjs prototype method assignments use constructor-inferred thi
         }
     }
     try T.expectEqual(@as(usize, 2), arg_mismatches);
+}
+
+test "checker: checkjs chained function assignments share JSDoc signatures and members" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\function A() { this.x = 1; }
+        \\/** @param {number} n */
+        \\A.prototype.y = A.prototype.z = function (n) { return n + this.x; };
+        \\/** @param {number} m */
+        \\A.s = A.t = function (m) { return m + this.x; };
+        \\A.s("no");
+        \\A.t("no");
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_does_not_exist) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "Property 'y'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "Property 'z'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "Property 't'") == null);
+    }
 }
 
 test "checker: checkjs prototype object functions report implicit params and missing this members" {
