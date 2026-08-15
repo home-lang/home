@@ -4009,7 +4009,7 @@ test "driver: checkJs virtual js surfaces checker diagnostics" {
     try T.expect(c.has_errors);
 }
 
-test "driver: checkJs virtual computed prototype object literal surfaces index diagnostics" {
+test "driver: checkJs virtual computed prototype object literal preserves tsgo constructor diagnostics" {
     const source_lf =
         \\// @allowJs: true
         \\// @checkJs: true
@@ -4058,11 +4058,12 @@ test "driver: checkJs virtual computed prototype object literal surfaces index d
         T.allocator.destroy(c);
     }
 
-    var index_count: u32 = 0;
+    var constructor_count: u32 = 0;
     for (c.diagnostics.items) |d| {
-        if (d.code == ts_checker.check.TsCodes.element_implicitly_any) index_count += 1;
+        try T.expect(d.code != ts_checker.check.TsCodes.element_implicitly_any);
+        if (d.code == ts_checker.check.TsCodes.new_expression_implicitly_any) constructor_count += 1;
     }
-    try T.expect(index_count >= 2);
+    try T.expectEqual(@as(u32, 2), constructor_count);
     try T.expect(c.has_errors);
 }
 

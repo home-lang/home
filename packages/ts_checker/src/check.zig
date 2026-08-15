@@ -44641,7 +44641,7 @@ pub const Checker = struct {
                 const key_t = if (self.hir.typeOf(key) != types.Primitive.none)
                     self.hir.typeOf(key)
                 else
-                    self.checkExpression(key) catch types.Primitive.any;
+                    self.visibleAnnotatedIdentifierType(key) orelse types.Primitive.any;
                 if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_literal) {
                     switch (self.interner.literalOf(key_t)) {
                         .string_lit => |sid| break :blk sid,
@@ -48596,15 +48596,6 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
-                if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
-                    if (self.class_static_type_by_node.get(decl)) |static_t| {
-                        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
-                        if (self.interner.objectMemberInfo(static_t, prototype_name)) |prototype| {
-                            break :blk prototype.type;
-                        }
-                        if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
-                    }
-                }
                 if (self.findLocalValueDeclBefore(self.enclosingClassNode(extends_expr), id.name)) |local_decl| {
                     const local_kind = self.hir.kindOf(local_decl);
                     if (local_kind == .var_decl or local_kind == .let_decl or local_kind == .const_decl) {
@@ -48623,6 +48614,15 @@ pub const Checker = struct {
                             if (try self.constructReturnType(value_t)) |instance_t| break :blk instance_t;
                         }
                         break :blk null;
+                    }
+                }
+                if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
+                    if (self.class_static_type_by_node.get(decl)) |static_t| {
+                        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+                        if (self.interner.objectMemberInfo(static_t, prototype_name)) |prototype| {
+                            break :blk prototype.type;
+                        }
+                        if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
                     }
                 }
                 if (self.class_instance_types.get(id.name)) |t| {
@@ -179334,6 +179334,7 @@ test "checker: TS2318 reports missing noLib required globals" {
         \\declare function foo(): void;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_bind_call_apply = true });
     try s.checker.checkSourceFile(s.root);
 
     const required = [_][]const u8{
@@ -220142,7 +220143,7 @@ test "checker: prototype method reassignment checks declared instance signature"
     try T.expect(!saw_return_value_mismatch);
 }
 
-test "checker: checkjs computed prototype assignment makes function constructable but not indexed" {
+test "checker: checkjs computed prototype assignment matches tsgo unsupported constructor recovery" {
     const s = try newSetup(
         \\// @checkJs: true
         \\// @strict: true
@@ -220159,15 +220160,15 @@ test "checker: checkjs computed prototype assignment makes function constructabl
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
 
-    var saw_index = false;
+    var constructor_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.new_expression_implicitly_any);
-        if (d.code == TsCodes.element_implicitly_any) saw_index = true;
+        try T.expect(d.code != TsCodes.element_implicitly_any);
+        if (d.code == TsCodes.new_expression_implicitly_any) constructor_count += 1;
     }
-    try T.expect(saw_index);
+    try T.expectEqual(@as(usize, 1), constructor_count);
 }
 
-test "checker: checkjs computed prototype object literal makes function constructable but not indexed" {
+test "checker: checkjs computed prototype object literal matches tsgo unsupported constructor recovery" {
     const s = try newSetup(
         \\// @checkJs: true
         \\// @strict: true
@@ -220188,15 +220189,15 @@ test "checker: checkjs computed prototype object literal makes function construc
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
 
-    var saw_index = false;
+    var constructor_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.new_expression_implicitly_any);
-        if (d.code == TsCodes.element_implicitly_any) saw_index = true;
+        try T.expect(d.code != TsCodes.element_implicitly_any);
+        if (d.code == TsCodes.new_expression_implicitly_any) constructor_count += 1;
     }
-    try T.expect(saw_index);
+    try T.expectEqual(@as(usize, 1), constructor_count);
 }
 
-test "checker: checkjs computed prototype object literal stays strict across virtual commonjs usage" {
+test "checker: checkjs computed prototype object literal matches virtual commonjs constructor errors" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -220227,12 +220228,12 @@ test "checker: checkjs computed prototype object literal stays strict across vir
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
 
-    var index_count: usize = 0;
+    var constructor_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.new_expression_implicitly_any);
-        if (d.code == TsCodes.element_implicitly_any) index_count += 1;
+        try T.expect(d.code != TsCodes.element_implicitly_any);
+        if (d.code == TsCodes.new_expression_implicitly_any) constructor_count += 1;
     }
-    try T.expect(index_count >= 2);
+    try T.expectEqual(@as(usize, 2), constructor_count);
 }
 
 test "checker: TS2496 suppressed when `arguments` resolves to a parameter binding" {
@@ -229470,7 +229471,7 @@ test "checker: checked JS constructor JSDoc controls accessibility" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_is_protected));
 }
 
-test "checker: inaccessible constructor calls recover as any" {
+test "checker: inaccessible constructor calls preserve the instance type" {
     const s = try newSetup(
         \\class PrivateC {
         \\  private constructor(x: number) {}
@@ -229488,7 +229489,7 @@ test "checker: inaccessible constructor calls recover as any" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_is_private));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.constructor_is_protected));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2673 does not fire for new inside the declaring class" {
@@ -235858,8 +235859,9 @@ test "checker: nested callback does not re-enter incomplete IIFE signature" {
         \\let eleven = (o => o.a(11))({ a: function(n) { return n; } });
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.implicit_any_parameter));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: intersection call overloads preserve source annotation order" {
