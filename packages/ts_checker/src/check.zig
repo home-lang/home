@@ -922,6 +922,7 @@ pub const TsCodes = struct {
     /// TS1005 — parser-style "'}' expected." Used for malformed
     /// JSDoc type expressions in checked JavaScript.
     pub const expected_close_brace: u32 = 1005;
+    pub const identifier_expected: u32 = 1003;
     /// TS1110 — parser-style "Type expected." Used for malformed
     /// JSDoc type expressions in checked JavaScript.
     pub const type_expected: u32 = 1110;
@@ -6504,6 +6505,18 @@ pub const Checker = struct {
                 const inner = body[open + 1 .. open + type_len - 1];
                 if (std.mem.indexOfScalar(u8, inner, '~')) |tilde_rel| {
                     const pos: u32 = @intCast(body_start + open + 1 + tilde_rel);
+                    const line_start = if (std.mem.lastIndexOfScalar(u8, body[0..open], '\n')) |newline| newline + 1 else 0;
+                    if (std.mem.indexOf(u8, body[line_start..open], "@typedef") != null) {
+                        const identifier_pos: u32 = @intCast(body_start + open + 1);
+                        if (!self.hasDiagnosticAtPosition(TsCodes.identifier_expected, identifier_pos)) {
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = root,
+                                .pos = identifier_pos,
+                                .code = TsCodes.identifier_expected,
+                                .message = "Identifier expected.",
+                            });
+                        }
+                    }
                     if (self.hasDiagnosticAtPosition(TsCodes.expected_close_brace, pos)) continue;
                     try self.diagnostics.append(self.gpa, .{
                         .node = root,
@@ -6513,6 +6526,55 @@ pub const Checker = struct {
                     });
                 }
                 i = open + type_len;
+            }
+
+            var typedef_scan: usize = 0;
+            while (std.mem.indexOfPos(u8, body, typedef_scan, "@typedef")) |tag_pos| {
+                typedef_scan = tag_pos + "@typedef".len;
+                var type_start = typedef_scan;
+                while (type_start < body.len and jsDocTriviaByte(body[type_start])) : (type_start += 1) {}
+                if (type_start >= body.len or body[type_start] != '{') continue;
+                const type_len = jsDocBalancedBraceLen(body[type_start..]);
+                if (type_len == 0) continue;
+                const type_text = body[type_start + 1 .. type_start + type_len - 1];
+                if (std.mem.indexOfScalar(u8, type_text, '~') != null) continue;
+                var alias_start = type_start + type_len;
+                while (alias_start < body.len and jsDocTriviaByte(body[alias_start])) : (alias_start += 1) {}
+                var alias_end = alias_start;
+                while (alias_end < body.len and !std.ascii.isWhitespace(body[alias_end]) and body[alias_end] != '*') : (alias_end += 1) {}
+                const alias = body[alias_start..alias_end];
+                const tilde = std.mem.indexOfScalar(u8, alias, '~') orelse continue;
+                if (tilde == 0) continue;
+                const root_text = alias[0..tilde];
+                var valid_root = true;
+                for (root_text) |c| {
+                    if (isJsDocIdentChar(c)) continue;
+                    valid_root = false;
+                    break;
+                }
+                if (!valid_root) continue;
+                const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+                const declaration = self.findNamedClassDeclInAnyVirtualSection(root, root_name) orelse continue;
+                const declaration_name = hir_mod.classOf(self.hir, declaration).name;
+                const declaration_pos = self.hir.spanOf(declaration_name).start;
+                const alias_pos: u32 = @intCast(body_start + alias_start);
+                const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Duplicate identifier '{s}'.", .{root_text});
+                if (!self.hasDiagnosticAtPosition(TsCodes.duplicate_identifier, declaration_pos)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = declaration_name,
+                        .pos = declaration_pos,
+                        .code = TsCodes.duplicate_identifier,
+                        .message = message,
+                    });
+                }
+                if (!self.hasDiagnosticAtPosition(TsCodes.duplicate_identifier, alias_pos)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = alias_pos,
+                        .code = TsCodes.duplicate_identifier,
+                        .message = message,
+                    });
+                }
             }
         }
     }
@@ -47845,17 +47907,21 @@ pub const Checker = struct {
     fn classImplementsAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
         if (!self.classImplementsPrivateMembersCompatible(source, target)) return false;
         if (!self.classImplementsProtectedMembersCompatible(source, target)) return false;
-        if (self.heritageAssignable(source, target) catch false) return true;
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
         const sf = self.interner.pool.flagsOf(source);
         const tf = self.interner.pool.flagsOf(target);
         if (!sf.is_object_type or !tf.is_object_type) return false;
-        if (self.interner.objectStringIndex(target) != types.Primitive.none or
-            self.interner.objectNumberIndex(target) != types.Primitive.none or
-            self.interner.objectSymbolIndex(target) != types.Primitive.none)
-        {
-            return false;
+        const index_pairs = [_]struct { source: TypeId, target: TypeId }{
+            .{ .source = self.interner.objectStringIndex(source), .target = self.interner.objectStringIndex(target) },
+            .{ .source = self.interner.objectNumberIndex(source), .target = self.interner.objectNumberIndex(target) },
+            .{ .source = self.interner.objectSymbolIndex(source), .target = self.interner.objectSymbolIndex(target) },
+        };
+        for (index_pairs) |pair| {
+            if (pair.target == types.Primitive.none) continue;
+            if (pair.source == types.Primitive.none or
+                !(self.heritageMemberAssignable(pair.source, pair.target) catch false)) return false;
         }
+        if (self.heritageAssignable(source, target) catch false) return true;
         const source_members = self.interner.objectMembers(source);
         const target_members = self.interner.objectMembers(target);
         for (target_members) |tm| {
@@ -208204,11 +208270,9 @@ test "checker: checkjs JSDoc inner namepath type reports parse diagnostic" {
     );
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
-    var saw_expected_close = false;
-    for (b.base.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.expected_close_brace and std.mem.eql(u8, d.message, "'}' expected.")) saw_expected_close = true;
-    }
-    try T.expect(saw_expected_close);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.expected_close_brace));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.identifier_expected));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.duplicate_identifier));
 }
 
 test "checker: tsgo parity: checkjs JSDoc type rejects nested import tag token" {
@@ -210605,6 +210669,21 @@ test "checker: checkjs implements resolves global interfaces from declaration se
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+}
+
+test "checker: checkjs implements requires interface index signatures" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /defs.d.ts
+        \\interface Sig { [index: string]: string; }
+        \\// @Filename: /a.js
+        \\/** @implements {Sig} */
+        \\class B {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
 }
 
 test "checker: checkjs implements resolves an ordinary imported class" {
