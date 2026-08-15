@@ -16464,9 +16464,16 @@ pub const Checker = struct {
                 return;
             }
             if (try self.jsDocTypeTextToTypeAt(src, type_text, node)) |declared_t| {
-                if (self.callableSignatureCount(declared_t) > 1 or
-                    self.jsDocTypeMismatchesFunctionDeclaration(node, declared_t))
-                {
+                if (self.callableSignatureCount(declared_t) > 1) {
+                    try self.reportAt(
+                        node,
+                        self.sliceStartPos(src, tag.type_text),
+                        TsCodes.jsdoc_function_type_mismatch,
+                        "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
+                    );
+                    return;
+                }
+                if (self.jsDocTypeMismatchesFunctionDeclaration(node, declared_t)) {
                     try self.reportAt(
                         node,
                         self.sliceStartPos(src, tag.type_text),
@@ -16794,7 +16801,11 @@ pub const Checker = struct {
                 self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type) catch types.Primitive.none
             else blk: {
                 if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
-                    if (!(f.flags.is_async and jsdoc_return.origin == .contextual_type)) {
+                    const contextual_function_expression = jsdoc_return.origin == .contextual_type and
+                        self.hir.kindOf(node) == .fn_expr;
+                    if (!contextual_function_expression and
+                        !(f.flags.is_async and jsdoc_return.origin == .contextual_type))
+                    {
                         declared_from_jsdoc = true;
                         break :blk jsdoc_return.type;
                     }
@@ -79135,7 +79146,10 @@ pub const Checker = struct {
             declared_type = try self.adjustAmbientUnresolvedBareTypeAnnotation(v.is_ambient, v.type_annotation, declared_type);
             self.hir.setType(node, declared_type);
         } else if (try self.jsDocTypeForVarDecl(node)) |jsdoc_t| {
-            declared_type = jsdoc_t;
+            declared_type = if (self.isContextualFunctionExpressionLike(v.init))
+                self.pureCallableObjectSignature(jsdoc_t) orelse jsdoc_t
+            else
+                jsdoc_t;
             self.hir.setType(node, declared_type);
         }
 
@@ -79443,6 +79457,13 @@ pub const Checker = struct {
                     const init_fn = hir_mod.fnDeclOf(self.hir, v.init);
                     if (init_fn.flags.is_generator and
                         (try self.functionExpressionReturnMismatchSignature(v.init, declared_type)) != null)
+                    {
+                        break :blk false;
+                    }
+                    if (self.varDeclHasJsDocTypeTag(node) and
+                        (try self.functionExpressionReturnMismatchSignature(v.init, declared_type)) != null and
+                        self.hir.kindOf(v.init) == .fn_expr and
+                        try self.functionExpressionInferredReturnMismatchesTarget(v.init, declared_type))
                     {
                         break :blk false;
                     }
@@ -90477,9 +90498,7 @@ pub const Checker = struct {
     fn sourceTypeForVarDeclAssignmentReport(self: *Checker, init_node: NodeId, init_t: TypeId, target_t: TypeId) CheckError!TypeId {
         if (self.unnarrowedAnnotatedUnionType(init_node)) |union_t| return union_t;
         const init_kind = self.hir.kindOf(init_node);
-        if ((init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn) and
-            init_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(init_t).is_object_type)
-        {
+        if (init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn) {
             if (self.firstSignatureType(target_t)) |target_sig| {
                 var source_sig = try self.contextualFunctionSignatureWithInferredReturn(init_node, target_sig);
                 const function = hir_mod.fnDeclOf(self.hir, init_node);
@@ -90496,6 +90515,8 @@ pub const Checker = struct {
                     ) catch return error.OutOfMemory;
                     try self.copySignatureParamNames(source_sig, target_sig);
                 }
+                if (init_t >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(init_t).is_object_type) return source_sig;
                 const call_name = self.string_interner.intern("__call") catch return error.OutOfMemory;
                 return try self.objectTypeWithUpsertedMember(init_t, .{
                     .name = call_name,
@@ -96655,7 +96676,13 @@ pub const Checker = struct {
                     }
                 }
                 var suppressed_ts2350_via_ts7009 = false;
-                const checked_js_bare_function = (self.strict_flags.no_implicit_any or
+                if (try self.newCalleeHasMalformedClosureConstructorType(c.callee)) {
+                    try self.reportNotConstructableWithNoConstructSignatures(
+                        c.callee,
+                        try self.syntheticFunctionObjectType(),
+                    );
+                    suppressed_ts2350_via_ts7009 = true;
+                } else if ((self.strict_flags.no_implicit_any or
                     (self.sourceHasCheckJsDirective() and !self.sourceHasStrictFalseDirective())) and
                     ((try self.newCalleeIsImportedCallOnlyFunction(c.callee)) or if (self.sourceHasCheckJsDirective() and
                     self.hir.kindOf(c.callee) == .identifier)
@@ -96664,8 +96691,7 @@ pub const Checker = struct {
                     const fn_node = self.jsConstructorFunctionDeclForName(c.callee, id.name) orelse break :blk_bare false;
                     if (self.checkJsClassWithNameInOtherVirtualSection(c.callee, id.name)) break :blk_bare true;
                     break :blk_bare !self.fnLooksLikeCheckJsConstructor(fn_node);
-                } else false);
-                if (checked_js_bare_function) {
+                } else false)) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
                     suppressed_ts2350_via_ts7009 = true;
                 } else if ((self.strict_flags.no_implicit_any or
@@ -104157,6 +104183,17 @@ pub const Checker = struct {
         return null;
     }
 
+    fn pureCallableObjectSignature(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        if (self.interner.isSignature(t)) return t;
+        if (!self.interner.pool.flagsOf(t).is_object_type) return null;
+        const members = self.interner.objectMembers(t);
+        if (members.len != 1) return null;
+        const call_member_id = self.string_interner.intern("__call") catch return null;
+        if (members[0].name != call_member_id or !self.interner.isSignature(members[0].type)) return null;
+        return members[0].type;
+    }
+
     fn contextualElementAssignmentSignature(self: *Checker, t: TypeId) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
@@ -110202,6 +110239,64 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn jsDocClosureTypeDeclaresConstructor(type_text: []const u8) bool {
+        const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        if (!std.mem.startsWith(u8, trimmed, "function")) return false;
+        return std.mem.indexOf(u8, trimmed, "new:") != null;
+    }
+
+    fn functionJsDocDeclaresClosureConstructorReturn(self: *Checker, fn_node: NodeId) CheckError!bool {
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind == .returns_tag and jsDocClosureTypeDeclaresConstructor(tag.type_text)) return true;
+        }
+        return false;
+    }
+
+    fn functionJsDocParamDeclaresClosureConstructor(
+        self: *Checker,
+        fn_node: NodeId,
+        param_name: hir_mod.StringId,
+    ) CheckError!bool {
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        const wanted = self.string_interner.get(param_name);
+        for (tags) |tag| {
+            if (tag.kind == .param_tag and
+                std.mem.eql(u8, tag.name, wanted) and
+                jsDocClosureTypeDeclaresConstructor(tag.type_text)) return true;
+        }
+        return false;
+    }
+
+    fn newCalleeHasMalformedClosureConstructorType(self: *Checker, callee: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or callee == hir_mod.none_node_id or
+            self.hir.kindOf(callee) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, callee).name;
+        if (self.enclosingFunctionLike(callee)) |fn_node| {
+            for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+                if (self.hir.kindOf(param_node) != .parameter) continue;
+                const param = hir_mod.parameterOf(self.hir, param_node);
+                if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier or
+                    hir_mod.identifierOf(self.hir, param.name).name != name) continue;
+                if (try self.functionJsDocParamDeclaresClosureConstructor(fn_node, name)) return true;
+            }
+        }
+        const declaration = self.findLocalValueDeclBeforeExpression(callee, name) orelse return false;
+        const kind = self.hir.kindOf(declaration);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return false;
+        const variable = hir_mod.varDeclOf(self.hir, declaration);
+        if (variable.init == hir_mod.none_node_id or self.hir.kindOf(variable.init) != .call_expr) return false;
+        const call = hir_mod.callOf(self.hir, variable.init);
+        const fn_node = self.namedFunctionDeclForCallCallee(call.callee) orelse return false;
+        return try self.functionJsDocDeclaresClosureConstructorReturn(fn_node);
     }
 
     fn newCalleeIsImportedCallOnlyFunction(self: *Checker, callee: NodeId) CheckError!bool {
@@ -152720,6 +152815,18 @@ pub const Checker = struct {
             .return_mismatch => |target_sig| target_sig,
             else => null,
         };
+    }
+
+    fn functionExpressionInferredReturnMismatchesTarget(
+        self: *Checker,
+        fn_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        const target_sig = self.firstSignatureType(target_t) orelse return false;
+        const source_sig = try self.contextualFunctionSignatureWithInferredReturn(fn_node, target_sig);
+        const source_ret = self.interner.signatureReturn(source_sig) orelse return false;
+        const target_ret = self.interner.signatureReturn(target_sig) orelse return false;
+        return !try self.checkerAssignableTo(source_ret, target_ret);
     }
 
     fn functionExpressionContextualPredicate(self: *Checker, fn_node: NodeId) CheckError!?FnPredicate {
