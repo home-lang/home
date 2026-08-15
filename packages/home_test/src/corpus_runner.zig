@@ -55586,7 +55586,7 @@ const harness_prelude =
     \\    if (this.hostname.length > __home_url_hostname_max_len) this.hostname = "";
     \\    else if (ipv6Hostname && this.hostname.indexOf("::") === -1 && this.hostname.slice(1, -1).split(":").length === 8) this.hostname = this.hostname.toLowerCase();
     \\    else if (!ipv6Hostname) this.hostname = this.hostname.toLowerCase();
-    \\    if (this.hostname) this.hostname = __home_url_domain_to_ascii(this.hostname) || new URL("http://" + this.hostname).hostname;
+    \\    if (this.hostname && !ipv6Hostname) this.hostname = __home_url_domain_to_ascii(this.hostname) || new URL("http://" + this.hostname).hostname;
     \\    const p = this.port ? ":" + this.port : "";
     \\    const h = this.hostname || "";
     \\    const legacyIPv6SpotCheckPort = this.protocol === "http:" && h === "[::1]" && this.port === "1";
@@ -55878,21 +55878,17 @@ const harness_prelude =
     \\  Url: __home_legacy_Url,
     \\  domainToASCII(value) {
     \\    if (arguments.length === 0) { const error = new TypeError("Not enough arguments"); error.code = "ERR_MISSING_ARGS"; throw error; }
+    \\    if (value === null || value === undefined) return value;
     \\    return __home_url_domain_to_ascii(value);
     \\  },
     \\  domainToUnicode(value) {
     \\    if (arguments.length === 0) { const error = new TypeError("Not enough arguments"); error.code = "ERR_MISSING_ARGS"; throw error; }
+    \\    if (value === null || value === undefined) return value;
     \\    return __home_url_domain_to_unicode(value);
     \\  },
     \\  format(value, options) {
     \\    if (typeof value === "string") {
-    \\      const looseMatch = String(value).match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#"\s]+)(["\s].*)$/);
-    \\      if (looseMatch) return looseMatch[1] + looseMatch[2] + "/" + encodeURI(looseMatch[3]);
-    \\      try { return new URL(value).href; } catch (error) {
-    \\        const match = String(value).match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#"\s]+)(.*)$/);
-    \\        if (match) return match[1] + match[2] + (match[3] ? "/" + encodeURI(match[3]) : "/");
-    \\        return value;
-    \\      }
+    \\      return __home_url_format_legacy(value);
     \\    }
     \\    let output = __home_url_format_legacy(value);
     \\    if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "auth") && !options.auth) {
@@ -88831,6 +88827,47 @@ test "bootstrap runner preserves node timers and TLS foundation contracts" {
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
+}
+
+test "bootstrap runner preserves node URL contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize }{
+        .{ .path = "js/node/url/pathToFileURL.test.ts", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/url/url-domain-ascii-unicode.test.js", .passed = 130, .todo = 0 },
+        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/url/url-format-whatwg.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/url/url-format.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/url/url-is-url.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/url/url-null-char.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/url/url-parse-format.test.js", .passed = 2, .todo = 1 },
+        .{ .path = "js/node/url/url-parse-invalid-input.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-parse-ipv6.test.ts", .passed = 34, .todo = 0 },
+        .{ .path = "js/node/url/url-parse-query.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 4, .todo = 0 },
+        .{ .path = "js/node/url/url-relative.test.js", .passed = 5, .todo = 0 },
+        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 1, .todo = 0 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node URL contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
 }
 
