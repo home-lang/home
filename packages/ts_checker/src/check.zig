@@ -4110,6 +4110,10 @@ pub const Checker = struct {
     /// scanner sees before parser diagnostics are emitted. Re-entering
     /// the same alias should not recurse forever.
     resolving_jsdoc_typedef_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// Function values whose expando members are currently being collected.
+    /// Self-referential assignments such as `f.self = f` reuse the base
+    /// callable type instead of recursively rebuilding the same expando.
+    resolving_expando_function_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Exported type declarations currently being materialized through
     /// virtual relative-module lookup. Circular module references can
     /// legally mention the exported class/interface before its full body
@@ -4644,6 +4648,11 @@ pub const Checker = struct {
     /// syntax nodes, so this gives trivia diagnostics a stable owner
     /// while their exact byte position stays in `Diagnostic.pos`.
     jsdoc_diagnostic_anchor: NodeId = hir_mod.none_node_id,
+    /// Parameter whose JSDoc type text is currently being lowered. JSDoc
+    /// `typeof` queries use value-space lookup, so this preserves parameter
+    /// shadowing while the eager object-type builder breaks self-cycles.
+    jsdoc_parameter_name: ?hir_mod.StringId = null,
+    jsdoc_parameter_type_text: []const u8 = "",
     /// Effective `--moduleResolution` value as a normalized lower-case
     /// label (`"classic"`, `"node10"`, `"node16"`, `"nodenext"`,
     /// `"bundler"`). Populated by the driver/program path; empty
@@ -4736,6 +4745,7 @@ pub const Checker = struct {
             .namespace_value_in_progress = .empty,
             .namespace_value_object_types = .empty,
             .resolving_jsdoc_typedef_aliases = .empty,
+            .resolving_expando_function_names = .empty,
             .resolving_exported_type_decls = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
@@ -5133,6 +5143,7 @@ pub const Checker = struct {
         self.namespace_value_in_progress.deinit(self.gpa);
         self.namespace_value_object_types.deinit(self.gpa);
         self.resolving_jsdoc_typedef_aliases.deinit(self.gpa);
+        self.resolving_expando_function_names.deinit(self.gpa);
         self.resolving_exported_type_decls.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
@@ -18544,6 +18555,9 @@ pub const Checker = struct {
         const base_is_signature = base_flags.is_signature;
         const base_is_callable_object = base_flags.is_object_type and self.objectHasCallOrConstructSignature(base_t);
         if (!base_is_signature and !base_is_callable_object) return null;
+        if (self.resolving_expando_function_names.contains(name)) return null;
+        try self.resolving_expando_function_names.put(self.gpa, name, {});
+        defer _ = self.resolving_expando_function_names.remove(name);
 
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
@@ -81747,7 +81761,7 @@ pub const Checker = struct {
             if (std.mem.startsWith(u8, tag.description, ".")) continue;
             var t: ?TypeId = null;
             if (tag.type_text.len > 0) {
-                if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, fn_node)) |param_t| {
+                if (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, fn_node, tag.name)) |param_t| {
                     t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
                 }
             }
@@ -81785,7 +81799,7 @@ pub const Checker = struct {
             if (current == param_index) {
                 var t: ?TypeId = null;
                 if (tag.type_text.len > 0) {
-                    if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, fn_node)) |param_t| {
+                    if (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, fn_node, tag.name)) |param_t| {
                         t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
                     }
                 }
@@ -81937,7 +81951,7 @@ pub const Checker = struct {
         defer names.deinit(self.gpa);
         for (tags) |tag| {
             if (tag.kind != .param_tag) continue;
-            const param_t = (try self.jsDocTypeTextToTypeAt(src, tag.type_text, ctor_node)) orelse types.Primitive.any;
+            const param_t = (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, ctor_node, tag.name)) orelse types.Primitive.any;
             const effective_t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
             try param_types.append(self.gpa, effective_t);
             try omittable.append(self.gpa, tag.optional or self.parameterTypeAllowsVoidOmission(effective_t));
@@ -84969,6 +84983,27 @@ pub const Checker = struct {
         return try self.jsDocTypeTextToType(src, type_text);
     }
 
+    fn jsDocParamTypeTextToTypeAt(
+        self: *Checker,
+        src: []const u8,
+        type_text: []const u8,
+        at_node: NodeId,
+        param_name: []const u8,
+    ) CheckError!?TypeId {
+        const prev_name = self.jsdoc_parameter_name;
+        const prev_text = self.jsdoc_parameter_type_text;
+        self.jsdoc_parameter_name = if (param_name.len > 0)
+            self.string_interner.intern(param_name) catch return error.OutOfMemory
+        else
+            null;
+        self.jsdoc_parameter_type_text = type_text;
+        defer {
+            self.jsdoc_parameter_name = prev_name;
+            self.jsdoc_parameter_type_text = prev_text;
+        }
+        return try self.jsDocTypeTextToTypeAt(src, type_text, at_node);
+    }
+
     fn jsDocQualifiedNameTypeForNode(self: *Checker, src: []const u8, type_text: []const u8, at_node: NodeId) CheckError!?TypeId {
         const trimmed = jsDocTrimOuterParens(std.mem.trim(u8, type_text, " \t\r\n"));
         if (trimmed.len == 0) return null;
@@ -85577,11 +85612,42 @@ pub const Checker = struct {
             return types.Primitive.any;
         }
         const name = self.string_interner.intern(operand) catch return error.OutOfMemory;
+        if (self.jsdoc_parameter_name != null and self.jsdoc_parameter_name.? == name) {
+            return (try self.jsDocObjectSkeletonWithAnyMembers(self.jsdoc_parameter_type_text)) orelse
+                types.Primitive.any;
+        }
         const visible_t = try self.typeOfVisibleNameNoDiag(self.jsdoc_diagnostic_anchor, name);
         if (visible_t) |t| if (!self.typeIsAnyLike(t)) return t;
         if (try self.jsDocTypeofSiblingFunctionType(self.jsdoc_diagnostic_anchor, name)) |t| return t;
         if (visible_t) |t| return t;
         return types.Primitive.any;
+    }
+
+    fn jsDocObjectSkeletonWithAnyMembers(self: *Checker, type_text: []const u8) CheckError!?TypeId {
+        const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') return null;
+        const body = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\r\n");
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var lines = std.mem.tokenizeAny(u8, body, "\n;,");
+        while (lines.next()) |raw_line| {
+            var line = std.mem.trim(u8, raw_line, " \t\r");
+            if (line.len > 0 and line[0] == '*') line = std.mem.trim(u8, line[1..], " \t\r");
+            if (line.len == 0 or !isJsDocIdentStart(line[0])) continue;
+            var name_end: usize = 1;
+            while (name_end < line.len and isJsDocIdentChar(line[name_end])) : (name_end += 1) {}
+            const after_name = std.mem.trim(u8, line[name_end..], " \t");
+            if (after_name.len == 0 or (after_name[0] != ':' and !std.mem.startsWith(u8, after_name, "?:"))) continue;
+            try members.append(self.gpa, .{
+                .name = self.string_interner.intern(line[0..name_end]) catch return error.OutOfMemory,
+                .type = types.Primitive.any,
+                .is_optional = std.mem.startsWith(u8, after_name, "?:"),
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+        if (members.items.len == 0) return null;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn jsDocTypeofSiblingFunctionType(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -87891,7 +87957,7 @@ pub const Checker = struct {
                         continue;
                     }
                     param_tag_index += 1;
-                    const param_t = (try self.jsDocTypeTextToType(src, tag.type_text)) orelse types.Primitive.any;
+                    const param_t = (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, self.jsdoc_diagnostic_anchor, tag.name)) orelse types.Primitive.any;
                     try params.append(self.gpa, param_t);
                     try omittable.append(self.gpa, tag.optional);
                 } else if (tag.kind == .returns_tag) {
@@ -93520,6 +93586,12 @@ pub const Checker = struct {
 
     fn reportNotCallableWithPossibleMissingSemicolon(self: *Checker, call_node: NodeId, callee: NodeId, callee_t: TypeId) CheckError!void {
         try self.reportNotCallableWithNoCallSignatures(callee, callee_t);
+        if (self.hir.kindOf(callee) == .member_access and self.diagnostics.items.len > 0) {
+            const last = &self.diagnostics.items[self.diagnostics.items.len - 1];
+            if (last.code == TsCodes.not_callable and last.node == callee) {
+                last.pos = self.memberAccessPropertyNamePos(callee);
+            }
+        }
         if (!self.callExprLooksLikeMissingSemicolon(call_node)) return;
         if (self.diagnostics.items.len == 0) return;
         const last = &self.diagnostics.items[self.diagnostics.items.len - 1];
@@ -171394,6 +171466,36 @@ test "checker: block-scoped expando function gains assigned properties" {
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: self-referential function expando reuses base callable type" {
+    const s = try newSetup(
+        \\function f() {}
+        \\f.self = f;
+        \\f.self();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != TsCodes.property_does_not_exist);
+        try T.expect(diagnostic.code != TsCodes.not_callable);
+    }
+}
+
+test "checker: JSDoc typeof parameter shadows a global function" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\function b() {}
+        \\/** @param {{ y: typeof b }} b */
+        \\function g(b) { b.y(); }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var not_callable_count: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.not_callable) not_callable_count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), not_callable_count);
 }
 
 test "checker: expando function block shadowing keeps top and block properties distinct" {
