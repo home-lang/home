@@ -4028,6 +4028,9 @@ pub const Checker = struct {
     mapped_property_cycle_detected: bool = false,
     /// Dedupes TS2615 by mapped-node/key target.
     reported_mapped_property_cycles: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    /// Recursive mapped-property cycles recognized while declarations are
+    /// lowered but reported only when a concrete projection is observed.
+    pending_instantiated_mapped_cycles: std.ArrayListUnmanaged(PendingInstantiatedMappedCycle) = .empty,
     /// Stable declaration identity for mapped key parameters. Structural
     /// interning would collapse unrelated `[K in ...]` declarations.
     mapped_type_params: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
@@ -5154,6 +5157,7 @@ pub const Checker = struct {
         self.type_resolutions.deinit(self.gpa);
         self.conditional_branch_check_names.deinit(self.gpa);
         self.reported_mapped_property_cycles.deinit(self.gpa);
+        self.pending_instantiated_mapped_cycles.deinit(self.gpa);
         self.mapped_type_params.deinit(self.gpa);
         self.type_parameter_placeholder_targets.deinit(self.gpa);
         self.alias_lower_in_progress.deinit(self.gpa);
@@ -58843,14 +58847,14 @@ pub const Checker = struct {
             if (im.name == 0) continue;
             if (self.recursiveRequiredMappedPropertyInfo(node, m)) |cycle| {
                 try self.reportSelfReferencedInterfacePropertyAtKey(m, im.name);
-                try self.reportInstantiatedMappedPropertyCircularOnce(
-                    cycle.selector_mapped,
-                    im.name,
-                    m,
-                    im.type_node,
-                    cycle.selector_source_param,
-                    cycle.interface_name,
-                );
+                try self.queueInstantiatedMappedPropertyCycle(.{
+                    .mapped_node = cycle.selector_mapped,
+                    .key_name = im.name,
+                    .member_node = m,
+                    .source_param = cycle.selector_source_param,
+                    .concrete_name = cycle.interface_name,
+                    .projection_name = cycle.projection_name,
+                });
             }
             if (it.name != hir_mod.none_node_id and
                 self.hir.kindOf(it.name) == .identifier and
@@ -65156,6 +65160,16 @@ pub const Checker = struct {
         selector_mapped: NodeId,
         selector_source_param: hir_mod.StringId,
         interface_name: hir_mod.StringId,
+        projection_name: hir_mod.StringId,
+    };
+
+    const PendingInstantiatedMappedCycle = struct {
+        mapped_node: NodeId,
+        key_name: hir_mod.StringId,
+        member_node: NodeId,
+        source_param: hir_mod.StringId,
+        concrete_name: hir_mod.StringId,
+        projection_name: hir_mod.StringId,
     };
 
     fn typeAliasSingleTypeParameterName(self: *Checker, alias_decl: NodeId) ?hir_mod.StringId {
@@ -65266,6 +65280,7 @@ pub const Checker = struct {
             .selector_mapped = selector_indexed.object,
             .selector_source_param = selector_source_param,
             .interface_name = interface_name,
+            .projection_name = projection_ref.name,
         };
     }
 
@@ -75572,6 +75587,65 @@ pub const Checker = struct {
             .{ property_display, mapped_text.items },
         );
         try self.report(report_node, TsCodes.mapped_property_circular, msg);
+    }
+
+    fn queueInstantiatedMappedPropertyCycle(
+        self: *Checker,
+        pending: PendingInstantiatedMappedCycle,
+    ) CheckError!void {
+        for (self.pending_instantiated_mapped_cycles.items) |existing| {
+            if (existing.mapped_node == pending.mapped_node and existing.key_name == pending.key_name) return;
+        }
+        try self.pending_instantiated_mapped_cycles.append(self.gpa, pending);
+    }
+
+    fn reportPendingInstantiatedMappedCycleAtMemberAccess(
+        self: *Checker,
+        access_node: NodeId,
+        object_node: NodeId,
+    ) CheckError!void {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(object_node) orelse return;
+        for (self.pending_instantiated_mapped_cycles.items) |pending| {
+            const target = mappedPropertyResolutionTarget(pending.mapped_node, pending.key_name);
+            if (self.reported_mapped_property_cycles.contains(target)) continue;
+            if (!self.typeNodeInstantiatesMappedProjection(
+                annotation,
+                pending.projection_name,
+                pending.concrete_name,
+                0,
+            )) continue;
+            try self.reportInstantiatedMappedPropertyCircularOnce(
+                pending.mapped_node,
+                pending.key_name,
+                pending.member_node,
+                access_node,
+                pending.source_param,
+                pending.concrete_name,
+            );
+        }
+    }
+
+    fn typeNodeInstantiatesMappedProjection(
+        self: *Checker,
+        type_node: NodeId,
+        projection_name: hir_mod.StringId,
+        concrete_name: hir_mod.StringId,
+        depth: u8,
+    ) bool {
+        if (type_node == hir_mod.none_node_id or depth > 8 or self.hir.kindOf(type_node) != .type_ref) return false;
+        const type_ref = hir_mod.typeRefOf(self.hir, type_node);
+        if (type_ref.qualifier_len != 0) return false;
+        const args = hir_mod.typeRefArgs(self.hir, type_node);
+        if (type_ref.name == projection_name and args.len == 1 and self.bareTypeNodeHasName(args[0], concrete_name)) {
+            return true;
+        }
+        const alias_decl = self.findTypeAliasDeclInScope(type_node, type_ref.name) orelse return false;
+        return self.typeNodeInstantiatesMappedProjection(
+            hir_mod.typeAliasOf(self.hir, alias_decl).aliased,
+            projection_name,
+            concrete_name,
+            depth + 1,
+        );
     }
 
     fn lowerMappedPropertyValue(
@@ -98988,6 +99062,7 @@ pub const Checker = struct {
                         obj_t = self.interner.internStringLiteral(literal.value) catch return error.OutOfMemory;
                     }
                 }
+                try self.reportPendingInstantiatedMappedCycleAtMemberAccess(node, m.object);
                 if (try self.reportPrivateIdentifierOutsideClassBody(node, m.object, obj_t, m.name)) {
                     break :blk types.Primitive.any;
                 }
@@ -233507,6 +233582,9 @@ test "checker: recursive mapped aliases report declaration and instantiation cyc
         \\    "type": "list";
         \\    "each": Child<ListWidget>;
         \\}
+        \\type ListChild = Child<ListWidget>;
+        \\declare let x: ListChild;
+        \\x.type;
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .declaration = true });
@@ -233528,6 +233606,10 @@ test "checker: recursive mapped aliases report declaration and instantiation cyc
         "Type of property '\"each\"' circularly references itself in mapped type '{ [P in keyof ListWidget]: undefined extends ListWidget[P] ? never : P; }'.",
         mapped_cycle,
     );
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.mapped_property_circular) continue;
+        try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(diagnostic.node));
+    }
 }
 
 // Lib-coverage expansion (w7): the high-frequency Array / String members
