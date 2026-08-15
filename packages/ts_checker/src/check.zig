@@ -4118,6 +4118,10 @@ pub const Checker = struct {
     /// Nested callback contextual typing must not re-enter an incomplete
     /// direct-IIFE callee signature.
     resolving_function_signatures: std.AutoHashMapUnmanaged(NodeId, void),
+    /// Virtual module sections whose CommonJS export object is currently
+    /// being synthesized. Self-reexports must fall through to the bounded
+    /// ESM resolver instead of recursively probing the same module shape.
+    resolving_virtual_commonjs_export_sections: std.AutoHashMapUnmanaged(usize, void),
     /// Exported type declarations currently being materialized through
     /// virtual relative-module lookup. Circular module references can
     /// legally mention the exported class/interface before its full body
@@ -4751,6 +4755,7 @@ pub const Checker = struct {
             .resolving_jsdoc_typedef_aliases = .empty,
             .resolving_expando_function_names = .empty,
             .resolving_function_signatures = .empty,
+            .resolving_virtual_commonjs_export_sections = .empty,
             .resolving_exported_type_decls = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
@@ -5150,6 +5155,7 @@ pub const Checker = struct {
         self.resolving_jsdoc_typedef_aliases.deinit(self.gpa);
         self.resolving_expando_function_names.deinit(self.gpa);
         self.resolving_function_signatures.deinit(self.gpa);
+        self.resolving_virtual_commonjs_export_sections.deinit(self.gpa);
         self.resolving_exported_type_decls.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
@@ -56704,6 +56710,17 @@ pub const Checker = struct {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const stmts = hir_mod.blockStmts(self.hir, root);
+        var target_section: ?usize = null;
+        for (stmts) |raw| {
+            if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+            target_section = self.virtualSectionStartForNode(raw);
+            break;
+        }
+        const section = target_section orelse return null;
+        if (self.resolving_virtual_commonjs_export_sections.contains(section)) return null;
+        try self.resolving_virtual_commonjs_export_sections.put(self.gpa, section, {});
+        defer _ = self.resolving_virtual_commonjs_export_sections.remove(section);
+
         var export_alias: ?hir_mod.StringId = null;
         var direct_export_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer direct_export_types.deinit(self.gpa);
@@ -222062,6 +222079,20 @@ test "checker: no TS18043 for JS re-export of value relative export" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.js_type_export_in_js);
     }
+}
+
+test "checker: self re-export does not recurse through CommonJS shape probing" {
+    const b = try newBoundSetup(
+        \\// @target: es2022
+        \\// @module: es2022
+        \\// @filename: /src/values.ts
+        \\export const foo = 1;
+        \\export { foo as "valid 1" };
+        \\export { "valid 1" as "valid 2" } from "./values";
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.resolving_virtual_commonjs_export_sections.count());
 }
 
 test "checker: TS1484 for verbatim value import of direct type export" {
