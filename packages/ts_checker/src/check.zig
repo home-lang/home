@@ -11187,17 +11187,23 @@ pub const Checker = struct {
     }
 
     fn checkCrossVirtualScriptClassFunctionConflicts(self: *Checker, stmts: []const NodeId) CheckError!void {
-        if (!self.sourceHasVirtualFilenameSections()) return;
+        if (!self.sourceHasVirtualFilenameSections() or stmts.len == 0) return;
+        const root = self.rootBlockFor(stmts[0]);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
         for (stmts, 0..) |left_raw, index| {
             const left = self.unwrapExportDecl(left_raw);
             const left_name = self.declarationName(left) orelse continue;
+            const left_section = self.virtualSectionStartForNode(left);
+            if (self.virtualSectionHasExternalModuleSyntax(root, left_section)) continue;
             const left_is_class = self.hir.kindOf(left) == .class_decl or self.hir.kindOf(left) == .class_expr;
             const left_is_function_value = self.hir.kindOf(left) == .fn_decl or self.declarationIsFunctionValuedVariable(left);
             const left_is_block_scoped_value = self.hir.kindOf(left) == .let_decl or self.hir.kindOf(left) == .const_decl;
             if (!left_is_class and !left_is_function_value and !left_is_block_scoped_value) continue;
             for (stmts[index + 1 ..]) |right_raw| {
                 const right = self.unwrapExportDecl(right_raw);
-                if (self.virtualSectionStartForNode(left) == self.virtualSectionStartForNode(right)) continue;
+                const right_section = self.virtualSectionStartForNode(right);
+                if (left_section == right_section) continue;
+                if (self.virtualSectionHasExternalModuleSyntax(root, right_section)) continue;
                 if ((self.declarationName(right) orelse continue) != left_name) continue;
                 const right_is_class = self.hir.kindOf(right) == .class_decl or self.hir.kindOf(right) == .class_expr;
                 const right_is_function_value = self.hir.kindOf(right) == .fn_decl or self.declarationIsFunctionValuedVariable(right);
@@ -57728,14 +57734,11 @@ pub const Checker = struct {
         return text[j] != '.';
     }
 
-    /// True when the module identified by `spec` carries an `export =`
-    /// assignment (ambient `declare module "spec" { export = X }` or a
-    /// relative virtual-section module). Such a module may export a type,
-    /// so `import("spec")` is a legitimate type and TS1340 is suppressed.
-    /// Conservative: any `export =` suppresses, including `export = value`
-    /// (which tsc would still flag) — preferring a missed diagnostic over a
-    /// false positive.
-    fn importTypeModuleHasExportAssignment(self: *Checker, anchor: NodeId, spec: []const u8) bool {
+    /// True when the module identified by `spec` has an export assignment
+    /// whose target contributes a type meaning. A call-only function or
+    /// ordinary value still requires `typeof import("spec")` and receives
+    /// TS1340; classes and other type declarations can be named directly.
+    fn importTypeModuleExportAssignmentHasTypeMeaning(self: *Checker, anchor: NodeId, spec: []const u8) bool {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
@@ -57746,7 +57749,7 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, ns.name);
                     if (self.moduleNameMatchesSpecifier(self.string_interner.get(id.name), spec)) {
                         for (hir_mod.namespaceBody(self.hir, local)) |body_stmt| {
-                            if (self.isExportAssignmentDecl(body_stmt)) return true;
+                            if (self.exportAssignmentTargetHasTypeMeaning(body_stmt)) return true;
                         }
                     }
                 }
@@ -57756,11 +57759,38 @@ pub const Checker = struct {
             if (self.source) |src| {
                 for (hir_mod.blockStmts(self.hir, root)) |stmt| {
                     if (!self.virtualSectionMatchesSpecifier(src, stmt, spec)) continue;
-                    if (self.isExportAssignmentDecl(stmt)) return true;
+                    if (self.exportAssignmentTargetHasTypeMeaning(stmt)) return true;
                 }
             }
         }
         return false;
+    }
+
+    fn exportAssignmentTargetHasTypeMeaning(self: *Checker, node: NodeId) bool {
+        if (!self.isExportAssignmentDecl(node)) return false;
+        const ex = hir_mod.exportOf(self.hir, node);
+        if (ex.decl == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(ex.decl) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, ex.decl).name;
+            var parent = self.hir.parentOf(node);
+            while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+                if (self.hir.kindOf(parent) != .namespace_decl and self.hir.kindOf(parent) != .module_decl) continue;
+                if (self.findNamedDeclInNamespaceBody(parent, name)) |target| {
+                    return self.declHasTypeMeaning(target);
+                }
+            }
+            const target = self.findNamedDeclInVirtualSection(node, name) orelse return false;
+            return self.declHasTypeMeaning(target);
+        }
+        return self.declHasTypeMeaning(ex.decl);
+    }
+
+    fn declHasTypeMeaning(self: *Checker, decl: NodeId) bool {
+        const unwrapped = self.unwrapExportDecl(decl);
+        return switch (self.hir.kindOf(unwrapped)) {
+            .class_decl, .class_expr, .interface_decl, .type_alias_decl, .enum_decl => true,
+            else => false,
+        };
     }
 
     fn importTypeModuleExportAssignmentTargetsTypeOnly(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!bool {
@@ -57814,7 +57844,10 @@ pub const Checker = struct {
     /// message arg `{0}` is the raw specifier text (no surrounding quotes),
     /// rendered into both `Module '{0}'` and `typeof import('{0}')`.
     fn reportImportTypeNotAType(self: *Checker, node: NodeId, spec: []const u8) CheckError!void {
-        const pos = self.hir.spanOf(node).start;
+        return self.reportImportTypeNotATypeAt(node, self.hir.spanOf(node).start, spec);
+    }
+
+    fn reportImportTypeNotATypeAt(self: *Checker, node: NodeId, pos: u32, spec: []const u8) CheckError!void {
         if (self.hasDiagnosticAtPosition(TsCodes.module_does_not_refer_to_type, pos)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -68668,7 +68701,7 @@ pub const Checker = struct {
                     // so this is the value-as-type case.
                     if (r.qualifier_len == 0 and self.importTypeIsBareModuleType(type_node) and
                         !self.nodeHasAncestorKind(type_node, .typeof_type) and
-                        !self.importTypeModuleHasExportAssignment(type_node, import_spec))
+                        !self.importTypeModuleExportAssignmentHasTypeMeaning(type_node, import_spec))
                     {
                         try self.reportImportTypeNotAType(type_node, import_spec);
                         return types.Primitive.any;
@@ -68676,7 +68709,7 @@ pub const Checker = struct {
                     if (try self.virtualCommonJsImportTypeMember(type_node, .type)) |t| return t;
                     if (r.qualifier_len == 0 and
                         self.importTypeIsBareModuleType(type_node) and
-                        self.importTypeModuleHasExportAssignment(type_node, import_spec))
+                        self.importTypeModuleExportAssignmentHasTypeMeaning(type_node, import_spec))
                     {
                         // The parser uses a synthetic `unknown` root for
                         // bare generic import types. Once the module's
@@ -86920,6 +86953,13 @@ pub const Checker = struct {
                 return export_t;
             }
             const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec_text)) orelse return null;
+            if (space == .jsdoc_type and
+                !self.importTypeModuleExportAssignmentHasTypeMeaning(anchor, spec_text))
+            {
+                const pos = self.sliceStartPos(src, text) orelse self.hir.spanOf(anchor).start;
+                try self.reportImportTypeNotATypeAt(anchor, pos, spec_text);
+                return types.Primitive.any;
+            }
             return if (space == .jsdoc_type) try self.commonJsValueExportAsJsDocType(module_t) else module_t;
         }
         if (rest[0] != '.') return null;
@@ -190015,6 +190055,25 @@ test "checker: generic bare import type with export assignment ignores synthetic
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: bare import type rejects call-only CommonJS export without cross-module redeclaration" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: MW.js
+        \\/** @typedef {import("./MC")} MC */
+        \\class MW {}
+        \\module.exports = MW;
+        \\// @filename: MC.js
+        \\const MW = require("./MW");
+        \\/** @class */
+        \\module.exports = function MC() { return new MW(); };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.module_does_not_refer_to_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_redeclare_block_scoped));
 }
 
 test "checker: ambient module class merges with sibling namespace types" {
