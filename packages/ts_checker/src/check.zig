@@ -4114,6 +4114,10 @@ pub const Checker = struct {
     /// Self-referential assignments such as `f.self = f` reuse the base
     /// callable type instead of recursively rebuilding the same expando.
     resolving_expando_function_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// Function nodes whose signatures are currently being constructed.
+    /// Nested callback contextual typing must not re-enter an incomplete
+    /// direct-IIFE callee signature.
+    resolving_function_signatures: std.AutoHashMapUnmanaged(NodeId, void),
     /// Exported type declarations currently being materialized through
     /// virtual relative-module lookup. Circular module references can
     /// legally mention the exported class/interface before its full body
@@ -4746,6 +4750,7 @@ pub const Checker = struct {
             .namespace_value_object_types = .empty,
             .resolving_jsdoc_typedef_aliases = .empty,
             .resolving_expando_function_names = .empty,
+            .resolving_function_signatures = .empty,
             .resolving_exported_type_decls = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
@@ -5144,6 +5149,7 @@ pub const Checker = struct {
         self.namespace_value_object_types.deinit(self.gpa);
         self.resolving_jsdoc_typedef_aliases.deinit(self.gpa);
         self.resolving_expando_function_names.deinit(self.gpa);
+        self.resolving_function_signatures.deinit(self.gpa);
         self.resolving_exported_type_decls.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
@@ -26733,6 +26739,7 @@ pub const Checker = struct {
                 const idx = arg_index orelse return null;
                 var callee_t = self.hir.typeOf(c.callee);
                 if (callee_t == types.Primitive.none) {
+                    if (self.resolving_function_signatures.contains(c.callee)) return null;
                     callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
@@ -26779,6 +26786,7 @@ pub const Checker = struct {
                 const idx = arg_index orelse return null;
                 var callee_t = self.hir.typeOf(c.callee);
                 if (callee_t == types.Primitive.none) {
+                    if (self.resolving_function_signatures.contains(c.callee)) return null;
                     callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
@@ -31546,6 +31554,8 @@ pub const Checker = struct {
     /// fn declares any, and the caller must pop it after the body
     /// walk so type-param references inside the body still resolve.
     fn checkFnSignatureOnly(self: *Checker, node: NodeId) CheckError!TypeId {
+        try self.resolving_function_signatures.put(self.gpa, node, {});
+        defer _ = self.resolving_function_signatures.remove(node);
         const f = hir_mod.fnDeclOf(self.hir, node);
         // Surface JS-file TS-only signature syntax. Type parameter
         // lists are syntax errors even without `@checkJs`; annotations
@@ -235755,6 +235765,16 @@ test "checker: direct IIFEs omit only trailing untyped parameters" {
         try s.checker.checkSourceFile(s.root);
         try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
     }
+}
+
+test "checker: nested callback does not re-enter incomplete IIFE signature" {
+    const s = try newSetup(
+        \\let twelve = (f => f(12))(i => i);
+        \\let eleven = (o => o.a(11))({ a: function(n) { return n; } });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.implicit_any_parameter));
 }
 
 test "checker: intersection call overloads preserve source annotation order" {
