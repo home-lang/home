@@ -4122,6 +4122,10 @@ pub const Checker = struct {
     /// being synthesized. Self-reexports must fall through to the bounded
     /// ESM resolver instead of recursively probing the same module shape.
     resolving_virtual_commonjs_export_sections: std.AutoHashMapUnmanaged(usize, void),
+    /// Exported variable declarations whose initializer type is currently
+    /// being materialized for a module namespace. A dynamic import of the
+    /// variable's own module sees an any-like placeholder for that member.
+    resolving_exported_value_decls: std.AutoHashMapUnmanaged(NodeId, void),
     /// Exported type declarations currently being materialized through
     /// virtual relative-module lookup. Circular module references can
     /// legally mention the exported class/interface before its full body
@@ -4756,6 +4760,7 @@ pub const Checker = struct {
             .resolving_expando_function_names = .empty,
             .resolving_function_signatures = .empty,
             .resolving_virtual_commonjs_export_sections = .empty,
+            .resolving_exported_value_decls = .empty,
             .resolving_exported_type_decls = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
@@ -5156,6 +5161,7 @@ pub const Checker = struct {
         self.resolving_expando_function_names.deinit(self.gpa);
         self.resolving_function_signatures.deinit(self.gpa);
         self.resolving_virtual_commonjs_export_sections.deinit(self.gpa);
+        self.resolving_exported_value_decls.deinit(self.gpa);
         self.resolving_exported_type_decls.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
@@ -26488,6 +26494,9 @@ pub const Checker = struct {
         if (dk != .var_decl and dk != .let_decl and dk != .const_decl) return null;
         const existing = self.hir.typeOf(decl);
         if (existing != types.Primitive.none and existing != types.Primitive.unknown) return existing;
+        if (self.resolving_exported_value_decls.contains(decl)) return types.Primitive.any;
+        try self.resolving_exported_value_decls.put(self.gpa, decl, {});
+        defer _ = self.resolving_exported_value_decls.remove(decl);
         const v = hir_mod.varDeclOf(self.hir, decl);
         if (v.type_annotation != hir_mod.none_node_id) {
             const declared_t = try self.lowerValueTypeAnnotation(name, v.type_annotation);
@@ -214373,6 +214382,21 @@ test "checker: dynamic import literal uses virtual module namespace shape" {
         if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: exported initializer can dynamically import its own module" {
+    const s = try newSetup(
+        \\// @module: amd
+        \\// @target: es6
+        \\// @filename: test.ts
+        \\export const load = async () => {
+        \\  const namespace = await import("./test");
+        \\  return namespace;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.resolving_exported_value_decls.count());
 }
 
 test "checker: dynamic import namespace promise is assignable to Promise<any> parameter" {
