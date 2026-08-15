@@ -34203,9 +34203,9 @@ pub const Checker = struct {
 
     /// Lower a class declaration into an instance object type. Each
     /// TS2725 ÃÂ¢ÃÂÃÂ `export class Object {}` is forbidden when the
-    /// emit target is ES5+ and the module format is CommonJS / UMD
-    /// (which would conflict with the global `Object` symbol the
-    /// emitter pulls in). Fires only on classes whose name is
+    /// emit target is ES5+ and the effective module emit format is below
+    /// ES2015 (CommonJS in the conformance matrix). Fires only on classes
+    /// whose name is
     /// literally `Object` and only on the export-prefixed forms
     /// (`export class Object`, `export default class Object`) since
     /// those are what tsc reports ÃÂ¢ÃÂÃÂ non-exported `class Object` is
@@ -34219,20 +34219,11 @@ pub const Checker = struct {
         if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .export_decl) return;
         if (self.classHasLeadingDeclare(node)) return;
         if (self.virtualSectionIsDeclarationFile(node)) return;
-        const module_label: []const u8 = if (self.sourceDirectiveValueMentions("module", "commonjs"))
-            "CommonJS"
-        else if (self.sourceDirectiveValueMentions("module", "umd"))
-            "UMD"
-        else if (self.sourceDirectiveValueMentions("module", "amd"))
-            "AMD"
-        else if (self.sourceDirectiveValueMentions("module", "system"))
-            "System"
-        else
-            return;
+        if (!self.sourceDirectiveValueMentions("module", "commonjs")) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Class name cannot be 'Object' when targeting ES5 and above with module {s}.",
-            .{module_label},
+            .{"CommonJS"},
         );
         try self.diagnostics.append(self.gpa, .{
             .node = c.name,

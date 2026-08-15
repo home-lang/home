@@ -617,24 +617,6 @@ fn reportDeprecatedOptionDirectives(
                 c.has_errors = true;
             }
 
-            // TS5105 — `verbatimModuleSyntax` is incompatible with the
-            // module-system targets that don't preserve ES module syntax
-            // (UMD/AMD/System all desugar imports to plain calls).
-            // Upstream tsc emits this as a global option-validation
-            // diagnostic. Mirrors `verbatimModuleSyntaxCompat`.
-            if (directiveValue(source, "verbatimModuleSyntax")) |vms_raw| {
-                if (std.ascii.eqlIgnoreCase(vms_raw, "true")) {
-                    try c.diagnostics.append(gpa, .{
-                        .phase = .parse,
-                        .pos = 0,
-                        .line = 0,
-                        .code = 5105,
-                        .is_global = true,
-                        .message = try gpa.dupe(u8, "Option 'verbatimModuleSyntax' cannot be used when 'module' is set to 'UMD', 'AMD', or 'System'."),
-                    });
-                    c.has_errors = true;
-                }
-            }
         }
     }
 }
@@ -6323,13 +6305,11 @@ test "driver: ignoreDeprecations 6.0 suppresses TypeScript 6 option deprecations
         suppressed.deinit();
         T.allocator.destroy(suppressed);
     }
-    var found_compatibility_error = false;
     for (suppressed.diagnostics.items) |d| {
         try T.expect(d.code != 5101);
         if (d.code == 5107) try T.expect(std.mem.indexOf(u8, d.message, "deprecated") == null);
-        if (d.code == 5105) found_compatibility_error = true;
+        try T.expect(d.code != 5105);
     }
-    try T.expect(found_compatibility_error);
 
     var older_boundary = try compileSource(T.allocator,
         \\// @ignoreDeprecations: 5.0
@@ -6523,12 +6503,7 @@ test "driver: @module: esnext does not emit TS5107" {
     }
 }
 
-test "driver: @verbatimModuleSyntax + @module: system emits TS5105" {
-    // Mirrors `verbatimModuleSyntaxCompat`: tsc rejects the
-    // combination of `verbatimModuleSyntax: true` with `module=UMD`,
-    // `module=AMD`, or `module=System` because those module formats
-    // can't preserve the original ES module syntax. The diagnostic is
-    // a global option-validation entry (no source span).
+test "driver: @verbatimModuleSyntax + @module: system does not emit stale TS5105" {
     var c = try compileSource(T.allocator,
         \\// @verbatimModuleSyntax: true
         \\// @module: system
@@ -6538,11 +6513,9 @@ test "driver: @verbatimModuleSyntax + @module: system emits TS5105" {
         c.deinit();
         T.allocator.destroy(c);
     }
-    var found_5105 = false;
     for (c.diagnostics.items) |d| {
-        if (d.code == 5105) found_5105 = true;
+        try T.expect(d.code != 5105);
     }
-    try T.expect(found_5105);
 }
 
 test "driver: unchecked JavaScript retains tsgo plain grammar diagnostics" {
