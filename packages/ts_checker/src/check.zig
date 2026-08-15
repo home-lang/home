@@ -163950,10 +163950,8 @@ pub const Checker = struct {
         if (pk == .array_literal or pk == .object_literal) return;
         switch (pk) {
             .array_pattern => {
-                if (self.sourceDirectiveValueMentions("target", "es5")) {
+                if (self.target_emit_es5 or self.target_es5_baseline) {
                     try self.report(pattern, TsCodes.string_iteration_requires_downlevel, "Type 'string' can only be iterated through when using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher.");
-                } else {
-                    try self.checkArrayDestructuringAssignment(pattern, types.Primitive.string_t, hir_mod.none_node_id, 0);
                 }
             },
             .object_pattern => try self.reportForInStringObjectPatternProperties(pattern),
@@ -176656,7 +176654,7 @@ test "checker: Object assignment mismatch nests TS2696 under TS2322" {
 
 test "checker: for-in destructuring checks string key shape and scopes bindings" {
     const s = try newSetup(
-        \\// @target: es5
+        \\// @target: es5, es2015
         \\for (let [x = 'a' in {}] in { '': 0 }) { x; }
         \\for (let {y = 'a' in {}} in { '': 0 }) { y; }
     );
@@ -176670,7 +176668,7 @@ test "checker: for-in destructuring checks string key shape and scopes bindings"
         if (d.code == TsCodes.property_does_not_exist and std.mem.indexOf(u8, d.message, "Property 'y' does not exist on type 'String'.") != null) saw_missing_prop = true;
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
-    try T.expect(saw_downlevel);
+    try T.expect(!saw_downlevel);
     try T.expect(saw_missing_prop);
 }
 

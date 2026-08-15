@@ -1157,8 +1157,9 @@ pub const Parser = struct {
     /// `grammarErrorOnNode`), NOT `parseDiagnostics`, so they don't
     /// suppress TS2410. Covers `plainJSBinderErrors` (syntactic errors ->
     /// TS1101 only) and `missingCloseParenStatements` (malformed `with (`
-    /// -> TS1101 only) while keeping the ambient `with` (TS1036+TS2410)
-    /// and clean strict `with` (TS1101+TS2410) cases intact.
+    /// -> TS1101 only) while keeping the ambient declaration-file `with`
+    /// (TS1036+TS1101+TS2410) and clean strict `with` (TS1101+TS2410)
+    /// cases intact.
     fn suppressWithUnsupportedWhenFileHasParseErrors(self: *Parser) void {
         var has_other_error = false;
         for (self.diagnostics.items) |d| {
@@ -3954,6 +3955,7 @@ pub const Parser = struct {
         var defer_ts2410_if_clean = false;
         if (self.isAmbientContextAt(start.span.start)) {
             try self.reportCodeAt(start.span.start, start.line, 1036, "Statements are not allowed in ambient contexts.");
+            try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
             try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         } else if (self.strict_mode) {
             try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
@@ -29867,15 +29869,16 @@ test "parser: nested non-strict with body suppresses redundant unsupported diagn
     try T.expectEqual(@as(usize, 1), unsupported_count);
 }
 
-test "parser: with statement in declaration file reports ambient and unsupported diagnostics" {
+test "parser: with statement in declaration file reports ambient strict and unsupported diagnostics" {
     var s = try newTestSetup("with (foo) {}");
     defer destroyTestSetup(s);
 
     s.parser.setDeclarationFile(true);
     _ = try s.parser.parseSourceFile();
-    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expect(s.parser.diagnostics.items.len >= 3);
     try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 2410), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1101), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 2410), s.parser.diagnostics.items[2].code);
 }
 
 test "parser: strict mode catch binding reports restricted name" {
