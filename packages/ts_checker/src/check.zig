@@ -3196,6 +3196,9 @@ pub const StrictFlags = struct {
     /// flexibility ÃÂ¢ÃÂÃÂ matches `tsc`'s pre-3.0 default and current
     /// behavior on method declarations).
     strict_function_types: bool = false,
+    /// `strictBindCallApply` (also implied by `strict`). Selects the
+    /// stricter global CallableFunction and NewableFunction types.
+    strict_bind_call_apply: bool = false,
     /// `strictNullChecks` (also implied by `strict`). When false,
     /// `null` and `undefined` flow to every type except `never`.
     strict_null_checks: bool = false,
@@ -33646,25 +33649,7 @@ pub const Checker = struct {
     fn checkNoLibRequiredGlobalTypes(self: *Checker, root: NodeId, stmts: []const NodeId) CheckError!void {
         if (!self.sourceHasNoLibTrueDirective()) return;
         const RequiredGlobal = struct { name: []const u8, arity: usize };
-        const core_names = [_][]const u8{
-            "Array",
-            "Boolean",
-            "Function",
-            "IArguments",
-            "Number",
-            "Object",
-            "RegExp",
-            "String",
-        };
-        var core_globals_complete = true;
-        for (core_names) |name| {
-            if (self.topLevelGlobalTypeDecl(stmts, name) != null) continue;
-            core_globals_complete = false;
-            break;
-        }
-        const require_extended_function_globals =
-            !core_globals_complete or
-            self.sourceDirectiveValueMentions("declaration", "true");
+        const require_extended_function_globals = self.strict_flags.strict_bind_call_apply;
         const required = [_]RequiredGlobal{
             .{ .name = "Array", .arity = 1 },
             .{ .name = "Boolean", .arity = 0 },
@@ -38921,6 +38906,7 @@ pub const Checker = struct {
                 }
                 try self.reportUnresolvedTypeRefHeritage(impl_node, type_params);
                 const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
+                if (self.typeIsAnyLike(target_t)) continue;
                 // TS2422 — the implements target is not an object type
                 // (bare type parameter, primitive, or union). Fires before
                 // (and instead of) the TS2420 assignability check, matching
@@ -44661,6 +44647,16 @@ pub const Checker = struct {
                 const raw = self.string_interner.get(name);
                 if (try self.sourceConstStringMemberName(raw)) |member_name| break :blk member_name;
                 if (try self.sourceConstSymbolMemberName(raw)) |member_name| break :blk member_name;
+                const key_t = if (self.hir.typeOf(key) != types.Primitive.none)
+                    self.hir.typeOf(key)
+                else
+                    self.checkExpression(key) catch types.Primitive.any;
+                if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_literal) {
+                    switch (self.interner.literalOf(key_t)) {
+                        .string_lit => |sid| break :blk sid,
+                        else => {},
+                    }
+                }
                 if (self.sourceHasUniqueSymbolDeclaration(raw)) {
                     const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{raw});
                     defer self.gpa.free(synthetic);
@@ -58293,8 +58289,7 @@ pub const Checker = struct {
             }
             if (self.hir.kindOf(assignment.value) == .identifier) {
                 const name = hir_mod.identifierOf(self.hir, assignment.value).name;
-                const target = self.findNamedDeclInVirtualSection(node, name) orelse return false;
-                return self.declHasTypeMeaning(target);
+                return self.virtualSectionNameHasTypeMeaning(node, name);
             }
             return self.declHasTypeMeaning(assignment.value);
         }
@@ -58306,12 +58301,9 @@ pub const Checker = struct {
             var parent = self.hir.parentOf(node);
             while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
                 if (self.hir.kindOf(parent) != .namespace_decl and self.hir.kindOf(parent) != .module_decl) continue;
-                if (self.findNamedDeclInNamespaceBody(parent, name)) |target| {
-                    return self.declHasTypeMeaning(target);
-                }
+                return self.namespaceBodyNameHasTypeMeaning(parent, name);
             }
-            const target = self.findNamedDeclInVirtualSection(node, name) orelse return false;
-            return self.declHasTypeMeaning(target);
+            return self.virtualSectionNameHasTypeMeaning(node, name);
         }
         return self.declHasTypeMeaning(ex.decl);
     }
@@ -58322,6 +58314,29 @@ pub const Checker = struct {
             .class_decl, .class_expr, .interface_decl, .type_alias_decl, .enum_decl => true,
             else => false,
         };
+    }
+
+    fn virtualSectionNameHasTypeMeaning(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (self.virtualSectionStartForNode(raw) != section) continue;
+            const decl = self.unwrapExportDecl(raw);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name == name and self.declHasTypeMeaning(decl)) return true;
+        }
+        return false;
+    }
+
+    fn namespaceBodyNameHasTypeMeaning(self: *Checker, ns_node: NodeId, name: hir_mod.StringId) bool {
+        if (self.hir.kindOf(ns_node) != .namespace_decl) return false;
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name == name and self.declHasTypeMeaning(decl)) return true;
+        }
+        return false;
     }
 
     fn importTypeModuleExportAssignmentTargetsTypeOnly(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!bool {

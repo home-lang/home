@@ -8602,6 +8602,7 @@ const StrictDirectiveState = struct {
     no_unused_parameters: ?bool = null,
     no_unused_locals: ?bool = null,
     strict_function_types: ?bool = null,
+    strict_bind_call_apply: ?bool = null,
     strict_null_checks: ?bool = null,
     strict_property_initialization: ?bool = null,
     no_unchecked_indexed_access: ?bool = null,
@@ -9140,6 +9141,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .no_unused_parameters = state.no_unused_parameters orelse false,
         .no_unused_locals = state.no_unused_locals orelse false,
         .strict_function_types = state.strict_function_types orelse strict_on,
+        .strict_bind_call_apply = state.strict_bind_call_apply orelse strict_on,
         .strict_null_checks = state.strict_null_checks orelse strict_on,
         .strict_property_initialization = state.strict_property_initialization orelse strict_on,
         .no_unchecked_indexed_access = state.no_unchecked_indexed_access orelse false,
@@ -9180,6 +9182,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.no_unused_locals = value;
     } else if (std.ascii.eqlIgnoreCase(name, "strictFunctionTypes")) {
         state.strict_function_types = value;
+    } else if (std.ascii.eqlIgnoreCase(name, "strictBindCallApply")) {
+        state.strict_bind_call_apply = value;
     } else if (std.ascii.eqlIgnoreCase(name, "strictNullChecks")) {
         state.strict_null_checks = value;
     } else if (std.ascii.eqlIgnoreCase(name, "strictPropertyInitialization")) {
@@ -9638,6 +9642,7 @@ test "conformance: parses strict directives into checker flags" {
     ).?;
     try T.expect(flags.no_implicit_any);
     try T.expect(flags.strict_function_types);
+    try T.expect(flags.strict_bind_call_apply);
     try T.expect(!flags.strict_null_checks);
     try T.expect(flags.strict_property_initialization);
     try T.expect(flags.no_unused_locals);
@@ -9732,6 +9737,7 @@ test "conformance: strict false directive leaves strict family disabled" {
     ).?;
     try T.expect(flags.no_implicit_any);
     try T.expect(!flags.strict_function_types);
+    try T.expect(!flags.strict_bind_call_apply);
     try T.expect(!flags.strict_null_checks);
     try T.expect(!flags.strict_property_initialization);
     try T.expect(!flags.use_unknown_in_catch_variables);
@@ -9793,6 +9799,7 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.strict_property_initialization);
     try T.expect(merged_with_strict_on.strict_null_checks);
     try T.expect(merged_with_strict_on.strict_function_types);
+    try T.expect(merged_with_strict_on.strict_bind_call_apply);
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
