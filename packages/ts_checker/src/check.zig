@@ -5237,8 +5237,6 @@ pub const Checker = struct {
         try self.checkJSDocMalformedParamTags(root);
         try self.checkJSDocEnumSelfReferences(root);
         try self.checkJSDocParamTagsOnVariableFunctionLists(root);
-        try self.checkUnattachedJsDocExtendsTags(root);
-        try self.checkAttachedJsDocExtendsTagsOnNonClasses(root);
         try self.checkMultipleAttachedJsDocExtendsTags();
         try self.checkDefaultExportMerges(stmts);
         try self.checkImportLocalConflicts(stmts);
@@ -6827,65 +6825,6 @@ pub const Checker = struct {
         return std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
     }
 
-    fn checkUnattachedJsDocExtendsTags(self: *Checker, root: NodeId) CheckError!void {
-        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
-        const src = self.source orelse return;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
-            const body_start = comment_start + 3;
-            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
-            const comment_end = body_start + close_rel;
-            search_start = comment_end + 2;
-
-            const tag_name = jsDocExtendsTagName(src[body_start..comment_end]) orelse continue;
-            const next = skipAsciiWhitespace(src, search_start);
-            if (next < src.len and !std.mem.startsWith(u8, src[next..], "/**")) continue;
-            const report_pos = jsDocUnattachedCommentReportPos(src, search_start);
-
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "JSDoc '@{s}' is not attached to a class.",
-                .{tag_name},
-            );
-            try self.diagnostics.append(self.gpa, .{
-                .node = root,
-                .pos = report_pos,
-                .code = TsCodes.jsdoc_extends_not_attached,
-                .message = msg,
-            });
-        }
-    }
-
-    fn checkAttachedJsDocExtendsTagsOnNonClasses(self: *Checker, root: NodeId) CheckError!void {
-        _ = root;
-        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
-        const src = self.source orelse return;
-        var node: NodeId = 0;
-        while (node < self.hir.nodeCount()) : (node += 1) {
-            const kind = self.hir.kindOf(node);
-            if (kind == .class_decl or kind == .class_expr) continue;
-            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
-            const jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, node) orelse continue;
-            const tag = jsDocExtendsTagWithPos(jsdoc.body, jsdoc.start) orelse continue;
-            if (std.mem.indexOf(u8, jsdoc.body, "@constructor") != null or
-                std.mem.indexOf(u8, jsdoc.body, "@class") != null)
-            {
-                continue;
-            }
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "JSDoc '@{s}' is not attached to a class.",
-                .{tag.name},
-            );
-            try self.diagnostics.append(self.gpa, .{
-                .node = node,
-                .pos = self.declarationNameSpanStart(node),
-                .code = TsCodes.jsdoc_extends_not_attached,
-                .message = msg,
-            });
-        }
-    }
-
     fn checkMultipleAttachedJsDocExtendsTags(self: *Checker) CheckError!void {
         if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
@@ -7006,53 +6945,6 @@ pub const Checker = struct {
         const span = self.hir.spanOf(class_node);
         const jsdoc = self.leadingJsDocBodyWithStart(src, span.start) orelse return false;
         return jsDocFirstExtendsOrAugmentsType(jsdoc.body, jsdoc.start) != null;
-    }
-
-    fn jsDocExtendsTagName(body: []const u8) ?[]const u8 {
-        var search_start: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, body, search_start, '@')) |at| {
-            search_start = at + 1;
-            if (at > 0 and isJsDocIdentChar(body[at - 1])) continue;
-            var end = at + 1;
-            while (end < body.len and std.ascii.isAlphabetic(body[end])) : (end += 1) {}
-            const tag = body[at + 1 .. end];
-            if (std.mem.eql(u8, tag, "extends") or std.mem.eql(u8, tag, "augments")) return tag;
-        }
-        return null;
-    }
-
-    const JsDocExtendsTagRef = struct {
-        name: []const u8,
-        pos: u32,
-    };
-
-    fn jsDocExtendsTagWithPos(body: []const u8, body_start: usize) ?JsDocExtendsTagRef {
-        var search_start: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, body, search_start, '@')) |at| {
-            search_start = at + 1;
-            if (at > 0 and isJsDocIdentChar(body[at - 1])) continue;
-            var end = at + 1;
-            while (end < body.len and std.ascii.isAlphabetic(body[end])) : (end += 1) {}
-            const tag = body[at + 1 .. end];
-            if (!std.mem.eql(u8, tag, "extends") and !std.mem.eql(u8, tag, "augments")) continue;
-            return .{
-                .name = tag,
-                .pos = @intCast(body_start + at + @min(tag.len, @as(usize, 5))),
-            };
-        }
-        return null;
-    }
-
-    fn jsDocUnattachedCommentReportPos(src: []const u8, after_comment: usize) u32 {
-        if (after_comment >= src.len) return @intCast(src.len);
-        if (src[after_comment] == '\r') {
-            if (after_comment + 1 < src.len and src[after_comment + 1] == '\n') {
-                return @intCast(after_comment + 2);
-            }
-            return @intCast(after_comment + 1);
-        }
-        if (src[after_comment] == '\n') return @intCast(after_comment + 1);
-        return @intCast(after_comment);
     }
 
     fn checkRemovedCompilerOptionDirectives(self: *Checker, root: NodeId) CheckError!void {
@@ -79261,7 +79153,6 @@ pub const Checker = struct {
 
         try self.checkJsTypeOnlyRequireBinding(node, v);
         try self.checkJsDestructuredRequireHiddenWholeExport(node, v);
-        try self.checkJsDocDuplicateSatisfies(node);
         try self.checkExportedVariablePrivateName(node);
         try self.checkExportedAnonymousClassPrivateMembers(node);
         try self.checkExportedVariableInferredPortableName(node);
@@ -88009,54 +87900,6 @@ pub const Checker = struct {
         if (hir_mod.varDeclOf(self.hir, parent).init != node) return false;
         const declaration = self.leadingJsDocBodyWithStart(src, self.hir.spanOf(parent).start) orelse return false;
         return selected.start == declaration.start;
-    }
-
-    /// TS gathers an initializer's inline JSDoc tags before the declaration's
-    /// leading tags. Preserve that ordering so repeated declaration tags and
-    /// declaration-plus-inline tags both anchor TS1223 on the same tag as TS.
-    fn checkJsDocDuplicateSatisfies(self: *Checker, decl: NodeId) CheckError!void {
-        if (!self.sourceHasCheckJsDirective()) return;
-        if (!self.virtualSectionIsJsLike(decl)) return;
-        const src = self.source orelse return;
-        const declaration_jsdoc = self.leadingJsDocBodyWithStart(src, self.hir.spanOf(decl).start);
-        const initializer = hir_mod.varDeclOf(self.hir, decl).init;
-
-        var saw_tag = false;
-        if (initializer != hir_mod.none_node_id) {
-            if (self.leadingJsDocBodyBeforeExpressionWithStart(src, self.hir.spanOf(initializer).start)) |inline_jsdoc| {
-                if (declaration_jsdoc == null or inline_jsdoc.start != declaration_jsdoc.?.start) {
-                    try self.reportDuplicateJsDocSatisfiesTags(decl, inline_jsdoc, &saw_tag);
-                }
-            }
-        }
-        if (declaration_jsdoc) |jsdoc| {
-            try self.reportDuplicateJsDocSatisfiesTags(decl, jsdoc, &saw_tag);
-        }
-    }
-
-    fn reportDuplicateJsDocSatisfiesTags(
-        self: *Checker,
-        decl: NodeId,
-        jsdoc: JsDocBody,
-        saw_tag: *bool,
-    ) CheckError!void {
-        const tag = "@satisfies";
-        var search: usize = 0;
-        while (std.mem.indexOfPos(u8, jsdoc.body, search, tag)) |at| {
-            search = at + tag.len;
-            if (at > 0 and isJsDocIdentChar(jsdoc.body[at - 1])) continue;
-            if (search < jsdoc.body.len and isJsDocIdentChar(jsdoc.body[search])) continue;
-            if (!saw_tag.*) {
-                saw_tag.* = true;
-                continue;
-            }
-            try self.reportAt(
-                decl,
-                @intCast(jsdoc.start + at + 1),
-                TsCodes.jsdoc_satisfies_already_specified,
-                "'satisfies' tag already specified.",
-            );
-        }
     }
 
     fn checkJsDocSatisfiesExpression(self: *Checker, node: NodeId, expr_t: TypeId) CheckError!void {
@@ -208102,7 +207945,7 @@ test "checker: checkjs JSDoc @extends on a constructor function" {
     }
 }
 
-test "checker: checkjs unattached JSDoc @extends reports TS8022 after comment" {
+test "checker: checkjs unattached JSDoc @extends is ignored" {
     const source =
         \\// @checkjs: true
         \\/** @constructor */
@@ -208114,18 +207957,12 @@ test "checker: checkjs unattached JSDoc @extends reports TS8022 after comment" {
     const s = try newSetup(source);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsdoc_extends_not_attached) {
-            found = true;
-            const after_comment = (std.mem.indexOf(u8, source, "/** @extends {A} */") orelse unreachable) + "/** @extends {A} */".len;
-            try T.expectEqual(Checker.jsDocUnattachedCommentReportPos(source, after_comment), d.pos.?);
-        }
+        try T.expect(d.code != TsCodes.jsdoc_extends_not_attached);
     }
-    try T.expect(found);
 }
 
-test "checker: checkjs attached JSDoc @augments on plain function reports TS8022" {
+test "checker: checkjs attached JSDoc @augments on plain function is ignored" {
     const source =
         \\// @checkjs: true
         \\class A {}
@@ -208135,15 +207972,9 @@ test "checker: checkjs attached JSDoc @augments on plain function reports TS8022
     const s = try newSetup(source);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsdoc_extends_not_attached) {
-            found = true;
-            try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "b()") orelse unreachable)), d.pos.?);
-            try T.expectEqualStrings("JSDoc '@augments' is not attached to a class.", d.message);
-        }
+        try T.expect(d.code != TsCodes.jsdoc_extends_not_attached);
     }
-    try T.expect(found);
 }
 
 test "checker: checkjs class JSDoc duplicate @augments/@extends reports TS8025 on second tag" {
@@ -209308,7 +209139,7 @@ test "checker: checkjs JSDoc satisfies constraint anchors on the tag" {
     try T.expect(found);
 }
 
-test "checker: checkjs JSDoc satisfies duplicate tags follow effective tag order" {
+test "checker: checkjs JSDoc satisfies duplicate tags are ignored" {
     const source =
         \\// @allowJs: true
         \\// @checkJs: true
@@ -209325,20 +209156,7 @@ test "checker: checkjs JSDoc satisfies duplicate tags follow effective tag order
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    const first_tag = std.mem.indexOf(u8, source, "satisfies") orelse return error.TestUnexpectedResult;
-    const repeated_tag = std.mem.indexOfPos(u8, source, first_tag + 1, "satisfies") orelse return error.TestUnexpectedResult;
-    const declaration_tag = std.mem.indexOfPos(u8, source, repeated_tag + 1, "satisfies") orelse return error.TestUnexpectedResult;
-    const expected = [_]u32{ @intCast(repeated_tag), @intCast(declaration_tag) };
-    var found: [2]u32 = undefined;
-    var count: usize = 0;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.jsdoc_satisfies_already_specified) continue;
-        if (count >= found.len) return error.TestUnexpectedResult;
-        found[count] = d.pos orelse return error.TestUnexpectedResult;
-        count += 1;
-    }
-    try T.expectEqual(expected.len, count);
-    try T.expectEqualSlices(u32, &expected, found[0..count]);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsdoc_satisfies_already_specified));
 }
 
 test "checker: checkjs JSDoc satisfies preserves contextual object member literals" {
