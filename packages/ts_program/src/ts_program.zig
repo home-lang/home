@@ -3579,6 +3579,11 @@ pub const Program = struct {
         const lessThan = struct {
             fn lt(_: void, a: ts_driver.Diagnostic, b: ts_driver.Diagnostic) bool {
                 if (a.pos != b.pos) return a.pos < b.pos;
+                if ((a.code == 2300 and b.code == 1005) or
+                    (a.code == 1005 and b.code == 2300))
+                {
+                    return a.code == 2300;
+                }
                 if (a.span_len != 0 and b.span_len != 0 and a.span_len != b.span_len) {
                     return a.span_len < b.span_len;
                 }

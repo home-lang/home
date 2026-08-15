@@ -6588,6 +6588,11 @@ pub const Checker = struct {
     fn checkJSDocClosureFunctionTypes(self: *Checker, root: NodeId) CheckError!void {
         if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
+        const MissingTypedef = struct {
+            pos: u32,
+        };
+        var missing_typedefs: std.ArrayListUnmanaged(MissingTypedef) = .empty;
+        defer missing_typedefs.deinit(self.gpa);
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
             const body_start = comment_start + 3;
@@ -6606,6 +6611,34 @@ pub const Checker = struct {
                 const inner = body[open + 1 .. open + type_len - 1];
                 if (jsDocClosureFunctionOpen(inner)) |paren| {
                     const pos: u32 = @intCast(body_start + open + 1 + paren);
+                    const line_start = if (std.mem.lastIndexOfScalar(u8, body[0..open], '\n')) |newline| newline + 1 else 0;
+                    const is_typedef = std.mem.indexOf(u8, body[line_start..open], "@typedef") != null;
+                    if (is_typedef) {
+                        var diagnostic_index: usize = 0;
+                        while (diagnostic_index < self.diagnostics.items.len) : (diagnostic_index += 1) {
+                            const diagnostic = self.diagnostics.items[diagnostic_index];
+                            if (diagnostic.code != TsCodes.expected_close_brace or diagnostic.pos != pos) continue;
+                            _ = self.diagnostics.orderedRemove(diagnostic_index);
+                            break;
+                        }
+                        if (!self.hasDiagnosticAtPosition(TsCodes.identifier_expected, pos - 1)) {
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = root,
+                                .pos = pos - 1,
+                                .code = TsCodes.identifier_expected,
+                                .message = "Identifier expected.",
+                            });
+                        }
+                        if (!self.hasDiagnosticAtPosition(TsCodes.duplicate_identifier, pos)) {
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = root,
+                                .pos = pos,
+                                .code = TsCodes.duplicate_identifier,
+                                .message = "Duplicate identifier '(Missing)'.",
+                            });
+                        }
+                        try missing_typedefs.append(self.gpa, .{ .pos = pos });
+                    }
                     if (!self.hasDiagnosticAtPosition(TsCodes.expected_close_brace, pos)) {
                         try self.diagnostics.append(self.gpa, .{
                             .node = root,
@@ -6616,6 +6649,27 @@ pub const Checker = struct {
                     }
                 }
                 scan = open + type_len;
+            }
+        }
+        if (missing_typedefs.items.len > 1) {
+            for (missing_typedefs.items, 0..) |missing, i| {
+                const related = try self.diag_arena.allocator().alloc(RelatedInfo, missing_typedefs.items.len - 1);
+                var related_index: usize = 0;
+                for (missing_typedefs.items, 0..) |other, j| {
+                    if (i == j) continue;
+                    related[related_index] = .{
+                        .node = root,
+                        .pos = other.pos,
+                        .code = TsCodes.was_also_declared_here,
+                        .message = "'(Missing)' was also declared here.",
+                    };
+                    related_index += 1;
+                }
+                for (self.diagnostics.items) |*diagnostic| {
+                    if (diagnostic.code != TsCodes.duplicate_identifier or diagnostic.pos != missing.pos) continue;
+                    diagnostic.related = related;
+                    break;
+                }
             }
         }
     }
@@ -6670,14 +6724,27 @@ pub const Checker = struct {
                 const inner = body[open .. open + type_len];
                 if (std.mem.indexOfScalar(u8, inner, '\n') == null) continue;
                 if (jsDocLineHasLeadingStar(body, tag_pos)) continue;
-                const pos: u32 = @intCast(body_start + open + 1);
-                if (self.hasDiagnosticAtPosition(TsCodes.type_expected, pos)) continue;
-                try self.diagnostics.append(self.gpa, .{
-                    .node = root,
-                    .pos = pos,
-                    .code = TsCodes.type_expected,
-                    .message = "Type expected.",
-                });
+                const type_inner = body[open + 2 .. open + type_len - 2];
+                if (std.mem.indexOfScalar(u8, type_inner, '*')) |wildcard| {
+                    const wildcard_pos: u32 = @intCast(body_start + open + 2 + wildcard + 1);
+                    if (!self.hasDiagnosticAtPosition(TsCodes.type_expected, wildcard_pos)) {
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = root,
+                            .pos = wildcard_pos,
+                            .code = TsCodes.type_expected,
+                            .message = "Type expected.",
+                        });
+                    }
+                }
+                const close_pos: u32 = @intCast(body_start + open + type_len - 2);
+                if (!self.hasDiagnosticAtPosition(TsCodes.type_expected, close_pos)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = close_pos,
+                        .code = TsCodes.type_expected,
+                        .message = "Type expected.",
+                    });
+                }
             }
         }
     }
@@ -86317,7 +86384,7 @@ pub const Checker = struct {
             const exports_name = self.string_interner.intern("exports") catch return error.OutOfMemory;
             if (try self.currentCommonJsExportsTypeRef(anchor, exports_name)) |exports_t| return exports_t;
         }
-        const suggestion = self.jsDocUnresolvedNameSuggestion(base);
+        const suggestion = self.jsDocUnresolvedNameSuggestion(src, base);
         const msg = if (suggestion) |suggested|
             try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -86351,14 +86418,39 @@ pub const Checker = struct {
             std.mem.indexOf(u8, prefix, "@prop") != null;
     }
 
-    fn jsDocUnresolvedNameSuggestion(self: *Checker, name: []const u8) ?[]const u8 {
-        _ = self;
+    fn jsDocUnresolvedNameSuggestion(self: *Checker, src: []const u8, name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, name, "IThenable")) return "Iterable";
         const builtin_suggestions = [_][]const u8{
             "Array", "Object", "String", "Number", "Boolean", "Promise", "Iterable", "Iterator",
         };
         var best_name: []const u8 = "";
         var best_dist: usize = std.math.maxInt(usize);
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const comment_end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse break;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..comment_end];
+            const tag_pos = std.mem.indexOf(u8, body, "@typedef") orelse continue;
+            const rest = body[tag_pos + "@typedef".len ..];
+            const brace_pos = std.mem.indexOfScalar(u8, rest, '{') orelse continue;
+            const type_len = jsDocBalancedBraceLen(rest[brace_pos..]);
+            if (type_len == 0) continue;
+            const type_text = std.mem.trim(u8, rest[brace_pos + 1 .. brace_pos + type_len - 1], " \t\r\n");
+            if (jsDocClosureFunctionOpen(type_text) != null) continue;
+            const trailing = std.mem.trimStart(u8, rest[brace_pos + type_len ..], " \t\r\n*");
+            var name_len: usize = 0;
+            while (name_len < trailing.len and isJsDocIdentChar(trailing[name_len])) : (name_len += 1) {}
+            if (name_len == 0) continue;
+            const candidate = trailing[0..name_len];
+            if (std.mem.eql(u8, candidate, name)) continue;
+            const dist = levenshteinIcase(name, candidate);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_name = candidate;
+            }
+        }
         for (builtin_suggestions) |candidate| {
             const dist = levenshteinIcase(name, candidate);
             if (dist < best_dist) {
@@ -86582,6 +86674,7 @@ pub const Checker = struct {
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
             defer search_start = end + 2;
             const body = src[body_start..end];
+            if (jsDocTypedefIsMalformedClosure(body, name)) continue;
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
 
@@ -88074,6 +88167,7 @@ pub const Checker = struct {
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
             defer search_start = end + 2;
             const body = src[body_start..end];
+            if (jsDocTypedefIsMalformedClosure(body, wanted_name)) continue;
             if (jsDocTypedefTypeText(body, wanted_name)) |type_text| {
                 if (try self.jsDocObjectSkeletonFromTypeText(type_text)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
@@ -88226,6 +88320,7 @@ pub const Checker = struct {
                     declaration_function == null;
                 if (!scope_matches) continue;
                 const body = src[body_start..end];
+                if (jsDocTypedefIsMalformedClosure(body, wanted_name)) continue;
                 if (jsDocTypedefTypeText(body, wanted_name)) |type_text| {
                     return try self.jsDocTypeTextToType(src, type_text);
                 }
@@ -88255,6 +88350,11 @@ pub const Checker = struct {
         if (name_end == 0) return null;
         if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
         return rest[brace_pos + 1 .. brace_pos + type_len - 1];
+    }
+
+    fn jsDocTypedefIsMalformedClosure(body: []const u8, wanted_name: []const u8) bool {
+        const type_text = jsDocTypedefTypeText(body, wanted_name) orelse return false;
+        return jsDocClosureFunctionOpen(std.mem.trim(u8, type_text, " \t\r\n")) != null;
     }
 
     fn visibleJsDocTypedefNameExistsAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
@@ -88327,6 +88427,7 @@ pub const Checker = struct {
             const declaration_function = self.sourceSliceFunctionContainingPos(src, start);
             if (declaration_function != null and declaration_function != use_function) continue;
             const body = src[body_start..end];
+            if (jsDocTypedefIsMalformedClosure(body, wanted)) continue;
             if (jsDocTypedefTypeText(body, wanted) != null) return true;
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
@@ -211061,6 +211162,30 @@ test "checker: checkjs Closure-style function @type reports TS8030 and TS1005" {
         s,
         TsCodes.jsdoc_function_type_mismatch,
         "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
+    ));
+}
+
+test "checker: malformed Closure-style typedef recovers name and suggests valid typedef" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /broken.js
+        \\/** @typedef {function(string): boolean} Type1 */
+        \\/** @param {Type1} value */
+        \\function use(value) {}
+        \\// @Filename: /valid.js
+        \\/** @typedef {{ value: string }} Type2 */
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.identifier_expected));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_close_brace));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.cannot_find_name_did_you_mean,
+        "Cannot find name 'Type1'. Did you mean 'Type2'?",
     ));
 }
 

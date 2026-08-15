@@ -998,6 +998,9 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const a_missing_comma_operand_priority = a.code == 2695 and b.code == 1109;
             const b_missing_comma_operand_priority = b.code == 2695 and a.code == 1109;
             if (a_missing_comma_operand_priority != b_missing_comma_operand_priority) return a_missing_comma_operand_priority;
+            const a_missing_typedef_priority = a.code == 2300 and b.code == 1005;
+            const b_missing_typedef_priority = b.code == 2300 and a.code == 1005;
+            if (a_missing_typedef_priority != b_missing_typedef_priority) return a_missing_typedef_priority;
             if (a.span_len != 0 and b.span_len != 0 and a.span_len != b.span_len) {
                 return a.span_len < b.span_len;
             }
@@ -1077,6 +1080,11 @@ const ActualDiagnosticLine = struct {
         }
         if (a.line != b.line) return a.line < b.line;
         if (a.col != b.col) return a.col < b.col;
+        if ((a.code == 2300 and b.code == 1005) or
+            (a.code == 1005 and b.code == 2300))
+        {
+            return a.code == 2300;
+        }
         if (a.code != b.code) return a.code < b.code;
         return a.order < b.order;
     }
@@ -1108,6 +1116,20 @@ test "conformance: program diagnostics sort same-position globals by code" {
 
     try std.testing.expectEqual(@as(u32, 2318), lines[0].code);
     try std.testing.expectEqual(@as(u32, 5107), lines[1].code);
+}
+
+test "conformance: malformed JSDoc typedef diagnostics preserve bind order" {
+    var parse_text = [_]u8{'p'};
+    var bind_text = [_]u8{'b'};
+    var lines = [_]ActualDiagnosticLine{
+        .{ .file = "a.js", .line = 1, .col = 1, .code = 1005, .order = 0, .text = &parse_text },
+        .{ .file = "a.js", .line = 1, .col = 1, .code = 2300, .order = 1, .text = &bind_text },
+    };
+
+    std.mem.sort(ActualDiagnosticLine, &lines, {}, ActualDiagnosticLine.lessThan);
+
+    try std.testing.expectEqual(@as(u32, 2300), lines[0].code);
+    try std.testing.expectEqual(@as(u32, 1005), lines[1].code);
 }
 
 const ScriptGlobalSpaces = struct {

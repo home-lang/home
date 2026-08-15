@@ -2398,6 +2398,13 @@ fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
             {
                 return a.code == 2695;
             }
+            // A malformed Closure-style JSDoc typedef binds the missing
+            // declaration before parser recovery reports the closing brace.
+            if ((a.code == 2300 and b.code == 1005) or
+                (a.code == 1005 and b.code == 2300))
+            {
+                return a.code == 2300;
+            }
             // TypeScript's `compareDiagnostics` orders same-start
             // diagnostics by span length before falling back to the
             // diagnostic code. This matters when an identifier-level
