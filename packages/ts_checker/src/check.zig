@@ -4211,6 +4211,10 @@ pub const Checker = struct {
     /// a check pass. Empty type-args are skipped to avoid registering
     /// non-generic identity aliases.
     alias_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    /// Source-order spellings for anonymous union annotations. These are
+    /// diagnostic-only: unlike alias names, they must not participate in
+    /// declaration identity or relation checks.
+    diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
     /// Namespace-qualified names for non-generic aliases, used only while
     /// rendering diagnostics. Keeping these separate from
     /// `alias_display_names` prevents a qualified display name from becoming
@@ -4780,6 +4784,7 @@ pub const Checker = struct {
             .dependent_bindings = .empty,
             .exhaustive_switches = .empty,
             .alias_display_names = .empty,
+            .diagnostic_union_display_names = .empty,
             .qualified_alias_diagnostic_names = .empty,
             .type_alias_bodies = .empty,
             .alias_type_args = .empty,
@@ -5192,6 +5197,7 @@ pub const Checker = struct {
         self.dependent_bindings.deinit(self.gpa);
         self.exhaustive_switches.deinit(self.gpa);
         self.alias_display_names.deinit(self.gpa);
+        self.diagnostic_union_display_names.deinit(self.gpa);
         self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
@@ -18590,7 +18596,16 @@ pub const Checker = struct {
                         const prop_t = try self.expandoAssignmentPropertyType(stmt, a);
                         if (seen.contains(m.name)) {
                             for (members.items) |*existing| {
-                                if (existing.name == m.name) existing.type = prop_t;
+                                if (existing.name != m.name) continue;
+                                const existing_callable = existing.type < self.interner.pool.typeCount() and
+                                    (self.interner.pool.flagsOf(existing.type).is_signature or
+                                        (self.interner.pool.flagsOf(existing.type).is_object_type and
+                                            self.objectHasCallOrConstructSignature(existing.type)));
+                                const next_callable = prop_t < self.interner.pool.typeCount() and
+                                    (self.interner.pool.flagsOf(prop_t).is_signature or
+                                        (self.interner.pool.flagsOf(prop_t).is_object_type and
+                                            self.objectHasCallOrConstructSignature(prop_t)));
+                                if (!existing_callable or !next_callable) existing.type = prop_t;
                             }
                         } else {
                             try seen.put(self.gpa, m.name, {});
@@ -18765,6 +18780,44 @@ pub const Checker = struct {
         else
             assignment_node;
         return (self.jsDocTypeForLeadingNode(anchor) catch null) != null;
+    }
+
+    fn isRepeatedCallableExpandoAssignment(
+        self: *Checker,
+        assignment_node: NodeId,
+        assignment: hir_mod.AssignmentPayload,
+    ) CheckError!bool {
+        if (assignment.op != null or !self.isContextualFunctionExpressionLike(assignment.value)) return false;
+        const key = (try self.expandoFunctionMemberKey(assignment.target)) orelse return false;
+        const receiver_decl = self.expandoReceiverDeclaration(assignment.target) orelse return false;
+        if (self.expandoReceiverHasExplicitType(assignment_node, assignment.target)) return false;
+
+        const owner = self.enclosingFunctionLike(assignment_node);
+        const section = self.virtualSectionStartForNode(assignment_node);
+        var candidate: NodeId = 0;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (candidate == assignment_node or self.hir.kindOf(candidate) != .assignment) continue;
+            if (self.enclosingFunctionLike(candidate) != owner or
+                self.virtualSectionStartForNode(candidate) != section)
+            {
+                continue;
+            }
+            const other = hir_mod.assignmentOf(self.hir, candidate);
+            if (other.op != null or !self.isContextualFunctionExpressionLike(other.value)) continue;
+            const other_key = (try self.expandoFunctionMemberKey(other.target)) orelse continue;
+            if (other_key.obj_name != key.obj_name or other_key.prop_name != key.prop_name) continue;
+            if (self.expandoReceiverDeclaration(other.target) == receiver_decl) return true;
+        }
+        return false;
+    }
+
+    fn expandoReceiverDeclaration(self: *Checker, target: NodeId) ?NodeId {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, target);
+        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return null;
+        const object_id = hir_mod.identifierOf(self.hir, member.object);
+        if (self.findLocalValueDeclBeforeExpression(member.object, object_id.name)) |decl| return decl;
+        return self.findSiblingFunctionDecl(member.object);
     }
 
     fn expressionReferencesWholeIdentifier(
@@ -69173,7 +69226,9 @@ pub const Checker = struct {
                 var ms: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer ms.deinit(self.gpa);
                 for (members) |m| try ms.append(self.gpa, try self.lowererLowerWithTypeParams(m));
-                return try self.internUnionDroppingLiteralsCoveredByTemplates(ms.items);
+                const union_t = try self.internUnionDroppingLiteralsCoveredByTemplates(ms.items);
+                try self.registerSourceOrderedUnionDisplayName(union_t, ms.items);
+                return union_t;
             },
             .intersection_type => {
                 const members = hir_mod.intersectionTypeMembers(self.hir, type_node);
@@ -91731,6 +91786,18 @@ pub const Checker = struct {
     fn registerDiagnosticUnionDisplayName(self: *Checker, union_t: TypeId, members: []const TypeId) CheckError!void {
         if (union_t < types.Primitive.first_dynamic or union_t >= self.interner.pool.typeCount()) return;
         if (self.alias_display_names.contains(union_t)) return;
+        const display = (try self.allocDiagnosticUnionDisplayName(members)) orelse return;
+        try self.alias_display_names.put(self.gpa, union_t, display);
+    }
+
+    fn registerSourceOrderedUnionDisplayName(self: *Checker, union_t: TypeId, members: []const TypeId) CheckError!void {
+        if (union_t < types.Primitive.first_dynamic or union_t >= self.interner.pool.typeCount()) return;
+        if (self.diagnostic_union_display_names.contains(union_t)) return;
+        const display = (try self.allocDiagnosticUnionDisplayName(members)) orelse return;
+        try self.diagnostic_union_display_names.put(self.gpa, union_t, display);
+    }
+
+    fn allocDiagnosticUnionDisplayName(self: *Checker, members: []const TypeId) CheckError!?[]const u8 {
         var flattened: std.ArrayListUnmanaged(TypeId) = .empty;
         defer flattened.deinit(self.gpa);
         for (members) |member| try self.collectDiagnosticUnionMembers(member, &flattened);
@@ -91752,7 +91819,7 @@ pub const Checker = struct {
             }
             const member_name = (try self.allocSimpleTypeName(member)) orelse
                 (try self.allocObjectTypeShape(member)) orelse
-                return;
+                return null;
             var duplicate = false;
             for (seen.items) |prior| {
                 if (std.mem.eql(u8, prior, member_name)) {
@@ -91764,8 +91831,7 @@ pub const Checker = struct {
             try seen.append(self.gpa, member_name);
             if (!first) try buf.appendSlice(arena, " | ");
             first = false;
-            const needs_parens = self.interner.isSignature(member) or
-                std.mem.indexOf(u8, member_name, "=>") != null;
+            const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null;
             if (needs_parens) try buf.append(arena, '(');
             try buf.appendSlice(arena, member_name);
             if (needs_parens) try buf.append(arena, ')');
@@ -91780,8 +91846,8 @@ pub const Checker = struct {
             first = false;
             try buf.appendSlice(arena, "undefined");
         }
-        if (buf.items.len == 0) return;
-        try self.alias_display_names.put(self.gpa, union_t, buf.items);
+        if (buf.items.len == 0) return null;
+        return buf.items;
     }
 
     fn collectDiagnosticUnionMembers(self: *Checker, t: TypeId, out: *std.ArrayListUnmanaged(TypeId)) CheckError!void {
@@ -96778,6 +96844,8 @@ pub const Checker = struct {
                 const target_is_inferred_checkjs_class_member = a.op == null and
                     !target_has_explicit_jsdoc_prototype_type and
                     try self.checkJsInferredClassMemberWrite(a.target);
+                const target_is_repeated_callable_expando =
+                    try self.isRepeatedCallableExpandoAssignment(node, a);
                 if (target_is_js_container_prototype_object_assignment) {
                     self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
                     self.removePriorDiagnosticsInNodeSpan(a.target, TsCodes.property_does_not_exist);
@@ -97036,7 +97104,7 @@ pub const Checker = struct {
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
                 const dedicated_generic_indexed_assignment =
                     self.genericIndexedAssignmentUsesDedicatedRelation(a.target, a.value);
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_checked_js_undefined_any and !target_is_checked_js_default_parameter_undefined and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and !target_is_inferred_checkjs_class_member and !target_is_explicit_jsdoc_function_expando_declaration and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_checked_js_undefined_any and !target_is_checked_js_default_parameter_undefined and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and !target_is_inferred_checkjs_class_member and !target_is_explicit_jsdoc_function_expando_declaration and !target_is_repeated_callable_expando and a.op == null and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -102969,10 +103037,8 @@ pub const Checker = struct {
                     if (self.jsxTagHasVisibleOverloads(el.tag) and !attrs_match_overload) {
                         const report_anchor = if (overload_value_mismatch_anchor) |anchor|
                             anchor
-                        else if (has_spread_attr and !has_generic_spread)
-                            try self.jsxAttrsStructuralMismatchAnchor(el.tag, attrs, effective_target)
                         else
-                            el.tag;
+                            try self.jsxLastOverloadMismatchAnchor(el.tag, attrs);
                         try self.report(
                             report_anchor,
                             TsCodes.no_overload_matches,
@@ -104439,6 +104505,20 @@ pub const Checker = struct {
                 },
                 else => {},
             }
+        }
+        return tag;
+    }
+
+    fn jsxLastOverloadMismatchAnchor(self: *Checker, tag: NodeId, attrs: []const NodeId) CheckError!NodeId {
+        const overloads = self.jsxTagVisibleOverloads(tag) orelse return tag;
+        if (overloads.len == 0) return tag;
+        const params = self.interner.signatureParams(overloads[overloads.len - 1]);
+        if (params.len == 0) return tag;
+        const target = params[0];
+        for (attrs) |attr| {
+            if (self.hir.kindOf(attr) != .jsx_attribute) continue;
+            const jsx_attr = hir_mod.jsxAttributeOf(self.hir, attr);
+            if ((try self.lookupObjectMember(target, jsx_attr.name)) == null) return attr;
         }
         return tag;
     }
@@ -159756,6 +159836,7 @@ pub const Checker = struct {
 
     fn allocObjectShapeMemberTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         const display_t = try self.collapseRedundantLiteralUnionForDisplay(t);
+        if (self.diagnostic_union_display_names.get(display_t)) |display| return display;
         if (self.class_name_by_instance.get(display_t)) |class_name| {
             const bare_name = self.string_interner.get(class_name);
             if (self.alias_display_names.get(display_t)) |display| {
@@ -171601,6 +171682,24 @@ test "checker: self-referential function expando reuses base callable type" {
         try T.expect(diagnostic.code != TsCodes.property_does_not_exist);
         try T.expect(diagnostic.code != TsCodes.not_callable);
     }
+}
+
+test "checker: repeated branch expando writes preserve the first callable signature" {
+    const s = try newSetup(
+        \\function C() {}
+        \\if (Math.random()) {
+        \\  C.f = function (value) { return value > 0; };
+        \\} else {
+        \\  C.f = function () {};
+        \\}
+        \\const result = C.f(1);
+        \\if (result) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.void_truthiness));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: JSDoc typeof parameter shadows a global function" {
@@ -236761,8 +236860,8 @@ test "checker: JSX overloads excess-check explicit attrs beside concrete spreads
             else => {},
         }
     }
-    try T.expectEqual(@as(usize, 2), attr_anchors);
-    try T.expectEqual(@as(usize, 2), tag_anchors);
+    try T.expectEqual(@as(usize, 4), attr_anchors);
+    try T.expectEqual(@as(usize, 0), tag_anchors);
 }
 
 test "checker: JSX inference falls back to an unsatisfied object constraint" {
