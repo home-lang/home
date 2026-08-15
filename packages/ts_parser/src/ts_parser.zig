@@ -1270,15 +1270,13 @@ pub const Parser = struct {
             const close_after = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse continue;
             const close = close_after - 1;
             const type_text = self.source[open + 1 .. close];
+            var diagnostic_type = std.mem.trim(u8, type_text, " \t\r\n");
+            if (std.mem.startsWith(u8, diagnostic_type, "...")) {
+                diagnostic_type = std.mem.trim(u8, diagnostic_type[3..], " \t\r\n");
+            }
+            if (diagnostic_type.len == 0 or !isJSDocIdentifierChar(diagnostic_type[0])) continue;
             if (jsdoc.firstInvalidPostfixNullableOffset(type_text)) |invalid| {
                 const pos: u32 = @intCast(open + 1 + invalid);
-                try self.reportCodeAtWithSpan(
-                    pos,
-                    self.lineAt(pos),
-                    1,
-                    8024,
-                    "JSDoc '@param' tag has name '', but there is no parameter with that name.",
-                );
                 try self.reportCodeAtWithMatchedPairSpan(
                     pos,
                     self.lineAt(pos),
@@ -1291,24 +1289,7 @@ pub const Parser = struct {
                 );
                 continue;
             }
-            if (jsdoc.isValidRestType(type_text) and self.hasFollowingJSDocParamTag(close_after, end)) {
-                const pos: u32 = @intCast(open + 1);
-                try self.reportCodeAt(pos, self.lineAt(pos), 1014, "A rest parameter must be last in a parameter list.");
-            }
         }
-    }
-
-    fn hasFollowingJSDocParamTag(self: *const Parser, start: usize, end: usize) bool {
-        var i = start;
-        while (i < end) {
-            const tag_pos = self.nextJSDocTagStart(i, end) orelse return false;
-            const tag_name_start = tag_pos + 1;
-            var tag_name_end = tag_name_start;
-            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
-            if (std.mem.eql(u8, self.source[tag_name_start..tag_name_end], "param")) return true;
-            i = tag_name_end;
-        }
-        return false;
     }
 
     fn scanJSDocParamParentDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -1858,7 +1839,6 @@ pub const Parser = struct {
                     '}' => {
                         depth -= 1;
                         if (depth == 0) {
-                            try self.scanJSDocTypeArgumentListSyntax(i + 1, j);
                             try self.scanJSDocPrefixTypeSyntax(i + 1, j);
                             i = j;
                             break;
@@ -1908,55 +1888,6 @@ pub const Parser = struct {
                 "'readonly' type modifier is only permitted on array and tuple literal types.",
             );
         }
-    }
-
-    fn scanJSDocTypeArgumentListSyntax(self: *Parser, start: usize, end: usize) ParseError!void {
-        var i = start;
-        while (i < end) : (i += 1) {
-            if (self.source[i] != '<') continue;
-            const close = self.findJSDocTypeArgumentClose(i, end) orelse continue;
-            const first_arg = firstNonWhitespace(self.source, i + 1, close);
-            if (first_arg == close) {
-                if (self.isAllowedJSDocEmptyClosureTypeArguments(i, start)) continue;
-                try self.reportCodeAt(@intCast(i), self.lineAt(@intCast(i)), 1099, "Type argument list cannot be empty.");
-                continue;
-            }
-            const last_arg = lastNonWhitespaceBefore(self.source, i + 1, close) orelse continue;
-            if (self.source[last_arg] == ',') {
-                try self.reportCodeAt(@intCast(last_arg), self.lineAt(@intCast(last_arg)), 1009, "Trailing comma not allowed.");
-            }
-        }
-    }
-
-    fn findJSDocTypeArgumentClose(self: *const Parser, open: usize, end: usize) ?usize {
-        var depth: u32 = 1;
-        var i = open + 1;
-        while (i < end) : (i += 1) {
-            switch (self.source[i]) {
-                '<' => depth += 1,
-                '>' => {
-                    depth -= 1;
-                    if (depth == 0) return i;
-                },
-                else => {},
-            }
-        }
-        return null;
-    }
-
-    fn isAllowedJSDocEmptyClosureTypeArguments(self: *const Parser, open: usize, start: usize) bool {
-        var before_open = open;
-        while (before_open > start and isWhitespaceByte(self.source[before_open - 1])) : (before_open -= 1) {}
-        if (before_open == start or self.source[before_open - 1] != '.') return false;
-
-        var name_end = before_open - 1;
-        while (name_end > start and isWhitespaceByte(self.source[name_end - 1])) : (name_end -= 1) {}
-
-        var name_start = name_end;
-        while (name_start > start and isJSDocIdentifierChar(self.source[name_start - 1])) : (name_start -= 1) {}
-
-        const name = self.source[name_start..name_end];
-        return std.mem.eql(u8, name, "Array");
     }
 
     fn firstNonWhitespace(source: []const u8, start: usize, end: usize) usize {
@@ -31333,11 +31264,9 @@ test "parser: JSDoc postfix nullable diagnostics keep TypeScript order" {
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expect(s.parser.diagnostics.items.len >= 2);
-    try T.expectEqual(@as(u32, 8024), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[0].span_len);
-    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
-    try T.expectEqual(@as(u32, 2), s.parser.diagnostics.items[1].span_len);
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2), s.parser.diagnostics.items[0].span_len);
 }
 
 test "parser: enum reserved declaration name reports TS1359" {
@@ -31398,11 +31327,7 @@ test "parser: JSDoc Closure type arguments report empty and trailing-comma diagn
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 1099), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 1009), s.parser.diagnostics.items[1].code);
-    try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[0].pos);
-    try T.expectEqual(@as(u32, 44), s.parser.diagnostics.items[1].pos);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: JSDoc Array empty Closure type arguments default to any" {

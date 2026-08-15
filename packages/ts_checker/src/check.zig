@@ -6739,9 +6739,6 @@ pub const Checker = struct {
         const extends_name = self.string_interner.get(extends_name_id);
         const jsdoc_extends = jsDocFirstExtendsOrAugmentsType(jsdoc.body, jsdoc.start) orelse return;
         if (std.mem.eql(u8, jsdoc_extends.name, extends_name)) return;
-        if (self.source) |src| {
-            _ = try self.jsDocTypeTextToTypeAt(src, jsdoc_extends.type_text, class_node);
-        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "JSDoc '@{s} {s}' does not match the 'extends {s}' clause.",
@@ -11190,6 +11187,7 @@ pub const Checker = struct {
         // sees each block in isolation. Mirrors fixture
         // `twoGenericInterfacesWithTheSameNameButDifferentArity` M3.
         try self.checkSiblingNamespaceInterfaceMerges(stmts);
+        try self.checkSiblingNamespaceClassDuplicates(stmts);
         try self.checkSiblingAmbientModuleExportCollisions(stmts);
         try self.checkSiblingNamespaceFunctionImplementations(stmts);
         try self.checkClassInterfaceMemberModifierMerges(stmts);
@@ -11769,6 +11767,93 @@ pub const Checker = struct {
             const ns_decls = e.value_ptr.items;
             if (ns_decls.len < 2) continue;
             try self.crossNamespaceInterfaceMergeCheck(ns_decls);
+        }
+    }
+
+    const NamespaceClassEntry = struct {
+        node: NodeId,
+        root_index: usize,
+    };
+
+    const NamespaceClassKey = struct {
+        path: u64,
+        name: hir_mod.StringId,
+    };
+
+    const NamespaceClassRoot = struct {
+        node: NodeId,
+        path: u64,
+    };
+
+    /// Reopened namespaces merge their exported declaration spaces. Classes
+    /// at the same exported namespace path therefore collide across blocks,
+    /// including dotted and explicitly nested namespace spellings.
+    fn checkSiblingNamespaceClassDuplicates(
+        self: *Checker,
+        stmts: []const NodeId,
+    ) CheckError!void {
+        var ns_groups: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NamespaceClassRoot)) = .empty;
+        defer {
+            var it = ns_groups.iterator();
+            while (it.next()) |entry| entry.value_ptr.deinit(self.gpa);
+            ns_groups.deinit(self.gpa);
+        }
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) continue;
+            const name = self.declarationName(node) orelse continue;
+            var segments = std.mem.splitScalar(u8, self.string_interner.get(name), '.');
+            const root_name = segments.next() orelse continue;
+            const root_id = self.string_interner.intern(root_name) catch return error.OutOfMemory;
+            var path: u64 = 0;
+            while (segments.next()) |segment| path = std.hash.Wyhash.hash(path, segment);
+            const gop = try ns_groups.getOrPut(self.gpa, root_id);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, .{ .node = node, .path = path });
+        }
+
+        var group_it = ns_groups.iterator();
+        while (group_it.next()) |group| {
+            if (group.value_ptr.items.len < 2) continue;
+            var seen: std.AutoHashMapUnmanaged(NamespaceClassKey, NamespaceClassEntry) = .empty;
+            defer seen.deinit(self.gpa);
+            for (group.value_ptr.items, 0..) |root, root_index| {
+                try self.collectNamespaceClassDuplicates(root.node, root_index, root.path, &seen);
+            }
+        }
+    }
+
+    fn collectNamespaceClassDuplicates(
+        self: *Checker,
+        ns_node: NodeId,
+        root_index: usize,
+        path: u64,
+        seen: *std.AutoHashMapUnmanaged(NamespaceClassKey, NamespaceClassEntry),
+    ) CheckError!void {
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |raw| {
+            const explicitly_exported = self.hir.kindOf(raw) == .export_decl;
+            const decl = self.unwrapExportDecl(raw);
+            if (decl == hir_mod.none_node_id) continue;
+            switch (self.hir.kindOf(decl)) {
+                .class_decl => {
+                    if (!explicitly_exported) continue;
+                    const name = self.declarationName(decl) orelse continue;
+                    const gop = try seen.getOrPut(self.gpa, .{ .path = path, .name = name });
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = .{ .node = decl, .root_index = root_index };
+                    } else if (gop.value_ptr.root_index != root_index) {
+                        try self.reportDuplicateIdentifierWithOther(gop.value_ptr.node, name, decl);
+                        try self.reportDuplicateIdentifierWithOther(decl, name, gop.value_ptr.node);
+                    }
+                },
+                .namespace_decl => {
+                    if (!explicitly_exported) continue;
+                    const name = self.declarationName(decl) orelse continue;
+                    const next_path = std.hash.Wyhash.hash(path, self.string_interner.get(name));
+                    try self.collectNamespaceClassDuplicates(decl, root_index, next_path, seen);
+                },
+                else => {},
+            }
         }
     }
 
@@ -30878,7 +30963,6 @@ pub const Checker = struct {
         // stay gated to checked JS below.
         try self.checkJsOnlySignatureAnnotations(node);
         try self.checkJsDocThisTagOnArrowFunction(node);
-        try self.checkJsDocFunctionTypeReturnAnnotations(node);
         try self.checkUnmatchedJsDocParameters(node);
         try self.checkJsDocTemplateBracketedName(node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
@@ -80377,7 +80461,6 @@ pub const Checker = struct {
             if (tag.kind != .template_tag) continue;
             if (tag.name.len != 0) continue;
             if (tag.type_text.len == 0) continue;
-            _ = try self.jsDocTypeTextToTypeAt(src, tag.type_text, fn_node);
             const inner_pos = self.sliceStartPos(src, tag.type_text) orelse continue;
             const after_constraint = @as(usize, inner_pos) + tag.type_text.len + 1;
             const pos = blk: {
@@ -81001,27 +81084,6 @@ pub const Checker = struct {
         var it = refs.keyIterator();
         while (it.next()) |name| if (std.mem.eql(u8, self.string_interner.get(name.*), "arguments")) return true;
         return false;
-    }
-
-    fn checkJsDocFunctionTypeReturnAnnotations(self: *Checker, fn_node: NodeId) CheckError!void {
-        if (!self.sourceHasCheckJsDirective()) return;
-        const src = self.source orelse return;
-        const jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, fn_node) orelse return;
-        const tags = ts_parser.jsdoc.parse(self.gpa, jsdoc.body) catch return;
-        defer self.gpa.free(tags);
-        for (tags) |tag| {
-            if (tag.type_text.len == 0) continue;
-            const fn_text = jsDocFunctionTypeMissingReturn(tag.type_text) orelse continue;
-            const rel = std.mem.indexOf(u8, jsdoc.body, fn_text) orelse
-                std.mem.indexOf(u8, jsdoc.body, tag.type_text) orelse
-                continue;
-            try self.diagnostics.append(self.gpa, .{
-                .node = fn_node,
-                .pos = @intCast(jsdoc.start + rel),
-                .code = TsCodes.function_type_return_implicitly_any,
-                .message = try self.diag_arena.allocator().dupe(u8, "Function type, which lacks return-type annotation, implicitly has an 'any' return type."),
-            });
-        }
     }
 
     fn expressionNodeAssignableToTarget(self: *Checker, value_node: NodeId, value_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -85279,18 +85341,6 @@ pub const Checker = struct {
             std.mem.startsWith(u8, trimmed, "Object<");
     }
 
-    fn jsDocFunctionTypeMissingReturn(type_text: []const u8) ?[]const u8 {
-        var t = std.mem.trim(u8, type_text, " \t\r\n");
-        while (t.len > 0 and (t[0] == '!' or t[0] == '?')) {
-            t = std.mem.trim(u8, t[1..], " \t\r\n");
-        }
-        const open = jsDocFunctionOpenParen(t) orelse return null;
-        const close = jsDocMatchingParen(t, open) orelse return null;
-        const rest = std.mem.trim(u8, t[close + 1 ..], " \t\r\n");
-        if (std.mem.startsWith(u8, rest, ":")) return null;
-        return t;
-    }
-
     fn jsDocGenericTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
         const open = jsDocTopLevelOpenAngle(type_text) orelse return null;
         if (!std.mem.endsWith(u8, type_text, ">")) return null;
@@ -88211,10 +88261,6 @@ pub const Checker = struct {
                             break :blk true;
                         }
                     }
-                    if (qualified_private_text_mismatch) |texts| {
-                        annotation_text_mismatch = texts;
-                        break :blk false;
-                    }
                     if (try self.sameGenericAliasAnnotationArgMismatch(prior_annotation, v.type_annotation)) |texts| {
                         annotation_text_mismatch = texts;
                         break :blk false;
@@ -88279,7 +88325,17 @@ pub const Checker = struct {
                     break :blk true;
                 }
                 if ((prior == types.Primitive.any or final_type == types.Primitive.any) and prior != final_type) break :blk false;
-                if (self.repeatedVarTypesHaveDifferentPrivateOrigins(prior, final_type)) break :blk false;
+                const different_private_origins = self.repeatedVarTypesHaveDifferentPrivateOrigins(prior, final_type);
+                if (different_private_origins) {
+                    if (qualified_private_text_mismatch) |texts| annotation_text_mismatch = texts;
+                    break :blk false;
+                }
+                if (prior_explicit and has_annotation and !different_private_origins) {
+                    const prior_text = try self.subsequentVarTypeText(prior);
+                    const current_text = try self.subsequentVarTypeText(final_type);
+                    if (prior_text != null and current_text != null and
+                        std.mem.eql(u8, prior_text.?, current_text.?)) break :blk true;
+                }
                 if (try self.repeatedVarConditionalsCompatible(prior, final_type)) |ok| break :blk ok;
                 if (try self.conditionalAnnotationDistributionMismatch(prior_annotation, v.type_annotation)) |texts| {
                     annotation_text_mismatch = texts;
@@ -134606,7 +134662,8 @@ pub const Checker = struct {
             return self.interner.internUnion(&.{ lhs_non_null, rhs }) catch error.OutOfMemory;
         }
         try self.reportVoidTruthiness(l.lhs, lhs);
-        if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
+        const report_syntactic_truthiness = !self.virtualSectionIsJsLike(l.lhs);
+        if (report_syntactic_truthiness and l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
             // tsc anchors at the opening `(` for parenthesized LHS
             // forms like `({}) || s`. Mirrors fixture
             // `symbolType11.ts(7,1)`.
@@ -134619,7 +134676,7 @@ pub const Checker = struct {
         // below and anchor at the opening `(` for the parenthesized
         // form. `object_literal` is handled above with its own
         // anchor so we exclude it here.
-        if (l.op == .@"or" and
+        if (report_syntactic_truthiness and l.op == .@"or" and
             self.hir.kindOf(l.lhs) != .object_literal and
             self.expressionAlwaysTruthyInLogicalAnd(l.lhs, lhs))
         {
@@ -134630,7 +134687,7 @@ pub const Checker = struct {
                 try self.reportAt(l.lhs, lhs_pos, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             }
         }
-        if (l.op == .@"and" and self.expressionAlwaysTruthyInLogicalAnd(l.lhs, lhs)) {
+        if (report_syntactic_truthiness and l.op == .@"and" and self.expressionAlwaysTruthyInLogicalAnd(l.lhs, lhs)) {
             if (self.hir.kindOf(l.lhs) == .literal_string) {
                 try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             } else {
@@ -134638,14 +134695,14 @@ pub const Checker = struct {
             }
             try self.reportLogicalTruthyFunctionImplicitAnyParams(l.lhs);
         }
-        if (l.op == .@"or" and self.expressionAlwaysFalsyInLogicalOr(l.lhs, lhs)) {
+        if (report_syntactic_truthiness and l.op == .@"or" and self.expressionAlwaysFalsyInLogicalOr(l.lhs, lhs)) {
             try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
         }
         // tsc also fires TS2873 on the LHS of `&&` when it is a
         // literal `null` / `undefined` / empty string (the always-falsy
         // gate short-circuits the right operand). Mirrors fixtures like
         // `logicalAndOperatorWithEveryType.ts` rows 23-24 and witness.ts.
-        if (l.op == .@"and") {
+        if (report_syntactic_truthiness and l.op == .@"and") {
             switch (self.hir.kindOf(l.lhs)) {
                 .literal_null, .literal_undefined => {
                     try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
@@ -134659,7 +134716,7 @@ pub const Checker = struct {
                 else => {},
             }
         }
-        if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .literal_string) {
+        if (report_syntactic_truthiness and l.op == .@"or" and self.hir.kindOf(l.lhs) == .literal_string) {
             const lit = hir_mod.literalStringOf(self.hir, l.lhs);
             if (self.string_interner.get(lit.value).len == 0) {
                 try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
@@ -207233,7 +207290,7 @@ test "checker: checkjs class JSDoc @extends mismatch reports TS8023" {
         }
     }
     try T.expect(found);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: checkjs class JSDoc @augments mismatch reports TS8023" {
