@@ -115776,6 +115776,7 @@ pub const Checker = struct {
             if (class_kind != .class_decl and class_kind != .class_expr) continue;
             const op = hir_mod.objectPropertyOf(self.hir, cur);
             if (op.is_static) return null;
+            if (prev == op.key) return null;
             // The reference is in the type annotation (TS2844) or the
             // initializer (TS2301). `prev` is the direct child of the
             // property we ascended through. A type-position reference is
