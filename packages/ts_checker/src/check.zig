@@ -5272,6 +5272,7 @@ pub const Checker = struct {
             defer self.popNarrowScope();
             for (stmts) |s| try self.checkStatement(s);
         }
+        try self.anchorJsDocValueUsedAsTypeDiagnostics();
         try self.recheckDeferredVarianceAnnotations(stmts);
         try self.checkUniqueSymbolPositionsGlobal();
         try self.checkNoLibRequiredGlobalTypes(root, stmts);
@@ -5305,6 +5306,48 @@ pub const Checker = struct {
         // doesn't trip on ordering alone.
         self.sortDiagnosticsByPosition();
         if (self.source != null) try self.applyDirectives(root);
+    }
+
+    fn anchorJsDocValueUsedAsTypeDiagnostics(self: *Checker) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const body_end = body_start + close_rel;
+            search_start = body_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..body_end];
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
+            defer self.gpa.free(tags);
+            for (tags) |tag| {
+                const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+                if (type_text.len == 0) continue;
+                var simple_name = true;
+                for (type_text) |c| {
+                    if (isJsDocIdentChar(c)) continue;
+                    simple_name = false;
+                    break;
+                }
+                if (!simple_name) continue;
+                const rel = std.mem.indexOf(u8, body, type_text) orelse continue;
+                const expected_pos: u32 = @intCast(body_start + rel);
+                const message_prefix = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' refers to a value",
+                    .{type_text},
+                );
+                for (self.diagnostics.items) |*diagnostic| {
+                    if (diagnostic.code != TsCodes.value_used_as_type_did_you_mean_typeof or
+                        !std.mem.startsWith(u8, diagnostic.message, message_prefix)) continue;
+                    const node_pos = self.hir.spanOf(diagnostic.node).start;
+                    if (diagnostic.pos != null and diagnostic.pos.? != node_pos) continue;
+                    diagnostic.pos = expected_pos;
+                    break;
+                }
+            }
+        }
     }
 
     fn checkUnsupportedJsPrototypeReplacementMembers(self: *Checker) CheckError!void {
@@ -6003,7 +6046,25 @@ pub const Checker = struct {
             var seen_optional = false;
             var template_index: usize = 0;
             for (tags) |tag| {
-                if (tag.kind != .template_tag or tag.name.len == 0) continue;
+                if (tag.kind != .template_tag) continue;
+                if (tag.name.len == 0) {
+                    if (tag.type_text.len == 0) continue;
+                    const next_decl = jsDocNextNonTrivia(src, comment_end + 2);
+                    if (sourceIdentifierKeywordAt(src, next_decl, "function") or
+                        sourceIdentifierKeywordAt(src, next_decl, "class")) continue;
+                    const inner_pos = self.sliceStartPos(src, tag.type_text) orelse continue;
+                    const after_constraint = @as(usize, inner_pos) + tag.type_text.len + 1;
+                    const pos: u32 = @intCast(@min(after_constraint, src.len));
+                    if (!self.hasDiagnosticAtPosition(1069, pos)) {
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = root,
+                            .pos = pos,
+                            .code = 1069,
+                            .message = "Unexpected token. A type parameter name was expected without curly braces.",
+                        });
+                    }
+                    continue;
+                }
                 const name_pos = self.sliceStartPos(src, tag.name) orelse @as(u32, @intCast(comment_start));
                 if (tag.optional and !tag.has_default) {
                     try self.diagnostics.append(self.gpa, .{
@@ -35504,6 +35565,7 @@ pub const Checker = struct {
         try self.checkHeritagePrivateNames(node, self.declarationName(node), true);
         try self.checkExportedClassMemberPrivateNames(node);
         try self.checkJsDocTemplateBracketedName(node);
+        try self.checkJsDocReadonlyConstructors(node, members);
         const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
         try self.checkExportedTypeParamPrivateNames(node, type_params, .class);
         try self.checkJsOnlyTypeParameters(node, type_params);
@@ -39031,6 +39093,32 @@ pub const Checker = struct {
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             try self.checkJsDocClassImplements(node, instance_t, cid.name);
+        }
+    }
+
+    fn checkJsDocReadonlyConstructors(
+        self: *Checker,
+        class_node: NodeId,
+        members: []const NodeId,
+    ) CheckError!void {
+        if (!self.check_js_enabled or
+            !self.virtualSectionIsJsLike(class_node) or
+            self.sourceDirectiveIsTrue("@declaration")) return;
+        const src = self.source orelse return;
+        for (members) |member| {
+            const kind = self.hir.kindOf(member);
+            if (kind != .fn_decl and kind != .fn_expr) continue;
+            if (!hir_mod.fnDeclOf(self.hir, member).flags.is_constructor) continue;
+            const jsdoc = self.leadingJsDocBodyWithStart(src, self.hir.spanOf(member).start) orelse continue;
+            const rel = std.mem.indexOf(u8, jsdoc.body, "@readonly") orelse continue;
+            const pos: u32 = @intCast(jsdoc.start + rel);
+            if (self.hasDiagnosticAtPosition(1024, pos)) continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = member,
+                .pos = pos,
+                .code = 1024,
+                .message = "'readonly' modifier can only appear on a property declaration or index signature.",
+            });
         }
     }
 
@@ -56241,6 +56329,10 @@ pub const Checker = struct {
         if (space != .value) {
             const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
             if (try self.virtualRelativeModuleExportType(anchor, spec_id, &.{}, leaf)) |type_export| return type_export;
+            if ((try self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, leaf)) == .value) {
+                try self.reportVirtualImportTypeMissingExport(anchor, spec, leaf, missing_pos);
+                return types.Primitive.any;
+            }
         } else {
             const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
             if (try self.virtualRelativeModuleExportValueType(anchor, spec_id, leaf)) |value_export| return value_export;
@@ -56251,6 +56343,34 @@ pub const Checker = struct {
         if (space == .value) return value_t;
         try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
         return types.Primitive.any;
+    }
+
+    fn reportVirtualImportTypeMissingExport(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        leaf: hir_mod.StringId,
+        missing_pos: ?u32,
+    ) CheckError!void {
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == TsCodes.namespace_no_exported_member and diagnostic.pos == missing_pos) return;
+        }
+        var module_name = spec;
+        while (std.mem.startsWith(u8, module_name, "./")) module_name = module_name[2..];
+        const dot = std.mem.lastIndexOfScalar(u8, module_name, '.') orelse module_name.len;
+        module_name = module_name[0..dot];
+        const leaf_text = self.string_interner.get(leaf);
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Namespace '\"{s}\"' has no exported member '{s}'.",
+            .{ module_name, leaf_text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = missing_pos,
+            .code = TsCodes.namespace_no_exported_member,
+            .message = message,
+        });
     }
 
     fn commonJsValueExportAsJsDocType(self: *Checker, value_t: TypeId) CheckError!TypeId {
@@ -70952,19 +71072,8 @@ pub const Checker = struct {
                 }
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name != leaf_name) continue;
-                // A `/** @enum {T} */ export const X = { … }` declares a type as
-                // well as a value, so an imported reference (`@type
-                // {import("./m").X}` / `@typedef {import("./m").X} Y`) must
-                // resolve to the enum's backing type. Mirrors `enumTagImported`
-                // and the same-file `jsDocSameFileEnumTagType`.
                 const dk = self.hir.kindOf(decl);
                 if (dk == .var_decl or dk == .let_decl or dk == .const_decl) {
-                    if (self.leadingJsDocBodyWithStart(src, self.hir.spanOf(raw).start)) |jsdoc| {
-                        if (std.mem.indexOf(u8, jsdoc.body, "@enum") != null) {
-                            const type_text = jsDocBlockTagTypeText(jsdoc.body, "@enum") orelse return types.Primitive.any;
-                            return (try self.jsDocTypeTextToTypeAt(src, type_text, anchor)) orelse types.Primitive.any;
-                        }
-                    }
                     return null;
                 }
                 if (dk == .fn_decl or dk == .fn_expr or dk == .arrow_fn) return null;
@@ -84331,7 +84440,7 @@ pub const Checker = struct {
         if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
         if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
         if (try self.jsDocImportedNameType(src, base)) |t| return t;
-        const simple_t = try self.jsDocSimpleNameType(src, base);
+        const simple_t = try self.jsDocSimpleNameType(src, base, base.len == trimmed.len);
         if (simple_t) |t| {
             if (!self.typeIsAnyLike(t)) return t;
         }
@@ -84638,11 +84747,18 @@ pub const Checker = struct {
         return self.interner.internIndexedAccess(obj_t, idx_t) catch return error.OutOfMemory;
     }
 
-    fn jsDocSimpleNameType(self: *Checker, src: []const u8, base: []const u8) CheckError!?TypeId {
-        _ = src;
+    fn jsDocSimpleNameType(
+        self: *Checker,
+        src: []const u8,
+        base: []const u8,
+        is_entire_type: bool,
+    ) CheckError!?TypeId {
         if (base.len == 0) return null;
         const name = self.string_interner.intern(base) catch return error.OutOfMemory;
-        if (self.lookupNarrow(name)) |t| return t;
+        const narrow_t = self.lookupNarrow(name);
+        if (narrow_t) |t| {
+            if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_type_parameter) return t;
+        }
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor != hir_mod.none_node_id) {
             if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
@@ -84657,12 +84773,42 @@ pub const Checker = struct {
             if (try self.jsDocRequireAliasType(anchor, name, false)) |t| return t;
             if (try self.jsDocSameFileClassInstanceType(anchor, name)) |t| return t;
             if (try self.jsDocSameFileEnumTagType(anchor, name)) |t| return t;
+            if (is_entire_type and
+                try self.reportJsDocSimpleValueUsedAsType(src, anchor, name, base)) return types.Primitive.any;
         }
-        if (std.mem.eql(u8, base, "Image")) {
-            return self.seedCtor(self.htmlImageElementType() catch types.Primitive.any) catch types.Primitive.any;
-        }
+        if (narrow_t) |t| return t;
         if (self.isBuiltinName(name)) return types.Primitive.any;
         return null;
+    }
+
+    fn reportJsDocSimpleValueUsedAsType(
+        self: *Checker,
+        src: []const u8,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+        text: []const u8,
+    ) CheckError!bool {
+        if (!self.jsDocTypeTextIsInCheckedJsContext()) return false;
+        if (self.visibleTypeDeclarationExistsAt(anchor, name)) return false;
+        const known_value_only = std.mem.eql(u8, text, "Image") or
+            std.mem.eql(u8, text, "exports");
+        if (!known_value_only and !self.visibleValueOnlyDeclarationExistsAt(anchor, name)) return false;
+        const pos = self.sliceStartPos(src, text);
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == TsCodes.value_used_as_type_did_you_mean_typeof and diagnostic.pos == pos) return true;
+        }
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' refers to a value, but is being used as a type here. Did you mean 'typeof {s}'?",
+            .{ text, text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = pos,
+            .code = TsCodes.value_used_as_type_did_you_mean_typeof,
+            .message = message,
+        });
+        return true;
     }
 
     /// Resolve a JSDoc type name that refers to a same-file `@enum`-tagged
