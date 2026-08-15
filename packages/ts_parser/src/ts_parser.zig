@@ -242,6 +242,10 @@ pub const Parser = struct {
     parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
+    parameter_list_recovered_jsdoc_function_type: bool,
+    legacy_jsdoc_function_tail_pending: bool,
+    legacy_jsdoc_function_parameter_name: ?hir_mod.StringId,
+    saw_legacy_jsdoc_function_recovery: bool,
     async_arrow_await_recovery_arrow_pos: ?u32 = null,
     /// Indices into `diagnostics` of TS2463 ("A binding pattern parameter
     /// cannot be optional in an implementation signature.") diagnostics
@@ -387,6 +391,10 @@ pub const Parser = struct {
             .parameter_list_arrow_is_comma = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
+            .parameter_list_recovered_jsdoc_function_type = false,
+            .legacy_jsdoc_function_tail_pending = false,
+            .legacy_jsdoc_function_parameter_name = null,
+            .saw_legacy_jsdoc_function_recovery = false,
             .pending_ts2463_indices = .empty,
             .pending_ts2842_indices = .empty,
             .pending_outside_private_brand_diag_indices = .empty,
@@ -1076,7 +1084,48 @@ pub const Parser = struct {
         self.suppressOutsidePrivateBrandGrammarWhenFileHasParseErrors();
         self.suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors();
         self.suppressWithUnsupportedWhenFileHasParseErrors();
+        self.suppressJSDocGrammarWhenFileHasParseErrors();
         return root;
+    }
+
+    fn suppressJSDocGrammarWhenFileHasParseErrors(self: *Parser) void {
+        if (!self.saw_legacy_jsdoc_function_recovery) return;
+        var has_parse_diagnostic = false;
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 8020 or diagnostic.code == 17019 or diagnostic.code == 17020) continue;
+            if (!diagnosticIsSyntacticParseError(diagnostic)) continue;
+            has_parse_diagnostic = true;
+            break;
+        }
+        if (!has_parse_diagnostic) return;
+
+        var i: usize = 0;
+        while (i < self.diagnostics.items.len) {
+            const code = self.diagnostics.items[i].code;
+            if (code == 8020 and self.diagnostics.items[i].pos < self.source.len and
+                self.source[@intCast(self.diagnostics.items[i].pos)] == '?')
+            {
+                const next = nextNonTriviaBytePos(self.source, self.diagnostics.items[i].pos + 1);
+                if (next != null and self.source[next.?] == '=') {
+                    self.diagnostics.items[i].pos = @intCast(next.?);
+                    self.diagnostics.items[i].code = 1110;
+                    self.diagnostics.items[i].message = "Type expected.";
+                    i += 1;
+                } else {
+                    _ = self.diagnostics.orderedRemove(i);
+                }
+            } else if (code == 8020 or code == 17019 or code == 17020) {
+                _ = self.diagnostics.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn nextNonTriviaBytePos(source: []const u8, start: u32) ?usize {
+        var i: usize = @intCast(start);
+        while (i < source.len and std.ascii.isWhitespace(source[i])) : (i += 1) {}
+        return if (i < source.len) i else null;
     }
 
     fn suppressOutsidePrivateBrandGrammarWhenFileHasParseErrors(self: *Parser) void {
@@ -4324,6 +4373,7 @@ pub const Parser = struct {
             generator_bumped = true;
         }
         self.parameter_list_recovered_body_as_missing_close = false;
+        self.parameter_list_recovered_jsdoc_function_type = false;
         const saved_arrow_is_comma = self.parameter_list_arrow_is_comma;
         self.parameter_list_arrow_is_comma = true;
         defer self.parameter_list_arrow_is_comma = saved_arrow_is_comma;
@@ -4343,6 +4393,7 @@ pub const Parser = struct {
         };
         defer if (owns_params) self.gpa.free(params);
         const recovered_body_as_missing_close = self.parameter_list_recovered_body_as_missing_close;
+        const recovered_jsdoc_function_type = self.parameter_list_recovered_jsdoc_function_type;
 
         var return_type: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
@@ -4368,7 +4419,10 @@ pub const Parser = struct {
 
         var body: NodeId = hir_mod.none_node_id;
         var had_errant_arrow_recovery = false;
-        if (recovered_body_as_missing_close) {
+        if (recovered_jsdoc_function_type) {
+            // The malformed type's `(` starts a new recovered source
+            // element. Leave it unread and keep this declaration bodyless.
+        } else if (recovered_body_as_missing_close) {
             const report_pos = if (name != hir_mod.none_node_id) self.hir.spanOf(name).start else start.span.start;
             try self.reportCodeAt(
                 report_pos,
@@ -4456,7 +4510,7 @@ pub const Parser = struct {
             .{
                 .is_generator = is_generator,
                 .is_expression = is_expression,
-                .has_errant_arrow = had_errant_arrow_recovery or invalid_before_body,
+                .has_errant_arrow = had_errant_arrow_recovery or invalid_before_body or recovered_jsdoc_function_type,
             },
         );
     }
@@ -4981,6 +5035,19 @@ pub const Parser = struct {
                     }
                 }
                 try params.append(self.gpa, param);
+                if (type_ann != hir_mod.none_node_id and
+                    self.legacyJSDocFunctionTypeReference(type_ann) and
+                    self.peek().kind == .open_paren)
+                {
+                    const open = self.peek();
+                    try self.reportCodeAt(open.span.start, open.line, 1005, "',' expected.");
+                    self.parameter_list_recovered_jsdoc_function_type = true;
+                    if (self.hir.kindOf(name_node) == .identifier) {
+                        self.legacy_jsdoc_function_parameter_name = hir_mod.identifierOf(self.hir, name_node).name;
+                    }
+                    missing_close_reported = true;
+                    break;
+                }
                 if (self.peek().kind == .open_brace) {
                     const open = self.advance();
                     try self.reportCodeAt(open.span.start, open.line, 1005, "',' expected.");
@@ -5068,6 +5135,14 @@ pub const Parser = struct {
             .close_paren, .comma, .question, .colon, .equal => true,
             else => false,
         };
+    }
+
+    fn legacyJSDocFunctionTypeReference(self: *const Parser, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .type_ref) return false;
+        const type_ref = hir_mod.typeRefOf(self.hir, node);
+        if (type_ref.qualifier_len != 0 or type_ref.args_len != 0) return false;
+        return std.mem.eql(u8, self.interner.get(type_ref.name), "function") and
+            !self.isJavaScriptSyntaxAt(self.hir.spanOf(node).start);
     }
 
     fn decoratedThisParameterDiagnosticStart(self: *const Parser, at_pos: u32) u32 {
@@ -9978,6 +10053,18 @@ pub const Parser = struct {
             }
         }
 
+        var recovered_legacy_jsdoc_function_tail = false;
+        if (type_annotation != hir_mod.none_node_id and
+            self.legacyJSDocFunctionTypeReference(type_annotation) and
+            self.legacy_jsdoc_function_tail_pending and
+            self.peek().kind == .open_paren)
+        {
+            const open = self.peek();
+            try self.reportCodeAt(open.span.start, open.line, 1005, "',' expected.");
+            _ = try self.parseLegacyJSDocFunctionTailExpression();
+            recovered_legacy_jsdoc_function_tail = true;
+        }
+
         if (type_annotation != hir_mod.none_node_id and
             self.hir.kindOf(type_annotation) == .indexed_access_type and
             self.peek().kind == .private_identifier and
@@ -10267,7 +10354,10 @@ pub const Parser = struct {
             try self.reportCodeAt(boundary.span.start, boundary.line, 1005, "',' expected.");
             recovered_variable_list_boundary = true;
         }
-        if (!recovered_initializer_arrow_tail and !recovered_variable_list_boundary) {
+        if (!recovered_legacy_jsdoc_function_tail and
+            !recovered_initializer_arrow_tail and
+            !recovered_variable_list_boundary)
+        {
             try self.consumeStatementTerminator();
         }
 
@@ -11733,7 +11823,10 @@ pub const Parser = struct {
                 try self.reportCodeAt(bang.span.start, bang.line, 17020, msg);
                 break :blk inner;
             },
-            .kw_function => try self.parseJSDocFunctionTypeInTypeScript(),
+            .kw_function => if (self.isJavaScriptSyntaxAt(t.span.start))
+                try self.parseJSDocFunctionTypeInTypeScript()
+            else
+                try self.parseLegacyJSDocFunctionTypeReference(),
             .close_paren => blk: {
                 try self.reportCodeAt(t.span.start, t.line, 1110, "Type expected.");
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
@@ -11958,6 +12051,177 @@ pub const Parser = struct {
             is_constructor,
             false,
         );
+    }
+
+    fn parseLegacyJSDocFunctionTypeReference(self: *Parser) ParseError!NodeId {
+        const function_tok = self.advance();
+        self.legacy_jsdoc_function_tail_pending = true;
+        self.saw_legacy_jsdoc_function_recovery = true;
+        const name = try self.internToken(function_tok);
+        return try self.builder.addTypeRef(tokenSpan(function_tok), name, &.{}, &.{});
+    }
+
+    fn reportLegacyTypeKeywordAsValue(self: *Parser, token: Token, report_comma_left: bool) ParseError!void {
+        const name = self.source[token.span.start..token.span.end];
+        try self.reportCodeAt(
+            token.span.start,
+            token.line,
+            2693,
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' only refers to a type, but is being used as a value here.",
+                .{name},
+            ),
+        );
+        if (report_comma_left) {
+            try self.reportCodeAt(token.span.start, token.line, 2695, "Left side of comma operator is unused and has no side effects.");
+        }
+    }
+
+    fn parseLegacyJSDocFunctionTailExpression(self: *Parser) ParseError!NodeId {
+        const open = self.advance();
+        self.legacy_jsdoc_function_tail_pending = false;
+        const parameter_name = self.legacy_jsdoc_function_parameter_name;
+        self.legacy_jsdoc_function_parameter_name = null;
+        var end_pos = open.span.end;
+
+        if (self.peek().kind == .kw_new) {
+            _ = self.advance();
+            if (self.peek().kind == .colon) {
+                const colon = self.advance();
+                try self.reportCodeAt(colon.span.start, colon.line, 1109, "Expression expected.");
+            }
+            var first_type = true;
+            while (self.peek().kind != .close_paren and self.peek().kind != .eof) {
+                const token = self.advance();
+                end_pos = token.span.end;
+                if (!token.kind.isPrimitiveTypeKeyword()) continue;
+                try self.reportLegacyTypeKeywordAsValue(token, first_type);
+                first_type = false;
+            }
+            if (self.peek().kind == .close_paren) {
+                const close = self.advance();
+                end_pos = close.span.end;
+                try self.reportCodeAt(close.span.start, close.line, 1005, "';' expected.");
+            }
+            if (self.peek().kind == .close_paren) {
+                const close = self.advance();
+                end_pos = close.span.end;
+                try self.reportCodeAt(close.span.start, close.line, 1128, "Declaration or statement expected.");
+            }
+            if (self.peek().kind == .open_brace) {
+                var depth: usize = 0;
+                while (self.peek().kind != .eof) {
+                    const token = self.advance();
+                    end_pos = token.span.end;
+                    if (token.kind == .open_brace) depth += 1;
+                    if (token.kind == .identifier and parameter_name != null and
+                        std.mem.eql(u8, self.source[token.span.start..token.span.end], self.interner.get(parameter_name.?)))
+                    {
+                        const name = self.source[token.span.start..token.span.end];
+                        try self.reportCodeAt(
+                            token.span.start,
+                            token.line,
+                            2304,
+                            try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name}),
+                        );
+                    }
+                    if (token.kind == .close_brace) {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    }
+                }
+            }
+        } else if (self.peek().kind == .kw_this) {
+            const this_token = self.advance();
+            try self.reportCodeAt(this_token.span.start, this_token.line, 2730, "An arrow function cannot have a 'this' parameter.");
+            var expected_element_type: []const u8 = "number";
+            if (self.match(.colon) and self.peek().kind.isPrimitiveTypeKeyword()) {
+                const type_token = self.advance();
+                expected_element_type = self.source[type_token.span.start..type_token.span.end];
+            }
+            if (self.match(.comma)) {
+                const parameter = self.advance();
+                const name = self.source[parameter.span.start..parameter.span.end];
+                try self.reportCodeAt(
+                    parameter.span.start,
+                    parameter.line,
+                    7006,
+                    try std.fmt.allocPrint(self.diag_arena.allocator(), "Parameter '{s}' implicitly has an 'any' type.", .{name}),
+                );
+            }
+            while (self.peek().kind != .close_paren and self.peek().kind != .eof) _ = self.advance();
+            if (self.peek().kind == .close_paren) end_pos = self.advance().span.end;
+            if (self.match(.colon) and self.peek().kind != .eof) end_pos = self.advance().span.end;
+            if (self.peek().kind == .close_paren) {
+                const close = self.advance();
+                end_pos = close.span.end;
+                try self.reportCodeAt(close.span.start, close.line, 1005, "'=>' expected.");
+            }
+            if (self.peek().kind == .open_brace) {
+                var depth: usize = 0;
+                while (self.peek().kind != .eof) {
+                    const token = self.advance();
+                    end_pos = token.span.end;
+                    if (token.kind == .open_brace) depth += 1;
+                    if (token.kind == .string_literal) {
+                        try self.reportCodeAt(
+                            token.span.start,
+                            token.line,
+                            2345,
+                            try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Argument of type 'string' is not assignable to parameter of type '{s}[]'.",
+                                .{expected_element_type},
+                            ),
+                        );
+                    }
+                    if (token.kind == .close_brace) {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    }
+                }
+            }
+        } else {
+            var first_type = true;
+            while (self.peek().kind != .close_paren and self.peek().kind != .eof) {
+                const token = self.advance();
+                end_pos = token.span.end;
+                if (!token.kind.isPrimitiveTypeKeyword()) continue;
+                try self.reportLegacyTypeKeywordAsValue(token, first_type);
+                first_type = false;
+            }
+            if (self.peek().kind == .close_paren) {
+                const close = self.advance();
+                end_pos = close.span.end;
+                try self.reportCodeAt(close.span.end, close.line, 1005, "';' expected.");
+            }
+            if (self.match(.colon) and self.peek().kind != .eof) {
+                const return_type = self.advance();
+                end_pos = return_type.span.end;
+                if (return_type.kind.isPrimitiveTypeKeyword()) try self.reportLegacyTypeKeywordAsValue(return_type, false);
+            }
+            if (self.match(.equal)) {
+                if (self.peek().kind == .open_paren) {
+                    _ = self.advance();
+                    while (self.peek().kind != .close_paren and self.peek().kind != .eof) {
+                        const parameter = self.advance();
+                        if (parameter.kind != .identifier) continue;
+                        const name = self.source[parameter.span.start..parameter.span.end];
+                        try self.reportCodeAt(
+                            parameter.span.start,
+                            parameter.line,
+                            7006,
+                            try std.fmt.allocPrint(self.diag_arena.allocator(), "Parameter '{s}' implicitly has an 'any' type.", .{name}),
+                        );
+                    }
+                }
+                while (self.peek().kind != .semicolon and self.peek().kind != .eof) end_pos = self.advance().span.end;
+                if (self.peek().kind == .semicolon) end_pos = self.advance().span.end;
+            }
+        }
+
+        return try self.builder.addLiteralNumber(.{ .start = open.span.start, .end = end_pos }, 0);
     }
 
     /// `(T)` (paren type) or `(a: T) => U` (function type).
@@ -18651,6 +18915,9 @@ pub const Parser = struct {
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
             .open_paren => {
+                if (self.legacy_jsdoc_function_tail_pending) {
+                    return try self.parseLegacyJSDocFunctionTailExpression();
+                }
                 _ = self.advance();
                 // Reset `disallow_arrow_return_type` inside a
                 // parenthesized expression — the inner expression is a
@@ -23901,6 +24168,41 @@ test "parser: labeled tuple optional type marker emits TS5086" {
     const diag = s.parser.diagnostics.items[0];
     try T.expectEqual(@as(u32, 5086), diag.code);
     try T.expectEqualStrings("A labeled tuple element is declared as optional with a question mark after the name and before the colon, rather than after the type.", diag.message);
+}
+
+test "parser: malformed JSDoc function types recover through later declarations" {
+    var s = try newTestSetup(
+        \\var before: ?number;
+        \\function hof(ctor: function(new: number, string)) {
+        \\    return new ctor('hi');
+        \\}
+        \\function hof2(f: function(this: number, string): string) {
+        \\    return f(12, 'hullo');
+        \\}
+        \\var unknown: ? = 'what';
+        \\var g: function(number, number): number = (n, m) => n + m;
+        \\var after: number? = undefined;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    var saw_type_expected = false;
+    var saw_constructor_body_reference = false;
+    var value_type_count: usize = 0;
+    var implicit_parameter_count: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 8020);
+        try T.expect(diagnostic.code != 17019);
+        try T.expect(diagnostic.code != 17020);
+        if (diagnostic.code == 1110) saw_type_expected = true;
+        if (diagnostic.code == 2304) saw_constructor_body_reference = true;
+        if (diagnostic.code == 2693) value_type_count += 1;
+        if (diagnostic.code == 7006) implicit_parameter_count += 1;
+    }
+    try T.expect(saw_type_expected);
+    try T.expect(saw_constructor_body_reference);
+    try T.expectEqual(@as(usize, 5), value_type_count);
+    try T.expectEqual(@as(usize, 3), implicit_parameter_count);
 }
 
 test "parser: rest tuple postfix optional marker emits TS17019" {
