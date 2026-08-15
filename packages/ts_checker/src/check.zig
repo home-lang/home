@@ -16628,7 +16628,6 @@ pub const Checker = struct {
     fn checkJsDocFunctionTypeTag(self: *Checker, node: NodeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective()) return;
         const f = hir_mod.fnDeclOf(self.hir, node);
-        if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) return;
         const src = self.source orelse return;
         const span = self.hir.spanOf(node);
         const body = self.leadingJsDocBody(src, span.start) orelse return;
@@ -16666,11 +16665,13 @@ pub const Checker = struct {
                     return;
                 }
             }
-            const fn_name = self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name);
-            const base = jsDocTypeBaseName(type_text);
-            if (base.len == fn_name.len and std.mem.eql(u8, base, fn_name)) {
-                try self.report(f.name, TsCodes.jsdoc_function_type_mismatch, "The type of a function declaration must match the function's signature.");
-                return;
+            if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+                const fn_name = self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name);
+                const base = jsDocTypeBaseName(type_text);
+                if (base.len == fn_name.len and std.mem.eql(u8, base, fn_name)) {
+                    try self.report(f.name, TsCodes.jsdoc_function_type_mismatch, "The type of a function declaration must match the function's signature.");
+                    return;
+                }
             }
         }
     }
@@ -99232,6 +99233,10 @@ pub const Checker = struct {
                     // `modulePreserve4`'s `d2.default()`.
                     if (self.memberAccessReceiverIsRequireAssignmentBinding(m.object)) {
                         try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                    } else if (self.isInAssignmentTargetChain(node) and
+                        self.checkJsReceiverIsStaticClassMethod(m.object))
+                    {
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                     } else if (try self.checkJsCallableDeclaredInOtherVirtualSectionType(m.object)) |declared_t| {
                         try self.reportPropertyDoesNotExistOnType(node, m.name, declared_t);
                     }
@@ -130239,8 +130244,7 @@ pub const Checker = struct {
         if (node != hir_mod.none_node_id and self.hir.kindOf(node) == .member_access and
             self.memberAccessReceiverIsRequireAssignmentBinding(hir_mod.memberOf(self.hir, node).object)) return true;
         if (self.class_name_by_static.contains(receiver_t)) {
-            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return false;
-            return !self.nodeIsThisReference(hir_mod.memberOf(self.hir, node).object);
+            return false;
         }
         if (self.class_name_by_instance.contains(receiver_t)) {
             if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return false;
@@ -130248,6 +130252,14 @@ pub const Checker = struct {
         }
         const builtin = self.builtin_object_names.get(receiver_t) orelse return false;
         return std.mem.eql(u8, builtin, "Event");
+    }
+
+    fn checkJsReceiverIsStaticClassMethod(self: *Checker, receiver: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective() or receiver == hir_mod.none_node_id or
+            self.hir.kindOf(receiver) != .member_access) return false;
+        const owner = hir_mod.memberOf(self.hir, receiver).object;
+        if (owner == hir_mod.none_node_id or self.hir.kindOf(owner) != .identifier) return false;
+        return self.class_static_types.contains(hir_mod.identifierOf(self.hir, owner).name);
     }
 
     fn checkJsCallableDeclaredInOtherVirtualSectionType(self: *Checker, object: NodeId) CheckError!?TypeId {
@@ -210618,6 +210630,36 @@ test "checker: checkjs Closure-style function @type reports TS8030 and TS1005" {
         TsCodes.jsdoc_function_type_mismatch,
         "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
     ));
+}
+
+test "checker: checkjs Closure-style function @type validates object methods" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\const obj = {
+        \\  /** @type {function(number): number} */
+        \\  method(value) { return value; },
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsdoc_function_type_mismatch));
+}
+
+test "checker: checkjs permits class static expandos but rejects static method expandos" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\class C {
+        \\  static method() {}
+        \\}
+        \\C.extra = 1;
+        \\C.method.prop = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    const message = checkerFirstMessageForCode(s, TsCodes.property_does_not_exist) orelse
+        return error.MissingDiagnostic;
+    try T.expect(std.mem.indexOf(u8, message, "Property 'prop'") != null);
 }
 
 test "checker: JSDoc callback return tags do not annotate the host function" {
