@@ -1077,7 +1077,9 @@ pub const TsCodes = struct {
     pub const update_operand_not_variable: u32 = 2357;
     pub const arithmetic_left_operand_type: u32 = 2362;
     pub const arithmetic_right_operand_type: u32 = 2363;
+    pub const rest_parameter_cannot_be_optional: u32 = 1047;
     pub const rest_parameter_must_be_array_type: u32 = 2370;
+    pub const empty_type_argument_list: u32 = 1099;
     pub const accessors_cannot_declare_this: u32 = 2784;
     pub const getter_must_be_at_least_as_accessible_as_setter: u32 = 2808;
     /// TS2803 ÃÂ¢ÃÂÃÂ assignment/update/destructuring write target is an
@@ -6647,15 +6649,6 @@ pub const Checker = struct {
                         .message = "'{' expected.",
                     });
                 }
-                const close_pos: u32 = @intCast(comment_end);
-                if (close_pos != open_pos and !self.hasDiagnosticAtPosition(TsCodes.expected_close_brace, close_pos)) {
-                    try self.diagnostics.append(self.gpa, .{
-                        .node = root,
-                        .pos = close_pos,
-                        .code = TsCodes.expected_close_brace,
-                        .message = "'}' expected.",
-                    });
-                }
             }
         }
     }
@@ -7238,6 +7231,13 @@ pub const Checker = struct {
             }
             if (is_nocheck_directive) self.nocheck_file = true;
 
+            // JSDoc is declaration trivia: an ignore immediately before the
+            // block suppresses diagnostics produced from the block as well as
+            // diagnostics anchored on the declaration that follows it.
+            if (pending_ignore and comment_is_jsdoc and is_comment and !is_ignore_directive) {
+                try self.ts_ignore_lines.put(self.gpa, line, {});
+            }
+
             if (!is_blank and !is_comment and !is_directive) {
                 if (pending_ignore) {
                     try self.ts_ignore_lines.put(self.gpa, line, {});
@@ -7281,10 +7281,10 @@ pub const Checker = struct {
         var keep_count: usize = 0;
         while (i < self.diagnostics.items.len) : (i += 1) {
             const d = self.diagnostics.items[i];
-            const span = self.hir.spanOf(d.node);
-            const dline = byteOffsetToLine(src, span.start);
-            const ignored = self.ts_ignore_lines.contains(dline);
-            const expected = self.ts_expect_error_lines.contains(dline);
+            const dline = byteOffsetToLine(src, self.diagnosticStart(d));
+            const node_line = byteOffsetToLine(src, self.hir.spanOf(d.node).start);
+            const ignored = self.ts_ignore_lines.contains(dline) or self.ts_ignore_lines.contains(node_line);
+            const expected = self.ts_expect_error_lines.contains(dline) or self.ts_expect_error_lines.contains(node_line);
             if (ignored or expected) {
                 if (expected) try used_expect.put(self.gpa, dline, {});
                 continue;
@@ -31493,6 +31493,17 @@ pub const Checker = struct {
             const jsdoc_param_t: ?TypeId = if (jsdoc_param_info) |info| info.typ else null;
             const jsdoc_marks_optional = if (jsdoc_param_info) |info| info.optional else false;
             const has_jsdoc_param_type = jsdoc_param_t != null;
+            if (pp.flags.is_rest and jsdoc_marks_optional) {
+                const jsdoc = self.leadingJsDocBodyWithStart(self.source orelse "", self.hir.spanOf(node).start);
+                const pos: ?u32 = if (jsdoc) |body|
+                    @intCast(body.start + (std.mem.indexOf(u8, body.body, "@param") orelse 0))
+                else
+                    null;
+                if (pos == null or !self.hasDiagnosticAtPosition(TsCodes.rest_parameter_cannot_be_optional, pos.?)) {
+                    try self.reportAt(p, pos, TsCodes.rest_parameter_cannot_be_optional, "A rest parameter cannot be optional.");
+                }
+                try self.report(p, TsCodes.rest_parameter_must_be_array_type, "A rest parameter must be of an array type.");
+            }
             if (f.flags.is_setter and jsdoc_marks_optional) {
                 const jsdoc = self.leadingJsDocBodyWithStart(self.source orelse "", self.hir.spanOf(node).start);
                 const pos: ?u32 = if (jsdoc) |body|
@@ -86208,8 +86219,22 @@ pub const Checker = struct {
         const open = jsDocTopLevelOpenAngle(type_text) orelse return null;
         if (!std.mem.endsWith(u8, type_text, ">")) return null;
         const name = std.mem.trim(u8, type_text[0..open], " \t\r\n");
-        if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return types.Primitive.any;
         const args_text = type_text[open + 1 .. type_text.len - 1];
+        if (std.mem.trim(u8, args_text, " \t\r\n").len == 0) {
+            const type_pos = self.sliceStartPos(src, type_text) orelse 0;
+            const pos = type_pos + @as(u32, @intCast(open));
+            if (!self.hasDiagnosticAtPosition(TsCodes.empty_type_argument_list, pos)) {
+                try self.diagnostics.append(self.gpa, .{
+                    .node = self.jsdoc_diagnostic_anchor,
+                    .pos = pos,
+                    .code = TsCodes.empty_type_argument_list,
+                    .message = "Type argument list cannot be empty.",
+                });
+            }
+            const bare_name = std.mem.trimEnd(u8, name, ".");
+            return self.jsDocBareBuiltinGenericType(bare_name) orelse types.Primitive.any;
+        }
+        if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return types.Primitive.any;
         var args = JsDocTopLevelSplitter.init(args_text, ',');
 
         if (std.mem.eql(u8, name, "Parameters")) {
@@ -209716,14 +209741,37 @@ test "checker: checkjs bare JSDoc @satisfies type reports braces" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var saw_open = false;
-    var saw_close = false;
+    var open_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.expected_open_brace and std.mem.eql(u8, d.message, "'{' expected.")) saw_open = true;
-        if (d.code == TsCodes.expected_close_brace and std.mem.eql(u8, d.message, "'}' expected.")) saw_close = true;
+        if (d.code == TsCodes.expected_open_brace and std.mem.eql(u8, d.message, "'{' expected.")) open_count += 1;
+        try T.expect(d.code != TsCodes.expected_close_brace);
     }
-    try T.expect(saw_open);
-    try T.expect(saw_close);
+    try T.expectEqual(@as(usize, 2), open_count);
+}
+
+test "checker: optional JSDoc rest parameter reports grammar and array diagnostics" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @param {...*=} args */
+        \\function f(...args) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.rest_parameter_cannot_be_optional));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.rest_parameter_must_be_array_type));
+}
+
+test "checker: empty Closure type arguments report TS1099" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @return {(Array.<> | null)} */
+        \\function f() { return null; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.empty_type_argument_list));
 }
 
 test "checker: checkjs malformed JSDoc @param star reports identifier expected" {
