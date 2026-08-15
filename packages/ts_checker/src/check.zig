@@ -4440,15 +4440,6 @@ pub const Checker = struct {
     /// in their member types; those nested lookups should see the base
     /// lib shape instead of recursively expanding the same augmentation.
     symbol_global_building: bool = false,
-    /// Per-checker count of emitted spelling suggestions for unresolved
-    /// names. Mirrors tsc's `suggestionCount` / `maximumSuggestionCount`
-    /// gate (`checker.ts`): after 10 suggestions, `reportCannotFindName`
-    /// stops emitting TS2552 ("Did you mean ...?") and falls back to
-    /// the plain TS2304 form. Without this cap a fixture with many
-    /// references to the same unresolved identifier (e.g. `$ERROR`)
-    /// stays on TS2552 indefinitely while upstream downgrades to TS2304
-    /// after the 10th suggestion ÃÂ¢ÃÂÃÂ see `parserS7.6_A4.2_T1.errors.txt`.
-    suggestion_count: u32 = 0,
     namespace_budget_exempt_suggestion_used: bool = false,
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
@@ -68488,11 +68479,7 @@ pub const Checker = struct {
                         return types.Primitive.any;
                     }
                     if (self.isBuiltinName(r.name)) return types.Primitive.any;
-                    if (self.sourceHasStrictFalseDirective() and self.nodeHasAncestorKind(type_node, .namespace_decl)) {
-                        try self.reportCannotFindNamePlainOnce(type_node, r.name);
-                    } else {
-                        try self.reportCannotFindNameOnce(type_node, r.name);
-                    }
+                    try self.reportCannotFindNameOnce(type_node, r.name);
                     return types.Primitive.any;
                 }
                 // `Alias<X, Y>` ÃÂ¢ÃÂÃÂ instantiate the generic alias by
@@ -116292,6 +116279,11 @@ pub const Checker = struct {
     }
 
     fn identifierIsAccessibilityMemberRoot(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        // In strict mode these spellings are reserved identifiers, not
+        // contextual member modifiers. The parser still recovers an
+        // identifier node so the checker must retain TS2304 alongside
+        // the parser's TS1212/TS1213 diagnostic.
+        if (self.strictModeAppliesAt(node)) return false;
         const name_str = self.string_interner.get(name);
         if (!(std.mem.eql(u8, name_str, "public") or
             std.mem.eql(u8, name_str, "private") or
@@ -122702,11 +122694,6 @@ pub const Checker = struct {
             });
             return;
         }
-        if (self.sourceHasStrictFalseDirective() and self.nodeHasAncestorKind(node, .namespace_decl)) {
-            try self.reportCannotFindNamePlain(node, name);
-            self.suggestion_count +|= 1;
-            return;
-        }
         // tsc's spelling-suggestion pass DOES surface `await` ÃÂ¢ÃÂÃÂ
         // `Awaited` in type position (TS 4.5 added the lib type and
         // the suggestion mirrors that): `var v: await;` produces
@@ -122728,7 +122715,6 @@ pub const Checker = struct {
                 .code = TsCodes.cannot_find_name_did_you_mean,
                 .message = msg,
             });
-            self.suggestion_count += 1;
             return;
         }
         if (std.mem.eql(u8, name_str, "await") and self.nodeIsCallCallee(node)) {
@@ -122741,15 +122727,12 @@ pub const Checker = struct {
                 .code = TsCodes.cannot_find_name_async_function_hint,
                 .message = "Cannot find name 'await'. Did you mean to write this in an async function?",
             });
-            self.suggestion_count += 1;
             return;
         }
 
-        // Collect in-scope candidate names and find the closest one
-        // by Levenshtein distance. We accept a suggestion only if the
-        // distance is ÃÂ¢ÃÂÃÂ¤ max(2, name.len/4) ÃÂ¢ÃÂÃÂ matches tsc behavior of
-        // suggesting only "obvious" typos.
-        const Best = struct { name: []const u8 = "", dist: usize = std.math.maxInt(usize) };
+        // Collect in-scope candidate names and find the closest one with
+        // current tsgo's weighted Levenshtein distance.
+        const Best = struct { name: []const u8 = "", dist: f64 = std.math.inf(f64) };
         var best: Best = .{};
         var namespace_best: Best = .{};
 
@@ -122759,15 +122742,6 @@ pub const Checker = struct {
         // 'foo'?" hint that crosses the dot. Mirrors fixtures like
         // `typeofAnExportedType` and `typeofANonExportedType`.
         //
-        // Also skip once we've already emitted 10 spelling
-        // suggestions in this checker run, matching tsc's
-        // `maximumSuggestionCount = 10` cap in `checker.ts`. Without
-        // this gate a fixture that references the same unresolved
-        // identifier dozens of times (e.g. `$ERROR` in
-        // `parserS7.6_A4.2_T1`) stays on TS2552 indefinitely while
-        // upstream downgrades to TS2304 after the 10th attempt.
-        const maximum_suggestion_count: u32 = 10;
-        const suggestion_budget_exhausted = self.suggestion_count >= maximum_suggestion_count;
         // Reserved / strict-future-reserved keywords used as
         // identifier references (`let`, `const`, `interface`, ÃÂ¢ÃÂÃÂ¦) are
         // already flagged by TS1212 / TS1213 from the parser. tsc's
@@ -122788,7 +122762,6 @@ pub const Checker = struct {
             std.mem.eql(u8, name_str, "protected") or
             std.mem.eql(u8, name_str, "static");
         const skip_suggestions = std.mem.indexOfScalar(u8, name_str, '.') != null or
-            suggestion_budget_exhausted or
             is_reserved_keyword_identifier;
 
         // When the unresolved name appears in a TYPE position (HIR
@@ -122816,7 +122789,6 @@ pub const Checker = struct {
                 .code = TsCodes.cannot_find_name_instance_member,
                 .message = msg,
             });
-            self.suggestion_count +|= 1;
             return;
         }
         if (!in_type_position and
@@ -122834,13 +122806,12 @@ pub const Checker = struct {
                     .code = TsCodes.cannot_find_name_static_member,
                     .message = msg,
                 });
-                self.suggestion_count +|= 1;
                 return;
             }
         }
 
         const considerCandidate = struct {
-            fn call(typo: []const u8, cand_str: []const u8, value_only: bool, allow_case_only_value: bool, in_type_pos: bool, b: *Best) void {
+            fn call(typo: []const u8, cand_str: []const u8, value_only: bool, in_type_pos: bool, b: *Best) void {
                 if (cand_str.len == 0) return;
                 if (std.mem.eql(u8, cand_str, typo)) return;
                 // Mirrors tsc's `getSuggestedSymbolForNonexistentSymbol`
@@ -122848,28 +122819,10 @@ pub const Checker = struct {
                 // local, plain `var`/`function`) never satisfies a
                 // type-position lookup. When we're checking from a
                 // `type_ref` node, reject those candidates outright.
-                // When we're checking from a value-position node, fall
-                // back to the legacy case-only equal-length filter so
-                // `symbol` ÃÂ¢ÃÂÃÂ `Symbol` (parserSymbolIndexer5) still
-                // works and bare lowercase typos still suggest matching
-                // builtins. Function declarations are the exception:
-                // tsgo suggests `Foo` for a value-position `foo`, while
-                // variables and parameters retain the self-suggestion
-                // suppression. Mirrors parserSkippedTokens16 alongside
-                // parserRealSource5/11/12/14 and parserClass2.
-                if (value_only) {
-                    if (in_type_pos) return;
-                    if (!allow_case_only_value and cand_str.len == typo.len) {
-                        var case_only = true;
-                        for (cand_str, typo) |x, y| {
-                            if (std.ascii.toLower(x) != std.ascii.toLower(y)) {
-                                case_only = false;
-                                break;
-                            }
-                        }
-                        if (case_only) return;
-                    }
-                }
+                // Value declarations participate in value-position
+                // suggestions regardless of whether the only difference
+                // is case. They remain excluded from type-position lookup.
+                if (value_only and in_type_pos) return;
                 // Quick reject mirrors tsc's `getSpellingSuggestion`
                 // length gate: `maximumLengthDifference = max(2,
                 // floor(typo.len * 0.34))`. Any candidate whose length
@@ -122881,12 +122834,15 @@ pub const Checker = struct {
                     lowerAsciiIdentifierEndsWith(typo, "regexp");
                 const max_len_diff: usize = @max(@as(usize, 2), (typo.len * 34) / 100);
                 if (!regexp_suffix_candidate and ll > max_len_diff) return;
-                // tsc's `getSpellingSuggestion` does case-insensitive
-                // comparison so `$ERROR` ÃÂ¢ÃÂÃÂ `Error` (parserS7.3_A1.1_T2)
-                // and `mY_Var` ÃÂ¢ÃÂÃÂ `my_var` are recognized. Mirror
-                // that with an ASCII case-folded distance.
-                const d = levenshteinIcase(typo, cand_str);
-                if (d < b.dist) b.* = .{ .name = cand_str, .dist = d };
+                // Current tsgo ignores non-case-equivalent names shorter
+                // than three characters, since those are rarely useful.
+                if (cand_str.len < 3 and !std.ascii.eqlIgnoreCase(cand_str, typo)) return;
+                const d = spellingSuggestionDistance(typo, cand_str);
+                if (d < b.dist or
+                    (d == b.dist and (b.name.len == 0 or std.mem.order(u8, cand_str, b.name) == .lt)))
+                {
+                    b.* = .{ .name = cand_str, .dist = d };
+                }
             }
         }.call;
 
@@ -122903,7 +122859,7 @@ pub const Checker = struct {
                     if (pp.name == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(pp.name) != .identifier) continue;
                     const pid = hir_mod.identifierOf(self.hir, pp.name);
-                    considerCandidate(name_str, self.string_interner.get(pid.name), true, false, in_type_position, &best);
+                    considerCandidate(name_str, self.string_interner.get(pid.name), true, in_type_position, &best);
                 }
             } else if (k == .block_stmt or k == .namespace_decl) {
                 const stmts = if (k == .block_stmt)
@@ -122917,20 +122873,20 @@ pub const Checker = struct {
                         const v = hir_mod.varDeclOf(self.hir, s);
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                             const vid = hir_mod.identifierOf(self.hir, v.name);
-                            considerCandidate(name_str, self.string_interner.get(vid.name), true, self.nodeHasAncestor(node, s), in_type_position, &best);
-                            if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(vid.name), true, false, in_type_position, &namespace_best);
+                            considerCandidate(name_str, self.string_interner.get(vid.name), true, in_type_position, &best);
+                            if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(vid.name), true, in_type_position, &namespace_best);
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
                         const fp = hir_mod.fnDeclOf(self.hir, s);
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
-                            considerCandidate(name_str, self.string_interner.get(fid.name), true, true, in_type_position, &best);
-                            if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(fid.name), true, true, in_type_position, &namespace_best);
+                            considerCandidate(name_str, self.string_interner.get(fid.name), true, in_type_position, &best);
+                            if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(fid.name), true, in_type_position, &namespace_best);
                         }
                     } else if (sk == .class_decl or sk == .class_expr or sk == .enum_decl or sk == .namespace_decl) {
                         const decl_name = self.declarationName(s) orelse continue;
-                        considerCandidate(name_str, self.string_interner.get(decl_name), false, false, in_type_position, &best);
-                        if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(decl_name), false, false, in_type_position, &namespace_best);
+                        considerCandidate(name_str, self.string_interner.get(decl_name), false, in_type_position, &best);
+                        if (k == .namespace_decl) considerCandidate(name_str, self.string_interner.get(decl_name), false, in_type_position, &namespace_best);
                     }
                 }
             }
@@ -122944,7 +122900,7 @@ pub const Checker = struct {
                 var it = @field(module.root, field_name).iterator();
                 while (it.next()) |entry| {
                     const cand_id = entry.key_ptr.*;
-                    considerCandidate(name_str, self.string_interner.get(cand_id), value_only, false, in_type_position, &best);
+                    considerCandidate(name_str, self.string_interner.get(cand_id), value_only, in_type_position, &best);
                 }
             }
         }
@@ -122970,14 +122926,14 @@ pub const Checker = struct {
             "setInterval", "clearInterval", "CSSStyleDeclaration",
         };
         for (builtin_suggestions) |b| {
-            considerCandidate(name_str, b, false, false, in_type_position, &best);
+            considerCandidate(name_str, b, false, in_type_position, &best);
         }
         if (namespace_best.name.len == 0 and
             std.mem.eql(u8, name_str, "TypeScript") and
             self.source != null and
             std.mem.indexOf(u8, self.source.?, "class TypeScriptLS") != null)
         {
-            namespace_best = .{ .name = "TypeScriptLS", .dist = levenshteinIcase(name_str, "TypeScriptLS") };
+            namespace_best = .{ .name = "TypeScriptLS", .dist = spellingSuggestionDistance(name_str, "TypeScriptLS") };
         }
 
         // Program-routed JS files can contribute namespace-object
@@ -123001,13 +122957,10 @@ pub const Checker = struct {
             }
         }
 
-        // Threshold mirrors tsc's `getSpellingSuggestion`:
-        // `min(floor(name.length * 0.4), 4)`. For very short names
-        // (1-2 chars) the threshold collapses to 0 / 1 so we suppress
-        // suggestions like "Did you mean 'x'?" for `b` ÃÂ¢ÃÂÃÂ matching
-        // baselines such as objectTypesIdentityWithCallSignatures3
-        // which expect bare TS2304 in that case.
-        const threshold: usize = @min((name_str.len * 4) / 10, @as(usize, 4));
+        // Port `core.GetSpellingSuggestion`'s initial best distance:
+        // floor(name.length * 0.4) + 0.9. The fractional margin admits
+        // case-only edits (cost 0.1) without admitting another insertion.
+        const threshold: f64 = @floor(@as(f64, @floatFromInt(name_str.len)) * 0.4) + 0.9;
         const namespace_budget_exempt_suggestion = !self.namespace_budget_exempt_suggestion_used and
             !is_reserved_keyword_identifier and
             std.mem.indexOfScalar(u8, name_str, '.') == null and
@@ -123088,11 +123041,7 @@ pub const Checker = struct {
             .related = related,
             .category = if (unchecked_js) .suggestion else .error_,
         });
-        // Upstream increments `suggestionCount` after every unresolved-name
-        // report, including the plain TS2304 fallback. Once ten misses have
-        // been considered, later names skip spelling lookup entirely.
         if (namespace_budget_exempt_suggestion) self.namespace_budget_exempt_suggestion_used = true;
-        self.suggestion_count +|= 1;
     }
 
     fn reportUmdGlobalInExternalModule(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -123752,6 +123701,32 @@ pub const Checker = struct {
                 curr[k] = m;
             }
             std.mem.copyForwards(usize, prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+        }
+        return prev[b.len];
+    }
+
+    /// Port of tsgo's `core.levenshteinWithMax` edit metric used by
+    /// `GetSpellingSuggestion`. Insertions and deletions cost one,
+    /// substitutions cost two, and ASCII case-only changes cost 0.1.
+    fn spellingSuggestionDistance(a: []const u8, b: []const u8) f64 {
+        if (a.len == 0) return @floatFromInt(b.len);
+        if (b.len == 0) return @floatFromInt(a.len);
+        const cap: usize = 128;
+        if (a.len + 1 > cap or b.len + 1 > cap) return std.math.inf(f64);
+        var prev: [cap]f64 = undefined;
+        var curr: [cap]f64 = undefined;
+        for (0..b.len + 1) |i| prev[i] = @floatFromInt(i);
+        for (1..a.len + 1) |i| {
+            curr[0] = @floatFromInt(i);
+            for (1..b.len + 1) |j| {
+                if (a[i - 1] == b[j - 1]) {
+                    curr[j] = prev[j - 1];
+                    continue;
+                }
+                const substitution_cost: f64 = if (std.ascii.toLower(a[i - 1]) == std.ascii.toLower(b[j - 1])) 0.1 else 2.0;
+                curr[j] = @min(prev[j] + 1.0, @min(curr[j - 1] + 1.0, prev[j - 1] + substitution_cost));
+            }
+            std.mem.copyForwards(f64, prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
         }
         return prev[b.len];
     }
@@ -216658,12 +216633,9 @@ test "checker: malformed computed object indexer suggests Symbol" {
     try T.expect(saw_symbol);
 }
 
-test "checker: TS2552 spelling-suggestion budget caps at 10 occurrences" {
-    // Mirrors tsc's `maximumSuggestionCount = 10` cap in `checker.ts`.
-    // Twelve references to the same unresolved name `$ERROR` should
-    // yield ten TS2552 ("Did you mean 'Error'?") suggestions followed
-    // by two bare TS2304 diagnostics ÃÂ¢ÃÂÃÂ matching upstream baselines
-    // like `parserS7.6_A4.2_T1.errors.txt`.
+test "checker: TS2552 spelling suggestions are not globally capped" {
+    // Current tsgo keeps offering the same high-quality spelling
+    // suggestion for every unresolved occurrence in the source file.
     const src =
         "$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();" ++
         "$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();";
@@ -216680,8 +216652,69 @@ test "checker: TS2552 spelling-suggestion budget caps at 10 occurrences" {
             else => {},
         }
     }
-    try T.expectEqual(@as(u32, 10), did_you_mean);
-    try T.expectEqual(@as(u32, 2), plain);
+    try T.expectEqual(@as(u32, 12), did_you_mean);
+    try T.expectEqual(@as(u32, 0), plain);
+}
+
+test "checker: TS2552 follows lexical candidates in strict-false namespaces" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\namespace TypeScript {
+        \\    class Identifier {}
+        \\    function emit(tokenId: number) {
+        \\        TokenID.Dot;
+        \\        (<IdentifierToken>token).hasEscapeSequence;
+        \\        getTypeLink();
+        \\        var typeLink = 1;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.cannot_find_name_did_you_mean,
+        "Cannot find name 'TokenID'. Did you mean 'tokenId'?",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.cannot_find_name_did_you_mean,
+        "Cannot find name 'IdentifierToken'. Did you mean 'Identifier'?",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.cannot_find_name_did_you_mean,
+        "Cannot find name 'getTypeLink'. Did you mean 'typeLink'?",
+    ));
+}
+
+test "checker: strict accessibility member roots remain unresolved names" {
+    const source =
+        \\return {
+        \\    set: function (key, value) {
+        \\        private[key] = value;
+        \\    }
+        \\};
+    ;
+    const strict = try newSetup(source);
+    defer destroySetup(strict);
+    strict.checker.setStrictFlags(.{ .always_strict = true });
+    try strict.checker.checkSourceFile(strict.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        strict,
+        TsCodes.cannot_find_name,
+        "Cannot find name 'private'.",
+    ));
+
+    const loose = try newSetup(source);
+    defer destroySetup(loose);
+    try loose.checker.checkSourceFile(loose.root);
+    try T.expect(!hasDiagnosticCodeMessage(
+        loose,
+        TsCodes.cannot_find_name,
+        "Cannot find name 'private'.",
+    ));
 }
 
 test "checker: TS2552 suggests RegExp for regexp-suffixed typo" {
@@ -236803,7 +236836,7 @@ test "checker: unresolved namespace-local values suggest later classes" {
     ));
 }
 
-test "checker: namespace-local declarations survive the spelling suggestion budget" {
+test "checker: namespace-local declarations remain available after prior suggestions" {
     const s = try newSetup(
         \\Erro; Erro; Erro; Erro; Erro;
         \\Erro; Erro; Erro; Erro; Erro;
@@ -236823,7 +236856,7 @@ test "checker: namespace-local declarations survive the spelling suggestion budg
     ));
 }
 
-test "checker: plain unresolved names consume the spelling suggestion budget" {
+test "checker: plain unresolved names do not suppress later spelling suggestions" {
     const s = try newSetup(
         \\qzxvOne; qzxvTwo; qzxvThree; qzxvFour; qzxvFive;
         \\qzxvSix; qzxvSeven; qzxvEight; qzxvNine; qzxvTen;
@@ -236832,8 +236865,8 @@ test "checker: plain unresolved names consume the spelling suggestion budget" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 11), checkerCountCode(s, TsCodes.cannot_find_name));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 10), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
 }
 
 test "checker: exhaustive branch assignments remove an initial null flow type" {
@@ -236989,7 +237022,7 @@ test "checker: unresolved interface properties and variables retain error any" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null_2531));
 }
 
-test "checker: hoisted case suggestion requires a prior type reference" {
+test "checker: hoisted case suggestions use later function-scoped vars" {
     const s = try newSetup(
         \\function inspect(link: TypeLink) {
         \\    new TypeLink();
@@ -237001,8 +237034,8 @@ test "checker: hoisted case suggestion requires a prior type reference" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: unresolved function targets preserve annotation text" {
