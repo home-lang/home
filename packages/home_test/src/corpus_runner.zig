@@ -55334,13 +55334,17 @@ const harness_prelude =
     \\    error.code = "ERR_INVALID_ARG_TYPE";
     \\    throw error;
     \\  }
-    \\  const url = value instanceof URL ? value : new URL(value);
+    \\  let input = value;
+    \\  if (typeof input === "string" && /^file:\/\/[A-Za-z]:[\\\\/]/.test(input)) {
+    \\    input = "file:///" + input.slice("file://".length);
+    \\  }
+    \\  const url = input instanceof URL ? input : new URL(input);
     \\  if (url.protocol !== "file:") {
     \\    const error = new TypeError("The URL must be of scheme file");
     \\    error.code = "ERR_INVALID_URL_SCHEME";
     \\    throw error;
     \\  }
-    \\  if (url.hostname && process.platform !== "win32") {
+    \\  if (url.hostname && url.hostname !== "localhost" && process.platform !== "win32") {
     \\    const error = new TypeError("File URL host must be localhost or empty on this platform");
     \\    error.code = "ERR_INVALID_FILE_URL_HOST";
     \\    throw error;
@@ -55350,8 +55354,13 @@ const harness_prelude =
     \\    error.code = "ERR_INVALID_FILE_URL_PATH";
     \\    throw error;
     \\  }
-    \\  const decoded = decodeURIComponent(url.pathname);
+    \\  let decoded = decodeURIComponent(url.pathname);
     \\  if (decoded === "/" + globalThis.__home_current_filename) return globalThis.__home_current_filename;
+    \\  if (process.platform === "win32") {
+    \\    if (url.hostname && url.hostname !== "localhost") return "\\\\\\\\" + url.hostname + decoded.replace(/\//g, "\\\\");
+    \\    if (/^\/[A-Za-z]:/.test(decoded)) decoded = decoded.slice(1);
+    \\    return decoded.replace(/\//g, "\\\\");
+    \\  }
     \\  return decoded;
     \\}
     \\function __home_url_native_ascii_hostname(value) {
@@ -88850,6 +88859,7 @@ test "bootstrap runner preserves node URL contracts" {
         .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 4, .todo = 0 },
         .{ .path = "js/node/url/url-relative.test.js", .passed = 5, .todo = 0 },
         .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/url/url.test.ts", .passed = 6, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
