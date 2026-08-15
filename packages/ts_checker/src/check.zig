@@ -48605,6 +48605,15 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
+                if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
+                    if (self.class_static_type_by_node.get(decl)) |static_t| {
+                        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+                        if (self.interner.objectMemberInfo(static_t, prototype_name)) |prototype| {
+                            break :blk prototype.type;
+                        }
+                        if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
+                    }
+                }
                 if (self.findLocalValueDeclBefore(self.enclosingClassNode(extends_expr), id.name)) |local_decl| {
                     const local_kind = self.hir.kindOf(local_decl);
                     if (local_kind == .var_decl or local_kind == .let_decl or local_kind == .const_decl) {
@@ -49627,6 +49636,9 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
+                if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
+                    if (self.class_static_type_by_node.get(decl)) |t| break :blk t;
+                }
                 if (self.class_static_types.get(id.name)) |t| {
                     if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| {
                         break :blk instantiated;
@@ -97411,10 +97423,12 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.constructor_is_protected, msg);
                         constructor_accessibility_failed = true;
                     }
-                    // Upstream resolves an inaccessible constructor through
-                    // its error-call signature. The `new` expression is
-                    // therefore `any`, and overload/arity checks stop here.
-                    if (constructor_accessibility_failed) break :blk types.Primitive.any;
+                    // Accessibility rejects the call without changing the
+                    // new-expression result type. Keep the class instance
+                    // while skipping overload/arity follow-on diagnostics.
+                    if (constructor_accessibility_failed) {
+                        break :blk self.class_instance_types.get(id.name) orelse types.Primitive.any;
+                    }
                     if (self.abstract_classes.contains(id.name)) {
                         try self.report(
                             node,
@@ -101844,6 +101858,15 @@ pub const Checker = struct {
         }
         const id = hir_mod.identifierOf(self.hir, value_node);
         const name = self.string_interner.get(id.name);
+        if (std.mem.eql(u8, name, "private")) {
+            const src = self.source orelse return;
+            var next = self.hir.spanOf(value_node).end;
+            while (next < src.len and std.ascii.isWhitespace(src[next])) : (next += 1) {}
+            if (next < src.len and src[next] == '[') {
+                self.diagnostics.items.len -= 1;
+                return;
+            }
+        }
         last.code = TsCodes.shorthand_property_no_value;
         last.message = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
