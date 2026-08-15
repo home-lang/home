@@ -122932,7 +122932,7 @@ pub const Checker = struct {
             "parseInt",    "parseFloat",    "isNaN",        "isFinite",
             "encodeURI",   "decodeURI",     "setTimeout",   "clearTimeout",
             "setInterval", "clearInterval", "CSSStyleDeclaration",
-            "Parameters",  "Cache",
+            "Parameters", "ClassDecorator", "Cache", "Lock",
         };
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, false, in_type_position, &best);
@@ -236855,6 +236855,19 @@ test "checker: unresolved namespace-local values suggest later classes" {
         TsCodes.cannot_find_name_did_you_mean,
         "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
     ));
+}
+
+test "checker: default lib type names participate in spelling suggestions" {
+    const s = try newSetup(
+        \\let block: Block;
+        \\let declaration: ClassDeclaration;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name_did_you_mean, "Cannot find name 'Block'. Did you mean 'Lock'?"));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name_did_you_mean, "Cannot find name 'ClassDeclaration'. Did you mean 'ClassDecorator'?"));
 }
 
 test "checker: namespace-local declarations remain available after prior suggestions" {
