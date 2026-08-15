@@ -6412,6 +6412,9 @@ pub const DirectoryLoadOptions = struct {
     /// expected-error case even when the source filename itself is
     /// not `.errors.ts`.
     baseline_root: ?[]const u8 = null,
+    /// Original TypeScript baseline root used only when the primary tsgo
+    /// baseline set has no entry for an unported fixture.
+    fallback_baseline_root: ?[]const u8 = null,
     /// Opt in to upstream per-file `// @strict: ...` directive
     /// handling. Kept off for the current ratchet because a handful
     /// of strict-positive cases still need contextual typing work.
@@ -6518,7 +6521,10 @@ pub fn loadDirectoryWithOptions(
         const raw_source: []u8 = if (stripped != null) src else &.{};
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
-        const baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.baseline_root, stem, src);
+        var baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.baseline_root, stem, src);
+        if (baseline_path == null) {
+            baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.fallback_baseline_root, stem, src);
+        }
         defer if (baseline_path) |p| gpa.free(p);
         const baseline_only_option_deprecation = if (baseline_path) |bp|
             try baselineHasOnlyOptionDeprecation(gpa, bp)
@@ -56416,6 +56422,22 @@ fn resolveTsCorpusPaths(gpa: std.mem.Allocator) !?TsCorpusPaths {
     return resolveTsCaseFamilyPaths(gpa, "conformance");
 }
 
+fn resolveOriginalTsBaselineRoot(gpa: std.mem.Allocator) !?[]u8 {
+    const path = try std.fmt.allocPrint(
+        gpa,
+        "{s}/_submodules/TypeScript/tests/baselines/reference",
+        .{tsSuiteRootSlice()},
+    );
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().access(io, path, .{}) catch {
+        gpa.free(path);
+        return null;
+    };
+    return path;
+}
+
 fn resolveTsCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8) !?TsCorpusPaths {
     const root_slice = tsSuiteRootSlice();
     const cases = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/cases/{s}", .{ root_slice, family });
@@ -56446,6 +56468,12 @@ test "conformance: tsgo submodule cases use tsgo-generated baselines" {
     }
     try T.expect(std.mem.endsWith(u8, paths.cases, "/_submodules/TypeScript/tests/cases/conformance"));
     try T.expect(std.mem.endsWith(u8, paths.baselines, "/testdata/baselines/reference/submodule/conformance"));
+}
+
+test "conformance: original TypeScript baselines are available as a fallback" {
+    const root = (try resolveOriginalTsBaselineRoot(T.allocator)) orelse return;
+    defer T.allocator.free(root);
+    try T.expect(std.mem.endsWith(u8, root, "/_submodules/TypeScript/tests/baselines/reference"));
 }
 
 fn resolveTsgoTestdataCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8) !?TsCorpusPaths {
@@ -56658,6 +56686,8 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     }
     const ts_root = paths.cases;
     const baseline_root = paths.baselines;
+    const fallback_baseline_root = try resolveOriginalTsBaselineRoot(T.allocator);
+    defer if (fallback_baseline_root) |root| T.allocator.free(root);
 
     var results: std.ArrayListUnmanaged(Result) = .empty;
     defer {
@@ -56684,6 +56714,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // policy each case runs under.
     const corpus = try loadDirectoryWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
+        .fallback_baseline_root = fallback_baseline_root,
         .strict_default_for_expected_errors = true,
         .exact_error_headers = want_exact,
         .load_start = requested_start,
