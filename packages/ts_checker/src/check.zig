@@ -96677,6 +96677,13 @@ pub const Checker = struct {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
                     break :blk types.Primitive.any;
                 }
+                if (self.sourceHasCheckJsDirective() and
+                    (self.strict_flags.no_implicit_any or !self.sourceHasStrictFalseDirective()) and
+                    self.newCalleeTargetsSelfReturningFunction(c.callee))
+                {
+                    try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                    break :blk types.Primitive.any;
+                }
                 if (callee_t == types.Primitive.unknown) {
                     if (self.shouldReportUnknownOperand(c.callee)) {
                         try self.reportUnknownObjectOperand(c.callee);
@@ -96823,6 +96830,7 @@ pub const Checker = struct {
                     }
                 }
                 if (self.sourceHasCheckJsDirective() and !self.strict_flags.no_implicit_any and
+                    self.sourceHasStrictFalseDirective() and
                     self.newCalleeTargetsSelfReturningFunction(c.callee))
                 {
                     try self.report(node, TsCodes.new_expression_not_void, "Only a void function can be called with the 'new' keyword.");
@@ -173181,6 +173189,33 @@ test "checker: noImplicitAny suppresses TS2350 when TS7009 fires on same new-exp
     }
     try T.expect(saw_7009);
     try T.expect(!saw_2350);
+}
+
+test "checker: checked JS self-new uses effective noImplicitAny diagnostic" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/** @class */
+        \\function Point() { return new Point(); }
+        \\module.exports = Point;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_not_void));
+}
+
+test "checker: strict-false checked JS self-new keeps void-function diagnostic" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: false
+        \\function Point() { return new Point(); }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_not_void));
 }
 
 test "checker: const enum initializer resolves earlier members" {
