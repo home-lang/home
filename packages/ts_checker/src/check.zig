@@ -41206,21 +41206,6 @@ pub const Checker = struct {
             const a = hir_mod.assignmentOf(self.hir, raw);
             if (a.op != null or a.value == hir_mod.none_node_id) continue;
 
-            if (self.memberAccessIsModuleExports(a.target) and self.hir.kindOf(a.value) == .object_literal) {
-                for (hir_mod.objectLiteralProps(self.hir, a.value)) |prop| {
-                    if (self.hir.kindOf(prop) != .object_property) continue;
-                    const op = hir_mod.objectPropertyOf(self.hir, prop);
-                    const name = self.propertyNameFromKeyNode(op.key) orelse continue;
-                    const key_pos = self.hir.spanOf(op.key).start;
-                    for (entries) |entry| {
-                        if (!entry.is_typedef or entry.section != section or entry.name != name) continue;
-                        try self.reportDuplicateIdentifierAt(entry.node, entry.pos, name, key_pos);
-                        try self.reportDuplicateIdentifierAt(root, key_pos, name, entry.pos);
-                    }
-                }
-                continue;
-            }
-
             if (self.hir.kindOf(a.value) == .class_decl or self.hir.kindOf(a.value) == .class_expr) {
                 for (aliases.items) |alias| {
                     if (alias.section != section) continue;
@@ -57772,6 +57757,22 @@ pub const Checker = struct {
     }
 
     fn exportAssignmentTargetHasTypeMeaning(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) == .assignment) {
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or
+                assignment.target == hir_mod.none_node_id or
+                assignment.value == hir_mod.none_node_id or
+                !self.memberAccessIsModuleExports(assignment.target))
+            {
+                return false;
+            }
+            if (self.hir.kindOf(assignment.value) == .identifier) {
+                const name = hir_mod.identifierOf(self.hir, assignment.value).name;
+                const target = self.findNamedDeclInVirtualSection(node, name) orelse return false;
+                return self.declHasTypeMeaning(target);
+            }
+            return self.declHasTypeMeaning(assignment.value);
+        }
         if (!self.isExportAssignmentDecl(node)) return false;
         const ex = hir_mod.exportOf(self.hir, node);
         if (ex.decl == hir_mod.none_node_id) return false;
@@ -84930,6 +84931,7 @@ pub const Checker = struct {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
         const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+        if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) return false;
         const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse
             self.checkJsFunctionVariableInitializer(anchor, name) orelse return false;
         if (self.fnLooksLikeCheckJsConstructor(fn_node)) return false;
@@ -85189,7 +85191,7 @@ pub const Checker = struct {
         }
         if (self.jsDocBareBuiltinGenericType(base)) |t| return t;
         if (anchor != hir_mod.none_node_id) {
-            if (try self.jsDocRequireAliasType(anchor, name, false)) |t| return t;
+            if (try self.jsDocRequireAliasType(anchor, name, true)) |t| return t;
             if (try self.jsDocSameFileClassInstanceType(anchor, name)) |t| return t;
             if (try self.jsDocSameFileEnumTagType(anchor, name)) |t| return t;
             if (is_entire_type and
@@ -85208,6 +85210,7 @@ pub const Checker = struct {
         text: []const u8,
     ) CheckError!bool {
         if (!self.jsDocTypeTextIsInCheckedJsContext()) return false;
+        if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) return false;
         if (self.visibleTypeDeclarationExistsAt(anchor, name)) return false;
         const known_value_only = std.mem.eql(u8, text, "Image") or
             std.mem.eql(u8, text, "exports");
@@ -87041,10 +87044,7 @@ pub const Checker = struct {
             if (space == .value) {
                 if (try self.virtualExportAssignmentExpressionType(anchor, spec_id)) |export_t| return export_t;
                 if (try self.virtualExportAssignmentTargetStaticType(anchor, spec_id)) |export_t| return export_t;
-            } else if (try self.virtualExportAssignmentTargetInstanceType(anchor, spec_id)) |export_t| {
-                return export_t;
             }
-            const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec_text)) orelse return null;
             if (space == .jsdoc_type and
                 !self.importTypeModuleExportAssignmentHasTypeMeaning(anchor, spec_text))
             {
@@ -87052,6 +87052,11 @@ pub const Checker = struct {
                 try self.reportImportTypeNotATypeAt(anchor, pos, spec_text);
                 return types.Primitive.any;
             }
+            if (space == .jsdoc_type) {
+                if (try self.virtualExportAssignmentTargetInstanceType(anchor, spec_id)) |export_t| return export_t;
+                if (try self.virtualCommonJsExportedClassInstanceType(anchor, spec_text)) |export_t| return export_t;
+            }
+            const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec_text)) orelse return null;
             return if (space == .jsdoc_type) try self.commonJsValueExportAsJsDocType(module_t) else module_t;
         }
         if (rest[0] != '.') return null;
@@ -208649,7 +208654,7 @@ test "checker: checkjs JSDoc type tag preserves instantiated function constraint
     try T.expect(found);
 }
 
-test "checker: checkjs JSDoc typedef collides with CommonJS export object key" {
+test "checker: checkjs JSDoc typedef merges with CommonJS export object key" {
     const s = try newSetup(
         \\// @checkjs: true
         \\// @filename: mod3.js
@@ -208668,7 +208673,7 @@ test "checker: checkjs JSDoc typedef collides with CommonJS export object key" {
             duplicate_count += 1;
         }
     }
-    try T.expectEqual(@as(usize, 2), duplicate_count);
+    try T.expectEqual(@as(usize, 0), duplicate_count);
 }
 
 test "checker: checkjs JSDoc typedef collides with exported alias object class key" {
