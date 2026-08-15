@@ -2018,6 +2018,7 @@ pub const TsCodes = struct {
     pub const cannot_find_parameter: u32 = 1225;
     pub const type_predicate_not_assignable: u32 = 1226;
     pub const type_predicate_parameter_position_mismatch: u32 = 1227;
+    pub const type_predicate_only_in_return_type: u32 = 1228;
     pub const this_type_guard_not_parameter_type_guard: u32 = 2518;
     /// TS1229 ÃÂ¢ÃÂÃÂ `A type predicate cannot reference a rest parameter.`
     pub const type_predicate_references_rest_parameter: u32 = 1229;
@@ -18782,14 +18783,18 @@ pub const Checker = struct {
                 var then_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
                 defer then_pending.deinit(self.gpa);
                 try self.clonePendingAssignments(pending, &then_pending);
-                try self.removePendingFromPositiveGuardBranch(i.cond, true, &then_pending);
+                if (!self.conditionHasInvalidJsDocPredicateCast(i.cond)) {
+                    try self.removePendingFromPositiveGuardBranch(i.cond, true, &then_pending);
+                }
                 try self.removePendingFromImpossibleTypeofBranch(i.cond, true, &then_pending);
                 try self.scanForUsedBeforeAssign(i.then_branch, &then_pending);
                 if (i.else_branch != hir_mod.none_node_id) {
                     var else_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
                     defer else_pending.deinit(self.gpa);
                     try self.clonePendingAssignments(pending, &else_pending);
-                    try self.removePendingFromPositiveGuardBranch(i.cond, false, &else_pending);
+                    if (!self.conditionHasInvalidJsDocPredicateCast(i.cond)) {
+                        try self.removePendingFromPositiveGuardBranch(i.cond, false, &else_pending);
+                    }
                     try self.removePendingFromImpossibleTypeofBranch(i.cond, false, &else_pending);
                     try self.scanForUsedBeforeAssign(i.else_branch, &else_pending);
                 }
@@ -84319,15 +84324,102 @@ pub const Checker = struct {
             var cast_t: ?TypeId = null;
             for (tags) |tag| {
                 if (tag.kind != .type_tag or tag.type_text.len == 0) continue;
+                const type_text = jsDocTrimOuterParens(std.mem.trim(u8, tag.type_text, " \t\r\n"));
+                if (std.mem.eql(u8, type_text, "const")) {
+                    if (!self.asConstOperandIsValid(node)) {
+                        try self.reportAt(
+                            node,
+                            self.sliceStartPos(src, tag.type_text),
+                            1355,
+                            "A 'const' assertions can only be applied to references to enum members, or string, number, boolean, array, or object literals.",
+                        );
+                    }
+                    result_t = self.literalizeForAsConst(node, result_t) catch result_t;
+                    found = true;
+                    break;
+                }
+                if (jsDocTypeTextIsPredicate(type_text)) {
+                    try self.reportAt(
+                        node,
+                        self.sliceStartPos(src, tag.type_text),
+                        TsCodes.type_predicate_only_in_return_type,
+                        "A type predicate is only allowed in return type position for functions and methods.",
+                    );
+                    found = true;
+                    break;
+                }
                 cast_t = try self.jsDocTypeTextToTypeAt(src, tag.type_text, node);
+                if (cast_t) |target_t| {
+                    try self.checkTypeAssertionOverlapAt(
+                        node,
+                        result_t,
+                        target_t,
+                        self.sliceStartPos(src, tag.type_text),
+                    );
+                }
                 break;
             }
-            result_t = cast_t orelse break;
-            found = true;
+            if (cast_t) |target_t| {
+                result_t = target_t;
+                found = true;
+            } else if (!found) break;
             wrapper_start = comment_start;
             wrapper_end = close_pos + 1;
         }
         return if (found) result_t else null;
+    }
+
+    fn jsDocTypeTextIsPredicate(type_text: []const u8) bool {
+        if (std.mem.startsWith(u8, type_text, "asserts ")) return true;
+        return std.mem.indexOf(u8, type_text, " is ") != null;
+    }
+
+    fn conditionHasInvalidJsDocPredicateCast(self: *Checker, node: NodeId) bool {
+        const span = self.hir.spanOf(node);
+        const section = self.virtualSectionStartForNode(node);
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != TsCodes.type_predicate_only_in_return_type) continue;
+            if (diagnostic.pos) |pos| {
+                if (pos <= span.end and span.end - pos <= 256) return true;
+            }
+            if (self.virtualSectionStartForNode(diagnostic.node) != section) continue;
+            if (diagnostic.node == node or
+                self.nodeHasAncestor(diagnostic.node, node) or
+                self.nodeHasAncestor(node, diagnostic.node))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn inlineJsDocCastDeclaresTargetType(self: *Checker, node: NodeId, target_t: TypeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        if (self.source_has_virtual_sections and !self.virtualSectionIsJsLike(node)) return false;
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start >= span.end or span.end > src.len) return false;
+
+        var open_after: usize = span.start;
+        while (open_after > 0 and std.ascii.isWhitespace(src[open_after - 1])) : (open_after -= 1) {}
+        if (open_after == 0 or src[open_after - 1] != '(') return false;
+        var comment_end = open_after - 1;
+        while (comment_end > 0 and std.ascii.isWhitespace(src[comment_end - 1])) : (comment_end -= 1) {}
+        if (comment_end < 2 or !std.mem.eql(u8, src[comment_end - 2 .. comment_end], "*/")) return false;
+        const body_end = comment_end - 2;
+        const comment_start = std.mem.lastIndexOf(u8, src[0..body_end], "/**") orelse return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, src[comment_start + 3 .. body_end]) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .type_tag or tag.type_text.len == 0) continue;
+            const type_text = jsDocTrimOuterParens(std.mem.trim(u8, tag.type_text, " \t\r\n"));
+            if (type_text.len == 0 or jsDocTypeTextIsPredicate(type_text) or std.mem.eql(u8, type_text, "const")) return false;
+            for (type_text) |c| if (!isJsDocIdentChar(c)) return false;
+            const target_name = (try self.simpleDiagnosticTypeName(target_t)) orelse
+                (try self.allocSimpleTypeName(target_t)) orelse return false;
+            return std.mem.eql(u8, type_text, target_name);
+        }
+        return false;
     }
 
     fn jsDocContextualSignatureForFunction(self: *Checker, node: NodeId) CheckError!?TypeId {
@@ -96362,6 +96454,8 @@ pub const Checker = struct {
                             true
                         else if (try self.bareTypeParameterAssignmentNeedsNonNullable(a.value, a.target, assignment_check_value_t))
                             false
+                        else if (try self.inlineJsDocCastDeclaresTargetType(a.value, target_t))
+                            true
                         else
                             (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
                                 (self.hir.kindOf(a.value) == .array_literal and
@@ -96412,6 +96506,7 @@ pub const Checker = struct {
                                 }
                                 break :blk_source if (logical_fn_t != types.Primitive.none) logical_fn_t else assignment_check_value_t;
                             } else if (self.hir.kindOf(a.value) == .identifier) blk_source: {
+                                if (assignment_value_jsdoc_t) |declared_t| break :blk_source declared_t;
                                 const declared_value_t = self.visibleAnnotatedIdentifierType(a.value) orelse self.typeOfIdentifierDeclared(a.value);
                                 if (self.enumIdentityInfo(declared_value_t) != null) break :blk_source declared_value_t;
                                 if (self.identifierAnnotationIsNonNullable(a.target)) break :blk_source declared_value_t;
@@ -112787,6 +112882,7 @@ pub const Checker = struct {
     }
 
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
+        if (self.conditionHasInvalidJsDocPredicateCast(cond)) return;
         // Aliased conditional narrowing: `if (cond)` where `cond`
         // was bound to a guard expression. Expand the alias and
         // recurse on the original expression so all the existing
@@ -166186,6 +166282,16 @@ pub const Checker = struct {
     }
 
     fn checkTypeAssertionOverlap(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
+        return self.checkTypeAssertionOverlapAt(node, source_t, target_t, self.typeAssertionDiagnosticPos(node));
+    }
+
+    fn checkTypeAssertionOverlapAt(
+        self: *Checker,
+        node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+        diagnostic_pos: ?u32,
+    ) CheckError!void {
         if (self.assertionTargetHasGenericArityDiagnostic(node)) return;
         if (self.typeIsAnyLike(source_t) or self.typeIsAnyLike(target_t)) return;
         if (self.assertionSourceIncludesTargetTypeParameter(source_t, target_t, 0)) return;
@@ -166201,32 +166307,32 @@ pub const Checker = struct {
         if (self.primitiveAssertionMatchesWrapper(source_t, target_t) or
             self.primitiveAssertionMatchesWrapper(target_t, source_t)) return;
         if (source_t == types.Primitive.null_t and self.strict_flags.strict_null_checks and !self.typeIncludesNull(target_t)) {
-            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
         if (source_t == types.Primitive.undefined_t and !self.typeIncludesUndefined(target_t)) {
-            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
         if (self.assertionPrimitiveDomainsOverlap(source_t, target_t)) return;
         if (try self.assertionUnionConstituentHasNoOverlap(source_t, target_t)) {
-            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
         if (try self.privateGenericAssertionSyntaxHasNoOverlap(node)) {
-            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
         if (try self.privateClassAssertionHasNoDirectionalOverlap(source_t, target_t)) {
-            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
         if (try self.objectLiteralAssertionHasNoDirectionalOverlap(node, source_t, target_t)) {
-            try self.emitConversionMayBeMistake(node, source_t, target_t);
+            try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
         if (try self.typesHaveComparableOverlap(source_t, target_t)) return;
-        try self.emitConversionMayBeMistake(node, source_t, target_t);
+        try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
     }
 
     fn assertionSourceIncludesTargetTypeParameter(
@@ -166446,7 +166552,13 @@ pub const Checker = struct {
     /// When both endpoints are nameable, mirror upstream's verbose
     /// form including the "convert to 'unknown' first" hint; otherwise
     /// fall back to the bare message that pre-dated the helper.
-    fn emitConversionMayBeMistake(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
+    fn emitConversionMayBeMistakeAt(
+        self: *Checker,
+        node: NodeId,
+        diagnostic_pos: ?u32,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!void {
         var chain: []const DiagnosticChainEntry = &.{};
         if (try self.assignmentTypeParameterInstantiationChainEntry(source_t, target_t)) |entry| {
             chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{entry});
@@ -166462,7 +166574,7 @@ pub const Checker = struct {
                 );
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
-                    .pos = self.typeAssertionDiagnosticPos(node),
+                    .pos = diagnostic_pos,
                     .code = TsCodes.conversion_may_be_mistake,
                     .message = msg,
                     .chain = chain,
@@ -166472,7 +166584,7 @@ pub const Checker = struct {
         }
         try self.diagnostics.append(self.gpa, .{
             .node = node,
-            .pos = self.typeAssertionDiagnosticPos(node),
+            .pos = diagnostic_pos,
             .code = TsCodes.conversion_may_be_mistake,
             .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
             .chain = chain,
