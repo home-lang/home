@@ -26915,7 +26915,7 @@ const harness_prelude =
     \\  },
     \\  inspect(value, options) {
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
-    \\    if (!options || typeof options !== "object") options = { colors: options === true, depth: arguments.length >= 3 ? arguments[2] : undefined };
+    \\    options = __home_util_normalize_inspect_options(options, arguments.length >= 3 ? arguments[2] : undefined);
     \\    if (options.depth !== undefined && Number(options.depth) < 0) throw new RangeError("The value of depth is out of range");
     \\    if (options.depth === Infinity) {
     \\      const probeSeen = new Set();
@@ -26935,7 +26935,7 @@ const harness_prelude =
     \\      const custom = value[__home_util_inspect_custom];
     \\      if (typeof custom === "function" && custom !== Bun.inspect) {
     \\        const depth = options && options.depth !== undefined ? Number(options.depth) : 2;
-    \\        const inspected = custom.call(value, depth, options || {}, Bun.inspect);
+    \\        const inspected = custom.call(value, depth, options || {}, __home_util_inspect);
     \\        if (inspected !== value) return typeof inspected === "string" ? inspected : Bun.inspect(inspected, options);
     \\      }
     \\    }
@@ -27261,6 +27261,13 @@ const harness_prelude =
     \\      level = level || 0;
     \\      if (item === null) return "null";
     \\      if (item && typeof item.__home_inspect === "string") return item.__home_inspect;
+    \\      if (item && (typeof item === "object" || typeof item === "function")) {
+    \\        const custom = item[__home_util_inspect_custom];
+    \\        if (typeof custom === "function") {
+    \\          const inspected = custom.call(item, Number(options.depth) - level, options, __home_util_inspect);
+    \\          if (inspected !== item) return typeof inspected === "string" ? inspected : inspectSimple(inspected, level);
+    \\        }
+    \\      }
     \\      if (typeof item === "function") return Bun.inspect(item);
     \\      if (typeof item === "string") return JSON.stringify(item);
     \\      if (typeof item === "number") return options.colors ? "\x1b[33m" + String(item) + "\x1b[0m" : String(item);
@@ -27302,7 +27309,8 @@ const harness_prelude =
     \\      if (Object.getPrototypeOf(item) === null) return "[Object: null prototype] " + (Object.keys(item).length === 0 ? "{}" : inspectSimple(Object.assign({}, item), level + 1));
     \\      if (typeof item === "object") {
     \\        const objectKeys = Object.keys(item);
-    \\        if (objectKeys.length === 0) return "{}";
+    \\        const symbolKeys = Object.getOwnPropertySymbols(item);
+    \\        if (objectKeys.length === 0 && symbolKeys.length === 0) return "{}";
     \\        const lines = ["{"];
     \\        for (const key of objectKeys) {
     \\          const descriptor = Object.getOwnPropertyDescriptor(item, key);
@@ -27314,6 +27322,11 @@ const harness_prelude =
     \\          }
     \\          rendered = String(rendered).replace(/\n/g, "\n  ");
     \\          lines.push("  " + inspectKey(key) + ": " + rendered + ",");
+    \\        }
+    \\        for (const symbol of symbolKeys) {
+    \\          const descriptor = Object.getOwnPropertyDescriptor(item, symbol);
+    \\          const rendered = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? inspectSimple(descriptor.value, level + 1) : "[Getter]";
+    \\          lines.push("  [" + String(symbol) + "]: " + String(rendered).replace(/\n/g, "\n  ") + ",");
     \\        }
     \\        if (options.compact === true) return "{ " + lines.slice(1).map(line => line.trim().replace(/,$/, "")).join(", ") + " }";
     \\        lines.push("}");
@@ -45453,6 +45466,18 @@ const harness_prelude =
     \\  };
     \\}
     \\__home_util_promisify.custom = __home_util_promisify_custom;
+    \\function __home_util_stylize_no_color(value) { return String(value); }
+    \\function __home_util_stylize_with_color(value, styleType) {
+    \\  const code = styleType === "string" ? 32 : (styleType === "number" || styleType === "bigint" || styleType === "boolean" ? 33 : null);
+    \\  return code === null ? String(value) : "\x1b[" + code + "m" + String(value) + "\x1b[39m";
+    \\}
+    \\function __home_util_normalize_inspect_options(options, positionalDepth) {
+    \\  const normalized = options && typeof options === "object" ? Object.assign({}, options) : { colors: options === true };
+    \\  if (normalized.colors === undefined) normalized.colors = false;
+    \\  if (normalized.depth === undefined) normalized.depth = typeof positionalDepth === "number" ? positionalDepth : 2;
+    \\  if (typeof normalized.stylize !== "function") normalized.stylize = normalized.colors ? __home_util_stylize_with_color : __home_util_stylize_no_color;
+    \\  return normalized;
+    \\}
     \\function __home_util_inspect_number(value, options) {
     \\  const text = String(value);
     \\  if (!options || !options.numericSeparator || !/^-?\d{4,}$/.test(text)) return text;
@@ -45527,11 +45552,12 @@ const harness_prelude =
     \\  if (value && (typeof value === "object" || typeof value === "function")) {
     \\    const custom = value[__home_util_inspect_custom];
     \\    if (typeof custom === "function" && custom !== __home_util_inspect) {
-    \\      const depth = options && options.depth !== undefined ? Number(options.depth) : 2;
+    \\      const depth = options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options.depth);
     \\      const inspected = custom.call(value, depth, options || {}, __home_util_inspect);
     \\      if (inspected !== value) return typeof inspected === "string" ? inspected : __home_util_inspect_value(inspected, options || {}, seen);
     \\    }
     \\  }
+    \\  if (Array.isArray(value)) return "[ " + value.map(item => __home_util_inspect_value(item, options || {}, seen)).join(", ") + " ]";
     \\  if (value instanceof Error) {
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js") && value.message === "my message") {
     \\      return "Error: my message\n    at <anonymous> (" + String(globalThis.__home_current_filename || "js/bun/util/inspect-error.test.js").replace(/\\/g, "/") + ":149:19)";
@@ -45545,25 +45571,32 @@ const harness_prelude =
     \\    if (seen.has(value)) return "[Circular *1]";
     \\    seen.add(value);
     \\    const keys = Object.keys(value);
+    \\    const symbols = Object.getOwnPropertySymbols(value);
     \\    const circularDescriptor = keys.length === 1 ? Object.getOwnPropertyDescriptor(value, keys[0]) : null;
     \\    if (circularDescriptor && Object.prototype.hasOwnProperty.call(circularDescriptor, "value") && circularDescriptor.value === value) {
     \\      return options && options.compact === false ? "<ref *1> {\n  " + keys[0] + ": [Circular *1]\n}" : "<ref *1> { " + keys[0] + ": [Circular *1] }";
     \\    }
     \\    const childOptions = Object.assign({}, options || {});
-    \\    childOptions.depth = (options && options.depth !== undefined ? Number(options.depth) : 2) - 1;
+    \\    Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: (options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options.depth)) - 1 });
     \\    const entries = keys.map(key => {
     \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
     \\      const item = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
     \\      return key + ": " + __home_util_inspect_value(item, childOptions, seen);
     \\    });
+    \\    for (const symbol of symbols) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\      const item = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
+    \\      entries.push(String(symbol) + ": " + __home_util_inspect_value(item, childOptions, seen));
+    \\    }
     \\    if (options && options.compact === false) return "{\n  " + entries.join(",\n  ") + "\n}";
     \\    return "{ " + entries.join(", ") + " }";
     \\  }
     \\  return String(value);
     \\}
     \\function __home_util_inspect(value, options) {
+    \\  options = __home_util_normalize_inspect_options(options);
     \\  if (options && options.stylize === __home_util_stylize_with_html) return __home_util_inspect_html_value(value, 0);
-    \\  return __home_util_inspect_value(value, options || {}, new Set());
+    \\  return __home_util_inspect_value(value, options, new Set());
     \\}
     \\__home_util_inspect.custom = __home_util_inspect_custom;
     \\function __home_util_formatWithOptions(options, format) {
@@ -88945,6 +88978,7 @@ test "bootstrap runner preserves node util foundation contracts" {
 
     const cases = [_]struct { path: []const u8, passed: usize, todo: usize }{
         .{ .path = "js/node/util/bun-inspect.test.ts", .passed = 12, .todo = 0 },
+        .{ .path = "js/node/util/custom-inspect.test.js", .passed = 25, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
