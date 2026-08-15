@@ -352,6 +352,16 @@ pub const ExternalResolver = struct {
             containing_file: []const u8,
             name: []const u8,
         ) ?ModuleExport = null,
+        /// Module-export query with an explicit JSDoc/type-reference
+        /// resolution mode. This bypasses importer-mode inference for
+        /// `resolution-mode: "import" | "require"` attributes.
+        moduleExportWithMode: ?*const fn (
+            self: *anyopaque,
+            specifier: []const u8,
+            containing_file: []const u8,
+            name: []const u8,
+            resolution_mode: []const u8,
+        ) ?ModuleExport = null,
         // Declaration-emit portability query for inferred exported
         // variables initialized by an imported call expression. Returns
         // the first type reference in the imported function's declared
@@ -392,6 +402,17 @@ pub const ExternalResolver = struct {
     ) ?ModuleExport {
         const f = self.vtable.moduleExport orelse return null;
         return f(self.ptr, specifier, containing_file, name);
+    }
+
+    pub fn moduleExportWithMode(
+        self: ExternalResolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+        resolution_mode: []const u8,
+    ) ?ModuleExport {
+        const f = self.vtable.moduleExportWithMode orelse return null;
+        return f(self.ptr, specifier, containing_file, name, resolution_mode);
     }
 
     pub fn inferredExportUnsafeReference(
@@ -5247,6 +5268,7 @@ pub const Checker = struct {
         try self.checkCommonJsDefinePropertyDeclarationPrivacy();
         try self.checkAmbientModuleExportAssignments(stmts);
         try self.checkJSDocMalformedImportAttributes(root);
+        try self.checkJSDocImportLocalConflicts(root);
         try self.checkJSDocImportRequireSyntax(root);
         try self.checkJSDocImportTypeModuleTargets(root);
         try self.reportLargeControlFlowBodyIfNeeded(stmts);
@@ -5852,8 +5874,128 @@ pub const Checker = struct {
                     .code = TsCodes.expected_from,
                     .message = "'from' expected.",
                 });
+                if (!self.hasDiagnosticAtPosition(1141, pos)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = pos,
+                        .code = 1141,
+                        .message = "String literal expected.",
+                    });
+                }
             }
         }
+    }
+
+    const JsDocImportBinding = struct {
+        name: []const u8,
+        pos: u32,
+        section: usize,
+    };
+
+    fn checkJSDocImportLocalConflicts(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var bindings: std.ArrayListUnmanaged(JsDocImportBinding) = .empty;
+        defer bindings.deinit(self.gpa);
+
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..comment_end];
+            var tag_search: usize = 0;
+            while (std.mem.indexOfPos(u8, body, tag_search, "@import")) |tag_at| {
+                const clause_start = tag_at + "@import".len;
+                tag_search = clause_start;
+                if (tag_at > 0 and isJsDocIdentChar(body[tag_at - 1])) continue;
+                if (clause_start < body.len and isJsDocIdentChar(body[clause_start])) continue;
+                const clause_end = jsDocTagBodyEnd(body, clause_start);
+                const raw_clause = body[clause_start..clause_end];
+                const section = self.virtualSectionStartForPos(body_start + tag_at);
+                try self.appendJsDocImportBindings(src, raw_clause, section, &bindings);
+            }
+        }
+
+        for (bindings.items) |binding| {
+            var duplicate_count: usize = 0;
+            for (bindings.items) |candidate| {
+                if (candidate.section == binding.section and std.mem.eql(u8, candidate.name, binding.name)) {
+                    duplicate_count += 1;
+                }
+            }
+            if (duplicate_count < 2 or self.hasDiagnosticAtPosition(TsCodes.duplicate_identifier, binding.pos)) continue;
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Duplicate identifier '{s}'.",
+                .{binding.name},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = root,
+                .pos = binding.pos,
+                .code = TsCodes.duplicate_identifier,
+                .message = message,
+            });
+        }
+    }
+
+    fn appendJsDocImportBindings(
+        self: *Checker,
+        src: []const u8,
+        raw_clause: []const u8,
+        section: usize,
+        bindings: *std.ArrayListUnmanaged(JsDocImportBinding),
+    ) CheckError!void {
+        const from_at = jsDocWordIndex(raw_clause, "from") orelse return;
+        const clause = raw_clause[0..from_at];
+        const open = std.mem.indexOfScalar(u8, clause, '{');
+        const head_end = open orelse clause.len;
+        const head = clause[0..head_end];
+
+        if (std.mem.indexOfScalar(u8, head, '*')) |star| {
+            if (jsDocWordIndex(head[star + 1 ..], "as")) |as_rel| {
+                const after_as = head[star + 1 + as_rel + "as".len ..];
+                if (jsDocFirstIdentifierSlice(after_as)) |local| {
+                    try self.appendJsDocImportBinding(src, local, section, bindings);
+                }
+            }
+        } else if (jsDocFirstIdentifierSlice(head)) |default_local| {
+            try self.appendJsDocImportBinding(src, default_local, section, bindings);
+        }
+
+        const named_open = open orelse return;
+        const close = std.mem.indexOfScalarPos(u8, clause, named_open + 1, '}') orelse clause.len;
+        var named = std.mem.splitScalar(u8, clause[named_open + 1 .. close], ',');
+        while (named.next()) |raw_binding| {
+            const local_text = if (jsDocWordIndex(raw_binding, "as")) |as_at|
+                raw_binding[as_at + "as".len ..]
+            else
+                raw_binding;
+            const local = jsDocFirstIdentifierSlice(local_text) orelse continue;
+            try self.appendJsDocImportBinding(src, local, section, bindings);
+        }
+    }
+
+    fn appendJsDocImportBinding(
+        self: *Checker,
+        src: []const u8,
+        local: []const u8,
+        section: usize,
+        bindings: *std.ArrayListUnmanaged(JsDocImportBinding),
+    ) CheckError!void {
+        const pos = self.sliceStartPos(src, local) orelse return;
+        try bindings.append(self.gpa, .{ .name = local, .pos = pos, .section = section });
+    }
+
+    fn jsDocFirstIdentifierSlice(text: []const u8) ?[]const u8 {
+        var start: usize = 0;
+        while (start < text.len and !isJsDocIdentStart(text[start])) : (start += 1) {}
+        if (start >= text.len) return null;
+        var end = start + 1;
+        while (end < text.len and isJsDocIdentChar(text[end])) : (end += 1) {}
+        return text[start..end];
     }
 
     fn checkJSDocMalformedImportAttributes(self: *Checker, root: NodeId) CheckError!void {
@@ -54434,6 +54576,30 @@ pub const Checker = struct {
             "/__root__.ts";
         const name_text = self.string_interner.get(name);
         const info = resolver.moduleExport(spec, containing, name_text) orelse return .unknown;
+        return moduleExportRuntimeStatus(info);
+    }
+
+    fn externalJSDocImportRuntimeStatus(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+        name: hir_mod.StringId,
+        resolution_mode: ?[]const u8,
+    ) CheckError!ModuleExportRuntimeStatus {
+        const mode = resolution_mode orelse return self.externalModuleNamedExportRuntimeStatus(node, spec, name);
+        const resolver = self.external_resolver orelse return .unknown;
+        const containing = if (self.importer_path.len > 0)
+            self.importer_path
+        else if (self.virtualSectionFilenameForNode(node)) |raw|
+            raw
+        else
+            "/__root__.ts";
+        const info = resolver.moduleExportWithMode(spec, containing, self.string_interner.get(name), mode) orelse
+            return self.externalModuleNamedExportRuntimeStatus(node, spec, name);
+        return moduleExportRuntimeStatus(info);
+    }
+
+    fn moduleExportRuntimeStatus(info: ExternalResolver.ModuleExport) ModuleExportRuntimeStatus {
         if (info.ambient_const_enum) return .ambient_const_enum;
         if (info.exported_value) return .value;
         if (info.type_only_export) return .type_only_alias;
@@ -55389,6 +55555,100 @@ pub const Checker = struct {
             }
         }
         return try self.virtualBareModuleExportType(anchor, spec, name);
+    }
+
+    fn virtualJSDocBareImportMemberIsValueOnly(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        name: hir_mod.StringId,
+        resolution_mode: ?[]const u8,
+    ) CheckError!bool {
+        switch (try self.externalJSDocImportRuntimeStatus(anchor, spec, name, resolution_mode)) {
+            .value => return true,
+            .type_only_decl, .type_only_alias, .ambient_const_enum => return false,
+            .unknown, .missing => {},
+        }
+        if (resolution_mode) |mode| {
+            if (try self.virtualPackageExportsDeclarationFilename(spec, mode)) |decl_file| {
+                defer self.gpa.free(decl_file);
+                return self.virtualDeclarationFileExportIsValueOnly(anchor, decl_file, name);
+            }
+        }
+        if (try self.virtualBareModuleDeclarationFilename(spec)) |decl_file| {
+            defer self.gpa.free(decl_file);
+            if (self.virtualDeclarationFileExportIsValueOnly(anchor, decl_file, name)) return true;
+        }
+        return self.virtualBarePackageExportIsValueOnly(anchor, spec, name, resolution_mode);
+    }
+
+    fn virtualDeclarationFileExportIsValueOnly(
+        self: *Checker,
+        anchor: NodeId,
+        decl_file: []const u8,
+        name: hir_mod.StringId,
+    ) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const filename = self.virtualSectionFilenameForNode(raw) orelse continue;
+            if (!virtualPathEquals(filename, decl_file)) continue;
+            return self.virtualExportDeclarationIsValueOnly(raw, name) orelse continue;
+        }
+        return false;
+    }
+
+    fn virtualBarePackageExportIsValueOnly(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        name: hir_mod.StringId,
+        resolution_mode: ?[]const u8,
+    ) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        if (resolution_mode) |mode| {
+            const preferred_ext: []const u8 = if (std.mem.eql(u8, mode, "import")) ".d.mts" else ".d.cts";
+            for (hir_mod.blockStmts(self.hir, root)) |raw| {
+                const filename = self.virtualSectionFilenameForNode(raw) orelse continue;
+                if (!virtualFilenameBelongsToBarePackage(filename, spec) or
+                    !std.mem.endsWith(u8, filename, preferred_ext)) continue;
+                return self.virtualExportDeclarationIsValueOnly(raw, name) orelse continue;
+            }
+        }
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const filename = self.virtualSectionFilenameForNode(raw) orelse continue;
+            if (!virtualFilenameBelongsToBarePackage(filename, spec)) continue;
+            return self.virtualExportDeclarationIsValueOnly(raw, name) orelse continue;
+        }
+        return false;
+    }
+
+    fn virtualExportDeclarationIsValueOnly(self: *Checker, raw: NodeId, name: hir_mod.StringId) ?bool {
+        if (self.hir.kindOf(raw) != .export_decl) return null;
+        const decl = self.unwrapExportDecl(raw);
+        const decl_name = self.declarationName(decl) orelse return null;
+        if (decl_name != name) return null;
+        return switch (self.hir.kindOf(decl)) {
+            .var_decl, .let_decl, .const_decl, .fn_decl, .fn_expr => true,
+            else => false,
+        };
+    }
+
+    fn virtualFilenameBelongsToBarePackage(filename_raw: []const u8, spec: []const u8) bool {
+        var filename = filename_raw;
+        while (filename.len > 0 and filename[0] == '/') filename = filename[1..];
+        const marker = "node_modules/";
+        const marker_at = std.mem.indexOf(u8, filename, marker) orelse return false;
+        const package_path = filename[marker_at + marker.len ..];
+        if (std.mem.startsWith(u8, package_path, spec) and
+            package_path.len > spec.len and package_path[spec.len] == '/') return true;
+        if (spec.len == 0 or spec[0] == '@') return false;
+        const types_prefix = "@types/";
+        if (!std.mem.startsWith(u8, package_path, types_prefix)) return false;
+        const types_path = package_path[types_prefix.len..];
+        return std.mem.startsWith(u8, types_path, spec) and
+            types_path.len > spec.len and types_path[spec.len] == '/';
     }
 
     fn virtualPackageExportsDeclarationFilename(self: *Checker, spec: []const u8, mode: []const u8) CheckError!?[]u8 {
@@ -84764,6 +85024,7 @@ pub const Checker = struct {
         }
         const base = jsDocTypeBaseName(trimmed);
         if (base.len == 0) return null;
+        if (try self.jsDocImportedNameType(src, base)) |t| return t;
         if (self.jsdoc_diagnostic_anchor != hir_mod.none_node_id) {
             const base_name = self.string_interner.intern(base) catch return error.OutOfMemory;
             if (try self.checkJsDestructuredRequireClassInstanceType(self.jsdoc_diagnostic_anchor, base_name)) |class_t| {
@@ -84780,7 +85041,6 @@ pub const Checker = struct {
         }
         if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
         if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
-        if (try self.jsDocImportedNameType(src, base)) |t| return t;
         const simple_t = try self.jsDocSimpleNameType(src, base, base.len == trimmed.len);
         if (simple_t) |t| {
             if (!self.typeIsAnyLike(t)) return t;
@@ -85738,22 +85998,57 @@ pub const Checker = struct {
                 }
             }
         }
-        // 0 matches: not a JSDoc-imported name. >1: duplicate import — tsc
-        // emits TS2300; leave it to the fallback rather than resolve it.
-        if (match_count != 1 or spec_len == 0) return null;
+        // Duplicate bindings still resolve after TS2300 is emitted by the
+        // source-level import pass, preventing a cascading TS2304 at uses.
+        if (match_count > 1) return types.Primitive.any;
+        if (match_count == 0 or spec_len == 0) return null;
         const orig_id = self.string_interner.intern(orig_buf[0..orig_len]) catch return error.OutOfMemory;
         const pos = self.sliceStartPos(src, base);
         if (!std.mem.startsWith(u8, spec_buf[0..spec_len], ".")) {
+            const resolution_mode = if (mode_len > 0) mode_buf[0..mode_len] else null;
+            if (try self.virtualJSDocBareImportMemberIsValueOnly(
+                anchor,
+                spec_buf[0..spec_len],
+                orig_id,
+                resolution_mode,
+            )) {
+                try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
+                return types.Primitive.any;
+            }
             return (try self.virtualJSDocBareImportMemberByName(
                 anchor,
                 spec_buf[0..spec_len],
                 orig_id,
-                if (mode_len > 0) mode_buf[0..mode_len] else null,
+                resolution_mode,
             )) orelse types.Primitive.any;
         }
         // Resolve to the real cross-module type, or null (NOT `any`) on failure
         // so an unresolvable import still surfaces a diagnostic.
         return try self.virtualCommonJsImportMemberByName(anchor, spec_buf[0..spec_len], orig_id, .jsdoc_type, pos);
+    }
+
+    fn reportJsDocImportedValueUsedAsType(
+        self: *Checker,
+        src: []const u8,
+        anchor: NodeId,
+        text: []const u8,
+    ) CheckError!void {
+        if (!self.jsDocTypeTextIsInCheckedJsContext()) return;
+        const pos = self.sliceStartPos(src, text);
+        if (pos) |at| {
+            if (self.hasDiagnosticAtPosition(TsCodes.value_used_as_type_did_you_mean_typeof, at)) return;
+        }
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' refers to a value, but is being used as a type here. Did you mean 'typeof {s}'?",
+            .{ text, text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = pos,
+            .code = TsCodes.value_used_as_type_did_you_mean_typeof,
+            .message = message,
+        });
     }
 
     fn jsDocUnresolvedSimpleNameToType(self: *Checker, src: []const u8, trimmed: []const u8, base: []const u8) CheckError!?TypeId {
@@ -207517,10 +207812,30 @@ test "checker: checkjs JSDoc import tag rejects require alias syntax" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     var saw_expected_from = false;
+    var saw_string_literal = false;
     for (b.base.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.expected_from) saw_expected_from = true;
+        if (d.code == 1141) saw_string_literal = true;
     }
     try T.expect(saw_expected_from);
+    try T.expect(saw_string_literal);
+}
+
+test "checker: checkjs duplicate JSDoc import locals report both declarations without use cascade" {
+    const b = try newBoundSetup(
+        \\// @checkjs: true
+        \\// @filename: /types.ts
+        \\export interface Foo {}
+        \\// @filename: /foo.js
+        \\/** @import { Foo } from "./types" */
+        \\/** @import { Foo } from "./types" */
+        \\/** @param {Foo} value */
+        \\function f(value) {}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
 }
 
 test "checker: checkjs JSDoc default and named import tags resolve type exports" {
@@ -207574,6 +207889,30 @@ test "checker: virtual package exports resolution-mode selects declaration file"
     defer s.checker.gpa.free(require_path);
     try T.expectEqualStrings("node_modules/@types/foo/index.d.mts", import_path);
     try T.expectEqualStrings("node_modules/@types/foo/index.d.cts", require_path);
+}
+
+test "checker: checkjs JSDoc bare imports preserve value-only export meaning" {
+    const b = try newBoundSetup(
+        \\// @target: es2022
+        \\// @module: node16
+        \\// @checkjs: true
+        \\// @filename: /node_modules/@types/foo/package.json
+        \\{"exports":{".":{"import":"./index.d.mts","require":"./index.d.cts"}}}
+        \\// @filename: /node_modules/@types/foo/index.d.mts
+        \\export declare const Import: "module";
+        \\// @filename: /node_modules/@types/foo/index.d.cts
+        \\export declare const Require: "script";
+        \\// @filename: /a.js
+        \\/** @import { Import } from "foo" with { "resolution-mode": "import" } */
+        \\/** @import { Require } from "foo" with { "resolution-mode": "require" } */
+        \\/** @returns {Import} */
+        \\export function f1() { return 1; }
+        \\/** @returns {Require} */
+        \\export function f2() { return 1; }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
 test "checker: relative typeof imports with resolution-mode resolve value exports" {

@@ -2037,6 +2037,7 @@ const CheckerResolverAdapter = struct {
     pub const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
+        .moduleExportWithMode = moduleExportWithModeImpl,
         .commonJsExportPrivateName = commonJsExportPrivateNameImpl,
         .ambiguousProjectRoot = ambiguousProjectRootImpl,
     };
@@ -2117,6 +2118,37 @@ const CheckerResolverAdapter = struct {
                 "",
             .default_export_member_readonly = facts.default_export_member_readonly,
             .call_only_function = facts.call_only_function,
+            .module_is_external = facts.module_is_external,
+        };
+    }
+
+    fn moduleExportWithModeImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+        resolution_mode: []const u8,
+    ) ?ts_driver.ExternalResolver.ModuleExport {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const mode: ts_resolver.TypeReferenceResolutionMode = if (std.mem.eql(u8, resolution_mode, "require"))
+            .require
+        else
+            .import;
+        const resolved = self.resolver.resolveTypeReferenceDirectiveWithMode(specifier, containing_file, mode) catch return null;
+        const src = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
+        defer self.resolver.gpa.free(src);
+        const is_tsx = std.mem.endsWith(u8, resolved.path, ".tsx") or std.mem.endsWith(u8, resolved.path, ".jsx");
+        const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, resolved.path, name);
+        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
+        const arena = self.resolver.arena.allocator();
+        return .{
+            .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
+            .exported_type = facts.exported_type,
+            .exported_value = facts.exported_value,
+            .ambient_const_enum = facts.ambient_const_enum,
+            .type_only_export = type_only_pos != null,
+            .export_path = if (type_only_pos != null) (arena.dupe(u8, resolved.path) catch return null) else "",
+            .export_pos = type_only_pos orelse 0,
             .module_is_external = facts.module_is_external,
         };
     }
