@@ -7202,12 +7202,13 @@ pub const Checker = struct {
                     try self.report(node, TsCodes.return_outside_function, "A 'return' statement can only be used within a function body.");
                 }
                 const r = hir_mod.returnOf(self.hir, node);
-                const raw_ret_t: TypeId = if (suppress_recovered_top_level_return)
-                    types.Primitive.void_t
-                else if (r.value != hir_mod.none_node_id)
-                    try self.checkExpression(r.value)
-                else
-                    types.Primitive.void_t;
+                const raw_ret_t: TypeId = if (r.value != hir_mod.none_node_id) blk: {
+                    const value_t = try self.checkExpression(r.value);
+                    // Recovery suppresses the return statement's own TS1108
+                    // and follow-on return-type checks, but tsgo still checks
+                    // the operand for ordinary semantic diagnostics.
+                    break :blk if (suppress_recovered_top_level_return) types.Primitive.void_t else value_t;
+                } else types.Primitive.void_t;
                 if (self.current_async_function_return_check and r.value != hir_mod.none_node_id) {
                     switch (self.awaitedChainIssue(raw_ret_t)) {
                         .none => {},
@@ -183657,7 +183658,7 @@ test "checker: return in top-level if block reports TS1108" {
     try T.expect(found);
 }
 
-test "checker: recovered top-level return before unmatched close suppresses follow-ons" {
+test "checker: recovered top-level return checks operands without TS1108" {
     const s = try newSetup(
         \\return foo;
         \\}
@@ -183666,10 +183667,8 @@ test "checker: recovered top-level return before unmatched close suppresses foll
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.return_outside_function);
-        try T.expect(d.code != TsCodes.cannot_find_name);
-    }
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.return_outside_function));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: duplicate function implementations report on both bodies" {
