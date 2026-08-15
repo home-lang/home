@@ -5925,9 +5925,13 @@ pub const Checker = struct {
             const body = src[body_start..comment_end];
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
+            try self.reportInvalidJsDocTemplateReferences(src, body, tags, root);
             var has_template = false;
+            const invalid_template_placement = jsDocHasInvalidTemplatePlacement(body);
             for (tags) |candidate| {
-                if (candidate.kind == .template_tag and candidate.name.len > 0) {
+                if (!invalid_template_placement and
+                    candidate.kind == .template_tag and candidate.name.len > 0)
+                {
                     has_template = true;
                     break;
                 }
@@ -6019,6 +6023,122 @@ pub const Checker = struct {
             if (span.start <= comment_start and comment_start < span.end) return stmt;
         }
         return root;
+    }
+
+    fn jsDocHasInvalidTemplatePlacement(body: []const u8) bool {
+        var seen_alias_like = false;
+        var scan: usize = 0;
+        while (jsDocNextLineTagStart(body, scan)) |tag_start| {
+            const name_start = tag_start + 1;
+            var name_end = name_start;
+            while (name_end < body.len and isJsDocIdentChar(body[name_end])) : (name_end += 1) {}
+            const name = body[name_start..name_end];
+            if (std.mem.eql(u8, name, "template") and seen_alias_like) return true;
+            if (std.mem.eql(u8, name, "typedef") or
+                std.mem.eql(u8, name, "callback") or
+                std.mem.eql(u8, name, "overload")) seen_alias_like = true;
+            scan = name_end;
+        }
+        return false;
+    }
+
+    fn jsDocHasTemplateTypeTagCombination(tags: []const ts_parser.jsdoc.Tag) bool {
+        var has_template = false;
+        var has_type = false;
+        for (tags) |tag| {
+            has_template = has_template or tag.kind == .template_tag;
+            has_type = has_type or tag.kind == .type_tag;
+        }
+        return has_template and has_type;
+    }
+
+    const InvalidJsDocTemplate = struct {
+        name: []const u8,
+        pos: u32,
+    };
+
+    fn reportInvalidJsDocTemplateReferences(
+        self: *Checker,
+        src: []const u8,
+        body: []const u8,
+        tags: []const ts_parser.jsdoc.Tag,
+        root: NodeId,
+    ) CheckError!void {
+        if (!jsDocHasInvalidTemplatePlacement(body)) return;
+        var invalid: std.ArrayListUnmanaged(InvalidJsDocTemplate) = .empty;
+        defer invalid.deinit(self.gpa);
+
+        var seen_alias_like = false;
+        var parsed_tag_index: usize = 0;
+        var scan: usize = 0;
+        while (jsDocNextLineTagStart(body, scan)) |tag_start| {
+            const name_start = tag_start + 1;
+            var name_end = name_start;
+            while (name_end < body.len and isJsDocIdentChar(body[name_end])) : (name_end += 1) {}
+            const tag_name = body[name_start..name_end];
+            if (std.mem.eql(u8, tag_name, "template")) {
+                while (parsed_tag_index < tags.len and tags[parsed_tag_index].kind != .template_tag) {
+                    parsed_tag_index += 1;
+                }
+                if (parsed_tag_index < tags.len) {
+                    const tag = tags[parsed_tag_index];
+                    parsed_tag_index += 1;
+                    if (seen_alias_like and tag.name.len > 0) {
+                        try invalid.append(self.gpa, .{
+                            .name = tag.name,
+                            .pos = self.sliceStartPos(src, tag.name) orelse @as(u32, @intCast(name_start)),
+                        });
+                        var comma_names = std.mem.trimStart(u8, tag.description, " \t\r\n");
+                        while (comma_names.len > 0 and comma_names[0] == ',') {
+                            comma_names = std.mem.trimStart(u8, comma_names[1..], " \t\r\n");
+                            if (comma_names.len == 0 or !isJsDocIdentStart(comma_names[0])) break;
+                            var len: usize = 1;
+                            while (len < comma_names.len and isJsDocIdentChar(comma_names[len])) : (len += 1) {}
+                            const comma_name = comma_names[0..len];
+                            try invalid.append(self.gpa, .{
+                                .name = comma_name,
+                                .pos = self.sliceStartPos(src, comma_name) orelse @as(u32, @intCast(name_start)),
+                            });
+                            comma_names = std.mem.trimStart(u8, comma_names[len..], " \t\r\n");
+                        }
+                    }
+                }
+            } else if (std.mem.eql(u8, tag_name, "typedef") or
+                std.mem.eql(u8, tag_name, "callback") or
+                std.mem.eql(u8, tag_name, "overload"))
+            {
+                seen_alias_like = true;
+            }
+            scan = name_end;
+        }
+
+        for (tags) |tag| {
+            if (tag.type_text.len == 0) continue;
+            const type_pos = self.sliceStartPos(src, tag.type_text) orelse continue;
+            for (invalid.items) |template| {
+                if (type_pos <= template.pos) continue;
+                var offset: usize = 0;
+                while (std.mem.indexOfPos(u8, tag.type_text, offset, template.name)) |hit| {
+                    offset = hit + template.name.len;
+                    const before_ok = hit == 0 or !isJsDocIdentChar(tag.type_text[hit - 1]);
+                    const after_ok = offset == tag.type_text.len or !isJsDocIdentChar(tag.type_text[offset]);
+                    if (!before_ok or !after_ok) continue;
+                    const pos = type_pos + @as(u32, @intCast(hit));
+                    if (self.hasDiagnosticAtPosition(TsCodes.cannot_find_name, pos)) continue;
+                    const message = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Cannot find name '{s}'.",
+                        .{template.name},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = pos,
+                        .code = TsCodes.cannot_find_name,
+                        .message = message,
+                    });
+                }
+            }
+        }
     }
 
     fn checkJsDocTemplateDeclarations(self: *Checker, root: NodeId) CheckError!void {
@@ -6634,14 +6754,19 @@ pub const Checker = struct {
     }
 
     fn jsDocNextTagCompletesTypedef(body: []const u8, start: usize) bool {
-        const next_tag = jsDocNextLineTagStart(body, start) orelse return false;
-        const name_start = next_tag + 1;
-        var name_end = name_start;
-        while (name_end < body.len and isJsDocIdentChar(body[name_end])) : (name_end += 1) {}
-        const name = body[name_start..name_end];
-        return std.mem.eql(u8, name, "property") or
-            std.mem.eql(u8, name, "prop") or
-            std.mem.eql(u8, name, "type");
+        var scan = start;
+        while (jsDocNextLineTagStart(body, scan)) |next_tag| {
+            const name_start = next_tag + 1;
+            var name_end = name_start;
+            while (name_end < body.len and isJsDocIdentChar(body[name_end])) : (name_end += 1) {}
+            const name = body[name_start..name_end];
+            if (std.mem.eql(u8, name, "property") or
+                std.mem.eql(u8, name, "prop") or
+                std.mem.eql(u8, name, "type")) return true;
+            if (!std.mem.eql(u8, name, "template")) return false;
+            scan = name_end;
+        }
+        return false;
     }
 
     fn jsDocTypedefNamePos(body: []const u8, start: usize, end: usize) ?usize {
@@ -31106,7 +31231,8 @@ pub const Checker = struct {
         defer param_nullish_array_defaults.deinit(self.gpa);
         const params = hir_mod.fnParams(self.hir, node);
         const malformed_closure_jsdoc_type = self.functionOrOwnerHasMalformedClosureJsDocTypeTag(node);
-        const jsdoc_context_sig = if (malformed_closure_jsdoc_type)
+        const invalid_jsdoc_template_type = self.functionOrOwnerHasInvalidJsDocTemplateTypeCombination(node);
+        const jsdoc_context_sig = if (malformed_closure_jsdoc_type or invalid_jsdoc_template_type)
             null
         else
             try self.jsDocContextualSignatureForFunction(node);
@@ -31241,7 +31367,10 @@ pub const Checker = struct {
                 if (value_param_index >= sig_params.len) break :blk null;
                 break :blk sig_params[value_param_index];
             } else null;
-            const contextual_tuple_param_t: ?TypeId = if (!has_anno and !has_jsdoc_param_type and !is_this_param) blk: {
+            const contextual_tuple_param_t: ?TypeId = if (!has_anno and
+                !has_jsdoc_param_type and
+                !is_this_param and
+                !invalid_jsdoc_template_type) blk: {
                 if (try self.contextualParameterTypeFromFunctionAnnotation(node, p)) |syntax_t| {
                     break :blk syntax_t;
                 }
@@ -31257,6 +31386,7 @@ pub const Checker = struct {
                 !has_jsdoc_param_type and
                 !is_this_param and
                 !malformed_closure_jsdoc_type and
+                !invalid_jsdoc_template_type and
                 pp.default_value == hir_mod.none_node_id)
             blk: {
                 const parent = self.hir.parentOf(node);
@@ -31555,7 +31685,9 @@ pub const Checker = struct {
                     !self.fnIsJsDocConstructorOverloadImplementation(node)) and
                 !self.functionIsPrivateAmbientClassMember(node) and
                 !rest_has_contextual_signature and
-                (!self.parameterHasContextualType(node, p) or malformed_closure_jsdoc_type))
+                (!self.parameterHasContextualType(node, p) or
+                    malformed_closure_jsdoc_type or
+                    invalid_jsdoc_template_type))
             {
                 // Binding-pattern parameters (`function f([a, b]) {}` /
                 // `function f({a, b}) {}`) ÃÂ¢ÃÂÃÂ tsc reports one TS7031
@@ -80485,6 +80617,7 @@ pub const Checker = struct {
         }
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return has_type_marker;
         defer self.gpa.free(tags);
+        if (jsDocHasTemplateTypeTagCombination(tags)) return false;
         var saw_type_tag = false;
         for (tags) |tag| {
             if (tag.kind == .param_tag) return true;
@@ -80506,11 +80639,20 @@ pub const Checker = struct {
         const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
         defer self.gpa.free(tags);
+        if (jsDocHasInvalidTemplatePlacement(body) or jsDocHasTemplateTypeTagCombination(tags)) return false;
         for (tags) |tag| {
             if (tag.kind != .type_tag) continue;
             if (jsDocClosureFunctionOpen(std.mem.trim(u8, tag.type_text, " \t\r\n")) != null) return true;
         }
         return false;
+    }
+
+    fn functionOrOwnerHasInvalidJsDocTemplateTypeCombination(self: *Checker, fn_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        return jsDocHasTemplateTypeTagCombination(tags);
     }
 
     fn checkUnmatchedJsDocParameters(self: *Checker, fn_node: NodeId) CheckError!void {
@@ -80661,6 +80803,7 @@ pub const Checker = struct {
         if (std.mem.indexOf(u8, body, "@template") == null) return false;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
         defer self.gpa.free(tags);
+        if (jsDocHasInvalidTemplatePlacement(body) or jsDocHasTemplateTypeTagCombination(tags)) return false;
         for (tags) |tag| {
             if (tag.kind == .template_tag and tag.name.len > 0) return true;
         }
@@ -80702,6 +80845,9 @@ pub const Checker = struct {
         const src = self.source orelse return;
         const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return;
         if (std.mem.indexOf(u8, body, "@template") == null) return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return;
+        defer self.gpa.free(tags);
+        if (jsDocHasInvalidTemplatePlacement(body) or jsDocHasTemplateTypeTagCombination(tags)) return;
         var line_start: usize = 0;
         var i: usize = 0;
         while (i <= body.len) : (i += 1) {
@@ -84081,6 +84227,12 @@ pub const Checker = struct {
     fn jsDocContextualSignatureForFunction(self: *Checker, node: NodeId) CheckError!?TypeId {
         if (!self.sourceHasCheckJsDirective()) return null;
         if (self.source_has_virtual_sections and !self.virtualSectionIsJsLike(node)) return null;
+        const src = self.source orelse return null;
+        if (self.leadingJsDocBodyForFunctionOrOwner(src, node)) |body| {
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+            defer self.gpa.free(tags);
+            if (jsDocHasTemplateTypeTagCombination(tags)) return null;
+        }
         if (try self.jsDocSatisfiesContextualSignatureForFunction(node)) |sig| return sig;
         const jsdoc_node = blk: {
             const parent = self.hir.parentOf(node);
@@ -85040,13 +85192,15 @@ pub const Checker = struct {
             if (std.mem.indexOf(u8, body, "@template") != null) {
                 const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
                 defer self.gpa.free(tags);
-                for (tags) |tag| {
-                    if (tag.kind != .template_tag or tag.name.len == 0) continue;
-                    const tag_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
-                    if (tag_name != name) continue;
-                    return try self.freshJsDocTemplateParamType(name);
+                if (!jsDocHasInvalidTemplatePlacement(body) and !jsDocHasTemplateTypeTagCombination(tags)) {
+                    for (tags) |tag| {
+                        if (tag.kind != .template_tag or tag.name.len == 0) continue;
+                        const tag_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
+                        if (tag_name != name) continue;
+                        return try self.freshJsDocTemplateParamType(name);
+                    }
+                    if (try self.jsDocTemplateParamTypeFromBody(body, name)) |t| return t;
                 }
-                if (try self.jsDocTemplateParamTypeFromBody(body, name)) |t| return t;
             }
         }
         // A prototype method can reference its constructor's `@template` params
@@ -85078,6 +85232,9 @@ pub const Checker = struct {
     }
 
     fn jsDocTemplateParamTypeFromBody(self: *Checker, body: []const u8, name: hir_mod.StringId) CheckError!?TypeId {
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+        if (jsDocHasInvalidTemplatePlacement(body) or jsDocHasTemplateTypeTagCombination(tags)) return null;
         if (!jsDocBodyDeclaresTemplateName(body, self.string_interner.get(name))) return null;
         return try self.freshJsDocTemplateParamType(name);
     }
@@ -85669,6 +85826,23 @@ pub const Checker = struct {
             while (callback_args.next()) |arg_text| {
                 const arg_t = (try self.jsDocTypeTextToType(src, arg_text)) orelse types.Primitive.any;
                 try arg_types.append(self.gpa, arg_t);
+            }
+
+            if (callback_type_params.items.len == 0 and arg_types.items.len > 0) {
+                const pos = self.sliceStartPos(src, name) orelse 0;
+                if (!self.hasDiagnosticAtPosition(TsCodes.type_not_generic, pos)) {
+                    const message = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Type '{s}' is not generic.",
+                        .{name},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = self.jsdoc_diagnostic_anchor,
+                        .pos = pos,
+                        .code = TsCodes.type_not_generic,
+                        .message = message,
+                    });
+                }
             }
 
             var instantiated = callback_sig;
@@ -86881,15 +87055,18 @@ pub const Checker = struct {
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
             var has_templates = false;
-            for (tags) |tag| {
-                if (tag.kind == .template_tag and tag.name.len > 0) {
-                    has_templates = true;
-                    break;
+            if (!jsDocHasInvalidTemplatePlacement(body)) {
+                for (tags) |tag| {
+                    if (tag.kind == .template_tag and tag.name.len > 0) {
+                        has_templates = true;
+                        break;
+                    }
                 }
             }
             if (has_templates) try self.pushNarrowScope();
             defer if (has_templates) self.popNarrowScope();
             for (tags) |tag| {
+                if (!has_templates) break;
                 if (tag.kind != .template_tag or tag.name.len == 0) continue;
                 const tag_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
                 const constraint_t = if (tag.type_text.len > 0)
@@ -207875,26 +208052,20 @@ test "checker: checkjs JSDoc typedef member child does not suppress TS8021" {
     try T.expect(found);
 }
 
-test "checker: checkjs JSDoc typedef template before property still reports TS8021" {
-    const source =
+test "checker: checkjs JSDoc template before property still completes typedef" {
+    const s = try newSetup(
         \\// @checkjs: true
         \\/**
         \\ * @typedef Oops
         \\ * @template T
         \\ * @property {T} a
         \\ */
-    ;
-    const s = try newSetup(source);
+    );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsdoc_typedef_missing_type) {
-            found = true;
-            try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "Oops") orelse unreachable)), d.pos.?);
-        }
+        try T.expect(d.code != TsCodes.jsdoc_typedef_missing_type);
     }
-    try T.expect(found);
 }
 
 test "checker: unchecked JSDoc typedef without type does not report TS8021" {

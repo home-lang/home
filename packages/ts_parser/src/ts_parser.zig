@@ -1724,7 +1724,7 @@ pub const Parser = struct {
                         8039,
                         "A JSDoc '@template' tag may not follow a '@typedef', '@callback', or '@overload' tag",
                     );
-                    return;
+                    continue;
                 }
                 continue;
             }
@@ -31504,7 +31504,7 @@ test "parser: JSDoc template after typedef callback or overload reports TS8039" 
             try T.expectEqual(@as(u32, 8), d.span_len);
         }
     }
-    try T.expectEqual(@as(usize, 3), count);
+    try T.expectEqual(@as(usize, 4), count);
 }
 
 test "parser: duplicate JSDoc @returns reports TS1223" {
