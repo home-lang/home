@@ -3178,17 +3178,11 @@ pub const Parser = struct {
             try self.reportCodeAt(tok.span.start, tok.line, 1214, "Identifier expected. 'yield' is a reserved word in strict mode. Modules are automatically in strict mode.");
             return;
         }
-        // Inside a generator body (outside a class), the grammar itself
-        // reserves `yield` for any binding — TS1359. When the source is
-        // ES2015+ (target-driven) and the enclosing function is a plain
-        // generator (not `async *`), tsc prefers the strict-mode TS1212
-        // variant for binding names. Async generators keep TS1359 because
-        // the [Yield] context is grammar-imposed by `async *`. Mirrors
-        // `FunctionDeclaration{3,5,11,12}_es6` (TS1212) vs
-        // `yieldParameterIsError` / `nestedFunctionDeclarationNamedYieldIsError`
-        // (TS1359, async generators).
+        // At ES2015+ the target-level future-reserved rule wins over the
+        // generator grammar context, including async-generator names and
+        // parameters. Older targets retain the grammar-specific TS1359.
         if (self.generator_depth > 0) {
-            if (self.target_es2015_or_later and self.async_function_depth == 0) {
+            if (self.target_es2015_or_later) {
                 try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
                 return;
             }
@@ -7911,6 +7905,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(start.span.start, start.line, 2304, "Cannot find name 'interface'.");
                 }
             }
+            try self.reportInvalidYieldName(name_tok, true);
             const name_id_str = try self.internToken(name_tok);
             break :name_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id_str);
         };
@@ -11824,21 +11819,11 @@ pub const Parser = struct {
                 break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
             },
             .kw_yield => blk: {
-                // `yield` in type position parses as an identifier-named
-                // type ref so the type-resolution pass can emit
-                // TS2304 ("Cannot find name 'yield'"). In an async
-                // generator (`yieldAsTypeIsOk`) tsc keeps the type
-                // position silent — no TS1212 + no TS2304. In a plain
-                // generator at ES2015+ (`FunctionDeclaration13_es6`)
-                // tsc additionally reports TS1212 ("'yield' is a
-                // reserved word in strict mode.") because the binder
-                // walks types through the strict-mode reservation
-                // check.
+                // The binder visits `yield` type references under the same
+                // target-level reserved-word rule as value bindings. Class
+                // bodies use their dedicated strict-mode diagnostic.
                 const yield_tok = self.advance();
-                if (self.generator_depth > 0 and
-                    self.target_es2015_or_later and
-                    (self.async_function_depth == 0 or self.class_body_depth > 0))
-                {
+                if (self.target_es2015_or_later) {
                     if (self.class_body_depth > 0) {
                         try self.reportCodeAt(yield_tok.span.start, yield_tok.line, 1213, "Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.");
                     } else {
@@ -30287,21 +30272,18 @@ test "parser: computed enum member reports TS1164" {
     try T.expectEqualStrings("Computed property names are not allowed in enums.", s.parser.diagnostics.items[0].message);
 }
 
-test "parser: yield in async-generator function-expression name reports TS1359" {
-    // `const f = async function * yield() {}` — the function name
-    // binds inside the generator's [Yield] context, so `yield` is
-    // reserved by the grammar (TS1359), not by strict mode (TS1212).
-    // Mirrors upstream `parser.asyncGenerators.functionExpressions.es2018`
-    // baseline for nested/anonymous-bound generator expressions.
+test "parser: ES2018 async-generator function-expression name reports TS1212" {
     var s = try newTestSetup("const f = async function * yield() {};");
     defer destroyTestSetup(s);
 
+    s.parser.setTargetEs2015OrLater(true);
     _ = try s.parser.parseSourceFile();
-    var saw_1359 = false;
+    var saw_1212 = false;
     for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1359) saw_1359 = true;
+        if (d.code == 1212) saw_1212 = true;
+        try T.expect(d.code != 1359);
     }
-    try T.expect(saw_1359);
+    try T.expect(saw_1212);
 }
 
 test "parser: strict-mode top-level reserves yield in function names and params" {
@@ -30367,12 +30349,7 @@ test "parser: sloppy top-level async-generator declaration may be named yield" {
     try T.expect(saw_1212);
 }
 
-test "parser: nested function declaration named yield inside async generator reports TS1359" {
-    // Mirrors `parser.asyncGenerators.functionDeclarations.es2018`
-    // (`nestedFunctionDeclarationNamedYieldIsError`). Inside an async
-    // generator body, declaring `function yield()` (or `function await()`)
-    // binds the name into the surrounding generator/async scope, which
-    // is reserved by the grammar (TS1359), not strict mode (TS1212).
+test "parser: ES2018 nested yield declaration in async generator reports TS1212" {
     var s = try newTestSetup(
         \\async function * f9() {
         \\    function yield() {
@@ -30381,6 +30358,7 @@ test "parser: nested function declaration named yield inside async generator rep
     );
     defer destroyTestSetup(s);
 
+    s.parser.setTargetEs2015OrLater(true);
     _ = try s.parser.parseSourceFile();
     var saw_1359 = false;
     var saw_1212 = false;
@@ -30388,20 +30366,18 @@ test "parser: nested function declaration named yield inside async generator rep
         if (d.code == 1359) saw_1359 = true;
         if (d.code == 1212) saw_1212 = true;
     }
-    try T.expect(saw_1359);
-    try T.expect(!saw_1212);
+    try T.expect(!saw_1359);
+    try T.expect(saw_1212);
 }
 
-test "parser: yield parameter inside async generator reports TS1359" {
-    // Mirrors `yieldParameterIsError` (`parser.asyncGenerators.*`).
-    // `async function * f5(yield)` puts `yield` in the [Yield]
-    // parameter list → TS1359 at the `yield` token.
+test "parser: ES2018 yield parameter inside async generator reports TS1212" {
     var s = try newTestSetup(
         \\async function * f5(yield) {
         \\}
     );
     defer destroyTestSetup(s);
 
+    s.parser.setTargetEs2015OrLater(true);
     _ = try s.parser.parseSourceFile();
     var saw_1359 = false;
     var saw_1212 = false;
@@ -30409,14 +30385,11 @@ test "parser: yield parameter inside async generator reports TS1359" {
         if (d.code == 1359) saw_1359 = true;
         if (d.code == 1212) saw_1212 = true;
     }
-    try T.expect(saw_1359);
-    try T.expect(!saw_1212);
+    try T.expect(!saw_1359);
+    try T.expect(saw_1212);
 }
 
-test "parser: yield as type-position reference is allowed (yieldAsTypeIsOk)" {
-    // `interface yield {}` followed by `let x: yield;` inside an async
-    // generator yields zero diagnostics in tsc — `yield` is only
-    // reserved in value position, not type position.
+test "parser: ES2018 yield type declarations and references report TS1212" {
     var s = try newTestSetup(
         \\interface yield {}
         \\async function * f20() {
@@ -30425,12 +30398,14 @@ test "parser: yield as type-position reference is allowed (yieldAsTypeIsOk)" {
     );
     defer destroyTestSetup(s);
 
+    s.parser.setTargetEs2015OrLater(true);
     _ = try s.parser.parseSourceFile();
-    var saw_1212_or_1359 = false;
+    var count_1212: usize = 0;
     for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1212 or d.code == 1359) saw_1212_or_1359 = true;
+        if (d.code == 1212) count_1212 += 1;
+        try T.expect(d.code != 1359);
     }
-    try T.expect(!saw_1212_or_1359);
+    try T.expectEqual(@as(usize, 2), count_1212);
 }
 
 test "parser: yield operand can be an arrow expression" {

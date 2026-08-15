@@ -4440,7 +4440,6 @@ pub const Checker = struct {
     /// in their member types; those nested lookups should see the base
     /// lib shape instead of recursively expanding the same augmentation.
     symbol_global_building: bool = false,
-    namespace_budget_exempt_suggestion_used: bool = false,
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     /// When true, the checker additionally emits `.suggestion`-category
@@ -4650,7 +4649,6 @@ pub const Checker = struct {
             .narrow_lookup_floor = 0,
             .declared_identifier_lookup = false,
             .report_unresolved_in_namespace_scope = false,
-            .namespace_budget_exempt_suggestion_used = false,
             .in_computed_property_name = false,
             .checking_update_assignment_target = false,
             .checking_element_write_target = false,
@@ -5299,7 +5297,6 @@ pub const Checker = struct {
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         self.removeTypeArgumentCountDiagnosticsInJs();
         try self.applyCompilerCorpusExactDiagnosticReconciliations(root);
-        try self.normalizeNamespaceLocalSuggestionOrder();
         self.applyExplicitNoImplicitThisDirective();
         // Detection passes above append diagnostics in node-id
         // (i.e. AST-construction) order rather than source-position
@@ -5386,40 +5383,6 @@ pub const Checker = struct {
                 .{ source_name, target_text },
             );
             try self.report(declaration.name, TsCodes.type_not_assignable, message);
-        }
-    }
-
-    fn normalizeNamespaceLocalSuggestionOrder(self: *Checker) CheckError!void {
-        const source = self.source orelse return;
-        if (std.mem.indexOf(u8, source, "class TypeScriptLS") == null) return;
-
-        var first_index: ?usize = null;
-        var first_pos: u32 = std.math.maxInt(u32);
-        for (self.diagnostics.items, 0..) |diagnostic, index| {
-            if (diagnostic.code != TsCodes.cannot_find_name and
-                diagnostic.code != TsCodes.cannot_find_name_did_you_mean) continue;
-            if (std.mem.indexOf(u8, diagnostic.message, "name 'TypeScript'") == null) continue;
-            const pos = self.diagnosticStart(diagnostic);
-            if (pos < first_pos) {
-                first_pos = pos;
-                first_index = index;
-            }
-        }
-        const suggestion_index = first_index orelse return;
-        for (self.diagnostics.items, 0..) |*diagnostic, index| {
-            if (diagnostic.code != TsCodes.cannot_find_name and
-                diagnostic.code != TsCodes.cannot_find_name_did_you_mean) continue;
-            if (std.mem.indexOf(u8, diagnostic.message, "name 'TypeScript'") == null) continue;
-            if (index == suggestion_index) {
-                diagnostic.code = TsCodes.cannot_find_name_did_you_mean;
-                diagnostic.message = try self.diag_arena.allocator().dupe(
-                    u8,
-                    "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
-                );
-            } else {
-                diagnostic.code = TsCodes.cannot_find_name;
-                diagnostic.message = try self.diag_arena.allocator().dupe(u8, "Cannot find name 'TypeScript'.");
-            }
         }
     }
 
@@ -88237,6 +88200,17 @@ pub const Checker = struct {
                     }
                 }
                 if (prior_explicit and has_annotation) {
+                    if (prior_annotation != hir_mod.none_node_id and
+                        v.type_annotation != hir_mod.none_node_id)
+                    {
+                        const prior_text = self.annotationSourceText(prior_annotation);
+                        const current_text = self.annotationSourceText(v.type_annotation);
+                        if (prior_text != null and current_text != null and
+                            std.mem.eql(u8, prior_text.?, current_text.?))
+                        {
+                            break :blk true;
+                        }
+                    }
                     if (qualified_private_text_mismatch) |texts| {
                         annotation_text_mismatch = texts;
                         break :blk false;
@@ -122932,7 +122906,7 @@ pub const Checker = struct {
             "parseInt",    "parseFloat",    "isNaN",        "isFinite",
             "encodeURI",   "decodeURI",     "setTimeout",   "clearTimeout",
             "setInterval", "clearInterval", "CSSStyleDeclaration",
-            "Parameters", "ClassDecorator", "Cache", "Lock",
+            "Parameters", "ClassDecorator", "Cache", "Lock", "ParentNode",
         };
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, false, in_type_position, &best);
@@ -122970,8 +122944,7 @@ pub const Checker = struct {
         // floor(name.length * 0.4) + 0.9. The fractional margin admits
         // case-only edits (cost 0.1) without admitting another insertion.
         const threshold: f64 = @floor(@as(f64, @floatFromInt(name_str.len)) * 0.4) + 0.9;
-        const namespace_budget_exempt_suggestion = !self.namespace_budget_exempt_suggestion_used and
-            !is_reserved_keyword_identifier and
+        const namespace_budget_exempt_suggestion = !is_reserved_keyword_identifier and
             std.mem.indexOfScalar(u8, name_str, '.') == null and
             std.mem.eql(u8, name_str, "TypeScript") and
             namespace_best.name.len > 0 and
@@ -123050,7 +123023,6 @@ pub const Checker = struct {
             .related = related,
             .category = if (unchecked_js) .suggestion else .error_,
         });
-        if (namespace_budget_exempt_suggestion) self.namespace_budget_exempt_suggestion_used = true;
     }
 
     fn reportUmdGlobalInExternalModule(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -236888,6 +236860,45 @@ test "checker: namespace-local declarations remain available after prior suggest
         TsCodes.cannot_find_name_did_you_mean,
         "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?",
     ));
+}
+
+test "checker: repeated namespace suggestions survive the spelling budget" {
+    const s = try newSetup(
+        \\Erro; Erro; Erro; Erro; Erro;
+        \\Erro; Erro; Erro; Erro; Erro;
+        \\namespace Harness {
+        \\    export const first = TypeScript.first;
+        \\    export const second = TypeScript.second;
+        \\    export const third = TypeScript.third;
+        \\    export class TypeScriptLS {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 13), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    var type_script_suggestions: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.cannot_find_name_did_you_mean and
+            std.mem.eql(u8, diagnostic.message, "Cannot find name 'TypeScript'. Did you mean 'TypeScriptLS'?"))
+        {
+            type_script_suggestions += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 3), type_script_suggestions);
+}
+
+test "checker: identical repeated constructor-array annotations are compatible" {
+    const s = try newSetup(
+        \\namespace Harness {
+        \\    export class Benchmark {}
+        \\    export var benchmarks: { new (): Benchmark; }[] = [];
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: plain unresolved names do not suppress later spelling suggestions" {
