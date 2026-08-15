@@ -9923,6 +9923,13 @@ pub const Checker = struct {
                         continue;
                     }
                     const decl_kind = self.hir.kindOf(ex.decl);
+                    // tsgo checks an `export default <expression>` before
+                    // returning from the namespace-context grammar error, so
+                    // unresolved operands and spelling suggestions survive.
+                    if (ex.is_default and hir_mod.NodeKind.isExpression(decl_kind)) {
+                        _ = try self.checkExpression(ex.decl);
+                        continue;
+                    }
                     if (self.isExportAssignmentDecl(s)) {
                         if (!self.namespaceNameComesFromStringLiteral(node)) {
                             _ = try self.checkExpression(ex.decl);
@@ -122925,6 +122932,7 @@ pub const Checker = struct {
             "parseInt",    "parseFloat",    "isNaN",        "isFinite",
             "encodeURI",   "decodeURI",     "setTimeout",   "clearTimeout",
             "setInterval", "clearInterval", "CSSStyleDeclaration",
+            "Parameters",  "Cache",
         };
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, false, in_type_position, &best);
@@ -182129,6 +182137,22 @@ test "checker: namespace export assignment checks its expression before grammar 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'A'."));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: namespace default export checks its expression before grammar bailout" {
+    const s = try newSetup(
+        \\namespace Foo {
+        \\  export default foo;
+        \\}
+        \\namespace Bar {
+        \\  export default bar;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name_did_you_mean, "Cannot find name 'foo'. Did you mean 'Foo'?"));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name_did_you_mean, "Cannot find name 'bar'. Did you mean 'Bar'?"));
 }
 
 test "checker: interface property must match string index signature" {

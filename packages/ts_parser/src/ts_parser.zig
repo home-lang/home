@@ -9367,7 +9367,9 @@ pub const Parser = struct {
             } else if (self.moduleElementContextIsIllegal()) {
                 try self.reportCodeAt(start.span.start, start.line, 1258, "A default export must be at the top level of a file or module declaration.");
             }
-            if (!self.moduleElementContextIsIllegal() and self.namespace_depth > 0 and self.ambient_depth == 0) {
+            const namespace_default_is_illegal = !self.moduleElementContextIsIllegal() and
+                self.namespace_depth > 0 and self.ambient_depth == 0;
+            if (namespace_default_is_illegal and default_starts_declaration) {
                 try self.reportCodeAt(default_tok.span.start, default_tok.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
             // `export default` may be followed by a class/function
@@ -9398,6 +9400,19 @@ pub const Parser = struct {
                 },
             };
             const end_pos = self.tokens[self.cursor - 1].span.end;
+            // Export assignments and declarations use different grammar
+            // anchors in tsgo: an expression covers the complete `export
+            // default expr`, while a class/function/interface marks only the
+            // `default` modifier (reported above).
+            if (namespace_default_is_illegal and !default_starts_declaration) {
+                try self.reportCodeAtWithSpan(
+                    start.span.start,
+                    start.line,
+                    end_pos - start.span.start,
+                    1319,
+                    "A default export can only be used in an ECMAScript-style module.",
+                );
+            }
             return try self.builder.addExport(
                 .{ .start = start.span.start, .end = end_pos },
                 decl,
@@ -25132,7 +25147,7 @@ test "parser: namespace export assignment forms report diagnostics" {
     try T.expectEqual(@as(u32, 1063), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
     try T.expectEqual(
-        @as(u32, @intCast(std.mem.lastIndexOf(u8, src, "default").?)),
+        @as(u32, @intCast(std.mem.indexOf(u8, src, "export default").?)),
         s.parser.diagnostics.items[1].pos,
     );
     try T.expectEqualStrings("A default export can only be used in an ECMAScript-style module.", s.parser.diagnostics.items[1].message);
