@@ -1037,16 +1037,45 @@ pub const Parser = struct {
         if (tok.kind != .number_literal) {
             return self.interner.intern(slice) catch error.OutOfMemory;
         }
-        var end = slice.len;
-        while (end > 0 and
-            slice[end - 1] == '0' and
-            std.mem.indexOfScalar(u8, slice[0..end], '.') != null)
-        {
-            end -= 1;
+        const value = parseNumericLiteral(slice);
+        if (std.math.isPositiveInf(value)) {
+            return self.interner.intern("Infinity") catch error.OutOfMemory;
         }
-        if (end > 0 and slice[end - 1] == '.') end -= 1;
-        if (end == 0) end = slice.len;
-        return self.interner.intern(slice[0..end]) catch error.OutOfMemory;
+        if (std.math.isNegativeInf(value)) {
+            return self.interner.intern("-Infinity") catch error.OutOfMemory;
+        }
+        if (std.math.isNan(value)) {
+            return self.interner.intern("NaN") catch error.OutOfMemory;
+        }
+        const magnitude = @abs(value);
+        if (magnitude >= 1e21 or (magnitude != 0 and magnitude < 1e-6)) {
+            const scientific = try std.fmt.allocPrint(self.gpa, "{e}", .{value});
+            defer self.gpa.free(scientific);
+            const exponent = std.mem.indexOfScalar(u8, scientific, 'e') orelse {
+                return self.interner.intern(scientific) catch error.OutOfMemory;
+            };
+            if (exponent + 1 < scientific.len and scientific[exponent + 1] != '-') {
+                const canonical = try std.fmt.allocPrint(
+                    self.gpa,
+                    "{s}e+{s}",
+                    .{ scientific[0..exponent], scientific[exponent + 1 ..] },
+                );
+                defer self.gpa.free(canonical);
+                return self.interner.intern(canonical) catch error.OutOfMemory;
+            }
+            return self.interner.intern(scientific) catch error.OutOfMemory;
+        }
+        var buf: [64]u8 = undefined;
+        const canonical = if (value == 0)
+            "0"
+        else if (@floor(value) == value and
+            @abs(value) < 1e21 and
+            value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+            value <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+            std.fmt.bufPrint(&buf, "{d}", .{@as(i64, @intFromFloat(value))}) catch return error.OutOfMemory
+        else
+            std.fmt.bufPrint(&buf, "{d}", .{value}) catch return error.OutOfMemory;
+        return self.interner.intern(canonical) catch error.OutOfMemory;
     }
 
     // ========================================================================
@@ -21448,16 +21477,19 @@ fn parseNumericLiteral(slice: []const u8) f64 {
 }
 
 fn parseRadix(slice: []const u8, radix: u8) f64 {
-    var stripped: [64]u8 = undefined;
-    var n: usize = 0;
+    var value: f64 = 0;
     for (slice) |c| {
         if (c == '_') continue;
-        if (n >= stripped.len) break;
-        stripped[n] = c;
-        n += 1;
+        const digit: u8 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => return 0,
+        };
+        if (digit >= radix) return 0;
+        value = value * @as(f64, @floatFromInt(radix)) + @as(f64, @floatFromInt(digit));
     }
-    const v = std.fmt.parseInt(u64, stripped[0..n], radix) catch return 0.0;
-    return @floatFromInt(v);
+    return value;
 }
 
 // =============================================================================

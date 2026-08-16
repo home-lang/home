@@ -39724,7 +39724,8 @@ pub const Checker = struct {
             for (static_members.items) |*member| {
                 if (member.name == construct_name) {
                     member.type = static_ctor_sig;
-                    break;
+                } else if (member.name == prototype_name_id) {
+                    member.type = instance_t;
                 }
             }
             static_t = self.interner.internObjectTypeWithIndexAndSymbol(static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
@@ -42034,14 +42035,6 @@ pub const Checker = struct {
                 if (e.kind == .getter or e.kind == .setter) has_accessor = true;
             }
             if (has_accessor) {
-                const canonical_name = self.string_interner.get(a.canonical);
-                if (std.mem.startsWith(u8, canonical_name, "Symbol.")) {
-                    for (group_idx.items[1..]) |idx| {
-                        const e = entries.items[idx];
-                        try self.reportDuplicateIdentifierWithDisplay(e.name_node, a.display);
-                    }
-                    continue;
-                }
                 for (group_idx.items) |idx| {
                     const e = entries.items[idx];
                     try self.reportDuplicateIdentifierWithDisplay(e.name_node, a.display);
@@ -44841,15 +44834,7 @@ pub const Checker = struct {
                 break :blk self.string_interner.intern(synthetic) catch return error.OutOfMemory;
             },
             .literal_string => hir_mod.literalStringOf(self.hir, key).value,
-            .literal_number => blk: {
-                const value = hir_mod.literalNumberOf(self.hir, key);
-                const text = if (@floor(value) == value and std.math.isFinite(value) and @abs(value) < 1e21)
-                    try std.fmt.allocPrint(self.gpa, "{d}", .{@as(i64, @intFromFloat(value))})
-                else
-                    try std.fmt.allocPrint(self.gpa, "{d}", .{value});
-                defer self.gpa.free(text);
-                break :blk self.string_interner.intern(text) catch return error.OutOfMemory;
-            },
+            .literal_number => try self.enumNumberToStringId(hir_mod.literalNumberOf(self.hir, key)),
             .member_access => blk: {
                 if (!is_computed) break :blk null;
                 const m = hir_mod.memberOf(self.hir, key);
@@ -58916,6 +58901,8 @@ pub const Checker = struct {
         defer iface_member_predicates.deinit(self.gpa);
         var iface_property_type_nodes: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer iface_property_type_nodes.deinit(self.gpa);
+        var iface_symbol_property_nodes: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer iface_symbol_property_nodes.deinit(self.gpa);
 
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
@@ -59049,6 +59036,20 @@ pub const Checker = struct {
                 try self.reportMemberImplicitAny(m, im.name);
             }
             if (!im.is_method and !self.syntheticSignatureMemberName(im.name)) {
+                if (self.isSymbolNamedMember(im.name)) {
+                    const symbol_gop = try iface_symbol_property_nodes.getOrPut(self.gpa, im.name);
+                    if (symbol_gop.found_existing) {
+                        const raw_name = self.string_interner.get(im.name);
+                        const inner = self.computedMemberNameInner(raw_name) orelse raw_name;
+                        const display = try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{inner});
+                        if (!self.diagnosticExistsOnNode(symbol_gop.value_ptr.*, TsCodes.duplicate_identifier)) {
+                            try self.reportDuplicateIdentifierWithDisplay(symbol_gop.value_ptr.*, display);
+                        }
+                        try self.reportDuplicateIdentifierWithDisplay(m, display);
+                    } else {
+                        symbol_gop.value_ptr.* = m;
+                    }
+                }
                 const gop = try iface_property_type_nodes.getOrPut(self.gpa, im.name);
                 if (gop.found_existing) {
                     if (!self.nodeSourceTextEqual(gop.value_ptr.*, im.type_node)) {
@@ -61268,7 +61269,13 @@ pub const Checker = struct {
         if (target_has_no_index and !self.nodeIsNamedObjectInterface(container)) {
             if (try self.objectSourceAssignableToUpperObjectTarget(source, target)) |ok| return ok;
         }
-        return try self.heritageAssignableDeep(source, target);
+        if (!try self.heritageAssignableDeep(source, target)) return false;
+        if (self.interner.isSignature(source) and self.interner.isSignature(target)) {
+            const source_ret = self.interner.signatureReturn(source) orelse types.Primitive.any;
+            const target_ret = self.interner.signatureReturn(target) orelse types.Primitive.any;
+            return try self.heritageAssignableDeep(source_ret, target_ret);
+        }
+        return true;
     }
 
     fn nodeIsNamedObjectInterface(self: *Checker, node: NodeId) bool {
@@ -63464,14 +63471,38 @@ pub const Checker = struct {
     }
 
     fn enumNumberToStringId(self: *Checker, value: f64) CheckError!hir_mod.StringId {
-        if (std.math.isNan(value)) return self.string_interner.intern("NaN") catch return error.OutOfMemory;
-        if (std.math.isPositiveInf(value)) return self.string_interner.intern("Infinity") catch return error.OutOfMemory;
-        if (std.math.isNegativeInf(value)) return self.string_interner.intern("-Infinity") catch return error.OutOfMemory;
-        if (value == 0) return self.string_interner.intern("0") catch return error.OutOfMemory;
-
-        const text = try std.fmt.allocPrint(self.gpa, "{d}", .{value});
-        defer self.gpa.free(text);
+        var buf: [128]u8 = undefined;
+        const text = formatCanonicalNumber(&buf, value) catch return error.OutOfMemory;
         return self.string_interner.intern(text) catch return error.OutOfMemory;
+    }
+
+    fn formatCanonicalNumber(buf: []u8, value: f64) ![]const u8 {
+        if (std.math.isNan(value)) return "NaN";
+        if (std.math.isPositiveInf(value)) return "Infinity";
+        if (std.math.isNegativeInf(value)) return "-Infinity";
+        if (value == 0) return "0";
+
+        const magnitude = @abs(value);
+        if (magnitude >= 1e21 or magnitude < 1e-6) {
+            var scientific_buf: [128]u8 = undefined;
+            const scientific = try std.fmt.bufPrint(&scientific_buf, "{e}", .{value});
+            const exponent = std.mem.indexOfScalar(u8, scientific, 'e') orelse
+                return std.fmt.bufPrint(buf, "{s}", .{scientific});
+            if (exponent + 1 < scientific.len and scientific[exponent + 1] != '-') {
+                return std.fmt.bufPrint(buf, "{s}e+{s}", .{
+                    scientific[0..exponent],
+                    scientific[exponent + 1 ..],
+                });
+            }
+            return std.fmt.bufPrint(buf, "{s}", .{scientific});
+        }
+        if (@floor(value) == value and
+            value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+            value <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+        {
+            return std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(value))});
+        }
+        return std.fmt.bufPrint(buf, "{d}", .{value});
     }
 
     fn evalEnumConstExpression(self: *Checker, enum_name: hir_mod.StringId, node: NodeId) CheckError!?f64 {
@@ -77538,7 +77569,9 @@ pub const Checker = struct {
                     // TS2322 sites pick up the source / target binding
                     // names. Matches upstream baselines for
                     // `iterableArrayPattern{5,6,8}.ts` and friends.
-                    try self.reportTypeNotAssignable(el, source_elem_t, target_t, "Type is not assignable to target type.");
+                    if (!try self.tryReportNonArrayToArrayMissingProperties(el, source_elem_t, target_t, true)) {
+                        try self.reportTypeNotAssignable(el, source_elem_t, target_t, "Type is not assignable to target type.");
+                    }
                 } else {
                     const id = hir_mod.identifierOf(self.hir, el);
                     try self.recordNarrow(id.name, source_elem_t);
@@ -78688,12 +78721,7 @@ pub const Checker = struct {
             .string_lit => |sid| return sid,
             .number_lit => |bits| {
                 const v: f64 = @bitCast(bits);
-                var buf: [64]u8 = undefined;
-                const text = if (v == @floor(v) and v >= -9007199254740991 and v <= 9007199254740991)
-                    std.fmt.bufPrint(&buf, "{d}", .{@as(i64, @intFromFloat(v))}) catch return null
-                else
-                    std.fmt.bufPrint(&buf, "{d}", .{v}) catch return null;
-                return self.string_interner.intern(text) catch return error.OutOfMemory;
+                return try self.enumNumberToStringId(v);
             },
             else => return null,
         }
@@ -142799,7 +142827,8 @@ pub const Checker = struct {
                         diagnostic_arg_t = self.expressionLiteralType(args[i], diagnostic_arg_t) catch diagnostic_arg_t;
                     }
                     const missing_relation_target = try self.missingPropertyRelationTarget(display_param_t);
-                    if (!self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
+                    if (self.actualTupleLength(missing_relation_target) == null and
+                        !self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
                         try self.tryReportSinglePropertyMissingWithDisplayTarget(
                         args[i],
                         args[i],
@@ -142962,7 +142991,8 @@ pub const Checker = struct {
                         // `iterableArrayPattern{13,17,18,29}` etc.
                         const diagnostic_arg_t = try self.expressionLiteralType(args[j], arg_t);
                         const missing_relation_target = try self.missingPropertyRelationTarget(target_t);
-                        if (!self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
+                        if (self.actualTupleLength(missing_relation_target) == null and
+                            !self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
                             try self.tryReportSinglePropertyMissingWithDisplayTarget(
                                 args[j],
                                 args[j],
@@ -145472,20 +145502,36 @@ pub const Checker = struct {
         if (param_sigs.items.len == 0) return null;
 
         const arg_text = if (arg_sigs.items.len == 1)
-            (try self.allocCallableSignatureName(arg_sigs.items[0])) orelse
+            (try self.allocAnonymousClassStaticSignatureName(arg_sigs.items[0])) orelse
+                (try self.allocCallableSignatureName(arg_sigs.items[0])) orelse
                 (try self.allocSimpleTypeName(arg_t)) orelse
                 (try self.allocObjectTypeShape(arg_t)) orelse return null
         else
             (try self.allocObjectTypeShape(arg_t)) orelse return null;
 
         const param_text = if (param_sigs.items.len == 1)
-            (try self.allocCallableSignatureName(param_sigs.items[0])) orelse
+            (try self.allocAnonymousClassStaticSignatureName(param_sigs.items[0])) orelse
+                (try self.allocCallableSignatureName(param_sigs.items[0])) orelse
                 (try self.allocSimpleTypeName(param_t)) orelse
                 (try self.allocObjectTypeShape(param_t)) orelse return null
         else
             (try self.allocObjectTypeShape(param_t)) orelse return null;
 
         return .{ .arg = arg_text, .param = param_text };
+    }
+
+    fn allocAnonymousClassStaticSignatureName(self: *Checker, signature: TypeId) CheckError!?[]const u8 {
+        if (!self.interner.isSignature(signature)) return null;
+        const payload_idx = self.interner.pool.payloadOf(signature);
+        if (payload_idx >= self.interner.pool.signature_payloads.items.len or
+            !self.interner.pool.signature_payloads.items[payload_idx].is_construct)
+        {
+            return null;
+        }
+        const return_t = self.interner.signatureReturn(signature) orelse return null;
+        const return_name = (try self.allocSimpleTypeName(return_t)) orelse return null;
+        if (!std.mem.eql(u8, return_name, "(Anonymous class)")) return null;
+        return "typeof (Anonymous class)";
     }
 
     fn argumentCallOverloadSetNames(
@@ -160409,7 +160455,7 @@ pub const Checker = struct {
         };
         if (!source_is_object_shaped) return false;
 
-        if (try self.tryReportNonArrayToArrayMissingProperties(diag_node, source, target)) {
+        if (try self.tryReportNonArrayToArrayMissingProperties(diag_node, source, target, false)) {
             return true;
         }
 
@@ -160620,19 +160666,58 @@ pub const Checker = struct {
         diag_node: NodeId,
         source: TypeId,
         target: TypeId,
+        include_structural_array: bool,
     ) CheckError!bool {
         if (self.actualTupleLength(target) != null or
-            !self.array_origin_types.contains(target) or
+            (!self.array_origin_types.contains(target) and
+                !(include_structural_array and self.objectTypeIsArrayLikeContainer(target))) or
             self.objectTypeIsArrayLikeContainer(source))
         {
             return false;
         }
-        const source_name = (try self.missingPropertyTypeName(source)) orelse return false;
         const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
+        var missing_total: usize = 0;
+        if (std.mem.endsWith(u8, target_name, "[]")) {
+            // `internArrayType` stores only `length` plus the number
+            // indexer. For relation diagnostics, tsgo compares against
+            // the ES2015 Array<T> surface, whose 29 required properties
+            // determine TS2740's omitted-member count.
+            const array_members = [_][]const u8{
+                "length",       "pop",          "push",       "concat",
+                "join",         "reverse",      "shift",      "slice",
+                "sort",         "splice",       "unshift",    "indexOf",
+                "lastIndexOf",  "every",        "some",       "forEach",
+                "map",          "filter",       "reduce",     "reduceRight",
+                "find",         "findIndex",    "entries",    "keys",
+                "values",       "Symbol.iterator", "toString", "toLocaleString",
+                "fill",
+            };
+            for (array_members) |name| {
+                const member_id = self.string_interner.intern(name) catch return error.OutOfMemory;
+                if (source < self.interner.pool.typeCount() and
+                    self.interner.objectMember(source, member_id) != null)
+                {
+                    continue;
+                }
+                missing_total += 1;
+            }
+        } else {
+            for (self.interner.objectMembers(target)) |member| {
+                if (member.is_optional or self.syntheticSignatureMemberName(member.name)) continue;
+                if (source < self.interner.pool.typeCount() and
+                    self.interner.objectMember(source, member.name) != null)
+                {
+                    continue;
+                }
+                missing_total += 1;
+            }
+        }
+        if (missing_total <= 5) return false;
+        const source_name = (try self.missingPropertyTypeName(source)) orelse return false;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Type '{s}' is missing the following properties from type '{s}': length, pop, push, concat, and 24 more.",
-            .{ source_name, target_name },
+            "Type '{s}' is missing the following properties from type '{s}': length, pop, push, concat, and {d} more.",
+            .{ source_name, target_name, missing_total - 4 },
         );
         try self.report(diag_node, TsCodes.type_missing_properties_truncated, msg);
         return true;
@@ -160729,7 +160814,7 @@ pub const Checker = struct {
         // — `{ "data-prop": true; }` in `tsxUnionElementType6` /
         // `{ "data-extra": string; }` in `tsxUnionElementType3`. Plain
         // identifiers and simple numeric names (`0`, `42`) render bare.
-        const canonical_numeric = isAllDigits(name) and (name.len == 1 or name[0] != '0');
+        const canonical_numeric = isCanonicalNumericPropertyName(name);
         if (!isJsIdentifier(name) and !canonical_numeric) {
             try buf.append(arena, '"');
             try buf.appendSlice(arena, name);
@@ -160737,6 +160822,13 @@ pub const Checker = struct {
             return;
         }
         try buf.appendSlice(arena, name);
+    }
+
+    fn isCanonicalNumericPropertyName(name: []const u8) bool {
+        const value = std.fmt.parseFloat(f64, name) catch return false;
+        var buf: [128]u8 = undefined;
+        const canonical = formatCanonicalNumber(&buf, value) catch return false;
+        return std.mem.eql(u8, name, canonical);
     }
 
     fn objectMemberDeclaredNameText(self: *Checker, member: types.ObjectMember) ?[]const u8 {
@@ -164696,6 +164788,20 @@ pub const Checker = struct {
                     }
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
+                // Anonymous class expressions retain a nominal static-side
+                // identity in diagnostics instead of exposing their
+                // structural construct signature.
+                {
+                    var sit = self.class_static_type_by_node.iterator();
+                    while (sit.next()) |entry| {
+                        if (entry.value_ptr.* != t) continue;
+                        const class_node = entry.key_ptr.*;
+                        const kind = self.hir.kindOf(class_node);
+                        if (kind != .class_decl and kind != .class_expr) continue;
+                        if (hir_mod.classOf(self.hir, class_node).name != hir_mod.none_node_id) continue;
+                        break :blk "typeof (Anonymous class)";
+                    }
+                }
                 // `typeof Foo` rendering for class constructor types.
                 // The static side of `class Foo { ÃÂ¢ÃÂÃÂ¦ }` lives in
                 // `class_static_types[Foo]`; when that matches `t`,
@@ -164752,6 +164858,17 @@ pub const Checker = struct {
                         // Mirrors fixture
                         // `objectTypeWithConstructSignatureHidingMembersOfFunctionAssignmentCompat.ts(14,1)`.
                         if (members[0].name == construct_id and self.interner.isSignature(members[0].type)) {
+                            const return_t = self.interner.signatureReturn(members[0].type) orelse types.Primitive.none;
+                            if (self.alias_display_names.get(return_t)) |display| {
+                                if (std.mem.eql(u8, display, "(Anonymous class)")) {
+                                    break :blk "typeof (Anonymous class)";
+                                }
+                            }
+                            if (try self.allocSimpleTypeName(return_t)) |return_name| {
+                                if (std.mem.eql(u8, return_name, "(Anonymous class)")) {
+                                    break :blk "typeof (Anonymous class)";
+                                }
+                            }
                             if (try self.allocCallableSignatureName(members[0].type)) |name| break :blk name;
                         }
                     }
@@ -165129,6 +165246,17 @@ pub const Checker = struct {
                 // Synthesized signatures (no recorded names) fall
                 // back to positional `xN` placeholders.
                 if (self.interner.isSignature(t)) {
+                    const payload_idx = self.interner.pool.payloadOf(t);
+                    if (payload_idx < self.interner.pool.signature_payloads.items.len and
+                        self.interner.pool.signature_payloads.items[payload_idx].is_construct)
+                    {
+                        const return_t = self.interner.signatureReturn(t) orelse types.Primitive.none;
+                        if (try self.allocSimpleTypeName(return_t)) |return_name| {
+                            if (std.mem.eql(u8, return_name, "(Anonymous class)")) {
+                                break :blk "typeof (Anonymous class)";
+                            }
+                        }
+                    }
                     if (try self.allocCallableSignatureName(t)) |name| break :blk name;
                     break :blk null;
                 }
@@ -219018,7 +219146,7 @@ test "checker: two getters of same name emit TS2300" {
     try T.expect(dup_count >= 1);
 }
 
-test "checker: duplicate well-known symbol getters report only later declarations" {
+test "checker: duplicate well-known symbol getters report both declarations" {
     const s = try newSetup(
         \\class C {
         \\  get [Symbol.hasInstance]() { return true; }
@@ -219027,7 +219155,7 @@ test "checker: duplicate well-known symbol getters report only later declaration
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
 test "checker: method and field of same name emit TS2300" {
@@ -241496,7 +241624,7 @@ test "checker: computed symbol overloads diagnose mixed staticness without TS239
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.implementation_missing));
 }
 
-test "checker: identical well-known symbol interface properties merge" {
+test "checker: identical well-known symbol interface properties are duplicate identifiers" {
     const s = try newSetup(
         \\interface I {
         \\  [Symbol.isConcatSpreadable]: string;
@@ -241506,7 +241634,7 @@ test "checker: identical well-known symbol interface properties merge" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
 test "checker: in operator preserves well-known unique symbol display" {
@@ -241589,7 +241717,7 @@ test "checker: global namespace exports can expose namespace-local declaration t
     s.checker.setStrictFlags(.{ .declaration = true, .strict_null_checks = true, .strict_property_initialization = true });
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.duplicate_identifier));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.public_property_private_name));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.public_method_param_private_name));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.public_method_return_private_name));
