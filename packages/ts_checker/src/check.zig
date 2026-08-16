@@ -5941,7 +5941,6 @@ pub const Checker = struct {
             const comment_end = body_start + close_rel;
             search_start = comment_end + 2;
             if (!self.sourcePositionIsJsLike(comment_start)) continue;
-            if (!self.jsDocCommentHasFollowingStatement(root, comment_start)) continue;
             const body = src[body_start..comment_end];
             const missing = jsDocTypedefMissingTypeTag(body, body_start) orelse continue;
             try self.diagnostics.append(self.gpa, .{
@@ -6277,20 +6276,6 @@ pub const Checker = struct {
             if (span.start <= comment_start and comment_start < span.end) return stmt;
         }
         return root;
-    }
-
-    fn jsDocCommentHasFollowingStatement(self: *Checker, root: NodeId, comment_start: usize) bool {
-        if (self.hir.kindOf(root) != .block_stmt) return false;
-        const section = self.virtualSectionStartForPos(comment_start);
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            const span = self.hir.spanOf(stmt);
-            if (span.start <= comment_start and comment_start < span.end) return true;
-            if (span.start <= comment_start) continue;
-            if (self.sourceHasVirtualFilenameSections() and
-                self.virtualSectionStartForNode(stmt) != section) continue;
-            return true;
-        }
-        return false;
     }
 
     fn jsDocHasInvalidTemplatePlacement(body: []const u8) bool {
