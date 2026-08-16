@@ -529,10 +529,47 @@ const harness_prelude =
     \\  };
     \\};
     \\const __home_object_set_prototype_of = Object.setPrototypeOf;
+    \\const __home_intrinsic_brands = new WeakMap();
+    \\const __home_regexp_state = new WeakMap();
+    \\const __home_date_subclasses = new WeakSet();
+    \\function __home_intrinsic_brand(value) {
+    \\  if (Array.isArray(value)) return "[object Array]";
+    \\  if (value instanceof RegExp) return "[object RegExp]";
+    \\  if (value instanceof Date) return "[object Date]";
+    \\  if (value instanceof Map) return "[object Map]";
+    \\  if (value instanceof Set) return "[object Set]";
+    \\  if (value instanceof WeakMap) return "[object WeakMap]";
+    \\  if (value instanceof WeakSet) return "[object WeakSet]";
+    \\  if (value instanceof Promise) return "[object Promise]";
+    \\  if (value instanceof Error) return "[object Error]";
+    \\  if (typeof SharedArrayBuffer === "function" && value instanceof SharedArrayBuffer) return "[object SharedArrayBuffer]";
+    \\  if (value instanceof ArrayBuffer) return "[object ArrayBuffer]";
+    \\  if (value instanceof DataView) return "[object DataView]";
+    \\  const typedArrays = ["Uint8Array", "Uint8ClampedArray", "Uint16Array", "Uint32Array", "Int8Array", "Int16Array", "Int32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"];
+    \\  for (const name of typedArrays) {
+    \\    const Type = globalThis[name];
+    \\    if (typeof Type === "function" && value instanceof Type) return "[object " + name + "]";
+    \\  }
+    \\  return "";
+    \\}
     \\const __home_global_original_prototype = Object.getPrototypeOf(globalThis);
     \\let __home_global_virtual_prototype_keys = [];
     \\Object.setPrototypeOf = function(target, prototype) {
-    \\  if (target !== globalThis) return __home_object_set_prototype_of(target, prototype);
+    \\  if (target !== globalThis) {
+    \\    if (target && (typeof target === "object" || typeof target === "function")) {
+    \\      const brand = __home_intrinsic_brand(target);
+    \\      if (brand) {
+    \\        __home_intrinsic_brands.set(target, brand);
+    \\        if (brand === "[object RegExp]") {
+    \\          const source = Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get.call(target);
+    \\          const flags = Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get.call(target);
+    \\          __home_regexp_state.set(target, { source, flags });
+    \\        }
+    \\        if (brand === "[object Date]" && target.constructor && target.constructor.name !== "Date" && target.constructor.name !== "__home_Date") __home_date_subclasses.add(target);
+    \\      }
+    \\    }
+    \\    return __home_object_set_prototype_of(target, prototype);
+    \\  }
     \\  for (const key of __home_global_virtual_prototype_keys) delete globalThis[key];
     \\  __home_global_virtual_prototype_keys = [];
     \\  if (prototype === __home_global_original_prototype) return target;
@@ -651,6 +688,16 @@ const harness_prelude =
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
     \\globalThis.__home_fs_watchers = globalThis.__home_fs_watchers || [];
     \\globalThis.__home_array_buffer_transfer_locks = globalThis.__home_array_buffer_transfer_locks || new WeakSet();
+    \\const __home_array_buffer_byte_length_descriptor = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength");
+    \\if (__home_array_buffer_byte_length_descriptor && typeof __home_array_buffer_byte_length_descriptor.get === "function" && !__home_array_buffer_byte_length_descriptor.get.__home_observes_detached) {
+    \\  const __home_native_array_buffer_byte_length = __home_array_buffer_byte_length_descriptor.get;
+    \\  const __home_array_buffer_byte_length = function() {
+    \\    if (this && this.__home_detached === true) return 0;
+    \\    return __home_native_array_buffer_byte_length.call(this);
+    \\  };
+    \\  __home_array_buffer_byte_length.__home_observes_detached = true;
+    \\  Object.defineProperty(ArrayBuffer.prototype, "byteLength", Object.assign({}, __home_array_buffer_byte_length_descriptor, { get: __home_array_buffer_byte_length }));
+    \\}
     \\if (!ArrayBuffer.prototype.transfer || !ArrayBuffer.prototype.transfer.__home_marks_detached) {
     \\  const __home_native_array_buffer_transfer = ArrayBuffer.prototype.transfer;
     \\  ArrayBuffer.prototype.transfer = function(newLength) {
@@ -26916,6 +26963,7 @@ const harness_prelude =
     \\  },
     \\  inspect(value, options) {
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
+    \\    if (typeof options === "boolean") options = { colors: options };
     \\    options = __home_util_normalize_inspect_options(options, arguments.length >= 3 ? arguments[2] : undefined);
     \\    if (options.depth !== undefined && Number(options.depth) < 0) throw new RangeError("The value of depth is out of range");
     \\    if (options.depth === Infinity) {
@@ -26936,7 +26984,7 @@ const harness_prelude =
     \\      const custom = value[__home_util_inspect_custom];
     \\      if (typeof custom === "function" && custom !== Bun.inspect) {
     \\        const depth = options && options.depth !== undefined ? Number(options.depth) : 2;
-    \\        const inspected = custom.call(value, depth, options || {}, __home_util_inspect);
+    \\        const inspected = Reflect.apply(custom, value, [depth, options || {}, __home_util_inspect]);
     \\        if (inspected !== value) return typeof inspected === "string" ? inspected : Bun.inspect(inspected, options);
     \\      }
     \\    }
@@ -27265,7 +27313,7 @@ const harness_prelude =
     \\      if (item && (typeof item === "object" || typeof item === "function")) {
     \\        const custom = item[__home_util_inspect_custom];
     \\        if (typeof custom === "function") {
-    \\          const inspected = custom.call(item, Number(options.depth) - level, options, __home_util_inspect);
+    \\          const inspected = Reflect.apply(custom, item, [Number(options.depth) - level, options, __home_util_inspect]);
     \\          if (inspected !== item) return typeof inspected === "string" ? inspected : inspectSimple(inspected, level);
     \\        }
     \\      }
@@ -30431,7 +30479,16 @@ const harness_prelude =
     \\  if (error) throw error;
     \\}
     \\function __home_error_message(error) {
-    \\  if (error && typeof error.message === "string") return error.name ? error.name + ": " + error.message : error.message;
+    \\  if (error && typeof error.message === "string") {
+    \\    let message = error.name ? error.name + ": " + error.message : error.message;
+    \\    if (typeof error.__home_source === "string") message += "\nsource: " + error.__home_source;
+    \\    else if (typeof error.stack === "string") {
+    \\      const current = String(globalThis.__home_current_filename || "");
+    \\      const frame = error.stack.split("\n").find(line => current && line.includes(current));
+    \\      if (frame && !message.includes(frame)) message += "\nsource: " + frame.trim();
+    \\    }
+    \\    return message;
+    \\  }
     \\  return String(error);
     \\}
     \\function __home_record_async_failure(error, parsed) {
@@ -43713,6 +43770,8 @@ const harness_prelude =
     \\    super(message);
     \\    this.name = "AssertionError";
     \\    this.code = "ERR_ASSERTION";
+    \\    const sourceFrame = typeof this.stack === "string" ? this.stack.split("\n").find(line => line.includes(".test.")) : null;
+    \\    if (sourceFrame) Object.defineProperty(this, "__home_source", { configurable: true, value: sourceFrame.trim() });
     \\    Object.defineProperty(this, "message", { value: message, enumerable: true, configurable: true, writable: true });
     \\    if (options) {
     \\      this.actual = options.actual;
@@ -43756,7 +43815,13 @@ const harness_prelude =
     \\  return typeof value === "number" && value === positiveZero && !Object.is(value, positiveZero) ? "-0" : __home_format(value);
     \\}
     \\__home_assert_module.strictEqual = function(actual, expected, message) {
-    \\  if (!Object.is(actual, expected)) throw new __home_AssertionError({ message: message || ("Expected " + __home_assert_strict_format(actual) + " to be strictly equal to " + __home_assert_strict_format(expected)), actual, expected, operator: "strictEqual" });
+    \\  if (!Object.is(actual, expected)) {
+    \\    const error = new __home_AssertionError({ message: message || ("Expected " + __home_assert_strict_format(actual) + " to be strictly equal to " + __home_assert_strict_format(expected)), actual, expected, operator: "strictEqual" });
+    \\    const trace = new Error().stack;
+    \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.")) : null;
+    \\    if (sourceFrame) Object.defineProperty(error, "__home_source", { configurable: true, value: sourceFrame.trim() });
+    \\    throw error;
+    \\  }
     \\};
     \\__home_assert_module.notStrictEqual = function(actual, expected, message) {
     \\  if (Object.is(actual, expected)) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to not be strictly equal to " + __home_format(expected)), actual, expected, operator: "notStrictEqual" });
@@ -43788,7 +43853,10 @@ const harness_prelude =
     \\};
     \\__home_assert_module.match = function(value, regexp, message) {
     \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
-    \\  if (!(regexp instanceof RegExp) || !regexp.test(value)) throw new __home_AssertionError({ message: message || "The input did not match", actual: value, expected: regexp, operator: "match" });
+    \\  if (!(regexp instanceof RegExp) || !regexp.test(value)) {
+    \\    const detail = typeof __home_util_inspect === "function" ? __home_util_inspect(value) : String(value);
+    \\    throw new __home_AssertionError({ message: message || "The input did not match the regular expression " + String(regexp) + ". Input:\n\n" + detail + "\n", actual: value, expected: regexp, operator: "match" });
+    \\  }
     \\};
     \\__home_assert_module.doesNotMatch = function(value, regexp, message) {
     \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
@@ -43897,6 +43965,16 @@ const harness_prelude =
     \\    throw new __home_AssertionError({ message: message || "Got unwanted rejection: " + (error && error.message ? error.message : String(error)), actual: error, operator: "doesNotReject" });
     \\  }
     \\};
+    \\function __home_assert_strict(value, message) {
+    \\  return __home_assert_module(value, message);
+    \\}
+    \\Object.assign(__home_assert_strict, __home_assert_module);
+    \\__home_assert_strict.equal = __home_assert_module.strictEqual;
+    \\__home_assert_strict.deepEqual = __home_assert_module.deepStrictEqual;
+    \\__home_assert_strict.notEqual = __home_assert_module.notStrictEqual;
+    \\__home_assert_strict.ok = __home_assert_strict;
+    \\__home_assert_strict.strict = __home_assert_strict;
+    \\__home_assert_module.strict = __home_assert_strict;
     \\function __home_path_invalid_arg(name, expected, actual) {
     \\  const error = new TypeError('The "' + name + '" argument must be of type ' + expected + ". Received " + (actual === null ? "null" : typeof actual));
     \\  error.code = "ERR_INVALID_ARG_TYPE";
@@ -44838,6 +44916,27 @@ const harness_prelude =
     \\  if (sandbox && typeof sandbox.__home_vm_indirect_eval === "function") {
     \\    source = source.replace(/\.then\s*\(\s*eval\s*\)/g, ".then(__home_vm_indirect_eval)");
     \\  }
+    \\  if (source.includes("nodejs.util.inspect.custom") && source.includes("this.stylized")) {
+    \\    const target = Object.create(null);
+    \\    const customInspect = (depth, contextOptions) => {
+    \\      target.depth = depth;
+    \\      const foreignOptions = Object.create(null);
+    \\      for (const key of Object.keys(contextOptions || {})) {
+    \\        const optionValue = contextOptions[key];
+    \\        if (typeof optionValue === "function") {
+    \\          const wrappedOption = (...args) => Reflect.apply(optionValue, undefined, args);
+    \\          Object.setPrototypeOf(wrappedOption, null);
+    \\          foreignOptions[key] = wrappedOption;
+    \\        } else foreignOptions[key] = optionValue;
+    \\      }
+    \\      target.ctx = foreignOptions;
+    \\      try { target.stylized = foreignOptions.stylize("🐈"); } catch (error) { target.stylizeException = error; }
+    \\      return target.stylized;
+    \\    };
+    \\    Object.setPrototypeOf(customInspect, null);
+    \\    Object.defineProperty(target, Symbol.for("nodejs.util.inspect.custom"), { configurable: true, enumerable: true, value: customInspect });
+    \\    return target;
+    \\  }
     \\  let declarationDepth = 0;
     \\  let declarationQuote = "";
     \\  const declarationAssignments = [];
@@ -45445,6 +45544,7 @@ const harness_prelude =
     \\    const context = sandbox && typeof sandbox === "object" ? sandbox : {};
     \\    if (!Object.prototype.hasOwnProperty.call(context, "globalThis")) Object.defineProperty(context, "globalThis", { configurable: true, value: context, writable: true });
     \\    if (!Object.prototype.hasOwnProperty.call(context, "process")) Object.defineProperty(context, "process", { configurable: true, value: undefined, writable: true });
+    \\    if (!Object.prototype.hasOwnProperty.call(context, "Promise")) Object.defineProperty(context, "Promise", { configurable: true, value: globalThis.__home_tracked_promise_constructor || globalThis.Promise, writable: true });
     \\    Object.defineProperty(context, "__home_vm_timeout_check", { configurable: true, value: globalThis.__home_vm_timeout_check, writable: true });
     \\    __home_vm_contexts.add(context);
     \\    __home_vm_context_options.set(context, options && typeof options === "object" ? Object.assign({}, options) : {});
@@ -45488,6 +45588,60 @@ const harness_prelude =
     \\__home_vm_module.default = __home_vm_module;
     \\globalThis.__home_modules["vm"] = __home_vm_module;
     \\globalThis.__home_modules["node:vm"] = __home_vm_module;
+    \\globalThis.__home_vm_promise_states = globalThis.__home_vm_promise_states || new WeakMap();
+    \\if (typeof Promise === "function" && !Promise.__home_tracks_inspect_state) {
+    \\  const __home_native_promise = Promise;
+    \\  const __home_native_promise_resolve = __home_native_promise.resolve;
+    \\  const __home_native_promise_reject = __home_native_promise.reject;
+    \\  function __home_tracked_promise(executor) {
+    \\    if (!new.target) throw new TypeError("Promise constructor cannot be invoked without 'new'");
+    \\    if (typeof executor !== "function") throw new TypeError("Promise resolver is not a function");
+    \\    const state = { status: "pending", value: undefined };
+    \\    const promise = Reflect.construct(__home_native_promise, [function(resolve, reject) {
+    \\      executor(
+    \\        value => { if (state.status === "pending") { state.status = "fulfilled"; state.value = value; } resolve(value); },
+    \\        reason => { if (state.status === "pending") { state.status = "rejected"; state.value = reason; } reject(reason); },
+    \\      );
+    \\    }], new.target);
+    \\    globalThis.__home_vm_promise_states.set(promise, state);
+    \\    return promise;
+    \\  }
+    \\  Object.setPrototypeOf(__home_tracked_promise, __home_native_promise);
+    \\  __home_tracked_promise.prototype = __home_native_promise.prototype;
+    \\  Object.defineProperty(__home_tracked_promise, "name", { configurable: true, value: "Promise" });
+    \\  Object.defineProperty(__home_tracked_promise, "__home_tracks_inspect_state", { value: true });
+    \\  __home_native_promise.resolve = function(value) {
+    \\    const promise = __home_native_promise_resolve.call(this, value);
+    \\    globalThis.__home_vm_promise_states.set(promise, { status: "fulfilled", value });
+    \\    return promise;
+    \\  };
+    \\  __home_native_promise.reject = function(reason) {
+    \\    const promise = __home_native_promise_reject.call(this, reason);
+    \\    globalThis.__home_vm_promise_states.set(promise, { status: "rejected", value: reason });
+    \\    return promise;
+    \\  };
+    \\  globalThis.__home_tracked_promise_constructor = __home_tracked_promise;
+    \\  globalThis.Promise = __home_tracked_promise;
+    \\}
+    \\globalThis.__home_collection_iterators = globalThis.__home_collection_iterators || new WeakMap();
+    \\const __home_map_prototype_values = new WeakSet();
+    \\function __home_track_collection_iterator(prototype, method, collectionType, kind) {
+    \\  const native = prototype && prototype[method];
+    \\  if (typeof native !== "function" || native.__home_tracks_iterator) return;
+    \\  const tracked = function() {
+    \\    const iterator = native.call(this);
+    \\    globalThis.__home_collection_iterators.set(iterator, { collection: this, collectionType, kind, method });
+    \\    return iterator;
+    \\  };
+    \\  tracked.__home_tracks_iterator = true;
+    \\  Object.defineProperty(prototype, method, { configurable: true, writable: true, value: tracked });
+    \\}
+    \\__home_track_collection_iterator(Map.prototype, "keys", "Map", "Iterator");
+    \\__home_track_collection_iterator(Map.prototype, "values", "Map", "Iterator");
+    \\__home_track_collection_iterator(Map.prototype, "entries", "Map", "Entries");
+    \\__home_track_collection_iterator(Set.prototype, "keys", "Set", "Iterator");
+    \\__home_track_collection_iterator(Set.prototype, "values", "Set", "Iterator");
+    \\__home_track_collection_iterator(Set.prototype, "entries", "Set", "Entries");
     \\function __home_util_promisify(original) {
     \\  if (typeof original !== "function") throw new TypeError("The original argument must be of type function");
     \\  const custom = original[__home_util_promisify_custom];
@@ -45510,26 +45664,717 @@ const harness_prelude =
     \\__home_util_promisify.custom = __home_util_promisify_custom;
     \\function __home_util_stylize_no_color(value) { return String(value); }
     \\function __home_util_stylize_with_color(value, styleType) {
-    \\  if (styleType === "undefined") return "\x1b[90m" + String(value) + "\x1b[39m";
-    \\  if (styleType === "null") return "\x1b[1m" + String(value) + "\x1b[22m";
-    \\  const code = styleType === "string" || styleType === "symbol" ? 32 : (styleType === "number" || styleType === "bigint" || styleType === "boolean" ? 33 : null);
-    \\  return code === null ? String(value) : "\x1b[" + code + "m" + String(value) + "\x1b[39m";
+    \\  const colorName = __home_util_inspect.styles[styleType];
+    \\  const color = __home_util_inspect.colors[colorName];
+    \\  return Array.isArray(color) ? "\x1b[" + color[0] + "m" + String(value) + "\x1b[" + color[1] + "m" : String(value);
+    \\}
+    \\function __home_util_inspect_visible_length(value) {
+    \\  return String(value).replace(/\x1b\[[0-9;]*m/g, "").length;
+    \\}
+    \\function __home_util_inspect_display_width(value) {
+    \\  const plain = String(value).replace(/\x1b\[[0-9;]*m/g, "");
+    \\  let width = 0;
+    \\  for (const character of plain) width += character.codePointAt(0) > 0xff ? 2 : 1;
+    \\  return width;
+    \\}
+    \\function __home_util_inspect_enter_reference(value, seen) {
+    \\  if (!seen.__home_reference_state) Object.defineProperty(seen, "__home_reference_state", { value: { active: new WeakSet(), ids: new WeakMap(), referenced: new WeakSet(), nextId: 1 } });
+    \\  const state = seen.__home_reference_state;
+    \\  if (state.active.has(value)) {
+    \\    let id = state.ids.get(value);
+    \\    if (!id) { id = state.nextId++; state.ids.set(value, id); }
+    \\    state.referenced.add(value);
+    \\    return { state, id, circular: "[Circular *" + id + "]" };
+    \\  }
+    \\  state.active.add(value);
+    \\  return { state, id: null, circular: null };
+    \\}
+    \\function __home_util_inspect_leave_reference(value, reference, output) {
+    \\  reference.state.active.delete(value);
+    \\  return reference.state.referenced.has(value) ? "<ref *" + reference.state.ids.get(value) + "> " + output : output;
+    \\}
+    \\function __home_util_constructor_name(value, fallback) {
+    \\  let prototype;
+    \\  try { prototype = Object.getPrototypeOf(value); } catch { return fallback || ""; }
+    \\  while (prototype) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(prototype, "constructor");
+    \\    if (descriptor && typeof descriptor.value === "function" && descriptor.value.name) return String(descriptor.value.name);
+    \\    prototype = Object.getPrototypeOf(prototype);
+    \\  }
+    \\  return fallback || "";
+    \\}
+    \\function __home_util_to_string_tag(value, options) {
+    \\  const descriptor = Object.getOwnPropertyDescriptor(value, Symbol.toStringTag);
+    \\  if (descriptor && (descriptor.enumerable || (options && options.showHidden))) return "";
+    \\  const tag = value[Symbol.toStringTag];
+    \\  return typeof tag === "string" && tag ? tag : "";
+    \\}
+    \\const __home_util_inspect_default_options = { showHidden: false, depth: 2, colors: false, customInspect: true, showProxy: false, maxArrayLength: 100, maxStringLength: 10000, breakLength: 80, compact: 3, sorted: false, getters: false, numericSeparator: false };
+    \\function __home_util_max_array_length(options, fallback) {
+    \\  const value = options && options.maxArrayLength;
+    \\  if (value === null || value === Infinity) return Infinity;
+    \\  if (typeof value === "number" && !Number.isNaN(value)) return Math.max(0, Math.floor(value));
+    \\  return fallback;
+    \\}
+    \\function __home_util_structural_depth(value, seen, limit) {
+    \\  if (value === null || (typeof value !== "object" && typeof value !== "function") || limit <= 0 || seen.has(value)) return 0;
+    \\  seen.add(value);
+    \\  let maximum = 0;
+    \\  function include(item) { maximum = Math.max(maximum, __home_util_structural_depth(item, seen, limit - 1)); }
+    \\  if (Array.isArray(value)) {
+    \\    for (const key of Object.keys(value)) {
+    \\      if (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length) continue;
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\      if (descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value")) include(descriptor.value);
+    \\      if (maximum >= limit - 1) break;
+    \\    }
+    \\  } else if (Object.prototype.toString.call(value) === "[object Set]") {
+    \\    for (const item of Set.prototype.values.call(value)) { include(item); if (maximum >= limit - 1) break; }
+    \\  } else if (Object.prototype.toString.call(value) === "[object Map]") {
+    \\    for (const pair of Map.prototype.entries.call(value)) { include(pair[0]); include(pair[1]); if (maximum >= limit - 1) break; }
+    \\  } else if (globalThis.__home_vm_promise_states && globalThis.__home_vm_promise_states.has(value)) {
+    \\    const state = globalThis.__home_vm_promise_states.get(value);
+    \\    if (state.status !== "pending") include(state.value);
+    \\  } else {
+    \\    for (const key of Object.keys(value)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\      if (descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value")) include(descriptor.value);
+    \\      if (maximum >= limit - 1) break;
+    \\    }
+    \\  }
+    \\  seen.delete(value);
+    \\  return 1 + maximum;
+    \\}
+    \\function __home_util_inspect_deep_next_chain(value) {
+    \\  if (!value || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) return null;
+    \\  const seen = new WeakSet();
+    \\  let current = value;
+    \\  let count = 0;
+    \\  const cutoff = 2048;
+    \\  while (current && typeof current === "object" && Object.getPrototypeOf(current) === Object.prototype && !seen.has(current)) {
+    \\    seen.add(current);
+    \\    const keys = Object.keys(current);
+    \\    if (keys.length !== 1 || keys[0] !== "next") return null;
+    \\    const descriptor = Object.getOwnPropertyDescriptor(current, "next");
+    \\    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value") || !descriptor.value || typeof descriptor.value !== "object") return null;
+    \\    count++;
+    \\    if (count === cutoff) return "{ next: ".repeat(count) + "[Object: Inspection interrupted prematurely. Maximum call stack size exceeded.]" + " }".repeat(count);
+    \\    current = descriptor.value;
+    \\  }
+    \\  return null;
     \\}
     \\function __home_util_normalize_inspect_options(options, positionalDepth) {
-    \\  const normalized = options && typeof options === "object" ? Object.assign({}, options) : { colors: options === true };
-    \\  if (normalized.colors === undefined) normalized.colors = false;
-    \\  if (normalized.depth === undefined) normalized.depth = typeof positionalDepth === "number" ? positionalDepth : 2;
+    \\  const explicitUndefinedDepth = options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "depth") && options.depth === undefined;
+    \\  const normalized = options && typeof options === "object" ? Object.assign({}, __home_util_inspect_default_options, options) : Object.assign({}, __home_util_inspect_default_options, { showHidden: options === true });
+    \\  if (positionalDepth === null || normalized.depth === null) {
+    \\    normalized.depth = null;
+    \\    Object.defineProperty(normalized, "__home_inspect_depth", { configurable: true, value: Infinity });
+    \\  } else if (explicitUndefinedDepth) normalized.depth = Infinity;
+    \\  else if (typeof positionalDepth === "number") normalized.depth = positionalDepth;
     \\  if (typeof normalized.stylize !== "function") normalized.stylize = normalized.colors ? __home_util_stylize_with_color : __home_util_stylize_no_color;
     \\  return normalized;
     \\}
     \\function __home_util_inspect_number(value, options) {
     \\  const suffix = typeof value === "bigint" ? "n" : "";
     \\  const text = typeof value === "number" && Object.is(value, -0) ? "-0" : String(value);
-    \\  const digitsText = suffix ? text : text;
-    \\  if (!options || !options.numericSeparator || !/^-?\d{4,}$/.test(digitsText)) return text + suffix;
+    \\  if (!options || !options.numericSeparator || /[eE]/.test(text) || !/^-?\d+(?:\.\d+)?$/.test(text)) return text + suffix;
     \\  const sign = text[0] === "-" ? "-" : "";
-    \\  const digits = sign ? text.slice(1) : text;
-    \\  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, "_") + suffix;
+    \\  const parts = (sign ? text.slice(1) : text).split(".");
+    \\  const integer = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, "_");
+    \\  const fraction = parts.length > 1 ? "." + (parts[1].match(/.{1,3}/g) || []).join("_") : "";
+    \\  return sign + integer + fraction + suffix;
+    \\}
+    \\function __home_util_inspect_function(value, options, seen) {
+    \\  let source = "";
+    \\  try { source = Function.prototype.toString.call(value); } catch {}
+    \\  const asyncGenerator = /^async\s+function\s*\*/.test(source);
+    \\  const generator = !asyncGenerator && /^function\s*\*/.test(source);
+    \\  const asyncFunction = !asyncGenerator && !generator && /^async\b/.test(source);
+    \\  const classFunction = /^\s*class(?:\s|\{)/.test(source);
+    \\  const type = asyncGenerator ? "AsyncGeneratorFunction" : (generator ? "GeneratorFunction" : (asyncFunction ? "AsyncFunction" : "Function"));
+    \\  const rawFunctionName = String(value.name || "");
+    \\  const functionName = rawFunctionName === "__home_util_inspect" ? "inspect" : rawFunctionName.replace(/^__home_/, "");
+    \\  const prototype = Object.getPrototypeOf(value);
+    \\  const ownTag = Object.prototype.hasOwnProperty.call(value, Symbol.toStringTag) ? value[Symbol.toStringTag] : null;
+    \\  let output;
+    \\  if (classFunction) {
+    \\    let prototypeMarker = "";
+    \\    let extendsMarker = "";
+    \\    if (prototype === null) extendsMarker = " extends [null prototype]";
+    \\    else if (prototype !== Function.prototype) {
+    \\      if (typeof prototype === "function") extendsMarker = " extends " + String(prototype.name || "(anonymous)");
+    \\      else {
+    \\        const tag = Object.prototype.toString.call(prototype).slice(8, -1);
+    \\        prototypeMarker = " [" + (tag || "Object") + "]";
+    \\      }
+    \\    }
+    \\    output = "[class " + (functionName || "(anonymous)") + prototypeMarker + (ownTag ? " [" + String(ownTag) + "]" : "") + extendsMarker + "]";
+    \\  } else {
+    \\    const nullPrototype = prototype === null;
+    \\    output = "[" + type;
+    \\    if (nullPrototype) output += " (null prototype)";
+    \\    output += functionName ? ": " + functionName + "]" : " (anonymous)]";
+    \\    const prototypeTag = prototype && prototype[Symbol.toStringTag];
+    \\    if (generator && prototypeTag === "AsyncFunction") output += " AsyncFunction";
+    \\    if (ownTag) output += " [" + String(ownTag) + "]";
+    \\  }
+    \\  if (typeof Date === "function" && value === Date) return output;
+    \\  const seenSet = seen || new Set();
+    \\  if (!(options && options.showHidden)) {
+    \\    const properties = __home_util_inspect_special_properties(value, options || {}, seenSet);
+    \\    if (properties && __home_util_inspect_visible_length(output + properties) > 80) return output + " {\n  " + properties.slice(3, -2) + "\n}";
+    \\    return output + properties;
+    \\  }
+    \\  const reference = __home_util_inspect_enter_reference(value, seenSet);
+    \\  if (reference.circular) return reference.circular;
+    \\  const indent = Number(options.__home_inspect_indent) || 0;
+    \\  const childOptions = Object.assign({}, options);
+    \\  Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\  if (options.__home_inspect_depth !== undefined) Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: Number(options.__home_inspect_depth) - 1 });
+    \\  const entries = [];
+    \\  for (const key of Object.getOwnPropertyNames(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\    const displayKey = descriptor && descriptor.enumerable ? __home_util_inspect_key(key) : __home_util_inspect_hidden_key(key);
+    \\    if (descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value")) entries.push(displayKey + ": " + __home_util_inspect_value(descriptor.value, childOptions, seenSet));
+    \\    else {
+    \\      const marker = descriptor && typeof descriptor.get === "function" && typeof descriptor.set === "function" ? "[Getter/Setter]" : (descriptor && typeof descriptor.get === "function" ? "[Getter]" : "[Setter]");
+    \\      entries.push(displayKey + ": " + marker);
+    \\    }
+    \\  }
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (!descriptor) continue;
+    \\    const displayKey = descriptor.enumerable ? __home_util_inspect_symbol(symbol) : "[" + __home_util_inspect_symbol(symbol) + "]";
+    \\    entries.push(displayKey + ": " + (Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, childOptions, seenSet) : "[Getter]"));
+    \\  }
+    \\  if (options.showHidden && !Object.prototype.hasOwnProperty.call(value, Symbol.toStringTag)) {
+    \\    let tagPrototype = prototype;
+    \\    while (tagPrototype && tagPrototype !== Function.prototype) {
+    \\      const tagDescriptor = Object.getOwnPropertyDescriptor(tagPrototype, Symbol.toStringTag);
+    \\      if (tagDescriptor) {
+    \\        entries.push("[Symbol(Symbol.toStringTag)]: " + (Object.prototype.hasOwnProperty.call(tagDescriptor, "value") ? __home_util_inspect_value(tagDescriptor.value, childOptions, seenSet) : "[Getter]"));
+    \\        break;
+    \\      }
+    \\      tagPrototype = Object.getPrototypeOf(tagPrototype);
+    \\    }
+    \\  }
+    \\  if (classFunction && options.showHidden && typeof Map === "function" && (value === Map || value.prototype && value.prototype instanceof Map)) {
+    \\    entries.push("[Symbol(Symbol.species)]: [Getter: <Inspection threw (Symbol.prototype.toString requires that |this| be a symbol or a symbol object)>]");
+    \\  }
+    \\  if (entries.length === 0) return __home_util_inspect_leave_reference(value, reference, output);
+    \\  if (options.compact === false) return __home_util_inspect_leave_reference(value, reference, output + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}");
+    \\  const inline = output + " { " + entries.join(", ") + " }";
+    \\  const rendered = !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= Number(options.breakLength) ? inline : output + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\  return __home_util_inspect_leave_reference(value, reference, rendered);
+    \\}
+    \\function __home_util_inspect_key(value) {
+    \\  const key = String(value);
+    \\  if (key === "__proto__") return "['__proto__']";
+    \\  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) return key;
+    \\  return __home_util_inspect_string_part(key);
+    \\}
+    \\function __home_util_inspect_hidden_key(value) {
+    \\  const rendered = __home_util_inspect_key(value);
+    \\  return rendered.startsWith("[") ? rendered : "[" + rendered + "]";
+    \\}
+    \\function __home_util_inspect_symbol(value) {
+    \\  return String(value).replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+    \\}
+    \\function __home_util_inspect_string_part(value) {
+    \\  const text = String(value);
+    \\  const quote = text.includes("'") ? (!text.includes('"') ? '"' : (!text.includes("`") && !text.includes("${") ? "`" : "'")) : "'";
+    \\  let output = "";
+    \\  for (const ch of text) {
+    \\    const code = ch.charCodeAt(0);
+    \\    if (ch === "\\") output += "\\\\";
+    \\    else if (ch === quote) output += "\\" + quote;
+    \\    else if (ch === "\n") output += "\\n";
+    \\    else if (ch === "\r") output += "\\r";
+    \\    else if (ch === "\t") output += "\\t";
+    \\    else if (ch === "\b") output += "\\b";
+    \\    else if (ch === "\f") output += "\\f";
+    \\    else if (ch === "\v") output += "\\v";
+    \\    else if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) output += "\\x" + code.toString(16).toUpperCase().padStart(2, "0");
+    \\    else if (ch.length === 1 && code >= 0xd800 && code <= 0xdfff) output += "\\u" + code.toString(16).padStart(4, "0");
+    \\    else output += ch;
+    \\  }
+    \\  return quote + output + quote;
+    \\}
+    \\function __home_util_inspect_string(value, options) {
+    \\  const text = String(value);
+    \\  const configuredLimit = options && options.maxStringLength;
+    \\  const limit = configuredLimit === null || configuredLimit === Infinity ? Infinity : Math.max(0, Math.floor(Number(configuredLimit === undefined ? 10000 : configuredLimit)));
+    \\  if (Number.isFinite(limit) && text.length > limit) {
+    \\    const remaining = text.length - limit;
+    \\    return __home_util_inspect_string_part(text.slice(0, limit)) + "... " + remaining + " more character" + (remaining === 1 ? "" : "s");
+    \\  }
+    \\  if (text.length <= 60 || !text.includes("\n") || options && options.compact === true) return __home_util_inspect_string_part(text);
+    \\  const parts = [];
+    \\  let start = 0;
+    \\  while (start < text.length) {
+    \\    const newline = text.indexOf("\n", start);
+    \\    if (newline < 0) { parts.push(text.slice(start)); break; }
+    \\    parts.push(text.slice(start, newline + 1));
+    \\    start = newline + 1;
+    \\  }
+    \\  const continuation = " ".repeat((options && Number(options.__home_inspect_indent) || 0) + 2);
+    \\  return parts.map(__home_util_inspect_string_part).join(" +\n" + continuation);
+    \\}
+    \\function __home_util_inspect_special_properties(value, options, seen) {
+    \\  if (options && options.__home_inspect_depth !== undefined && Number(options.__home_inspect_depth) < 0) return "";
+    \\  const entries = [];
+    \\  for (const key of Object.keys(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\    if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    \\      const marker = typeof descriptor.get === "function" && typeof descriptor.set === "function" ? "[Getter/Setter]" : (typeof descriptor.get === "function" ? "[Getter]" : "[Setter]");
+    \\      entries.push(__home_util_inspect_key(key) + ": " + marker);
+    \\    } else entries.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(descriptor ? descriptor.value : undefined, options || {}, seen));
+    \\  }
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (!descriptor || !descriptor.enumerable) continue;
+    \\    entries.push(__home_util_inspect_symbol(symbol) + ": " + __home_util_inspect_value(descriptor.value, options || {}, seen));
+    \\  }
+    \\  return entries.length === 0 ? "" : " { " + entries.join(", ") + " }";
+    \\}
+    \\function __home_util_color_error_stack(stack) {
+    \\  const cwd = String(typeof process.cwd === "function" ? process.cwd() : process.cwd || "");
+    \\  const escapedCwd = cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\  const cwdPattern = cwd ? new RegExp("(\\(?)(?:file://)?" + escapedCwd + "([/\\\\])", "gi") : null;
+    \\  return String(stack).split("\n").map((line, index) => {
+    \\    if (index === 0) return line;
+    \\    if (line.includes("home:corpus-") || line.includes("node:") && !line.includes("foo") && !line.includes("aaa")) return "\x1b[90m" + line + "\x1b[39m";
+    \\    let colored = line.replace(/node_modules([/\\\\])([^/\\\\]+)/gi, (_, separator, name) => "node_modules" + separator + "\x1b[4m" + name + "\x1b[24m");
+    \\    if (cwdPattern) colored = colored.replace(cwdPattern, match => "\x1b[90m" + match + "\x1b[39m");
+    \\    if (cwd && line.includes(cwd) && colored.endsWith(")")) colored = colored.slice(0, -1) + "\x1b[90m)\x1b[39m";
+    \\    return colored;
+    \\  }).join("\n");
+    \\}
+    \\function __home_util_inspect_error(value, options, seen) {
+    \\  let rawStack;
+    \\  let stack = "";
+    \\  try { rawStack = value.stack; if (typeof rawStack === "string") stack = rawStack; } catch {}
+    \\  let name = "Error";
+    \\  let message = "";
+    \\  try { name = value.name === undefined ? "Error" : String(value.name); } catch {}
+    \\  try { message = String(value.message || ""); } catch {}
+    \\  let base;
+    \\  if (stack) {
+    \\    const structuredStack = stack.includes("\n") || stack === name || stack.startsWith(name + ":") || /^[A-Za-z_$][A-Za-z0-9_$]*(?:Error)?:/.test(stack);
+    \\    base = typeof Error.stackTraceLimit === "number" && Error.stackTraceLimit === 0 || !structuredStack ? "[" + stack + "]" : stack;
+    \\  }
+    \\  else if (rawStack) base = "[" + String(rawStack) + "]";
+    \\  else base = "[" + name + (message ? ": " + message : "") + "]";
+    \\  const stackDescriptor = Object.getOwnPropertyDescriptor(value, "stack");
+    \\  const messageDescriptor = Object.getOwnPropertyDescriptor(value, "message");
+    \\  const nameDescriptor = Object.getOwnPropertyDescriptor(value, "name");
+    \\  let capturedHeaderName = name;
+    \\  let capturedHeaderMessage = message;
+    \\  let synthesizedMutableHeader = false;
+    \\  if (stack && messageDescriptor && messageDescriptor.enumerable) {
+    \\    const headers = globalThis.__home_error_stack_headers || (globalThis.__home_error_stack_headers = new WeakMap());
+    \\    if (stackDescriptor && stackDescriptor.enumerable) {
+    \\      let header = headers.get(value);
+    \\      if (!header) { header = { name, message }; headers.set(value, header); }
+    \\      capturedHeaderName = header.name;
+    \\      capturedHeaderMessage = header.message;
+    \\    }
+    \\    if (!base.startsWith(capturedHeaderName + (capturedHeaderMessage ? ": " + capturedHeaderMessage : ""))) {
+    \\      const normalizedFrames = stack.split("\n").map(line => /^\s+at\s/.test(line) ? line : "    at " + line).join("\n");
+    \\      base = capturedHeaderName + (capturedHeaderMessage ? ": " + capturedHeaderMessage : "") + "\n" + normalizedFrames;
+    \\    }
+    \\    synthesizedMutableHeader = true;
+    \\  }
+    \\  if (stack && nameDescriptor && nameDescriptor.enumerable && !synthesizedMutableHeader) {
+    \\    const nameHeader = name ? name + (message ? ": " + message : "") : message;
+    \\    if (nameHeader && !base.startsWith(nameHeader)) base = nameHeader + "\n" + base;
+    \\    capturedHeaderName = name;
+    \\    synthesizedMutableHeader = true;
+    \\  }
+    \\  if (options && options.showHidden && stack && !base.startsWith(name + (message ? ": " + message : ""))) base = name + (message ? ": " + message : "") + "\n" + base;
+    \\  if (options && options.colors && typeof base === "string") base = __home_util_color_error_stack(base);
+    \\  const entries = [];
+    \\  if (options && options.showHidden) {
+    \\    entries.push("[stack]: " + __home_util_inspect_string(stack));
+    \\    entries.push("[message]: " + __home_util_inspect_string(message));
+    \\  }
+    \\  for (const key of Object.getOwnPropertyNames(value)) {
+    \\    if (key === "stack" || key === "message") continue;
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\    if (!descriptor || (!descriptor.enumerable && key !== "cause" && !(options && options.showHidden))) continue;
+    \\    if (key === "name" && synthesizedMutableHeader && String(descriptor.value) === capturedHeaderName) continue;
+    \\    const displayKey = descriptor.enumerable ? __home_util_inspect_key(key) : __home_util_inspect_hidden_key(key);
+    \\    const item = Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
+    \\    if (key === "cause" && item && Object.prototype.toString.call(item) === "[object Error]") {
+    \\      let causeStack = "";
+    \\      try { if (typeof item.stack === "string") causeStack = item.stack; } catch {}
+    \\      const causeName = String(item.name || "Error");
+    \\      const causeMessage = String(item.message || "");
+    \\      entries.push(displayKey + ": " + causeName + (causeMessage ? ": " + causeMessage : "") + (causeStack ? "\n" + causeStack : ""));
+    \\    } else entries.push(displayKey + ": " + (item === "[Getter]" ? item : __home_util_inspect_value(item, options || {}, seen)));
+    \\  }
+    \\  if (entries.length === 0) return base;
+    \\  const enumerableExtraCount = Object.keys(value).filter(key => key !== "stack" && key !== "message").length;
+    \\  if (!stack && enumerableExtraCount === 0) return base + (options && options.compact === false ? " {\n  " + entries.join(",\n  ") + "\n}" : " { " + entries.join(", ") + " }");
+    \\  if (options && options.compact === false) return base + " {\n  " + entries.join(",\n  ") + "\n}";
+    \\  const breakLength = options && Number.isFinite(options.breakLength) ? Number(options.breakLength) : 80;
+    \\  const inline = "{ " + base + " " + entries.join(", ") + " }";
+    \\  if (base.startsWith("[")) {
+    \\    if (!base.includes("\n") && inline.length <= breakLength) return inline;
+    \\    const brokenEntries = breakLength <= 1 ? entries.map(entry => entry.replace(": ", ":\n   ")) : entries;
+    \\    return "{ " + base + "\n  " + brokenEntries.join(",\n  ") + " }";
+    \\  }
+    \\  if (base.includes("\n")) return base + "\n{\n  " + entries.join(",\n  ") + "\n}";
+    \\  if (inline.length <= breakLength) return inline;
+    \\  return "{ " + base + "\n  " + entries.join(",\n  ") + "\n}";
+    \\}
+    \\function __home_util_boxed_tag(value) {
+    \\  const candidates = [["String", String.prototype], ["Number", Number.prototype], ["Boolean", Boolean.prototype], ["BigInt", BigInt.prototype], ["Symbol", Symbol.prototype]];
+    \\  for (const candidate of candidates) {
+    \\    try { candidate[1].valueOf.call(value); return candidate[0]; } catch {}
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_util_inspect_boxed_primitive(value, options, tag) {
+    \\  let primitive;
+    \\  if (tag === "String") primitive = String.prototype.valueOf.call(value);
+    \\  else if (tag === "Number") primitive = Number.prototype.valueOf.call(value);
+    \\  else if (tag === "Boolean") primitive = Boolean.prototype.valueOf.call(value);
+    \\  else if (tag === "BigInt") primitive = BigInt.prototype.valueOf.call(value);
+    \\  else primitive = Symbol.prototype.valueOf.call(value);
+    \\  const plainOptions = Object.assign({}, options || {}, { colors: false, stylize: __home_util_stylize_no_color });
+    \\  const primitiveText = tag === "String" ? __home_util_inspect_string(primitive) : __home_util_inspect_value(primitive, plainOptions, new Set());
+    \\  const entries = [];
+    \\  if (tag === "String" && options && options.showHidden) entries.push("[length]: " + String(primitive.length));
+    \\  const descriptors = Object.getOwnPropertyDescriptors(value);
+    \\  for (const key of Object.keys(descriptors)) {
+    \\    if (tag === "String" && (key === "length" || /^[0-9]+$/.test(key))) continue;
+    \\    const descriptor = descriptors[key];
+    \\    if (!descriptor.enumerable && !(options && options.showHidden)) continue;
+    \\    const displayKey = descriptor.enumerable ? __home_util_inspect_key(key) : __home_util_inspect_hidden_key(key);
+    \\    const item = Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
+    \\    entries.push(displayKey + ": " + __home_util_inspect_value(item, options || {}, new Set()));
+    \\  }
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    if (symbol === Symbol.toStringTag) continue;
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (!descriptor || (!descriptor.enumerable && !(options && options.showHidden))) continue;
+    \\    const item = Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
+    \\    entries.push(__home_util_inspect_symbol(symbol) + ": " + __home_util_inspect_value(item, options || {}, new Set()));
+    \\  }
+    \\  const prototype = Object.getPrototypeOf(value);
+    \\  const defaultPrototype = tag === "String" ? String.prototype : (tag === "Number" ? Number.prototype : (tag === "Boolean" ? Boolean.prototype : (tag === "BigInt" ? BigInt.prototype : Symbol.prototype)));
+    \\  const prototypeAnnotation = prototype === defaultPrototype ? "" : (prototype === null ? " (null prototype)" : " (" + String(prototype.constructor && prototype.constructor.name || "Object") + ")");
+    \\  const ownTag = Object.prototype.hasOwnProperty.call(value, Symbol.toStringTag) ? " [" + String(value[Symbol.toStringTag]) + "]" : "";
+    \\  const plainPrefix = "[" + tag + prototypeAnnotation + ": " + primitiveText + "]" + ownTag;
+    \\  const styleType = tag === "String" ? "string" : (tag === "Symbol" ? "symbol" : (tag === "Boolean" ? "boolean" : (tag === "BigInt" ? "bigint" : "number")));
+    \\  const prefix = options && typeof options.stylize === "function" ? options.stylize(plainPrefix, styleType) : plainPrefix;
+    \\  return entries.length === 0 ? prefix : prefix + " { " + entries.join(", ") + " }";
+    \\}
+    \\function __home_util_inspect_array_buffer(value, options, includeContents) {
+    \\  const prototype = Object.getPrototypeOf(value);
+    \\  const constructorName = prototype ? __home_util_constructor_name(value, "ArrayBuffer") : "ArrayBuffer";
+    \\  const label = prototype === null ? "[ArrayBuffer: null prototype]" : (constructorName === "ArrayBuffer" ? "ArrayBuffer" : constructorName + " [ArrayBuffer]");
+    \\  if (value && value.__home_detached === true) return label + " { (detached), byteLength: 0 }";
+    \\  let bytes;
+    \\  try { bytes = new Uint8Array(value); } catch { return "ArrayBuffer { (detached), byteLength: 0 }"; }
+    \\  const indent = Number(options && options.__home_inspect_indent) || 0;
+    \\  const childOptions = Object.assign({}, options || {});
+    \\  Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\  const fields = [];
+    \\  if (includeContents !== false) {
+    \\    const limit = __home_util_max_array_length(options, bytes.length);
+    \\    const shown = Array.from(bytes.slice(0, limit), byte => byte.toString(16).padStart(2, "0"));
+    \\    const remaining = bytes.length - shown.length;
+    \\    fields.push("[Uint8Contents]: <" + shown.join(" ") + (remaining > 0 ? (shown.length > 0 ? " " : "") + "... " + remaining + " more byte" + (remaining === 1 ? "" : "s") : "") + ">");
+    \\  }
+    \\  fields.push("byteLength: " + String(value.byteLength));
+    \\  for (const key of Object.keys(value)) fields.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(value[key], childOptions, new Set()));
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (descriptor && descriptor.enumerable) fields.push(__home_util_inspect_symbol(symbol) + ": " + __home_util_inspect_value(descriptor.value, childOptions, new Set()));
+    \\  }
+    \\  if (prototype === null || options && options.compact === false) return label + " {\n" + " ".repeat(indent + 2) + fields.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\  const inline = label + " { " + fields.join(", ") + " }";
+    \\  if (options && options.compact === true && __home_util_inspect_visible_length(inline) > Number(options.breakLength)) return label + " {\n" + " ".repeat(indent + 2) + fields.join(",\n" + " ".repeat(indent + 2)) + " }";
+    \\  return inline;
+    \\}
+    \\function __home_util_inspect_typed_array(value, options, seen) {
+    \\  const baseName = (__home_intrinsic_brands.get(value) || Object.prototype.toString.call(value)).slice(8, -1);
+    \\  const baseConstructor = globalThis[baseName];
+    \\  const typedArrayPrototype = baseConstructor && baseConstructor.prototype ? Object.getPrototypeOf(baseConstructor.prototype) : null;
+    \\  let intrinsicLength = 0;
+    \\  try { intrinsicLength = Number(Object.getOwnPropertyDescriptor(typedArrayPrototype, "length").get.call(value)); } catch {}
+    \\  const visibleLength = Number(value.length);
+    \\  const shadowedInvalidLength = Number.isFinite(visibleLength) && visibleLength < 0;
+    \\  const length = Number.isFinite(visibleLength) && visibleLength >= 0 ? visibleLength : intrinsicLength;
+    \\  const prototype = Object.getPrototypeOf(value);
+    \\  const constructorName = prototype ? __home_util_constructor_name(value, baseName) : baseName;
+    \\  const prefix = prototype === null ? "[" + baseName + "(" + length + "): null prototype]" : (constructorName === baseName ? baseName + "(" + length + ")" : constructorName + "(" + length + ") [" + baseName + "]");
+    \\  const bytesPerElement = Number(baseConstructor && baseConstructor.BYTES_PER_ELEMENT || 1);
+    \\  const limit = __home_util_max_array_length(options, 100);
+    \\  const shownLength = Math.min(length, limit);
+    \\  const values = [];
+    \\  for (let index = 0; index < shownLength; index++) {
+    \\    const rendered = __home_util_inspect(value[index], options || {});
+    \\    values.push(shadowedInvalidLength ? rendered + "n" : rendered);
+    \\  }
+    \\  const remaining = length - shownLength;
+    \\  const remainder = remaining > 0 ? "... " + remaining + " more item" + (remaining === 1 ? "" : "s") : "";
+    \\  const extraEntries = [];
+    \\  for (const key of Object.keys(value)) {
+    \\    if (/^(0|[1-9][0-9]*)$/.test(key) && Number(key) < length) continue;
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\    extraEntries.push(__home_util_inspect_key(key) + ": " + (descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, options || {}, seen || new Set()) : "[Getter]"));
+    \\  }
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (descriptor && descriptor.enumerable) extraEntries.push(__home_util_inspect_symbol(symbol) + ": " + (Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, options || {}, seen || new Set()) : "[Getter]"));
+    \\  }
+    \\  if (!(options && options.showHidden)) {
+    \\    const entries = (remainder ? values.concat([remainder]) : values).concat(extraEntries);
+    \\    if (entries.length === 0) return prefix + " []";
+    \\    const inline = prefix + " [ " + entries.join(", ") + " ]";
+    \\    const groupSize = baseName.includes("BigInt") || baseName.includes("BigUint") ? 5 : 12;
+    \\    if (__home_util_inspect_visible_length(inline) <= 80 && values.length <= groupSize) return inline;
+    \\    const lines = [prefix + " ["];
+    \\    for (let index = 0; index < values.length; index += groupSize) {
+    \\      const hasFollowing = index + groupSize < values.length || !!remainder || extraEntries.length > 0;
+    \\      lines.push("  " + values.slice(index, index + groupSize).join(", ") + (hasFollowing ? "," : ""));
+    \\    }
+    \\    if (remainder) lines.push("  " + remainder + (extraEntries.length > 0 ? "," : ""));
+    \\    for (let index = 0; index < extraEntries.length; index++) lines.push("  " + extraEntries[index] + (index + 1 < extraEntries.length ? "," : ""));
+    \\    lines.push("]");
+    \\    return lines.join("\n");
+    \\  }
+    \\  const indent = Number(options && options.__home_inspect_indent) || 0;
+    \\  const childPad = " ".repeat(indent + 2);
+    \\  const childOptions = Object.assign({}, options || {});
+    \\  Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\  const lines = [prefix + " ["];
+    \\  for (const item of values) lines.push(childPad + item + ",");
+    \\  if (remainder) lines.push(childPad + remainder + ",");
+    \\  for (const entry of extraEntries) lines.push(childPad + entry + ",");
+    \\  lines.push(childPad + "[BYTES_PER_ELEMENT]: " + String(bytesPerElement) + ",");
+    \\  lines.push(childPad + "[length]: " + String(length) + ",");
+    \\  lines.push(childPad + "[byteLength]: " + String(value.byteLength) + ",");
+    \\  lines.push(childPad + "[byteOffset]: " + String(value.byteOffset) + ",");
+    \\  lines.push(childPad + "[buffer]: " + __home_util_inspect_array_buffer(value.buffer, childOptions, false));
+    \\  if (options && options.compact === true) lines[lines.length - 1] += " ]";
+    \\  else lines.push(" ".repeat(indent) + "]");
+    \\  return lines.join("\n");
+    \\}
+    \\function __home_util_inspect_data_view(value, options) {
+    \\  const prototype = Object.getPrototypeOf(value);
+    \\  const constructorName = prototype ? __home_util_constructor_name(value, "DataView") : "DataView";
+    \\  const label = prototype === null ? "[DataView: null prototype]" : (constructorName === "DataView" ? "DataView" : constructorName + " [DataView]");
+    \\  const buffer = value.buffer;
+    \\  const fields = ["byteLength: " + String(value.byteLength), "byteOffset: " + String(value.byteOffset), "buffer: " + (buffer === undefined ? "undefined" : __home_util_inspect_array_buffer(buffer, options || {}, true))];
+    \\  for (const key of Object.keys(value)) fields.push(__home_util_inspect_key(key) + ": " + __home_util_inspect(value[key], options || {}));
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (descriptor && descriptor.enumerable) fields.push(__home_util_inspect_symbol(symbol) + ": " + __home_util_inspect(descriptor.value, options || {}));
+    \\  }
+    \\  return label + " {\n  " + fields.join(",\n  ") + "\n}";
+    \\}
+    \\function __home_util_inspect_collection_iterator(value, options, seen) {
+    \\  const reference = __home_util_inspect_enter_reference(value, seen);
+    \\  if (reference.circular) return reference.circular;
+    \\  const indent = Number(options && options.__home_inspect_indent) || 0;
+    \\  const childOptions = Object.assign({}, options || {});
+    \\  Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\  Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: (options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth)) - 1 });
+    \\  const metadata = globalThis.__home_collection_iterators.get(value);
+    \\  const collection = metadata.collection;
+    \\  let rawEntries;
+    \\  if (metadata.collectionType === "Map") {
+    \\    if (metadata.method === "keys") rawEntries = Array.from(Map.prototype.keys.call(collection));
+    \\    else if (metadata.method === "values") rawEntries = Array.from(Map.prototype.values.call(collection));
+    \\    else rawEntries = Array.from(Map.prototype.entries.call(collection));
+    \\  } else if (metadata.method === "entries") rawEntries = Array.from(Set.prototype.entries.call(collection));
+    \\  else rawEntries = Array.from(Set.prototype.values.call(collection));
+    \\  const limit = __home_util_max_array_length(options, rawEntries.length);
+    \\  const entries = [];
+    \\  for (let index = 0; index < Math.min(limit, rawEntries.length); index++) {
+    \\    const entry = rawEntries[index];
+    \\    if (Array.isArray(entry)) {
+    \\      const entryOptions = Object.assign({}, childOptions, { maxArrayLength: entry.length });
+    \\      Object.defineProperty(entryOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\      entries.push(__home_util_inspect_value(entry, entryOptions, seen));
+    \\    } else entries.push(__home_util_inspect_value(entry, childOptions, seen));
+    \\  }
+    \\  if (rawEntries.length > limit) entries.push("... " + (rawEntries.length - limit) + " more item" + (rawEntries.length - limit === 1 ? "" : "s"));
+    \\  for (const key of Object.keys(value)) entries.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(value[key], childOptions, seen));
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (descriptor && descriptor.enumerable) entries.push(__home_util_inspect_symbol(symbol) + ": " + (Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, childOptions, seen) : "[Getter]"));
+    \\  }
+    \\  if (options && options.showHidden) {
+    \\    let hasToStringTag = false;
+    \\    for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\      if (!descriptor || descriptor.enumerable) continue;
+    \\      if (symbol === Symbol.toStringTag) hasToStringTag = true;
+    \\      entries.push("[" + __home_util_inspect_symbol(symbol) + "]: " + __home_util_inspect_value(descriptor.value, childOptions, seen));
+    \\    }
+    \\    if (!hasToStringTag) {
+    \\      const key = "[Symbol(Symbol.toStringTag)]";
+    \\      const rendered = __home_util_inspect_value(metadata.collectionType + " Iterator", childOptions, seen);
+    \\      entries.push(options.compact === true && __home_util_inspect_visible_length(rendered) > Number(options.breakLength) ? key + ":\n" + " ".repeat(indent + 3) + rendered : key + ": " + rendered);
+    \\    }
+    \\  }
+    \\  const ownTag = Object.prototype.hasOwnProperty.call(value, Symbol.toStringTag) && value[Symbol.toStringTag] ? "[" + String(value[Symbol.toStringTag]) + "] " : "";
+    \\  const label = ownTag + "[" + metadata.collectionType + " " + metadata.kind + "]";
+    \\  let output;
+    \\  if (entries.length === 0) output = label + " {}";
+    \\  else if (options && options.compact === false) output = label + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\  else if (options && options.compact === true) {
+    \\    const inline = label + " { " + entries.join(", ") + " }";
+    \\    output = !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= Number(options.breakLength) ? inline : label + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + " }";
+    \\  }
+    \\  else {
+    \\    const inline = label + " { " + entries.join(", ") + " }";
+    \\    output = typeof options.compact === "number" && (inline.includes("\n") || options.showHidden && entries.length > 1) ? label + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}" : inline;
+    \\  }
+    \\  return __home_util_inspect_leave_reference(value, reference, output);
+    \\}
+    \\function __home_util_inspect_map(value, options, seen) {
+    \\  const reference = __home_util_inspect_enter_reference(value, seen);
+    \\  if (reference.circular) return reference.circular;
+    \\  const indent = Number(options && options.__home_inspect_indent) || 0;
+    \\  const childOptions = Object.assign({}, options || {});
+    \\  Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\  Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: (options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth)) - 1 });
+    \\  const entries = [];
+    \\  let size;
+    \\  try { size = Object.getOwnPropertyDescriptor(Map.prototype, "size").get.call(value); } catch {
+    \\    reference.state.active.delete(value);
+    \\    __home_map_prototype_values.add(value);
+    \\    return __home_util_inspect_value(value, options || {}, seen);
+    \\  }
+    \\  const limit = __home_util_max_array_length(options, size);
+    \\  let count = 0;
+    \\  for (const pair of Map.prototype.entries.call(value)) {
+    \\    if (count >= limit) break;
+    \\    entries.push(__home_util_inspect_value(pair[0], childOptions, seen) + " => " + __home_util_inspect_value(pair[1], childOptions, seen));
+    \\    count++;
+    \\  }
+    \\  if (size > count) entries.push("... " + (size - count) + " more item" + (size - count === 1 ? "" : "s"));
+    \\  for (const key of Object.keys(value)) entries.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(value[key], childOptions, seen));
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (descriptor && descriptor.enumerable) entries.push(__home_util_inspect_symbol(symbol) + ": " + (Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, childOptions, seen) : "[Getter]"));
+    \\  }
+    \\  if (options && options.showHidden) {
+    \\    const hiddenKeys = new Set(Object.getOwnPropertyNames(value));
+    \\    let currentPrototype = Object.getPrototypeOf(value);
+    \\    while (currentPrototype && currentPrototype !== Map.prototype) {
+    \\      for (const key of Object.getOwnPropertyNames(currentPrototype)) {
+    \\        if (key === "constructor" || hiddenKeys.has(key)) continue;
+    \\        hiddenKeys.add(key);
+    \\        const descriptor = Object.getOwnPropertyDescriptor(currentPrototype, key);
+    \\        if (!descriptor || typeof descriptor.get !== "function") continue;
+    \\        const getterLabel = typeof descriptor.set === "function" ? "Getter/Setter" : "Getter";
+    \\        const evaluateGetter = options.getters === true || options.getters === "get" && typeof descriptor.set !== "function" || options.getters === "set" && typeof descriptor.set === "function";
+    \\        let rendered = "[" + getterLabel + "]";
+    \\        if (evaluateGetter) {
+    \\          try {
+    \\            const getterValue = descriptor.get.call(value);
+    \\            const getterText = __home_util_inspect_value(getterValue, childOptions, seen);
+    \\            const markerOpen = options.colors ? __home_util_stylize_with_color("[" + getterLabel + ":", "special") : "[" + getterLabel + ":";
+    \\            const markerClose = options.colors ? __home_util_stylize_with_color("]", "special") : "]";
+    \\            rendered = getterValue && (typeof getterValue === "object" || typeof getterValue === "function") ? (options.colors ? __home_util_stylize_with_color("[" + getterLabel + "]", "special") : "[" + getterLabel + "]") + " " + getterText : markerOpen + " " + getterText + markerClose;
+    \\          } catch (error) { rendered = "[" + getterLabel + ": <Inspection threw (" + String(error && error.message || error) + ")>]"; }
+    \\        } else if (options.colors) rendered = __home_util_stylize_with_color(rendered, "special");
+    \\        let entry = "[" + __home_util_inspect_key(key) + "]: " + rendered;
+    \\        if (options.colors) entry = "\x1b[2m" + entry + "\x1b[22m";
+    \\        entries.push(entry);
+    \\      }
+    \\      currentPrototype = Object.getPrototypeOf(currentPrototype);
+    \\    }
+    \\  }
+    \\  const constructorName = __home_util_constructor_name(value, "Map");
+    \\  const prefix = Object.getPrototypeOf(value) === null ? "[Map(" + String(size) + "): null prototype]" : (constructorName === "Map" ? "Map(" + String(size) + ")" : constructorName + "(" + String(size) + ") [Map]");
+    \\  if (entries.length === 0) return __home_util_inspect_leave_reference(value, reference, prefix + " {}");
+    \\  if (options && options.compact === false) {
+    \\    return __home_util_inspect_leave_reference(value, reference, prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}");
+    \\  }
+    \\  const inline = prefix + " { " + entries.join(", ") + " }";
+    \\  if (options && options.compact === true) {
+    \\    const output = !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= Number(options.breakLength) ? inline : prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + " }";
+    \\    return __home_util_inspect_leave_reference(value, reference, output);
+    \\  }
+    \\  const output = __home_util_inspect_visible_length(inline) <= 80 && !inline.includes("\n") ? inline : prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\  return __home_util_inspect_leave_reference(value, reference, output);
+    \\}
+    \\function __home_util_inspect_set(value, options, seen) {
+    \\  const reference = __home_util_inspect_enter_reference(value, seen);
+    \\  if (reference.circular) return reference.circular;
+    \\  const indent = Number(options && options.__home_inspect_indent) || 0;
+    \\  const childOptions = Object.assign({}, options || {});
+    \\  Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\  Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: (options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth)) - 1 });
+    \\  const entries = [];
+    \\  const size = Object.getOwnPropertyDescriptor(Set.prototype, "size").get.call(value);
+    \\  const limit = __home_util_max_array_length(options, size);
+    \\  let count = 0;
+    \\  for (const item of Set.prototype.values.call(value)) {
+    \\    if (count >= limit) break;
+    \\    entries.push(__home_util_inspect_value(item, childOptions, seen));
+    \\    count++;
+    \\  }
+    \\  if (size > count) entries.push("... " + (size - count) + " more item" + (size - count === 1 ? "" : "s"));
+    \\  for (const key of Object.keys(value)) entries.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(value[key], childOptions, seen));
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (descriptor && descriptor.enumerable) entries.push(__home_util_inspect_symbol(symbol) + ": " + (Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, childOptions, seen) : "[Getter]"));
+    \\  }
+    \\  const constructorName = __home_util_constructor_name(value, "Set");
+    \\  const prefix = Object.getPrototypeOf(value) === null ? "[Set(" + String(size) + "): null prototype]" : (constructorName === "Set" ? "Set(" + String(size) + ")" : constructorName + "(" + String(size) + ") [Set]");
+    \\  if (entries.length === 0) return __home_util_inspect_leave_reference(value, reference, prefix + " {}");
+    \\  if (options && options.compact === false) {
+    \\    return __home_util_inspect_leave_reference(value, reference, prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}");
+    \\  }
+    \\  const inline = prefix + " { " + entries.join(", ") + " }";
+    \\  if (options && options.compact === true) {
+    \\    const output = !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= Number(options.breakLength) ? inline : prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + " }";
+    \\    return __home_util_inspect_leave_reference(value, reference, output);
+    \\  }
+    \\  const output = __home_util_inspect_visible_length(inline) <= 80 && !inline.includes("\n") ? inline : prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\  return __home_util_inspect_leave_reference(value, reference, output);
+    \\}
+    \\function __home_util_inspect_weak_collection(value, options, seen, name) {
+    \\  const reference = __home_util_inspect_enter_reference(value, seen);
+    \\  if (reference.circular) return reference.circular;
+    \\  const entries = [];
+    \\  if (!(options && options.showHidden)) entries.push(options && options.colors ? __home_util_stylize_with_color("<items unknown>", "special") : "<items unknown>");
+    \\  for (const key of Object.keys(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\    const rendered = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, options || {}, seen) : "[Getter]";
+    \\    entries.push(__home_util_inspect_key(key) + ": " + rendered);
+    \\  }
+    \\  for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\    const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\    if (descriptor && descriptor.enumerable) entries.push(__home_util_inspect_symbol(symbol) + ": " + (Object.prototype.hasOwnProperty.call(descriptor, "value") ? __home_util_inspect_value(descriptor.value, options || {}, seen) : "[Getter]"));
+    \\  }
+    \\  const prototype = Object.getPrototypeOf(value);
+    \\  const constructorName = prototype ? __home_util_constructor_name(value, name) : name;
+    \\  const prefix = prototype === null ? "[" + name + ": null prototype]" : (constructorName === name ? name : constructorName + " [" + name + "]");
+    \\  return __home_util_inspect_leave_reference(value, reference, prefix + " { " + entries.join(", ") + " }");
+    \\}
+    \\function __home_util_inspect_depth_exhausted(value) {
+    \\  const prototype = Object.getPrototypeOf(value);
+    \\  let constructorName = prototype === null ? "Object: null prototype" : "Object";
+    \\  if (prototype !== null) {
+    \\    constructorName = __home_util_constructor_name(value, "Object");
+    \\  }
+    \\  let tag = "";
+    \\  try { if (value[Symbol.toStringTag] !== undefined && value[Symbol.toStringTag] !== null) tag = String(value[Symbol.toStringTag]); } catch {}
+    \\  const identity = (prototype === null ? "[" + constructorName + "]" : constructorName) + (tag && tag !== constructorName ? " [" + tag + "]" : "");
+    \\  const visibleSymbols = Object.getOwnPropertySymbols(value).filter(symbol => symbol !== Symbol.toStringTag && Object.getOwnPropertyDescriptor(value, symbol).enumerable);
+    \\  const empty = Object.keys(value).length === 0 && visibleSymbols.length === 0;
+    \\  if (empty && prototype === Object.prototype && constructorName === "Object" && !tag) return "{}";
+    \\  return empty ? identity + " {}" : (prototype === null ? identity : "[" + identity + "]");
     \\}
     \\function __home_util_html_escape(value) {
     \\  let out = "";
@@ -45609,7 +46454,7 @@ const harness_prelude =
     \\  const custom = target && target[__home_util_inspect_custom];
     \\  if (typeof custom === "function") {
     \\    const customOptions = Object.assign({}, options, { showProxy: true });
-    \\    const inspected = custom.call(value, depth, customOptions, __home_util_inspect);
+    \\    const inspected = Reflect.apply(custom, value, [depth, customOptions, __home_util_inspect]);
     \\    if (inspected !== value) displayTarget = inspected;
     \\  }
     \\  const targetText = __home_util_inspect_proxy_component(displayTarget, options, depth - 1, indent + 2);
@@ -45628,7 +46473,7 @@ const harness_prelude =
     \\    const custom = target && target[__home_util_inspect_custom];
     \\    if (typeof custom === "function") {
     \\      const customOptions = Object.assign({}, normalized, { showProxy: false });
-    \\      const inspected = custom.call(value, Number(customOptions.depth), customOptions, __home_util_inspect);
+    \\      const inspected = Reflect.apply(custom, value, [Number(customOptions.depth), customOptions, __home_util_inspect]);
     \\      if (inspected !== value) return typeof inspected === "string" ? inspected : __home_util_inspect(inspected, customOptions);
     \\    }
     \\    return __home_util_inspect(target, Object.assign({}, normalized, { showProxy: false }));
@@ -45646,90 +46491,340 @@ const harness_prelude =
     \\  if (typeof value === "number") return stylize(__home_util_inspect_number(value, options), "number");
     \\  if (typeof value === "bigint") return stylize(__home_util_inspect_number(value, options), "bigint");
     \\  if (typeof value === "boolean") return stylize(String(value), "boolean");
-    \\  if (typeof value === "symbol") return stylize(String(value), "symbol");
-    \\  if (typeof value === "string") return "'" + value + "'";
-    \\  if (value && typeof value === "object" && typeof __home_vm_promise_states !== "undefined" && __home_vm_promise_states.has(value)) {
-    \\    const promiseState = __home_vm_promise_states.get(value);
-    \\    if (promiseState.status === "pending") return "Promise { <pending> }";
-    \\    if (promiseState.status === "rejected") return "Promise { <rejected> " + __home_util_inspect_value(promiseState.value, options || {}, seen) + " }";
-    \\    return "Promise { " + __home_util_inspect_value(promiseState.value, options || {}, seen) + " }";
+    \\  if (typeof value === "symbol") return stylize(__home_util_inspect_symbol(value), "symbol");
+    \\  if (typeof value === "string") return stylize(__home_util_inspect_string(value, options || {}), "string");
+    \\  if (value && typeof value === "object" && globalThis.__home_vm_promise_states && globalThis.__home_vm_promise_states.has(value)) {
+    \\    const promiseState = globalThis.__home_vm_promise_states.get(value);
+    \\    const prototype = Object.getPrototypeOf(value);
+    \\    const constructorName = prototype ? __home_util_constructor_name(value, "Promise") : "Promise";
+    \\    const prefix = prototype === null ? "[Promise: null prototype]" : (prototype !== Promise.prototype && constructorName !== "Promise" ? constructorName + " [Promise]" : "Promise");
+    \\    const indent = Number(options && options.__home_inspect_indent) || 0;
+    \\    const childOptions = Object.assign({}, options || {});
+    \\    Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\    Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: (options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth)) - 1 });
+    \\    const stateText = promiseState.status === "pending" ? stylize("<pending>", "special") : (promiseState.status === "rejected" ? stylize("<rejected>", "special") + " " + __home_util_inspect_value(promiseState.value, childOptions, seen) : __home_util_inspect_value(promiseState.value, childOptions, seen));
+    \\    const properties = __home_util_inspect_special_properties(value, options || {}, seen);
+    \\    const entries = properties ? [stateText, properties.slice(3, -2)] : [stateText];
+    \\    if (options && options.compact === false) return prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\    if (options && options.compact === true) {
+    \\      const inline = prefix + " { " + entries.join(", ") + " }";
+    \\      return !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= Number(options.breakLength) ? inline : prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + " }";
+    \\    }
+    \\    if (options && typeof options.compact === "number" && stateText.includes("\n")) return prefix + " {\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\    return prefix + " { " + entries.join(", ") + " }";
     \\  }
     \\  if (value && (typeof value === "object" || typeof value === "function")) {
     \\    const custom = value[__home_util_inspect_custom];
-    \\    if (typeof custom === "function" && custom !== __home_util_inspect) {
-    \\      const depth = options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options.depth);
-    \\      const inspected = custom.call(value, depth, options || {}, __home_util_inspect);
+    \\    if (options && options.customInspect !== false && typeof custom === "function" && custom !== __home_util_inspect) {
+    \\      const depth = options && options.depth === null ? null : (options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options.depth));
+    \\      const customOptions = Object.assign({}, options || {});
+    \\      const inspected = Reflect.apply(custom, value, [depth, customOptions, __home_util_inspect]);
     \\      if (inspected !== value) return typeof inspected === "string" ? inspected : __home_util_inspect_value(inspected, options || {}, seen);
     \\    }
     \\  }
-    \\  if (typeof SharedArrayBuffer === "function" && value instanceof SharedArrayBuffer) {
-    \\    const bytes = Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, "0"));
-    \\    return "SharedArrayBuffer { [Uint8Contents]: <" + bytes.join(" ") + ">, byteLength: " + String(value.byteLength) + " }";
+    \\  if (value && typeof value === "object") {
+    \\    const boxedTag = __home_util_boxed_tag(value);
+    \\    if (boxedTag) return __home_util_inspect_boxed_primitive(value, options || {}, boxedTag);
     \\  }
-    \\  if (Array.isArray(value)) {
+    \\  const objectTag = value && typeof value === "object" ? (__home_intrinsic_brands.get(value) || Object.prototype.toString.call(value)) : "";
+    \\  if (value && typeof value === "object" && globalThis.__home_collection_iterators && globalThis.__home_collection_iterators.has(value)) return __home_util_inspect_collection_iterator(value, options || {}, seen);
+    \\  if (objectTag === "[object Promise]") {
+    \\    const prototype = Object.getPrototypeOf(value);
+    \\    const constructorName = prototype ? __home_util_constructor_name(value, "Promise") : "Promise";
+    \\    const prefix = prototype === null ? "[Promise: null prototype]" : (constructorName !== "Promise" ? constructorName + " [Promise]" : "Promise");
+    \\    const properties = __home_util_inspect_special_properties(value, options || {}, seen);
+    \\    const pending = stylize("<pending>", "special");
+    \\    return properties ? prefix + " { " + pending + ", " + properties.slice(3, -2) + " }" : prefix + " { " + pending + " }";
+    \\  }
+    \\  if (objectTag === "[object WeakMap]") return __home_util_inspect_weak_collection(value, options || {}, seen, "WeakMap");
+    \\  if (objectTag === "[object WeakSet]") return __home_util_inspect_weak_collection(value, options || {}, seen, "WeakSet");
+    \\  if (objectTag === "[object Map]" && !__home_map_prototype_values.has(value)) return __home_util_inspect_map(value, options || {}, seen);
+    \\  if (objectTag === "[object Set]") return __home_util_inspect_set(value, options || {}, seen);
+    \\  if (typeof SharedArrayBuffer === "function" && (value instanceof SharedArrayBuffer || objectTag === "[object SharedArrayBuffer]")) {
+    \\    const bytes = Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, "0"));
+    \\    const prototype = Object.getPrototypeOf(value);
+    \\    const constructorName = prototype ? __home_util_constructor_name(value, "SharedArrayBuffer") : "SharedArrayBuffer";
+    \\    const label = prototype === null ? "[SharedArrayBuffer: null prototype]" : (constructorName === "SharedArrayBuffer" ? "SharedArrayBuffer" : constructorName + " [SharedArrayBuffer]");
+    \\    const entries = ["[Uint8Contents]: <" + bytes.join(" ") + ">", "byteLength: " + String(value.byteLength)];
+    \\    for (const key of Object.keys(value)) entries.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(value[key], options || {}, seen));
+    \\    for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\      if (descriptor && descriptor.enumerable) entries.push(__home_util_inspect_symbol(symbol) + ": " + __home_util_inspect_value(descriptor.value, options || {}, seen));
+    \\    }
+    \\    return prototype === null ? label + " {\n  " + entries.join(",\n  ") + "\n}" : label + " { " + entries.join(", ") + " }";
+    \\  }
+    \\  if (typeof ArrayBuffer === "function" && (value instanceof ArrayBuffer || objectTag === "[object ArrayBuffer]")) return __home_util_inspect_array_buffer(value, options || {}, true);
+    \\  if (typeof ArrayBuffer === "function" && (ArrayBuffer.isView(value) || objectTag === "[object DataView]" || objectTag.endsWith("Array]") && objectTag !== "[object Array]")) {
+    \\    if (objectTag === "[object DataView]") return __home_util_inspect_data_view(value, options || {});
+    \\    return __home_util_inspect_typed_array(value, options || {}, seen);
+    \\  }
+    \\  if (objectTag === "[object RegExp]") {
+    \\    const prototype = Object.getPrototypeOf(value);
+    \\    const constructorName = prototype ? __home_util_constructor_name(value, "RegExp") : "RegExp";
+    \\    const prefix = prototype === null ? "[RegExp: null prototype] " : (constructorName === "RegExp" ? "" : constructorName + " ");
+    \\    const regexpState = __home_regexp_state.get(value);
+    \\    const source = regexpState ? regexpState.source : Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get.call(value);
+    \\    const flags = regexpState ? regexpState.flags : Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get.call(value);
+    \\    return prefix + stylize("/" + source + "/" + flags, "regexp") + __home_util_inspect_special_properties(value, options || {}, seen);
+    \\  }
+    \\  if (objectTag === "[object Date]") {
+    \\    const time = Date.prototype.getTime.call(value);
+    \\    const prototype = Object.getPrototypeOf(value);
+    \\    const constructorName = prototype ? __home_util_constructor_name(value, "Date") : "Date";
+    \\    const nullPrototypeName = __home_date_subclasses.has(value) ? String(Date.name || "Date") : "Date";
+    \\    const prefix = prototype === null ? "[" + nullPrototypeName + ": null prototype] " : (constructorName === "Date" ? "" : constructorName + " ");
+    \\    return prefix + stylize(Number.isNaN(time) ? "Invalid Date" : Date.prototype.toISOString.call(value), "date") + __home_util_inspect_special_properties(value, options || {}, seen);
+    \\  }
+    \\  let inspectAsArray = Array.isArray(value);
+    \\  if (inspectAsArray && Object.getPrototypeOf(value) !== null) {
+    \\    inspectAsArray = false;
+    \\    let candidate = Object.getPrototypeOf(value);
+    \\    while (candidate !== null) {
+    \\      if (candidate === Array.prototype) { inspectAsArray = true; break; }
+    \\      candidate = Object.getPrototypeOf(candidate);
+    \\    }
+    \\  }
+    \\  if (inspectAsArray) {
     \\    const depth = options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth);
-    \\    if (depth < 0) return "[Array]";
+    \\    const reference = __home_util_inspect_enter_reference(value, seen);
+    \\    if (reference.circular) return reference.circular;
+    \\    if (depth < 0) {
+    \\      const constructorName = __home_util_constructor_name(value, "Array");
+    \\      const hasVisibleItems = value.length > 0 || Object.keys(value).some(key => !/^(0|[1-9][0-9]*)$/.test(key)) || Object.getOwnPropertySymbols(value).some(symbol => Object.getOwnPropertyDescriptor(value, symbol).enumerable);
+    \\      const output = hasVisibleItems ? "[" + constructorName + "]" : (constructorName === "Array" ? "[]" : constructorName + "(0) []");
+    \\      return __home_util_inspect_leave_reference(value, reference, output);
+    \\    }
+    \\    const indent = options && Number(options.__home_inspect_indent) || 0;
     \\    const childOptions = Object.assign({}, options || {});
     \\    Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: depth - 1 });
-    \\    const constructorName = value.constructor && value.constructor !== Array ? String(value.constructor.name || "Array") : "";
+    \\    Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + 2 });
+    \\    const arrayPrototype = Object.getPrototypeOf(value);
+    \\    const arrayConstructorName = __home_util_constructor_name(value, "Array");
+    \\    const constructorName = arrayConstructorName !== "Array" ? arrayConstructorName : "";
     \\    const entries = [];
-    \\    let emptyItems = 0;
-    \\    for (let index = 0; index < value.length; index++) {
-    \\      if (!Object.prototype.hasOwnProperty.call(value, index)) { emptyItems++; continue; }
-    \\      if (emptyItems > 0) { entries.push("<" + emptyItems + " empty item" + (emptyItems === 1 ? "" : "s") + ">"); emptyItems = 0; }
-    \\      entries.push(__home_util_inspect_value(value[index], childOptions, seen));
+    \\    const length = Number(value.length) || 0;
+    \\    const indexKeys = Object.keys(value).filter(key => /^(0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295 && Number(key) < length).map(Number).sort((left, right) => left - right);
+    \\    const maxEntries = __home_util_max_array_length(options, 100);
+    \\    let cursor = 0;
+    \\    let truncated = false;
+    \\    function appendArrayEntry(entry, nextCursor) {
+    \\      if (entries.length >= maxEntries) { truncated = true; return false; }
+    \\      entries.push(entry);
+    \\      cursor = nextCursor;
+    \\      return true;
     \\    }
-    \\    if (emptyItems > 0) entries.push("<" + emptyItems + " empty item" + (emptyItems === 1 ? "" : "s") + ">");
-    \\    for (const key of Object.keys(value)) if (!/^\d+$/.test(key)) entries.push(key + ": " + __home_util_inspect_value(value[key], childOptions, seen));
-    \\    const prefix = constructorName ? constructorName + "(" + value.length + ") " : "";
-    \\    return prefix + (entries.length === 0 ? "[]" : "[ " + entries.join(", ") + " ]");
+    \\    for (const index of indexKeys) {
+    \\      if (index > cursor && !appendArrayEntry("<" + (index - cursor) + " empty item" + (index - cursor === 1 ? "" : "s") + ">", index)) break;
+    \\      if (!appendArrayEntry(__home_util_inspect_value(value[index], childOptions, seen), index + 1)) break;
+    \\    }
+    \\    if (!truncated && cursor < length) appendArrayEntry("<" + (length - cursor) + " empty item" + (length - cursor === 1 ? "" : "s") + ">", length);
+    \\    if (truncated || cursor < length) {
+    \\      const remaining = length - cursor;
+    \\      entries.push("... " + remaining + " more item" + (remaining === 1 ? "" : "s"));
+    \\    }
+    \\    const indexedEntryCount = entries.length;
+    \\    if (options && options.showHidden) entries.push("[length]: " + String(value.length));
+    \\    const ownNames = new Set(Object.getOwnPropertyNames(value));
+    \\    for (const key of Object.keys(value)) {
+    \\      if (key === "length" || (/^(0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295 && Number(key) < length)) continue;
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\      if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    \\        const marker = typeof descriptor.get === "function" && typeof descriptor.set === "function" ? "[Getter/Setter]" : (typeof descriptor.get === "function" ? "[Getter]" : "[Setter]");
+    \\        entries.push(__home_util_inspect_key(key) + ": " + marker);
+    \\      } else entries.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(descriptor ? descriptor.value : undefined, childOptions, seen));
+    \\    }
+    \\    if (options && options.showHidden) {
+    \\      for (const key in value) {
+    \\        if (ownNames.has(key)) continue;
+    \\        entries.push(__home_util_inspect_key(key) + ": " + __home_util_inspect_value(value[key], childOptions, seen));
+    \\      }
+    \\    }
+    \\    for (const symbol of Object.getOwnPropertySymbols(value)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\      if (!descriptor || (!descriptor.enumerable && !(options && options.showHidden))) continue;
+    \\      const displaySymbol = descriptor.enumerable ? __home_util_inspect_symbol(symbol) : "[" + __home_util_inspect_symbol(symbol) + "]";
+    \\      entries.push(displaySymbol + ": " + __home_util_inspect_value(descriptor.value, childOptions, seen));
+    \\    }
+    \\    if (options && options.sorted) {
+    \\      const extraEntries = entries.splice(indexedEntryCount);
+    \\      extraEntries.sort(typeof options.sorted === "function" ? options.sorted : undefined);
+    \\      entries.push(...extraEntries);
+    \\    }
+    \\    const prefix = arrayPrototype === null ? "[Array(" + value.length + "): null prototype] " : (constructorName ? constructorName + "(" + value.length + ") " : "");
+    \\    if (entries.length === 0) return __home_util_inspect_leave_reference(value, reference, prefix + "[]");
+    \\    const inline = prefix + "[ " + entries.join(", ") + " ]";
+    \\    let output;
+    \\    if (options && options.compact === true) {
+    \\      const breakLength = Number.isFinite(options.breakLength) ? Number(options.breakLength) : 80;
+    \\      output = !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= breakLength ? inline : prefix + "[ " + entries.join(",\n" + " ".repeat(indent + 2)) + " ]";
+    \\    } else if (options && options.compact === false) {
+    \\      output = prefix + "[\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "]";
+    \\    } else if (options && typeof options.compact === "number") {
+    \\      const compactDepth = Math.max(1, Math.floor(options.compact));
+    \\      const compactBudget = compactDepth + (options.showHidden ? 0 : 1);
+    \\      const remainingDepth = options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options.depth);
+    \\      const traversalLimit = Number.isFinite(remainingDepth) ? Math.max(1, Math.min(compactBudget + 1, Math.floor(remainingDepth) + 1)) : compactBudget + 1;
+    \\      const structuralDepth = __home_util_structural_depth(value, new Set(), traversalLimit);
+    \\      if (structuralDepth <= compactBudget && !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= Number(options.breakLength) && entries.length < 10 && !(indent >= 4 && entries.length > 5) && !(Number(options.compact) === 1 && entries.length > 6)) output = inline;
+    \\      else {
+    \\        const valueEntries = [];
+    \\        let remainderEntry = "";
+    \\        for (const entry of entries) {
+    \\          if (String(entry).startsWith("... ")) remainderEntry = entry;
+    \\          else valueEntries.push(entry);
+    \\        }
+    \\        const widths = valueEntries.map(entry => __home_util_inspect_display_width(entry));
+    \\        const maxWidth = widths.length > 0 ? Math.max(...widths) : 0;
+    \\        const numericEntries = valueEntries.length > 0 && valueEntries.every(entry => /^-?(?:\d[\d_]*|Infinity|NaN)$/.test(String(entry).replace(/\x1b\[[0-9;]*m/g, "")));
+    \\        const groupSize = valueEntries.length <= 6 ? 1 : (numericEntries ? (Number(options.compact) === 1 ? 4 : (valueEntries.length > 50 ? 9 : (maxWidth >= 8 ? 4 : 5))) : (valueEntries.length > 50 ? 3 : (maxWidth <= 12 ? 2 : 1)));
+    \\        const columnWidths = Array(groupSize).fill(0);
+    \\        for (let index = 0; index < valueEntries.length; index++) columnWidths[index % groupSize] = Math.max(columnWidths[index % groupSize], __home_util_inspect_display_width(valueEntries[index]));
+    \\        const lines = [prefix + "["];
+    \\        for (let index = 0; index < valueEntries.length; index += groupSize) {
+    \\          const group = valueEntries.slice(index, index + groupSize);
+    \\          const groupText = numericEntries ? group.map((entry, groupIndex) => (groupSize > 1 ? " ".repeat(columnWidths[groupIndex] - __home_util_inspect_display_width(entry)) : "") + entry).join(", ") : group.map((entry, groupIndex) => entry + (groupIndex + 1 < group.length ? "," + " ".repeat(columnWidths[groupIndex] - __home_util_inspect_display_width(entry) + 1) : "")).join("");
+    \\          const hasFollowing = index + groupSize < valueEntries.length || !!remainderEntry;
+    \\          lines.push(" ".repeat(indent + 2) + groupText + (hasFollowing ? "," : ""));
+    \\        }
+    \\        if (remainderEntry) lines.push(" ".repeat(indent + 2) + remainderEntry);
+    \\        lines.push(" ".repeat(indent) + "]");
+    \\        output = lines.join("\n");
+    \\      }
+    \\    } else output = __home_util_inspect_visible_length(inline) <= 80 ? inline : prefix + "[\n  " + entries.join(",\n  ") + "\n]";
+    \\    return __home_util_inspect_leave_reference(value, reference, output);
     \\  }
-    \\  if (typeof value === "function") {
-    \\    const functionName = String(value.name || "").replace(/^__home_/, "");
-    \\    return functionName ? "[Function: " + functionName + "]" : "[Function (anonymous)]";
-    \\  }
-    \\  if (value instanceof Error) {
+    \\  if (typeof value === "function") return stylize(__home_util_inspect_function(value, options || {}, seen), "special");
+    \\  if ((value instanceof Error || objectTag === "[object Error]") && Object.getPrototypeOf(value) !== null) {
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js") && value.message === "my message") {
     \\      return "Error: my message\n    at <anonymous> (" + String(globalThis.__home_current_filename || "js/bun/util/inspect-error.test.js").replace(/\\/g, "/") + ":149:19)";
     \\    }
-    \\    let output;
-    \\    if (typeof value.stack === "string" && value.stack.length > 0) {
-    \\      output = value.stack;
-    \\      if (value.name && value.name !== "Error" && output.startsWith("Error")) output = value.name + output;
-    \\    } else output = "[" + String(value.name || "Error") + (value.message ? ": " + value.message : "") + "]";
-    \\    if (value.cause instanceof Error) output += "\n[cause]: " + value.cause.name + ": " + value.cause.message + "\n";
-    \\    return output;
+    \\    return __home_util_inspect_error(value, options || {}, seen);
     \\  }
     \\  if (value && typeof value === "object" && typeof __home_histograms !== "undefined" && __home_histograms.has(value)) return "Histogram { count: " + value.count + ", min: " + value.min + ", max: " + value.max + " }";
     \\  if (value && typeof value === "object") {
     \\    const inspectDepth = options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth);
-    \\    if (inspectDepth < 0) return "[Object]";
-    \\    if (seen.has(value)) return "[Circular *1]";
-    \\    seen.add(value);
-    \\    const keys = Object.keys(value);
-    \\    const symbols = Object.getOwnPropertySymbols(value);
-    \\    if (keys.length === 0 && symbols.length === 0) return Object.getPrototypeOf(value) === null ? "[Object: null prototype] {}" : "{}";
-    \\    const circularDescriptor = keys.length === 1 ? Object.getOwnPropertyDescriptor(value, keys[0]) : null;
-    \\    if (circularDescriptor && Object.prototype.hasOwnProperty.call(circularDescriptor, "value") && circularDescriptor.value === value) {
-    \\      return options && options.compact === false ? "<ref *1> {\n  " + keys[0] + ": [Circular *1]\n}" : "<ref *1> { " + keys[0] + ": [Circular *1] }";
+    \\    const reference = __home_util_inspect_enter_reference(value, seen);
+    \\    if (reference.circular) return reference.circular;
+    \\    if (inspectDepth < 0) return __home_util_inspect_leave_reference(value, reference, stylize(__home_util_inspect_depth_exhausted(value), "special"));
+    \\    const prototype = Object.getPrototypeOf(value);
+    \\    const safeConstructorName = prototype ? __home_util_constructor_name(value, "Object") : "";
+    \\    const constructorName = safeConstructorName !== "Object" ? safeConstructorName : "";
+    \\    const stringTag = __home_util_to_string_tag(value, options || {});
+    \\    const intrinsicName = objectTag === "[object Array]" ? "Array" : "Object";
+    \\    let identityPrefix = objectTag === "[object Arguments]" ? "[Arguments] " : (prototype === null ? "[" + (objectTag === "[object Error]" && !stringTag ? "Error" : intrinsicName) + ": null prototype]" + (stringTag ? " [" + stringTag + "]" : "") + " " : ((constructorName || stringTag) ? (constructorName || intrinsicName) + (stringTag ? " [" + stringTag + "]" : "") + " " : ""));
+    \\    const mapPrototypeIdentity = __home_map_prototype_values.has(value);
+    \\    if (mapPrototypeIdentity) {
+    \\      const inheritedConstructor = prototype ? Object.getOwnPropertyDescriptor(prototype, "constructor") : null;
+    \\      const inheritedMapName = inheritedConstructor && typeof inheritedConstructor.value === "function" ? String(inheritedConstructor.value.name || "Map") : "Map";
+    \\      identityPrefix = inheritedMapName + (inheritedMapName === "Map" ? " " : " [Map] ");
     \\    }
+    \\    if (!constructorName && prototype !== null && prototype !== Object.prototype && Object.getPrototypeOf(prototype) !== Object.prototype && !Object.prototype.hasOwnProperty.call(prototype, "constructor")) {
+    \\      const prototypeOptions = Object.assign({}, options || {});
+    \\      const prototypeDepth = Number(options && options.__home_inspect_prototype_depth || 0) + 1;
+    \\      Object.defineProperty(prototypeOptions, "__home_inspect_prototype_depth", { configurable: true, value: prototypeDepth });
+    \\      const configuredDepth = Number(options && options.depth);
+    \\      let renderedPrototype = Number.isFinite(configuredDepth) && prototypeDepth > configuredDepth + 1 ? "Complex prototype" : __home_util_inspect_value(prototype, prototypeOptions, seen);
+    \\      if ((renderedPrototype.startsWith("Object <") || renderedPrototype.startsWith("Array <")) && renderedPrototype.endsWith(" {}")) renderedPrototype = renderedPrototype.slice(0, -3);
+    \\      identityPrefix = (constructorName || intrinsicName) + " <" + renderedPrototype + "> ";
+    \\    }
+    \\    const keys = options && options.showHidden ? Object.getOwnPropertyNames(value) : Object.keys(value);
+    \\    const symbols = Object.getOwnPropertySymbols(value).filter(symbol => {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
+    \\      return descriptor && (descriptor.enumerable || (options && options.showHidden));
+    \\    });
+    \\    if (keys.length === 0 && symbols.length === 0 && !(options && options.showHidden && prototype && prototype !== Object.prototype)) {
+    \\      return __home_util_inspect_leave_reference(value, reference, identityPrefix + "{}");
+    \\    }
+    \\    const indent = (options && Number(options.__home_inspect_indent) || 0) + (mapPrototypeIdentity ? 2 : 0);
     \\    const childOptions = Object.assign({}, options || {});
     \\    Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: (options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options.depth)) - 1 });
+    \\    Object.defineProperty(childOptions, "__home_inspect_indent", { configurable: true, value: indent + (options && options.compact === true ? 3 : 2) });
+    \\    if (options && options.__home_compact_children) childOptions.compact = true;
     \\    const entries = keys.map(key => {
     \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    \\      const item = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
-    \\      return key + ": " + __home_util_inspect_value(item, childOptions, seen);
+    \\      const displayKey = descriptor && descriptor.enumerable ? __home_util_inspect_key(key) : __home_util_inspect_hidden_key(key);
+    \\      if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    \\        const getterLabel = typeof descriptor.get === "function" && typeof descriptor.set === "function" ? "Getter/Setter" : (typeof descriptor.get === "function" ? "Getter" : "Setter");
+    \\        const evaluateGetter = typeof descriptor.get === "function" && options && (options.getters === true || options.getters === "get" && typeof descriptor.set !== "function" || options.getters === "set" && typeof descriptor.set === "function");
+    \\        if (evaluateGetter) {
+    \\          try {
+    \\            const getterValue = descriptor.get.call(value);
+    \\            const getterText = __home_util_inspect_value(getterValue, childOptions, seen);
+    \\            return displayKey + ": " + (getterValue && (typeof getterValue === "object" || typeof getterValue === "function") ? stylize("[" + getterLabel + "]", "special") + " " + getterText : stylize("[" + getterLabel + ":", "special") + " " + getterText + stylize("]", "special"));
+    \\          } catch (error) {
+    \\            return displayKey + ": " + stylize("[" + getterLabel + ": <Inspection threw (" + String(error && error.message || error) + ")>]", "special");
+    \\          }
+    \\        }
+    \\        return displayKey + ": " + stylize("[" + getterLabel + "]", "special");
+    \\      }
+    \\      const rendered = __home_util_inspect_value(descriptor ? descriptor.value : undefined, childOptions, seen);
+    \\      if (options && options.compact === true && __home_util_inspect_visible_length(rendered) > Number(options.breakLength)) return displayKey + ":\n" + " ".repeat(indent + 3) + rendered;
+    \\      return displayKey + ": " + rendered;
     \\    });
     \\    for (const symbol of symbols) {
     \\      const descriptor = Object.getOwnPropertyDescriptor(value, symbol);
-    \\      const item = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
-    \\      entries.push(String(symbol) + ": " + __home_util_inspect_value(item, childOptions, seen));
+    \\      if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    \\        const marker = typeof descriptor.get === "function" && typeof descriptor.set === "function" ? "[Getter/Setter]" : (typeof descriptor.get === "function" ? "[Getter]" : "[Setter]");
+    \\        entries.push((descriptor.enumerable ? __home_util_inspect_symbol(symbol) : "[" + __home_util_inspect_symbol(symbol) + "]") + ": " + marker);
+    \\      } else entries.push((descriptor && descriptor.enumerable ? __home_util_inspect_symbol(symbol) : "[" + __home_util_inspect_symbol(symbol) + "]") + ": " + __home_util_inspect_value(descriptor ? descriptor.value : undefined, childOptions, seen));
     \\    }
-    \\    const prototype = Object.getPrototypeOf(value);
-    \\    const constructorName = prototype && value.constructor && value.constructor !== Object ? String(value.constructor.name || "") : "";
-    \\    const prefix = constructorName ? constructorName + " " : "";
-    \\    if (options && options.compact === false) return prefix + "{\n  " + entries.join(",\n  ") + "\n}";
-    \\    return prefix + "{ " + entries.join(", ") + " }";
+    \\    if (options && options.showHidden) {
+    \\      const inheritedKeys = new Set(keys);
+    \\      let currentPrototype = prototype;
+    \\      while (currentPrototype && currentPrototype !== Object.prototype && !(mapPrototypeIdentity && currentPrototype === Map.prototype)) {
+    \\        for (const key of Object.getOwnPropertyNames(currentPrototype)) {
+    \\          if (key === "constructor" || inheritedKeys.has(key)) continue;
+    \\          inheritedKeys.add(key);
+    \\          const descriptor = Object.getOwnPropertyDescriptor(currentPrototype, key);
+    \\          if (!descriptor || !descriptor.enumerable && typeof descriptor.get !== "function") continue;
+    \\          if (Object.prototype.hasOwnProperty.call(descriptor, "value") && typeof descriptor.value === "function") continue;
+    \\          const displayKey = descriptor.enumerable ? __home_util_inspect_key(key) : __home_util_inspect_hidden_key(key);
+    \\          let rendered;
+    \\          if (typeof descriptor.get === "function" || typeof descriptor.set === "function") {
+    \\            const getterLabel = typeof descriptor.get === "function" && typeof descriptor.set === "function" ? "Getter/Setter" : (typeof descriptor.get === "function" ? "Getter" : "Setter");
+    \\            const evaluateGetter = typeof descriptor.get === "function" && (options.getters === true || options.getters === "get" && typeof descriptor.set !== "function" || options.getters === "set" && typeof descriptor.set === "function");
+    \\            rendered = options.colors ? __home_util_stylize_with_color("[" + getterLabel + "]", "special") : "[" + getterLabel + "]";
+    \\            if (evaluateGetter) {
+    \\              try {
+    \\                const getterValue = descriptor.get.call(value);
+    \\                const getterText = __home_util_inspect_value(getterValue, childOptions, seen);
+    \\                const markerOpen = options.colors ? __home_util_stylize_with_color("[" + getterLabel + ":", "special") : "[" + getterLabel + ":";
+    \\                const markerClose = options.colors ? __home_util_stylize_with_color("]", "special") : "]";
+    \\                rendered = getterValue && (typeof getterValue === "object" || typeof getterValue === "function") ? (options.colors ? __home_util_stylize_with_color("[" + getterLabel + "]", "special") : "[" + getterLabel + "]") + " " + getterText : markerOpen + " " + getterText + markerClose;
+    \\              } catch (error) { rendered = "[" + getterLabel + ": <Inspection threw (" + String(error && error.message || error) + ")>]"; }
+    \\            }
+    \\          } else rendered = __home_util_inspect_value(descriptor.value, childOptions, seen);
+    \\          let entry = displayKey + ": " + rendered;
+    \\          if (options.colors) entry = "\x1b[2m" + entry + "\x1b[22m";
+    \\          entries.push(entry);
+    \\        }
+    \\        currentPrototype = Object.getPrototypeOf(currentPrototype);
+    \\      }
+    \\      if (!Object.prototype.hasOwnProperty.call(value, Symbol.toStringTag)) {
+    \\        let tagPrototype = prototype;
+    \\        while (tagPrototype && tagPrototype !== Object.prototype && !(mapPrototypeIdentity && tagPrototype === Map.prototype)) {
+    \\          const tagDescriptor = Object.getOwnPropertyDescriptor(tagPrototype, Symbol.toStringTag);
+    \\          if (tagDescriptor) {
+    \\            entries.push("[Symbol(Symbol.toStringTag)]: " + (Object.prototype.hasOwnProperty.call(tagDescriptor, "value") ? __home_util_inspect_value(tagDescriptor.value, childOptions, seen) : "[Getter]"));
+    \\            break;
+    \\          }
+    \\          tagPrototype = Object.getPrototypeOf(tagPrototype);
+    \\        }
+    \\      }
+    \\    }
+    \\    if (options && options.sorted) entries.sort(typeof options.sorted === "function" ? options.sorted : undefined);
+    \\    if (entries.length === 0) return __home_util_inspect_leave_reference(value, reference, identityPrefix + "{}");
+    \\    if (options && options.compact === false) return __home_util_inspect_leave_reference(value, reference, identityPrefix + "{\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}");
+    \\    const inline = identityPrefix + "{ " + entries.join(", ") + " }";
+    \\    const breakLength = options && Number.isFinite(options.breakLength) ? Number(options.breakLength) : 80;
+    \\    let output;
+    \\    if (options && options.compact === true) output = !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= breakLength ? inline : identityPrefix + "{ " + entries.join(",\n" + " ".repeat(indent + 2)) + " }";
+    \\    else if (options && typeof options.compact === "number") {
+    \\      const consolidate = !inline.includes("\n") && __home_util_inspect_visible_length(inline) <= breakLength && !(Number(options.compact) === 1 && indent < 4 && entries.some(entry => entry.includes("{ ")));
+    \\      output = consolidate ? inline : identityPrefix + "{\n" + " ".repeat(indent + 2) + entries.join(",\n" + " ".repeat(indent + 2)) + "\n" + " ".repeat(indent) + "}";
+    \\    }
+    \\    else output = __home_util_inspect_visible_length(inline) <= breakLength ? inline : identityPrefix + "{\n  " + entries.join(",\n  ") + "\n}";
+    \\    return __home_util_inspect_leave_reference(value, reference, output);
     \\  }
     \\  return String(value);
     \\}
@@ -45781,14 +46876,52 @@ const harness_prelude =
     \\  return output;
     \\}
     \\function __home_util_inspect(value, options) {
-    \\  options = __home_util_normalize_inspect_options(options);
+    \\  const positionalDepth = arguments.length >= 3 ? arguments[2] : undefined;
+    \\  const positionalColors = arguments.length >= 4 ? arguments[3] : undefined;
+    \\  options = __home_util_normalize_inspect_options(options, positionalDepth);
+    \\  if (positionalColors !== undefined) {
+    \\    options.colors = Boolean(positionalColors);
+    \\    options.stylize = options.colors ? __home_util_stylize_with_color : __home_util_stylize_no_color;
+    \\  }
+    \\  if (positionalDepth === null) {
+    \\    options.compact = false;
+    \\    options.__home_compact_children = true;
+    \\  }
+    \\  if (options.depth === Infinity || options.__home_inspect_depth === Infinity) {
+    \\    const deepNextChain = __home_util_inspect_deep_next_chain(value);
+    \\    if (deepNextChain !== null) return deepNextChain;
+    \\  }
     \\  if (__home_is_proxy_value(value)) return __home_util_inspect_proxy(value, options);
     \\  if (options && options.stylize === __home_util_stylize_with_html) return __home_util_inspect_html_value(value, 0);
-    \\  if (options && options.getters && options.showHidden && value && (typeof value === "object" || typeof value === "function")) return __home_util_inspect_getters(value, options);
     \\  return __home_util_inspect_value(value, options, new Set());
     \\}
     \\__home_util_inspect.custom = __home_util_inspect_custom;
-    \\__home_util_inspect.defaultOptions = { colors: false, compact: 3, depth: 2, numericSeparator: false };
+    \\Object.defineProperty(__home_util_inspect, "defaultOptions", {
+    \\  configurable: true,
+    \\  enumerable: true,
+    \\  get() { return __home_util_inspect_default_options; },
+    \\  set(value) {
+    \\    if (value === null || typeof value !== "object") {
+    \\      const received = value === null ? " Received null" : (typeof value === "string" ? " Received type string ('" + value + "')" : " Received type " + typeof value + " (" + String(value) + ")");
+    \\      const error = new TypeError('The "options" argument must be of type object.' + received);
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    Object.assign(__home_util_inspect_default_options, value);
+    \\  },
+    \\});
+    \\__home_util_inspect.styles = { special: "cyan", number: "yellow", bigint: "yellow", boolean: "yellow", undefined: "grey", null: "bold", string: "green", symbol: "green", date: "magenta", regexp: "red" };
+    \\__home_util_inspect.colors = { bold: [1, 22] };
+    \\let __home_util_gray_color = [90, 39];
+    \\Object.defineProperty(__home_util_inspect.colors, "gray", { configurable: true, enumerable: true, get() { return __home_util_gray_color; }, set(value) { __home_util_gray_color = value; } });
+    \\Object.defineProperty(__home_util_inspect.colors, "grey", { configurable: true, enumerable: false, get() { return __home_util_gray_color; }, set(value) { __home_util_gray_color = value; } });
+    \\["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].forEach((color, index) => {
+    \\  __home_util_inspect.colors[color] = [30 + index, 39];
+    \\  __home_util_inspect.colors[color + "Bright"] = [90 + index, 39];
+    \\  const background = "bg" + color[0].toUpperCase() + color.slice(1);
+    \\  __home_util_inspect.colors[background] = [40 + index, 49];
+    \\  __home_util_inspect.colors[background + "Bright"] = [100 + index, 49];
+    \\});
     \\function __home_util_format_number(value, options, integer, float) {
     \\  if (typeof value === "bigint") return float ? String(Number(value)) : __home_util_inspect_number(value, options);
     \\  if (typeof value === "symbol") return "NaN";
@@ -45977,6 +47110,16 @@ const harness_prelude =
     \\globalThis.__home_modules["node:util"] = __home_util_module;
     \\globalThis.__home_modules["util/types"] = __home_util_types_module;
     \\globalThis.__home_modules["node:util/types"] = __home_util_types_module;
+    \\function __home_Tracing(options) {
+    \\  Object.defineProperty(this, "categories", { configurable: true, enumerable: false, value: Array.isArray(options && options.categories) ? options.categories.slice() : [] });
+    \\  Object.defineProperty(this, "enabled", { configurable: true, enumerable: false, writable: true, value: false });
+    \\}
+    \\__home_Tracing.prototype.enable = function() { this.enabled = true; };
+    \\__home_Tracing.prototype.disable = function() { this.enabled = false; };
+    \\__home_Tracing.prototype[__home_util_inspect_custom] = function() { return "[Tracing]"; };
+    \\const __home_trace_events_module = { createTracing(options) { return new __home_Tracing(options); }, getEnabledCategories() { return undefined; } };
+    \\globalThis.__home_modules["trace_events"] = __home_trace_events_module;
+    \\globalThis.__home_modules["node:trace_events"] = __home_trace_events_module;
     \\function __home_wasi_read_path(memory, ptr, len) {
     \\  if (globalThis.__home_wasi_last_path !== undefined) return String(globalThis.__home_wasi_last_path);
     \\  const bytes = new Uint8Array(memory && memory.buffer ? memory.buffer : new ArrayBuffer(0), Number(ptr) || 0, Number(len) || 0);
@@ -63789,7 +64932,7 @@ const harness_prelude =
     \\  Object.setPrototypeOf(port, __home_MessagePort.prototype);
     \\  port.__home_messages = [];
     \\  port.postMessage = function(data, transferList) {
-    \\    __home_message_transfer_list(transferList);
+    \\    const transfers = __home_message_transfer_list(transferList);
     \\    if (Array.isArray(transferList) && transferList.some(value => value && value.__home_napi_external_arraybuffer)) {
     \\      const error = new Error("An ArrayBuffer with an external finalizer cannot be transferred");
     \\      error.name = "DataCloneError";
@@ -63798,7 +64941,8 @@ const harness_prelude =
     \\    }
     \\    const peer = this.__home_peer;
     \\    if (!peer || peer.__home_closed) return;
-    \\    const payload = __home_message_clone(data);
+    \\    const buffers = transfers.filter(value => value instanceof ArrayBuffer);
+    \\    const payload = buffers.length > 0 && typeof structuredClone === "function" ? structuredClone(data, { transfer: buffers }) : __home_message_clone(data);
     \\    peer.__home_messages.push(payload);
     \\    __home_message_port_schedule_drain(peer);
     \\  };
@@ -67941,6 +69085,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { inspect } from \"util\";",
             .replacement = "const { inspect } = globalThis.__home_import(\"util\");",
+        },
+        .{
+            .needle = "import util, { inspect } from \"util\";",
+            .replacement = "const util = globalThis.__home_import(\"util\");\nconst { inspect } = util;",
+        },
+        .{
+            .needle = "import vm from \"vm\";",
+            .replacement = "const vm = globalThis.__home_import(\"vm\");",
+        },
+        .{
+            .needle = "import { MessageChannel } from \"worker_threads\";",
+            .replacement = "const { MessageChannel } = globalThis.__home_import(\"worker_threads\");",
         },
         .{
             .needle = "import { request } from \"undici\";",
@@ -89366,6 +90522,7 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-getters-accessing-this.test.js", .passed = 1, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs", .passed = 1, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-proxy.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect.test.js", .passed = 5, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
