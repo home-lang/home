@@ -133965,6 +133965,7 @@ pub const Checker = struct {
         if (self.checkJsPrototypeObjectLiteralHasConstructor(node)) {
             self.removePriorDiagnosticForNode(node, TsCodes.property_does_not_exist);
         }
+        if (self.diagnosticExists(node, TsCodes.property_does_not_exist)) return;
         if (try self.commonJsWholeExportArrowDisplayFromSource(node)) |display| {
             try self.reportPropertyDoesNotExistOnTypeText(node, name, display);
             return;
@@ -213084,7 +213085,7 @@ test "checker: checkjs object namespace class expando is visible to new and exte
     try T.expectEqual(@as(usize, 1), number_member_count);
 }
 
-test "checker: checkjs JSDoc qualified object expando constructor names instance type" {
+test "checker: current tsgo rejects cross-file JSDoc object expando namespaces" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -213100,17 +213101,8 @@ test "checker: checkjs JSDoc qualified object expando constructor names instance
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var missing_count: usize = 0;
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.namespace_no_exported_member);
-        if (d.code == TsCodes.property_does_not_exist and
-            std.mem.indexOf(u8, d.message, "wat") != null and
-            std.mem.indexOf(u8, d.message, "One") != null)
-        {
-            missing_count += 1;
-        }
-    }
-    try T.expectEqual(@as(usize, 1), missing_count);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_namespace));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs dotted optional JSDoc params type destructured members as possibly undefined" {
@@ -213192,7 +213184,7 @@ test "checker: checkjs CommonJS chained void export declarations use later liter
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type '2'."));
 }
 
-test "checker: checked JS void-zero assignments do not declare expando members" {
+test "checker: current tsgo checked JS void-zero assignments declare implicit-any expandos" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -213214,12 +213206,14 @@ test "checker: checked JS void-zero assignments do not declare expando members" 
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
 
-test "checker: program-routed CommonJS diagnostics use the importer module name" {
+test "checker: current tsgo program-routed CommonJS void export is implicit-any" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -213227,11 +213221,12 @@ test "checker: program-routed CommonJS diagnostics use the importer module name"
     );
     defer destroySetup(s);
     s.checker.setImporterPath("/assignmentToVoidZero2.js");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expect(hasDiagnosticCodeMessage(
         s,
-        TsCodes.property_does_not_exist,
-        "Property 'k' does not exist on type 'typeof import(\"assignmentToVoidZero2\")'.",
+        TsCodes.member_implicitly_any,
+        "Member 'k' implicitly has an 'any' type.",
     ));
 }
 
@@ -213339,7 +213334,7 @@ test "checker: nested checked JS constructor instances include whole-object prot
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'addon' does not exist on type '{ set: () => void; get(): void; }'."));
 }
 
-test "checker: checkjs virtual CommonJS exports carry chained prototype constructor members" {
+test "checker: current tsgo chained CommonJS constructor values remain non-constructable" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -213375,10 +213370,12 @@ test "checker: checkjs virtual CommonJS exports carry chained prototype construc
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
 }
 
-test "checker: checkjs virtual CommonJS string-literal exports shape require result" {
+test "checker: current tsgo CommonJS nested object writes keep literal export shape" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -213403,9 +213400,8 @@ test "checker: checkjs virtual CommonJS string-literal exports shape require res
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.property_does_not_exist);
-    }
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'e' does not exist on type '{}'."));
 }
 
 test "checker: checkjs module exports property assignment flow narrows after reassignment" {
@@ -213486,7 +213482,7 @@ test "checker: checkjs expando namespace prototype assignment target does not re
     }
 }
 
-test "checker: checkjs constructor and prototype functions do not report implicit this" {
+test "checker: current tsgo bare constructor function reports implicit this" {
     const s = try newSetup(
         \\// @checkJs: true
         \\function C() {
@@ -213498,9 +213494,8 @@ test "checker: checkjs constructor and prototype functions do not report implici
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.this_implicitly_any);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs prototype method assignments use constructor-inferred this members" {
@@ -214016,7 +214011,7 @@ test "checker: checkjs computed whole-object prototype assignment merges members
     }
 }
 
-test "checker: checkjs variable and expando constructor functions do not report implicit this" {
+test "checker: current tsgo variable and nested expando functions stay ordinary" {
     const s = try newSetup(
         \\// @checkJs: true
         \\var SomeClass = function () {
@@ -214029,9 +214024,8 @@ test "checker: checkjs variable and expando constructor functions do not report 
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.this_implicitly_any);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs top-level this assignment exposes global expando name" {
@@ -239715,7 +239709,7 @@ test "checker: redefined static protected diagnostics omit typeof" {
     );
 }
 
-test "checker: class and JavaScript values merge across virtual files" {
+test "checker: current tsgo class and JavaScript values conflict across virtual files" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @filename: declaration.d.ts
@@ -239730,7 +239724,7 @@ test "checker: class and JavaScript values merge across virtual files" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
 test "checker: CommonJS whole exports reject property writes" {
