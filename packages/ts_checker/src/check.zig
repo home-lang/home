@@ -24953,7 +24953,6 @@ pub const Checker = struct {
             const anchor = if (ep.name != hir_mod.none_node_id) ep.name else elem;
             if (i >= values.len) {
                 if (ep.default_value != hir_mod.none_node_id) continue;
-                if (values.len != 0) continue;
                 if (ep.name != hir_mod.none_node_id and self.hir.kindOf(ep.name) == .array_pattern) {
                     try self.reportIteratorRequired(ep.name, types.Primitive.undefined_t);
                 }
@@ -77043,7 +77042,17 @@ pub const Checker = struct {
         if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .array_literal) return false;
         const values = hir_mod.arrayLiteralElements(self.hir, init_node);
         const target_required = self.tupleAnnotationMinRequiredCount(tuple_node);
-        var chain = try self.tupleWidthChainForArity(values.len, values.len, target_required, null);
+        const source_count = try self.fixedArrayLiteralTupleLength(init_node);
+        const is_single_open_spread = source_count == null and
+            values.len == 1 and
+            values[0] != hir_mod.none_node_id and
+            self.hir.kindOf(values[0]) == .spread;
+        var chain = if (source_count) |count|
+            try self.tupleWidthChainForArity(count, count, target_required, null)
+        else if (is_single_open_spread)
+            try self.tupleWidthChainForArity(0, null, target_required, null)
+        else
+            try self.tupleWidthChainForArity(values.len, values.len, target_required, null);
         if (chain.len == 0) {
             const elems = hir_mod.tupleTypeElements(self.hir, tuple_node);
             var rest_i: ?usize = null;
@@ -77096,6 +77105,13 @@ pub const Checker = struct {
         const expands_rest_alias = self.tupleAnnotationHasArrayAliasRest(tuple_node);
         const source_name = if (values.len == 0)
             "[]"
+        else if (is_single_open_spread)
+            blk: {
+                const spread = hir_mod.spreadOf(self.hir, values[0]);
+                var spread_t = self.hir.typeOf(spread.expression);
+                if (spread_t == types.Primitive.none) spread_t = try self.checkExpression(spread.expression);
+                break :blk (try self.allocSimpleTypeName(spread_t)) orelse "any[]";
+            }
         else if (expands_rest_alias)
             try self.arrayLiteralTupleAnnotationDisplayName(init_node, tuple_node)
         else
@@ -80639,7 +80655,30 @@ pub const Checker = struct {
                 )) break :blk true;
                 break :blk try self.checkerAssignableTo(init_type, declared_type);
             };
-            try self.checkArrayLiteralContextualElements(v.init, declared_type);
+            var open_spread_tuple_diag_emitted = false;
+            if (!ok and
+                self.hir.kindOf(v.init) == .array_literal and
+                v.type_annotation != hir_mod.none_node_id and
+                (try self.fixedArrayLiteralTupleLength(v.init)) == null)
+            {
+                const values = hir_mod.arrayLiteralElements(self.hir, v.init);
+                if (values.len == 1 and
+                    values[0] != hir_mod.none_node_id and
+                    self.hir.kindOf(values[0]) == .spread)
+                {
+                    if (self.tupleAnnotationSourceNode(v.type_annotation)) |tuple_node| {
+                        const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
+                        open_spread_tuple_diag_emitted = try self.tryReportArrayLiteralTupleAnnotationAssignmentMismatch(
+                            diag_node,
+                            v.init,
+                            v.type_annotation,
+                            tuple_node,
+                            declared_type,
+                        );
+                    }
+                }
+            }
+            if (!open_spread_tuple_diag_emitted) try self.checkArrayLiteralContextualElements(v.init, declared_type);
             var contextual_literal_diag_emitted = false;
             const recursive_tuple_annotation_ok = ok and
                 v.type_annotation != hir_mod.none_node_id and
@@ -136919,6 +136958,11 @@ pub const Checker = struct {
                             try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                         }
                     },
+                    .literal_number => {
+                        if (hir_mod.literalNumberOf(self.hir, u.operand) != 0) {
+                            try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                        }
+                    },
                     // `!null` / `!undefined` ÃÂ¢ÃÂÃÂ both operands are the
                     // canonical falsy literals. tsc emits TS2873 at
                     // the operand. Mirrors fixture
@@ -146179,6 +146223,12 @@ pub const Checker = struct {
         var elem_t = self.hir.typeOf(elem_node);
         if (elem_t == types.Primitive.none) elem_t = try self.checkExpression(elem_node);
         if (try self.checkerAssignableExpressionTo(elem_node, elem_t, target_t)) return false;
+        const diagnostic_start = self.diagnostics.items.len;
+        try self.checkExcessProperties(elem_node, target_t);
+        if (self.diagnostics.items.len > diagnostic_start) {
+            self.diagnostics.items.len = diagnostic_start + 1;
+            return true;
+        }
         if (try self.tryReportSinglePropertyMissing(elem_node, elem_node, elem_t, target_t)) return true;
         return try self.tryReportObjectLiteralPropertyMismatch(elem_node, target_t);
     }
