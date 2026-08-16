@@ -23317,7 +23317,7 @@ pub const Checker = struct {
                     if (self.target_es5_baseline) {
                         try self.reportTypeNotArrayForTarget(pp.name, default_t);
                     } else {
-                        try self.report(pp.name, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                        try self.reportIteratorRequiredWithSource(pp.name, default_t, pp.default_value);
                     }
                 }
             }
@@ -23326,7 +23326,7 @@ pub const Checker = struct {
                 if (param_t != types.Primitive.none) try self.checkObjectBindingPatternAgainstType(pp.name, param_t, true);
             } else if (nk == .array_pattern and pp.type_annotation != hir_mod.none_node_id) {
                 const param_t = self.hir.typeOf(p);
-                if (param_t != types.Primitive.none) try self.checkArrayBindingPatternAgainstType(pp.name, param_t);
+                if (param_t != types.Primitive.none) try self.checkArrayBindingPatternAgainstType(pp.name, param_t, hir_mod.none_node_id);
             }
         }
     }
@@ -24425,7 +24425,7 @@ pub const Checker = struct {
         if (target == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(target)) {
             .object_pattern => try self.checkObjectBindingPatternAgainstType(target, target_t, true),
-            .array_pattern => try self.checkArrayBindingPatternAgainstType(target, target_t),
+            .array_pattern => try self.checkArrayBindingPatternAgainstType(target, target_t, hir_mod.none_node_id),
             else => {},
         }
     }
@@ -24827,7 +24827,12 @@ pub const Checker = struct {
         }
     }
 
-    fn checkArrayBindingPatternAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!void {
+    fn checkArrayBindingPatternAgainstType(
+        self: *Checker,
+        pattern_node: NodeId,
+        container_t: TypeId,
+        source_node: NodeId,
+    ) CheckError!void {
         if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
         if (container_t >= self.interner.pool.typeCount()) return;
         try self.checkIteratorNextSentType(pattern_node, container_t, types.Primitive.undefined_t, .array_destructuring);
@@ -24879,6 +24884,13 @@ pub const Checker = struct {
             const ep = hir_mod.parameterOf(self.hir, e);
             if (!ep.flags.is_rest and ep.name != hir_mod.none_node_id and self.hir.kindOf(ep.name) == .object_pattern) {
                 var element_t = self.tupleElementType(container_t, i);
+                if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .array_literal) {
+                    const source_elements = hir_mod.arrayLiteralElements(self.hir, source_node);
+                    if (i < source_elements.len and source_elements[i] != hir_mod.none_node_id) {
+                        const source_element_t = self.hir.typeOf(source_elements[i]);
+                        if (source_element_t != types.Primitive.none) element_t = source_element_t;
+                    }
+                }
                 if (element_t == types.Primitive.none) element_t = elem_t;
                 try self.checkObjectBindingPatternAgainstType(ep.name, element_t, false);
                 continue;
@@ -77500,7 +77512,7 @@ pub const Checker = struct {
                     };
                     try self.checkObjectDestructuringAssignment(sp.expression, object_rest_t, hir_mod.none_node_id);
                 } else {
-                    try self.checkDestructuringAssignmentTarget(sp.expression, rest_source_t);
+                    try self.checkDestructuringAssignmentTarget(sp.expression, rest_source_t, source_node);
                 }
                 continue;
             }
@@ -77719,7 +77731,7 @@ pub const Checker = struct {
                         // Object-rest assignments write the residual
                         // source shape into the rest target. Check that
                         // shape even without a dynamic computed key.
-                        try self.checkDestructuringAssignmentTarget(target_for_rest, rest_t);
+                        try self.checkDestructuringAssignmentTarget(target_for_rest, rest_t, hir_mod.none_node_id);
                     }
                 }
                 continue;
@@ -77783,12 +77795,17 @@ pub const Checker = struct {
                 }
             } else {
                 const prop_t = maybe_prop_t orelse types.Primitive.any;
-                try self.checkDestructuringAssignmentTarget(op.value, prop_t);
+                try self.checkDestructuringAssignmentTarget(op.value, prop_t, hir_mod.none_node_id);
             }
         }
     }
 
-    fn checkDestructuringAssignmentTarget(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
+    fn checkDestructuringAssignmentTarget(
+        self: *Checker,
+        target_node: NodeId,
+        source_t: TypeId,
+        source_node: NodeId,
+    ) CheckError!void {
         switch (self.hir.kindOf(target_node)) {
             .identifier, .member_access, .element_access => {
                 if (self.expressionIsOptionalChain(target_node)) {
@@ -77818,7 +77835,7 @@ pub const Checker = struct {
                     return;
                 }
                 if (!(self.engine.isAssignableTo(source_t, target_t) catch true)) {
-                    if (try self.tryReportSinglePropertyMissing(target_node, hir_mod.none_node_id, source_t, target_t)) return;
+                    if (try self.tryReportSinglePropertyMissing(target_node, source_node, source_t, target_t)) return;
                     try self.reportTypeNotAssignable(target_node, source_t, target_t, "Type is not assignable to target type.");
                 } else if (self.hir.kindOf(target_node) == .identifier and
                     source_t != types.Primitive.none and
@@ -77846,7 +77863,7 @@ pub const Checker = struct {
     fn checkDestructuringAssignmentTargetWithDefault(self: *Checker, target_node: NodeId, default_node: NodeId, effective_t: TypeId, source_only_t: TypeId, default_t: TypeId) CheckError!void {
         const tk = self.hir.kindOf(target_node);
         if (tk != .identifier and tk != .member_access and tk != .element_access) {
-            try self.checkDestructuringAssignmentTarget(target_node, effective_t);
+            try self.checkDestructuringAssignmentTarget(target_node, effective_t, hir_mod.none_node_id);
             return;
         }
         const target_t = if (tk == .identifier)
@@ -77854,7 +77871,7 @@ pub const Checker = struct {
         else
             try self.checkExpression(target_node);
         if (target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown) {
-            try self.checkDestructuringAssignmentTarget(target_node, effective_t);
+            try self.checkDestructuringAssignmentTarget(target_node, effective_t, hir_mod.none_node_id);
             return;
         }
         if (target_t == types.Primitive.undefined_t and
@@ -77864,7 +77881,7 @@ pub const Checker = struct {
             return;
         }
         if (self.engine.isAssignableTo(effective_t, target_t) catch true) {
-            try self.checkDestructuringAssignmentTarget(target_node, effective_t);
+            try self.checkDestructuringAssignmentTarget(target_node, effective_t, hir_mod.none_node_id);
             return;
         }
         const source_no_undef = self.subtractType(source_only_t, types.Primitive.undefined_t) catch source_only_t;
@@ -77880,7 +77897,7 @@ pub const Checker = struct {
             try self.reportTypeNotAssignable(target_node, source_no_undef, target_t, "Type is not assignable to target type.");
             return;
         }
-        try self.checkDestructuringAssignmentTarget(target_node, effective_t);
+        try self.checkDestructuringAssignmentTarget(target_node, effective_t, hir_mod.none_node_id);
     }
 
     fn shouldKeepDeclaredFunctionTargetForDestructuring(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
@@ -79716,7 +79733,9 @@ pub const Checker = struct {
             }
             if (direct_ref == null and !loop_cycle) continue;
             const name_text = self.string_interner.get(occurrence.name);
-            if (!self.diagnosticExists(occurrence.node, TsCodes.variable_self_reference_implicitly_any)) {
+            if (self.strict_flags.no_implicit_any and
+                !self.diagnosticExists(occurrence.node, TsCodes.variable_self_reference_implicitly_any))
+            {
                 const message = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
@@ -79730,6 +79749,7 @@ pub const Checker = struct {
                 });
             }
             if (direct_ref) |ref| {
+                if (self.hir.kindOf(decl_node) == .var_decl) continue;
                 if (!self.diagnosticExists(ref.node, TsCodes.block_scoped_used_before_decl)) {
                     const message = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -80825,7 +80845,7 @@ pub const Checker = struct {
                     if (expected_t != types.Primitive.none) try self.checkExcessProperties(v.init, expected_t);
                 }
             } else if (nk == .array_pattern and v.init != hir_mod.none_node_id) {
-                try self.checkArrayBindingPatternAgainstType(v.name, final_type);
+                try self.checkArrayBindingPatternAgainstType(v.name, final_type, v.init);
                 try self.checkArrayBindingPatternAgainstArrayLiteral(v.name, v.init);
                 // Under non-strict-null mode, destructuring from
                 // `[undefined, null]` widens those positions to
@@ -98251,10 +98271,11 @@ pub const Checker = struct {
                         }
                         const entry = try self.inferMapEntryTypes(args);
                         if (entry.invalid_mixed_value_entries) {
-                            // tsc anchors TS2769 at the callee identifier
-                            // (`Map`), not the surrounding `new` expression
-                            // ÃÂ¢ÃÂÃÂ matches `for-of39.ts(1,15)` baseline.
-                            try self.report(c.callee, TsCodes.no_overload_matches, "No overload matches this call.");
+                            const report_node = if (entry.invalid_mixed_value_node != hir_mod.none_node_id)
+                                entry.invalid_mixed_value_node
+                            else
+                                c.callee;
+                            try self.report(report_node, TsCodes.no_overload_matches, "No overload matches this call.");
                         }
                         break :blk try self.builtinMapInstanceType(entry.key, entry.value);
                     }
@@ -119376,6 +119397,7 @@ pub const Checker = struct {
         key: TypeId,
         value: TypeId,
         invalid_mixed_value_entries: bool = false,
+        invalid_mixed_value_node: NodeId = hir_mod.none_node_id,
     };
 
     fn inferMapEntryTypes(self: *Checker, args: []const NodeId) CheckError!MapEntryTypes {
@@ -119387,7 +119409,9 @@ pub const Checker = struct {
         var value_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer value_types.deinit(self.gpa);
         var first_value_t: TypeId = types.Primitive.none;
+        var first_value_node: NodeId = hir_mod.none_node_id;
         var invalid_mixed_value_entries = false;
+        var invalid_mixed_value_node: NodeId = hir_mod.none_node_id;
         for (hir_mod.arrayLiteralElements(self.hir, args[0])) |entry_node| {
             if (entry_node == hir_mod.none_node_id or self.hir.kindOf(entry_node) != .array_literal) continue;
             const entry_elems = hir_mod.arrayLiteralElements(self.hir, entry_node);
@@ -119408,14 +119432,22 @@ pub const Checker = struct {
             try value_types.append(self.gpa, value_t);
             if (first_value_t == types.Primitive.none) {
                 first_value_t = value_t;
+                first_value_node = entry_elems[1];
             } else if (!(self.engine.isAssignableTo(value_t, first_value_t) catch true)) {
                 invalid_mixed_value_entries = true;
+                invalid_mixed_value_node = if (value_t == types.Primitive.boolean_t)
+                    entry_elems[1]
+                else if (first_value_t == types.Primitive.boolean_t)
+                    first_value_node
+                else
+                    entry_elems[1];
             }
         }
         return .{
             .key = try self.unionOrAny(key_types.items),
             .value = try self.unionMapValueTypes(value_types.items),
             .invalid_mixed_value_entries = invalid_mixed_value_entries,
+            .invalid_mixed_value_node = invalid_mixed_value_node,
         };
     }
 
@@ -160302,6 +160334,21 @@ pub const Checker = struct {
         return self.typeIsGlobalObjectBuiltin(source);
     }
 
+    fn arrayLiteralMissingPropertySourceName(self: *Checker, value_node: NodeId, source: TypeId) CheckError!?[]const u8 {
+        if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .array_literal) return null;
+        if (source >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source).is_object_type) return null;
+        const element_t = self.interner.objectNumberIndex(source);
+        if (element_t == types.Primitive.none) return null;
+        const element_name = (try self.simpleDiagnosticTypeName(element_t)) orelse
+            (try self.allocSimpleTypeName(element_t)) orelse return null;
+        const needs_parens = element_t < self.interner.pool.typeCount() and
+            (self.interner.pool.flagsOf(element_t).is_union or self.interner.pool.flagsOf(element_t).is_intersection);
+        return if (needs_parens)
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "({s})[]", .{element_name})
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}[]", .{element_name});
+    }
+
     fn tryReportSinglePropertyMissingWithDisplayTarget(
         self: *Checker,
         diag_node: NodeId,
@@ -160491,6 +160538,8 @@ pub const Checker = struct {
             (try self.allocIntersectionNameWithPrimitiveWrappers(source)) orelse
                 (try self.allocSimpleTypeName(source)) orelse
                 (try self.allocObjectTypeShape(source)) orelse "{}"
+        else if (try self.arrayLiteralMissingPropertySourceName(value_node, source)) |name|
+            name
         else if (try self.expandedGenericAliasAnnotationNameForIdentifier(value_node)) |name|
             name
         else
