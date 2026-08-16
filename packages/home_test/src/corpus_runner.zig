@@ -45767,14 +45767,32 @@ const harness_prelude =
     \\__home_track_collection_iterator(Set.prototype, "keys", "Set", "Iterator");
     \\__home_track_collection_iterator(Set.prototype, "values", "Set", "Iterator");
     \\__home_track_collection_iterator(Set.prototype, "entries", "Set", "Entries");
+    \\function __home_util_promisify_invalid_received(value) {
+    \\  if (value === null || value === undefined) return " Received " + String(value);
+    \\  if (typeof value === "function" && value.name) return " Received function " + String(value.name);
+    \\  if (typeof value === "object") {
+    \\    if (value.constructor && value.constructor.name) return " Received an instance of " + String(value.constructor.name);
+    \\    return " Received " + __home_util_inspect(value, { depth: -1 });
+    \\  }
+    \\  let inspected = __home_util_inspect(value, { colors: false });
+    \\  if (inspected.length > 28) inspected = inspected.slice(0, 25) + "...";
+    \\  return " Received type " + typeof value + " (" + inspected + ")";
+    \\}
     \\function __home_util_promisify(original) {
-    \\  if (typeof original !== "function") throw new TypeError("The original argument must be of type function");
+    \\  if (typeof original !== "function") {
+    \\    const error = new TypeError('The "original" argument must be of type function.' + __home_util_promisify_invalid_received(original));
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
     \\  const custom = original[__home_util_promisify_custom];
     \\  if (custom !== undefined) {
     \\    if (typeof custom !== "function") throw new TypeError("The util.promisify.custom property must be a function");
+    \\    if (custom[__home_util_promisify_custom] !== custom) {
+    \\      try { Object.defineProperty(custom, __home_util_promisify_custom, { configurable: true, value: custom }); } catch (error) {}
+    \\    }
     \\    return custom;
     \\  }
-    \\  return function() {
+    \\  const promisified = function() {
     \\    const args = Array.prototype.slice.call(arguments);
     \\    const receiver = this;
     \\    return new Promise((resolve, reject) => {
@@ -45785,6 +45803,10 @@ const harness_prelude =
     \\      original.apply(receiver, args);
     \\    });
     \\  };
+    \\  try { Object.defineProperty(promisified, __home_util_promisify_custom, { configurable: true, value: promisified }); } catch (error) {}
+    \\  try { Object.defineProperty(promisified, "length", { configurable: true, value: Math.max(0, Number(original.length) - 1) }); } catch (error) {}
+    \\  try { Object.defineProperty(promisified, "name", { configurable: true, value: String(original.name || "") }); } catch (error) {}
+    \\  return promisified;
     \\}
     \\__home_util_promisify.custom = __home_util_promisify_custom;
     \\function __home_util_stylize_no_color(value) { return String(value); }
@@ -50796,6 +50818,15 @@ const harness_prelude =
     \\    const bigint = !!(options && typeof options === "object" && options.bigint);
     \\    if (__home_fs_is_symlink(path)) return __home_node_fs.__home_make_stats({ isSymbolicLink: true, size: String(__home_fs_readlink(path)).length, mode: 0o777 }, bigint);
     \\    return __home_node_fs.statSync(path, options);
+    \\  },
+    \\  stat(path, options, callback) {
+    \\    const cb = typeof options === "function" ? options : callback;
+    \\    const statOptions = typeof options === "function" ? undefined : options;
+    \\    if (typeof cb !== "function") throw new TypeError('The "cb" argument must be of type function');
+    \\    Promise.resolve().then(() => {
+    \\      try { cb(null, __home_node_fs.statSync(path, statOptions)); }
+    \\      catch (error) { cb(error); }
+    \\    });
     \\  },
     \\  promises: {
     \\    opendir(path, options) {
@@ -69912,6 +69943,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { callbackify } from \"util\";",
             .replacement = "const { callbackify } = globalThis.__home_import(\"util\");",
+        },
+        .{
+            .needle = "import { inspect, promisify } from \"util\";",
+            .replacement = "const { inspect, promisify } = globalThis.__home_import(\"util\");",
         },
         .{
             .needle = "import process from \"process\";",
@@ -90991,6 +91026,7 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/test-aborted.test.ts", .passed = 5, .todo = 0 },
         .{ .path = "js/node/util/test-util-types.test.js", .passed = 52, .todo = 0 },
         .{ .path = "js/node/util/util-callbackify.test.js", .passed = 90, .todo = 0 },
+        .{ .path = "js/node/util/util-promisify.test.js", .passed = 16, .todo = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
