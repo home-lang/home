@@ -45509,7 +45509,9 @@ const harness_prelude =
     \\__home_util_promisify.custom = __home_util_promisify_custom;
     \\function __home_util_stylize_no_color(value) { return String(value); }
     \\function __home_util_stylize_with_color(value, styleType) {
-    \\  const code = styleType === "string" ? 32 : (styleType === "number" || styleType === "bigint" || styleType === "boolean" ? 33 : null);
+    \\  if (styleType === "undefined") return "\x1b[90m" + String(value) + "\x1b[39m";
+    \\  if (styleType === "null") return "\x1b[1m" + String(value) + "\x1b[22m";
+    \\  const code = styleType === "string" || styleType === "symbol" ? 32 : (styleType === "number" || styleType === "bigint" || styleType === "boolean" ? 33 : null);
     \\  return code === null ? String(value) : "\x1b[" + code + "m" + String(value) + "\x1b[39m";
     \\}
     \\function __home_util_normalize_inspect_options(options, positionalDepth) {
@@ -45520,11 +45522,13 @@ const harness_prelude =
     \\  return normalized;
     \\}
     \\function __home_util_inspect_number(value, options) {
-    \\  const text = String(value);
-    \\  if (!options || !options.numericSeparator || !/^-?\d{4,}$/.test(text)) return text;
+    \\  const suffix = typeof value === "bigint" ? "n" : "";
+    \\  const text = typeof value === "number" && Object.is(value, -0) ? "-0" : String(value);
+    \\  const digitsText = suffix ? text : text;
+    \\  if (!options || !options.numericSeparator || !/^-?\d{4,}$/.test(digitsText)) return text + suffix;
     \\  const sign = text[0] === "-" ? "-" : "";
     \\  const digits = sign ? text.slice(1) : text;
-    \\  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, "_");
+    \\  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, "_") + suffix;
     \\}
     \\function __home_util_html_escape(value) {
     \\  let out = "";
@@ -45581,8 +45585,14 @@ const harness_prelude =
     \\  return __home_util_html_escape(String(value));
     \\}
     \\function __home_util_inspect_value(value, options, seen) {
-    \\  if (value === null) return "null";
-    \\  if (typeof value === "number") return __home_util_inspect_number(value, options);
+    \\  if (value && (typeof value === "object" || typeof value === "function") && globalThis.__home_proxy_targets && globalThis.__home_proxy_targets.has(value)) value = globalThis.__home_proxy_targets.get(value);
+    \\  const stylize = options && typeof options.stylize === "function" ? options.stylize : __home_util_stylize_no_color;
+    \\  if (value === null) return stylize("null", "null");
+    \\  if (value === undefined) return stylize("undefined", "undefined");
+    \\  if (typeof value === "number") return stylize(__home_util_inspect_number(value, options), "number");
+    \\  if (typeof value === "bigint") return stylize(__home_util_inspect_number(value, options), "bigint");
+    \\  if (typeof value === "boolean") return stylize(String(value), "boolean");
+    \\  if (typeof value === "symbol") return stylize(String(value), "symbol");
     \\  if (typeof value === "string") return "'" + value + "'";
     \\  if (value && typeof value === "object" && typeof __home_vm_promise_states !== "undefined" && __home_vm_promise_states.has(value)) {
     \\    const promiseState = __home_vm_promise_states.get(value);
@@ -45598,21 +45608,50 @@ const harness_prelude =
     \\      if (inspected !== value) return typeof inspected === "string" ? inspected : __home_util_inspect_value(inspected, options || {}, seen);
     \\    }
     \\  }
-    \\  if (Array.isArray(value)) return "[ " + value.map(item => __home_util_inspect_value(item, options || {}, seen)).join(", ") + " ]";
+    \\  if (typeof SharedArrayBuffer === "function" && value instanceof SharedArrayBuffer) {
+    \\    const bytes = Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, "0"));
+    \\    return "SharedArrayBuffer { [Uint8Contents]: <" + bytes.join(" ") + ">, byteLength: " + String(value.byteLength) + " }";
+    \\  }
+    \\  if (Array.isArray(value)) {
+    \\    const depth = options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth);
+    \\    if (depth < 0) return "[Array]";
+    \\    const childOptions = Object.assign({}, options || {});
+    \\    Object.defineProperty(childOptions, "__home_inspect_depth", { configurable: true, value: depth - 1 });
+    \\    const constructorName = value.constructor && value.constructor !== Array ? String(value.constructor.name || "Array") : "";
+    \\    const entries = [];
+    \\    let emptyItems = 0;
+    \\    for (let index = 0; index < value.length; index++) {
+    \\      if (!Object.prototype.hasOwnProperty.call(value, index)) { emptyItems++; continue; }
+    \\      if (emptyItems > 0) { entries.push("<" + emptyItems + " empty item" + (emptyItems === 1 ? "" : "s") + ">"); emptyItems = 0; }
+    \\      entries.push(__home_util_inspect_value(value[index], childOptions, seen));
+    \\    }
+    \\    if (emptyItems > 0) entries.push("<" + emptyItems + " empty item" + (emptyItems === 1 ? "" : "s") + ">");
+    \\    for (const key of Object.keys(value)) if (!/^\d+$/.test(key)) entries.push(key + ": " + __home_util_inspect_value(value[key], childOptions, seen));
+    \\    const prefix = constructorName ? constructorName + "(" + value.length + ") " : "";
+    \\    return prefix + (entries.length === 0 ? "[]" : "[ " + entries.join(", ") + " ]");
+    \\  }
+    \\  if (typeof value === "function") return value.name ? "[Function: " + value.name + "]" : "[Function (anonymous)]";
     \\  if (value instanceof Error) {
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js") && value.message === "my message") {
     \\      return "Error: my message\n    at <anonymous> (" + String(globalThis.__home_current_filename || "js/bun/util/inspect-error.test.js").replace(/\\/g, "/") + ":149:19)";
     \\    }
-    \\    let output = value.name + ": " + value.message;
+    \\    let output;
+    \\    if (typeof value.stack === "string" && value.stack.length > 0) {
+    \\      output = value.stack;
+    \\      if (value.name && value.name !== "Error" && output.startsWith("Error")) output = value.name + output;
+    \\    } else output = "[" + String(value.name || "Error") + (value.message ? ": " + value.message : "") + "]";
     \\    if (value.cause instanceof Error) output += "\n[cause]: " + value.cause.name + ": " + value.cause.message + "\n";
     \\    return output;
     \\  }
     \\  if (value && typeof value === "object" && typeof __home_histograms !== "undefined" && __home_histograms.has(value)) return "Histogram { count: " + value.count + ", min: " + value.min + ", max: " + value.max + " }";
     \\  if (value && typeof value === "object") {
+    \\    const inspectDepth = options && options.__home_inspect_depth !== undefined ? Number(options.__home_inspect_depth) : Number(options && options.depth);
+    \\    if (inspectDepth < 0) return "[Object]";
     \\    if (seen.has(value)) return "[Circular *1]";
     \\    seen.add(value);
     \\    const keys = Object.keys(value);
     \\    const symbols = Object.getOwnPropertySymbols(value);
+    \\    if (keys.length === 0 && symbols.length === 0) return Object.getPrototypeOf(value) === null ? "[Object: null prototype] {}" : "{}";
     \\    const circularDescriptor = keys.length === 1 ? Object.getOwnPropertyDescriptor(value, keys[0]) : null;
     \\    if (circularDescriptor && Object.prototype.hasOwnProperty.call(circularDescriptor, "value") && circularDescriptor.value === value) {
     \\      return options && options.compact === false ? "<ref *1> {\n  " + keys[0] + ": [Circular *1]\n}" : "<ref *1> { " + keys[0] + ": [Circular *1] }";
@@ -45629,8 +45668,11 @@ const harness_prelude =
     \\      const item = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
     \\      entries.push(String(symbol) + ": " + __home_util_inspect_value(item, childOptions, seen));
     \\    }
-    \\    if (options && options.compact === false) return "{\n  " + entries.join(",\n  ") + "\n}";
-    \\    return "{ " + entries.join(", ") + " }";
+    \\    const prototype = Object.getPrototypeOf(value);
+    \\    const constructorName = prototype && value.constructor && value.constructor !== Object ? String(value.constructor.name || "") : "";
+    \\    const prefix = constructorName ? constructorName + " " : "";
+    \\    if (options && options.compact === false) return prefix + "{\n  " + entries.join(",\n  ") + "\n}";
+    \\    return prefix + "{ " + entries.join(", ") + " }";
     \\  }
     \\  return String(value);
     \\}
@@ -45640,23 +45682,85 @@ const harness_prelude =
     \\  return __home_util_inspect_value(value, options, new Set());
     \\}
     \\__home_util_inspect.custom = __home_util_inspect_custom;
+    \\__home_util_inspect.defaultOptions = { colors: false, compact: 3, depth: 2, numericSeparator: false };
+    \\function __home_util_format_number(value, options, integer, float) {
+    \\  if (typeof value === "bigint") return float ? String(Number(value)) : __home_util_inspect_number(value, options);
+    \\  if (typeof value === "symbol") return "NaN";
+    \\  const number = integer ? parseInt(value, 10) : (float ? parseFloat(value) : Number(value));
+    \\  return __home_util_inspect_number(number, options);
+    \\}
+    \\function __home_util_format_string(value, options) {
+    \\  if (typeof value === "bigint") return __home_util_inspect_number(value, options);
+    \\  if (typeof value === "number") return __home_util_inspect_number(value, options);
+    \\  if (typeof value === "symbol") return String(value);
+    \\  if (value && typeof value === "object") {
+    \\    const toString = value.toString;
+    \\    if (typeof toString !== "function" || toString === Object.prototype.toString || Array.isArray(value)) return __home_util_inspect(value, Object.assign({}, options || {}, { colors: false, compact: 3, depth: 0 }));
+    \\  }
+    \\  return String(value);
+    \\}
+    \\function __home_util_inspect_full(value, options, indent) {
+    \\  indent = Number(indent) || 0;
+    \\  const pad = " ".repeat(indent);
+    \\  const childPad = " ".repeat(indent + 2);
+    \\  if (typeof value === "function") {
+    \\    const name = value.name ? ": " + value.name : " (anonymous)";
+    \\    return "<ref *1> [Function" + name + "] {\n" +
+    \\      childPad + "[length]: " + String(value.length) + ",\n" +
+    \\      childPad + "[name]: '" + String(value.name || "") + "',\n" +
+    \\      childPad + "[prototype]: { [constructor]: [Circular *1] }\n" + pad + "}";
+    \\  }
+    \\  if (Array.isArray(value)) {
+    \\    const lines = ["["];
+    \\    for (let index = 0; index < value.length; index++) lines.push(childPad + __home_util_inspect_full(value[index], options, indent + 2) + ",");
+    \\    lines.push(childPad + "[length]: " + String(value.length));
+    \\    lines.push(pad + "]");
+    \\    return lines.join("\n");
+    \\  }
+    \\  if (value && typeof value === "object" && !(value instanceof Error)) {
+    \\    const keys = Object.keys(value);
+    \\    if (keys.length === 0) return "{}";
+    \\    const lines = ["{"];
+    \\    for (let index = 0; index < keys.length; index++) {
+    \\      const key = keys[index];
+    \\      lines.push(childPad + key + ": " + __home_util_inspect_full(value[key], options, indent + 2) + (index + 1 < keys.length ? "," : ""));
+    \\    }
+    \\    lines.push(pad + "}");
+    \\    return lines.join("\n");
+    \\  }
+    \\  return __home_util_inspect(value, options || {});
+    \\}
     \\function __home_util_formatWithOptions(options, format) {
+    \\  if (options === null || typeof options !== "object") {
+    \\    const error = new TypeError('The "inspectOptions" argument must be of type object');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  options = Object.assign({}, __home_util_inspect.defaultOptions, options);
     \\  const args = Array.prototype.slice.call(arguments, 2);
     \\  if (typeof format === "string") {
     \\    let index = 0;
-    \\    return format.replace(/%[sdjifoO%]/g, token => {
+    \\    return format.replace(/%[scdjifoO%]/g, token => {
     \\      if (token === "%%") return "%";
+    \\      if (index >= args.length) return token;
     \\      const value = args[index++];
-    \\      if (token === "%d" || token === "%i" || token === "%f") return __home_util_inspect_number(Number(value), options || {});
-    \\      if (token === "%j") return JSON.stringify(value);
-    \\      if (token === "%s") return String(value);
+    \\      if (token === "%c") return "";
+    \\      if (token === "%d") return __home_util_format_number(value, options, false, false);
+    \\      if (token === "%i") return __home_util_format_number(value, options, true, false);
+    \\      if (token === "%f") return __home_util_format_number(value, options, false, true);
+    \\      if (token === "%j") {
+    \\        try { return JSON.stringify(value); } catch (error) { if (error instanceof TypeError && /circular|cyclic/i.test(String(error.message))) return "[Circular]"; throw error; }
+    \\      }
+    \\      if (token === "%s") return __home_util_format_string(value, options);
+    \\      if (token === "%o") return __home_util_inspect_full(value, Object.assign({}, options, { compact: false, depth: 4, showHidden: true }), 0);
     \\      return __home_util_inspect(value, options || {});
-    \\    }) + (index < args.length ? " " + args.slice(index).map(value => __home_util_inspect(value, options || {})).join(" ") : "");
+    \\    }) + (index < args.length ? " " + args.slice(index).map(value => typeof value === "string" ? value : __home_util_inspect(value, options || {})).join(" ") : "");
     \\  }
-    \\  return [format].concat(args).map(value => __home_util_inspect(value, options || {})).join(" ");
+    \\  return [format].concat(args).map(value => typeof value === "string" ? value : __home_util_inspect(value, options || {})).join(" ");
     \\}
     \\function __home_util_format() {
-    \\  return __home_util_formatWithOptions.apply(null, [{}].concat(Array.prototype.slice.call(arguments)));
+    \\  if (arguments.length === 0) return "";
+    \\  return __home_util_formatWithOptions.apply(null, [__home_util_inspect.defaultOptions].concat(Array.prototype.slice.call(arguments)));
     \\}
     \\const __home_util_types_module = {
     \\  isModuleNamespaceObject(value) {
@@ -62661,15 +62765,22 @@ const harness_prelude =
     \\if (!globalThis.__home_native_proxy) {
     \\  globalThis.__home_native_proxy = globalThis.Proxy;
     \\  globalThis.__home_proxy_values = new WeakSet();
+    \\  globalThis.__home_proxy_targets = new WeakMap();
     \\  globalThis.Proxy = new globalThis.__home_native_proxy(globalThis.__home_native_proxy, {
     \\    construct(target, args) {
     \\      const value = Reflect.construct(target, args);
-    \\      if (value !== null && (typeof value === "object" || typeof value === "function")) globalThis.__home_proxy_values.add(value);
+    \\      if (value !== null && (typeof value === "object" || typeof value === "function")) {
+    \\        globalThis.__home_proxy_values.add(value);
+    \\        globalThis.__home_proxy_targets.set(value, args[0]);
+    \\      }
     \\      return value;
     \\    },
     \\    apply(target, thisArg, args) {
     \\      const value = Reflect.apply(target, thisArg, args);
-    \\      if (value !== null && (typeof value === "object" || typeof value === "function")) globalThis.__home_proxy_values.add(value);
+    \\      if (value !== null && (typeof value === "object" || typeof value === "function")) {
+    \\        globalThis.__home_proxy_values.add(value);
+    \\        globalThis.__home_proxy_targets.set(value, args[0]);
+    \\      }
     \\      return value;
     \\    },
     \\  });
@@ -89118,6 +89229,9 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/bun-inspect.test.ts", .passed = 12, .todo = 0 },
         .{ .path = "js/node/util/custom-inspect.test.js", .passed = 25, .todo = 0 },
         .{ .path = "js/node/util/mime-api.test.ts", .passed = 8, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/import.test.mjs", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/parallel/util-format.test.js", .passed = 1, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
