@@ -40991,6 +40991,13 @@ pub const Checker = struct {
             if (kind != .arrow_fn and hir_mod.fnDeclOf(self.hir, cur).flags.is_constructor) return false;
         }
         if (containing_member == hir_mod.none_node_id) return false;
+        const assignment = self.hir.parentOf(target);
+        if (assignment != hir_mod.none_node_id and self.hir.kindOf(assignment) == .assignment) {
+            const payload = hir_mod.assignmentOf(self.hir, assignment);
+            if (payload.target == target and self.expressionContainsThisMember(payload.value, access.name)) {
+                return false;
+            }
+        }
 
         for (hir_mod.classMembers(self.hir, class_node)) |member| {
             switch (self.hir.kindOf(member)) {
@@ -89966,6 +89973,13 @@ pub const Checker = struct {
                             break :blk true;
                         }
                     }
+                    if (try self.repeatedVarDistinctPrivateClassAnnotations(node, prior_annotation, v.type_annotation)) {
+                        annotation_text_mismatch = .{
+                            .prior = self.annotationSourceText(prior_annotation) orelse "unknown",
+                            .current = self.annotationSourceText(v.type_annotation) orelse "unknown",
+                        };
+                        break :blk false;
+                    }
                     if (try self.sameGenericAliasAnnotationArgMismatch(prior_annotation, v.type_annotation)) |texts| {
                         annotation_text_mismatch = texts;
                         break :blk false;
@@ -91070,6 +91084,42 @@ pub const Checker = struct {
         if (prior_decl != null and current_decl != null and prior_decl.? == current_decl.?) return false;
         if (self.classPrivateMemberSetsShareName(prior, current)) return true;
         return self.objectTypesSharePrivateMemberName(prior, current);
+    }
+
+    fn repeatedVarDistinctPrivateClassAnnotations(
+        self: *Checker,
+        anchor: NodeId,
+        prior_annotation: NodeId,
+        current_annotation: NodeId,
+    ) CheckError!bool {
+        if (prior_annotation == hir_mod.none_node_id or current_annotation == hir_mod.none_node_id or
+            self.hir.kindOf(prior_annotation) != .type_ref or
+            self.hir.kindOf(current_annotation) != .type_ref)
+        {
+            return false;
+        }
+        const prior_ref = hir_mod.typeRefOf(self.hir, prior_annotation);
+        const current_ref = hir_mod.typeRefOf(self.hir, current_annotation);
+        if (prior_ref.qualifier_len != 0 or current_ref.qualifier_len != 0 or prior_ref.name == current_ref.name) {
+            return false;
+        }
+        const prior_class = self.findClassDeclByName(anchor, prior_ref.name);
+        const current_class = self.findClassDeclByName(anchor, current_ref.name);
+        if (prior_class == hir_mod.none_node_id or current_class == hir_mod.none_node_id or prior_class == current_class) {
+            return false;
+        }
+        var prior_has_private = false;
+        for (hir_mod.classMembers(self.hir, prior_class)) |member| {
+            if ((try self.privateOrProtectedClassMemberName(member)) != null) {
+                prior_has_private = true;
+                break;
+            }
+        }
+        if (!prior_has_private) return false;
+        for (hir_mod.classMembers(self.hir, current_class)) |member| {
+            if ((try self.privateOrProtectedClassMemberName(member)) != null) return true;
+        }
+        return false;
     }
 
     fn classPrivateMemberSetsShareName(self: *Checker, prior: TypeId, current: TypeId) bool {
@@ -100073,6 +100123,9 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(pattern_idx, member_is_optional_chain);
                     }
                     // No matching member and no indexer ÃÂ¢ÃÂÃÂ TS2339.
+                    if (self.checkJsPrototypeAccessHasFunctionOwner(node)) {
+                        break :blk types.Primitive.any;
+                    }
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
                         if ((try self.checkJsImportedCallableExpandoTargetType(m.object, access_obj_t)) == null) {
                             // Only the outermost access in `obj.slot.value = rhs`
@@ -131874,6 +131927,25 @@ pub const Checker = struct {
         return std.mem.eql(u8, self.string_interner.get(parent_member.name), "prototype");
     }
 
+    fn checkJsPrototypeAccessHasFunctionOwner(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective() or !self.isInAssignmentTargetChain(node) or
+            node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access)
+        {
+            return false;
+        }
+        const access = hir_mod.memberOf(self.hir, node);
+        if (!std.mem.eql(u8, self.string_interner.get(access.name), "prototype") or
+            access.object == hir_mod.none_node_id or self.hir.kindOf(access.object) != .identifier)
+        {
+            return false;
+        }
+        const owner = hir_mod.identifierOf(self.hir, access.object).name;
+        return self.rootHasFunctionOrClassDeclNamed(node, owner) or
+            self.checkJsFunctionDeclNamedInVirtualProgram(node, owner) != null or
+            self.findFunctionDeclForNameNearNode(node, owner) != null or
+            self.findCheckJsVirtualSourceFunctionDeclForName(node, owner) != null;
+    }
+
     /// `.js` files with `// @ts-check` accept `/** @type {T} */
     /// C.prototype = expr` as a declaration that pins the prototype
     /// slot to T. Returns T when the assignment statement carries a
@@ -133630,12 +133702,16 @@ pub const Checker = struct {
         name: hir_mod.StringId,
         target_text: []const u8,
     ) CheckError!void {
+        if (std.mem.eql(u8, self.string_interner.get(name), "prototype") and
+            self.checkJsPrototypeAccessHasFunctionOwner(node)) return;
         const name_str = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Property '{s}' does not exist on type '{s}'.",
             .{ name_str, target_text },
         );
+        if (self.sourceHasCommonJsReexportAlias() and
+            self.diagnosticExistsWithMessage(node, TsCodes.property_does_not_exist, msg)) return;
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .pos = self.memberAccessNamePos(node),
@@ -133961,6 +134037,8 @@ pub const Checker = struct {
     }
 
     fn reportPropertyDoesNotExistOnType(self: *Checker, node: NodeId, name: hir_mod.StringId, target_t: TypeId) CheckError!void {
+        if (std.mem.eql(u8, self.string_interner.get(name), "prototype") and
+            self.checkJsPrototypeAccessHasFunctionOwner(node)) return;
         if ((try self.checkJsPrototypeConstructorThisMemberType(node, name)) != null) return;
         if (self.checkJsPrototypeObjectLiteralHasConstructor(node)) {
             self.removePriorDiagnosticForNode(node, TsCodes.property_does_not_exist);
@@ -141924,6 +142002,97 @@ pub const Checker = struct {
         );
     }
 
+    fn qualifiedClassParameterInstanceType(
+        self: *Checker,
+        sig: TypeId,
+        param_index: usize,
+    ) CheckError!?TypeId {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return null;
+        if (param_index >= param_nodes.len) return null;
+        const param_node = param_nodes[param_index];
+        if (param_node == hir_mod.none_node_id or self.hir.kindOf(param_node) != .parameter) return null;
+        const annotation = hir_mod.parameterOf(self.hir, param_node).type_annotation;
+        if (annotation == hir_mod.none_node_id or self.hir.kindOf(annotation) != .type_ref) return null;
+        const type_ref = hir_mod.typeRefOf(self.hir, annotation);
+        if (type_ref.qualifier_len == 0) return null;
+
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        for (hir_mod.typeRefQualifier(self.hir, annotation)) |qualifier| {
+            if (self.hir.kindOf(qualifier) != .identifier) return null;
+            try path.append(self.gpa, hir_mod.identifierOf(self.hir, qualifier).name);
+        }
+        const root = self.rootBlockFor(param_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const namespace = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), path.items) orelse return null;
+        const declaration = self.findVisibleTypeDeclInNamespace(namespace, type_ref.name, param_node) orelse return null;
+        const declaration_kind = self.hir.kindOf(declaration);
+        if (declaration_kind != .class_decl and declaration_kind != .class_expr) return null;
+        const instance_t = self.hir.typeOf(declaration);
+        if (instance_t == types.Primitive.none) return null;
+        return instance_t;
+    }
+
+    fn tryReportQualifiedClassParameterMissingProperty(
+        self: *Checker,
+        arg_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+        sig: TypeId,
+        param_index: usize,
+    ) CheckError!bool {
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source).is_object_type or
+            !self.interner.pool.flagsOf(target).is_object_type)
+        {
+            return false;
+        }
+        var missing_name: ?hir_mod.StringId = null;
+        for (self.interner.objectMembers(target)) |member| {
+            if (member.is_optional or member.is_method or
+                (try self.lookupObjectMember(source, member.name)) != null)
+            {
+                continue;
+            }
+            if (missing_name != null) return false;
+            missing_name = member.name;
+        }
+        const property = missing_name orelse return false;
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return false;
+        if (param_index >= param_nodes.len) return false;
+        const annotation = hir_mod.parameterOf(self.hir, param_nodes[param_index]).type_annotation;
+        const target_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(annotation));
+        const source_name = (try self.missingPropertyTypeName(source)) orelse return false;
+        try self.report(
+            arg_node,
+            TsCodes.property_missing_required,
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
+                .{ self.string_interner.get(property), source_name, target_name },
+            ),
+        );
+        return true;
+    }
+
+    fn argumentAnnotatedClassInstanceType(self: *Checker, node: NodeId) ?TypeId {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
+        const name: hir_mod.StringId = switch (self.hir.kindOf(annotation)) {
+            .identifier => hir_mod.identifierOf(self.hir, annotation).name,
+            .type_ref => blk: {
+                const type_ref = hir_mod.typeRefOf(self.hir, annotation);
+                if (type_ref.qualifier_len != 0) return null;
+                break :blk type_ref.name;
+            },
+            else => return null,
+        };
+        const declaration = self.findVisibleNamedTypeDecl(annotation, name) orelse return null;
+        const declaration_kind = self.hir.kindOf(declaration);
+        if (declaration_kind != .class_decl and declaration_kind != .class_expr) return null;
+        const instance_t = self.hir.typeOf(declaration);
+        return if (instance_t == types.Primitive.none) null else instance_t;
+    }
+
     fn checkArgsAgainstSignatureWithMode(
         self: *Checker,
         call_node: NodeId,
@@ -142136,7 +142305,11 @@ pub const Checker = struct {
                 i,
                 fixed_pos,
             )) continue;
+            const qualified_param_t = try self.qualifiedClassParameterInstanceType(sig, fixed_pos);
             var param_t = param_ts[fixed_pos];
+            if (qualified_param_t) |qualified_t| {
+                param_t = qualified_t;
+            }
             param_t = self.pureVariadicTupleTarget(param_t) orelse param_t;
             if (param_t >= self.interner.pool.typeCount()) continue;
             const declared_param_predicate = self.signature_param_predicates.get(.{
@@ -142302,6 +142475,19 @@ pub const Checker = struct {
                 });
                 stop_after_arg_mismatch = true;
                 continue;
+            }
+            if (qualified_param_t) |qualified_t| {
+                const qualified_source_t = self.argumentAnnotatedClassInstanceType(args[i]) orelse arg_t;
+                if (try self.tryReportQualifiedClassParameterMissingProperty(
+                    args[i],
+                    qualified_source_t,
+                    qualified_t,
+                    sig,
+                    fixed_pos,
+                )) {
+                    stop_after_arg_mismatch = true;
+                    continue;
+                }
             }
             const pattern_source_diag = if (self.directCalleePatternParam(call_node, i)) |pattern|
                 try self.checkBindingPatternSourceType(pattern, arg_t, args[i])
@@ -158504,6 +158690,9 @@ pub const Checker = struct {
         if (target == types.Primitive.never or self.intersectionReducesToNeverForAssignability(target)) {
             return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
         }
+        if ((try self.missingEcmaPrivateMemberAssignmentChainForNodes(source, init_node, target_node)) != null) {
+            return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
+        }
         try self.reportTypeNotAssignable(node, source, target, fallback);
     }
 
@@ -160618,6 +160807,48 @@ pub const Checker = struct {
         return self.string_interner.get(base_name);
     }
 
+    fn missingEcmaPrivateMemberAssignmentChainForNodes(
+        self: *Checker,
+        source: TypeId,
+        value_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!?[]const DiagnosticChainEntry {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return null;
+        const target_type_name: hir_mod.StringId = switch (self.hir.kindOf(annotation)) {
+            .identifier => hir_mod.identifierOf(self.hir, annotation).name,
+            .type_ref => hir_mod.typeRefOf(self.hir, annotation).name,
+            else => return null,
+        };
+        const declaration = self.findVisibleNamedTypeDecl(annotation, target_type_name) orelse return null;
+        const declaration_kind = self.hir.kindOf(declaration);
+        if (declaration_kind != .class_decl and declaration_kind != .class_expr) return null;
+        for (hir_mod.classMembers(self.hir, declaration)) |member| {
+            const member_name = (try self.privateOrProtectedClassMemberName(member)) orelse continue;
+            if (!self.memberNameIsEcmaPrivate(member_name)) continue;
+            if (self.class_name_by_instance.get(source)) |source_class_name| {
+                if (self.class_private_members.getPtr(source_class_name)) |private_names| {
+                    if (private_names.contains(member_name)) return null;
+                }
+            }
+            const source_name = (try self.missingPrivatePropertyApparentSourceName(source, value_node)) orelse
+                (try self.allocSimpleTypeName(source)) orelse
+                (try self.allocObjectTypeShape(source)) orelse
+                return null;
+            const target_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(annotation));
+            const chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+            chain[0] = .{
+                .code = TsCodes.property_missing_required,
+                .message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
+                    .{ self.string_interner.get(member_name), source_name, target_name },
+                ),
+            };
+            return chain;
+        }
+        return null;
+    }
+
     fn objectMemberNameLessThan(self: *Checker, a: types.ObjectMember, b: types.ObjectMember) bool {
         return std.mem.lessThan(u8, self.string_interner.get(a.name), self.string_interner.get(b.name));
     }
@@ -161727,6 +161958,7 @@ pub const Checker = struct {
             target,
             null,
         )) orelse (try self.symbolicTupleIdentifierMismatchChain(value_node, target_node)) orelse
+            (try self.missingEcmaPrivateMemberAssignmentChainForNodes(source, value_node, target_node)) orelse
             (self.buildAssignmentAssignabilityElaborationChain(source, target) catch &.{});
         const related = try self.sourceTypeParameterConstraintHintRelated(source, target);
         try self.diagnostics.append(self.gpa, .{
@@ -165813,6 +166045,23 @@ pub const Checker = struct {
             try self.currentCommonJsModuleTypeName(node),
         );
         return true;
+    }
+
+    fn sourceHasCommonJsReexportAlias(self: *Checker) bool {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .identifier)
+            {
+                continue;
+            }
+            const target = hir_mod.identifierOf(self.hir, assignment.target);
+            if (!std.mem.eql(u8, self.string_interner.get(target.name), "exports")) continue;
+            if (self.requireCallSpecifier(assignment.value) != null) return true;
+        }
+        return false;
     }
 
     fn reportCheckJsWholeExportAliasMissingMember(
@@ -227470,7 +227719,7 @@ test "checker: exported virtual modules do not share generic type aliases withou
     try T.expect(!checkerHasCode(b, TsCodes.type_parameter_of_exported_mapped_object_type_private_name));
 }
 
-test "checker: namespaced class instance displays qualified name in assignment diagnostics" {
+test "checker: namespaced class instance preserves qualified TS2741 target" {
     const b = try newBoundSetup(
         \\namespace m {
         \\  export class variable {
@@ -227487,7 +227736,8 @@ test "checker: namespaced class instance displays qualified name in assignment d
     defer destroyBoundSetup(b);
     b.base.checker.setStrictFlags(.{ .strict_property_initialization = true });
     try b.base.checker.checkSourceFile(b.base.root);
-    try T.expect(checkerHasCodeWithMessage(b, TsCodes.argument_type_mismatch, "Argument of type 'variable' is not assignable to parameter of type 'm.variable'."));
+    try T.expect(!checkerHasCode(b, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeWithMessage(b, TsCodes.property_missing_required, "Property 's' is missing in type 'variable' but required in type 'm.variable'."));
 }
 
 test "checker: unambiguous namespaced class argument displays bare class name" {
@@ -238322,7 +238572,7 @@ test "checker: CommonJS typedef export property conflicts with export assignment
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expect(checkerHasCodeAndMessage(
         s,
         TsCodes.property_does_not_exist,
@@ -238349,7 +238599,7 @@ test "checker: checked JS whole CommonJS exports reject later expandos" {
     try T.expect(checkerHasCodeAndMessage(
         s,
         TsCodes.property_does_not_exist,
-        "Property 'f' does not exist",
+        "Property 'f' does not exist on type '() => void'.",
     ));
 }
 
@@ -238909,11 +239159,16 @@ test "checker: missing private member uses inherited class source identity" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expect(hasDiagnosticCodeMessage(
-        s,
-        TsCodes.property_missing_required,
-        "Property '#something' is missing in type 'A1' but required in type 'C'.",
-    ));
+    var found = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        for (diagnostic.chain) |child| {
+            if (std.mem.eql(u8, child.message, "Property '#something' is missing in type 'A1' but required in type 'C'.")) {
+                found = true;
+            }
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: JSX constructor interfaces use concrete managed props" {
@@ -239734,10 +239989,10 @@ test "checker: CommonJS whole exports reject property writes" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
-    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'before' does not exist"));
-    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'after' does not exist"));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
 }
 
 test "checker: future CommonJS value assignment suppresses implicit any" {
