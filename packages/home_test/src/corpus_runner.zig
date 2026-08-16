@@ -299,6 +299,9 @@ const harness_prelude =
     \\if (typeof console !== "object" || console === null) var console = {};
     \\if (typeof console.log !== "function") console.log = function() {};
     \\if (typeof console.warn !== "function") console.warn = console.log;
+    \\if (typeof console.info !== "function") console.info = console.log;
+    \\if (typeof console.error !== "function") console.error = console.log;
+    \\if (typeof console.debug !== "function") console.debug = console.log;
     \\let __home_next_timer_id = 1;
     \\var __home_cancelled_timers = new Set();
     \\var __home_fake_timer_records = new Map();
@@ -2674,11 +2677,6 @@ const harness_prelude =
     \\  if (String(source.cmd[0]) === "node" || String(source.cmd[0]) === "node.exe") {
     \\    const normalized = Object.assign({}, source);
     \\    normalized.cmd = [process.execPath].concat(source.cmd.slice(1));
-    \\    return normalized;
-    \\  }
-    \\  if (source.cmd.length >= 4 && String(source.cmd[1]) === "run" && String(source.cmd[2]) === "--bun") {
-    \\    const normalized = Object.assign({}, source);
-    \\    normalized.cmd = [source.cmd[0], "run"].concat(source.cmd.slice(3));
     \\    return normalized;
     \\  }
     \\  return source;
@@ -47015,6 +47013,188 @@ const harness_prelude =
     \\  if (value === -24) return "EMFILE";
     \\  throw new RangeError("The value of errno is out of range");
     \\}
+    \\function __home_util_parse_args_error(code, message) {
+    \\  const error = new TypeError(message);
+    \\  error.code = code;
+    \\  return error;
+    \\}
+    \\function __home_util_parse_args_validate_boolean(value, name) {
+    \\  if (typeof value !== "boolean") throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "' + name + '" argument must be of type boolean');
+    \\  return value;
+    \\}
+    \\function __home_util_parse_args_validate_options(options) {
+    \\  if (options === undefined || options === null) return [];
+    \\  if (typeof options !== "object" || Array.isArray(options)) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object');
+    \\  const definitions = [];
+    \\  for (const name of Object.keys(options)) {
+    \\    const input = options[name];
+    \\    if (!input || typeof input !== "object" || Array.isArray(input)) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "options.' + name + '" argument must be of type object');
+    \\    if (typeof input.type !== "string" || (input.type !== "string" && input.type !== "boolean")) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "options.' + name + '.type" property must be one of: string, boolean');
+    \\    let short;
+    \\    if (Object.prototype.hasOwnProperty.call(input, "short") && input.short !== undefined) {
+    \\      if (typeof input.short !== "string") throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "options.' + name + '.short" property must be of type string');
+    \\      if (input.short.length !== 1) throw __home_util_parse_args_error("ERR_INVALID_ARG_VALUE", "options." + name + ".short must be a single character");
+    \\      short = input.short;
+    \\    }
+    \\    let multiple = false;
+    \\    if (Object.prototype.hasOwnProperty.call(input, "multiple") && input.multiple !== undefined) multiple = __home_util_parse_args_validate_boolean(input.multiple, "options." + name + ".multiple");
+    \\    let defaultValue;
+    \\    let hasDefault = false;
+    \\    if (Object.prototype.hasOwnProperty.call(input, "default") && input.default !== undefined) {
+    \\      defaultValue = input.default;
+    \\      hasDefault = true;
+    \\      if (multiple) {
+    \\        if (!Array.isArray(defaultValue)) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "options.' + name + '.default" property must be an instance of Array');
+    \\        for (let index = 0; index < defaultValue.length; index++) {
+    \\          if (typeof defaultValue[index] !== input.type) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "options.' + name + '.default[' + index + ']" property must be of type ' + input.type);
+    \\        }
+    \\      } else if (typeof defaultValue !== input.type) {
+    \\        throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "options.' + name + '.default" property must be of type ' + input.type);
+    \\      }
+    \\    }
+    \\    definitions.push({ name, short, type: input.type, multiple, defaultValue, hasDefault });
+    \\  }
+    \\  return definitions;
+    \\}
+    \\function __home_util_parse_args_find_long(definitions, name) {
+    \\  for (let index = 0; index < definitions.length; index++) if (definitions[index].name === name) return index;
+    \\  return -1;
+    \\}
+    \\function __home_util_parse_args_find_short(definitions, short) {
+    \\  let longMatch = -1;
+    \\  for (let index = 0; index < definitions.length; index++) {
+    \\    if (definitions[index].short === short) return index;
+    \\    if (definitions[index].name.length === 1 && definitions[index].name === short) longMatch = index;
+    \\  }
+    \\  return longMatch;
+    \\}
+    \\function __home_util_parse_args(config) {
+    \\  config = config === undefined || config === null ? {} : config;
+    \\  if (typeof config !== "object" || Array.isArray(config)) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "config" argument must be of type object');
+    \\  const strictValue = config.strict === undefined ? true : config.strict;
+    \\  const strict = __home_util_parse_args_validate_boolean(strictValue, "strict");
+    \\  const allowPositionalsValue = config.allowPositionals === undefined || config.allowPositionals === null ? !strict : config.allowPositionals;
+    \\  const allowPositionals = __home_util_parse_args_validate_boolean(allowPositionalsValue, "allowPositionals");
+    \\  const returnTokens = __home_util_parse_args_validate_boolean(config.tokens === undefined ? false : config.tokens, "tokens");
+    \\  const allowNegative = __home_util_parse_args_validate_boolean(config.allowNegative === undefined ? false : config.allowNegative, "allowNegative");
+    \\  const definitions = __home_util_parse_args_validate_options(config.options);
+    \\  let args;
+    \\  if (config.args === undefined || config.args === null) {
+    \\    const execArgv = Array.isArray(process.execArgv) ? process.execArgv : [];
+    \\    const evalMode = execArgv.some(value => value === "-e" || value === "--eval" || value === "-p" || value === "--print");
+    \\    args = Array.isArray(process.argv) ? process.argv.slice(evalMode ? 1 : 2) : [];
+    \\  } else {
+    \\    if (!Array.isArray(config.args)) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "args" argument must be an instance of Array');
+    \\    args = config.args;
+    \\  }
+    \\  const values = Object.create(null);
+    \\  const positionals = [];
+    \\  const tokens = [];
+    \\  function rawOptionName(raw, groupIndex, parseType) {
+    \\    if (groupIndex !== undefined) return "-" + raw[groupIndex];
+    \\    if (parseType === "short-value") return raw.slice(0, 2);
+    \\    if (parseType === "long-value") return raw.slice(0, raw.indexOf("="));
+    \\    return raw;
+    \\  }
+    \\  function optionLike(value) { return typeof value === "string" && value.length > 1 && value[0] === "-"; }
+    \\  function handleOption(index, name, raw, value, inlineValue, definitionIndex, negative, groupIndex, parseType) {
+    \\    const definition = definitionIndex >= 0 ? definitions[definitionIndex] : null;
+    \\    const rawName = rawOptionName(raw, groupIndex, parseType);
+    \\    if (strict) {
+    \\      if (!definition) {
+    \\        const suffix = allowPositionals ? ". To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"" + rawName + "\"'" : "";
+    \\        throw __home_util_parse_args_error("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + rawName + "'" + suffix);
+    \\      }
+    \\      if (definition.type === "string" && value === undefined) throw __home_util_parse_args_error("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + (definition.short ? "-" + definition.short + ", " : "") + "--" + definition.name + " <value>' argument missing");
+    \\      if (definition.type === "boolean" && value !== undefined) throw __home_util_parse_args_error("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + (definition.short ? "-" + definition.short + ", " : "") + "--" + definition.name + "' does not take an argument");
+    \\      if (definition.type === "string" && inlineValue === false && optionLike(value)) {
+    \\        const hint = rawName.slice(0, 2) === "--" ? rawName + "=-XYZ" : "--" + definition.name + "=-XYZ' or '" + rawName + "-XYZ";
+    \\        throw __home_util_parse_args_error("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + rawName + "' argument is ambiguous.\nDid you forget to specify the option argument for '" + rawName + "'?\nTo specify an option argument starting with a dash use '" + hint + "'.");
+    \\      }
+    \\    }
+    \\    if (name !== "__proto__") {
+    \\      const stored = value === undefined ? !negative : value;
+    \\      if (definition && definition.multiple) {
+    \\        if (Object.prototype.hasOwnProperty.call(values, name)) values[name].push(stored);
+    \\        else values[name] = [stored];
+    \\      } else values[name] = stored;
+    \\    }
+    \\    if (returnTokens) tokens.push({ kind: "option", name, rawName, index, value, inlineValue: value === undefined ? undefined : inlineValue });
+    \\  }
+    \\  function handlePositional(index, value) {
+    \\    if (!allowPositionals) throw __home_util_parse_args_error("ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL", "Unexpected argument '" + String(value) + "'. This command does not take positional arguments");
+    \\    positionals.push(value);
+    \\    if (returnTokens) tokens.push({ kind: "positional", index, value });
+    \\  }
+    \\  for (let index = 0; index < args.length; index++) {
+    \\    const original = args[index];
+    \\    const arg = String(original);
+    \\    if (arg === "--") {
+    \\      if (returnTokens) tokens.push({ kind: "option-terminator", index });
+    \\      for (index += 1; index < args.length; index++) handlePositional(index, args[index]);
+    \\      break;
+    \\    }
+    \\    if (arg.length === 2 && arg[0] === "-") {
+    \\      const short = arg[1];
+    \\      const definitionIndex = __home_util_parse_args_find_short(definitions, short);
+    \\      const definition = definitionIndex >= 0 ? definitions[definitionIndex] : null;
+    \\      let value;
+    \\      let inlineValue;
+    \\      if (definition && definition.type === "string" && index + 1 < args.length) { value = args[++index]; inlineValue = false; }
+    \\      handleOption(index - (inlineValue === false ? 1 : 0), definition ? definition.name : short, arg, value, inlineValue, definitionIndex, false, undefined, "short");
+    \\      continue;
+    \\    }
+    \\    if (arg.length > 2 && arg.slice(0, 2) === "--") {
+    \\      const equal = arg.indexOf("=");
+    \\      if (equal >= 3) {
+    \\        const name = arg.slice(2, equal);
+    \\        const definitionIndex = __home_util_parse_args_find_long(definitions, name);
+    \\        handleOption(index, name, arg, arg.slice(equal + 1), true, definitionIndex, false, undefined, "long-value");
+    \\      } else {
+    \\        let name = arg.slice(2);
+    \\        let negative = false;
+    \\        if (allowNegative && name.slice(0, 3) === "no-") { name = name.slice(3); negative = true; }
+    \\        const definitionIndex = __home_util_parse_args_find_long(definitions, name);
+    \\        const definition = definitionIndex >= 0 ? definitions[definitionIndex] : null;
+    \\        let value;
+    \\        let inlineValue;
+    \\        if (definition && definition.type === "string" && !negative && index + 1 < args.length) { value = args[++index]; inlineValue = false; }
+    \\        handleOption(index - (inlineValue === false ? 1 : 0), name, arg, value, inlineValue, definitionIndex, negative, undefined, "long");
+    \\      }
+    \\      continue;
+    \\    }
+    \\    if (arg.length > 2 && arg[0] === "-") {
+    \\      const firstDefinitionIndex = __home_util_parse_args_find_short(definitions, arg[1]);
+    \\      const firstDefinition = firstDefinitionIndex >= 0 ? definitions[firstDefinitionIndex] : null;
+    \\      if (firstDefinition && firstDefinition.type === "string") {
+    \\        handleOption(index, firstDefinition.name, arg.slice(0, 2), arg.slice(2), true, firstDefinitionIndex, false, undefined, "short-value");
+    \\        continue;
+    \\      }
+    \\      const originalIndex = index;
+    \\      for (let groupIndex = 1; groupIndex < arg.length; groupIndex++) {
+    \\        const short = arg[groupIndex];
+    \\        const definitionIndex = __home_util_parse_args_find_short(definitions, short);
+    \\        const definition = definitionIndex >= 0 ? definitions[definitionIndex] : null;
+    \\        if (definition && definition.type === "string" && groupIndex < arg.length - 1) {
+    \\          handleOption(originalIndex, definition.name, arg, arg.slice(groupIndex + 1), true, definitionIndex, false, groupIndex, "short-value");
+    \\          break;
+    \\        }
+    \\        let value;
+    \\        let inlineValue;
+    \\        if (definition && definition.type === "string" && index + 1 < args.length) { value = args[++index]; inlineValue = false; }
+    \\        handleOption(originalIndex, definition ? definition.name : short, arg, value, inlineValue, definitionIndex, false, groupIndex, "short");
+    \\      }
+    \\      continue;
+    \\    }
+    \\    handlePositional(index, original);
+    \\  }
+    \\  for (const definition of definitions) {
+    \\    if (definition.hasDefault && definition.name !== "__proto__" && !Object.prototype.hasOwnProperty.call(values, definition.name)) values[definition.name] = definition.defaultValue;
+    \\  }
+    \\  const result = { values, positionals };
+    \\  if (returnTokens) result.tokens = tokens;
+    \\  return result;
+    \\}
     \\const __home_mime_params_states = new WeakMap();
     \\function __home_mime_valid_token(value) {
     \\  const text = String(value);
@@ -47104,7 +47284,7 @@ const harness_prelude =
     \\});
     \\__home_MIMEType.prototype.toString = function() { const state = __home_mime_type_state(this); const params = String(state.params); return state.type + "/" + state.subtype + (params ? ";" + params : ""); };
     \\__home_MIMEType.prototype.toJSON = __home_MIMEType.prototype.toString;
-    \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
+    \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, parseArgs: __home_util_parse_args, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -49251,6 +49431,8 @@ const harness_prelude =
     \\    const text = Array.prototype.slice.call(arguments).map(value => __home_console_format_arg(value, this._colorMode)).join(" ");
     \\    __home_console_write(this._stderr, text + "\n");
     \\  }
+    \\  info() { return this.log.apply(this, arguments); }
+    \\  debug() { return this.log.apply(this, arguments); }
     \\  warn() { return this.error.apply(this, arguments); }
     \\  count(label) {
     \\    const key = label === undefined ? "default" : String(label);
@@ -50381,6 +50563,9 @@ const harness_prelude =
     \\    },
     \\    mkdtemp(prefix) {
     \\      return Promise.resolve(__home_node_fs.mkdtempSync(prefix));
+    \\    },
+    \\    realpath(path, options) {
+    \\      return Promise.resolve(__home_node_fs.realpathSync(path, options));
     \\    },
     \\    access(path) {
     \\      if (!__home_node_fs.existsSync(path)) {
@@ -69449,6 +69634,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { inspect } from \"node:util\";",
             .replacement = "const { inspect } = globalThis.__home_import(\"node:util\");",
+        },
+        .{
+            .needle = "import { parseArgs } from \"node:util\";",
+            .replacement = "const { parseArgs } = globalThis.__home_import(\"node:util\");",
         },
         .{
             .needle = "import process from \"process\";",
@@ -90523,6 +90712,8 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs", .passed = 1, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-proxy.test.js", .passed = 1, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect.test.js", .passed = 5, .todo = 0 },
+        .{ .path = "js/node/util/parse_args/default-args.test.mjs", .passed = 8, .todo = 0 },
+        .{ .path = "js/node/util/parse_args/parse-args.test.mjs", .passed = 107, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
