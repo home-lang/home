@@ -36204,7 +36204,7 @@ pub const Checker = struct {
         var class_param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
         var class_param_ids_moved = false;
         defer if (!class_param_ids_moved) class_param_ids.deinit(self.gpa);
-        const class_jsdoc_template_scope = self.check_js_enabled and
+        const class_jsdoc_template_scope = self.sourceHasCheckJsDirective() and
             type_params.len == 0 and self.fnHasJsDocTemplateTags(node);
         if (class_jsdoc_template_scope) try self.pushNarrowScope();
         defer if (class_jsdoc_template_scope) self.popNarrowScope();
@@ -48708,10 +48708,18 @@ pub const Checker = struct {
                     if (self.class_static_type_by_node.get(decl)) |static_t| {
                         const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
                         if (self.interner.objectMemberInfo(static_t, prototype_name)) |prototype| {
-                            break :blk self.merged_class_instance_types.get(prototype.type) orelse prototype.type;
+                            const inherited_t = self.merged_class_instance_types.get(prototype.type) orelse prototype.type;
+                            if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, inherited_t)) |instantiated| {
+                                break :blk instantiated;
+                            }
+                            break :blk inherited_t;
                         }
                         if (try self.constructReturnType(static_t)) |instance_t| {
-                            break :blk self.merged_class_instance_types.get(instance_t) orelse instance_t;
+                            const inherited_t = self.merged_class_instance_types.get(instance_t) orelse instance_t;
+                            if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, inherited_t)) |instantiated| {
+                                break :blk instantiated;
+                            }
+                            break :blk inherited_t;
                         }
                     }
                 }
@@ -49718,7 +49726,12 @@ pub const Checker = struct {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
-                    if (self.class_static_type_by_node.get(decl)) |t| break :blk t;
+                    if (self.class_static_type_by_node.get(decl)) |t| {
+                        if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| {
+                            break :blk instantiated;
+                        }
+                        break :blk t;
+                    }
                 }
                 if (self.class_static_types.get(id.name)) |t| {
                     if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| {
@@ -127127,7 +127140,7 @@ pub const Checker = struct {
         if (self.containsFreeTypeParameter(arg_t)) return;
         if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
         if (self.jsdoc_constrained_type_params.contains(param_t) and
-            try self.checkerAssignableTo(arg_t, constraint)) return;
+            try self.jsDocConstrainedTypeAssignable(arg_t, constraint, 0)) return;
         // Deferred indexed-access argument over a generic parameter
         // (`Foo<Source[Key], ÃÂ¢ÃÂÃÂ¦>` inside the body of a generic alias
         // `Foo<Source extends object, ÃÂ¢ÃÂÃÂ¦>`). When the type argument is
@@ -127217,6 +127230,56 @@ pub const Checker = struct {
             .message = msg,
             .chain = chain,
         });
+    }
+
+    fn jsDocConstrainedTypeAssignable(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+        depth: u8,
+    ) CheckError!bool {
+        if (source_t == target_t or target_t == types.Primitive.any or target_t == types.Primitive.unknown) return true;
+        if (depth >= 12 or source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) {
+            return self.engine.isAssignableTo(source_t, target_t) catch false;
+        }
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.jsDocConstrainedTypeAssignable(source_t, member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (source_flags.is_union) {
+            for (self.interner.unionMembers(source_t)) |member| {
+                if (!try self.jsDocConstrainedTypeAssignable(member, target_t, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (target_flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (!try self.jsDocConstrainedTypeAssignable(source_t, member, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (source_flags.is_object_type and target_flags.is_object_type) {
+            const source_element = try self.arrayElementType(source_t);
+            const target_element = try self.arrayElementType(target_t);
+            if (target_element != types.Primitive.none) {
+                if (source_element == types.Primitive.none) return false;
+                return try self.jsDocConstrainedTypeAssignable(source_element, target_element, depth + 1);
+            }
+            for (self.interner.objectMembers(target_t)) |target_member| {
+                const source_member = self.interner.objectMemberInfo(source_t, target_member.name) orelse {
+                    if (target_member.is_optional) continue;
+                    return false;
+                };
+                if (!target_member.is_optional and source_member.is_optional) return false;
+                if (!try self.jsDocConstrainedTypeAssignable(source_member.type, target_member.type, depth + 1)) return false;
+            }
+            return true;
+        }
+        return self.engine.isAssignableTo(source_t, target_t) catch false;
     }
 
     fn tryReportHeritageTypeArgSingleMissingProperty(
@@ -209748,28 +209811,37 @@ test "checker: checkjs class JSDoc @extends suppresses TS8026 heritage diagnosti
 test "checker: checkjs class JSDoc @extends enforces class template constraints" {
     const source =
         \\// @checkjs: true
-        \\/** @typedef {{ a: string, b: boolean | string[] }} Foo */
+        \\/**
+        \\ * @typedef {{
+        \\ *   a: number | string;
+        \\ *   b: boolean | string[];
+        \\ * }} Foo
+        \\ */
         \\/** @template {Foo} T */
         \\class A {
         \\  /** @param {T} value */
         \\  constructor(value) {}
         \\}
+        \\/**
+        \\ * @extends {A<{
+        \\ *   a: string,
+        \\ *   b: string
+        \\ * }>}
+        \\ */
+        \\class MultilineBad extends A {}
         \\/** @extends {A<{ a: string, b: string }>} */
-        \\class Bad extends A {}
+        \\class InlineBad extends A {}
     ;
     const s = try newSetup(source);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_does_not_satisfy_constraint) {
-            try T.expectEqual(
-                @as(u32, @intCast(std.mem.indexOf(u8, source, "{ a: string, b: string }") orelse unreachable)),
-                d.pos.?,
-            );
-        }
-    }
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type '{ a: string; b: string; }' does not satisfy the constraint 'Foo'.",
+    ));
 }
 
 test "checker: cached JavaScript constructor heritage applies JSDoc type arguments" {
