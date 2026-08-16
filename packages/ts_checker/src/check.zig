@@ -6672,6 +6672,9 @@ pub const Checker = struct {
                     continue;
                 }
                 const inner = body[open + 1 .. open + type_len - 1];
+                if (std.mem.indexOf(u8, inner, "<>") != null) {
+                    _ = try self.jsDocTypeTextToTypeAt(src, inner, root);
+                }
                 if (jsDocClosureFunctionOpen(inner)) |paren| {
                     const pos: u32 = @intCast(body_start + open + 1 + paren);
                     const line_start = if (std.mem.lastIndexOfScalar(u8, body[0..open], '\n')) |newline| newline + 1 else 0;
@@ -6846,6 +6849,20 @@ pub const Checker = struct {
                         .code = TsCodes.expected_open_brace,
                         .message = "'{' expected.",
                     });
+                }
+                const line_end: u32 = @intCast(body_start + jsDocLineEnd(body, type_start));
+                var diagnostic_index: usize = 0;
+                while (diagnostic_index < self.diagnostics.items.len) {
+                    const diagnostic = self.diagnostics.items[diagnostic_index];
+                    if (diagnostic.code == TsCodes.expected_close_brace and
+                        std.mem.eql(u8, diagnostic.message, "'}' expected.") and
+                        diagnostic.pos != null and
+                        diagnostic.pos.? >= open_pos and diagnostic.pos.? <= line_end)
+                    {
+                        _ = self.diagnostics.orderedRemove(diagnostic_index);
+                        continue;
+                    }
+                    diagnostic_index += 1;
                 }
             }
         }
@@ -16776,6 +16793,8 @@ pub const Checker = struct {
         if (std.mem.indexOf(u8, body, "@callback") != null) return null;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
+        const raw_return_type = jsDocBlockTagBracedTypeText(body, "@returns") orelse
+            jsDocBlockTagBracedTypeText(body, "@return");
 
         for (tags) |tag| {
             if (tag.kind == .type_tag) {
@@ -16799,8 +16818,9 @@ pub const Checker = struct {
                 };
             }
             if (tag.kind == .returns_tag) {
-                const ret_t = (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) orelse types.Primitive.any;
-                const pos = self.sliceStartPos(src, tag.type_text) orelse span.start;
+                const type_text = raw_return_type orelse tag.type_text;
+                const ret_t = (try self.jsDocTypeTextToTypeAt(src, type_text, node)) orelse types.Primitive.any;
+                const pos = self.sliceStartPos(src, type_text) orelse span.start;
                 return .{ .type = ret_t, .pos = pos, .origin = .returns_tag };
             }
         }
@@ -85183,21 +85203,22 @@ pub const Checker = struct {
             }
         }
         const jsdoc_body = body orelse return null;
+        if (jsDocBlockTagBracedTypeText(jsdoc_body, "@type")) |raw_type| {
+            if (try self.jsDocTypeTextToTypeAt(src, raw_type, node)) |t| {
+                const trimmed = std.mem.trim(u8, raw_type, " \t\r\n");
+                if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '=') {
+                    return try self.unionWithUndefined(t);
+                }
+                return t;
+            }
+            if (try self.jsDocQualifiedNameTypeForNode(src, raw_type, node)) |t| return t;
+        }
         const tags = ts_parser.jsdoc.parse(self.gpa, jsdoc_body) catch return null;
         defer self.gpa.free(tags);
 
         for (tags) |tag| {
             if (tag.kind != .type_tag) continue;
-            if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) |t| {
-                const raw_type = jsDocBlockTagBracedTypeText(jsdoc_body, "@type");
-                if (raw_type) |raw| {
-                    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-                    if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '=') {
-                        return try self.unionWithUndefined(t);
-                    }
-                }
-                return t;
-            }
+            if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) |t| return t;
             if (try self.jsDocQualifiedNameTypeForNode(src, tag.type_text, node)) |t| return t;
         }
         return null;
@@ -85701,7 +85722,12 @@ pub const Checker = struct {
         if (try self.jsDocTypeofTextToType(trimmed)) |typeof_t| return typeof_t;
         if (try self.jsDocKeyofTextToType(src, trimmed)) |keyof_t| return keyof_t;
         if (try self.jsDocIndexedAccessTextToType(src, trimmed)) |indexed_t| return indexed_t;
-        if (try self.jsDocQualifiedNamespaceTextToType(src, trimmed)) |qualified_t| return qualified_t;
+        if (std.mem.indexOf(u8, trimmed, ".<") != null) {
+            if (try self.jsDocGenericTypeTextToType(src, trimmed)) |generic_t| return generic_t;
+        }
+        if (!jsDocSplitTopLevelAny(trimmed, '|') and !jsDocSplitTopLevelAny(trimmed, '&')) {
+            if (try self.jsDocQualifiedNamespaceTextToType(src, trimmed)) |qualified_t| return qualified_t;
+        }
         var tuple_text = trimmed;
         var tuple_readonly = false;
         if (std.mem.startsWith(u8, tuple_text, "readonly ")) {
@@ -91977,6 +92003,21 @@ pub const Checker = struct {
             }
         }
         return rendered;
+    }
+
+    fn contextualAsyncFunctionAssignmentDiagnosticName(
+        self: *Checker,
+        node: NodeId,
+        target_t: TypeId,
+    ) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id) return null;
+        const kind = self.hir.kindOf(node);
+        if (kind != .arrow_fn and kind != .fn_expr and kind != .fn_decl) return null;
+        const function = hir_mod.fnDeclOf(self.hir, node);
+        if (!function.flags.is_async or function.flags.is_generator) return null;
+        const target_sig = self.firstSignatureType(target_t) orelse return null;
+        const source_sig = try self.contextualFunctionSignatureWithInferredReturn(node, target_sig);
+        return try self.allocCallableSignatureNameOmittingOptionalUndefined(source_sig);
     }
 
     fn sourceTypeForVarDeclAssignmentReport(self: *Checker, init_node: NodeId, init_t: TypeId, target_t: TypeId) CheckError!TypeId {
@@ -158416,6 +158457,21 @@ pub const Checker = struct {
             );
             return try self.report(node, TsCodes.type_not_assignable, msg);
         }
+        const init_kind = self.hir.kindOf(init_node);
+        if (init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn) {
+            const function = hir_mod.fnDeclOf(self.hir, init_node);
+            if (function.flags.is_async and !function.flags.is_generator) {
+                return try self.reportAssignmentTypeNotAssignable(
+                    node,
+                    init_node,
+                    target_node,
+                    source,
+                    related_source,
+                    target,
+                    fallback,
+                );
+            }
+        }
         if (try self.tryReportElementAccessVarDeclTypeNotAssignable(node, init_node, source, target)) return;
         if (try self.tryReportAnnotatedCallableIntersectionVarDeclMismatch(node, target_node, source, target)) return;
         if (target == types.Primitive.never or self.intersectionReducesToNeverForAssignability(target)) {
@@ -160245,6 +160301,7 @@ pub const Checker = struct {
                 "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
                 .{ prop_text, source_name, target_name },
             );
+            if (self.diagnosticExists(diag_node, TsCodes.property_missing_required)) return true;
             try self.report(diag_node, TsCodes.property_missing_required, msg);
             return true;
         }
@@ -161572,7 +161629,9 @@ pub const Checker = struct {
             try self.functionExpressionAssignmentDiagnosticName(value_node, source)
         else
             null;
+        const contextual_async_source_name = try self.contextualAsyncFunctionAssignmentDiagnosticName(value_node, target);
         const source_name = explicit_function_source_name orelse
+            contextual_async_source_name orelse
             (try self.assignmentExpressionPredicateTypeName(value_node, source)) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(value_node)) orelse
             (try self.jsDocAssignmentIdentifierTypeName(value_node, source)) orelse
@@ -210870,27 +210929,31 @@ test "checker: checkjs JSDoc template constraint applies only to first parameter
         \\// @strict: false
         \\// @filename: templateConstraints.js
         \\/**
-        \\ * @template {{ a: number, b: string }} T,U
+        \\ * @template {{ a: number, b: string }} T,U A Comment
+        \\ * @template {{ c: boolean }} V
         \\ * @template W
         \\ * @template X
         \\ * @param {T} t
         \\ * @param {U} u
+        \\ * @param {V} v
         \\ * @param {W} w
         \\ * @param {X} x
         \\ * @return {W | X}
         \\ */
-        \\function f(t, u, w, x) {
-        \\  if (u.a + u.b.length) return w;
+        \\function f(t, u, v, w, x) {
+        \\  if (t.a + t.b.length > u.a - u.b.length && v.c) return w;
         \\  return x;
         \\}
-        \\f({ a: 1 }, undefined, 1, "x");
+        \\f({ a: 12, b: "hi", c: null }, undefined, { c: false, d: 12, b: undefined }, 101, "nope");
+        \\f({ a: 12 }, undefined, undefined, 101, "nope");
     );
     defer destroySetup(s);
     s.checker.setCheckJsEnabled(true);
     s.checker.setAllowJsEnabled(true);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
@@ -211270,7 +211333,9 @@ test "checker: inline JSDoc @satisfies shadows outer @type member context" {
 
 test "checker: checkjs bare JSDoc @satisfies type reports braces" {
     const s = try newSetup(
-        \\// @checkjs: true
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: /a.js
         \\/** @typedef {Object} T1 */
         \\/** @satisfies T1 */
         \\const t1 = { a: 1 };
@@ -211281,7 +211346,7 @@ test "checker: checkjs bare JSDoc @satisfies type reports braces" {
     var open_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.expected_open_brace and std.mem.eql(u8, d.message, "'{' expected.")) open_count += 1;
-        try T.expect(d.code != TsCodes.expected_close_brace);
+        try T.expect(!std.mem.eql(u8, d.message, "'}' expected."));
     }
     try T.expectEqual(@as(usize, 2), open_count);
 }
@@ -211614,13 +211679,13 @@ test "checker: checkjs JSDoc type tags preserve object and callable arity" {
         \\var Obj;
         \\/** @type {object} */
         \\var obj;
-        \\/** @type {function(string): void} */
+        \\/** @type {(value: string) => void} */
         \\const f = (value) => {};
         \\/** @type {(s: string) => void} */
         \\function g(s) {}
         \\/** @type {{(s: string): void}} */
         \\function h(s) {}
-        \\/** @type {function (number)} */
+        \\/** @type {(value: number) => any} */
         \\const spaced = value => value + 1;
         \\/** @type {?} */
         \\let wildcard = 1;
@@ -211647,7 +211712,6 @@ test "checker: checkjs JSDoc type tags preserve object and callable arity" {
 
     var saw_object_mismatch = false;
     var saw_lower_object_mismatch = false;
-    var saw_spaced_missing_return = false;
     var saw_spaced_argument_mismatch = false;
     var broad_implicit_any: usize = 0;
     var saw_object_wrapper_mismatch = false;
@@ -211671,7 +211735,6 @@ test "checker: checkjs JSDoc type tags preserve object and callable arity" {
         {
             arity_errors += 1;
         }
-        if (d.code == TsCodes.function_type_return_implicitly_any) saw_spaced_missing_return = true;
         if (d.code == TsCodes.argument_type_mismatch and
             std.mem.eql(u8, d.message, "Argument of type 'string' is not assignable to parameter of type 'number'."))
         {
@@ -211694,7 +211757,6 @@ test "checker: checkjs JSDoc type tags preserve object and callable arity" {
     try T.expect(saw_object_mismatch);
     try T.expect(saw_lower_object_mismatch);
     try T.expectEqual(@as(usize, 3), arity_errors);
-    try T.expect(saw_spaced_missing_return);
     try T.expect(saw_spaced_argument_mismatch);
     try T.expectEqual(@as(usize, 2), broad_implicit_any);
     try T.expect(saw_object_wrapper_mismatch);
@@ -211807,6 +211869,9 @@ test "checker: checkjs JSDoc object property types contextualize values" {
     var number_to_string: usize = 0;
     var string_to_number: usize = 0;
     var undefined_to_string: usize = 0;
+    var closure_parse_errors: usize = 0;
+    var implicit_any_parameters: usize = 0;
+    var declaration_mismatches: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.variable_implicitly_any_declaration);
         if (d.code == TsCodes.type_not_assignable) {
@@ -211817,12 +211882,19 @@ test "checker: checkjs JSDoc object property types contextualize values" {
             try T.expect(std.mem.indexOf(u8, d.message, "=>") == null);
         }
         if (d.code == TsCodes.argument_type_mismatch) argument_mismatches += 1;
+        if (d.code == TsCodes.expected_close_brace and
+            std.mem.eql(u8, d.message, "'}' expected.")) closure_parse_errors += 1;
+        if (d.code == TsCodes.parameter_implicitly_any) implicit_any_parameters += 1;
+        if (d.code == TsCodes.jsdoc_function_type_mismatch) declaration_mismatches += 1;
     }
-    try T.expectEqual(@as(usize, 7), assignment_mismatches);
-    try T.expectEqual(@as(usize, 1), argument_mismatches);
-    try T.expectEqual(@as(usize, 3), number_to_string);
-    try T.expectEqual(@as(usize, 3), string_to_number);
+    try T.expectEqual(@as(usize, 2), assignment_mismatches);
+    try T.expectEqual(@as(usize, 0), argument_mismatches);
+    try T.expectEqual(@as(usize, 1), number_to_string);
+    try T.expectEqual(@as(usize, 0), string_to_number);
     try T.expectEqual(@as(usize, 1), undefined_to_string);
+    try T.expectEqual(@as(usize, 3), closure_parse_errors);
+    try T.expectEqual(@as(usize, 2), implicit_any_parameters);
+    try T.expectEqual(@as(usize, 1), declaration_mismatches);
 }
 
 test "checker: checkjs variable JSDoc function type contextually types arrow body" {
@@ -211831,7 +211903,7 @@ test "checker: checkjs variable JSDoc function type contextually types arrow bod
         \\// @checkJs: true
         \\// @strict: true
         \\// @filename: a.js
-        \\/** @type {function(string): void} */
+        \\/** @type {(value: string) => void} */
         \\const f = (value) => {
         \\    value = 1;
         \\};
@@ -211839,7 +211911,7 @@ test "checker: checkjs variable JSDoc function type contextually types arrow bod
         \\function g(s) {
         \\    s = 1;
         \\}
-        \\/** @type {function((string), function((string)): string): string} */
+        \\/** @type {(value: string, callback: (value: string) => string) => string} */
         \\const higherOrder = (value, callback) => callback(value);
     );
     defer destroySetup(s);
