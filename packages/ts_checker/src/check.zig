@@ -152866,7 +152866,8 @@ pub const Checker = struct {
         if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
             if (!self.pathIsJsLike(filename)) return null;
         }
-        if (!self.fnLooksLikeCheckJsConstructor(fn_node)) return null;
+        if (!self.fnLooksLikeCheckJsConstructor(fn_node) and
+            !self.checkJsFunctionHasConstructThisAssignment(fn_node)) return null;
         return try self.jsConstructorInstanceType(name, anchor);
     }
 
@@ -152881,7 +152882,8 @@ pub const Checker = struct {
         if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
             if (!self.pathIsJsLike(filename)) return null;
         }
-        if (!self.fnLooksLikeCheckJsConstructor(fn_node)) return null;
+        if (!self.fnLooksLikeCheckJsConstructor(fn_node) and
+            !self.checkJsFunctionHasConstructThisAssignment(fn_node)) return null;
         const instance_t = try self.jsConstructorInstanceType(name, anchor);
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
