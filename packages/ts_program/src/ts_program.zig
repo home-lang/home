@@ -587,6 +587,7 @@ pub const Program = struct {
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             if (!isJsLikePath(f.path)) continue;
+            try collectQualifiedJsDocTypedefs(self.gpa, f.source, &out);
             var roots: std.ArrayListUnmanaged([]const u8) = .empty;
             defer roots.deinit(self.gpa);
             try roots.appendSlice(self.gpa, namespace_roots.items);
@@ -1904,12 +1905,69 @@ pub const Program = struct {
             {
                 continue;
             }
-            for (out.items) |existing| {
-                if (std.mem.eql(u8, existing.root, root) and std.mem.eql(u8, existing.member, member)) break;
-            } else {
-                try out.append(gpa, .{ .root = root, .member = member });
-            }
+            try upsertScriptObjectExpando(gpa, out, root, member, true, false);
         }
+    }
+
+    fn collectQualifiedJsDocTypedefs(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ScriptObjectExpando),
+    ) ProgramError!void {
+        const needle = "@typedef";
+        var search_from: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_from, needle)) |tag_pos| {
+            var p = tag_pos + needle.len;
+            search_from = p;
+            while (p < source.len and (source[p] == ' ' or source[p] == '\t')) p += 1;
+            if (p < source.len and source[p] == '{') {
+                var depth: usize = 1;
+                p += 1;
+                while (p < source.len and depth > 0) : (p += 1) {
+                    if (source[p] == '{') depth += 1;
+                    if (source[p] == '}') depth -= 1;
+                }
+                if (depth != 0) continue;
+                while (p < source.len and (source[p] == ' ' or source[p] == '\t')) p += 1;
+            }
+            if (p >= source.len or !asciiIdentifierStart(source[p])) continue;
+            const root_start = p;
+            p += 1;
+            while (p < source.len and asciiIdentifierContinue(source[p])) p += 1;
+            const root = source[root_start..p];
+            if (p >= source.len or source[p] != '.') continue;
+            p += 1;
+            if (p >= source.len or !asciiIdentifierStart(source[p])) continue;
+            const member_start = p;
+            p += 1;
+            while (p < source.len and asciiIdentifierContinue(source[p])) p += 1;
+            const member = source[member_start..p];
+            try upsertScriptObjectExpando(gpa, out, root, member, false, true);
+            search_from = p;
+        }
+    }
+
+    fn upsertScriptObjectExpando(
+        gpa: std.mem.Allocator,
+        out: *std.ArrayListUnmanaged(ts_driver.ScriptObjectExpando),
+        root: []const u8,
+        member: []const u8,
+        has_value: bool,
+        has_jsdoc_typedef: bool,
+    ) ProgramError!void {
+        for (out.items) |*existing| {
+            if (!std.mem.eql(u8, existing.root, root)) continue;
+            if (!std.mem.eql(u8, existing.member, member)) continue;
+            existing.has_value = existing.has_value or has_value;
+            existing.has_jsdoc_typedef = existing.has_jsdoc_typedef or has_jsdoc_typedef;
+            return;
+        }
+        try out.append(gpa, .{
+            .root = root,
+            .member = member,
+            .has_value = has_value,
+            .has_jsdoc_typedef = has_jsdoc_typedef,
+        });
     }
 
     fn appendAmbientGlobalNamespaceRootsFromSource(
@@ -6731,6 +6789,37 @@ test "module export facts parse JSX-bearing JavaScript modules" {
     defer resolver.deinit();
     const facts = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/component.js", "C");
     try T.expect(facts.exported_value);
+}
+
+test "Program: qualified JSDoc typedef metadata stays separate from value expandos" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/types.js",
+        \\const myTypes = {};
+        \\/** @typedef {string} myTypes.typeA */
+        \\/**
+        \\ * @typedef myTypes.typeB
+        \\ * @property {myTypes.typeA} prop
+        \\ */
+        \\myTypes.Value = class {};
+    );
+
+    const expandos = try p.collectScriptObjectExpandos();
+    defer T.allocator.free(expandos);
+    try T.expectEqual(@as(usize, 3), expandos.len);
+    for (expandos) |expando| {
+        if (std.mem.eql(u8, expando.member, "Value")) {
+            try T.expect(expando.has_value);
+            try T.expect(!expando.has_jsdoc_typedef);
+        } else {
+            try T.expect(!expando.has_value);
+            try T.expect(expando.has_jsdoc_typedef);
+        }
+    }
 }
 
 test "Program: collects CommonJS exports assigned void" {

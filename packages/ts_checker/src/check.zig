@@ -453,6 +453,8 @@ pub const ExternalResolver = struct {
 pub const ScriptObjectExpando = struct {
     root: []const u8,
     member: []const u8,
+    has_value: bool = true,
+    has_jsdoc_typedef: bool = false,
 };
 
 pub const ModuleInterfaceAugmentation = struct {
@@ -5312,7 +5314,6 @@ pub const Checker = struct {
         try self.checkJSDocUnsupportedTypedefWrapping(root);
         try self.checkJSDocMalformedSatisfiesTags(root);
         try self.checkJSDocMalformedParamTags(root);
-        try self.checkJSDocEnumSelfReferences(root);
         try self.checkJSDocParamTagsOnVariableFunctionLists(root);
         try self.checkMultipleAttachedJsDocExtendsTags();
         try self.checkDefaultExportMerges(stmts);
@@ -6885,41 +6886,6 @@ pub const Checker = struct {
                 }
                 line_start = i + 1;
             }
-        }
-    }
-
-    fn checkJSDocEnumSelfReferences(self: *Checker, root: NodeId) CheckError!void {
-        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
-        const src = self.source orelse return;
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            const decl = self.unwrapExportDecl(stmt);
-            if (decl == hir_mod.none_node_id) continue;
-            const dk = self.hir.kindOf(decl);
-            if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
-            const v = hir_mod.varDeclOf(self.hir, decl);
-            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
-            const name_id = hir_mod.identifierOf(self.hir, v.name).name;
-            const name = self.string_interner.get(name_id);
-            const jsdoc = self.leadingJsDocBodyWithStart(src, self.hir.spanOf(stmt).start) orelse continue;
-            if (!self.sourcePositionIsJsLike(jsdoc.start)) continue;
-            const type_text = jsDocBlockTagTypeText(jsdoc.body, "@enum") orelse continue;
-            const base = jsDocTypeBaseName(type_text);
-            if (!std.mem.eql(u8, base, name)) continue;
-            const rel = std.mem.indexOf(u8, jsdoc.body, type_text) orelse 0;
-            const pos: u32 = @intCast(jsdoc.start + rel);
-            if (self.hasDiagnosticAtPosition(TsCodes.self_referenced_type_annotation, pos)) continue;
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "'{s}' is referenced directly or indirectly in its own type annotation.",
-                .{name},
-            );
-            try self.diagnostics.append(self.gpa, .{
-                .node = v.name,
-                .pos = pos,
-                .code = TsCodes.self_referenced_type_annotation,
-                .message = msg,
-            });
         }
     }
 
@@ -41530,8 +41496,6 @@ pub const Checker = struct {
                 }
             }
         }
-
-        try self.checkJsDocTypedefCommonJsExportObjectDuplicates(root, stmts, entries.items);
     }
 
     fn jsGlobalValuesMergeAcrossFiles(self: *Checker, left: JsDocGlobalDeclEntry, right: JsDocGlobalDeclEntry) bool {
@@ -41622,55 +41586,6 @@ pub const Checker = struct {
                 .is_var_like = is_var_like,
                 .is_lexical_value = is_class or kind == .let_decl or kind == .const_decl,
             });
-        }
-    }
-
-    fn checkJsDocTypedefCommonJsExportObjectDuplicates(
-        self: *Checker,
-        root: NodeId,
-        stmts: []const NodeId,
-        entries: []const JsDocGlobalDeclEntry,
-    ) CheckError!void {
-        const ExportAlias = struct {
-            name: hir_mod.StringId,
-            section: usize,
-        };
-        var aliases: std.ArrayListUnmanaged(ExportAlias) = .empty;
-        defer aliases.deinit(self.gpa);
-
-        for (stmts) |raw| {
-            if (self.hir.kindOf(raw) != .assignment) continue;
-            const section = self.virtualSectionStartForNode(raw);
-            if (!self.virtualSectionStartIsJsLike(section)) continue;
-            const a = hir_mod.assignmentOf(self.hir, raw);
-            if (a.op != null or a.value == hir_mod.none_node_id) continue;
-            if (!self.memberAccessIsModuleExports(a.target)) continue;
-            if (self.hir.kindOf(a.value) != .identifier) continue;
-            try aliases.append(self.gpa, .{
-                .name = hir_mod.identifierOf(self.hir, a.value).name,
-                .section = section,
-            });
-        }
-
-        for (stmts) |raw| {
-            if (self.hir.kindOf(raw) != .assignment) continue;
-            const section = self.virtualSectionStartForNode(raw);
-            if (!self.virtualSectionStartIsJsLike(section)) continue;
-            const a = hir_mod.assignmentOf(self.hir, raw);
-            if (a.op != null or a.value == hir_mod.none_node_id) continue;
-
-            if (self.hir.kindOf(a.value) == .class_decl or self.hir.kindOf(a.value) == .class_expr) {
-                for (aliases.items) |alias| {
-                    if (alias.section != section) continue;
-                    const name = self.commonJsAliasExportPropertyName(a.target, alias.name) orelse continue;
-                    const key_pos = self.memberAccessPropertyNamePos(a.target) orelse self.hir.spanOf(a.target).start;
-                    for (entries) |entry| {
-                        if (!entry.is_typedef or entry.section != section or entry.name != name) continue;
-                        try self.reportDuplicateIdentifierAt(entry.node, entry.pos, name, key_pos);
-                        try self.reportDuplicateIdentifierAt(root, key_pos, name, entry.pos);
-                    }
-                }
-            }
         }
     }
 
@@ -71308,6 +71223,9 @@ pub const Checker = struct {
         if (self.hir.kindOf(type_node) != .type_ref) return;
         const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
         if (qualifiers.len == 0 or self.hir.kindOf(qualifiers[0]) != .identifier) return;
+        // Qualified JSDoc typedefs merge into the namespace type space even
+        // when the root is represented by a JavaScript value or named import.
+        if (try self.jsDocQualifiedTypeRefIsDeclaredTypedef(type_node, qualifiers)) return;
         const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
         const checkjs_root_lacks_namespace = self.checkJsQualifiedTypeRootLacksNamespaceMeaning(type_node, root_name);
         if (!checkjs_root_lacks_namespace and
@@ -71372,12 +71290,31 @@ pub const Checker = struct {
         });
     }
 
+    fn jsDocQualifiedTypeRefIsDeclaredTypedef(
+        self: *Checker,
+        type_node: NodeId,
+        qualifiers: []const NodeId,
+    ) CheckError!bool {
+        if ((!self.check_js_enabled and !self.sourceHasCheckJsDirective()) or qualifiers.len != 1) return false;
+        if (self.hir.kindOf(qualifiers[0]) != .identifier) return false;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+        if (self.programJsDocQualifiedTypedefExists(root_name, reference.name)) return true;
+        const qualified = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s}.{s}",
+            .{ self.string_interner.get(root_name), self.string_interner.get(reference.name) },
+        );
+        const qualified_name = self.string_interner.intern(qualified) catch return error.OutOfMemory;
+        return self.visibleJsDocTypedefNameExistsAt(type_node, qualified_name);
+    }
+
     fn checkJsQualifiedTypeRootLacksNamespaceMeaning(
         self: *Checker,
         anchor: NodeId,
         root_name: hir_mod.StringId,
     ) bool {
-        if (!self.sourceHasCheckJsDirective()) return false;
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return false;
         if (self.localNameIsImportBinding(root_name, anchor)) {
             return !self.localNameIsNamespaceImportBinding(root_name, anchor);
         }
@@ -85312,6 +85249,9 @@ pub const Checker = struct {
         const leaf_text = trimmed[dot_pos + 1 ..];
         const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
         const leaf_name = self.string_interner.intern(leaf_text) catch return error.OutOfMemory;
+        if (try self.jsDocTypedefObjectSkeleton(src, trimmed)) |t| return t;
+        if (try self.jsDocTypedefAliasType(src, trimmed)) |t| return t;
+        if (self.programJsDocQualifiedTypedefExists(root_name, leaf_name)) return types.Primitive.any;
         if (self.checkJsQualifiedTypeRootLacksNamespaceMeaning(at_node, root_name)) {
             try self.reportJsDocCannotFindNamespace(src, root_text, at_node);
             return types.Primitive.unknown;
@@ -85574,7 +85514,6 @@ pub const Checker = struct {
         if (try self.jsDocTypeofTextToType(trimmed)) |typeof_t| return typeof_t;
         if (try self.jsDocKeyofTextToType(src, trimmed)) |keyof_t| return keyof_t;
         if (try self.jsDocIndexedAccessTextToType(src, trimmed)) |indexed_t| return indexed_t;
-        if (try self.jsDocQualifiedValueRootCannotFindNamespace(src, trimmed)) return types.Primitive.unknown;
         if (try self.jsDocQualifiedNamespaceTextToType(src, trimmed)) |qualified_t| return qualified_t;
         var tuple_text = trimmed;
         var tuple_readonly = false;
@@ -85660,6 +85599,7 @@ pub const Checker = struct {
             if (try self.jsDocCallbackSignature(src, trimmed)) |sig| return sig;
             if (try self.jsDocTypedefObjectSkeleton(src, trimmed)) |t| return t;
             if (try self.jsDocTypedefAliasType(src, trimmed)) |t| return t;
+            if (try self.jsDocQualifiedValueRootCannotFindNamespace(src, trimmed)) return types.Primitive.unknown;
         }
         const base = jsDocTypeBaseName(trimmed);
         if (base.len == 0) return null;
@@ -88534,6 +88474,12 @@ pub const Checker = struct {
                     return t;
                 }
             }
+            if (jsDocBlockHasNamedTag(body, "@typedef", wanted_name)) {
+                if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |t| {
+                    try self.registerAliasDisplayText(t, wanted_name);
+                    return t;
+                }
+            }
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
             for (tags) |tag| {
@@ -88714,7 +88660,7 @@ pub const Checker = struct {
     }
 
     fn visibleJsDocTypedefNameExistsAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
-        if (!self.sourceHasCheckJsDirective()) return false;
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return false;
         const src = self.source orelse return false;
         const wanted = self.string_interner.get(name);
         if (wanted.len == 0) return false;
@@ -88785,6 +88731,7 @@ pub const Checker = struct {
             const body = src[body_start..end];
             if (jsDocTypedefIsMalformedClosure(body, wanted)) continue;
             if (jsDocTypedefTypeText(body, wanted) != null) return true;
+            if (jsDocBlockHasNamedTag(body, "@typedef", wanted)) return true;
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
             for (tags) |tag| {
@@ -99449,6 +99396,12 @@ pub const Checker = struct {
                         self.commonJsSectionHasWholeExportAssignment(node);
                     if (!whole_export_blocks_expando) {
                         if (self.lookupCommonJsExportNarrow(key)) |nt| {
+                            if (nt == types.Primitive.undefined_t and self.sourceDirectiveIsTrue("@declaration")) {
+                                if (try self.futureCommonJsExportAssignmentValue(node, key)) |future_value| {
+                                    const future_t = try self.commonJsExportAssignmentValueType(future_value);
+                                    break :blk try self.optionalChainResult(future_t, member_is_optional_chain);
+                                }
+                            }
                             break :blk try self.optionalChainResult(nt, member_is_optional_chain);
                         }
                     }
@@ -108176,6 +108129,7 @@ pub const Checker = struct {
         const root_text = self.string_interner.get(root_name);
         const member_text = self.string_interner.get(member_name);
         for (self.script_object_expandos) |expando| {
+            if (!expando.has_value) continue;
             if (!std.mem.eql(u8, expando.root, root_text)) continue;
             if (!std.mem.eql(u8, expando.member, member_text)) continue;
             return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
@@ -108191,6 +108145,22 @@ pub const Checker = struct {
         const root_text = self.string_interner.get(root_name);
         const member_text = self.string_interner.get(member_name);
         for (self.script_object_expandos) |expando| {
+            if (!expando.has_value) continue;
+            if (std.mem.eql(u8, expando.root, root_text) and
+                std.mem.eql(u8, expando.member, member_text)) return true;
+        }
+        return false;
+    }
+
+    fn programJsDocQualifiedTypedefExists(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        const root_text = self.string_interner.get(root_name);
+        const member_text = self.string_interner.get(member_name);
+        for (self.script_object_expandos) |expando| {
+            if (!expando.has_jsdoc_typedef) continue;
             if (std.mem.eql(u8, expando.root, root_text) and
                 std.mem.eql(u8, expando.member, member_text)) return true;
         }
@@ -124798,6 +124768,7 @@ pub const Checker = struct {
         var script_expando_suggestion: ?[]const u8 = null;
         if (in_type_position and !skip_suggestions) {
             for (self.script_object_expandos) |expando| {
+                if (!expando.has_value) continue;
                 if (expando.member.len == 0) continue;
                 if (name_str.len <= expando.member.len) continue;
                 if (!std.mem.startsWith(u8, name_str, expando.member)) continue;
@@ -131264,6 +131235,7 @@ pub const Checker = struct {
         const class_name = self.class_name_by_static.get(receiver_t) orelse return false;
         const member_text = self.string_interner.get(class_name);
         for (self.script_object_expandos) |expando| {
+            if (!expando.has_value) continue;
             if (std.mem.eql(u8, expando.member, member_text)) return true;
         }
         if (self.hir.nodeCount() <= 1) return false;
@@ -210227,10 +210199,9 @@ test "checker: unattached EOF JSDoc typedef does not resolve its type" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
-test "checker: checkjs JSDoc typedef collides with exported alias object class key" {
-    // Mirrors `typedefCrossModule3.ts`: `module.exports = ns` makes
-    // `ns.Foo = class {}` an exported class-side declaration that
-    // collides with the same-file JSDoc typedef.
+test "checker: tsgo current JS typedef merges with exported alias object class key" {
+    // Current tsgo keeps the JSDoc typedef in type space while the
+    // class assignment contributes the value side of the export.
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -210251,7 +210222,7 @@ test "checker: checkjs JSDoc typedef collides with exported alias object class k
             duplicate_count += 1;
         }
     }
-    try T.expectEqual(@as(usize, 2), duplicate_count);
+    try T.expectEqual(@as(usize, 0), duplicate_count);
 }
 
 test "checker: checkjs JSDoc bare exports type resolves current CommonJS module" {
@@ -210387,7 +210358,7 @@ test "checker: checkjs JSDoc typedef participates in script-global duplicate che
     try T.expectEqual(@as(usize, 2), bar_redeclares);
 }
 
-test "checker: checkjs qualified JSDoc typedef member does not duplicate namespace root" {
+test "checker: tsgo current JS qualified typedef member keeps namespace meaning" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -210408,7 +210379,48 @@ test "checker: checkjs qualified JSDoc typedef member does not duplicate namespa
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.duplicate_identifier);
+        try T.expect(d.code != TsCodes.cannot_find_namespace);
+        try T.expect(d.code != TsCodes.namespace_no_exported_member);
     }
+}
+
+test "checker: tsgo current imported JSDoc namespace resolves qualified typedefs" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: types.js
+        \\/** @namespace myTypes @global @type {Object<string, *>} */
+        \\const myTypes = {};
+        \\/** @typedef {string | RegExp} myTypes.typeA */
+        \\/**
+        \\ * @typedef myTypes.typeB
+        \\ * @property {myTypes.typeA} prop
+        \\ */
+        \\export { myTypes };
+        \\// @filename: use.js
+        \\import { myTypes } from "./types";
+        \\/** @typedef {myTypes.typeB | Function} Input */
+        \\/** @param {Input} input */
+        \\export function use(input) { return input; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_namespace);
+        try T.expect(d.code != TsCodes.namespace_no_exported_member);
+    }
+}
+
+test "checker: tsgo current JSDoc enum self type merges without circular diagnostic" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @enum {E} */
+        \\const E = { A: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.self_referenced_type_annotation));
 }
 
 test "checker: checkjs JSDoc generic constructor type substitutes inferred this members" {
@@ -212621,7 +212633,7 @@ test "checker: checkjs dotted optional JSDoc params type destructured members as
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.object_possibly_undefined_18048, "'c' is possibly 'undefined'."));
 }
 
-test "checker: checkjs CommonJS export property assignment flow reports possibly undefined call once" {
+test "checker: tsgo current JS declaration CommonJS placeholder uses future type" {
     const s = try newSetup(
         \\// @checkJs: true
         \\// @declaration: true
@@ -212635,13 +212647,11 @@ test "checker: checkjs CommonJS export property assignment flow reports possibly
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    var count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.cannot_invoke_possibly_undefined) count += 1;
+        try T.expect(d.code != TsCodes.cannot_invoke_possibly_undefined);
         try T.expect(d.code != TsCodes.not_callable);
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
-    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "checker: checkjs CommonJS export JSDoc declares the slot across all writes" {
