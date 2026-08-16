@@ -487,6 +487,7 @@ pub const Case = struct {
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
+    emit_target: ts_driver.EsTarget = .esnext,
     report_deprecated_target_es5: bool = false,
     /// True for virtual `.js` / `.jsx` files where `allowJs` is on
     /// but `checkJs` is not. These still parse/bind/emit, but checker
@@ -796,8 +797,10 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
         .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
-        .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
-        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(directive_source, c.target_emit_es5),
+        .emit = .{ .es_target = effectiveEmitTarget(c.target_emit_es5, c.emit_target) },
+        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(
+            effectiveEmitTarget(c.target_emit_es5, c.emit_target),
+        ),
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
         .allow_js = directiveBool(directive_source, "allowJs") orelse false,
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
@@ -2312,6 +2315,7 @@ test "conformance: loaded corpus keeps checkJs diagnostics for late-bound comput
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -2365,6 +2369,7 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -3190,8 +3195,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
         .rewrite_relative_import_extensions = directiveBool(directive_source, "rewriteRelativeImportExtensions") orelse false,
         .syntax_target_es2015 = c.syntax_target_es2015,
-        .emit = .{ .es_target = if (c.target_emit_es5) .es5 else .esnext },
-        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(directive_source, c.target_emit_es5),
+        .emit = .{ .es_target = effectiveEmitTarget(c.target_emit_es5, c.emit_target) },
+        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(
+            effectiveEmitTarget(c.target_emit_es5, c.emit_target),
+        ),
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
         .allow_js = allow_js_project,
         .skip_lib_check = directiveBool(directive_source, "skipLibCheck") orelse
@@ -6356,6 +6363,7 @@ pub const CorpusEntry = struct {
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
+    emit_target: ts_driver.EsTarget = .esnext,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
     /// The selected upstream baseline contains diagnostics against the
@@ -6389,6 +6397,7 @@ pub const OwnedCorpusEntry = struct {
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
+    emit_target: ts_driver.EsTarget = .esnext,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
     baseline_has_no_position_lib_diagnostics: bool = false,
@@ -6707,6 +6716,9 @@ pub fn loadDirectoryWithOptions(
             directiveBool(directive_source, "deduplicatePackages") orelse
             true;
         const allow_importing_ts_extensions = baselineOptionBool(baseline_path, "allowimportingtsextensions");
+        const emit_target = selectedEmitTarget(directive_source, baseline_path);
+        const target_selection_explicit = baselineEmitTarget(baseline_path) != null or
+            directiveValue(directive_source, "target") != null;
         try out.append(gpa, .{
             .name = name,
             .source = case_src,
@@ -6727,9 +6739,11 @@ pub fn loadDirectoryWithOptions(
             .is_declaration_file = isDeclarationFilePath(entry.basename),
             .strict_flags = strict_flags,
             .always_strict = selectedAlwaysStrict(case_src, baseline_path, entry.basename),
-            .syntax_target_es2015 = selectedSyntaxTargetEs2015OrLater(case_src, baselinePathIsTargetEs5(baseline_path)),
-            .target_emit_es5 = baselinePathIsTargetEs5(baseline_path),
-            .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
+            .syntax_target_es2015 = emit_target != .es5,
+            .target_emit_es5 = emit_target == .es5,
+            .emit_target = emit_target,
+            .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and
+                target_selection_explicit and emit_target == .es5,
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, directive_source),
             .baseline_has_no_position_lib_diagnostics = baseline_has_no_position_lib_diagnostics,
             .raw_source = raw_source,
@@ -8087,6 +8101,47 @@ fn baselinePathIsTargetEs5(path: ?[]const u8) bool {
     return false;
 }
 
+fn parseEmitTarget(raw: []const u8) ?ts_driver.EsTarget {
+    const target = std.mem.trim(u8, raw, " \t\r");
+    if (std.ascii.eqlIgnoreCase(target, "es3") or std.ascii.eqlIgnoreCase(target, "es5")) return .es5;
+    if (std.ascii.eqlIgnoreCase(target, "es6") or std.ascii.eqlIgnoreCase(target, "es2015")) return .es2015;
+    if (std.ascii.eqlIgnoreCase(target, "es2016")) return .es2016;
+    if (std.ascii.eqlIgnoreCase(target, "es2017")) return .es2017;
+    if (std.ascii.eqlIgnoreCase(target, "es2018")) return .es2018;
+    if (std.ascii.eqlIgnoreCase(target, "es2019")) return .es2019;
+    if (std.ascii.eqlIgnoreCase(target, "es2020")) return .es2020;
+    if (std.ascii.eqlIgnoreCase(target, "es2021")) return .es2021;
+    if (std.ascii.eqlIgnoreCase(target, "es2022")) return .es2022;
+    if (std.ascii.eqlIgnoreCase(target, "es2023")) return .es2023;
+    if (std.ascii.eqlIgnoreCase(target, "es2024") or
+        std.ascii.eqlIgnoreCase(target, "esnext") or
+        std.ascii.eqlIgnoreCase(target, "latest")) return .esnext;
+    return null;
+}
+
+fn baselineEmitTarget(path: ?[]const u8) ?ts_driver.EsTarget {
+    const p = path orelse return null;
+    const suffix_end = std.mem.lastIndexOf(u8, p, ").errors.txt") orelse return null;
+    const options_start = std.mem.lastIndexOfScalar(u8, p[0..suffix_end], '(') orelse return null;
+    var options = std.mem.splitScalar(u8, p[options_start + 1 .. suffix_end], ',');
+    while (options.next()) |raw_option| {
+        const option = std.mem.trim(u8, raw_option, " \t");
+        if (!std.mem.startsWith(u8, option, "target=")) continue;
+        return parseEmitTarget(option["target=".len..]);
+    }
+    return null;
+}
+
+fn selectedEmitTarget(source: []const u8, baseline_path: ?[]const u8) ts_driver.EsTarget {
+    if (baselineEmitTarget(baseline_path)) |target| return target;
+    const raw = directiveValue(source, "target") orelse return .es5;
+    return parseEmitTarget(firstCommaSeparatedValue(raw)) orelse .es5;
+}
+
+fn effectiveEmitTarget(target_emit_es5: bool, emit_target: ts_driver.EsTarget) ts_driver.EsTarget {
+    return if (target_emit_es5) .es5 else emit_target;
+}
+
 test "conformance: ES5 target baseline detection parses option matrices" {
     try T.expect(baselinePathIsTargetEs5("case(target=es5).errors.txt"));
     try T.expect(baselinePathIsTargetEs5("case(target=ES5,alwaysstrict=true).errors.txt"));
@@ -8095,6 +8150,16 @@ test "conformance: ES5 target baseline detection parses option matrices" {
     try T.expect(!baselinePathIsTargetEs5("target=es5(case=plain).errors.txt"));
     try T.expect(!baselinePathIsTargetEs5("case(target=es2015).errors.txt"));
     try T.expect(!baselinePathIsTargetEs5("case.errors.txt"));
+}
+
+test "conformance: selected emit target follows baseline variants and directives" {
+    try T.expectEqual(ts_driver.EsTarget.es2021, selectedEmitTarget(
+        "// @target: es5, es2015, es2021\nconst x = 1;",
+        "case(target=es2021).errors.txt",
+    ));
+    try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget("// @target: es6", null));
+    try T.expectEqual(ts_driver.EsTarget.es5, selectedEmitTarget("const x = 1;", null));
+    try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("// @target: es2024", null));
 }
 
 /// Inspect the chosen `.errors.txt` baseline filename for an
@@ -8719,15 +8784,8 @@ fn directiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn selectedResourceManagementHelpersRequired(source: []const u8, target_emit_es5: bool) bool {
-    if (target_emit_es5) return true;
-    const target = directiveValue(source, "target") orelse return false;
-    var parts = std.mem.splitScalar(u8, target, ',');
-    while (parts.next()) |raw_part| {
-        const part = std.mem.trim(u8, raw_part, " \t\r");
-        if (std.ascii.eqlIgnoreCase(part, "esnext")) return false;
-    }
-    return true;
+fn selectedResourceManagementHelpersRequired(target: ts_driver.EsTarget) bool {
+    return target != .esnext;
 }
 
 fn directiveTargetEs2015OrLater(source: []const u8) bool {
@@ -8775,10 +8833,10 @@ test "conformance: selected ES5 baseline overrides multi-target directive" {
     try T.expect(directiveTargetEs2015OrLater(source));
     try T.expect(!selectedSyntaxTargetEs2015OrLater(source, true));
     try T.expect(selectedSyntaxTargetEs2015OrLater(source, false));
-    try T.expect(selectedResourceManagementHelpersRequired(source, true));
-    try T.expect(selectedResourceManagementHelpersRequired(source, false));
-    try T.expect(!selectedResourceManagementHelpersRequired("// @target: es5, esnext", false));
-    try T.expect(selectedResourceManagementHelpersRequired("// @target: es2022\nusing value = null;", false));
+    try T.expect(selectedResourceManagementHelpersRequired(.es5));
+    try T.expect(selectedResourceManagementHelpersRequired(.es2015));
+    try T.expect(!selectedResourceManagementHelpersRequired(.esnext));
+    try T.expect(selectedResourceManagementHelpersRequired(.es2022));
 }
 
 /// True when the source's `// @target: <value>` directive lists a
@@ -9248,6 +9306,7 @@ pub fn runOwnedCorpus(
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .baseline_has_no_position_lib_diagnostics = entry.baseline_has_no_position_lib_diagnostics,
@@ -9412,6 +9471,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             else
                 entry.syntax_target_es2015 or directiveTargetEs2015OrLater(entry.source),
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -9447,6 +9507,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -9473,8 +9534,10 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         .strict_flags = entry.strict_flags,
         .always_strict = entry.always_strict,
         .syntax_target_es2015 = entry.syntax_target_es2015,
-        .emit = .{ .es_target = if (entry.target_emit_es5) .es5 else .esnext },
-        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(directive_source, entry.target_emit_es5),
+        .emit = .{ .es_target = effectiveEmitTarget(entry.target_emit_es5, entry.emit_target) },
+        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(
+            effectiveEmitTarget(entry.target_emit_es5, entry.emit_target),
+        ),
         .allow_js = directiveBool(directive_source, "allowJs") orelse false,
         .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         .continue_on_error = true,
@@ -55674,6 +55737,7 @@ fn runClusterFixture(
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -55939,6 +56003,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -56608,6 +56673,7 @@ fn runOptInTsSuiteFamily(
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -56775,6 +56841,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
