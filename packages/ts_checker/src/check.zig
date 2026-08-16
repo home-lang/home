@@ -38357,10 +38357,9 @@ pub const Checker = struct {
                     const is_field_readonly = self.classMemberSourceHasLeadingKeyword(m, "readonly") or
                         self.leadingJsDocHasReadonly(m);
                     // TS1331 - a class field typed as `unique symbol`
-                    // must carry both `static` and `readonly`. Skip
-                    // methods/accessors; anchor at the field node.
+                    // must carry both `static` and `readonly`, including
+                    // checked-JS fields whose type comes from JSDoc.
                     if (!op.is_method and
-                        !self.virtualSectionIsJsLike(m) and
                         (self.typeAnnotationIsUniqueSymbol(op.type_annotation) or
                             self.leadingJsDocTypeIsUniqueSymbol(m)) and
                         !(op.is_static and is_field_readonly))
@@ -89678,11 +89677,24 @@ pub const Checker = struct {
                         annotation_text_mismatch = texts;
                         break :blk false;
                     }
+                    if (try self.conditionalAnnotationDistributionMismatch(prior_annotation, v.type_annotation)) |texts| {
+                        annotation_text_mismatch = texts;
+                        break :blk false;
+                    }
+                    if (try self.repeatedVarExpandedAnnotationsIdentical(prior_annotation, v.type_annotation)) {
+                        break :blk true;
+                    }
                     if ((self.hir.kindOf(prior_annotation) == .union_type) !=
                         (self.hir.kindOf(v.type_annotation) == .union_type))
                     {
-                        const prior_text = self.annotationSourceText(prior_annotation);
-                        const current_text = self.annotationSourceText(v.type_annotation);
+                        const prior_text = if (self.hir.kindOf(prior_annotation) == .union_type)
+                            try self.allocTypeAnnotationDiagnosticName(prior_annotation, false)
+                        else
+                            self.annotationSourceText(prior_annotation);
+                        const current_text = if (self.hir.kindOf(v.type_annotation) == .union_type)
+                            try self.allocTypeAnnotationDiagnosticName(v.type_annotation, false)
+                        else
+                            self.annotationSourceText(v.type_annotation);
                         if (prior_text != null and current_text != null) {
                             annotation_text_mismatch = .{ .prior = prior_text.?, .current = current_text.? };
                             break :blk false;
@@ -90629,14 +90641,9 @@ pub const Checker = struct {
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, node);
                 if (r.qualifier_len != 0) return null;
-                const body_node = if (self.generic_aliases.get(r.name)) |info|
-                    info.body_node
-                else blk: {
-                    const decl = self.typeAliasDeclForNameAt(r.name, node) orelse return null;
-                    const ta = hir_mod.typeAliasOf(self.hir, decl);
-                    if (ta.type_params_len != 0) return null;
-                    break :blk ta.aliased;
-                };
+                const decl = self.findTypeAliasDeclInScope(node, r.name) orelse
+                    (self.typeAliasDeclForNameAt(r.name, node) orelse return null);
+                const body_node = hir_mod.typeAliasOf(self.hir, decl).aliased;
                 if (body_node == hir_mod.none_node_id) return null;
                 if (self.hir.kindOf(body_node) == .conditional_type) {
                     return .{
@@ -90675,6 +90682,33 @@ pub const Checker = struct {
         const sp = self.hir.spanOf(node);
         if (sp.start > sp.end or sp.end > src.len) return null;
         return std.mem.trim(u8, src[sp.start..sp.end], " \t\r\n");
+    }
+
+    fn repeatedVarExpandedAnnotationsIdentical(
+        self: *Checker,
+        prior_node: NodeId,
+        current_node: NodeId,
+    ) CheckError!bool {
+        const prior = (try self.repeatedVarExpandedAnnotationType(prior_node, 0)) orelse return false;
+        const current = (try self.repeatedVarExpandedAnnotationType(current_node, 0)) orelse return false;
+        return prior == current or (self.engine.isIdenticalTo(prior, current) catch false);
+    }
+
+    fn repeatedVarExpandedAnnotationType(self: *Checker, node: NodeId, depth: u8) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id or depth > 8) return null;
+        if (self.hir.kindOf(node) == .type_ref) {
+            const ref = hir_mod.typeRefOf(self.hir, node);
+            if (ref.qualifier_len == 0 and ref.args_len == 0) {
+                if (self.findTypeAliasDeclInScope(node, ref.name)) |decl| {
+                    const alias = hir_mod.typeAliasOf(self.hir, decl);
+                    if (alias.type_params_len == 0) {
+                        if (self.hir.kindOf(alias.aliased) == .conditional_type) return null;
+                        return try self.repeatedVarExpandedAnnotationType(alias.aliased, depth + 1);
+                    }
+                }
+            }
+        }
+        return try self.lowererLowerWithTypeParams(node);
     }
 
     fn repeatedVarTypesCompatible(self: *Checker, prior: TypeId, final_type: TypeId) bool {
@@ -109511,10 +109545,20 @@ pub const Checker = struct {
                     if (!first) try buf.appendSlice(arena, " | ");
                     first = false;
                     const member_kind = self.hir.kindOf(member);
-                    const needs_parens = member_kind == .fn_type or member_kind == .constructor_type;
-                    if (needs_parens) try buf.append(arena, '(');
+                    const callable_text = member_kind == .fn_type or
+                        member_kind == .constructor_type or
+                        std.mem.indexOf(u8, member_name, "=>") != null;
+                    var open_parens: usize = 0;
+                    var close_parens: usize = 0;
+                    if (callable_text) {
+                        open_parens = std.mem.count(u8, member_name, "(");
+                        close_parens = std.mem.count(u8, member_name, ")");
+                    }
+                    const add_leading_paren = callable_text and open_parens <= close_parens;
+                    const add_trailing_paren = callable_text and close_parens <= open_parens;
+                    if (add_leading_paren) try buf.append(arena, '(');
                     try buf.appendSlice(arena, member_name);
-                    if (needs_parens) try buf.append(arena, ')');
+                    if (add_trailing_paren) try buf.append(arena, ')');
                 }
                 while (empty_object_count > 0) : (empty_object_count -= 1) {
                     if (!first) try buf.appendSlice(arena, " | ");
@@ -126953,6 +126997,7 @@ pub const Checker = struct {
         if (try self.symbolicTupleLayoutsAssignable(arg_t, constraint)) |tuple_ok| {
             if (tuple_ok) return;
         }
+        if (try self.tryReportHeritageTypeArgSingleMissingProperty(arg_node, arg_t, constraint)) return;
         const signature_constraint = self.typeArgSignatureConstraint(constraint);
         const allow_signature_display = signature_constraint != null;
         const arg_text = (try self.typeArgConstraintTypeNameAtNode(arg_node, arg_t, allow_signature_display)) orelse return;
@@ -127022,6 +127067,53 @@ pub const Checker = struct {
             .message = msg,
             .chain = chain,
         });
+    }
+
+    fn tryReportHeritageTypeArgSingleMissingProperty(
+        self: *Checker,
+        arg_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!bool {
+        const type_ref = self.hir.parentOf(arg_node);
+        if (type_ref == hir_mod.none_node_id or self.hir.kindOf(type_ref) != .type_ref) return false;
+        const heritage = self.hir.parentOf(type_ref);
+        if (heritage == hir_mod.none_node_id) return false;
+        const is_heritage = switch (self.hir.kindOf(heritage)) {
+            .interface_decl => blk: {
+                const iface = hir_mod.interfaceOf(self.hir, heritage);
+                for (self.hir.childSlice(iface.extends_start, iface.extends_len)) |base| {
+                    if (base == type_ref) break :blk true;
+                }
+                break :blk false;
+            },
+            .class_decl, .class_expr => hir_mod.classOf(self.hir, heritage).extends == type_ref,
+            else => false,
+        };
+        if (!is_heritage) return false;
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source).is_object_type or
+            !self.interner.pool.flagsOf(target).is_object_type)
+        {
+            return false;
+        }
+
+        var missing: ?types.ObjectMember = null;
+        for (self.interner.objectMembers(target)) |required| {
+            if (required.is_optional or (try self.lookupObjectMember(source, required.name)) != null) continue;
+            if (missing != null) return false;
+            missing = required;
+        }
+        const required = missing orelse return false;
+        const source_name = (try self.typeArgConstraintTypeName(source, false)) orelse return false;
+        const target_name = (try self.typeArgConstraintTypeName(target, false)) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
+            .{ self.string_interner.get(required.name), source_name, target_name },
+        );
+        try self.report(arg_node, TsCodes.property_missing_required, msg);
+        return true;
     }
 
     fn checkUnionTypeArgSatisfiesConstraint(
@@ -194432,6 +194524,10 @@ test "checker: mappedTypeModifiers inline mapped annotation no spurious TS2403" 
     // the equivalent object type does not trip TS2403.
     const s = try newSetup(
         \\type T = { a: number, b: string };
+        \\type TP = { a?: number, b?: string };
+        \\var v00: "a" | "b";
+        \\var v00: keyof T;
+        \\var v00: keyof TP;
         \\var v01: T;
         \\var v01: { [P in keyof T]: T[P] };
         \\var v01: Pick<T, keyof T>;
@@ -194442,6 +194538,29 @@ test "checker: mappedTypeModifiers inline mapped annotation no spurious TS2403" 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
     }
+}
+
+test "checker: repeated vars compare expanded aliases and normalized unions" {
+    const s = try newSetup(
+        \\type Bool = true | false;
+        \\var a: Bool;
+        \\var a: false | true;
+        \\type T8 = string | boolean;
+        \\var x8: string | boolean;
+        \\var x8: T8;
+        \\var bb: `${number}`;
+        \\var bb: `${number}` | "0";
+        \\type Foo<T> = T extends string ? boolean : number;
+        \\function conditional<T, U>() {
+        \\    type T1 = T & U extends string ? boolean : number;
+        \\    type T2 = Foo<T & U>;
+        \\    var z: T1;
+        \\    var z: T2;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: mappedTypes2 Readonly/Partial builtin annotation no spurious TS2403" {
@@ -219783,6 +219902,23 @@ test "checker: TS2344 fires for string arg violating extends number constraint" 
     try T.expect(found);
 }
 
+test "checker: heritage constraints surface a single missing property" {
+    const s = try newSetup(
+        \\interface Base { foo: string; }
+        \\interface Derived extends Base { bar: string; }
+        \\interface Box<T extends Derived> { value: T; }
+        \\interface Bad extends Box<Base> {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'bar' is missing in type 'Base' but required in type 'Derived'.",
+    ));
+}
+
 test "checker: TS2344 does NOT fire for satisfying type argument" {
     const s = try newSetup(
         \\interface Proxy<T extends object> { value: T; }
@@ -229053,7 +229189,7 @@ test "checker: TS1331 fires for class unique-symbol props missing static+readonl
     }
 }
 
-test "checker: TS1331 skips checkjs JSDoc unique symbol class fields" {
+test "checker: TS1331 checks JSDoc unique symbol class fields" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -229070,7 +229206,7 @@ test "checker: TS1331 skips checkjs JSDoc unique symbol class fields" {
     defer destroySetup(s);
     s.checker.setCheckJsEnabled(true);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unique_symbol_class_prop_must_be_static_readonly));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.unique_symbol_class_prop_must_be_static_readonly));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
 }
 
