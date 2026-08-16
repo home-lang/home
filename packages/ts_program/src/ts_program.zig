@@ -852,12 +852,11 @@ pub const Program = struct {
                 if (compilation.hir.kindOf(stmt) != .assignment) continue;
                 const assignment = hir_mod_ns.assignmentOf(&compilation.hir, stmt);
                 if (assignment.op != null or assignment.value == hir_mod_ns.none_node_id) continue;
-                const name = commonJsExportAssignmentName(
+                const name_text = commonJsExportAssignmentMetadataName(
                     &compilation.hir,
                     &compilation.interner,
-                    assignment.target,
+                    assignment,
                 ) orelse continue;
-                const name_text = compilation.interner.get(name);
                 var duplicate = false;
                 for (out.items) |existing| {
                     if (std.mem.eql(u8, existing.module_path, f.path) and
@@ -3785,6 +3784,35 @@ fn commonJsExportAssignmentName(
         return null;
     }
     return property_name;
+}
+
+fn commonJsExportAssignmentMetadataName(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    initial: hir_mod_ns.AssignmentPayload,
+) ?[]const u8 {
+    var assignment = initial;
+    while (true) {
+        if (commonJsExportAssignmentName(hir, interner, assignment.target)) |name| {
+            return interner.get(name);
+        }
+        if (commonJsWholeExportAssignmentTarget(hir, interner, assignment.target)) return "";
+        if (assignment.value == hir_mod_ns.none_node_id or hir.kindOf(assignment.value) != .assignment) return null;
+        assignment = hir_mod_ns.assignmentOf(hir, assignment.value);
+        if (assignment.op != null) return null;
+    }
+}
+
+fn commonJsWholeExportAssignmentTarget(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    target: hir_mod_ns.NodeId,
+) bool {
+    const property_name = commonJsPropertyAccessName(hir, target) orelse return false;
+    if (!std.mem.eql(u8, interner.get(property_name), "exports")) return false;
+    const object = commonJsPropertyAccessObject(hir, target) orelse return false;
+    return hir.kindOf(object) == .identifier and
+        std.mem.eql(u8, interner.get(hir_mod_ns.identifierOf(hir, object).name), "module");
 }
 
 fn commonJsPropertyAccessName(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) ?hir_mod_ns.StringId {
@@ -6740,6 +6768,29 @@ test "Program: collects CommonJS exports assigned void" {
     }
     try T.expect(saw_j);
     try T.expect(saw_k);
+}
+
+test "Program: records whole CommonJS export assignments" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/mod.js", "function C() {}\nexports = module.exports = C;\nexports.f = 1;\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/mod.js", "function C() {}\nexports = module.exports = C;\nexports.f = 1;\n");
+
+    const exports = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, exports);
+    var saw_whole = false;
+    var saw_f = false;
+    for (exports) |item| {
+        if (!std.mem.eql(u8, item.module_path, "/mod.js")) continue;
+        if (item.name.len == 0) saw_whole = true;
+        if (std.mem.eql(u8, item.name, "f")) saw_f = true;
+    }
+    try T.expect(saw_whole);
+    try T.expect(saw_f);
 }
 
 test "Program: collects private export-assignment declaration types" {
