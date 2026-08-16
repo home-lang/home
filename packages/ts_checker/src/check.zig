@@ -4567,6 +4567,7 @@ pub const Checker = struct {
     /// `preserve`/`react-native` emit no factory call.
     jsx_classic_runtime: bool = false,
     private_identifier_downlevel_collision_enabled: bool = true,
+    reflect_super_static_initializer_collision_enabled: bool = true,
     target_emit_es5: bool = false,
     target_es5_baseline: bool = false,
     target_selection_explicit: bool = false,
@@ -4927,6 +4928,10 @@ pub const Checker = struct {
 
     pub fn setPrivateIdentifierDownlevelCollisionEnabled(self: *Checker, enabled: bool) void {
         self.private_identifier_downlevel_collision_enabled = enabled;
+    }
+
+    pub fn setReflectSuperStaticInitializerCollisionEnabled(self: *Checker, enabled: bool) void {
+        self.reflect_super_static_initializer_collision_enabled = enabled;
     }
 
     /// Mark the whole compilation unit as a declaration file
@@ -20632,8 +20637,8 @@ pub const Checker = struct {
         }
         const name_node: NodeId = switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, node).name,
-            .fn_decl => hir_mod.fnDeclOf(self.hir, node).name,
-            .class_decl => hir_mod.classOf(self.hir, node).name,
+            .fn_decl, .fn_expr => hir_mod.fnDeclOf(self.hir, node).name,
+            .class_decl, .class_expr => hir_mod.classOf(self.hir, node).name,
             .enum_decl => hir_mod.enumOf(self.hir, node).name,
             .namespace_decl, .module_decl => hir_mod.namespaceOf(self.hir, node).name,
             else => return null,
@@ -20697,14 +20702,7 @@ pub const Checker = struct {
     }
 
     fn reflectSuperStaticInitializerCollisionsEnabled(self: *Checker) bool {
-        if (self.sourceDirectiveValueMentions("target", "es2022") or
-            self.sourceDirectiveValueMentions("target", "es2023") or
-            self.sourceDirectiveValueMentions("target", "es2024") or
-            self.sourceDirectiveValueMentions("target", "esnext"))
-        {
-            return false;
-        }
-        return true;
+        return self.reflect_super_static_initializer_collision_enabled;
     }
 
     fn checkReflectSuperStaticInitializerCollisions(self: *Checker) CheckError!void {
@@ -20713,9 +20711,9 @@ pub const Checker = struct {
         while (i < self.hir.nodeCount()) : (i += 1) {
             const node: NodeId = @intCast(i);
             const candidate = self.reflectCollisionCandidate(node) orelse continue;
-            const scope = self.weakMapSetCollisionScope(node);
+            const scope = self.weakMapSetCollisionScope(candidate.node);
             if (scope == self.rootBlockFor(node) and !self.rootHasTopLevelExternalModuleMarker(node)) continue;
-            if (!self.scopeContainsSuperPropertyInStaticInitializer(scope)) continue;
+            if (!self.scopeContainsSuperPropertyInStaticInitializer(scope, candidate.node)) continue;
             const name_text = self.string_interner.get(candidate.name);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -20779,14 +20777,14 @@ pub const Checker = struct {
                 const spec = hir_mod.importSpecifierOf(self.hir, node);
                 if (imp.is_type_only or spec.is_type_only) return null;
                 if (!self.stringIdEql(spec.local, "Reflect")) return null;
-                return .{ .node = node, .name = spec.local, .pos = spec.local_pos };
+                return .{ .node = node, .name = spec.local, .pos = spec.imported_pos };
             },
             else => {},
         }
         const name_node: NodeId = switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, node).name,
-            .fn_decl => hir_mod.fnDeclOf(self.hir, node).name,
-            .class_decl => hir_mod.classOf(self.hir, node).name,
+            .fn_decl, .fn_expr => hir_mod.fnDeclOf(self.hir, node).name,
+            .class_decl, .class_expr => hir_mod.classOf(self.hir, node).name,
             .enum_decl => hir_mod.enumOf(self.hir, node).name,
             .namespace_decl => hir_mod.namespaceOf(self.hir, node).name,
             .parameter => hir_mod.parameterOf(self.hir, node).name,
@@ -20874,6 +20872,11 @@ pub const Checker = struct {
                             if (tr.catch_param == node and tr.catch_block != hir_mod.none_node_id) return tr.catch_block;
                         },
                         .import_decl => return self.rootBlockFor(parent),
+                        .class_expr => return parent,
+                        .fn_expr => {
+                            const function = hir_mod.fnDeclOf(self.hir, parent);
+                            if (function.body != hir_mod.none_node_id) return function.body;
+                        },
                         else => {},
                     }
                 }
@@ -20910,11 +20913,14 @@ pub const Checker = struct {
         return false;
     }
 
-    fn scopeContainsSuperPropertyInStaticInitializer(self: *Checker, scope: NodeId) bool {
+    fn scopeContainsSuperPropertyInStaticInitializer(self: *Checker, scope: NodeId, anchor: NodeId) bool {
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
         var i: u32 = 0;
         while (i < self.hir.nodeCount()) : (i += 1) {
             const node: NodeId = @intCast(i);
             if (!self.nodeIsDescendantOf(node, scope)) continue;
+            if (has_sections and self.virtualSectionStartForNode(node) != anchor_section) continue;
             if (self.staticPropertyInitializerContainsSuper(node)) return true;
             if (!self.nodeIsSuperPropertyAccess(node)) continue;
             if (self.superPropertyAccessInStaticInitializer(node)) return true;
@@ -20935,7 +20941,10 @@ pub const Checker = struct {
             .element_access => hir_mod.elementOf(self.hir, node).object,
             else => return false,
         };
-        return object != hir_mod.none_node_id and self.hir.kindOf(object) == .super_expr;
+        if (object == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(object) == .super_expr) return true;
+        return self.hir.kindOf(object) == .identifier and
+            self.stringIdEql(hir_mod.identifierOf(self.hir, object).name, "super");
     }
 
     fn superPropertyAccessInStaticInitializer(self: *Checker, access_node: NodeId) bool {
@@ -20963,6 +20972,7 @@ pub const Checker = struct {
                 else => {},
             }
             if (kind == .block_stmt) {
+                if (self.blockHasLeadingStaticKeyword(cur)) return true;
                 const parent = self.hir.parentOf(cur);
                 if (parent != hir_mod.none_node_id and
                     (self.hir.kindOf(parent) == .class_decl or self.hir.kindOf(parent) == .class_expr))
@@ -20974,6 +20984,20 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn blockHasLeadingStaticKeyword(self: *Checker, block: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(block);
+        if (span.start > src.len) return false;
+        var start: usize = span.start;
+        while (start > 0 and (src[start - 1] == ' ' or src[start - 1] == '\t' or src[start - 1] == '\r' or src[start - 1] == '\n')) {
+            start -= 1;
+        }
+        if (start < "static".len) return false;
+        const keyword_start = start - "static".len;
+        if (!std.mem.eql(u8, src[keyword_start..start], "static")) return false;
+        return keyword_start == 0 or !isJsDocIdentChar(src[keyword_start - 1]);
     }
 
     fn nodeIsPrivateIdentifierClassElement(self: *Checker, node: NodeId) bool {
@@ -38793,6 +38817,7 @@ pub const Checker = struct {
                 }
             }
             try self.type_names.put(self.gpa, cid.name, final_instance_t);
+            try self.class_instance_types.put(self.gpa, cid.name, final_instance_t);
             if (class_param_ids.items.len > 0) {
                 // Class parameters use the completed instance shape for the
                 // same variance inference already applied to interfaces and
@@ -41871,6 +41896,9 @@ pub const Checker = struct {
                 if (!prior.is_private) continue;
                 if (prior.canonical != current.canonical) continue;
                 if (prior.is_static == current.is_static) continue;
+                if (!self.diagnosticExistsOnNode(prior.name_node, TsCodes.private_static_instance_duplicate)) {
+                    try self.reportPrivateStaticInstanceDuplicate(prior.name_node, prior.display);
+                }
                 try self.reportPrivateStaticInstanceDuplicate(current.name_node, current.display);
                 break;
             }
@@ -42053,26 +42081,18 @@ pub const Checker = struct {
         }
 
         if (has_field and has_non_field) {
-            const first = entries[group_idx[0]];
             for (group_idx) |idx| {
                 const e = entries[idx];
-                if (e.kind == .field) {
-                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
-                    if (first.kind == .method and idx != group_idx[0]) {
-                        try self.reportPrivateMethodFieldTypeMismatch(e.name_node, e.display, first.type_display, e.type_display);
-                    }
-                    continue;
-                }
-                if (first.kind == .field) {
-                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
-                }
+                try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
             }
             return;
         }
 
         if (has_field) {
-            const second = entries[group_idx[1]];
-            try self.reportDuplicateIdentifierWithDisplay(second.name_node, second.display);
+            for (group_idx) |idx| {
+                const e = entries[idx];
+                try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+            }
             return;
         }
 
@@ -42515,9 +42535,8 @@ pub const Checker = struct {
             const m = hir_mod.memberOf(self.hir, node);
             if (self.hir.kindOf(m.object) == .identifier) {
                 const ident = hir_mod.identifierOf(self.hir, m.object);
-                if (std.mem.eql(u8, self.string_interner.get(ident.name), "super") and
-                    self.sourceTargetMentionsEs5())
-                {
+                if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) {
+                    if (static_class == null and self.classOrAncestorHasInstanceProperty(declaring_class, prop_name)) return;
                     // Check member kind: data property is suppressed,
                     // method falls through. Use obj_t's structural
                     // members to classify.
@@ -42678,12 +42697,14 @@ pub const Checker = struct {
             });
             return;
         }
-        const receiver_class = self.class_name_by_instance.get(obj_t) orelse
+        const syntax_receiver_class = self.explicitClassAnnotationName(object_node);
+        const receiver_class = syntax_receiver_class orelse
+            self.class_name_by_instance.get(obj_t) orelse
             self.class_name_by_static.get(obj_t) orelse
             self.interfaceInheritedVisibilityClass(obj_t) orelse
             forward_receiver_class orelse
             return;
-        if (self.class_name_by_instance.contains(obj_t) and
+        if ((syntax_receiver_class != null or self.class_name_by_instance.contains(obj_t)) and
             try self.lexicalInstancePrivateBrandApplies(node, receiver_class, prop_name))
         {
             return;
@@ -42695,16 +42716,23 @@ pub const Checker = struct {
         var class_name = receiver_class;
         var declared = false;
         while (true) {
-            if (self.class_instance_member_names.getPtr(class_name)) |set| {
-                if (set.contains(prop_name)) {
+            if (self.findVisibleNamedClassDecl(node, class_name)) |class_decl| {
+                if (try self.classNodeDeclaresEcmaPrivateMember(class_decl, prop_name, null)) {
                     declared = true;
                     break;
                 }
-            }
-            if (self.class_static_member_names.getPtr(class_name)) |set| {
-                if (set.contains(prop_name)) {
-                    declared = true;
-                    break;
+            } else {
+                if (self.class_instance_member_names.getPtr(class_name)) |set| {
+                    if (set.contains(prop_name)) {
+                        declared = true;
+                        break;
+                    }
+                }
+                if (self.class_static_member_names.getPtr(class_name)) |set| {
+                    if (set.contains(prop_name)) {
+                        declared = true;
+                        break;
+                    }
                 }
             }
             if (forward_receiver_decl != hir_mod.none_node_id and
@@ -42782,8 +42810,7 @@ pub const Checker = struct {
         class_name: hir_mod.StringId,
     ) CheckError!void {
         const prop_str = self.string_interner.get(prop_name);
-        const raw_name = self.string_interner.get(class_name);
-        const class_display = if (std.mem.startsWith(u8, raw_name, "(anonymous:")) "(anonymous)" else raw_name;
+        const class_display = self.privateClassDisplayName(class_name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Property '{s}' is not accessible outside class '{s}' because it has a private identifier.",
@@ -42958,7 +42985,9 @@ pub const Checker = struct {
             if (try self.classNodeDeclaresEcmaPrivateMember(forward_receiver_decl, prop_name, true)) return false;
             break :blk object_id.name;
         };
-        if (self.class_static_member_names.getPtr(receiver_class)) |own_static| {
+        if (self.findVisibleNamedClassDecl(node, receiver_class)) |receiver_decl| {
+            if (try self.classNodeDeclaresEcmaPrivateMember(receiver_decl, prop_name, true)) return false;
+        } else if (self.class_static_member_names.getPtr(receiver_class)) |own_static| {
             if (own_static.contains(prop_name)) return false;
         }
         var current = receiver_class;
@@ -42971,8 +43000,13 @@ pub const Checker = struct {
         } else null;
         while (first_forward_parent orelse self.class_parent.get(current)) |parent| {
             first_forward_parent = null;
-            if (self.class_static_member_names.getPtr(parent)) |parent_static| {
-                if (parent_static.contains(prop_name)) {
+            const parent_declares_private = if (self.findVisibleNamedClassDecl(node, parent)) |parent_decl|
+                try self.classNodeDeclaresEcmaPrivateMember(parent_decl, prop_name, true)
+            else if (self.class_static_member_names.getPtr(parent)) |parent_static|
+                parent_static.contains(prop_name)
+            else
+                false;
+            if (parent_declares_private) {
                     if (forward_receiver_decl != hir_mod.none_node_id) {
                         const display = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
@@ -42984,7 +43018,6 @@ pub const Checker = struct {
                         try self.reportPropertyDoesNotExistOnType(node, prop_name, obj_t);
                     }
                     return true;
-                }
             }
             current = parent;
         }
@@ -43601,6 +43634,50 @@ pub const Checker = struct {
         return null;
     }
 
+    fn inferredClassExpressionName(self: *Checker, class_node: NodeId) ?hir_mod.StringId {
+        var child = class_node;
+        var parent = self.hir.parentOf(child);
+        while (parent != hir_mod.none_node_id) : ({
+            child = parent;
+            parent = self.hir.parentOf(parent);
+        }) {
+            switch (self.hir.kindOf(parent)) {
+                .var_decl, .let_decl, .const_decl => {
+                    const declaration = hir_mod.varDeclOf(self.hir, parent);
+                    if (declaration.init != child or declaration.name == hir_mod.none_node_id or
+                        self.hir.kindOf(declaration.name) != .identifier) return null;
+                    return hir_mod.identifierOf(self.hir, declaration.name).name;
+                },
+                .assignment => {
+                    const assignment = hir_mod.assignmentOf(self.hir, parent);
+                    if (assignment.value != child or assignment.target == hir_mod.none_node_id or
+                        self.hir.kindOf(assignment.target) != .identifier) return null;
+                    return hir_mod.identifierOf(self.hir, assignment.target).name;
+                },
+                .object_property => {
+                    const property = hir_mod.objectPropertyOf(self.hir, parent);
+                    if (property.value != child or property.key == hir_mod.none_node_id or
+                        self.hir.kindOf(property.key) != .identifier) return null;
+                    return hir_mod.identifierOf(self.hir, property.key).name;
+                },
+                .class_decl, .class_expr, .fn_decl, .fn_expr, .arrow_fn => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn privateClassDisplayName(self: *Checker, class_name: hir_mod.StringId) []const u8 {
+        const raw_name = self.string_interner.get(class_name);
+        if (!std.mem.startsWith(u8, raw_name, "(anonymous:") or !std.mem.endsWith(u8, raw_name, ")")) {
+            return raw_name;
+        }
+        const node_text = raw_name["(anonymous:".len .. raw_name.len - 1];
+        const class_node = std.fmt.parseInt(NodeId, node_text, 10) catch return "(anonymous)";
+        const inferred_name = self.inferredClassExpressionName(class_node) orelse return "(anonymous)";
+        return self.string_interner.get(inferred_name);
+    }
+
     fn classDisplayName(
         self: *Checker,
         ctx_node: NodeId,
@@ -43667,6 +43744,7 @@ pub const Checker = struct {
         prop_name: hir_mod.StringId,
     ) CheckError!void {
         var syntax_static_class: ?hir_mod.StringId = null;
+        var syntax_instance_class: ?hir_mod.StringId = null;
         if (self.hir.kindOf(node) == .member_access) {
             const m = hir_mod.memberOf(self.hir, node);
             if (self.hir.kindOf(m.object) == .identifier) {
@@ -43674,12 +43752,16 @@ pub const Checker = struct {
                 if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) return;
                 if (self.findVisibleNamedClassDecl(m.object, ident.name) != null) {
                     syntax_static_class = ident.name;
+                } else {
+                    syntax_instance_class = self.explicitClassAnnotationName(m.object);
                 }
             }
         }
         const Receiver = struct { class_name: hir_mod.StringId, is_static: bool };
         const receiver: Receiver = if (syntax_static_class) |name|
             .{ .class_name = name, .is_static = true }
+        else if (syntax_instance_class) |name|
+            .{ .class_name = name, .is_static = false }
         else if (self.class_name_by_instance.get(obj_t)) |name|
             .{ .class_name = name, .is_static = false }
         else if (self.class_name_by_static.get(obj_t)) |name|
@@ -46753,8 +46835,8 @@ pub const Checker = struct {
         if (callee_text.len == 0 or arg_text.len == 0) return null;
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "{s}<typeof {s}>.(Anonymous class) & {s}",
-            .{ callee_text, arg_text, arg_text },
+            "{s}.(Anonymous class) & {s}",
+            .{ callee_text, arg_text },
         );
     }
 
@@ -48682,9 +48764,11 @@ pub const Checker = struct {
                     if (self.class_static_type_by_node.get(decl)) |static_t| {
                         const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
                         if (self.interner.objectMemberInfo(static_t, prototype_name)) |prototype| {
-                            break :blk prototype.type;
+                            break :blk self.merged_class_instance_types.get(prototype.type) orelse prototype.type;
                         }
-                        if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
+                        if (try self.constructReturnType(static_t)) |instance_t| {
+                            break :blk self.merged_class_instance_types.get(instance_t) orelse instance_t;
+                        }
                     }
                 }
                 if (self.class_instance_types.get(id.name)) |t| {
@@ -130296,6 +130380,7 @@ pub const Checker = struct {
     }
 
     fn globalTopReceiverHasProgramProperty(self: *Checker, node: NodeId, object_node: NodeId, name: hir_mod.StringId) bool {
+        _ = node;
         if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .identifier) return false;
         const receiver = self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name);
         if (!std.mem.eql(u8, receiver, "top")) return false;
@@ -130303,8 +130388,7 @@ pub const Checker = struct {
         for (self.program_global_var_names) |program_name| {
             if (std.mem.eql(u8, program_name, raw)) return true;
         }
-        return self.rootHasVarDeclarationNamed(node, name) or
-            self.rootHasFunctionDeclarationNamed(node, name);
+        return false;
     }
 
     fn reportGlobalThisMissingProperty(self: *Checker, node: NodeId, name: hir_mod.StringId, target: []const u8) CheckError!void {
@@ -130347,9 +130431,15 @@ pub const Checker = struct {
             self.hir.kindOf(object_node) == .identifier and
             std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name), "globalThis");
         const object_is_global_this_receiver = object_is_global_this or self.memberAccessObjectIsGlobalThisThis(object_node);
+        const object_is_top = self.hir.kindOf(object_node) == .identifier and
+            std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name), "top");
         const annotation_mentions_global = self.identifierAnnotationMentionsGlobalThis(object_node);
         if (self.globalWindowReceiverIncludesGlobalProperties(object_node) and self.globalThisHasProperty(node, name)) return true;
         if (self.globalTopReceiverHasProgramProperty(node, object_node, name)) return true;
+        if (object_is_top) {
+            try self.reportGlobalThisMissingProperty(node, name, "Window");
+            return true;
+        }
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
         if (object_is_global_this and
             std.mem.eql(u8, self.string_interner.get(name), "globalThis") and
@@ -151203,6 +151293,40 @@ pub const Checker = struct {
         return null;
     }
 
+    fn explicitClassAnnotationName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, cur)) |param_node| {
+                if (self.hir.kindOf(param_node) != .parameter) continue;
+                const param = hir_mod.parameterOf(self.hir, param_node);
+                if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, param.name).name != name) continue;
+                return self.classNameFromAnnotation(node, param.type_annotation);
+            }
+        }
+        const declaration = self.visibleVariableDeclForIdentifier(node) orelse return null;
+        return self.classNameFromAnnotation(node, hir_mod.varDeclOf(self.hir, declaration).type_annotation);
+    }
+
+    fn classNameFromAnnotation(self: *Checker, context: NodeId, annotation: NodeId) ?hir_mod.StringId {
+        if (annotation == hir_mod.none_node_id) return null;
+        const name = switch (self.hir.kindOf(annotation)) {
+            .identifier => hir_mod.identifierOf(self.hir, annotation).name,
+            .type_ref => blk: {
+                const reference = hir_mod.typeRefOf(self.hir, annotation);
+                if (reference.qualifier_len != 0) return null;
+                break :blk reference.name;
+            },
+            else => return null,
+        };
+        _ = self.findVisibleNamedClassDecl(context, name) orelse return null;
+        return name;
+    }
+
     fn contextualFunctionExpressionReturnAssignable(
         self: *Checker,
         arg_node: NodeId,
@@ -159721,6 +159845,10 @@ pub const Checker = struct {
         }
         if (missing_total == 0) return false;
         const first_missing_name = missing_names[0];
+        // ECMAScript private names are nominal brands, not ordinary
+        // structurally required properties. A missing `#name` therefore
+        // keeps the enclosing TS2322 relation instead of becoming TS2741.
+        if (self.memberNameIsEcmaPrivate(first_missing_name)) return false;
 
         // Multi-property elaboration (TS2739/TS2740) is only safe to emit
         // from this surface heuristic for an object-LITERAL source — the
@@ -159753,16 +159881,10 @@ pub const Checker = struct {
         }
 
         const target_name = (try self.missingPropertyTypeName(display_target)) orelse return false;
-        const private_source_name = if (self.memberNameIsEcmaPrivate(first_missing_name))
-            try self.missingPrivatePropertyApparentSourceName(source, value_node)
-        else
-            null;
         const source_name = if (source_is_primitive_object_intersection)
             (try self.allocIntersectionNameWithPrimitiveWrappers(source)) orelse
                 (try self.allocSimpleTypeName(source)) orelse
                 (try self.allocObjectTypeShape(source)) orelse "{}"
-        else if (private_source_name) |name|
-            name
         else if (try self.expandedGenericAliasAnnotationNameForIdentifier(value_node)) |name|
             name
         else
@@ -180321,6 +180443,41 @@ test "checker: TS2818 skips ES2022 and instance super field initializers" {
     defer destroySetup(script_root);
     try script_root.checker.checkSourceFile(script_root.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(script_root, TsCodes.duplicate_identifier_reflect_static_initializer));
+}
+
+test "checker: TS2818 recognizes super property access in a static block" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\export {};
+        \\let Reflect;
+        \\class Base { static value = 1; }
+        \\class Derived extends Base {
+        \\  static { super.value; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.duplicate_identifier_reflect_static_initializer));
+}
+
+test "checker: TS2818 scopes named class and function expressions to their bodies" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\export {};
+        \\class Base { static value = 1; }
+        \\(class Reflect {
+        \\  static { class Derived extends Base { static { super.value; } } }
+        \\});
+        \\(function Reflect() {
+        \\  class Derived extends Base { static field = super.value; }
+        \\});
+        \\(class Reflect {});
+        \\(function Reflect() {});
+        \\class Unrelated extends Base { static field = super.value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier_reflect_static_initializer));
 }
 
 test "checker: legacy class decorator arity emits TS1238 header with arity chain" {
@@ -218093,7 +218250,7 @@ test "checker: private static and instance names emit TS2804" {
     try T.expect(found);
 }
 
-test "checker: private method then field emits TS2300 and TS2717" {
+test "checker: private method then field emits TS2300 at both declarations" {
     const s = try newSetup(
         \\class C {
         \\  #foo() { }
@@ -218102,14 +218259,104 @@ test "checker: private method then field emits TS2300 and TS2717" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var saw_2300 = false;
-    var saw_2717 = false;
+    var duplicate_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.duplicate_identifier) saw_2300 = true;
-        if (d.code == TsCodes.subsequent_property_declaration_same_type) saw_2717 = true;
+        if (d.code == TsCodes.duplicate_identifier) duplicate_count += 1;
+        try T.expect(d.code != TsCodes.subsequent_property_declaration_same_type);
     }
-    try T.expect(saw_2300);
-    try T.expect(saw_2717);
+    try T.expectEqual(@as(usize, 2), duplicate_count);
+}
+
+test "checker: duplicate private fields emit TS2300 at both declarations" {
+    const s = try newSetup(
+        \\class C {
+        \\  #foo = "first";
+        \\  #foo = "second";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+}
+
+test "checker: private diagnostics infer an anonymous class expression binding name" {
+    const s = try newSetup(
+        \\const C = class {
+        \\  #field = 1;
+        \\  static getInstance() { return new C(); }
+        \\};
+        \\C.getInstance().#field;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.ecma_private_not_accessible_outside_class));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.ecma_private_not_accessible_outside_class,
+        "Property '#field' is not accessible outside class 'C' because it has a private identifier.",
+    ));
+}
+
+test "checker: inherited private names report their declaring class from an annotated receiver" {
+    const s = try newSetup(
+        \\class Base { #prop = 1; }
+        \\class Derived extends Base {
+        \\  static read(value: Derived) { return value.#prop; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.ecma_private_not_accessible_outside_class,
+        "Property '#prop' is not accessible outside class 'Base' because it has a private identifier.",
+    ));
+}
+
+test "checker: inherited static private names stay missing on derived constructors" {
+    const s = try newSetup(
+        \\class Base { static get #prop() { return 1; } }
+        \\class Derived extends Base {
+        \\  static read(value: typeof Derived) { return value.#prop; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.ecma_private_not_accessible_outside_class));
+}
+
+test "checker: private super fields emit TS2855 without redundant TS2341" {
+    const s = try newSetup(
+        \\class Base { private value = 1; }
+        \\class Derived extends Base { field = super.value; }
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEmitEs5(false);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_field_via_super));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.private_member_access));
+}
+
+test "checker: protected receivers retain explicit sibling subclass annotations" {
+    const s = try newSetup(
+        \\class Base { protected value = 1; }
+        \\class Left extends Base {
+        \\  read(left: Left, right: Right) {
+        \\    left.value;
+        \\    right.value;
+        \\  }
+        \\}
+        \\class Right extends Base {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.protected_member_wrong_receiver));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.protected_member_wrong_receiver,
+        "Property 'value' is protected and only accessible through an instance of class 'Left'. This is an instance of class 'Right'.",
+    ));
 }
 
 test "checker: TS2803 private methods are not writable" {
