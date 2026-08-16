@@ -142626,7 +142626,7 @@ pub const Checker = struct {
                 i < flags.len and flags[i]
             else
                 false;
-            if (ok and self.hir.kindOf(args[i]) == .array_literal and
+            if (self.hir.kindOf(args[i]) == .array_literal and
                 (self.arrayParameterElementTypeIsNullishOnly(param_t) or nullish_default_array_param))
             {
                 if ((nullish_default_array_param and try self.tryReportArrayLiteralElementsAgainstNullish(args[i])) or
@@ -142647,9 +142647,9 @@ pub const Checker = struct {
                     if (try self.tryReportArrayLiteralParamTupleAnnotationWidthMismatch(args[i], sig, fixed_pos, param_t)) {
                         emitted = true;
                     } else if (self.tupleTypeFromMaybeOptional(param_t) != null) {
-                        if (try self.tryReportArrayLiteralTupleArgumentWidthMismatch(args[i], param_t)) {
+                        if (try self.tryReportArrayLiteralTupleElementMismatch(args[i], param_t)) {
                             emitted = true;
-                        } else if (try self.tryReportArrayLiteralTupleElementMismatch(args[i], param_t)) {
+                        } else if (try self.tryReportArrayLiteralTupleArgumentWidthMismatch(args[i], param_t)) {
                             emitted = true;
                         } else if (try self.formatArrayLiteralTupleArgumentNotAssignable(args[i], param_t)) |msg| {
                             try self.diagnostics.append(self.gpa, .{
@@ -142929,6 +142929,19 @@ pub const Checker = struct {
                         // names. Matches upstream baselines for
                         // `iterableArrayPattern{13,17,18,29}` etc.
                         const diagnostic_arg_t = try self.expressionLiteralType(args[j], arg_t);
+                        const missing_relation_target = try self.missingPropertyRelationTarget(target_t);
+                        if (!self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
+                            try self.tryReportSinglePropertyMissingWithDisplayTarget(
+                                args[j],
+                                args[j],
+                                diagnostic_arg_t,
+                                missing_relation_target,
+                                target_t,
+                            ))
+                        {
+                            emitted_rest_mismatch = true;
+                            continue;
+                        }
                         const msg = try self.formatArgumentNotAssignable(diagnostic_arg_t, target_t, j);
                         try self.diagnostics.append(self.gpa, .{
                             .node = args[j],
@@ -156697,9 +156710,6 @@ pub const Checker = struct {
         const resolved_target = self.tupleTypeFromMaybeOptional(target_t) orelse return false;
         if (!self.isFixedNoRestTuple(resolved_target)) return false;
         const elems = hir_mod.arrayLiteralElements(self.hir, init_node);
-        const target_required = self.tupleRestMinRequiredCount(resolved_target);
-        const target_max = self.restTupleMaxCount(resolved_target);
-        if ((try self.tupleWidthChainForArity(elems.len, elems.len, target_required, target_max)).len != 0) return false;
         var emitted = false;
         var i: usize = 0;
         while (i < elems.len) : (i += 1) {
@@ -160572,7 +160582,7 @@ pub const Checker = struct {
         const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Type '{s}' is missing the following properties from type '{s}': length, pop, push, concat, and 25 more.",
+            "Type '{s}' is missing the following properties from type '{s}': length, pop, push, concat, and 24 more.",
             .{ source_name, target_name },
         );
         try self.report(diag_node, TsCodes.type_missing_properties_truncated, msg);
