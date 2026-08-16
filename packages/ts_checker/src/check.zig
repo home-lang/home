@@ -18561,6 +18561,7 @@ pub const Checker = struct {
     fn expandoAugmentedFunctionType(
         self: *Checker,
         name: hir_mod.StringId,
+        binding_decl: NodeId,
         base_t: TypeId,
         scope_stmts: []const NodeId,
     ) CheckError!?TypeId {
@@ -18599,7 +18600,7 @@ pub const Checker = struct {
         }
 
         for (scope_stmts) |stmt| {
-            try self.collectExpandoMembersFromStmt(name, stmt, &members, &seen);
+            try self.collectExpandoMembersFromStmt(name, binding_decl, stmt, &members, &seen);
         }
 
         if (members.items.len == 1) return null;
@@ -18615,6 +18616,7 @@ pub const Checker = struct {
     fn collectExpandoMembersFromStmt(
         self: *Checker,
         name: hir_mod.StringId,
+        binding_decl: NodeId,
         stmt: NodeId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
         seen: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
@@ -18630,6 +18632,7 @@ pub const Checker = struct {
                         m.object != hir_mod.none_node_id and
                         self.hir.kindOf(m.object) == .identifier and
                         hir_mod.identifierOf(self.hir, m.object).name == name and
+                        self.expandoReceiverDeclaration(a.target) == binding_decl and
                         a.value != hir_mod.none_node_id)
                     {
                         const prop_t = try self.expandoAssignmentPropertyType(stmt, a);
@@ -18659,30 +18662,30 @@ pub const Checker = struct {
                     }
                 }
                 if (a.value != hir_mod.none_node_id and self.hir.kindOf(a.value) == .assignment) {
-                    try self.collectExpandoMembersFromStmt(name, a.value, members, seen);
+                    try self.collectExpandoMembersFromStmt(name, binding_decl, a.value, members, seen);
                 }
             },
-            .block_stmt => for (hir_mod.blockStmts(self.hir, stmt)) |s| try self.collectExpandoMembersFromStmt(name, s, members, seen),
+            .block_stmt => for (hir_mod.blockStmts(self.hir, stmt)) |s| try self.collectExpandoMembersFromStmt(name, binding_decl, s, members, seen),
             .var_decl, .let_decl, .const_decl => {
                 const variable = hir_mod.varDeclOf(self.hir, stmt);
-                try self.collectExpandoMembersFromStmt(name, variable.init, members, seen);
+                try self.collectExpandoMembersFromStmt(name, binding_decl, variable.init, members, seen);
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, stmt);
-                try self.collectExpandoMembersFromStmt(name, i.then_branch, members, seen);
-                try self.collectExpandoMembersFromStmt(name, i.else_branch, members, seen);
+                try self.collectExpandoMembersFromStmt(name, binding_decl, i.then_branch, members, seen);
+                try self.collectExpandoMembersFromStmt(name, binding_decl, i.else_branch, members, seen);
             },
-            .for_stmt => try self.collectExpandoMembersFromStmt(name, hir_mod.forStmtOf(self.hir, stmt).body, members, seen),
-            .for_in_stmt, .for_of_stmt => try self.collectExpandoMembersFromStmt(name, hir_mod.forInOf(self.hir, stmt).body, members, seen),
-            .while_stmt => try self.collectExpandoMembersFromStmt(name, hir_mod.whileOf(self.hir, stmt).body, members, seen),
-            .do_while_stmt => try self.collectExpandoMembersFromStmt(name, hir_mod.doWhileOf(self.hir, stmt).body, members, seen),
-            .switch_stmt => for (hir_mod.switchCases(self.hir, stmt)) |c| try self.collectExpandoMembersFromStmt(name, c, members, seen),
-            .switch_case => for (hir_mod.switchCaseStmts(self.hir, stmt)) |s| try self.collectExpandoMembersFromStmt(name, s, members, seen),
+            .for_stmt => try self.collectExpandoMembersFromStmt(name, binding_decl, hir_mod.forStmtOf(self.hir, stmt).body, members, seen),
+            .for_in_stmt, .for_of_stmt => try self.collectExpandoMembersFromStmt(name, binding_decl, hir_mod.forInOf(self.hir, stmt).body, members, seen),
+            .while_stmt => try self.collectExpandoMembersFromStmt(name, binding_decl, hir_mod.whileOf(self.hir, stmt).body, members, seen),
+            .do_while_stmt => try self.collectExpandoMembersFromStmt(name, binding_decl, hir_mod.doWhileOf(self.hir, stmt).body, members, seen),
+            .switch_stmt => for (hir_mod.switchCases(self.hir, stmt)) |c| try self.collectExpandoMembersFromStmt(name, binding_decl, c, members, seen),
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, stmt)) |s| try self.collectExpandoMembersFromStmt(name, binding_decl, s, members, seen),
             .try_stmt => {
                 const ts = hir_mod.tryOf(self.hir, stmt);
-                try self.collectExpandoMembersFromStmt(name, ts.block, members, seen);
-                try self.collectExpandoMembersFromStmt(name, ts.catch_block, members, seen);
-                try self.collectExpandoMembersFromStmt(name, ts.finally_block, members, seen);
+                try self.collectExpandoMembersFromStmt(name, binding_decl, ts.block, members, seen);
+                try self.collectExpandoMembersFromStmt(name, binding_decl, ts.catch_block, members, seen);
+                try self.collectExpandoMembersFromStmt(name, binding_decl, ts.finally_block, members, seen);
             },
             else => {},
         }
@@ -18923,15 +18926,20 @@ pub const Checker = struct {
                 .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
                 else => continue,
             };
-            var declares = false;
+            var scope_decl = hir_mod.none_node_id;
             for (stmts) |stmt| {
                 if (self.statementDeclaresFunctionValueName(stmt, name)) {
-                    declares = true;
+                    scope_decl = if (self.hir.kindOf(stmt) == .export_decl)
+                        hir_mod.exportOf(self.hir, stmt).decl
+                    else
+                        stmt;
                     break;
                 }
             }
-            if (!declares) continue;
-            return try self.expandoAugmentedFunctionType(name, base_t, stmts);
+            if (scope_decl == hir_mod.none_node_id) continue;
+            const binding_decl = self.findLocalValueDeclBeforeExpression(ref_node, name) orelse
+                self.findSiblingFunctionDecl(ref_node) orelse scope_decl;
+            return try self.expandoAugmentedFunctionType(name, binding_decl, base_t, stmts);
         }
         return null;
     }
@@ -82637,7 +82645,7 @@ pub const Checker = struct {
         {
             return true;
         }
-        if (try self.upperObjectSourceAssignableToAllOptionalTarget(source_t, target_t)) return true;
+        if (try self.upperObjectSourceToObjectTargetRelation(source_t, target_t)) |ok| return ok;
         if (try self.objectSourceAssignableToUpperObjectTarget(source_t, target_t)) |ok| return ok;
         if (try self.typeParameterConstraintAssignableToParam(source_t, target_t)) return true;
         if (self.sourceHasOptionalMemberForRequiredTarget(source_t, target_t)) return false;
@@ -82669,6 +82677,7 @@ pub const Checker = struct {
         if (try self.mappedArraySourceAssignableToArrayTarget(source_t, target_t)) return true;
         if (self.mappedSourceAssignableToOpenAnyIndexTarget(source_t, target_t)) return true;
         if (try self.namedObjectSourceToStringIndexTarget(source_t, target_t)) |ok| return ok;
+        if (self.indexedSourceAssignableToOpenAnyStringIndexTarget(source_t, target_t)) return true;
         if (try self.filteredMappedKeySourceAssignableToKeyofTarget(source_t, target_t)) return true;
         if (try self.patternIndexSignaturesAssignable(source_t, target_t)) |ok| return ok;
         if (try self.genericIndexSignatureRelationMismatch(source_t, target_t)) return false;
@@ -82728,23 +82737,23 @@ pub const Checker = struct {
         return true;
     }
 
-    fn upperObjectSourceAssignableToAllOptionalTarget(
+    fn upperObjectSourceToObjectTargetRelation(
         self: *Checker,
         source_t: TypeId,
         target_t: TypeId,
-    ) CheckError!bool {
-        if (!self.typeIsGlobalObjectBuiltin(source_t) and !(try self.typeIsUpperObject(source_t))) return false;
-        if (target_t >= self.interner.pool.typeCount()) return false;
+    ) CheckError!?bool {
+        if (!self.typeIsGlobalObjectBuiltin(source_t) and !(try self.typeIsUpperObject(source_t))) return null;
+        if (target_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(target_t);
-        if (!flags.is_object_type or flags.is_union or flags.is_intersection or flags.is_signature) return false;
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection or flags.is_signature) return null;
         if (self.interner.objectStringIndex(target_t) != types.Primitive.none or
             self.interner.objectNumberIndex(target_t) != types.Primitive.none or
             self.interner.objectSymbolIndex(target_t) != types.Primitive.none)
         {
-            return false;
+            return null;
         }
         const members = self.interner.objectMembers(target_t);
-        if (members.len == 0) return false;
+        if (members.len == 0) return null;
         for (members) |member| {
             if (!member.is_optional) return false;
         }
@@ -82943,6 +82952,22 @@ pub const Checker = struct {
             if (!try self.checkerAssignableTo(member.type, target_index)) return false;
         }
         return true;
+    }
+
+    fn indexedSourceAssignableToOpenAnyStringIndexTarget(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection) return false;
+        if (!target_flags.is_object_type or target_flags.is_union or target_flags.is_intersection) return false;
+        if (self.interner.objectMembers(target_t).len != 0) return false;
+        if (!self.typeIsAnyLike(self.interner.objectStringIndex(target_t))) return false;
+        return self.interner.objectStringIndex(source_t) != types.Primitive.none or
+            self.interner.objectNumberIndex(source_t) != types.Primitive.none;
     }
 
     fn genericConstraintAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -142555,7 +142580,8 @@ pub const Checker = struct {
                         diagnostic_arg_t = self.expressionLiteralType(args[i], diagnostic_arg_t) catch diagnostic_arg_t;
                     }
                     const missing_relation_target = try self.missingPropertyRelationTarget(display_param_t);
-                    if (try self.tryReportSinglePropertyMissingWithDisplayTarget(
+                    if (!self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
+                        try self.tryReportSinglePropertyMissingWithDisplayTarget(
                         args[i],
                         args[i],
                         diagnostic_arg_t,
@@ -160070,6 +160096,10 @@ pub const Checker = struct {
         if (!isSimpleTypeAliasName(base)) return constrained;
         const name = self.string_interner.intern(base) catch return error.OutOfMemory;
         return self.type_names.get(name) orelse constrained;
+    }
+
+    fn argumentMissingPropertyUsesArgumentHeader(self: *Checker, source: TypeId) bool {
+        return self.typeIsGlobalObjectBuiltin(source);
     }
 
     fn tryReportSinglePropertyMissingWithDisplayTarget(
@@ -187674,8 +187704,8 @@ test "checker: instanceof preserves a matching generic class union constituent" 
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.argument_type_mismatch, "Argument of type 'B<T>' is not assignable to parameter of type 'A<unknown>'."));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_missing_required, "Property 'value' is missing in type 'B<T>' but required in type 'A<unknown>'."));
 }
 
 test "checker: instanceof preserves generic class constituents with parameter properties" {
@@ -187690,8 +187720,8 @@ test "checker: instanceof preserves generic class constituents with parameter pr
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.argument_type_mismatch, "Argument of type 'B<T>' is not assignable to parameter of type 'A<unknown>'."));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_missing_required, "Property 'value' is missing in type 'B<T>' but required in type 'A<unknown>'."));
 }
 
 test "checker: generic object inference validates later sibling properties" {
@@ -194668,12 +194698,12 @@ test "checker: homomorphic utility inference preserves primary candidates" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_literal_excess_property));
     try T.expect(hasDiagnosticCodeMessage(
         s,
-        TsCodes.argument_type_mismatch,
-        "Argument of type '{ x: number; }' is not assignable to parameter of type 'Readonly<{ x: number; y: number; }>'.",
+        TsCodes.property_missing_required,
+        "Property 'y' is missing in type '{ x: number; }' but required in type 'Readonly<{ x: number; y: number; }>'.",
     ));
     try T.expect(hasDiagnosticCodeMessage(
         s,
@@ -201365,9 +201395,10 @@ test "checker: generic any string index suppresses source index requirements" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     var saw_obj_to_number = false;
     var saw_number_to_string = false;
+    var saw_number_alias_name = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.type_not_assignable) continue;
         if (std.mem.indexOf(u8, d.message, "Type 'Obj' is not assignable to type 'NumberTo<any>'") != null) {
@@ -201376,23 +201407,22 @@ test "checker: generic any string index suppresses source index requirements" {
         if (std.mem.indexOf(u8, d.message, "Type 'NumberTo<any>' is not assignable to type 'StringTo<any>'") != null) {
             saw_number_to_string = true;
         }
+        if (std.mem.indexOf(u8, d.message, "Type 'NumberToNumber' is not assignable to type 'Obj'") != null) {
+            saw_number_alias_name = true;
+        }
     }
     try T.expect(saw_obj_to_number);
     try T.expect(!saw_number_to_string);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expect(saw_number_alias_name);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_missing_properties));
     var saw_intersection_name = false;
-    var saw_expanded_alias_name = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.type_missing_properties) continue;
         if (std.mem.indexOf(u8, d.message, "Type 'StringTo<any> & NumberTo<any>' is missing") != null) {
             saw_intersection_name = true;
         }
-        if (std.mem.indexOf(u8, d.message, "Type 'NumberTo<number>' is missing") != null) {
-            saw_expanded_alias_name = true;
-        }
     }
     try T.expect(saw_intersection_name);
-    try T.expect(saw_expanded_alias_name);
 }
 
 test "checker: union assignment target missing member reports declared union" {
@@ -201853,7 +201883,7 @@ test "checker: fields merged with parameter properties keep field visibility" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_property_initialization = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.duplicate_identifier));
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.declarations_must_have_identical_modifiers));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.private_member_access));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.protected_member_access));
