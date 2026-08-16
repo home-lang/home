@@ -1900,6 +1900,14 @@ pub const Parser = struct {
     }
 
     fn scanJSDocPrefixTypeSyntax(self: *Parser, start: usize, end: usize) ParseError!void {
+        const type_start = firstNonWhitespace(self.source, start, end);
+        if (type_start + "module:".len <= end and
+            std.mem.eql(u8, self.source[type_start .. type_start + "module:".len], "module:"))
+        {
+            const colon_pos: u32 = @intCast(type_start + "module".len);
+            try self.reportCodeAt(colon_pos, self.lineAt(colon_pos), 1005, "'}' expected.");
+        }
+
         var i = start;
         while (i < end) : (i += 1) {
             const operator = self.source[i];
@@ -31950,6 +31958,21 @@ test "parser: JSDoc nullable and non-nullable prefixes follow type grammar recov
     try T.expectEqual(@as(usize, 2), type_expected);
     try T.expectEqual(@as(usize, 1), close_expected);
     try T.expectEqual(@as(usize, 2), readonly_modifier);
+}
+
+test "parser: legacy JSDoc module namepath stops at the type name" {
+    var s = try newTestSetup(
+        \\/** @type {module:A} */
+        \\export let value = null;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const diagnostic = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1005), diagnostic.code);
+    try T.expectEqualStrings("'}' expected.", diagnostic.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOfScalar(u8, s.parser.source, ':') orelse unreachable)), diagnostic.pos);
 }
 
 test "parser: leading JSDoc template before type-like tag is allowed" {

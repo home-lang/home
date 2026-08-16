@@ -5309,6 +5309,7 @@ pub const Checker = struct {
         try self.checkJsDocTemplateDeclarations(root);
         try self.checkJSDocTypedefTypeTags(root);
         try self.checkJSDocUnsupportedNamepathTypes(root);
+        try self.checkJSDocLegacyModuleNamepathTypes(root);
         try self.checkJSDocClosureFunctionTypes(root);
         try self.checkJSDocTagTokensInTypeExpressions(root);
         try self.checkJSDocUnsupportedTypedefWrapping(root);
@@ -5351,6 +5352,7 @@ pub const Checker = struct {
             defer self.popNarrowScope();
             for (stmts) |s| try self.checkStatement(s);
         }
+        try self.checkCommonJsWholeExportDeclarationPrivacy();
         try self.anchorJsDocValueUsedAsTypeDiagnostics();
         try self.recheckDeferredVarianceAnnotations(stmts);
         try self.checkUniqueSymbolPositionsGlobal();
@@ -5528,6 +5530,35 @@ pub const Checker = struct {
                 .{ source_name, target_text },
             );
             try self.report(declaration.name, TsCodes.type_not_assignable, message);
+        }
+    }
+
+    fn checkJSDocLegacyModuleNamepathTypes(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var comment_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, comment_start, "/**")) |open| {
+            const body_start = open + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const body_end = body_start + close_rel;
+            var search = body_start;
+            while (std.mem.indexOfPos(u8, src, search, "{module:")) |type_start| {
+                if (type_start >= body_end) break;
+                const name_pos: u32 = @intCast(type_start + 1);
+                if (!self.hasDiagnosticAtPosition(TsCodes.cannot_find_node_name, name_pos)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = name_pos,
+                        .code = TsCodes.cannot_find_node_name,
+                        .message = try self.diag_arena.allocator().dupe(
+                            u8,
+                            "Cannot find name 'module'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
+                        ),
+                    });
+                }
+                search = type_start + "{module:".len;
+            }
+            comment_start = body_end + 2;
         }
     }
 
@@ -13883,6 +13914,35 @@ pub const Checker = struct {
         }
     }
 
+    fn checkCommonJsWholeExportDeclarationPrivacy(self: *Checker) CheckError!void {
+        if ((!self.strict_flags.declaration and !self.sourceDirectiveIsTrue("@declaration")) or
+            !self.sourceHasVirtualFilenameSections()) return;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node)) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or !self.nodeIsModuleExportsAccess(assignment.target) or
+                assignment.value == hir_mod.none_node_id or self.hir.kindOf(assignment.value) != .identifier) continue;
+            const exported_name = hir_mod.identifierOf(self.hir, assignment.value).name;
+            const declaration = self.findLocalValueDeclBeforeExpression(node, exported_name) orelse continue;
+            const kind = self.hir.kindOf(declaration);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, declaration);
+            if (variable.init == hir_mod.none_node_id or self.hir.kindOf(variable.init) != .call_expr) continue;
+            const call = hir_mod.callOf(self.hir, variable.init);
+            const specifier = self.requireCallSpecifier(call.callee) orelse continue;
+            const private_name = (try self.virtualCommonJsExportPrivateName(node, specifier)) orelse continue;
+            const owner = self.string_interner.get(exported_name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Exported variable '{s}' has or is using name '{s}' from external module {s} but cannot be named.",
+                .{ owner, private_name.symbol_name, private_name.module_name },
+            );
+            const anchor = if (variable.name != hir_mod.none_node_id) variable.name else declaration;
+            try self.report(anchor, TsCodes.exported_variable_cannot_be_named, msg);
+        }
+    }
+
     fn virtualCommonJsExportPrivateName(
         self: *Checker,
         anchor: NodeId,
@@ -13898,8 +13958,7 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         var target: NodeId = hir_mod.none_node_id;
         for (hir_mod.blockStmts(self.hir, root)) |statement| {
-            const filename = self.virtualSectionFilenameForNode(statement) orelse continue;
-            if (!virtualPathEquals(filename, declaration_path)) continue;
+            if (!self.virtualSectionMatchesResolvedModule(statement, declaration_path, spec)) continue;
             if (!self.isExportAssignmentDecl(statement) and !self.exportDeclIsExportEquals(statement)) continue;
             const exported = hir_mod.exportOf(self.hir, statement).decl;
             if (exported == hir_mod.none_node_id or self.hir.kindOf(exported) != .identifier) continue;
@@ -13909,6 +13968,7 @@ pub const Checker = struct {
         if (target == hir_mod.none_node_id) return null;
         const annotation = switch (self.hir.kindOf(target)) {
             .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, target).type_annotation,
+            .fn_decl, .fn_expr => hir_mod.fnDeclOf(self.hir, target).return_type,
             else => hir_mod.none_node_id,
         };
         if (annotation == hir_mod.none_node_id) return null;
@@ -56742,6 +56802,8 @@ pub const Checker = struct {
         const lit = hir_mod.literalStringOf(self.hir, args[0]);
         const spec = self.string_interner.get(lit.value);
         if (!std.mem.startsWith(u8, spec, ".")) return null;
+        if (try self.virtualExportAssignmentExpressionType(callee, lit.value)) |export_t| return export_t;
+        if (try self.virtualExportAssignmentTargetStaticType(callee, lit.value)) |export_t| return export_t;
         if (try self.virtualCommonJsModuleExportObjectType(callee, spec)) |commonjs_t| return commonjs_t;
         return try self.moduleNamespaceTypeForSpecifier(lit.value, callee);
     }
@@ -99839,10 +99901,15 @@ pub const Checker = struct {
                     // No matching member and no indexer ÃÂ¢ÃÂÃÂ TS2339.
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
                         if ((try self.checkJsImportedCallableExpandoTargetType(m.object, access_obj_t)) == null) {
+                            // Only the outermost access in `obj.slot.value = rhs`
+                            // is a write. `obj.slot` is still read to obtain the
+                            // receiver, so a missing `slot` must report TS2339.
+                            const is_intermediate_read = !self.isAssignmentTarget(node);
                             const void_expando_declaration = self.assignmentTargetValueIsVoidExpression(node) and
                                 ((try self.commonJsExportMemberKey(node)) != null or
                                     (try self.checkJsObjectLiteralExpandoMemberKey(node)) != null);
-                            if (self.memberNameIsEcmaPrivate(m.name) or
+                            if (is_intermediate_read or
+                                self.memberNameIsEcmaPrivate(m.name) or
                                 (self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t) and
                                     !void_expando_declaration) or
                                 self.commonJsExportsObjectPropertyName(m.object) != null or
@@ -209903,6 +209970,24 @@ test "checker: checkjs JSDoc typedef without type reports TS8021 at typedef name
     try T.expect(found);
 }
 
+test "checker: checked JS legacy module namepath reports missing Node global" {
+    const source =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @type {module:A} */
+        \\export let value = null;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_node_name));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.cannot_find_node_name) continue;
+        try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "module:A") orelse unreachable)), diagnostic.pos.?);
+    }
+}
+
 test "checker: tsgo fallback batch accepts typed inline this on JSDoc typedef" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -212360,6 +212445,53 @@ test "checker: checkjs JSDoc array var assignment in method reports TS2322" {
         s,
         TsCodes.type_not_assignable,
         "Type 'string[]' is not assignable to type 'number[]'.",
+    ));
+}
+
+test "checker: checked JS dotted assignment reads intermediate receivers" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\let A;
+        \\A = {};
+        \\A.prototype.b = {};
+        \\const namespace = {};
+        \\namespace.value = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'prototype' does not exist on type '{}'.",
+    ));
+}
+
+test "checker: checked JS whole export reports private require return name" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @declaration: true
+        \\// @filename: some-mod.d.ts
+        \\interface Item { x: string; }
+        \\declare function getItems(): Item[];
+        \\export = getItems;
+        \\// @filename: index.js
+        \\const items = require("./some-mod")();
+        \\module.exports = items;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.exported_variable_cannot_be_named));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.exported_variable_cannot_be_named,
+        "Exported variable 'items' has or is using name 'Item' from external module \"some-mod\" but cannot be named.",
     ));
 }
 
