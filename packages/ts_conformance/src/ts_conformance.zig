@@ -56351,6 +56351,8 @@ test "conformance: baseline-aware type-relationship survey" {
     }
     const ts_root = paths.cases;
     const baseline_root = paths.baselines;
+    const fallback_baseline_root = try resolveOriginalTsBaselineRoot(T.allocator);
+    defer if (fallback_baseline_root) |root| T.allocator.free(root);
 
     const specs = [_]CategorySpec{
         .{ .label = "types/typeRelationships/apparentType", .rel_path = "types/typeRelationships/apparentType" },
@@ -56388,6 +56390,7 @@ test "conformance: baseline-aware type-relationship survey" {
 
     const cats = try runCategorySpecsWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
+        .fallback_baseline_root = fallback_baseline_root,
         .strict_default_for_expected_errors = true,
     }, &specs);
     defer freeCategoryResults(T.allocator, cats);
