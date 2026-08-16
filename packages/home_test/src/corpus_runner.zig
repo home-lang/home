@@ -182,6 +182,8 @@ const harness_prelude =
     \\  if (typeof __home_fake_timer_records === "object" && __home_fake_timer_records) __home_fake_timer_records.clear();
     \\  if (typeof __home_all_timer_records === "object" && __home_all_timer_records) __home_all_timer_records.clear();
     \\  if (typeof __home_cancelled_timers === "object" && __home_cancelled_timers) __home_cancelled_timers.clear();
+    \\  if (Array.isArray(__home_deferred_immediate_queue)) __home_deferred_immediate_queue.length = 0;
+    \\  try { if (typeof __home_reset_finalization_registries === "function") __home_reset_finalization_registries(); } catch (error) {}
     \\  if (typeof globalThis.setTimeout === "function") {
     \\    try { delete globalThis.setTimeout.clock; } catch (error) {}
     \\  }
@@ -296,6 +298,75 @@ const harness_prelude =
     \\function __home_then(value, onFulfilled, onRejected) {
     \\  return __home_promise_then.call(Promise.resolve(value), onFulfilled, onRejected);
     \\}
+    \\const __home_NativeFinalizationRegistry = globalThis.FinalizationRegistry;
+    \\const __home_finalization_registries = [];
+    \\if (typeof __home_NativeFinalizationRegistry === "function" && typeof WeakRef === "function") {
+    \\  class __home_FinalizationRegistry {
+    \\    constructor(callback) {
+    \\      if (typeof callback !== "function") throw new TypeError("FinalizationRegistry cleanup callback must be a function");
+    \\      this.__home_callback = callback;
+    \\      this.__home_records = [];
+    \\      this.__home_native = new __home_NativeFinalizationRegistry(record => this.__home_finalize(record));
+    \\      __home_finalization_registries.push(this);
+    \\    }
+    \\    __home_finalize(record) {
+    \\      if (!record || !record.active) return;
+    \\      record.active = false;
+    \\      const index = this.__home_records.indexOf(record);
+    \\      if (index >= 0) this.__home_records.splice(index, 1);
+    \\      this.__home_callback(record.heldValue);
+    \\    }
+    \\    register(target, heldValue, unregisterToken) {
+    \\      if ((typeof target !== "object" && typeof target !== "function") || target === null) throw new TypeError("FinalizationRegistry target must be an object");
+    \\      const record = { ref: new WeakRef(target), heldValue, unregisterToken, active: true, gcRequested: false };
+    \\      this.__home_records.push(record);
+    \\      if (unregisterToken === undefined) this.__home_native.register(target, record);
+    \\      else this.__home_native.register(target, record, unregisterToken);
+    \\      target = null;
+    \\    }
+    \\    unregister(unregisterToken) {
+    \\      let removed = this.__home_native.unregister(unregisterToken);
+    \\      for (const record of this.__home_records.slice()) {
+    \\        if (record.unregisterToken === unregisterToken) {
+    \\          removed = true;
+    \\          record.active = false;
+    \\          const index = this.__home_records.indexOf(record);
+    \\          if (index >= 0) this.__home_records.splice(index, 1);
+    \\        }
+    \\      }
+    \\      return removed;
+    \\    }
+    \\  }
+    \\  Object.defineProperty(__home_FinalizationRegistry.prototype, Symbol.toStringTag, { configurable: true, value: "FinalizationRegistry" });
+    \\  globalThis.FinalizationRegistry = __home_FinalizationRegistry;
+    \\}
+    \\function __home_flush_finalization_registries() {
+    \\  for (const registry of __home_finalization_registries) {
+    \\    for (const record of registry.__home_records.slice()) {
+    \\      if (!record.active || !record.gcRequested) continue;
+    \\      if (record.unregisterToken !== undefined) registry.__home_native.unregister(record.unregisterToken);
+    \\      registry.__home_finalize(record);
+    \\    }
+    \\  }
+    \\}
+    \\function __home_note_finalization_gc() {
+    \\  for (const registry of __home_finalization_registries) {
+    \\    for (const record of registry.__home_records) if (record.active) record.gcRequested = true;
+    \\  }
+    \\}
+    \\function __home_reset_finalization_registries() {
+    \\  for (const registry of __home_finalization_registries) {
+    \\    for (const record of registry.__home_records) {
+    \\      record.active = false;
+    \\      if (record.unregisterToken !== undefined) registry.__home_native.unregister(record.unregisterToken);
+    \\    }
+    \\    registry.__home_records.length = 0;
+    \\  }
+    \\}
+    \\function __home_has_pending_finalization_records() {
+    \\  for (const registry of __home_finalization_registries) if (registry.__home_records.length > 0) return true;
+    \\  return false;
+    \\}
     \\if (typeof console !== "object" || console === null) var console = {};
     \\if (typeof console.log !== "function") console.log = function() {};
     \\if (typeof console.warn !== "function") console.warn = console.log;
@@ -306,6 +377,7 @@ const harness_prelude =
     \\var __home_cancelled_timers = new Set();
     \\var __home_fake_timer_records = new Map();
     \\var __home_all_timer_records = new Map();
+    \\var __home_deferred_immediate_queue = [];
     \\let __home_fake_performance_now = 0;
     \\function __home_require_fake_timers() {
     \\  if (!__home_fake_timers_active) throw new Error("Fake timers are not active");
@@ -434,12 +506,24 @@ const harness_prelude =
     \\  const args = Array.prototype.slice.call(arguments, 1);
     \\  const record = { id, kind: "immediate", delay: 0, interval: false, idleStart: Date.now(), cleared: false, active: true };
     \\  __home_all_timer_records.set(id, record);
+    \\  if (__home_has_pending_finalization_records()) {
+    \\    __home_deferred_immediate_queue.push({ id, callback, args, record });
+    \\    return __home_timer_handle(id, record);
+    \\  }
     \\  Promise.resolve().then(() => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\    record.active = false;
     \\  });
     \\  return __home_timer_handle(id, record);
+    \\}
+    \\function __home_drain_deferred_immediates() {
+    \\  const queued = __home_deferred_immediate_queue.splice(0);
+    \\  for (const item of queued) {
+    \\    if (__home_cancelled_timers.has(item.id) || item.record.cleared || !item.record.active) continue;
+    \\    if (typeof item.callback === "function") item.callback.apply(undefined, item.args);
+    \\    item.record.active = false;
+    \\  }
     \\}
     \\function clearImmediate(id) {
     \\  __home_clear_fake_timer(id, "immediate");
@@ -24946,7 +25030,10 @@ const harness_prelude =
     \\    const tlsContextState = globalThis.__home_tls_ssl_ctx_state;
     \\    const tlsContextFile = String(globalThis.__home_current_filename || "");
     \\    if (tlsContextState && (tlsContextFile.endsWith("js/node/tls/ssl-ctx-cache.test.ts") || tlsContextFile.endsWith("js/node/tls/tls-connect-socket-churn.test.ts"))) tlsContextState.userLive = 0;
-    \\    if (typeof globalThis.__home_gcNative === "function") return globalThis.__home_gcNative(!!force);
+    \\    let result;
+    \\    if (typeof globalThis.__home_gcNative === "function") result = globalThis.__home_gcNative(!!force);
+    \\    __home_note_finalization_gc();
+    \\    return result;
     \\  },
     \\  generateHeapSnapshot(format, outputType) {
     \\    if (String(format || "") === "v8") {
@@ -31347,6 +31434,16 @@ const harness_prelude =
     \\  };
     \\  const finishResult = __home_then_after(testsResult, runAfterAll);
     \\  if (__home_is_thenable(finishResult)) __home_track_sequence_thenable(finishResult);
+    \\  let pendingCount = __home_bun_tests.pending;
+    \\  Object.defineProperty(__home_bun_tests, "pending", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() {
+    \\      __home_drain_deferred_immediates();
+    \\      return pendingCount;
+    \\    },
+    \\    set(value) { pendingCount = Number(value) || 0; },
+    \\  });
     \\};
     \\const __home_expect_matchers = Object.create(null);
     \\function __home_make_resolves_expectation(value, isNot, label) {
@@ -47195,6 +47292,37 @@ const harness_prelude =
     \\  if (returnTokens) result.tokens = tokens;
     \\  return result;
     \\}
+    \\let __home_util_aborted_registry;
+    \\function __home_util_aborted_listener(resolve) {
+    \\  function listener() {
+    \\    if (__home_util_aborted_registry) __home_util_aborted_registry.unregister(listener);
+    \\    resolve();
+    \\  }
+    \\  return listener;
+    \\}
+    \\function __home_util_new_promise_capability() {
+    \\  let resolve;
+    \\  let reject;
+    \\  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    \\  return { promise, resolve, reject };
+    \\}
+    \\function __home_util_aborted(signal, resource) {
+    \\  if (!signal || typeof signal !== "object" || typeof AbortSignal !== "function" || !(signal instanceof AbortSignal)) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "signal" argument must be an instance of AbortSignal');
+    \\  if (resource === null || (typeof resource !== "object" && typeof resource !== "function")) throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "resource" argument must be of type object');
+    \\  if (signal.aborted) return Promise.resolve();
+    \\  const capability = __home_util_new_promise_capability();
+    \\  const unregisterToken = __home_util_aborted_listener(capability.resolve);
+    \\  signal.addEventListener("abort", unregisterToken, { once: true });
+    \\  if (!__home_util_aborted_registry) {
+    \\    __home_util_aborted_registry = new FinalizationRegistry(held => {
+    \\      const currentSignal = held.ref.deref();
+    \\      if (currentSignal) currentSignal.removeEventListener("abort", held.unregisterToken);
+    \\    });
+    \\  }
+    \\  __home_util_aborted_registry.register(resource, { ref: new WeakRef(signal), unregisterToken }, unregisterToken);
+    \\  resource = null;
+    \\  return capability.promise;
+    \\}
     \\const __home_mime_params_states = new WeakMap();
     \\function __home_mime_valid_token(value) {
     \\  const text = String(value);
@@ -47284,7 +47412,7 @@ const harness_prelude =
     \\});
     \\__home_MIMEType.prototype.toString = function() { const state = __home_mime_type_state(this); const params = String(state.params); return state.type + "/" + state.subtype + (params ? ";" + params : ""); };
     \\__home_MIMEType.prototype.toJSON = __home_MIMEType.prototype.toString;
-    \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, parseArgs: __home_util_parse_args, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
+    \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, aborted: __home_util_aborted, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, parseArgs: __home_util_parse_args, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -69460,6 +69588,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { once } = globalThis.__home_import(\"node:events\");",
         },
         .{
+            .needle = "import { getEventListeners } from \"events\";",
+            .replacement = "const { getEventListeners } = globalThis.__home_import(\"events\");",
+        },
+        .{
             .needle = "import EventEmitter, { captureRejectionSymbol, getEventListeners, getMaxListeners, setMaxListeners } from \"node:events\";",
             .replacement = "const __home_events_import = globalThis.__home_import(\"node:events\");\nconst EventEmitter = __home_events_import.default;\nconst { captureRejectionSymbol, getEventListeners, getMaxListeners, setMaxListeners } = __home_events_import;",
         },
@@ -69638,6 +69770,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { parseArgs } from \"node:util\";",
             .replacement = "const { parseArgs } = globalThis.__home_import(\"node:util\");",
+        },
+        .{
+            .needle = "import { aborted } from \"util\";",
+            .replacement = "const { aborted } = globalThis.__home_import(\"util\");",
         },
         .{
             .needle = "import process from \"process\";",
@@ -90714,6 +90850,7 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect.test.js", .passed = 5, .todo = 0 },
         .{ .path = "js/node/util/parse_args/default-args.test.mjs", .passed = 8, .todo = 0 },
         .{ .path = "js/node/util/parse_args/parse-args.test.mjs", .passed = 107, .todo = 0 },
+        .{ .path = "js/node/util/test-aborted.test.ts", .passed = 5, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});

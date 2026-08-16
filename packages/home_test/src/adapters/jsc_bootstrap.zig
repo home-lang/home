@@ -481,10 +481,18 @@ pub const Runtime = struct {
         };
         var drain_rounds: usize = 0;
         while (counters.pending != 0 and drain_rounds < max_microtask_drain_rounds) : (drain_rounds += 1) {
+            const needs_finalization_checkpoint = (readCounter(
+                allocator,
+                &self.engine,
+                "globalThis.__home_has_pending_finalization_records && globalThis.__home_has_pending_finalization_records() ? 1 : 0",
+            ) catch 0) != 0;
+            if (needs_finalization_checkpoint) {
+                extern_fns.JSGarbageCollect(self.engine.currentContext());
+            }
             const drain_evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
                 allocator,
                 self.engine.currentContext(),
-                "void 0;",
+                if (needs_finalization_checkpoint) "globalThis.__home_flush_finalization_registries();" else "void 0;",
                 "home:corpus-microtask-drain",
                 1,
             );
