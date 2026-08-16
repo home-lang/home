@@ -44816,6 +44816,28 @@ const harness_prelude =
     \\              return result;
     \\            };
     \\          },
+    \\          mustSucceed(fn, expected) {
+    \\            const callback = typeof fn === "function" ? fn : function() {};
+    \\            const check = { calls: 0, expected: expected === undefined ? 1 : Math.max(0, Number(expected) || 0) };
+    \\            checks.push(check);
+    \\            return function(error) {
+    \\              check.calls++;
+    \\              if (error) {
+    \\                finished = true;
+    \\                if (typeof done === "function") done(error);
+    \\                return;
+    \\              }
+    \\              let result;
+    \\              try { result = callback.apply(this, Array.prototype.slice.call(arguments, 1)); }
+    \\              catch (callbackError) {
+    \\                finished = true;
+    \\                if (typeof done === "function") done(callbackError);
+    \\                return;
+    \\              }
+    \\              scheduleCheck();
+    \\              return result;
+    \\            };
+    \\          },
     \\        };
     \\      },
     \\      createDoneDotAll(done) { return typeof done === "function" ? done : function() {}; },
@@ -47400,6 +47422,32 @@ const harness_prelude =
     \\  resource = null;
     \\  return capability.promise;
     \\}
+    \\function __home_util_callbackify(original) {
+    \\  if (typeof original !== "function") throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The "original" argument must be of type function');
+    \\  function callbackified() {
+    \\    const args = Array.prototype.slice.call(arguments);
+    \\    const callback = args.pop();
+    \\    if (typeof callback !== "function") throw __home_util_parse_args_error("ERR_INVALID_ARG_TYPE", 'The last argument must be of type function');
+    \\    const receiver = this;
+    \\    const result = original.apply(receiver, args);
+    \\    Promise.resolve(result).then(
+    \\      value => callback.call(receiver, null, value),
+    \\      reason => {
+    \\        if (!reason) {
+    \\          const error = new Error("Promise was rejected with a falsy value");
+    \\          error.code = "ERR_FALSY_VALUE_REJECTION";
+    \\          error.reason = reason;
+    \\          callback.call(receiver, error, undefined);
+    \\          return;
+    \\        }
+    \\        callback.call(receiver, reason, undefined);
+    \\      },
+    \\    );
+    \\  }
+    \\  try { Object.defineProperty(callbackified, "length", { configurable: true, value: Number(original.length) + 1 }); } catch (error) {}
+    \\  try { Object.defineProperty(callbackified, "name", { configurable: true, value: String(original.name || "") + "Callbackified" }); } catch (error) {}
+    \\  return callbackified;
+    \\}
     \\const __home_mime_params_states = new WeakMap();
     \\function __home_mime_valid_token(value) {
     \\  const text = String(value);
@@ -47489,7 +47537,7 @@ const harness_prelude =
     \\});
     \\__home_MIMEType.prototype.toString = function() { const state = __home_mime_type_state(this); const params = String(state.params); return state.type + "/" + state.subtype + (params ? ";" + params : ""); };
     \\__home_MIMEType.prototype.toJSON = __home_MIMEType.prototype.toString;
-    \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, aborted: __home_util_aborted, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, parseArgs: __home_util_parse_args, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
+    \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, aborted: __home_util_aborted, callbackify: __home_util_callbackify, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, parseArgs: __home_util_parse_args, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -69862,6 +69910,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { aborted } = globalThis.__home_import(\"util\");",
         },
         .{
+            .needle = "import { callbackify } from \"util\";",
+            .replacement = "const { callbackify } = globalThis.__home_import(\"util\");",
+        },
+        .{
             .needle = "import process from \"process\";",
             .replacement = "const process = globalThis.process;",
         },
@@ -90938,6 +90990,7 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/parse_args/parse-args.test.mjs", .passed = 107, .todo = 0 },
         .{ .path = "js/node/util/test-aborted.test.ts", .passed = 5, .todo = 0 },
         .{ .path = "js/node/util/test-util-types.test.js", .passed = 52, .todo = 0 },
+        .{ .path = "js/node/util/util-callbackify.test.js", .passed = 90, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
