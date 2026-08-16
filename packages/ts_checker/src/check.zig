@@ -6145,7 +6145,6 @@ pub const Checker = struct {
             const comment_end = body_start + close_rel;
             search_start = comment_end + 2;
             if (!self.sourcePositionIsJsLike(comment_start)) continue;
-            if (!self.jsDocCommentHasFollowingStatement(root, comment_start)) continue;
             const body = src[body_start..comment_end];
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
             defer self.gpa.free(tags);
@@ -41464,6 +41463,7 @@ pub const Checker = struct {
 
         try self.collectJsDocTypedefDeclEntries(root, src, &entries);
         try self.collectJsTopLevelGlobalDeclEntries(stmts, &entries);
+        try self.checkJsDocDefaultClassTypedefDuplicates(stmts, entries.items);
 
         for (entries.items, 0..) |left, i| {
             if (!left.is_typedef and !left.is_value) continue;
@@ -41494,6 +41494,29 @@ pub const Checker = struct {
                     try self.reportBlockScopedRedeclareAt(left.node, left.pos, left.name);
                     try self.reportBlockScopedRedeclareAt(right.node, right.pos, right.name);
                 }
+            }
+        }
+    }
+
+    fn checkJsDocDefaultClassTypedefDuplicates(
+        self: *Checker,
+        stmts: []const NodeId,
+        entries: []const JsDocGlobalDeclEntry,
+    ) CheckError!void {
+        const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+        for (entries) |typedef| {
+            if (!typedef.is_typedef or typedef.name != default_name) continue;
+            for (stmts) |raw| {
+                if (self.virtualSectionStartForNode(raw) != typedef.section) continue;
+                if (self.hir.kindOf(raw) != .export_decl) continue;
+                const export_decl = hir_mod.exportOf(self.hir, raw);
+                if (!export_decl.is_default or export_decl.decl == hir_mod.none_node_id) continue;
+                const class_node = export_decl.decl;
+                if (self.hir.kindOf(class_node) != .class_decl and self.hir.kindOf(class_node) != .class_expr) continue;
+                const class_name = self.declarationName(class_node) orelse continue;
+                const class_pos = self.declarationNameSpanStart(class_node) orelse continue;
+                try self.reportDuplicateIdentifierAt(class_node, class_pos, class_name, typedef.pos);
+                try self.reportDuplicateIdentifierAt(typedef.node, typedef.pos, default_name, class_pos);
             }
         }
     }
@@ -86169,7 +86192,7 @@ pub const Checker = struct {
             "Promise",   "Map",            "Set",           "WeakMap",
             "WeakSet",   "Iterable",       "Iterator",      "IterableIterator",
             "Generator", "AsyncGenerator", "AsyncIterable", "AsyncIterator",
-            "ArrayLike", "PromiseLike",    "promise",       "event",
+            "ArrayLike", "PromiseLike",    "promise",
         };
         for (any_globals) |g| {
             if (std.mem.eql(u8, base, g)) return types.Primitive.any;
@@ -86667,6 +86690,10 @@ pub const Checker = struct {
         if (anchor == hir_mod.none_node_id) return null;
         const name = self.string_interner.intern(base) catch return error.OutOfMemory;
         if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) {
+            return types.Primitive.any;
+        }
+        if (std.mem.eql(u8, base, "event") and self.jsDocTypeTextIsInCheckedJsContext()) {
+            try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
             return types.Primitive.any;
         }
         const pos = self.sliceStartPos(src, trimmed);
@@ -136561,7 +136588,8 @@ pub const Checker = struct {
             return self.interner.internUnion(&.{ lhs_non_null, rhs }) catch error.OutOfMemory;
         }
         try self.reportVoidTruthiness(l.lhs, lhs);
-        const report_syntactic_truthiness = !self.virtualSectionIsJsLike(l.lhs);
+        const report_syntactic_truthiness = !self.virtualSectionIsJsLike(l.lhs) or
+            self.sourceHasCheckJsDirective();
         if (report_syntactic_truthiness and l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
             // tsc anchors at the opening `(` for parenthesized LHS
             // forms like `({}) || s`. Mirrors fixture
@@ -167557,7 +167585,11 @@ pub const Checker = struct {
         // computed key without emitting TS2352.
         if (self.primitiveAssertionMatchesWrapper(source_t, target_t) or
             self.primitiveAssertionMatchesWrapper(target_t, source_t)) return;
-        if (source_t == types.Primitive.null_t and self.strict_flags.strict_null_checks and !self.typeIncludesNull(target_t)) {
+        const checked_js_null_cast = self.sourceHasCheckJsDirective() and self.virtualSectionIsJsLike(node);
+        if (source_t == types.Primitive.null_t and
+            (self.strict_flags.strict_null_checks or checked_js_null_cast) and
+            !self.typeIncludesNull(target_t))
+        {
             try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
@@ -185454,6 +185486,20 @@ test "checker: null assertion to non-null target reports TS2352" {
         if (d.code == TsCodes.conversion_may_be_mistake) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: tsgo current checked JS null cast reports TS2352 without strict null checks" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\class Foo {
+        \\  a = /** @type {Foo} */(null);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
 test "checker: typed object literal does not suppress null assertion TS2352" {
@@ -210184,19 +210230,47 @@ test "checker: checkjs JSDoc typedef merges with CommonJS export object key" {
     try T.expectEqual(@as(usize, 0), duplicate_count);
 }
 
-test "checker: unattached EOF JSDoc typedef does not resolve its type" {
+test "checker: tsgo current direct default class conflicts with JSDoc default typedef" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\export default class C {};
+        \\/** @typedef {string | number} default */
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.duplicate_identifier, "Duplicate identifier 'C'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.duplicate_identifier, "Duplicate identifier 'default'."));
+}
+
+test "checker: tsgo current unattached EOF JSDoc typedef checks its type" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
         \\// @filename: eof.js
         \\/**
-        \\ * @typedef {Array<bad>} ShouldNotAttach
+        \\ * @typedef {Array<bad>} ShouldHaveError
         \\ */
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: tsgo current JSDoc event name remains value-only" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\/** @type {event} */
+        \\const q = undefined;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
 test "checker: tsgo current JS typedef merges with exported alias object class key" {
@@ -221302,6 +221376,18 @@ test "checker: non-empty string on LHS of `||` fires TS2872 always-truthy" {
         if (d.code == TsCodes.expression_always_truthy) saw_2872 = true;
     }
     try T.expect(saw_2872);
+}
+
+test "checker: tsgo current checked JS numeric literal on LHS of `||` fires TS2872" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: returns.js
+        \\function f() { return 5 || "hello"; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_always_truthy));
 }
 
 test "checker: empty string on LHS of `&&` fires TS2873 always-falsy" {
