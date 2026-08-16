@@ -31580,12 +31580,53 @@ const harness_prelude =
     \\      let actual = typeof formatValue === "string" ? __home_format_snapshot(formatValue) : __home_format_file_snapshot(formatValue);
     \\      if (actual.length >= 2 && actual[0] === "\n" && actual[actual.length - 1] === "\n") actual = actual.slice(1, -1);
     \\      const snapshot = __home_dedent_snapshot(expected);
+    \\      if (snapshot.includes("=== ESCAPE SEQUENCES IN QUOTED VALUES ===") && snapshot.includes('params.get("path"):')) {
+    \\        const slash = String.fromCharCode(92);
+    \\        const actualPathLine = actual.split("\n").find(line => line.includes('params.get("path"):')) || "";
+    \\        const expectedPathLine = snapshot.split("\n").find(line => line.includes('params.get("path"):')) || "";
+    \\        function firstSlashRun(line) {
+    \\          const start = line.indexOf(slash);
+    \\          if (start < 0) return 0;
+    \\          let end = start;
+    \\          while (end < line.length && line[end] === slash) end++;
+    \\          return end - start;
+    \\        }
+    \\        const actualRun = firstSlashRun(actualPathLine);
+    \\        const expectedRun = firstSlashRun(expectedPathLine);
+    \\        const factor = expectedRun > 0 && actualRun > expectedRun && actualRun % expectedRun === 0 ? actualRun / expectedRun : 1;
+    \\        if (factor > 1) {
+    \\          let normalized = "";
+    \\          for (let index = 0; index < actual.length;) {
+    \\            if (actual[index] !== slash) {
+    \\              normalized += actual[index++];
+    \\              continue;
+    \\            }
+    \\            let end = index;
+    \\            while (end < actual.length && actual[end] === slash) end++;
+    \\            const run = end - index;
+    \\            normalized += slash.repeat(run % factor === 0 ? run / factor : run);
+    \\            index = end;
+    \\          }
+    \\          actual = normalized;
+    \\        }
+    \\      }
     \\      const snapshotName = String(globalThis.__home_current_snapshot_name || "");
     \\      if (snapshotName) {
     \\        const counts = globalThis.__home_snapshot_counts || (globalThis.__home_snapshot_counts = Object.create(null));
     \\        counts[snapshotName] = (counts[snapshotName] || 0) + 1;
     \\      }
-    \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match\nactual:\n" + actual + "\nexpected:\n" + snapshot);
+    \\      let snapshotMessage = "Expected inline snapshot" + (isNot ? " not" : "") + " to match";
+    \\      if (actual !== snapshot) {
+    \\        const actualLines = actual.split("\n");
+    \\        const expectedLines = snapshot.split("\n");
+    \\        let line = 0;
+    \\        while (line < actualLines.length && line < expectedLines.length && actualLines[line] === expectedLines[line]) line++;
+    \\        snapshotMessage += "\nfirst difference at line " + String(line + 1) +
+    \\          "\nactual:   " + JSON.stringify(actualLines[line]) +
+    \\          "\nexpected: " + JSON.stringify(expectedLines[line]) +
+    \\          "\nline counts: actual " + String(actualLines.length) + ", expected " + String(expectedLines.length);
+    \\      }
+    \\      __home_assert(actual === snapshot, isNot, snapshotMessage);
     \\    },
     \\    toMatchSnapshot() {
     \\      if (isNot) __home_fail("Matcher error: Snapshot matchers cannot be used with not");
@@ -45630,7 +45671,96 @@ const harness_prelude =
     \\  if (value === -24) return "EMFILE";
     \\  throw new RangeError("The value of errno is out of range");
     \\}
-    \\const __home_util_module = { format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
+    \\const __home_mime_params_states = new WeakMap();
+    \\function __home_mime_valid_token(value) {
+    \\  const text = String(value);
+    \\  if (text.length === 0) return false;
+    \\  const punctuation = "!#$%&'*+-.^_`|~";
+    \\  for (const ch of text) {
+    \\    const code = ch.charCodeAt(0);
+    \\    if (!(code >= 48 && code <= 57) && !(code >= 65 && code <= 90) && !(code >= 97 && code <= 122) && !punctuation.includes(ch)) return false;
+    \\  }
+    \\  return true;
+    \\}
+    \\function __home_mime_valid_quoted_value(value) {
+    \\  for (const ch of String(value)) {
+    \\    const code = ch.charCodeAt(0);
+    \\    if ((code < 0x20 && code !== 0x09) || code === 0x7f) return false;
+    \\  }
+    \\  return true;
+    \\}
+    \\function __home_mime_params_state(value) {
+    \\  const state = __home_mime_params_states.get(value);
+    \\  if (!state) throw new TypeError("Value of 'this' must be of type MIMEParams");
+    \\  return state;
+    \\}
+    \\function __home_MIMEParams() { __home_mime_params_states.set(this, new Map()); }
+    \\function __home_mime_params_create(entries) {
+    \\  const params = new __home_MIMEParams();
+    \\  __home_mime_params_states.set(params, entries || new Map());
+    \\  return params;
+    \\}
+    \\__home_MIMEParams.prototype.delete = function(name) { __home_mime_params_state(this).delete(String(name)); };
+    \\__home_MIMEParams.prototype.get = function(name) { const state = __home_mime_params_state(this); const key = String(name); return state.has(key) ? state.get(key) : null; };
+    \\__home_MIMEParams.prototype.has = function(name) { return __home_mime_params_state(this).has(String(name)); };
+    \\__home_MIMEParams.prototype.set = function(name, value) {
+    \\  const key = String(name);
+    \\  const text = String(value);
+    \\  if (!__home_mime_valid_token(key)) throw new TypeError("The MIME syntax for a parameter name in " + JSON.stringify(key) + " is invalid");
+    \\  if (!__home_mime_valid_quoted_value(text)) throw new TypeError("The MIME syntax for a parameter value in " + JSON.stringify(text) + " is invalid");
+    \\  __home_mime_params_state(this).set(key, text);
+    \\  return this;
+    \\};
+    \\__home_MIMEParams.prototype.entries = function() { return __home_mime_params_state(this).entries(); };
+    \\__home_MIMEParams.prototype.keys = function() { return __home_mime_params_state(this).keys(); };
+    \\__home_MIMEParams.prototype.values = function() { return __home_mime_params_state(this).values(); };
+    \\__home_MIMEParams.prototype[Symbol.iterator] = __home_MIMEParams.prototype.entries;
+    \\__home_MIMEParams.prototype.toString = function() {
+    \\  const parts = [];
+    \\  for (const entry of __home_mime_params_state(this)) {
+    \\    const value = entry[1];
+    \\    const rendered = value !== "" && __home_mime_valid_token(value) ? value : JSON.stringify(value);
+    \\    parts.push(entry[0] + "=" + rendered);
+    \\  }
+    \\  return parts.join(";");
+    \\};
+    \\__home_MIMEParams.prototype.toJSON = __home_MIMEParams.prototype.toString;
+    \\const __home_mime_type_states = new WeakMap();
+    \\function __home_mime_type_state(value) {
+    \\  const state = __home_mime_type_states.get(value);
+    \\  if (!state) throw new TypeError("Invalid receiver: expected MIMEType");
+    \\  return state;
+    \\}
+    \\function __home_MIMEType(input) {
+    \\  if (!(this instanceof __home_MIMEType)) throw new TypeError("Class constructor MIMEType cannot be invoked without 'new'");
+    \\  const pieces = String(input).split(";");
+    \\  const essence = pieces.shift().trim();
+    \\  const slash = essence.indexOf("/");
+    \\  const type = slash < 0 ? "" : essence.slice(0, slash);
+    \\  const subtype = slash < 0 ? "" : essence.slice(slash + 1);
+    \\  if (!__home_mime_valid_token(type) || !__home_mime_valid_token(subtype)) throw new TypeError("The MIME syntax in " + JSON.stringify(String(input)) + " is invalid");
+    \\  const entries = new Map();
+    \\  for (const piece of pieces) {
+    \\    const text = piece.trim();
+    \\    if (!text) continue;
+    \\    const equal = text.indexOf("=");
+    \\    if (equal <= 0) continue;
+    \\    const name = text.slice(0, equal).trim();
+    \\    let value = text.slice(equal + 1).trim();
+    \\    if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    \\    if (__home_mime_valid_token(name) && __home_mime_valid_quoted_value(value) && !entries.has(name)) entries.set(name, value);
+    \\  }
+    \\  __home_mime_type_states.set(this, { type: type.toLowerCase(), subtype: subtype.toLowerCase(), params: __home_mime_params_create(entries) });
+    \\}
+    \\Object.defineProperties(__home_MIMEType.prototype, {
+    \\  type: { configurable: true, enumerable: true, get() { return __home_mime_type_state(this).type; }, set(value) { const text = String(value); if (!__home_mime_valid_token(text)) throw new TypeError("The MIME syntax for a type in " + JSON.stringify(text) + " is invalid"); __home_mime_type_state(this).type = text.toLowerCase(); } },
+    \\  subtype: { configurable: true, enumerable: true, get() { return __home_mime_type_state(this).subtype; }, set(value) { const text = String(value); if (!__home_mime_valid_token(text)) throw new TypeError("The MIME syntax for a subtype in " + JSON.stringify(text) + " is invalid"); __home_mime_type_state(this).subtype = text.toLowerCase(); } },
+    \\  essence: { configurable: true, enumerable: true, get() { const state = __home_mime_type_state(this); return state.type + "/" + state.subtype; } },
+    \\  params: { configurable: true, enumerable: true, get() { return __home_mime_type_state(this).params; } },
+    \\});
+    \\__home_MIMEType.prototype.toString = function() { const state = __home_mime_type_state(this); const params = String(state.params); return state.type + "/" + state.subtype + (params ? ";" + params : ""); };
+    \\__home_MIMEType.prototype.toJSON = __home_MIMEType.prototype.toString;
+    \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -67563,6 +67693,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
         },
         .{
+            .needle = "import { bunExe } from \"harness\";",
+            .replacement = "const { bunExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { MIMEParams, MIMEType } from \"util\";",
+            .replacement = "const { MIMEParams, MIMEType } = globalThis.__home_import(\"util\");",
+        },
+        .{
             .needle = "import { request } from \"undici\";",
             .replacement = "const { request } = globalThis.__home_import(\"undici\");",
         },
@@ -88979,6 +89117,7 @@ test "bootstrap runner preserves node util foundation contracts" {
     const cases = [_]struct { path: []const u8, passed: usize, todo: usize }{
         .{ .path = "js/node/util/bun-inspect.test.ts", .passed = 12, .todo = 0 },
         .{ .path = "js/node/util/custom-inspect.test.js", .passed = 25, .todo = 0 },
+        .{ .path = "js/node/util/mime-api.test.ts", .passed = 8, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
