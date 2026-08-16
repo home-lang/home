@@ -246,6 +246,11 @@ pub fn build(b: *std.Build) void {
         "ts-conformance-test-filter",
         "Only compile/run ts_conformance tests whose name contains this substring",
     );
+    const ts_checker_test_filter = b.option(
+        []const u8,
+        "ts-checker-test-filter",
+        "Only compile/run ts_checker tests whose name contains this substring",
+    );
 
     const zig_test_framework: ?*std.Build.Module = if (test_framework_path) |path|
         b.createModule(.{
@@ -1460,7 +1465,11 @@ pub fn build(b: *std.Build) void {
     const run_compat_tests = b.addRunArtifact(compat_tests);
     dependOnTest(test_step, &run_compat_tests.step, test_filter, "compat");
 
-    const ts_checker_tests = b.addTest(.{ .root_module = ts_checker_pkg });
+    const ts_checker_test_filters: []const []const u8 = if (ts_checker_test_filter) |needle| &.{needle} else &.{};
+    const ts_checker_tests = b.addTest(.{
+        .root_module = ts_checker_pkg,
+        .filters = ts_checker_test_filters,
+    });
     const run_ts_checker_tests = b.addRunArtifact(ts_checker_tests);
     dependOnTest(test_step, &run_ts_checker_tests.step, test_filter, "ts_checker");
 
