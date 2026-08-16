@@ -214079,7 +214079,7 @@ test "checker: checked JS callable container conflicts with TypeScript var decla
     );
 }
 
-test "checker: checked JS prototype assignment extends an ambient namespace container" {
+test "checker: current tsgo ambient namespace prototype assignment reports missing member" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -214093,9 +214093,10 @@ test "checker: checked JS prototype assignment extends an ambient namespace cont
     try s.checker.checkSourceFile(s.root);
     var assignment_mismatch = false;
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.property_does_not_exist);
         if (d.code == TsCodes.type_not_assignable) assignment_mismatch = true;
     }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'prototype' does not exist on type 'typeof C'."));
     try T.expect(assignment_mismatch);
 }
 
@@ -218371,10 +218372,7 @@ test "checker: TS2411 wraps computed property key in brackets" {
     try T.expect(saw_bracketed_2411);
 }
 
-test "checker: TS2345 renders anonymous-shape argument and parameter" {
-    // Mirrors upstream `objectLiteralShorthandPropertiesFunctionArgument2.ts(7,5)`:
-    //   Argument of type '{ name: string; id: number; }' is not assignable
-    //   to parameter of type '{ a: string; id: number; }'.
+test "checker: current tsgo object argument missing property uses TS2741" {
     const s = try newSetup(
         \\var id: number = 1;
         \\var name: string = "n";
@@ -218385,19 +218383,12 @@ test "checker: TS2345 renders anonymous-shape argument and parameter" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    var saw_named_2345 = false;
-    for (s.checker.diagnostics.items) |diag| {
-        if (diag.code != TsCodes.argument_type_mismatch) continue;
-        if (std.mem.indexOf(u8, diag.message, "Argument of type '{ ") != null and
-            std.mem.indexOf(u8, diag.message, "parameter of type '{ a: string;") != null)
-        {
-            saw_named_2345 = true;
-        }
-        // Regression guard: must not emit the positional placeholder
-        // for this case.
-        try T.expect(std.mem.indexOf(u8, diag.message, "Argument is not assignable to parameter at position") == null);
-    }
-    try T.expect(saw_named_2345);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'a' is missing in type '{ name: string; id: number; }' but required in type '{ a: string; id: number; }'.",
+    ));
 }
 
 test "checker: exactOptionalPropertyTypes uses TS2379 for argument mismatch" {
@@ -218822,7 +218813,7 @@ test "checker: computed call class keys are not duplicate symbols" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
-test "checker: accessor modifier does not cross newline" {
+test "checker: current tsgo accessor newline yields four duplicate names" {
     const s = try newSetup(
         \\class C {
         \\  accessor
@@ -218845,7 +218836,7 @@ test "checker: accessor modifier does not cross newline" {
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
     }
-    try T.expectEqual(@as(usize, 3), dup_count);
+    try T.expectEqual(@as(usize, 4), dup_count);
 }
 
 test "checker: private static and instance names emit TS2804" {
@@ -226254,10 +226245,7 @@ test "checker: checkjs @template with trailing name does NOT emit TS1069" {
     }
 }
 
-test "checker: checkjs class malformed @template and static prototype access report" {
-    // Mirrors jsdocOuterTypeParameters3: class-level `@template {T}`
-    // gets both the unresolved constraint name and TS1069, and
-    // `this.prototype` inside a static method is the class instance type.
+test "checker: current tsgo malformed class template omits unresolved constraint" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -226282,7 +226270,7 @@ test "checker: checkjs class malformed @template and static prototype access rep
         if (d.code == 1069 and std.mem.indexOf(u8, d.message, "type parameter name was expected without curly braces") != null) saw_template = true;
         if (d.code == TsCodes.property_does_not_exist and std.mem.indexOf(u8, d.message, "Property 'foo' does not exist on type 'Bar'.") != null) saw_foo = true;
     }
-    try T.expect(saw_t);
+    try T.expect(!saw_t);
     try T.expect(saw_template);
     try T.expect(saw_foo);
 }
@@ -239843,7 +239831,7 @@ test "checker: checked JavaScript initializes ambient namespace interface values
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: checked JavaScript initializes ambient namespace enum values" {
+test "checker: current tsgo ambient namespace enum initializer reports missing members" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -239857,7 +239845,7 @@ test "checker: checked JavaScript initializes ambient namespace enum values" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_missing_properties));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.readonly_property));
 }
 
@@ -239922,7 +239910,7 @@ test "checker: checked JavaScript constructors aggregate prototype property writ
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null_2531));
 }
 
-test "checker: checked JavaScript this assignments declare only direct properties" {
+test "checker: current tsgo checked JavaScript this assignments remain ordinary" {
     const s = try newSetup(
         \\// @checkJs: true
         \\this.x = {};
@@ -239942,7 +239930,9 @@ test "checker: checked JavaScript this assignments declare only direct propertie
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.this_implicitly_any));
 }
 
 test "checker: TypeScript expandos require function declarations or const bindings" {
