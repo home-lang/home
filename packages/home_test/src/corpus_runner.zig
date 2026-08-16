@@ -1838,6 +1838,13 @@ const harness_prelude =
     \\BuildMessage.prototype.toString = function() {
     \\  return this.message;
     \\};
+    \\function ResolveMessage(message) {
+    \\  this.name = "ResolveMessage";
+    \\  this.message = String(message || "");
+    \\}
+    \\ResolveMessage.prototype = Object.create(Error.prototype);
+    \\ResolveMessage.prototype.constructor = ResolveMessage;
+    \\ResolveMessage.prototype.toString = function() { return this.message; };
     \\function BuildArtifact(text, options) {
     \\  const opts = options || {};
     \\  this.__home_text = String(text || "");
@@ -1862,6 +1869,7 @@ const harness_prelude =
     \\  return this.__home_text;
     \\};
     \\globalThis.BuildMessage = BuildMessage;
+    \\globalThis.ResolveMessage = ResolveMessage;
     \\globalThis.BuildArtifact = BuildArtifact;
     \\function __home_build_error(message, position) {
     \\  return new BuildMessage(message, "error", position === undefined ? null : position);
@@ -47097,10 +47105,79 @@ const harness_prelude =
     \\  if (arguments.length === 0) return "";
     \\  return __home_util_formatWithOptions.apply(null, [__home_util_inspect.defaultOptions].concat(Array.prototype.slice.call(arguments)));
     \\}
+    \\function __home_util_type_tag(value) {
+    \\  try { return Object.prototype.toString.call(value); } catch (error) { return ""; }
+    \\}
+    \\function __home_util_is_object(value) {
+    \\  return value !== null && (typeof value === "object" || typeof value === "function");
+    \\}
+    \\const __home_util_typed_array_prototype = typeof Uint8Array === "function" ? Object.getPrototypeOf(Uint8Array.prototype) : null;
+    \\const __home_util_typed_array_tag_getter = __home_util_typed_array_prototype ? Object.getOwnPropertyDescriptor(__home_util_typed_array_prototype, Symbol.toStringTag).get : null;
+    \\const __home_util_data_view_byte_length_getter = typeof DataView === "function" ? Object.getOwnPropertyDescriptor(DataView.prototype, "byteLength").get : null;
+    \\function __home_util_typed_array_name(value) {
+    \\  if (!__home_util_typed_array_tag_getter) return "";
+    \\  try { return String(__home_util_typed_array_tag_getter.call(value) || ""); } catch (error) { return ""; }
+    \\}
+    \\function __home_util_is_data_view(value) {
+    \\  if (!__home_util_data_view_byte_length_getter) return false;
+    \\  try { __home_util_data_view_byte_length_getter.call(value); return true; } catch (error) { return false; }
+    \\}
+    \\function __home_util_is_typed_array(value) {
+    \\  return __home_util_typed_array_name(value) !== "";
+    \\}
+    \\function __home_util_is_function_tag(value, tags) {
+    \\  if (typeof value !== "function" || String(value.name || "").startsWith("bound ")) return false;
+    \\  return tags.includes(__home_util_type_tag(value));
+    \\}
     \\const __home_util_types_module = {
+    \\  isExternal(value) { return !!(value && value.__home_napi_external === true); },
+    \\  isDate(value) { return __home_util_type_tag(value) === "[object Date]"; },
+    \\  isArgumentsObject(value) { return __home_util_type_tag(value) === "[object Arguments]"; },
+    \\  isBigIntObject(value) { return __home_util_type_tag(value) === "[object BigInt]"; },
+    \\  isBooleanObject(value) { return __home_util_type_tag(value) === "[object Boolean]" && typeof value === "object"; },
+    \\  isNumberObject(value) { return __home_util_type_tag(value) === "[object Number]" && typeof value === "object"; },
+    \\  isStringObject(value) { return __home_util_type_tag(value) === "[object String]" && typeof value === "object"; },
+    \\  isSymbolObject(value) { return __home_util_type_tag(value) === "[object Symbol]"; },
+    \\  isNativeError(value) { return value instanceof Error || /^\\[object .*Error\\]$/.test(__home_util_type_tag(value)); },
+    \\  isRegExp(value) { return __home_util_type_tag(value) === "[object RegExp]"; },
+    \\  isAsyncFunction(value) { return __home_util_is_function_tag(value, ["[object AsyncFunction]", "[object AsyncGeneratorFunction]"]); },
+    \\  isGeneratorFunction(value) { return __home_util_is_function_tag(value, ["[object GeneratorFunction]", "[object AsyncGeneratorFunction]"]); },
+    \\  isGeneratorObject(value) { const tag = __home_util_type_tag(value); return tag === "[object Generator]" || tag === "[object AsyncGenerator]"; },
+    \\  isPromise(value) { return __home_util_type_tag(value) === "[object Promise]"; },
+    \\  isMap(value) { return __home_util_type_tag(value) === "[object Map]"; },
+    \\  isSet(value) { return __home_util_type_tag(value) === "[object Set]"; },
+    \\  isMapIterator(value) { return __home_util_type_tag(value) === "[object Map Iterator]"; },
+    \\  isSetIterator(value) { return __home_util_type_tag(value) === "[object Set Iterator]"; },
+    \\  isWeakMap(value) { return __home_util_type_tag(value) === "[object WeakMap]"; },
+    \\  isWeakSet(value) { return __home_util_type_tag(value) === "[object WeakSet]"; },
+    \\  isArrayBuffer(value) { return __home_util_type_tag(value) === "[object ArrayBuffer]"; },
+    \\  isDataView(value) { return __home_util_is_data_view(value); },
+    \\  isSharedArrayBuffer(value) { return typeof __home_is_shared_array_buffer_like === "function" && __home_is_shared_array_buffer_like(value); },
+    \\  isAnyArrayBuffer(value) { return __home_util_type_tag(value) === "[object ArrayBuffer]" || (typeof __home_is_shared_array_buffer_like === "function" && __home_is_shared_array_buffer_like(value)); },
+    \\  isArrayBufferView(value) { return __home_util_is_typed_array(value) || __home_util_is_data_view(value); },
+    \\  isTypedArray(value) { return __home_util_is_typed_array(value); },
+    \\  isUint8Array(value) { return __home_util_typed_array_name(value) === "Uint8Array"; },
+    \\  isUint8ClampedArray(value) { return __home_util_typed_array_name(value) === "Uint8ClampedArray"; },
+    \\  isUint16Array(value) { return __home_util_typed_array_name(value) === "Uint16Array"; },
+    \\  isUint32Array(value) { return __home_util_typed_array_name(value) === "Uint32Array"; },
+    \\  isInt8Array(value) { return __home_util_typed_array_name(value) === "Int8Array"; },
+    \\  isInt16Array(value) { return __home_util_typed_array_name(value) === "Int16Array"; },
+    \\  isInt32Array(value) { return __home_util_typed_array_name(value) === "Int32Array"; },
+    \\  isFloat32Array(value) { return __home_util_typed_array_name(value) === "Float32Array"; },
+    \\  isFloat64Array(value) { return __home_util_typed_array_name(value) === "Float64Array"; },
+    \\  isBigInt64Array(value) { return __home_util_typed_array_name(value) === "BigInt64Array"; },
+    \\  isBigUint64Array(value) { return __home_util_typed_array_name(value) === "BigUint64Array"; },
+    \\  isProxy(value) { return typeof __home_is_proxy_value === "function" && __home_is_proxy_value(value); },
+    \\  isEventTarget(value) { return typeof EventTarget === "function" && value instanceof EventTarget; },
     \\  isModuleNamespaceObject(value) {
-    \\    return !!(value && typeof value === "object" && (Object.prototype.toString.call(value) === "[object Module]" || value.__home_module_namespace === true || value.__esModule === true));
+    \\    return !!(__home_util_is_object(value) && (__home_util_type_tag(value) === "[object Module]" || value.__home_module_namespace === true || value.__esModule === true));
     \\  },
+    \\  isBoxedPrimitive(value) {
+    \\    const tag = __home_util_type_tag(value);
+    \\    return tag === "[object BigInt]" || tag === "[object Boolean]" || tag === "[object Number]" || tag === "[object String]" || tag === "[object Symbol]";
+    \\  },
+    \\  isKeyObject(value) { return !!(value && value.__home_key_object === true); },
+    \\  isCryptoKey(value) { return __home_util_type_tag(value) === "[object CryptoKey]" || !!(value && value.__home_crypto_key === true); },
     \\};
     \\__home_util_types_module.default = __home_util_types_module;
     \\function __home_util_get_system_error_name(errno) {
@@ -55730,8 +55807,7 @@ const harness_prelude =
     \\function __home_module_not_found_error(specifier, code, message, referrer) {
     \\  const text = String(specifier);
     \\  const ref = referrer !== undefined ? String(referrer) : String(globalThis.__home_current_filename || globalThis.__home_current_dirname || "");
-    \\  const error = new Error(message || ("Cannot find module '" + text + "' from '" + ref + "'"));
-    \\  error.name = "ResolveMessage";
+    \\  const error = new ResolveMessage(message || ("Cannot find module '" + text + "' from '" + ref + "'"));
     \\  error.code = code || "MODULE_NOT_FOUND";
     \\  error.specifier = text;
     \\  error.referrer = ref;
@@ -55856,6 +55932,9 @@ const harness_prelude =
     \\};
     \\globalThis.__home_import = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
+    \\  if ((String(specifier).startsWith("blob:") || String(resolved).startsWith("blob:")) && globalThis.__home_blob_url_registry && (globalThis.__home_blob_url_registry[String(specifier)] || globalThis.__home_blob_url_registry[String(resolved)])) {
+    \\    throw new BuildMessage("Unexpected token while parsing JavaScript module", "error", null);
+    \\  }
     \\  const mockKey = __home_mock_module_key(resolved);
     \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[mockKey];
     \\  if (mocked) {
@@ -56071,6 +56150,9 @@ const harness_prelude =
     \\}
     \\globalThis.require = function(specifier) {
     \\  const rawSpecifier = String(specifier);
+    \\  if (rawSpecifier.startsWith("blob:") && globalThis.__home_blob_url_registry && globalThis.__home_blob_url_registry[rawSpecifier]) {
+    \\    throw new BuildMessage("Unexpected token while parsing JavaScript module", "error", null);
+    \\  }
     \\  const queryIndex = rawSpecifier.indexOf("?");
     \\  const query = queryIndex === -1 ? "" : rawSpecifier.slice(queryIndex);
     \\  const resolved = __home_resolve_require(specifier);
@@ -69770,6 +69852,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { parseArgs } from \"node:util\";",
             .replacement = "const { parseArgs } = globalThis.__home_import(\"node:util\");",
+        },
+        .{
+            .needle = "import def, * as ns from \"util/types\";",
+            .replacement = "const def = globalThis.__home_import(\"util/types\").default;\nconst ns = globalThis.__home_import(\"util/types\");",
         },
         .{
             .needle = "import { aborted } from \"util\";",
@@ -90851,6 +90937,7 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/parse_args/default-args.test.mjs", .passed = 8, .todo = 0 },
         .{ .path = "js/node/util/parse_args/parse-args.test.mjs", .passed = 107, .todo = 0 },
         .{ .path = "js/node/util/test-aborted.test.ts", .passed = 5, .todo = 0 },
+        .{ .path = "js/node/util/test-util-types.test.js", .passed = 52, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
