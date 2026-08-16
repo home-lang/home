@@ -6531,7 +6531,14 @@ pub fn loadDirectoryWithOptions(
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
         var baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.baseline_root, stem, src);
-        if (baseline_path == null) {
+        // tsgo writes a full `<stem>.errors.txt` whenever its result has
+        // diagnostics. When it intentionally removes every inherited tsc
+        // diagnostic, the full file is absent and the sibling diff records
+        // `+<no content>`. That is an explicit clean tsgo result, not an
+        // unported fixture eligible for the legacy TypeScript fallback.
+        const primary_explicitly_clean = baseline_path == null and
+            try sourceSelectedErrorBaselineIsNoContent(gpa, options.baseline_root, stem, src);
+        if (baseline_path == null and !primary_explicitly_clean) {
             baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.fallback_baseline_root, stem, src);
         }
         defer if (baseline_path) |p| gpa.free(p);
@@ -7735,8 +7742,41 @@ fn sourceSelectedErrorBaselinePath(
     stem: []const u8,
     source: []const u8,
 ) !?[]u8 {
+    return sourceSelectedBaselinePath(gpa, baseline_root, stem, source, ".errors.txt");
+}
+
+fn sourceSelectedErrorBaselineIsNoContent(
+    gpa: std.mem.Allocator,
+    baseline_root: ?[]const u8,
+    stem: []const u8,
+    source: []const u8,
+) !bool {
+    const diff_path = try sourceSelectedBaselinePath(gpa, baseline_root, stem, source, ".errors.txt.diff") orelse
+        return false;
+    defer gpa.free(diff_path);
+    const diff = try readFileAlloc(gpa, diff_path);
+    defer gpa.free(diff);
+
+    var lines = std.mem.splitScalar(u8, diff, '\n');
+    while (lines.next()) |raw_line| {
+        const line = if (raw_line.len > 0 and raw_line[raw_line.len - 1] == '\r')
+            raw_line[0 .. raw_line.len - 1]
+        else
+            raw_line;
+        if (std.mem.eql(u8, line, "+<no content>")) return true;
+    }
+    return false;
+}
+
+fn sourceSelectedBaselinePath(
+    gpa: std.mem.Allocator,
+    baseline_root: ?[]const u8,
+    stem: []const u8,
+    source: []const u8,
+    suffix: []const u8,
+) !?[]u8 {
     const root = baseline_root orelse return null;
-    const direct = try std.fmt.allocPrint(gpa, "{s}/{s}.errors.txt", .{ root, stem });
+    const direct = try std.fmt.allocPrint(gpa, "{s}/{s}{s}", .{ root, stem, suffix });
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -7748,59 +7788,60 @@ fn sourceSelectedErrorBaselinePath(
                 const value = if (std.ascii.eqlIgnoreCase(selected, "true")) "true" else "false";
                 const variant = try std.fmt.allocPrint(
                     gpa,
-                    "{s}/{s}(checkjs={s}).errors.txt",
-                    .{ root, stem, value },
+                    "{s}/{s}(checkjs={s}){s}",
+                    .{ root, stem, value, suffix },
                 );
                 std.Io.Dir.cwd().access(io, variant, .{}) catch {
                     gpa.free(variant);
-                    return try variantErrorBaselinePath(gpa, root, stem);
+                    return try variantBaselinePath(gpa, root, stem, suffix);
                 };
                 return variant;
             }
         }
-        return try variantErrorBaselinePath(gpa, root, stem);
+        return try variantBaselinePath(gpa, root, stem, suffix);
     };
     return direct;
 }
 
 fn errorBaselinePath(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) !?[]u8 {
-    const root = baseline_root orelse return null;
-    const path = try std.fmt.allocPrint(gpa, "{s}/{s}.errors.txt", .{ root, stem });
-    var threaded = std.Io.Threaded.init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    std.Io.Dir.cwd().access(io, path, .{}) catch {
-        gpa.free(path);
-        return try variantErrorBaselinePath(gpa, root, stem);
-    };
-    return path;
+    return sourceSelectedBaselinePath(gpa, baseline_root, stem, "", ".errors.txt");
 }
 
-fn variantErrorBaselinePath(gpa: std.mem.Allocator, root: []const u8, stem: []const u8) !?[]u8 {
+fn variantBaselinePath(
+    gpa: std.mem.Allocator,
+    root: []const u8,
+    stem: []const u8,
+    suffix: []const u8,
+) !?[]u8 {
     const suffixes = [_][]const u8{
-        "(alwaysstrict=false).errors.txt",
-        "(alwaysstrict=true).errors.txt",
-        "(module=es2022).errors.txt",
-        "(module=esnext).errors.txt",
-        "(target=es5).errors.txt",
-        "(target=es2015).errors.txt",
-        "(target=es6).errors.txt",
+        "(alwaysstrict=false)",
+        "(alwaysstrict=true)",
+        "(module=es2022)",
+        "(module=esnext)",
+        "(target=es5)",
+        "(target=es2015)",
+        "(target=es6)",
     };
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    for (suffixes) |suffix| {
-        const path = try std.fmt.allocPrint(gpa, "{s}/{s}{s}", .{ root, stem, suffix });
+    for (suffixes) |variant| {
+        const path = try std.fmt.allocPrint(gpa, "{s}/{s}{s}{s}", .{ root, stem, variant, suffix });
         std.Io.Dir.cwd().access(io, path, .{}) catch {
             gpa.free(path);
             continue;
         };
         return path;
     }
-    return try discoverVariantErrorBaselinePath(gpa, root, stem);
+    return try discoverVariantBaselinePath(gpa, root, stem, suffix);
 }
 
-fn discoverVariantErrorBaselinePath(gpa: std.mem.Allocator, root: []const u8, stem: []const u8) !?[]u8 {
+fn discoverVariantBaselinePath(
+    gpa: std.mem.Allocator,
+    root: []const u8,
+    stem: []const u8,
+    suffix: []const u8,
+) !?[]u8 {
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -7815,7 +7856,9 @@ fn discoverVariantErrorBaselinePath(gpa: std.mem.Allocator, root: []const u8, st
         if (!std.mem.startsWith(u8, entry.name, stem)) continue;
         const rest = entry.name[stem.len..];
         if (!std.mem.startsWith(u8, rest, "(")) continue;
-        if (!std.mem.endsWith(u8, rest, ").errors.txt")) continue;
+        if (!std.mem.endsWith(u8, rest, suffix)) continue;
+        const variant_end = rest.len - suffix.len;
+        if (variant_end == 0 or rest[variant_end - 1] != ')') continue;
 
         const candidate = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.name });
         if (best) |current| {
@@ -9796,6 +9839,35 @@ test "conformance: checkJs matrix selects the executed variant baseline" {
     )) orelse return error.TestExpectedEqual;
     defer T.allocator.free(path);
     try T.expect(std.mem.endsWith(u8, path, "parameterDecoratorInJsFile(checkjs=true).errors.txt"));
+}
+
+test "conformance: tsgo no-content diffs suppress inherited error baselines" {
+    const root = "_submodules/typescript-go/testdata/baselines/reference/submodule/conformance";
+
+    // tsgo intentionally removed the inherited diagnostics for these
+    // fixtures. Their full baseline is absent and the diff's new side is
+    // `<no content>`, so exact mode must treat them as clean.
+    try T.expect(try sourceSelectedErrorBaselineIsNoContent(
+        T.allocator,
+        root,
+        "checkJsdocSatisfiesTag11",
+        "",
+    ));
+    try T.expect(try sourceSelectedErrorBaselineIsNoContent(
+        T.allocator,
+        root,
+        "syntaxErrors",
+        "",
+    ));
+
+    // A normal changed baseline has a diff too, but its new side still
+    // contains diagnostics and therefore remains an expected-error case.
+    try T.expect(!try sourceSelectedErrorBaselineIsNoContent(
+        T.allocator,
+        root,
+        "checkJsdocSatisfiesTag1",
+        "",
+    ));
 }
 
 test "conformance: strict false directive leaves strict family disabled" {
@@ -56178,7 +56250,7 @@ test "conformance: discovers option-suffixed upstream error baselines" {
     defer T.allocator.free(file_path);
     const root = std.fs.path.dirname(file_path).?;
 
-    const found = try variantErrorBaselinePath(T.allocator, root, "sample");
+    const found = try variantBaselinePath(T.allocator, root, "sample", ".errors.txt");
     defer if (found) |p| T.allocator.free(p);
 
     try T.expect(found != null);
