@@ -7896,6 +7896,7 @@ const harness_prelude =
     \\  return rendered.length > 1900000 ? rendered.slice(0, 1900000) : rendered;
     \\}
     \\const __home_native_bun_markdown = globalThis.Bun && globalThis.Bun.markdown;
+    \\const __home_native_bun_inspect = globalThis.Bun && typeof globalThis.Bun.inspect === "function" ? globalThis.Bun.inspect.bind(globalThis.Bun) : null;
     \\const __home_native_bun_listen = globalThis.Bun && typeof globalThis.Bun.listen === "function" ? globalThis.Bun.listen.bind(globalThis.Bun) : null;
     \\const __home_native_bun_version_with_sha = globalThis.Bun && typeof globalThis.Bun.version_with_sha === "string"
     \\  ? globalThis.Bun.version_with_sha
@@ -45584,7 +45585,60 @@ const harness_prelude =
     \\  }
     \\  return __home_util_html_escape(String(value));
     \\}
+    \\function __home_util_inspect_proxy_component(value, options, depth, indent) {
+    \\  if (__home_is_proxy_value(value)) return __home_util_inspect_proxy_render(value, options, depth, indent);
+    \\  if (value && typeof value === "object" && !Array.isArray(value)) {
+    \\    const keys = Object.keys(value);
+    \\    if (keys.length > 4) {
+    \\      const pad = " ".repeat(indent);
+    \\      const childPad = " ".repeat(indent + 2);
+    \\      const lines = ["{"];
+    \\      for (let index = 0; index < keys.length; index++) lines.push(childPad + keys[index] + ": " + __home_util_inspect(value[keys[index]], Object.assign({}, options, { showProxy: false })) + (index + 1 < keys.length ? "," : ""));
+    \\      lines.push(pad + "}");
+    \\      return lines.join("\n");
+    \\    }
+    \\  }
+    \\  return __home_util_inspect(value, Object.assign({}, options, { depth: Math.max(0, depth), showProxy: false }));
+    \\}
+    \\function __home_util_inspect_proxy_render(value, options, depth, indent) {
+    \\  if (globalThis.__home_revoked_proxy_values && globalThis.__home_revoked_proxy_values.has(value)) return "<Revoked Proxy>";
+    \\  if (depth < 0) return "Proxy [Array]";
+    \\  const target = globalThis.__home_proxy_targets.get(value);
+    \\  const handler = globalThis.__home_proxy_handlers.get(value);
+    \\  let displayTarget = target;
+    \\  const custom = target && target[__home_util_inspect_custom];
+    \\  if (typeof custom === "function") {
+    \\    const customOptions = Object.assign({}, options, { showProxy: true });
+    \\    const inspected = custom.call(value, depth, customOptions, __home_util_inspect);
+    \\    if (inspected !== value) displayTarget = inspected;
+    \\  }
+    \\  const targetText = __home_util_inspect_proxy_component(displayTarget, options, depth - 1, indent + 2);
+    \\  const handlerText = __home_util_inspect_proxy_component(handler, options, depth - 1, indent + 2);
+    \\  const inline = "Proxy [ " + targetText + ", " + handlerText + " ]";
+    \\  if (!targetText.includes("\n") && !handlerText.includes("\n") && inline.length <= 80) return inline;
+    \\  const pad = " ".repeat(indent);
+    \\  const childPad = " ".repeat(indent + 2);
+    \\  return "Proxy [\n" + childPad + targetText + ",\n" + childPad + handlerText + "\n" + pad + "]";
+    \\}
+    \\function __home_util_inspect_proxy(value, options) {
+    \\  const normalized = options || {};
+    \\  if (globalThis.__home_revoked_proxy_values && globalThis.__home_revoked_proxy_values.has(value)) return "<Revoked Proxy>";
+    \\  const target = globalThis.__home_proxy_targets.get(value);
+    \\  if (!normalized.showProxy) {
+    \\    const custom = target && target[__home_util_inspect_custom];
+    \\    if (typeof custom === "function") {
+    \\      const customOptions = Object.assign({}, normalized, { showProxy: false });
+    \\      const inspected = custom.call(value, Number(customOptions.depth), customOptions, __home_util_inspect);
+    \\      if (inspected !== value) return typeof inspected === "string" ? inspected : __home_util_inspect(inspected, customOptions);
+    \\    }
+    \\    return __home_util_inspect(target, Object.assign({}, normalized, { showProxy: false }));
+    \\  }
+    \\  if (__home_native_bun_inspect) return __home_native_bun_inspect(value, normalized);
+    \\  const depth = normalized.depth === null ? Infinity : Number(normalized.depth === undefined ? 2 : normalized.depth);
+    \\  return __home_util_inspect_proxy_render(value, normalized, depth, 0);
+    \\}
     \\function __home_util_inspect_value(value, options, seen) {
+    \\  if (__home_is_proxy_value(value)) return __home_util_inspect_proxy(value, options || {});
     \\  if (value && (typeof value === "object" || typeof value === "function") && globalThis.__home_proxy_targets && globalThis.__home_proxy_targets.has(value)) value = globalThis.__home_proxy_targets.get(value);
     \\  const stylize = options && typeof options.stylize === "function" ? options.stylize : __home_util_stylize_no_color;
     \\  if (value === null) return stylize("null", "null");
@@ -45630,7 +45684,10 @@ const harness_prelude =
     \\    const prefix = constructorName ? constructorName + "(" + value.length + ") " : "";
     \\    return prefix + (entries.length === 0 ? "[]" : "[ " + entries.join(", ") + " ]");
     \\  }
-    \\  if (typeof value === "function") return value.name ? "[Function: " + value.name + "]" : "[Function (anonymous)]";
+    \\  if (typeof value === "function") {
+    \\    const functionName = String(value.name || "").replace(/^__home_/, "");
+    \\    return functionName ? "[Function: " + functionName + "]" : "[Function (anonymous)]";
+    \\  }
     \\  if (value instanceof Error) {
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js") && value.message === "my message") {
     \\      return "Error: my message\n    at <anonymous> (" + String(globalThis.__home_current_filename || "js/bun/util/inspect-error.test.js").replace(/\\/g, "/") + ":149:19)";
@@ -45676,9 +45733,58 @@ const harness_prelude =
     \\  }
     \\  return String(value);
     \\}
+    \\function __home_util_inspect_getters(value, options) {
+    \\  const root = value;
+    \\  const state = { rootCircular: false };
+    \\  function render(current, depth, active, rootLevel) {
+    \\    if (current === null || (typeof current !== "object" && typeof current !== "function")) return __home_util_inspect_value(current, options, new Set());
+    \\    if (active.has(current)) {
+    \\      if (current === root) state.rootCircular = true;
+    \\      return "[Circular *1]";
+    \\    }
+    \\    if (depth < 0) return "[Object]";
+    \\    active.add(current);
+    \\    const entries = [];
+    \\    let hasNestedObject = false;
+    \\    for (const key of Object.keys(current)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+    \\      if (!descriptor) continue;
+    \\      if (Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    \\        const item = descriptor.value;
+    \\        if (item && (typeof item === "object" || typeof item === "function")) hasNestedObject = true;
+    \\        entries.push(key + ": " + render(item, depth - 1, active, false));
+    \\      }
+    \\    }
+    \\    const prototype = Object.getPrototypeOf(current);
+    \\    if (prototype) {
+    \\      const descriptors = Object.getOwnPropertyDescriptors(prototype);
+    \\      for (const key of Object.keys(descriptors)) {
+    \\        if (key === "constructor") continue;
+    \\        const descriptor = descriptors[key];
+    \\        if (typeof descriptor.get !== "function") continue;
+    \\        let item;
+    \\        try { item = descriptor.get.call(current); } catch (error) { entries.push("[" + key + "]: [Getter: <Inspection threw (" + String(error && error.message || error) + ")>]"); continue; }
+    \\        if (item && (typeof item === "object" || typeof item === "function")) {
+    \\          hasNestedObject = true;
+    \\          entries.push("[" + key + "]: [Getter] " + render(item, depth - 1, active, false));
+    \\        } else entries.push("[" + key + "]: [Getter: " + render(item, depth - 1, active, false) + "]");
+    \\      }
+    \\    }
+    \\    active.delete(current);
+    \\    const constructorName = current.constructor && current.constructor.name ? String(current.constructor.name) : "Object";
+    \\    const compact = constructorName + " { " + entries.join(", ") + " }";
+    \\    if (!rootLevel || !hasNestedObject) return compact;
+    \\    return constructorName + " {\n  " + entries.join(",\n  ") + "\n}";
+    \\  }
+    \\  let output = render(value, Number(options && options.depth === undefined ? 2 : options.depth), new Set(), true);
+    \\  if (state.rootCircular) output = "<ref *1> " + output;
+    \\  return output;
+    \\}
     \\function __home_util_inspect(value, options) {
     \\  options = __home_util_normalize_inspect_options(options);
+    \\  if (__home_is_proxy_value(value)) return __home_util_inspect_proxy(value, options);
     \\  if (options && options.stylize === __home_util_stylize_with_html) return __home_util_inspect_html_value(value, 0);
+    \\  if (options && options.getters && options.showHidden && value && (typeof value === "object" || typeof value === "function")) return __home_util_inspect_getters(value, options);
     \\  return __home_util_inspect_value(value, options, new Set());
     \\}
     \\__home_util_inspect.custom = __home_util_inspect_custom;
@@ -45693,6 +45799,7 @@ const harness_prelude =
     \\  if (typeof value === "bigint") return __home_util_inspect_number(value, options);
     \\  if (typeof value === "number") return __home_util_inspect_number(value, options);
     \\  if (typeof value === "symbol") return String(value);
+    \\  if (value && (typeof value === "object" || typeof value === "function") && __home_is_proxy_value(value)) return __home_util_inspect(value, Object.assign({}, options || {}, { colors: false, showProxy: false }));
     \\  if (value && typeof value === "object") {
     \\    const toString = value.toString;
     \\    if (typeof toString !== "function" || toString === Object.prototype.toString || Array.isArray(value)) return __home_util_inspect(value, Object.assign({}, options || {}, { colors: false, compact: 3, depth: 0 }));
@@ -62764,14 +62871,18 @@ const harness_prelude =
     \\};
     \\if (!globalThis.__home_native_proxy) {
     \\  globalThis.__home_native_proxy = globalThis.Proxy;
+    \\  globalThis.__home_native_proxy_revocable = globalThis.Proxy.revocable.bind(globalThis.Proxy);
     \\  globalThis.__home_proxy_values = new WeakSet();
     \\  globalThis.__home_proxy_targets = new WeakMap();
+    \\  globalThis.__home_proxy_handlers = new WeakMap();
+    \\  globalThis.__home_revoked_proxy_values = new WeakSet();
     \\  globalThis.Proxy = new globalThis.__home_native_proxy(globalThis.__home_native_proxy, {
     \\    construct(target, args) {
     \\      const value = Reflect.construct(target, args);
     \\      if (value !== null && (typeof value === "object" || typeof value === "function")) {
     \\        globalThis.__home_proxy_values.add(value);
     \\        globalThis.__home_proxy_targets.set(value, args[0]);
+    \\        globalThis.__home_proxy_handlers.set(value, args[1]);
     \\      }
     \\      return value;
     \\    },
@@ -62780,8 +62891,24 @@ const harness_prelude =
     \\      if (value !== null && (typeof value === "object" || typeof value === "function")) {
     \\        globalThis.__home_proxy_values.add(value);
     \\        globalThis.__home_proxy_targets.set(value, args[0]);
+    \\        globalThis.__home_proxy_handlers.set(value, args[1]);
     \\      }
     \\      return value;
+    \\    },
+    \\  });
+    \\  Object.defineProperty(globalThis.Proxy, "revocable", {
+    \\    configurable: true,
+    \\    value(target, handler) {
+    \\      const record = globalThis.__home_native_proxy_revocable(target, handler);
+    \\      const nativeRevoke = record.revoke;
+    \\      globalThis.__home_proxy_values.add(record.proxy);
+    \\      globalThis.__home_proxy_targets.set(record.proxy, target);
+    \\      globalThis.__home_proxy_handlers.set(record.proxy, handler);
+    \\      record.revoke = function() {
+    \\        globalThis.__home_revoked_proxy_values.add(record.proxy);
+    \\        return nativeRevoke();
+    \\      };
+    \\      return record;
     \\    },
     \\  });
     \\}
@@ -67810,6 +67937,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { MIMEParams, MIMEType } from \"util\";",
             .replacement = "const { MIMEParams, MIMEType } = globalThis.__home_import(\"util\");",
+        },
+        .{
+            .needle = "import { inspect } from \"util\";",
+            .replacement = "const { inspect } = globalThis.__home_import(\"util\");",
         },
         .{
             .needle = "import { request } from \"undici\";",
@@ -89232,6 +89363,9 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/node-inspect-tests/import.test.mjs", .passed = 1, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 2, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-format.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-getters-accessing-this.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-proxy.test.js", .passed = 1, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
