@@ -40962,7 +40962,13 @@ pub const Checker = struct {
                 },
                 .fn_decl, .fn_expr => {
                     const function = hir_mod.fnDeclOf(self.hir, member);
-                    if (function.flags.is_constructor) continue;
+                    if (function.flags.is_constructor) {
+                        if (self.nodeContainsDirectThisMemberAssignment(function.body, access.name)) {
+                            if ((try self.priorCheckJsPropertyAssignmentDeclaredType(target, target)) != null) return true;
+                            return false;
+                        }
+                        continue;
+                    }
                     const name = (try self.classMemberNameFromFunctionName(function.name)) orelse continue;
                     if (name == access.name) return false;
                 },
@@ -56484,6 +56490,14 @@ pub const Checker = struct {
         return false;
     }
 
+    fn programCommonJsModuleHasWholeExport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        for (self.program_commonjs_exports) |exported| {
+            if (exported.name.len != 0) continue;
+            if (try self.programImportTargetsPath(node, spec, exported.module_path)) return true;
+        }
+        return false;
+    }
+
     fn programCommonJsExportPrivateName(
         self: *Checker,
         node: NodeId,
@@ -57189,7 +57203,11 @@ pub const Checker = struct {
             const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
             if (try self.virtualRelativeModuleExportType(anchor, spec_id, &.{}, leaf)) |type_export| return type_export;
             if ((try self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, leaf)) == .value) {
-                try self.reportVirtualImportTypeMissingExport(anchor, spec, leaf, missing_pos);
+                if (try self.virtualModuleHasWholeCommonJsExport(anchor, spec)) {
+                    try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
+                } else {
+                    try self.reportVirtualImportTypeMissingExport(anchor, spec, leaf, missing_pos);
+                }
                 return types.Primitive.any;
             }
         } else {
@@ -97007,6 +97025,9 @@ pub const Checker = struct {
                         self.removeObjectLiteralMethodImplicitAnyDiagnostics(a.value);
                     }
                 }
+                if (commonjs_export_key) |key| {
+                    _ = try self.reportCommonJsVoidDeclarationPlaceholderMismatch(node, a, key);
+                }
                 const checkjs_object_expando_key = if (a.op == null and
                     (target_kind == .member_access or target_kind == .element_access))
                     try self.checkJsObjectLiteralExpandoMemberKey(a.target)
@@ -97061,7 +97082,12 @@ pub const Checker = struct {
                     }
                     if (assignment_value_is_void or commonjs_declaration_placeholder) {
                         if (commonjs_export_key) |key| {
-                            try self.recordCommonJsExportNarrow(key, types.Primitive.any);
+                            const placeholder_t = if (assignment_result_t == types.Primitive.none or
+                                assignment_result_t == types.Primitive.unknown)
+                                types.Primitive.any
+                            else
+                                assignment_result_t;
+                            try self.recordCommonJsExportNarrow(key, placeholder_t);
                         }
                         if (checkjs_object_expando_key) |key| {
                             if (self.strict_flags.no_implicit_any) {
@@ -107879,7 +107905,18 @@ pub const Checker = struct {
             if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node)) continue;
             if (self.virtualSectionStartForNode(node) != section) continue;
             const assignment = hir_mod.assignmentOf(self.hir, node);
-            if (assignment.op == null and self.nodeIsModuleExportsAccess(assignment.target)) return true;
+            if (self.assignmentContainsWholeCommonJsExport(assignment)) return true;
+        }
+        return false;
+    }
+
+    fn assignmentContainsWholeCommonJsExport(self: *Checker, initial: hir_mod.AssignmentPayload) bool {
+        var assignment = initial;
+        while (assignment.op == null) {
+            if (self.nodeIsModuleExportsAccess(assignment.target) and
+                self.commonJsModuleExportsPropertyName(assignment.target) == null) return true;
+            if (assignment.value == hir_mod.none_node_id or self.hir.kindOf(assignment.value) != .assignment) return false;
+            assignment = hir_mod.assignmentOf(self.hir, assignment.value);
         }
         return false;
     }
@@ -107956,6 +107993,12 @@ pub const Checker = struct {
             hir_mod.unaryOf(self.hir, value).op == .void_;
     }
 
+    fn expressionResolvesToVoidValue(self: *Checker, value: NodeId) bool {
+        if (self.expressionIsVoidValue(value)) return true;
+        if (value == hir_mod.none_node_id or self.hir.kindOf(value) != .assignment) return false;
+        return self.expressionResolvesToVoidValue(hir_mod.assignmentOf(self.hir, value).value);
+    }
+
     fn assignmentTargetValueIsVoidExpression(self: *Checker, target: NodeId) bool {
         var cur = target;
         while (cur != hir_mod.none_node_id) {
@@ -107993,6 +108036,31 @@ pub const Checker = struct {
             return later.value;
         }
         return null;
+    }
+
+    fn reportCommonJsVoidDeclarationPlaceholderMismatch(
+        self: *Checker,
+        node: NodeId,
+        assignment: hir_mod.AssignmentPayload,
+        key: MemberKey,
+    ) CheckError!bool {
+        if (!self.strict_flags.strict_null_checks or
+            !self.sourceDirectiveIsTrue("@declaration") or
+            !self.expressionResolvesToVoidValue(assignment.value)) return false;
+        const future_value = (try self.futureCommonJsExportAssignmentValue(node, key)) orelse return false;
+        var future_t = try self.checkExpression(future_value);
+        future_t = try self.expressionLiteralType(future_value, future_t);
+        if (try self.checkerAssignableTo(types.Primitive.undefined_t, future_t)) return false;
+        try self.reportAssignmentTypeNotAssignable(
+            node,
+            assignment.value,
+            assignment.target,
+            types.Primitive.undefined_t,
+            types.Primitive.undefined_t,
+            future_t,
+            "Type is not assignable to target type.",
+        );
+        return true;
     }
 
     fn checkJsAmbientClassMergeStaticType(
@@ -131139,8 +131207,11 @@ pub const Checker = struct {
         if (self.assignmentTargetValueIsVoidExpression(node)) return true;
         if (node != hir_mod.none_node_id and self.hir.kindOf(node) == .member_access and
             self.memberAccessReceiverIsRequireAssignmentBinding(hir_mod.memberOf(self.hir, node).object)) return true;
-        if (self.class_name_by_static.contains(receiver_t)) {
-            return false;
+        if (self.class_name_by_static.get(receiver_t)) |class_name| {
+            // Same-file checked-JS classes may grow static expandos. A class
+            // supplied by another program file is already a closed static
+            // shape, so its first property write still reports TS2339.
+            return self.findVisibleNamedClassDecl(node, class_name) == null;
         }
         if (self.class_name_by_instance.contains(receiver_t)) {
             if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return false;
@@ -133780,6 +133851,7 @@ pub const Checker = struct {
         if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return null;
         const local_name = hir_mod.identifierOf(self.hir, object).name;
         const spec = self.requireSpecifierForLocal(local_name, object) orelse return null;
+        if (try self.programCommonJsModuleHasWholeExport(object, spec)) return null;
         var resolved_path: ?[]u8 = null;
         defer if (resolved_path) |resolved| self.gpa.free(resolved);
         if (self.sourceHasVirtualFilenameSections() and std.mem.startsWith(u8, spec, ".")) {
@@ -133790,11 +133862,7 @@ pub const Checker = struct {
                     for (hir_mod.blockStmts(self.hir, root)) |stmt| {
                         if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec) or self.hir.kindOf(stmt) != .assignment) continue;
                         const assignment = hir_mod.assignmentOf(self.hir, stmt);
-                        if (assignment.op == null and self.memberAccessIsModuleExports(assignment.target) and
-                            self.commonJsModuleExportsPropertyName(assignment.target) == null)
-                        {
-                            return null;
-                        }
+                        if (self.assignmentContainsWholeCommonJsExport(assignment)) return null;
                     }
                 }
             }
@@ -212556,6 +212624,7 @@ test "checker: checkjs dotted optional JSDoc params type destructured members as
 test "checker: checkjs CommonJS export property assignment flow reports possibly undefined call once" {
     const s = try newSetup(
         \\// @checkJs: true
+        \\// @declaration: true
         \\// @filename: index.js
         \\exports.apply = undefined;
         \\function a() {}
@@ -212606,7 +212675,9 @@ test "checker: checkjs CommonJS chained void export declarations use later liter
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type '1'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type '2'."));
 }
 
 test "checker: checked JS void-zero assignments do not declare expando members" {
@@ -213350,6 +213421,43 @@ test "checker: checkjs infers class members from this-assignments in methods (no
             try T.expect(std.mem.indexOf(u8, d.message, "'inMethod'") == null);
         }
     }
+}
+
+test "checker: checkjs method writes respect constructor-inferred member types" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\class C {
+        \\  constructor() { this.value = 0; }
+        \\  first() { this.value = "wrong"; }
+        \\  second() { this.value = false; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'number'."));
+}
+
+test "checker: CommonJS object export value types render export assignment namespaces" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: mod.js
+        \\class Thing {}
+        \\module.exports = { Thing };
+        \\// @filename: index.ts
+        \\type Missing = import("./mod").Thing;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.namespace_no_exported_member,
+        "Namespace '\"mod\".export=' has no exported member 'Thing'.",
+    ));
 }
 
 test "checker: checkjs whole-object prototype assignment merges members onto the instance (no TS2339)" {
