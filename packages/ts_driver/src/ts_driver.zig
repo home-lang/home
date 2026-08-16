@@ -36,6 +36,7 @@ pub const ProgramAmbientModuleInterfaceExport = ts_checker.ProgramAmbientModuleI
 pub const ProgramCommonJsExport = ts_checker.ProgramCommonJsExport;
 pub const ProgramUmdGlobal = ts_checker.ProgramUmdGlobal;
 pub const ProgramAmbientInterfaceMember = ts_checker.ProgramAmbientInterfaceMember;
+pub const EsTarget = ts_emit.js_emit.EsTarget;
 
 /// One nested elaboration entry under a unified diagnostic, mirroring
 /// tsc's `messageChain`. `message` and any `children` array are
@@ -2124,6 +2125,7 @@ pub fn compileSource(
     checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
+    checker.setReflectSuperStaticInitializerCollisionEnabled(!options.emit.es_target.supportsNativeClassFields());
     checker.setAllowImportingTsExtensionsEnabled(options.allow_importing_ts_extensions or
         if (options.pub_tsconfig) |cfg| cfg.compiler_options.allow_importing_ts_extensions orelse false else false);
     checker.setRewriteRelativeImportExtensionsEnabled(options.rewrite_relative_import_extensions);
@@ -2302,6 +2304,7 @@ pub fn compileSource(
             c,
             source,
             helperDiagnosticsUseCommonJsModule(source, options),
+            options.emit.es_target != .esnext,
             options.emit.es_target != .esnext or
                 options.resource_management_helpers_required or
                 sourceTargetNeedsResourceLowering(source),
@@ -2417,6 +2420,7 @@ fn appendMissingImportedHelperDiagnostics(
     c: *Compilation,
     source: []const u8,
     commonjs_module: bool,
+    lower_stage3_decorators: bool,
     lower_resource_declarations: bool,
 ) CompileError!void {
     const tslib_source = tslibDeclarationSource(source) orelse {
@@ -2434,6 +2438,7 @@ fn appendMissingImportedHelperDiagnostics(
         return;
     };
     try appendImportedPrivateHelperArityDiagnostics(gpa, c, source, tslib_source);
+    try appendMissingStage3DecoratorHelperDiagnostics(gpa, c, source, tslib_source, lower_stage3_decorators);
     if (commonjs_module) try appendMissingCommonJsInteropHelperDiagnostics(gpa, c, tslib_source);
 }
 
@@ -2447,6 +2452,237 @@ fn helperDiagnosticsUseCommonJsModule(source: []const u8, options: CompileOption
         if (moduleKindLowersToCommonJs(firstCsvField(module))) return true;
     }
     return false;
+}
+
+const Stage3HelperFlags = struct {
+    decorate: bool = true,
+    prop_key: bool = false,
+    run_initializers: bool = true,
+    set_function_name: bool = false,
+};
+
+const Stage3DecorationUse = struct {
+    use: HelperUse,
+    flags: Stage3HelperFlags,
+};
+
+pub fn appendMissingStage3DecoratorHelperDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    tslib_source: []const u8,
+    lower_decorators: bool,
+) !void {
+    if (!lower_decorators) return;
+    var uses: std.ArrayListUnmanaged(Stage3DecorationUse) = .empty;
+    defer uses.deinit(gpa);
+    try collectStage3DecorationUses(gpa, c, source, &uses);
+    std.mem.sort(Stage3DecorationUse, uses.items, {}, struct {
+        fn lessThan(_: void, a: Stage3DecorationUse, b: Stage3DecorationUse) bool {
+            return a.use.pos < b.use.pos;
+        }
+    }.lessThan);
+
+    var requested = Stage3HelperFlags{ .decorate = false, .run_initializers = false };
+    for (uses.items) |entry| {
+        const helpers = [_]struct { name: []const u8, needed: bool, requested: *bool }{
+            .{ .name = "__esDecorate", .needed = entry.flags.decorate, .requested = &requested.decorate },
+            .{ .name = "__propKey", .needed = entry.flags.prop_key, .requested = &requested.prop_key },
+            .{ .name = "__runInitializers", .needed = entry.flags.run_initializers, .requested = &requested.run_initializers },
+            .{ .name = "__setFunctionName", .needed = entry.flags.set_function_name, .requested = &requested.set_function_name },
+        };
+        for (helpers) |helper| {
+            if (!helper.needed or helper.requested.*) continue;
+            helper.requested.* = true;
+            if (std.mem.indexOf(u8, tslib_source, helper.name) == null) {
+                try appendMissingNamedHelperDiagnostic(gpa, c, helper.name, entry.use);
+            }
+        }
+    }
+}
+
+fn collectStage3DecorationUses(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    uses: *std.ArrayListUnmanaged(Stage3DecorationUse),
+) !void {
+    const attached = try gpa.alloc(bool, @intCast(c.hir.nodeCount()));
+    defer gpa.free(attached);
+    @memset(attached, false);
+
+    var node: NodeId = 1;
+    while (node < c.hir.nodeCount()) : (node += 1) {
+        if (c.hir.kindOf(node) != .parameter) continue;
+        for (hir_mod.parameterDecorators(&c.hir, node)) |decorator| attached[decorator] = true;
+    }
+
+    node = 1;
+    while (node < c.hir.nodeCount()) : (node += 1) {
+        const kind = c.hir.kindOf(node);
+        if (kind != .class_decl and kind != .class_expr) continue;
+        const members = hir_mod.classMembers(&c.hir, node);
+        var i: usize = 0;
+        while (i < members.len) : (i += 1) {
+            if (c.hir.kindOf(members[i]) != .decorator) continue;
+            const first = members[i];
+            var j = i;
+            while (j < members.len and c.hir.kindOf(members[j]) == .decorator) : (j += 1) {
+                attached[members[j]] = true;
+            }
+            if (j >= members.len) break;
+            const target = members[j];
+            const target_kind = c.hir.kindOf(target);
+            const name: NodeId = switch (target_kind) {
+                .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(&c.hir, target).name,
+                .object_property => hir_mod.objectPropertyOf(&c.hir, target).key,
+                else => hir_mod.none_node_id,
+            };
+            var flags = Stage3HelperFlags{};
+            if (target_kind == .object_property) {
+                const property = hir_mod.objectPropertyOf(&c.hir, target);
+                flags.prop_key = property.is_computed;
+                flags.set_function_name = property.is_accessor and sourceNodeIsPrivateName(&c.hir, source, name);
+            } else if (target_kind == .fn_decl or target_kind == .fn_expr or target_kind == .arrow_fn) {
+                flags.prop_key = classFunctionNameIsComputed(&c.hir, source, target, name);
+                flags.set_function_name = sourceNodeIsPrivateName(&c.hir, source, name);
+            }
+            const span = c.hir.spanOf(first);
+            try uses.append(gpa, .{
+                .use = .{ .pos = span.start, .span_len = span.end - span.start },
+                .flags = flags,
+            });
+            i = j;
+        }
+    }
+
+    node = 1;
+    while (node < c.hir.nodeCount()) : (node += 1) {
+        if (c.hir.kindOf(node) != .decorator or attached[node]) continue;
+        const span = c.hir.spanOf(node);
+        const class_node = followingDecoratedClassDeclaration(&c.hir, source, span.end) orelse continue;
+        try uses.append(gpa, .{
+            .use = .{ .pos = span.start, .span_len = span.end - span.start },
+            .flags = .{ .set_function_name = classDeclarationNeedsSetFunctionName(&c.hir, source, class_node) },
+        });
+    }
+
+    node = 1;
+    while (node < c.hir.nodeCount()) : (node += 1) {
+        if (c.hir.kindOf(node) != .class_expr) continue;
+        const use = classExpressionDecoratorUse(source, c.hir.spanOf(node).start) orelse continue;
+        const shape = classExpressionNamedEvaluationShape(&c.hir, node);
+        try uses.append(gpa, .{
+            .use = use,
+            .flags = .{
+                .set_function_name = hir_mod.classOf(&c.hir, node).name == hir_mod.none_node_id and shape.named,
+                .prop_key = shape.computed,
+            },
+        });
+    }
+}
+
+fn sourceNodeIsPrivateName(hir: *const hir_mod.Hir, source: []const u8, node: NodeId) bool {
+    if (node == hir_mod.none_node_id) return false;
+    const span = hir.spanOf(node);
+    return span.start < span.end and span.end <= source.len and source[span.start] == '#';
+}
+
+fn classFunctionNameIsComputed(hir: *const hir_mod.Hir, source: []const u8, target: NodeId, name: NodeId) bool {
+    if (name == hir_mod.none_node_id) return false;
+    const target_span = hir.spanOf(target);
+    const name_span = hir.spanOf(name);
+    if (target_span.start >= name_span.end or name_span.end > source.len) return false;
+    return std.mem.indexOfScalar(u8, source[target_span.start..name_span.end], '[') != null;
+}
+
+fn followingDecoratedClassDeclaration(hir: *const hir_mod.Hir, source: []const u8, after: usize) ?NodeId {
+    var best: ?NodeId = null;
+    var best_start: usize = std.math.maxInt(usize);
+    var node: NodeId = 1;
+    while (node < hir.nodeCount()) : (node += 1) {
+        if (hir.kindOf(node) != .class_decl) continue;
+        const span = hir.spanOf(node);
+        if (span.start < after or span.start >= best_start or span.start > source.len) continue;
+        if (std.mem.trim(u8, source[after..span.start], " \t\r\n").len != 0) continue;
+        best = node;
+        best_start = span.start;
+    }
+    return best;
+}
+
+fn classDeclarationNeedsSetFunctionName(hir: *const hir_mod.Hir, source: []const u8, class_node: NodeId) bool {
+    if (hir_mod.classOf(hir, class_node).name == hir_mod.none_node_id) return true;
+    for (hir_mod.classMembers(hir, class_node)) |member| {
+        switch (hir.kindOf(member)) {
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const function = hir_mod.fnDeclOf(hir, member);
+                if (function.flags.is_static and sourceNodeIsPrivateName(hir, source, function.name)) return true;
+            },
+            .object_property => {
+                const property = hir_mod.objectPropertyOf(hir, member);
+                if (property.is_static and
+                    (sourceNodeIsPrivateName(hir, source, property.key) or property.value != hir_mod.none_node_id)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn classExpressionDecoratorUse(source: []const u8, class_start: usize) ?HelperUse {
+    if (class_start == 0 or class_start > source.len) return null;
+    const search_start = class_start -| 1024;
+    const relative_at = std.mem.lastIndexOfScalar(u8, source[search_start..class_start], '@') orelse return null;
+    const at = search_start + relative_at;
+    const between = source[at..class_start];
+    if (std.mem.indexOfScalar(u8, between, ';') != null or
+        std.mem.indexOfScalar(u8, between, '{') != null or
+        std.mem.indexOfScalar(u8, between, '}') != null or
+        std.mem.indexOf(u8, between, "//") != null) return null;
+    const trimmed = std.mem.trimEnd(u8, between, " \t\r\n");
+    if (trimmed.len <= 1) return null;
+    return .{ .pos = at, .span_len = trimmed.len };
+}
+
+const NamedEvaluationShape = struct { named: bool = false, computed: bool = false };
+
+fn classExpressionNamedEvaluationShape(hir: *const hir_mod.Hir, class_node: NodeId) NamedEvaluationShape {
+    var shape = NamedEvaluationShape{};
+    var child = class_node;
+    var parent = hir.parentOf(child);
+    while (parent != hir_mod.none_node_id) : ({
+        child = parent;
+        parent = hir.parentOf(parent);
+    }) {
+        switch (hir.kindOf(parent)) {
+            .var_decl, .let_decl, .const_decl => {
+                shape.named = hir_mod.varDeclOf(hir, parent).init == child;
+                return shape;
+            },
+            .assignment => {
+                shape.named = hir_mod.assignmentOf(hir, parent).value == child;
+                return shape;
+            },
+            .parameter => {
+                shape.named = hir_mod.parameterOf(hir, parent).default_value == child;
+                return shape;
+            },
+            .object_property => {
+                const property = hir_mod.objectPropertyOf(hir, parent);
+                shape.named = property.value == child;
+                shape.computed = shape.named and property.is_computed;
+                return shape;
+            },
+            .export_decl => {
+                shape.named = hir_mod.exportOf(hir, parent).decl == child;
+                return shape;
+            },
+            .class_decl, .class_expr, .fn_decl, .fn_expr, .arrow_fn => return shape,
+            else => {},
+        }
+    }
+    return shape;
 }
 
 fn moduleKindLowersToCommonJs(module: []const u8) bool {
@@ -4604,7 +4840,7 @@ test "driver: let-array parse recovery suppresses grammar diagnostics" {
     try T.expect(saw_1181 and saw_1005 and saw_1128);
 }
 
-test "driver: importHelpers does not diagnose Stage 3 decorator helpers" {
+test "driver: importHelpers diagnoses missing Stage 3 decorator helpers" {
     const source =
         \\// @target: es2022
         \\// @importHelpers: true
@@ -4617,16 +4853,21 @@ test "driver: importHelpers does not diagnose Stage 3 decorator helpers" {
         \\// @filename: tslib.d.ts
         \\export {}
     ;
-    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+    var c = try compileSource(T.allocator, source, .{
+        .no_emit = true,
+        .emit = .{ .import_helpers = true, .es_target = .es2022 },
+    });
     defer {
         c.deinit();
         T.allocator.destroy(c);
     }
 
+    var helper_count: usize = 0;
     for (c.diagnostics.items) |d| {
-        try T.expect(d.code != 2343);
+        if (d.code == 2343) helper_count += 1;
         try T.expect(d.code != 2354);
     }
+    try T.expectEqual(@as(usize, 3), helper_count);
 }
 
 test "driver: importHelpers detects lowered resource declarations" {

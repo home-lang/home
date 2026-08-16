@@ -3200,6 +3200,13 @@ pub const Program = struct {
         };
 
         try appendImportedPrivateHelperArityDiagnostics(self.gpa, c, f.source, tslib.source);
+        try ts_driver.appendMissingStage3DecoratorHelperDiagnostics(
+            self.gpa,
+            c,
+            f.source,
+            tslib.source,
+            options.emit.es_target != .esnext,
+        );
         if (commonjs_module) {
             try appendMissingCommonJsInteropHelperDiagnostics(self.gpa, c, tslib.source);
         }
@@ -6073,7 +6080,7 @@ test "Program: cycle does not infinite loop" {
     try T.expectEqual(@as(usize, 2), order.len);
 }
 
-test "Program: importHelpers does not diagnose Stage 3 decorator helpers" {
+test "Program: importHelpers diagnoses missing Stage 3 decorator helpers" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -6086,13 +6093,15 @@ test "Program: importHelpers does not diagnose Stage 3 decorator helpers" {
         \\@dec class C { @dec static #method() {} }
     );
     _ = try p.add("/tslib.d.ts", "export {}\n");
-    try p.compileAll(.{ .emit = .{ .import_helpers = true } });
+    try p.compileAll(.{ .emit = .{ .import_helpers = true, .es_target = .es2022 } });
 
     const c = p.fileById(0).compilation.?;
+    var helper_count: usize = 0;
     for (c.diagnostics.items) |d| {
-        try T.expect(d.code != 2343);
+        if (d.code == 2343) helper_count += 1;
         try T.expect(d.code != 2354);
     }
+    try T.expectEqual(@as(usize, 3), helper_count);
 }
 
 test "Program: importHelpers detects lowered resource declarations" {
