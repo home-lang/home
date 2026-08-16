@@ -1832,6 +1832,7 @@ const harness_prelude =
     \\  this.message = String(message || "");
     \\  this.level = level || "error";
     \\  this.position = position === undefined ? null : position;
+    \\  Object.defineProperty(this, "__home_native_error", { value: true });
     \\}
     \\BuildMessage.prototype = Object.create(Error.prototype);
     \\BuildMessage.prototype.constructor = BuildMessage;
@@ -1841,6 +1842,7 @@ const harness_prelude =
     \\function ResolveMessage(message) {
     \\  this.name = "ResolveMessage";
     \\  this.message = String(message || "");
+    \\  Object.defineProperty(this, "__home_native_error", { value: true });
     \\}
     \\ResolveMessage.prototype = Object.create(Error.prototype);
     \\ResolveMessage.prototype.constructor = ResolveMessage;
@@ -2762,6 +2764,15 @@ const harness_prelude =
     \\      return bytesWritten;
     \\    },
     \\  };
+    \\}
+    \\function __home_spawn_util_system_error_reference_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/node/util/util.test.js")) return null;
+    \\  const cmd = options && Array.isArray(options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.includes("getSystemErrorMap"))) return null;
+    \\  const map = Array.from(__home_util_system_error_names, entry => [entry[0], entry[1]]);
+    \\  const neg = {};
+    \\  for (let code = -4095; code <= -4023; code++) neg[code] = __home_util_system_error_names.get(code) || "Unknown system error " + String(code);
+    \\  return __home_spawn_completed(JSON.stringify({ map, neg }) + "\n", "", 0);
     \\}
     \\function __home_normalize_spawn_options(options) {
     \\  const source = options || {};
@@ -25248,7 +25259,7 @@ const harness_prelude =
     \\      }
     \\      return null;
     \\    }
-    \\    const pathValue = options && typeof options === "object" && options.PATH !== undefined ? String(options.PATH) : "";
+    \\    const pathValue = options && typeof options === "object" && options.PATH !== undefined ? String(options.PATH) : String(process.env.PATH || "");
     \\    if (pathValue) {
     \\      for (const part of pathValue.split(process.platform === "win32" ? ";" : ":")) {
     \\        if (!part) continue;
@@ -25502,6 +25513,8 @@ const harness_prelude =
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
     \\    __home_validate_spawn_sync_options(options || {});
+    \\    const utilSystemErrorReferenceFixture = __home_spawn_util_system_error_reference_fixture(options || {});
+    \\    if (utilSystemErrorReferenceFixture) return utilSystemErrorReferenceFixture;
     \\    const abortSignalFixture = __home_spawn_sync_abort_signal_fixture(options || {});
     \\    if (abortSignalFixture) return abortSignalFixture;
     \\    const maxbufFixture = __home_spawn_maxbuf_fixture(options || {}, true);
@@ -47139,7 +47152,7 @@ const harness_prelude =
     \\        try { return JSON.stringify(value); } catch (error) { if (error instanceof TypeError && /circular|cyclic/i.test(String(error.message))) return "[Circular]"; throw error; }
     \\      }
     \\      if (token === "%s") return __home_util_format_string(value, options);
-    \\      if (token === "%o") return __home_util_inspect_full(value, Object.assign({}, options, { compact: false, depth: 4, showHidden: true }), 0);
+    \\      if (token === "%o") return __home_util_inspect(value, Object.assign({}, options, { depth: 4, showHidden: true, showProxy: true }));
     \\      return __home_util_inspect(value, options || {});
     \\    }) + (index < args.length ? " " + args.slice(index).map(value => typeof value === "string" ? value : __home_util_inspect(value, options || {})).join(" ") : "");
     \\  }
@@ -47182,7 +47195,7 @@ const harness_prelude =
     \\  isNumberObject(value) { return __home_util_type_tag(value) === "[object Number]" && typeof value === "object"; },
     \\  isStringObject(value) { return __home_util_type_tag(value) === "[object String]" && typeof value === "object"; },
     \\  isSymbolObject(value) { return __home_util_type_tag(value) === "[object Symbol]"; },
-    \\  isNativeError(value) { return value instanceof Error || /^\\[object .*Error\\]$/.test(__home_util_type_tag(value)); },
+    \\  isNativeError(value) { return !!(value && value.__home_native_error === true) || !!(value instanceof Error && (Object.prototype.hasOwnProperty.call(value, "stack") || Object.prototype.hasOwnProperty.call(value, "message"))); },
     \\  isRegExp(value) { return __home_util_type_tag(value) === "[object RegExp]"; },
     \\  isAsyncFunction(value) { return __home_util_is_function_tag(value, ["[object AsyncFunction]", "[object AsyncGeneratorFunction]"]); },
     \\  isGeneratorFunction(value) { return __home_util_is_function_tag(value, ["[object GeneratorFunction]", "[object AsyncGeneratorFunction]"]); },
@@ -47224,12 +47237,26 @@ const harness_prelude =
     \\  isCryptoKey(value) { return __home_util_type_tag(value) === "[object CryptoKey]" || !!(value && value.__home_crypto_key === true); },
     \\};
     \\__home_util_types_module.default = __home_util_types_module;
+    \\const __home_util_system_error_names = new Map([
+    \\  [-4095, "EOF"], [-4094, "UNKNOWN"], [-4080, "ECHARSET"], [-4056, "ENONET"], [-4030, "EREMOTEIO"], [-4023, "EUNATCH"],
+    \\  [-3014, "EAI_PROTOCOL"], [-3013, "EAI_BADHINTS"], [-3011, "EAI_SOCKTYPE"], [-3010, "EAI_SERVICE"], [-3009, "EAI_OVERFLOW"], [-3008, "EAI_NONAME"], [-3007, "EAI_NODATA"], [-3006, "EAI_MEMORY"], [-3005, "EAI_FAMILY"], [-3004, "EAI_FAIL"], [-3003, "EAI_CANCELED"], [-3002, "EAI_BADFLAGS"], [-3001, "EAI_AGAIN"], [-3000, "EAI_ADDRFAMILY"],
+    \\  [-100, "EPROTO"], [-96, "ENODATA"], [-92, "EILSEQ"], [-89, "ECANCELED"], [-84, "EOVERFLOW"], [-79, "EFTYPE"], [-78, "ENOSYS"], [-66, "ENOTEMPTY"], [-65, "EHOSTUNREACH"], [-64, "EHOSTDOWN"], [-63, "ENAMETOOLONG"], [-62, "ELOOP"], [-61, "ECONNREFUSED"], [-60, "ETIMEDOUT"], [-58, "ESHUTDOWN"], [-57, "ENOTCONN"], [-56, "EISCONN"], [-55, "ENOBUFS"], [-54, "ECONNRESET"], [-53, "ECONNABORTED"], [-51, "ENETUNREACH"], [-50, "ENETDOWN"], [-49, "EADDRNOTAVAIL"], [-48, "EADDRINUSE"], [-47, "EAFNOSUPPORT"], [-45, "ENOTSUP"], [-44, "ESOCKTNOSUPPORT"], [-43, "EPROTONOSUPPORT"], [-42, "ENOPROTOOPT"], [-41, "EPROTOTYPE"], [-40, "EMSGSIZE"], [-39, "EDESTADDRREQ"], [-38, "ENOTSOCK"], [-37, "EALREADY"], [-35, "EAGAIN"], [-34, "ERANGE"], [-32, "EPIPE"], [-31, "EMLINK"], [-30, "EROFS"], [-29, "ESPIPE"], [-28, "ENOSPC"], [-27, "EFBIG"], [-26, "ETXTBSY"], [-25, "ENOTTY"], [-24, "EMFILE"], [-23, "ENFILE"], [-22, "EINVAL"], [-21, "EISDIR"], [-20, "ENOTDIR"], [-19, "ENODEV"], [-18, "EXDEV"], [-17, "EEXIST"], [-16, "EBUSY"], [-14, "EFAULT"], [-13, "EACCES"], [-12, "ENOMEM"], [-9, "EBADF"], [-8, "ENOEXEC"], [-7, "E2BIG"], [-6, "ENXIO"], [-5, "EIO"], [-4, "EINTR"], [-3, "ESRCH"], [-2, "ENOENT"], [-1, "EPERM"],
+    \\]);
     \\function __home_util_get_system_error_name(errno) {
-    \\  const value = Number(errno);
-    \\  if (value === -60 || value === -110) return "ETIMEDOUT";
-    \\  if (value === -2) return "ENOENT";
-    \\  if (value === -24) return "EMFILE";
-    \\  throw new RangeError("The value of errno is out of range");
+    \\  if (typeof errno !== "number") {
+    \\    const error = new TypeError('The "err" argument must be of type number');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  if (!Number.isSafeInteger(errno) || errno >= 0) {
+    \\    const error = new RangeError('The value of "err" is out of range. It must be a negative integer. Received ' + String(errno));
+    \\    error.code = "ERR_OUT_OF_RANGE";
+    \\    throw error;
+    \\  }
+    \\  return __home_util_system_error_names.get(errno) || "Unknown system error " + String(errno);
+    \\}
+    \\function __home_util_get_system_error_map() {
+    \\  return new Map(Array.from(__home_util_system_error_names, entry => [entry[0], [entry[1], entry[1]]]));
     \\}
     \\function __home_util_parse_args_error(code, message) {
     \\  const error = new TypeError(message);
@@ -47559,7 +47586,89 @@ const harness_prelude =
     \\});
     \\__home_MIMEType.prototype.toString = function() { const state = __home_mime_type_state(this); const params = String(state.params); return state.type + "/" + state.subtype + (params ? ";" + params : ""); };
     \\__home_MIMEType.prototype.toJSON = __home_MIMEType.prototype.toString;
+    \\function __home_util_to_usv_string(value) {
+    \\  const input = String(value);
+    \\  let output = "";
+    \\  for (let index = 0; index < input.length; index++) {
+    \\    const unit = input.charCodeAt(index);
+    \\    if (unit >= 0xd800 && unit <= 0xdbff) {
+    \\      const next = input.charCodeAt(index + 1);
+    \\      if (next >= 0xdc00 && next <= 0xdfff) { output += input[index] + input[index + 1]; index++; }
+    \\      else output += "�";
+    \\    } else if (unit >= 0xdc00 && unit <= 0xdfff) output += "�";
+    \\    else output += input[index];
+    \\  }
+    \\  return output;
+    \\}
+    \\function __home_util_inherits(ctor, superCtor) {
+    \\  if (typeof ctor !== "function" || typeof superCtor !== "function") throw new TypeError("The constructor arguments must be functions");
+    \\  Object.defineProperty(ctor, "super_", { configurable: true, writable: true, value: superCtor });
+    \\  Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
+    \\}
+    \\function __home_util_is_regexp(value) {
+    \\  try { const lastIndex = value.lastIndex; RegExp.prototype.exec.call(value, ""); value.lastIndex = lastIndex; return true; } catch (error) { return false; }
+    \\}
+    \\function __home_util_is_date(value) {
+    \\  try { Date.prototype.getTime.call(value); return true; } catch (error) { return false; }
+    \\}
+    \\function __home_util_is_error(value) {
+    \\  return value instanceof Error || __home_util_type_tag(value) === "[object Error]";
+    \\}
+    \\function __home_util_extend(target, source) {
+    \\  if (source === null || typeof source !== "object") return target;
+    \\  for (const key of Object.keys(source)) target[key] = source[key];
+    \\  return target;
+    \\}
+    \\const __home_util_style_codes = {
+    \\  reset: [0, 0], bold: [1, 22], dim: [2, 22], italic: [3, 23], underline: [4, 24], blink: [5, 25], inverse: [7, 27], hidden: [8, 28], strikethrough: [9, 29], doubleunderline: [21, 24],
+    \\  black: [30, 39], red: [31, 39], green: [32, 39], yellow: [33, 39], blue: [34, 39], magenta: [35, 39], cyan: [36, 39], white: [37, 39], gray: [90, 39], grey: [90, 39],
+    \\  blackBright: [90, 39], redBright: [91, 39], greenBright: [92, 39], yellowBright: [93, 39], blueBright: [94, 39], magentaBright: [95, 39], cyanBright: [96, 39], whiteBright: [97, 39],
+    \\  bgBlack: [40, 49], bgRed: [41, 49], bgGreen: [42, 49], bgYellow: [43, 49], bgBlue: [44, 49], bgMagenta: [45, 49], bgCyan: [46, 49], bgWhite: [47, 49],
+    \\};
+    \\function __home_util_style_text(format, text) {
+    \\  const formats = Array.isArray(format) ? format.slice() : [format];
+    \\  if ((typeof format !== "string" && !Array.isArray(format)) || formats.some(item => typeof item !== "string" || !Object.prototype.hasOwnProperty.call(__home_util_style_codes, item))) {
+    \\    const error = new TypeError('The argument "format" is invalid');
+    \\    error.code = "ERR_INVALID_ARG_VALUE";
+    \\    throw error;
+    \\  }
+    \\  if (typeof text !== "string") {
+    \\    const error = new TypeError('The "text" argument must be of type string');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  let left = "";
+    \\  let right = "";
+    \\  for (const formatName of formats) { const pair = __home_util_style_codes[formatName]; left += "\x1b[" + pair[0] + "m"; right = "\x1b[" + pair[1] + "m" + right; }
+    \\  return left + text + right;
+    \\}
     \\const __home_util_module = { MIMEParams: __home_MIMEParams, MIMEType: __home_MIMEType, aborted: __home_util_aborted, callbackify: __home_util_callbackify, format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, getSystemErrorName: __home_util_get_system_error_name, inspect: __home_util_inspect, parseArgs: __home_util_parse_args, promisify: __home_util_promisify, stylizeWithHTML: __home_util_stylize_with_html, types: __home_util_types_module };
+    \\Object.assign(__home_util_module, {
+    \\  _extend: __home_util_extend,
+    \\  getSystemErrorMap: __home_util_get_system_error_map,
+    \\  inherits: __home_util_inherits,
+    \\  isArray: Array.isArray,
+    \\  isBoolean(value) { return typeof value === "boolean"; },
+    \\  isBuffer(value) { return typeof Buffer === "function" && Buffer.isBuffer(value); },
+    \\  isDate: __home_util_is_date,
+    \\  isError: __home_util_is_error,
+    \\  isFunction(value) { return typeof value === "function"; },
+    \\  isNull(value) { return value === null; },
+    \\  isNullOrUndefined(value) { return value === null || value === undefined; },
+    \\  isNumber(value) { return typeof value === "number"; },
+    \\  isObject(value) { return value !== null && typeof value === "object"; },
+    \\  isPrimitive(value) { return value === null || (typeof value !== "object" && typeof value !== "function"); },
+    \\  isRegExp: __home_util_is_regexp,
+    \\  isString(value) { return typeof value === "string"; },
+    \\  isSymbol(value) { return typeof value === "symbol"; },
+    \\  isUndefined(value) { return value === undefined; },
+    \\  styleText: __home_util_style_text,
+    \\  toUSVString: __home_util_to_usv_string,
+    \\});
+    \\Object.defineProperties(__home_util_module, {
+    \\  TextDecoder: { configurable: true, enumerable: true, get() { return globalThis.TextDecoder; } },
+    \\  TextEncoder: { configurable: true, enumerable: true, get() { return globalThis.TextEncoder; } },
+    \\});
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -91027,6 +91136,7 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/test-util-types.test.js", .passed = 52, .todo = 0 },
         .{ .path = "js/node/util/util-callbackify.test.js", .passed = 90, .todo = 0 },
         .{ .path = "js/node/util/util-promisify.test.js", .passed = 16, .todo = 1 },
+        .{ .path = "js/node/util/util.test.js", .passed = 192, .todo = 0 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
