@@ -139639,6 +139639,13 @@ pub const Checker = struct {
                     try subs.put(self.gpa, param_t, merged);
                     return;
                 }
+                if (self.typeIsNullishOnly(existing) or self.typeIsNullishOnly(literal_arg))
+                {
+                    const candidate = self.widenForInference(literal_arg);
+                    const merged = self.interner.internUnion(&.{ existing, candidate }) catch return error.OutOfMemory;
+                    try subs.put(self.gpa, param_t, merged);
+                    return;
+                }
                 if (self.engine.isAssignableTo(literal_arg, existing) catch false) return;
             } else {
                 var prefer_literal = self.typeParameterConstraintPrefersLiteralInference(param_t);
@@ -139766,7 +139773,8 @@ pub const Checker = struct {
         }
         if (self.hir.kindOf(arg_node) == .array_literal and
             self.isTupleShapedTarget(param_t) and
-            self.arrayLiteralHasContextSensitiveFunction(arg_node))
+            (self.arrayLiteralHasContextSensitiveFunction(arg_node) or
+                self.tupleTargetHasDirectMutableTypeParameter(param_t, arg_node)))
         {
             try self.inferFromArrayLiteralArgument(param_t, arg_node, subs);
             return;
@@ -139990,6 +139998,13 @@ pub const Checker = struct {
 
                 try self.extendInferenceSubstitutionsByName(raw_target, subs);
                 const effective_target = self.substituteType(raw_target, subs) catch raw_target;
+                const inference_target = if (raw_target < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(raw_target).is_type_parameter and
+                    !self.interner.pool.flagsOf(raw_target).is_union and
+                    !self.interner.pool.flagsOf(raw_target).is_intersection)
+                    raw_target
+                else
+                    effective_target;
                 var source_t = if (self.hir.typeOf(element) != types.Primitive.none)
                     self.hir.typeOf(element)
                 else
@@ -140000,7 +140015,7 @@ pub const Checker = struct {
                 {
                     source_t = try self.contextualizeInferenceExpression(element, effective_target, source_t);
                 }
-                try self.inferFromArgument(effective_target, source_t, element, subs);
+                try self.inferFromArgument(inference_target, source_t, element, subs);
             }
         }
     }
@@ -140010,6 +140025,22 @@ pub const Checker = struct {
         for (hir_mod.arrayLiteralElements(self.hir, node)) |element| {
             if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
             if (self.expressionHasContextSensitiveFunction(element)) return true;
+        }
+        return false;
+    }
+
+    fn tupleTargetHasDirectMutableTypeParameter(self: *Checker, target: TypeId, node: NodeId) bool {
+        for (hir_mod.arrayLiteralElements(self.hir, node), 0..) |_, index| {
+            const element_t = self.tupleElementType(target, index);
+            if (element_t >= self.interner.pool.typeCount()) continue;
+            const flags = self.interner.pool.flagsOf(element_t);
+            if (flags.is_type_parameter and
+                !flags.is_union and
+                !flags.is_intersection and
+                !self.interner.typeParameterIsConst(element_t))
+            {
+                return true;
+            }
         }
         return false;
     }
