@@ -142695,6 +142695,12 @@ pub const Checker = struct {
                 stop_after_arg_mismatch = true;
                 continue;
             }
+            if (self.hir.kindOf(args[i]) == .array_literal and
+                try self.tryReportArrayLiteralAgainstBindingDefault(args[i], sig, fixed_pos))
+            {
+                try self.checkExcessProperties(args[i], param_t);
+                continue;
+            }
             if (try self.tryReportRecursiveArrayInferenceMismatch(args[i], sig, fixed_pos, param_t)) {
                 stop_after_arg_mismatch = true;
                 continue;
@@ -144374,6 +144380,78 @@ pub const Checker = struct {
             const el_t = if (self.hir.typeOf(el) != types.Primitive.none) self.hir.typeOf(el) else try self.checkExpression(el);
             if (self.engine.isAssignableTo(el_t, target_t) catch false) continue;
             try self.reportTypeNotAssignable(el, el_t, target_t, "Type is not assignable to array element type.");
+            emitted = true;
+        }
+        return emitted;
+    }
+
+    fn tryReportArrayLiteralAgainstBindingDefault(
+        self: *Checker,
+        argument: NodeId,
+        sig: TypeId,
+        param_index: usize,
+    ) CheckError!bool {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return false;
+        if (param_index >= param_nodes.len) return false;
+        const param_node = param_nodes[param_index];
+        if (self.hir.kindOf(param_node) != .parameter) return false;
+        const param = hir_mod.parameterOf(self.hir, param_node);
+        if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .array_pattern) return false;
+        if (param.default_value == hir_mod.none_node_id or self.hir.kindOf(param.default_value) != .array_literal) return false;
+        return try self.reportArrayLiteralAgainstNullishDefault(argument, param.default_value);
+    }
+
+    fn reportArrayLiteralAgainstNullishDefault(
+        self: *Checker,
+        argument: NodeId,
+        default_value: NodeId,
+    ) CheckError!bool {
+        if (self.hir.kindOf(argument) != .array_literal or
+            self.hir.kindOf(default_value) != .array_literal) return false;
+        const argument_elements = hir_mod.arrayLiteralElements(self.hir, argument);
+        const default_elements = hir_mod.arrayLiteralElements(self.hir, default_value);
+        const count = @min(argument_elements.len, default_elements.len);
+        var emitted = false;
+        for (argument_elements[0..count], default_elements[0..count]) |argument_element, default_element| {
+            if (argument_element == hir_mod.none_node_id or default_element == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(argument_element) == .array_literal and
+                self.hir.kindOf(default_element) == .array_literal)
+            {
+                if (try self.reportArrayLiteralAgainstNullishDefault(argument_element, default_element)) emitted = true;
+                continue;
+            }
+            const target_t: TypeId = switch (self.hir.kindOf(default_element)) {
+                .literal_null => types.Primitive.null_t,
+                .literal_undefined => types.Primitive.undefined_t,
+                .identifier => blk: {
+                    const id = hir_mod.identifierOf(self.hir, default_element);
+                    if (!std.mem.eql(u8, self.string_interner.get(id.name), "undefined")) continue;
+                    break :blk types.Primitive.undefined_t;
+                },
+                else => continue,
+            };
+            if (try self.literalExpressionAssignableToTarget(argument_element, target_t)) continue;
+            var argument_t = self.hir.typeOf(argument_element);
+            if (argument_t == types.Primitive.none) argument_t = try self.checkExpression(argument_element);
+            if (self.engine.isAssignableTo(argument_t, target_t) catch false) continue;
+            if (self.hir.kindOf(argument_element) == .literal_bool) {
+                const source_name = if (hir_mod.literalBoolOf(self.hir, argument_element)) "true" else "false";
+                const target_name = if (target_t == types.Primitive.null_t) "null" else "undefined";
+                const message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Type '{s}' is not assignable to type '{s}'.",
+                    .{ source_name, target_name },
+                );
+                try self.report(argument_element, TsCodes.type_not_assignable, message);
+                emitted = true;
+                continue;
+            }
+            try self.reportTypeNotAssignable(
+                argument_element,
+                argument_t,
+                target_t,
+                "Type is not assignable to binding element default type.",
+            );
             emitted = true;
         }
         return emitted;
