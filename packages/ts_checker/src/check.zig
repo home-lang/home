@@ -5375,6 +5375,7 @@ pub const Checker = struct {
         try self.detectConstructorTypeThisParameter();
         try self.detectThisInStaticContext();
         try self.detectBigIntLiteralTargetDiagnostics();
+        self.removeContextualReturnDiagnosticsFromDuplicateGetters();
         try self.checkUnusedTopLevelImports(stmts);
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         self.removeTypeArgumentCountDiagnosticsInJs();
@@ -5804,6 +5805,56 @@ pub const Checker = struct {
             }
         }
         self.diagnostics.items.len = write;
+    }
+
+    fn removeContextualReturnDiagnosticsFromDuplicateGetters(self: *Checker) void {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            const function = hir_mod.fnDeclOf(self.hir, node);
+            if (!function.flags.is_getter or function.return_type != hir_mod.none_node_id or
+                function.name == hir_mod.none_node_id or function.body == hir_mod.none_node_id) continue;
+            if (self.sourcePositionIsJsLike(self.hir.spanOf(node).start)) continue;
+            const name_span = self.hir.spanOf(function.name);
+            var duplicate = false;
+            for (self.diagnostics.items) |diagnostic| {
+                const start = self.diagnosticStart(diagnostic);
+                if (diagnostic.code == TsCodes.duplicate_identifier and
+                    (diagnostic.node == function.name or
+                        (start >= name_span.start and start < name_span.end)))
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) continue;
+
+            var write: usize = 0;
+            for (self.diagnostics.items) |diagnostic| {
+                const remove = diagnostic.code == TsCodes.type_not_assignable and
+                    self.diagnosticComesFromReturnInFunction(diagnostic.node, node);
+                if (!remove) {
+                    self.diagnostics.items[write] = diagnostic;
+                    write += 1;
+                }
+            }
+            self.diagnostics.items.len = write;
+        }
+    }
+
+    fn diagnosticComesFromReturnInFunction(self: *Checker, diagnostic_node: NodeId, function_node: NodeId) bool {
+        var current = diagnostic_node;
+        var saw_return = false;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            if (current == function_node) return saw_return;
+            switch (self.hir.kindOf(current)) {
+                .return_stmt => saw_return = true,
+                .fn_decl, .fn_expr, .arrow_fn => return false,
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn removeImplicitAnyDiagnosticsWithin(self: *Checker, node: NodeId) void {
@@ -25391,6 +25442,15 @@ pub const Checker = struct {
             ((trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') or
                 (trimmed[0] == '\'' and trimmed[trimmed.len - 1] == '\'')))
         {
+            const quote = trimmed[0];
+            var i: usize = 1;
+            while (i + 1 < trimmed.len) : (i += 1) {
+                if (trimmed[i] == '\\') {
+                    i += 1;
+                    continue;
+                }
+                if (trimmed[i] == quote) return null;
+            }
             return self.string_interner.intern(trimmed[1 .. trimmed.len - 1]) catch null;
         }
         const ret_idx = std.mem.indexOf(u8, raw, "return") orelse return null;
@@ -77683,6 +77743,7 @@ pub const Checker = struct {
 
     fn checkObjectDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId) CheckError!void {
         if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return;
+        const primitive_wrapper = self.primitiveWrapperDisplayName(source_t);
         if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .object_literal) {
             // Skip the excess-properties scan when the target pattern
             // contains a rest spread (`{...rest}`) ÃÂ¢ÃÂÃÂ the rest binding
@@ -77748,7 +77809,14 @@ pub const Checker = struct {
                     if (inner != hir_mod.none_node_id) {
                         const inner_kind = self.hir.kindOf(inner);
                         if (inner_kind == .object_literal or inner_kind == .array_literal) {
-                            try self.report(inner, TsCodes.rest_element_cannot_contain_binding_pattern, "A rest element cannot contain a binding pattern.");
+                            const inner_pos = self.objectRestTargetStart(prop_node);
+                            const parenthesized = if (inner_pos) |pos| pos < self.hir.spanOf(inner).start else false;
+                            try self.reportAt(inner, inner_pos, TsCodes.rest_element_cannot_contain_binding_pattern, "A rest element cannot contain a binding pattern.");
+                            if (parenthesized) {
+                                try self.reportAt(inner, inner_pos, TsCodes.object_rest_assignment_target_invalid, "The target of an object rest assignment must be a variable or a property access.");
+                            } else if (inner_kind == .array_literal) {
+                                try self.reportIteratorRequiredWithSource(inner, source_t, source_node);
+                            }
                         } else if (!self.expressionIsOptionalChain(inner) and
                             inner_kind != .identifier and
                             inner_kind != .member_access and
@@ -77806,16 +77874,54 @@ pub const Checker = struct {
             }
             const op = hir_mod.objectPropertyOf(self.hir, prop_node);
             if (op.value == hir_mod.none_node_id) continue;
+            var reported_primitive_computed_key = false;
             if (op.is_computed) {
                 const key_t = try self.checkExpression(op.key);
-                if (key_t != types.Primitive.any and
+                if (primitive_wrapper) |wrapper_name| {
+                    const key_flags = if (key_t < self.interner.pool.typeCount())
+                        self.interner.pool.flagsOf(key_t)
+                    else
+                        types.TypeFlags{};
+                    const syntax_key_name = self.propertyNameFromRawComputedKeyText(self.nodeSourceTextOrEmpty(op.key));
+                    if (syntax_key_name != null or
+                        (key_flags.is_literal and (key_flags.is_string or key_flags.is_number)))
+                    {
+                        const key_name = syntax_key_name orelse try self.propertyNameFromComputedBindingKeyNode(op.key);
+                        if (key_name) |name| {
+                            if ((try self.primitivePrototypeMember(source_t, name)) == null) {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Property '{s}' does not exist on type '{s}'.",
+                                    .{ self.string_interner.get(name), wrapper_name },
+                                );
+                                try self.report(op.key, TsCodes.property_does_not_exist, msg);
+                                reported_primitive_computed_key = true;
+                            }
+                        }
+                    } else if (try self.dynamicComputedIndexKind(key_t)) |key_kind| {
+                        const kind_text = switch (key_kind) {
+                            .string => "string",
+                            .number => "number",
+                            .symbol => "symbol",
+                        };
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Type '{s}' has no matching index signature for type '{s}'.",
+                            .{ wrapper_name, kind_text },
+                        );
+                        try self.report(op.key, TsCodes.no_matching_index_signature, msg);
+                        reported_primitive_computed_key = true;
+                        has_dynamic_computed_key = true;
+                    }
+                }
+                if (!reported_primitive_computed_key and key_t != types.Primitive.any and
                     try self.reportMissingIndexForComputedBindingKey(op.key, source_t, key_t, true))
                 {
                     has_dynamic_computed_key = true;
                 }
             }
             const maybe_prop_t = try self.objectPropertyTypeForDestructuring(source_t, op.key, op.is_computed);
-            if (maybe_prop_t == null and self.hir.kindOf(op.value) != .assignment) {
+            if (maybe_prop_t == null and !reported_primitive_computed_key and self.hir.kindOf(op.value) != .assignment) {
                 const prop_name = if (op.is_computed)
                     try self.propertyNameFromComputedBindingKeyNode(op.key)
                 else
@@ -77825,7 +77931,9 @@ pub const Checker = struct {
                     // Upstream tsc widens `object` to `{}` when reporting
                     // missing-property destructuring errors ÃÂ¢ÃÂÃÂ mirrors
                     // `nonPrimitiveAccessProperty.ts(5,7)`.
-                    const target_text_opt: ?[]const u8 = if (source_t == types.Primitive.object_t)
+                    const target_text_opt: ?[]const u8 = if (primitive_wrapper) |wrapper_name|
+                        wrapper_name
+                    else if (source_t == types.Primitive.object_t)
                         "{}"
                     else
                         try self.allocPropertyMissingTargetTypeName(source_t);
@@ -77866,6 +77974,17 @@ pub const Checker = struct {
                 try self.checkDestructuringAssignmentTarget(op.value, prop_t, hir_mod.none_node_id);
             }
         }
+    }
+
+    fn objectRestTargetStart(self: *Checker, spread_node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(spread_node);
+        if (span.start >= span.end or span.end > src.len) return null;
+        const text = src[span.start..span.end];
+        const spread = std.mem.indexOf(u8, text, "...") orelse return null;
+        var offset = spread + 3;
+        while (offset < text.len and std.ascii.isWhitespace(text[offset])) : (offset += 1) {}
+        return span.start + @as(u32, @intCast(offset));
     }
 
     fn checkDestructuringAssignmentTarget(
@@ -80936,7 +81055,9 @@ pub const Checker = struct {
                 }
             } else if (nk == .array_pattern and v.init != hir_mod.none_node_id) {
                 try self.checkArrayBindingPatternAgainstType(v.name, final_type, v.init);
-                try self.checkArrayBindingPatternAgainstArrayLiteral(v.name, v.init);
+                if (declared_type == types.Primitive.none) {
+                    try self.checkArrayBindingPatternAgainstArrayLiteral(v.name, v.init);
+                }
                 // Under non-strict-null mode, destructuring from
                 // `[undefined, null]` widens those positions to
                 // implicit `any`; strict-null mode keeps concrete
@@ -80950,11 +81071,12 @@ pub const Checker = struct {
             if (nk == .object_pattern or nk == .array_pattern) {
                 try self.reportCircularDestructuringBindings(node, v);
             }
-            if ((nk == .object_pattern or nk == .array_pattern) and
-                v.init != hir_mod.none_node_id and
-                !self.nodeIsDirectSourceFileStatement(node))
-            {
-                try self.recordBindingPatternFlowFromSource(v.name, v.init, final_type);
+            if ((nk == .object_pattern or nk == .array_pattern) and v.init != hir_mod.none_node_id) {
+                if (declared_type != types.Primitive.none) {
+                    try self.recordBindingPatternFlowFromSource(v.name, hir_mod.none_node_id, declared_type);
+                } else if (!self.nodeIsDirectSourceFileStatement(node)) {
+                    try self.recordBindingPatternFlowFromSource(v.name, v.init, final_type);
+                }
             }
             if ((nk == .object_pattern or nk == .array_pattern) and v.init != hir_mod.none_node_id) {
                 try self.recordRepeatedVarPatternBindings(node, v.name, v.init);
