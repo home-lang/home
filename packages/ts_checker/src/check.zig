@@ -24127,7 +24127,11 @@ pub const Checker = struct {
                 const default_value = if (ep.flags.is_computed_binding_key) hir_mod.none_node_id else ep.default_value;
                 try self.checkObjectBindingElementVisibilityAccess(e, ep.name, container_t, key_name);
                 if (check_defaults) {
-                    try self.checkBindingTargetAgainstElementType(ep.name, default_value, member.type);
+                    const binding_target_t = if (member.is_optional)
+                        self.unionWithUndefined(member.type) catch member.type
+                    else
+                        member.type;
+                    try self.checkBindingTargetAgainstElementType(ep.name, default_value, binding_target_t);
                 } else if (default_value != hir_mod.none_node_id) {
                     _ = try self.checkExpression(default_value);
                 }
@@ -24418,11 +24422,25 @@ pub const Checker = struct {
             if (default_value == hir_mod.none_node_id) default_value = a.value;
         }
 
-        if (default_value != hir_mod.none_node_id) {
-            try self.checkBindingDefaultAssignableToType(default_value, target_t, target);
-        }
-
         if (target == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(target) == .object_pattern and
+            default_value == hir_mod.none_node_id and
+            self.typeIncludesUndefined(target_t))
+        {
+            const target_text = (try self.allocPropertyMissingTargetTypeName(target_t)) orelse "unknown";
+            try self.reportObjectBindingPropertiesMissingOnType(target, target_text);
+            return;
+        }
+        if (default_value != hir_mod.none_node_id) {
+            const default_target_t = if (self.typeIncludesUndefined(target_t)) blk: {
+                const without_undefined = self.subtractType(target_t, types.Primitive.undefined_t) catch target_t;
+                break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
+                    target_t
+                else
+                    without_undefined;
+            } else target_t;
+            try self.checkBindingDefaultAssignableToType(default_value, default_target_t, target);
+        }
         switch (self.hir.kindOf(target)) {
             .object_pattern => try self.checkObjectBindingPatternAgainstType(target, target_t, true),
             .array_pattern => try self.checkArrayBindingPatternAgainstType(target, target_t, hir_mod.none_node_id),
@@ -31030,6 +31048,7 @@ pub const Checker = struct {
         if (p.name == hir_mod.none_node_id) return types.Primitive.any;
         return switch (self.hir.kindOf(p.name)) {
             .array_pattern => try self.arrayBindingPatternParameterType(p.name),
+            .object_pattern => try self.objectBindingPatternParameterType(p.name),
             else => types.Primitive.any,
         };
     }
@@ -80904,7 +80923,11 @@ pub const Checker = struct {
                 }
             }
             if (nk == .object_pattern and v.init != hir_mod.none_node_id and !object_rest_nullish_union_binding_diag_fired) {
-                try self.checkObjectBindingPatternAgainstType(v.name, final_type, declared_type != types.Primitive.none);
+                if (self.isEmptyArrayLiteral(v.init)) {
+                    try self.reportObjectBindingPropertiesMissingOnType(v.name, "undefined[]");
+                } else {
+                    try self.checkObjectBindingPatternAgainstType(v.name, final_type, declared_type != types.Primitive.none);
+                }
                 if (self.hir.kindOf(v.init) == .object_literal and
                     !self.objectBindingPatternHasRest(v.name))
                 {
@@ -80932,6 +80955,9 @@ pub const Checker = struct {
                 !self.nodeIsDirectSourceFileStatement(node))
             {
                 try self.recordBindingPatternFlowFromSource(v.name, v.init, final_type);
+            }
+            if ((nk == .object_pattern or nk == .array_pattern) and v.init != hir_mod.none_node_id) {
+                try self.recordRepeatedVarPatternBindings(node, v.name, v.init);
             }
         }
         try self.checkRepeatedVarDeclaration(node, final_type);
@@ -89975,6 +90001,61 @@ pub const Checker = struct {
             if (c < '0' or c > '9') return false;
         }
         return true;
+    }
+
+    fn recordRepeatedVarPatternBindings(
+        self: *Checker,
+        var_node: NodeId,
+        pattern_node: NodeId,
+        source_node: NodeId,
+    ) CheckError!void {
+        if (self.hir.kindOf(var_node) != .var_decl or self.hir.kindOf(pattern_node) != .array_pattern) return;
+        const values: []const NodeId = if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .array_literal)
+            hir_mod.arrayLiteralElements(self.hir, source_node)
+        else
+            &.{};
+        for (hir_mod.patternElements(self.hir, pattern_node), 0..) |element, index| {
+            if (self.hir.kindOf(element) != .parameter) continue;
+            const binding = hir_mod.parameterOf(self.hir, element);
+            if (binding.flags.is_rest or binding.name == hir_mod.none_node_id) continue;
+
+            const value_node = if (index < values.len) values[index] else hir_mod.none_node_id;
+            if (self.hir.kindOf(binding.name) == .array_pattern) {
+                try self.recordRepeatedVarPatternBindings(var_node, binding.name, value_node);
+                continue;
+            }
+            if (self.hir.kindOf(binding.name) != .identifier) continue;
+
+            var binding_t = types.Primitive.none;
+            if (value_node != hir_mod.none_node_id) {
+                binding_t = self.hir.typeOf(value_node);
+                if (binding_t == types.Primitive.none) binding_t = try self.checkExpression(value_node);
+                binding_t = self.widenForInference(binding_t);
+            }
+            if (binding.default_value != hir_mod.none_node_id) {
+                var default_t = self.hir.typeOf(binding.default_value);
+                if (default_t == types.Primitive.none) default_t = try self.checkExpression(binding.default_value);
+                default_t = self.widenForInference(default_t);
+                if (binding_t == types.Primitive.none or binding_t == types.Primitive.undefined_t) {
+                    binding_t = default_t;
+                } else if (default_t != types.Primitive.none and default_t != binding_t) {
+                    binding_t = self.interner.internUnion(&.{ binding_t, default_t }) catch return error.OutOfMemory;
+                }
+            }
+            if (binding_t == types.Primitive.none or binding_t == types.Primitive.any) continue;
+
+            const id = hir_mod.identifierOf(self.hir, binding.name);
+            const scope = self.enclosingVarDeclScope(var_node);
+            if (scope == hir_mod.none_node_id) continue;
+            const key: VarDeclKey = .{
+                .scope = scope,
+                .name = id.name,
+                .virtual_section_start = self.repeatedVarVirtualSectionKey(var_node),
+            };
+            if (self.var_decl_types.contains(key)) continue;
+            try self.var_decl_types.put(self.gpa, key, binding_t);
+            try self.var_decl_explicit.put(self.gpa, key, false);
+        }
     }
 
     fn checkRepeatedVarDeclaration(self: *Checker, node: NodeId, final_type: TypeId) CheckError!void {
@@ -142755,14 +142836,14 @@ pub const Checker = struct {
                             emitted = true;
                         } else if (try self.tryReportArrayLiteralTupleArgumentWidthMismatch(args[i], param_t)) {
                             emitted = true;
+                        } else if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
+                            emitted = true;
                         } else if (try self.formatArrayLiteralTupleArgumentNotAssignable(args[i], param_t)) |msg| {
                             try self.diagnostics.append(self.gpa, .{
                                 .node = args[i],
                                 .code = TsCodes.argument_type_mismatch,
                                 .message = msg,
                             });
-                            emitted = true;
-                        } else if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
                             emitted = true;
                         }
                     }
@@ -154878,7 +154959,11 @@ pub const Checker = struct {
         const arg_span = self.hir.spanOf(arg_node);
         for (self.diagnostics.items) |d| {
             if (self.isContextualCallShapeDiagnostic(d, call_node, args)) return true;
-            if (d.code == TsCodes.type_not_assignable) {
+            if (d.code == TsCodes.type_not_assignable or
+                d.code == TsCodes.property_missing_required or
+                d.code == TsCodes.type_missing_properties or
+                d.code == TsCodes.type_missing_properties_truncated)
+            {
                 const start = self.diagnosticStart(d);
                 if (start >= arg_span.start and start < arg_span.end) return true;
             }
@@ -156436,7 +156521,7 @@ pub const Checker = struct {
                 try self.reportTypeNotAssignable(
                     anchor,
                     value_t,
-                    tm.type,
+                    contextual_target_t,
                     "Type is not assignable to property type.",
                 );
                 try self.attachExpectedTypeFromPropertyRelated(resolved_target, tm);
@@ -160638,6 +160723,13 @@ pub const Checker = struct {
             name
         else if (try self.expandedGenericAliasAnnotationNameForIdentifier(value_node)) |name|
             name
+        else if (value_node != hir_mod.none_node_id and
+            self.hir.kindOf(value_node) == .object_literal and
+            self.hir.kindOf(self.hir.parentOf(value_node)) == .array_literal) blk: {
+            const refined_source = try self.literalRefinedObjectTypeForTarget(value_node, source);
+            break :blk (try self.missingPropertyTypeName(refined_source)) orelse
+                (try self.missingPropertyTypeName(source)) orelse "{}";
+        }
         else
             (try self.missingPropertyTypeName(source)) orelse "{}";
         // Tuple types render their numeric element index as `'2'`
