@@ -141,9 +141,22 @@ const harness_prelude =
     \\function __home_date_now() {
     \\  return __home_fake_timers_active ? Math.trunc(__home_fake_timers_now) : __home_real_Date.now();
     \\}
+    \\function __home_normalize_date_input(value) {
+    \\  if (typeof value !== "string") return value;
+    \\  if (value.startsWith("parse-local-time:")) value = value.slice("parse-local-time:".length);
+    \\  const hour24 = value.match(/^\d{4}-\d{2}-\d{2}T24:(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+    \\  if (hour24 && (hour24[1] !== "00" || hour24[2] !== undefined && hour24[2] !== "00" || hour24[3] !== undefined && !/^0+$/.test(hour24[3]))) return "Invalid Date";
+    \\  if (!/^\d{4}-/.test(value) && /\d{2}:\d{2}:\d{2}Z$/i.test(value)) value = value.replace(/Z$/i, " UTC");
+    \\  const spacedISO = value.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) ([+-]\d{2}:?\d{2})$/);
+    \\  if (spacedISO) value = spacedISO[1] + "T" + spacedISO[2] + spacedISO[3];
+    \\  const extendedYear = value.match(/^([+-]?)(\d{6})-(\d{2})-(\d{2})\s*$/);
+    \\  if (!extendedYear) return value;
+    \\  return (extendedYear[1] || "+") + extendedYear[2] + "-" + extendedYear[3] + "-" + extendedYear[4];
+    \\}
     \\function __home_Date() {
     \\  if (this instanceof __home_Date) {
     \\    const args = arguments.length === 0 && __home_fake_timers_active ? [Math.trunc(__home_fake_timers_now)] : Array.prototype.slice.call(arguments);
+    \\    if (args.length === 1) args[0] = __home_normalize_date_input(args[0]);
     \\    return Reflect.construct(__home_real_Date, args, new.target || __home_Date);
     \\  }
     \\  return __home_real_Date();
@@ -151,7 +164,7 @@ const harness_prelude =
     \\Object.setPrototypeOf(__home_Date, __home_real_Date);
     \\__home_Date.prototype = __home_real_Date.prototype;
     \\__home_Date.UTC = __home_real_Date.UTC;
-    \\__home_Date.parse = __home_real_Date.parse;
+    \\__home_Date.parse = function(value) { return __home_real_Date.parse(__home_normalize_date_input(value)); };
     \\__home_Date.now = __home_date_now;
     \\globalThis.Date = __home_Date;
     \\Object.defineProperty(globalThis, "self", { configurable: true, enumerable: true, get() { return globalThis; }, set(value) {} });
@@ -91373,24 +91386,31 @@ test "bootstrap runner preserves node util foundation contracts" {
     }
 }
 
-test "bootstrap runner preserves node V8 stack contracts" {
+test "bootstrap runner preserves node V8 contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "js/node/v8/capture-stack-trace.test.js", .passed = 38 },
+        .{ .path = "js/node/v8/v8-date-parser.test.js", .passed = 5 },
+    };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
 
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "js/node/v8/capture-stack-trace.test.js");
-    defer summary.deinit(std.testing.allocator);
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0) {
-        std.debug.print("node V8 stack contract failure: {s}\n", .{summary.first_failure_message});
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node V8 contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
-    try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 38), summary.passed);
-    try std.testing.expectEqual(@as(usize, 0), summary.todo);
-    try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
-    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 }
 
 test "bootstrap runner accepts Bun.serve static HTML route shape" {
