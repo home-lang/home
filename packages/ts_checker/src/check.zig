@@ -24038,7 +24038,10 @@ pub const Checker = struct {
         if (self.thisTypeMarkerConstraint(container_t)) |this_t| {
             return self.checkObjectBindingPatternAgainstType(pattern_node, this_t, check_defaults);
         }
-        if (container_t == types.Primitive.any) return;
+        if (container_t == types.Primitive.any) {
+            try self.checkObjectBindingPatternDefaultLiteralExcess(pattern_node);
+            return;
+        }
         if (container_t == types.Primitive.unknown) {
             _ = try self.checkObjectBindingComputedKeysAgainstType(pattern_node, container_t);
             if (self.objectBindingPatternHasRest(pattern_node)) {
@@ -24066,6 +24069,7 @@ pub const Checker = struct {
         if (flags.is_union) {
             var all_members_are_primitive = true;
             var saw_primitive_member = false;
+            var saw_nonempty_object_member = false;
             for (self.interner.unionMembers(container_t)) |member| {
                 if (member == types.Primitive.undefined_t or member == types.Primitive.null_t) continue;
                 if (member >= self.interner.pool.typeCount()) {
@@ -24073,6 +24077,13 @@ pub const Checker = struct {
                     break;
                 }
                 const member_flags = self.interner.pool.flagsOf(member);
+                if (member_flags.is_object_type and
+                    (self.interner.objectMembers(member).len > 0 or
+                        self.interner.objectStringIndex(member) != types.Primitive.none or
+                        self.interner.objectNumberIndex(member) != types.Primitive.none))
+                {
+                    saw_nonempty_object_member = true;
+                }
                 if (!(member_flags.is_string or member_flags.is_number or member_flags.is_boolean or
                     member_flags.is_bigint or member_flags.is_symbol))
                 {
@@ -24092,6 +24103,9 @@ pub const Checker = struct {
                     self.interner.objectStringIndex(member) == types.Primitive.none and
                     self.interner.objectNumberIndex(member) == types.Primitive.none)
                 {
+                    if (saw_nonempty_object_member) return;
+                    const target_text = (try self.allocPropertyMissingTargetTypeName(container_t)) orelse "unknown";
+                    try self.reportObjectBindingPropertiesMissingOnType(pattern_node, target_text);
                     return;
                 }
             }
@@ -24216,6 +24230,46 @@ pub const Checker = struct {
                 .code = TsCodes.property_does_not_exist,
                 .message = msg,
             });
+        }
+    }
+
+    fn checkObjectBindingPatternDefaultLiteralExcess(self: *Checker, pattern_node: NodeId) CheckError!void {
+        for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, elem);
+            if (p.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(p.name) == .object_pattern and
+                p.default_value != hir_mod.none_node_id and
+                self.hir.kindOf(p.default_value) == .object_literal)
+            {
+                const expected_t = try self.objectBindingPatternExpectedType(p.name, false, true);
+                if (expected_t != types.Primitive.none) {
+                    const diagnostic_base = self.diagnostics.items.len;
+                    try self.checkExcessProperties(p.default_value, expected_t);
+                    for (self.diagnostics.items[diagnostic_base..]) |*diagnostic| {
+                        if (diagnostic.code != TsCodes.object_literal_excess_property_suggestion or
+                            self.hir.kindOf(diagnostic.node) != .object_property)
+                        {
+                            continue;
+                        }
+                        const property = hir_mod.objectPropertyOf(self.hir, diagnostic.node);
+                        const property_name = if (self.hir.kindOf(property.key) == .identifier)
+                            self.string_interner.get(hir_mod.identifierOf(self.hir, property.key).name)
+                        else
+                            self.nodeSourceTextOrEmpty(property.key);
+                        const target_name = (try self.allocPropertyMissingTargetTypeName(expected_t)) orelse continue;
+                        diagnostic.code = TsCodes.object_literal_excess_property;
+                        diagnostic.message = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Object literal may only specify known properties, and '{s}' does not exist in type '{s}'.",
+                            .{ property_name, target_name },
+                        );
+                    }
+                }
+            }
+            if (self.hir.kindOf(p.name) == .object_pattern) {
+                try self.checkObjectBindingPatternDefaultLiteralExcess(p.name);
+            }
         }
     }
 
@@ -25290,10 +25344,11 @@ pub const Checker = struct {
                 } else if (!has_own_default and !parent_default_supplies) {
                     const id = hir_mod.identifierOf(self.hir, ep.name);
                     const raw = self.string_interner.get(id.name);
+                    const display_name = if (raw.len == 0) "(Missing)" else raw;
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Binding element '{s}' implicitly has an 'any' type.",
-                        .{raw},
+                        .{display_name},
                     );
                     try self.diagnostics.append(self.gpa, .{
                         .node = ep.name,
@@ -25374,6 +25429,11 @@ pub const Checker = struct {
 
     fn objectBindingElementKeyName(self: *Checker, elem_node: NodeId, name_node: NodeId) CheckError!?hir_mod.StringId {
         if (name_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(name_node) == .identifier and
+            self.string_interner.get(hir_mod.identifierOf(self.hir, name_node).name).len == 0)
+        {
+            return null;
+        }
         if (self.hir.kindOf(elem_node) == .parameter) {
             const p = hir_mod.parameterOf(self.hir, elem_node);
             if (p.flags.is_computed_binding_key and p.default_value != hir_mod.none_node_id) {
@@ -80598,6 +80658,7 @@ pub const Checker = struct {
                 object_rest_nullish_union_binding_diag_fired = true;
             } else if (nk == .object_pattern and
                 (init_type == types.Primitive.void_t or self.typeIncludesUndefined(init_type)) and
+                declared_type != types.Primitive.any and
                 !self.typeIsAnyLike(init_type))
             {
                 // `any` (and `<any>` cast targets) intentionally
@@ -208883,6 +208944,19 @@ test "checker: binding pattern parameters validate destructuring source type" {
     }
     try T.expectEqual(@as(usize, 2), iter_count);
     try T.expectEqual(@as(usize, 3), undefined_count);
+}
+
+test "checker: recovered reserved shorthand reports a missing binding element" {
+    const s = try newSetup("function f({while}) {}");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.binding_element_implicitly_any,
+        "Binding element '(Missing)' implicitly has an 'any' type.",
+    ));
 }
 
 test "checker: object destructuring reports missing and fresh excess properties" {

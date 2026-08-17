@@ -5406,7 +5406,7 @@ pub const Parser = struct {
                         // follows the literal key). Matches
                         // `objectBindingPatternKeywordIdentifiers03` baseline.
                         try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
-                        return error.UnexpectedToken;
+                        break :blk try self.missingIdentifierAt(self.peek().span.start);
                     }
                     // `{ while }` — shorthand object-binding entry whose key is
                     // a reserved word. tsc treats this as a missing rename
@@ -5415,8 +5415,15 @@ pub const Parser = struct {
                     // would have lived). Mirrors
                     // `objectBindingPatternKeywordIdentifiers01` baseline.
                     if (isReservedBindingNameToken(key_tok.kind)) {
+                        if (key_tok.kind == .kw_public or
+                            key_tok.kind == .kw_private or
+                            key_tok.kind == .kw_protected)
+                        {
+                            const name_id = try self.internToken(key_tok);
+                            break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
+                        }
                         try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
-                        return error.UnexpectedToken;
+                        break :blk try self.missingIdentifierAt(self.peek().span.start);
                     }
                     try self.reportInvalidStrictName(key_tok);
                     try self.reportReservedBindingNameIfNeeded(key_tok);
@@ -20304,7 +20311,11 @@ pub const Parser = struct {
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
             if (self.peek().kind == .close_brace or self.peek().kind == .close_paren) {
                 const close = self.peek();
-                try self.reportCodeAt(close.span.start, close.line, 1137, "Expression or comma expected.");
+                if (close.kind == .close_paren and elements.items.len > 0) {
+                    try self.reportCodeAt(close.span.start, close.line, 1005, "',' expected.");
+                } else {
+                    try self.reportCodeAt(close.span.start, close.line, 1137, "Expression or comma expected.");
+                }
                 return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.start }, elements.items);
             }
             if (self.peek().kind == .comma) {
@@ -20340,6 +20351,15 @@ pub const Parser = struct {
             if (arrayLiteralElementCanStart(self.peek().kind)) {
                 try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "',' expected.");
                 continue;
+            }
+            if (self.peek().kind == .close_paren or self.peek().kind == .close_brace) {
+                const close = self.peek();
+                if (close.kind == .close_paren) {
+                    try self.reportCodeAt(close.span.start, close.line, 1005, "',' expected.");
+                } else {
+                    try self.reportCodeAt(close.span.start, close.line, 1137, "Expression or comma expected.");
+                }
+                return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.start }, elements.items);
             }
             break;
         }
@@ -20775,7 +20795,18 @@ pub const Parser = struct {
             if (!is_computed and self.peek().kind == .question) {
                 const question_tok = self.advance();
                 optional_object_member_token = question_tok;
-                try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
+                var recovered_optional_binding = false;
+                for (self.diagnostics.items) |diagnostic| {
+                    if (diagnostic.line == question_tok.line and
+                        diagnostic.code == 1005 and
+                        std.mem.eql(u8, diagnostic.message, "',' expected."))
+                    {
+                        recovered_optional_binding = true;
+                    }
+                }
+                if (!recovered_optional_binding) {
+                    try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
+                }
             }
             var recovered_missing_colon_value = false;
             if (method_is_generator and self.peek().kind != .less_than and self.peek().kind != .open_paren) {
@@ -23980,9 +24011,9 @@ test "parser: reserved shorthand object binding target reports TS1005" {
     // NOT also emit TS1359 here — the reserved-word diagnostic only
     // surfaces when the key was actually parsed as a binding target
     // (e.g. `var { "while": while }`).
-    var s = try newTestSetup("var { while } = { while: 1 };");
+    var s = try newTestSetup("var { while } = { while: 1 }; let after = 1;");
     defer destroyTestSetup(s);
-    _ = s.parser.parseSourceFile() catch {};
+    const root = try s.parser.parseSourceFile();
     var saw_1005 = false;
     var saw_1359 = false;
     for (s.parser.diagnostics.items) |d| {
@@ -23991,6 +24022,7 @@ test "parser: reserved shorthand object binding target reports TS1005" {
     }
     try T.expect(saw_1005);
     try T.expect(!saw_1359);
+    try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
 }
 
 test "parser: literal object binding key without ':' reports TS1005" {
@@ -23998,9 +24030,9 @@ test "parser: literal object binding key without ':' reports TS1005" {
     //   var { "while" } = { while: 1 }
     // tsc emits TS1005 `':' expected.` (we previously emitted a custom TS1109
     // "expected ':' after literal binding key" which doesn't match upstream).
-    var s = try newTestSetup("var { \"while\" } = { while: 1 };");
+    var s = try newTestSetup("var { \"while\" } = { while: 1 }; let after = 1;");
     defer destroyTestSetup(s);
-    _ = s.parser.parseSourceFile() catch {};
+    const root = try s.parser.parseSourceFile();
     var found = false;
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 1005) {
@@ -24009,6 +24041,7 @@ test "parser: literal object binding key without ':' reports TS1005" {
         }
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
 }
 
 test "parser: duplicate names in binding pattern report TS2300" {
@@ -26459,6 +26492,21 @@ test "parser: array literal leaves a mismatched call close for outer recovery" {
     try T.expectEqual(@as(u32, 5), countDiag(s, 1005));
     try T.expectEqual(@as(u32, 2), countDiag(s, 1068));
     try T.expectEqual(@as(u32, 1), countDiag(s, 1434));
+}
+
+test "parser: nonempty array literal missing its close yields to the call close" {
+    var s = try newTestSetup(
+        \\declare function f(value: unknown): void;
+        \\f([1, [[2]]);
+        \\let after = 1;
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), hir_mod.blockStmts(&s.hir, root).len);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+    const d = findDiag(s, 1005) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("',' expected.", d.message);
 }
 
 test "parser: call expression with spread arguments" {
