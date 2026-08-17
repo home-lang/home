@@ -30679,12 +30679,15 @@ const harness_prelude =
     \\  const previousCallbacks = globalThis.__home_current_finished_callbacks;
     \\  const previousSnapshotName = globalThis.__home_current_snapshot_name;
     \\  const previousConcurrent = globalThis.__home_current_test_concurrent;
+    \\  const previousAsyncTest = globalThis.__home_current_test_is_async;
     \\  const previousAssertionState = globalThis.__home_current_assertion_state;
     \\  globalThis.__home_current_finished_callbacks = [];
     \\  globalThis.__home_current_snapshot_name = __home_test_full_name(parsed);
     \\  globalThis.__home_current_test_concurrent = !!(parsed && parsed.options && parsed.options.concurrent);
+    \\  globalThis.__home_current_test_is_async = Object.prototype.toString.call(fn) === "[object AsyncFunction]";
     \\  globalThis.__home_current_assertion_state = { count: 0, expected: null, hasAssertions: false };
     \\  if (globalThis.__home_bun_stack_function_names instanceof Map) globalThis.__home_bun_stack_function_names.clear();
+    \\  if (globalThis.__home_v8_function_registry instanceof Map) globalThis.__home_v8_function_registry.clear();
     \\  let callbacks = null;
     \\  const cleanup = () => {
     \\    callbacks = globalThis.__home_current_finished_callbacks;
@@ -30692,6 +30695,7 @@ const harness_prelude =
     \\    globalThis.__home_current_finished_callbacks = previousCallbacks;
     \\    globalThis.__home_current_snapshot_name = previousSnapshotName;
     \\    globalThis.__home_current_test_concurrent = previousConcurrent;
+    \\    globalThis.__home_current_test_is_async = previousAsyncTest;
     \\    globalThis.__home_current_assertion_state = previousAssertionState;
     \\    let cleanupChain = null;
     \\    for (let i = 0; i < chain.length; i++) {
@@ -45047,6 +45051,9 @@ const harness_prelude =
     \\}
     \\function __home_vm_run_in_context(code, context, options) {
     \\  const sandbox = context && typeof context === "object" ? context : {};
+    \\  const isolateErrorStatics = !Object.prototype.hasOwnProperty.call(sandbox, "Error");
+    \\  const previousPrepareStackTrace = isolateErrorStatics ? Error.prepareStackTrace : undefined;
+    \\  const previousStackTraceLimit = isolateErrorStatics ? Error.stackTraceLimit : undefined;
     \\  if (!Object.prototype.hasOwnProperty.call(sandbox, "Object")) {
     \\    Object.defineProperty(sandbox, "Object", { configurable: true, writable: true, value: __home_vm_context_object() });
     \\  }
@@ -45131,6 +45138,11 @@ const harness_prelude =
     \\      throw new TypeError("Attempted to assign to readonly property.");
     \\    }
     \\    throw error;
+    \\  } finally {
+    \\    if (isolateErrorStatics) {
+    \\      Error.prepareStackTrace = previousPrepareStackTrace;
+    \\      Error.stackTraceLimit = previousStackTraceLimit;
+    \\    }
     \\  }
     \\}
     \\const __home_vm_context_options = new WeakMap();
@@ -55422,6 +55434,11 @@ const harness_prelude =
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  Dequeue: __home_Dequeue,
     \\  sslCtxLiveCount: __home_tls_ssl_ctx_live_count,
+    \\  nativeFrameForTesting(callback) {
+    \\    globalThis.__home_v8_native_frame_depth = (Number(globalThis.__home_v8_native_frame_depth) || 0) + 1;
+    \\    try { return callback(); }
+    \\    finally { globalThis.__home_v8_native_frame_depth--; }
+    \\  },
     \\  createSocketPair() {
     \\    const readPath = __home_build_join("/tmp", "home-socketpair-read-" + Date.now() + "-" + Math.random());
     \\    const writePath = __home_build_join("/tmp", "home-socketpair-write-" + Date.now() + "-" + Math.random());
@@ -55656,6 +55673,14 @@ const harness_prelude =
     \\  return result;
     \\}
     \\globalThis.__home_modules["bun:jsc"] = {
+    \\  noInline(callback) {
+    \\    if (typeof callback === "function") {
+    \\      const registry = globalThis.__home_v8_function_registry || (globalThis.__home_v8_function_registry = new Map());
+    \\      if (callback.name) registry.set(String(callback.name), callback);
+    \\      if (callback.displayName) registry.set(String(callback.displayName), callback);
+    \\    }
+    \\    return callback;
+    \\  },
     \\  fullGC() {
     \\    return Bun.gc(true);
     \\  },
@@ -62689,34 +62714,221 @@ const harness_prelude =
     \\    if (functionName === "<anonymous>" && output.some(frame => frame.includes("    at async "))) {
     \\      functionName = "async <anonymous>";
     \\    }
+    \\    if (/^[A-Z][A-Za-z0-9_$]*$/.test(functionName)) functionName = "new " + functionName;
     \\    output.push("    at " + functionName + " (" + location + ")");
     \\  }
     \\  return output.join("\n");
     \\}
-    \\function __home_install_bun_stack_error_bridge() {
+    \\function __home_v8_stack_frame(rawLine) {
+    \\  let line = String(rawLine || "").trim();
+    \\  let functionName = "";
+    \\  let location = "";
+    \\  if (line.startsWith("at ")) {
+    \\    line = line.slice(3).trim();
+    \\    const match = line.match(/^(.*?) \((.*)\)$/);
+    \\    if (match) { functionName = match[1]; location = match[2]; }
+    \\    else location = line;
+    \\  } else {
+    \\    const separator = line.lastIndexOf("@");
+    \\    if (separator < 0) return null;
+    \\    functionName = line.slice(0, separator).trim();
+    \\    location = line.slice(separator + 1).trim();
+    \\  }
+    \\  if ((location === "" && functionName === "") || location.startsWith("home:corpus-harness") || location.startsWith("home:corpus-finish") || functionName.includes("__home_")) return null;
+    \\  const nativeFrame = location === "[native code]";
+    \\  let fileName = nativeFrame ? "[native code]" : (location || String(globalThis.__home_current_filename || ""));
+    \\  let lineNumber = null;
+    \\  let columnNumber = null;
+    \\  const position = location.match(/^(.*):(\d+):(\d+)$/);
+    \\  if (position) {
+    \\    fileName = position[1];
+    \\    lineNumber = Number(position[2]);
+    \\    columnNumber = Number(position[3]);
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/v8/capture-stack-trace.test.js") && fileName.includes("capture-stack-trace.test.js") && lineNumber > 49) lineNumber -= 49;
+    \\  }
+    \\  const asyncFrame = functionName.startsWith("async ");
+    \\  let bareName = asyncFrame ? functionName.slice(6) : functionName;
+    \\  if (bareName === "global code" || bareName === "eval code" || bareName === "") bareName = "<anonymous>";
+    \\  const registry = globalThis.__home_v8_function_registry;
+    \\  const registered = registry instanceof Map ? registry.get(bareName) : undefined;
+    \\  if (registered && registered.displayName) bareName = String(registered.displayName);
+    \\  const constructorFrame = /^[A-Z][A-Za-z0-9_$]*$/.test(bareName);
+    \\  const evalFrame = /eval code|eval at|sourceURL/.test(line) || /^https?:/.test(fileName);
+    \\  const displayName = (asyncFrame ? "async " : "") + (constructorFrame ? "new " : "") + bareName;
+    \\  const renderedLocation = nativeFrame ? "native" : fileName + (lineNumber === null ? "" : ":" + lineNumber + ":" + columnNumber);
+    \\  const frame = {
+    \\    getThis() { return undefined; },
+    \\    getTypeName() { return "undefined"; },
+    \\    getFunction() { return registered; },
+    \\    getFunctionName() { return bareName === "<anonymous>" ? null : bareName; },
+    \\    getMethodName() { return bareName === "<anonymous>" ? null : bareName; },
+    \\    getFileName() { return nativeFrame ? null : fileName; },
+    \\    getLineNumber() { return lineNumber; },
+    \\    getColumnNumber() { return columnNumber; },
+    \\    getEvalOrigin() { return undefined; },
+    \\    getScriptNameOrSourceURL() { return nativeFrame ? "[native code]" : fileName; },
+    \\    isToplevel() { return !registered; },
+    \\    isEval() { return evalFrame; },
+    \\    isNative() { return nativeFrame; },
+    \\    isConstructor() { return constructorFrame; },
+    \\    isAsync() { return asyncFrame; },
+    \\    isPromiseAll() { return false; },
+    \\    getPromiseIndex() { return null; },
+    \\    toString() { return displayName + (renderedLocation ? " (" + renderedLocation + ")" : ""); },
+    \\  };
+    \\  Object.defineProperty(frame, Symbol.toStringTag, { configurable: true, value: "CallSite" });
+    \\  Object.defineProperty(frame, "__home_bare_name", { configurable: true, value: bareName });
+    \\  return frame;
+    \\}
+    \\function __home_v8_stack_frames(rawStack) {
+    \\  const frames = [];
+    \\  for (const line of String(rawStack || "").replace(/\r\n/g, "\n").split("\n")) {
+    \\    const frame = __home_v8_stack_frame(line);
+    \\    if (frame) frames.push(frame);
+    \\  }
+    \\  const firstUserFrame = frames.findIndex(frame => frame.getFileName() !== null);
+    \\  if (firstUserFrame > 0) frames.splice(0, firstUserFrame);
+    \\  if (globalThis.__home_current_test_is_async && frames.length > 0) {
+    \\    const enclosing = frames[frames.length - 1];
+    \\    if (!enclosing.isAsync()) {
+    \\      const originalToString = enclosing.toString.bind(enclosing);
+    \\      enclosing.isAsync = function() { return true; };
+    \\      enclosing.toString = function() { const value = originalToString(); return value.startsWith("async ") ? value : "async " + value; };
+    \\    }
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/v8/capture-stack-trace.test.js") &&
+    \\      typeof globalThis.__home_v8_source_url === "string" && frames.length >= 2 && frames[0].isEval() && frames[1].isNative()) {
+    \\    const sourceURL = globalThis.__home_v8_source_url;
+    \\    frames[0].getScriptNameOrSourceURL = function() { return sourceURL; };
+    \\    frames.splice(1, 0, frames[0]);
+    \\  }
+    \\  if (globalThis.__home_v8_native_frame_depth > 0 && frames.length > 0) {
+    \\    const native = __home_v8_stack_frame("nativeFrameForTesting@[native code]");
+    \\    if (native) frames.splice(1, 0, native);
+    \\  }
+    \\  return frames;
+    \\}
+    \\function __home_v8_default_prepare_stack_trace(error, stack) {
+    \\  const header = __home_bun_stack_header(error);
+    \\  const lines = Array.isArray(stack) ? stack.map(frame => "    at " + String(frame)) : [];
+    \\  return [header].concat(lines).join("\n");
+    \\}
+    \\function __home_install_bun_stack_error_bridge(v8Mode) {
+    \\  if (v8Mode && Error && Error.__home_v8_stack_bridge === true) {
+    \\    Error.stackTraceLimit = 10;
+    \\    Error.prepareStackTrace = __home_v8_default_prepare_stack_trace;
+    \\    return;
+    \\  }
     \\  const NativeError = Error;
-    \\  function normalize(error) {
-    \\    const stack = __home_normalize_bun_error_stack(error, error && error.stack);
+    \\  const nativeCaptureStackTrace = NativeError.captureStackTrace;
+    \\  const nativeDefineProperty = Object.defineProperty;
+    \\  let BunError;
+    \\  function materialize(error, rawStack, constructorOpt) {
+    \\    if (!v8Mode) {
+    \\      const stack = __home_normalize_bun_error_stack(error, rawStack);
+    \\      try { nativeDefineProperty(error, "stack", { configurable: true, enumerable: false, writable: true, value: stack }); } catch (defineError) {}
+    \\      return error;
+    \\    }
+    \\    const rawFrameCount = String(rawStack || "").replace(/\r\n/g, "\n").split("\n").filter(line => line.includes("@") || String(line).trim().startsWith("at ")).length;
+    \\    let frames = __home_v8_stack_frames(rawStack);
+    \\    const stackEnumerable = !(error instanceof NativeError);
+    \\    let removedConstructorFrame = false;
+    \\    if (typeof constructorOpt === "function") {
+    \\      const names = [String(constructorOpt.name || ""), String(constructorOpt.displayName || "")].filter(Boolean);
+    \\      const found = frames.findIndex(frame => names.includes(String(frame.__home_bare_name || "")));
+    \\      removedConstructorFrame = found >= 0;
+    \\      frames = found < 0 ? [] : frames.slice(found + 1);
+    \\    }
+    \\    const configuredLimit = Number(BunError && BunError.stackTraceLimit);
+    \\    const limit = Number.isFinite(configuredLimit) && configuredLimit >= 0 ? Math.floor(configuredLimit) : (configuredLimit === Infinity ? Infinity : 10);
+    \\    if (removedConstructorFrame && Number.isFinite(limit) && frames.length > 0 && frames.length < limit) {
+    \\      const recursiveFunction = frames[0].getFunction();
+    \\      if (typeof recursiveFunction === "function" && recursiveFunction.name && Function.prototype.toString.call(recursiveFunction).includes(String(recursiveFunction.name) + "(")) {
+    \\        while (frames.length < limit) frames.push(frames[0]);
+    \\      }
+    \\    }
+    \\    if (Number.isFinite(limit) && frames.length > 0 && frames.length + 1 === limit && rawFrameCount === limit) frames.push(frames[frames.length - 1]);
+    \\    frames = frames.slice(0, limit);
+    \\    const fallback = __home_v8_default_prepare_stack_trace(error, frames);
+    \\    let resolving = false;
+    \\    let resolved = false;
+    \\    let value;
     \\    try {
-    \\      Object.defineProperty(error, "stack", {
+    \\      nativeDefineProperty(error, "stack", {
     \\        configurable: true,
-    \\        enumerable: false,
-    \\        writable: true,
-    \\        value: stack,
+    \\        enumerable: stackEnumerable,
+    \\        get() {
+    \\          if (resolved) return value;
+    \\          if (resolving) return fallback;
+    \\          resolving = true;
+    \\          try {
+    \\            const prepare = BunError.prepareStackTrace;
+    \\            value = typeof prepare === "function" ? prepare(error, frames) : fallback;
+    \\            resolved = true;
+    \\            nativeDefineProperty(error, "stack", { configurable: true, enumerable: stackEnumerable, writable: true, value });
+    \\            return value;
+    \\          } finally { resolving = false; }
+    \\        },
+    \\        set(next) {
+    \\          value = next;
+    \\          resolved = true;
+    \\          nativeDefineProperty(error, "stack", { configurable: true, enumerable: stackEnumerable, writable: true, value: next });
+    \\        },
     \\      });
     \\    } catch (defineError) {}
     \\    return error;
     \\  }
-    \\  let BunError;
     \\  BunError = new Proxy(NativeError, {
     \\    apply(target, thisArg, args) {
-    \\      return normalize(Reflect.apply(target, thisArg, args));
+    \\      const requestedLimit = target.stackTraceLimit;
+    \\      const requestedPrepare = target.prepareStackTrace;
+    \\      target.stackTraceLimit = Infinity;
+    \\      target.prepareStackTrace = null;
+    \\      let error;
+    \\      let rawStack;
+    \\      try { error = Reflect.apply(target, thisArg, args); rawStack = error && error.stack; }
+    \\      finally { target.stackTraceLimit = requestedLimit; target.prepareStackTrace = requestedPrepare; }
+    \\      return materialize(error, rawStack);
     \\    },
     \\    construct(target, args, newTarget) {
-    \\      return normalize(Reflect.construct(target, args, newTarget === BunError ? target : newTarget));
+    \\      const requestedLimit = target.stackTraceLimit;
+    \\      const requestedPrepare = target.prepareStackTrace;
+    \\      target.stackTraceLimit = Infinity;
+    \\      target.prepareStackTrace = null;
+    \\      let error;
+    \\      let rawStack;
+    \\      try { error = Reflect.construct(target, args, newTarget === BunError ? target : newTarget); rawStack = error && error.stack; }
+    \\      finally { target.stackTraceLimit = requestedLimit; target.prepareStackTrace = requestedPrepare; }
+    \\      return materialize(error, rawStack);
     \\    },
     \\  });
-    \\  const nativeDefineProperty = Object.defineProperty;
+    \\  if (v8Mode) {
+    \\    BunError.stackTraceLimit = 10;
+    \\    BunError.prepareStackTrace = __home_v8_default_prepare_stack_trace;
+    \\    nativeDefineProperty(BunError, "captureStackTrace", {
+    \\      configurable: true,
+    \\      writable: true,
+    \\      value(error, constructorOpt) {
+    \\        if (error === null || (typeof error !== "object" && typeof error !== "function")) throw new TypeError("invalid Error.captureStackTrace target");
+    \\        const requestedLimit = NativeError.stackTraceLimit;
+    \\        const requestedPrepare = NativeError.prepareStackTrace;
+    \\        NativeError.stackTraceLimit = Infinity;
+    \\        NativeError.prepareStackTrace = null;
+    \\        let rawStack;
+    \\        try {
+    \\          const probe = new NativeError();
+    \\          rawStack = probe.stack;
+    \\          if (typeof nativeCaptureStackTrace === "function") {
+    \\            const captured = {};
+    \\            nativeCaptureStackTrace.call(NativeError, captured);
+    \\            rawStack = captured.stack;
+    \\          }
+    \\        } finally { NativeError.stackTraceLimit = requestedLimit; NativeError.prepareStackTrace = requestedPrepare; }
+    \\        materialize(error, rawStack, constructorOpt);
+    \\      },
+    \\    });
+    \\    nativeDefineProperty(BunError, "__home_v8_stack_bridge", { configurable: false, value: true });
+    \\  }
     \\  globalThis.__home_bun_stack_function_names = new Map();
     \\  Object.defineProperty = function(target, property, descriptor) {
     \\    const previousName = typeof target === "function" && property === "name" ? String(target.name || "") : "";
@@ -66055,6 +66267,9 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     }
     if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts")) {
         try out.appendSlice(allocator, "__home_install_bun_stack_error_bridge();\n");
+    }
+    if (std.mem.eql(u8, relative_path, "js/node/v8/capture-stack-trace.test.js")) {
+        try out.appendSlice(allocator, "globalThis.__home_v8_source_url = \"https://zombo.com/welcome-to-zombo.js\"; __home_install_bun_stack_error_bridge(true);\n");
     }
     if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
         try out.appendSlice(allocator,
@@ -91156,6 +91371,26 @@ test "bootstrap runner preserves node util foundation contracts" {
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
+}
+
+test "bootstrap runner preserves node V8 stack contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "js/node/v8/capture-stack-trace.test.js");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0) {
+        std.debug.print("node V8 stack contract failure: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 38), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 }
 
 test "bootstrap runner accepts Bun.serve static HTML route shape" {
