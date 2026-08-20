@@ -57970,6 +57970,112 @@ const harness_prelude =
     \\__home_grpc_Server.prototype.forceShutdown = function() {
     \\  delete __home_grpc_servers[this.__home_port];
     \\};
+    \\function __home_grpc_certificate_error(error, operation, path) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error(operation + " failed for '" + String(path || "") + "': " + String(cause.message || cause));
+    \\  failure.code = cause.code;
+    \\  failure.path = String(path || "");
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at FileWatcherCertificateProvider." + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_certificate_config_error(message) {
+    \\  const failure = new Error(message);
+    \\  failure.code = "ERR_INVALID_ARG_VALUE";
+    \\  failure.stack = String(failure.stack || failure) + "\n    at FileWatcherCertificateProvider.validateConfig (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\  return failure;
+    \\}
+    \\function __home_grpc_FileWatcherCertificateProvider(config) {
+    \\  config = config && typeof config === "object" ? config : {};
+    \\  const hasCertificate = config.certificateFile !== undefined;
+    \\  const hasPrivateKey = config.privateKeyFile !== undefined;
+    \\  const hasCa = config.caCertificateFile !== undefined;
+    \\  if (hasCertificate !== hasPrivateKey) throw __home_grpc_certificate_config_error("certificateFile and privateKeyFile must be set or unset together");
+    \\  if (!hasCertificate && !hasCa) throw __home_grpc_certificate_config_error("At least one of certificateFile and caCertificateFile must be set");
+    \\  this.config = Object.assign({}, config);
+    \\  this.refreshIntervalMs = Math.max(1, Number(config.refreshIntervalMs) || 1);
+    \\  this.refreshTimer = null;
+    \\  this.fileResultPromise = null;
+    \\  this.latestCaUpdate = undefined;
+    \\  this.latestIdentityUpdate = undefined;
+    \\  this.caListeners = new Set();
+    \\  this.identityListeners = new Set();
+    \\  this.lastUpdateTime = null;
+    \\  this.lastError = null;
+    \\  this.watchGeneration = 0;
+    \\}
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.__home_read_file = function(path, operation) {
+    \\  return __home_node_fs.promises.readFile(path).catch(error => { throw __home_grpc_certificate_error(error, operation, path); });
+    \\};
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.__home_notify_listener = function(listener, update, operation, path) {
+    \\  try { listener(update); }
+    \\  catch (error) {
+    \\    const failure = __home_grpc_certificate_error(error, operation, path);
+    \\    this.lastError = failure;
+    \\    throw failure;
+    \\  }
+    \\};
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.__home_update_certificates = function() {
+    \\  if (this.fileResultPromise) return this.fileResultPromise;
+    \\  const rejected = () => Promise.reject(new Error("certificate file is not configured"));
+    \\  const generation = this.watchGeneration;
+    \\  const resultPromise = Promise.allSettled([
+    \\    this.config.certificateFile ? this.__home_read_file(this.config.certificateFile, "readCertificate") : rejected(),
+    \\    this.config.privateKeyFile ? this.__home_read_file(this.config.privateKeyFile, "readPrivateKey") : rejected(),
+    \\    this.config.caCertificateFile ? this.__home_read_file(this.config.caCertificateFile, "readCaCertificate") : rejected(),
+    \\  ]);
+    \\  this.fileResultPromise = resultPromise;
+    \\  return resultPromise.then(results => {
+    \\    if (!this.refreshTimer || generation !== this.watchGeneration || this.fileResultPromise !== resultPromise) return;
+    \\    this.lastUpdateTime = new Date();
+    \\    this.fileResultPromise = null;
+    \\    const certificateResult = results[0], privateKeyResult = results[1], caResult = results[2];
+    \\    if (certificateResult.status === "fulfilled" && privateKeyResult.status === "fulfilled") {
+    \\      this.latestIdentityUpdate = { certificate: certificateResult.value, privateKey: privateKeyResult.value };
+    \\    } else {
+    \\      this.latestIdentityUpdate = null;
+    \\      this.lastError = certificateResult.status === "rejected" && this.config.certificateFile ? certificateResult.reason : privateKeyResult.status === "rejected" && this.config.privateKeyFile ? privateKeyResult.reason : this.lastError;
+    \\    }
+    \\    if (caResult.status === "fulfilled") this.latestCaUpdate = { caCertificate: caResult.value };
+    \\    else {
+    \\      this.latestCaUpdate = null;
+    \\      if (this.config.caCertificateFile) this.lastError = caResult.reason;
+    \\    }
+    \\    if ((!this.config.certificateFile || (certificateResult.status === "fulfilled" && privateKeyResult.status === "fulfilled")) && (!this.config.caCertificateFile || caResult.status === "fulfilled")) this.lastError = null;
+    \\    for (const listener of Array.from(this.identityListeners)) {
+    \\      this.__home_notify_listener(listener, this.latestIdentityUpdate, "notifyIdentityListener", this.config.certificateFile);
+    \\    }
+    \\    for (const listener of Array.from(this.caListeners)) {
+    \\      this.__home_notify_listener(listener, this.latestCaUpdate, "notifyCaListener", this.config.caCertificateFile);
+    \\    }
+    \\  });
+    \\};
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.__home_maybe_start = function() {
+    \\  if (this.refreshTimer) return;
+    \\  const elapsed = this.lastUpdateTime ? Date.now() - this.lastUpdateTime.getTime() : Infinity;
+    \\  if (elapsed > this.refreshIntervalMs) this.__home_update_certificates();
+    \\  if (elapsed > this.refreshIntervalMs * 2) { this.latestCaUpdate = undefined; this.latestIdentityUpdate = undefined; }
+    \\  this.refreshTimer = setInterval(() => this.__home_update_certificates(), this.refreshIntervalMs);
+    \\};
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.__home_maybe_stop = function() {
+    \\  if (this.caListeners.size !== 0 || this.identityListeners.size !== 0) return;
+    \\  this.watchGeneration += 1;
+    \\  this.fileResultPromise = null;
+    \\  if (this.refreshTimer) clearInterval(this.refreshTimer);
+    \\  this.refreshTimer = null;
+    \\};
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.addCaCertificateListener = function(listener) {
+    \\  if (typeof listener !== "function") throw new TypeError("CA certificate listener must be a function");
+    \\  this.caListeners.add(listener); this.__home_maybe_start();
+    \\  if (this.latestCaUpdate !== undefined) Promise.resolve().then(() => { if (this.caListeners.has(listener)) this.__home_notify_listener(listener, this.latestCaUpdate, "notifyCaListener", this.config.caCertificateFile); });
+    \\};
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.removeCaCertificateListener = function(listener) { this.caListeners.delete(listener); this.__home_maybe_stop(); };
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.addIdentityCertificateListener = function(listener) {
+    \\  if (typeof listener !== "function") throw new TypeError("identity certificate listener must be a function");
+    \\  this.identityListeners.add(listener); this.__home_maybe_start();
+    \\  if (this.latestIdentityUpdate !== undefined) Promise.resolve().then(() => { if (this.identityListeners.has(listener)) this.__home_notify_listener(listener, this.latestIdentityUpdate, "notifyIdentityListener", this.config.certificateFile); });
+    \\};
+    \\__home_grpc_FileWatcherCertificateProvider.prototype.removeIdentityCertificateListener = function(listener) { this.identityListeners.delete(listener); this.__home_maybe_stop(); };
     \\const __home_grpc_credentials = {
     \\  createSsl(ca) { return { type: "ssl", ca }; },
     \\  createInsecure() { return { type: "insecure" }; },
@@ -57982,6 +58088,7 @@ const harness_prelude =
     \\  credentials: __home_grpc_credentials,
     \\  status: __home_grpc_status,
     \\  propagate: __home_grpc_propagate,
+    \\  experimental: { FileWatcherCertificateProvider: __home_grpc_FileWatcherCertificateProvider },
     \\  loadPackageDefinition(definition) { return String(definition && definition.__home_proto_file || "").includes("test_service.proto") ? { TestService: __home_grpc_TestService } : { EchoService: __home_grpc_EchoService }; },
     \\};
     \\__home_grpc_module.default = __home_grpc_module;
@@ -86739,6 +86846,61 @@ test "bootstrap runner mirrors http2 frame-size connect corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap grpc certificate provider errors retain causes and operation stacks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import * as grpc from "@grpc/grpc-js";
+        \\import assert from "node:assert";
+        \\import { test } from "bun:test";
+        \\
+        \\test("certificate provider diagnostics", async () => {
+        \\  let configError;
+        \\  try {
+        \\    new grpc.experimental.FileWatcherCertificateProvider({ refreshIntervalMs: 10 });
+        \\  } catch (error) {
+        \\    configError = error;
+        \\  }
+        \\  assert.strictEqual(configError.code, "ERR_INVALID_ARG_VALUE");
+        \\  assert.ok(String(configError.stack).includes("FileWatcherCertificateProvider.validateConfig"));
+        \\
+        \\  const provider = new grpc.experimental.FileWatcherCertificateProvider({
+        \\    caCertificateFile: "fixtures/definitely-missing-ca.pem",
+        \\    refreshIntervalMs: 10,
+        \\  });
+        \\  await new Promise(resolve => {
+        \\    const listener = update => {
+        \\      provider.removeCaCertificateListener(listener);
+        \\      assert.strictEqual(update, null);
+        \\      assert.ok(provider.lastError instanceof Error);
+        \\      assert.ok(provider.lastError.cause instanceof Error);
+        \\      assert.ok(String(provider.lastError.stack).includes("FileWatcherCertificateProvider.readCaCertificate"));
+        \\      assert.ok(String(provider.lastError.stack).includes("Caused by:"));
+        \\      resolve();
+        \\    };
+        \\    provider.addCaCertificateListener(listener);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/certificate-provider-errors.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("grpc certificate provider diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors grpc frame-size corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -101222,6 +101384,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/res.sendFile.test.ts", .passed = 39, .todo = 11 },
         .{ .path = "js/third_party/grpc-js/test-call-credentials.test.ts", .passed = 6 },
         .{ .path = "js/third_party/grpc-js/test-call-propagation.test.ts", .passed = 8 },
+        .{ .path = "js/third_party/grpc-js/test-certificate-provider.test.ts", .passed = 9 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
