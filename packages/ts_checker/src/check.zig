@@ -27160,6 +27160,11 @@ pub const Checker = struct {
         var parent = self.hir.parentOf(child);
         while (parent != hir_mod.none_node_id) {
             switch (self.hir.kindOf(parent)) {
+                .object_property => {
+                    const property = hir_mod.objectPropertyOf(self.hir, parent);
+                    if (property.value != child) return false;
+                    return self.contextualObjectUnionOwnsMemberReturnDiagnostic(parent);
+                },
                 .conditional => {
                     const conditional = hir_mod.conditionalOf(self.hir, parent);
                     if (conditional.then_branch != child and conditional.else_branch != child) return false;
@@ -27179,6 +27184,28 @@ pub const Checker = struct {
             }
             child = parent;
             parent = self.hir.parentOf(parent);
+        }
+        return false;
+    }
+
+    fn contextualObjectUnionOwnsMemberReturnDiagnostic(self: *Checker, property_node: NodeId) bool {
+        const property = hir_mod.objectPropertyOf(self.hir, property_node);
+        if (property.is_computed) return false;
+        const name = self.propertyNameFromKeyNode(property.key) orelse return false;
+        const object_node = self.hir.parentOf(property_node);
+        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) return false;
+        const target_t = self.contextualTargetTypeForExpression(object_node) orelse return false;
+        if (target_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target_t).is_union) return false;
+
+        var first_return = types.Primitive.none;
+        var saw_signature = false;
+        for (self.interner.unionMembers(target_t)) |member| {
+            const member_t = (self.contextualObjectLiteralMemberTarget(member, name) catch null) orelse continue;
+            const signature = self.firstSignatureType(member_t) orelse continue;
+            const return_t = self.interner.signatureReturn(signature) orelse types.Primitive.any;
+            if (saw_signature and return_t != first_return) return true;
+            first_return = return_t;
+            saw_signature = true;
         }
         return false;
     }
@@ -131899,7 +131926,9 @@ pub const Checker = struct {
             const name = self.propertyNameFromKeyNode(property.key) orelse continue;
             const member_t = (try self.contextualObjectLiteralMemberTarget(target_t, name)) orelse continue;
             const signature = self.firstSignatureType(member_t) orelse continue;
-            try self.checkFunctionWithContextualSignatureMode(property.value, signature, check_return_assignability, null);
+            const check_member_return = check_return_assignability and
+                !self.contextualObjectUnionOwnsMemberReturnDiagnostic(property_node);
+            try self.checkFunctionWithContextualSignatureMode(property.value, signature, check_member_return, null);
         }
     }
 
@@ -157139,13 +157168,14 @@ pub const Checker = struct {
         const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.any;
         const source_params = self.interner.signatureParams(source_t);
         const source_this = self.signatureThisParam(source_t);
-        const probe = if (source_this) |this_t|
+        const relation_this = source_this orelse self.signatureThisParam(target_t);
+        const probe = if (relation_this) |this_t|
             self.interner.internSignatureWithThisType(source_params, target_ret, false, false, this_t) catch return error.OutOfMemory
         else
             self.interner.internSignature(source_params, target_ret, false) catch return error.OutOfMemory;
         if (self.rest_signatures.contains(source_t)) try self.rest_signatures.put(self.gpa, probe, {});
         if (self.signature_min_args.get(source_t)) |min_args| try self.signature_min_args.put(self.gpa, probe, min_args);
-        if (source_this) |this_t| try self.signature_this_params.put(self.gpa, probe, this_t);
+        if (relation_this) |this_t| try self.signature_this_params.put(self.gpa, probe, this_t);
         return try self.checkerAssignableTo(probe, target_t);
     }
 
@@ -170450,6 +170480,12 @@ pub const Checker = struct {
     ) CheckError!void {
         if (self.assertionTargetHasGenericArityDiagnostic(node)) return;
         if (self.typeIsAnyLike(source_t) or self.typeIsAnyLike(target_t)) return;
+        if ((source_t == types.Primitive.null_t or source_t == types.Primitive.undefined_t) and
+            self.isThisTypeParameter(target_t) and self.assertionHasValidThisTypeTarget(node))
+        {
+            try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
+            return;
+        }
         if (self.assertionSourceIncludesTargetTypeParameter(source_t, target_t, 0)) return;
         if (self.assertionTargetIsFunctionObject(target_t)) return;
         if ((source_t == types.Primitive.null_t or source_t == types.Primitive.undefined_t) and
@@ -170496,6 +170532,15 @@ pub const Checker = struct {
         }
         if (try self.typesHaveComparableOverlap(source_t, target_t)) return;
         try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
+    }
+
+    fn assertionHasValidThisTypeTarget(self: *Checker, node: NodeId) bool {
+        const kind = self.hir.kindOf(node);
+        if (kind != .as_expr and kind != .type_assertion) return false;
+        const type_node = hir_mod.asExpressionOf(self.hir, node).type_node;
+        return type_node != hir_mod.none_node_id and
+            self.typeNodeIsThisType(type_node) and
+            self.thisTypeIsValidHere(type_node);
     }
 
     fn assertionSourceIncludesTargetTypeParameter(
