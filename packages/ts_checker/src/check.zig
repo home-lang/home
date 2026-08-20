@@ -99281,7 +99281,9 @@ pub const Checker = struct {
                                 // `computedPropertyNames30_ES{5,6}.ts(11,19)`.
                                 try self.report(c.callee, TsCodes.super_call_not_permitted, "Super calls are not permitted outside constructors or in nested functions inside constructors.");
                             }
-                            if (self.nodeIsDirectlyInsideConstructor(c.callee)) {
+                            if (self.nodeIsDirectlyInsideConstructor(c.callee) and
+                                !self.callExprIsTaggedTemplate(node))
+                            {
                                 try self.checkSuperConstructSignature(node, super_t, args, arg_types.items);
                             }
                             // A valid `super()` is void-valued. Preserving
@@ -110837,7 +110839,7 @@ pub const Checker = struct {
         var effective_count: usize = 0;
         for (args, 0..) |arg, arg_i| {
             effective_count += if (self.hir.kindOf(arg) == .spread)
-                self.spreadArgArityContribution(arg_types[arg_i])
+                self.spreadArgArityContributionForNode(arg, arg_types[arg_i])
             else
                 1;
         }
@@ -110859,6 +110861,17 @@ pub const Checker = struct {
                 continue;
             }
             if (self.hir.kindOf(arg) == .spread) {
+                if (self.spreadArrayLiteralElements(arg)) |elements| {
+                    for (elements, 0..) |element, element_i| {
+                        const param_i = fixed_pos + element_i;
+                        if (param_i >= fixed_count) break;
+                        const elem_t = self.hir.typeOf(element);
+                        if (elem_t == types.Primitive.none or params[param_i] >= self.interner.pool.typeCount()) continue;
+                        if (self.interner.pool.flagsOf(params[param_i]).is_type_parameter) continue;
+                        if (!(self.isArgumentAssignableToParam(element, elem_t, params[param_i]) catch false)) return false;
+                    }
+                    continue;
+                }
                 if (!self.isTupleShapedTarget(arg_t)) {
                     if (self.fixedSpreadNeedsTupleDiagnostic(arg_t, params, fixed_pos, fixed_count, min_required)) return true;
                     const elem_t = self.interner.objectNumberIndex(arg_t);
@@ -142466,7 +142479,7 @@ pub const Checker = struct {
         var arg_count: usize = 0;
         for (args, 0..) |arg, i| {
             arg_count += if (self.hir.kindOf(arg) == .spread)
-                self.spreadArgArityContribution(arg_types[i])
+                self.spreadArgArityContributionForNode(arg, arg_types[i])
             else
                 1;
         }
@@ -142628,11 +142641,23 @@ pub const Checker = struct {
         return @max(fixed_prefix, 1);
     }
 
+    fn spreadArrayLiteralElements(self: *Checker, arg: NodeId) ?[]const NodeId {
+        if (arg == hir_mod.none_node_id or self.hir.kindOf(arg) != .spread) return null;
+        const expression = hir_mod.spreadOf(self.hir, arg).expression;
+        if (expression == hir_mod.none_node_id or self.hir.kindOf(expression) != .array_literal) return null;
+        return hir_mod.arrayLiteralElements(self.hir, expression);
+    }
+
+    fn spreadArgArityContributionForNode(self: *Checker, arg: NodeId, arg_t: TypeId) usize {
+        if (self.spreadArrayLiteralElements(arg)) |elements| return elements.len;
+        return self.spreadArgArityContribution(arg_t);
+    }
+
     fn firstExcessArgStartPos(self: *Checker, args: []const NodeId, arg_types: []const TypeId, max_count: usize) ?u32 {
         var consumed: usize = 0;
         for (args, 0..) |arg, i| {
             const contribution: usize = if (self.hir.kindOf(arg) == .spread)
-                self.spreadArgArityContribution(arg_types[i])
+                self.spreadArgArityContributionForNode(arg, arg_types[i])
             else
                 1;
             if (consumed >= max_count or consumed + contribution > max_count) {
@@ -142651,11 +142676,13 @@ pub const Checker = struct {
         var consumed: usize = 0;
         for (args, 0..) |arg, i| {
             const contribution: usize = if (self.hir.kindOf(arg) == .spread)
-                self.spreadArgArityContribution(arg_types[i])
+                self.spreadArgArityContributionForNode(arg, arg_types[i])
             else
                 1;
             if (consumed >= max_count or consumed + contribution > max_count) {
-                if (self.hir.kindOf(arg) == .spread and !self.isTupleShapedTarget(arg_types[i])) return arg;
+                if (self.hir.kindOf(arg) == .spread and
+                    self.spreadArrayLiteralElements(arg) == null and
+                    !self.isTupleShapedTarget(arg_types[i])) return arg;
                 return null;
             }
             consumed += contribution;
@@ -142665,7 +142692,9 @@ pub const Checker = struct {
 
     fn callHasNonTupleSpread(self: *Checker, args: []const NodeId, arg_types: []const TypeId) bool {
         for (args, 0..) |arg, i| {
-            if (self.hir.kindOf(arg) == .spread and !self.isTupleShapedTarget(arg_types[i])) return true;
+            if (self.hir.kindOf(arg) == .spread and
+                self.spreadArrayLiteralElements(arg) == null and
+                !self.isTupleShapedTarget(arg_types[i])) return true;
         }
         return false;
     }
@@ -142701,7 +142730,7 @@ pub const Checker = struct {
         var i: usize = 0;
         while (i < arg_index and i < args.len) : (i += 1) {
             consumed += if (self.hir.kindOf(args[i]) == .spread)
-                self.spreadArgArityContribution(arg_types[i])
+                self.spreadArgArityContributionForNode(args[i], arg_types[i])
             else
                 1;
         }
@@ -142928,7 +142957,7 @@ pub const Checker = struct {
         var effective_min_count: usize = 0;
         for (args, 0..) |arg, arg_i| {
             if (self.hir.kindOf(arg) == .spread) {
-                effective_min_count += self.spreadArgArityContribution(arg_types[arg_i]);
+                effective_min_count += self.spreadArgArityContributionForNode(arg, arg_types[arg_i]);
             } else {
                 effective_min_count += 1;
             }
@@ -142977,7 +143006,9 @@ pub const Checker = struct {
             // tsc's `getArgumentArityError`. Without this the message
             // wrongly printed only the upper bound ("Expected 3").
             const use_variadic_range_form = fixed_variadic_count and (too_few or too_many) and min_required < rest_max_count.?;
-            const use_range_form = !is_variadic and too_few and min_required < param_ts.len;
+            // Fixed signatures with optional parameters describe the full
+            // accepted range for both missing and excess argument counts.
+            const use_range_form = !is_variadic and min_required < param_ts.len;
             const expected_label: []const u8 = if (use_range_form or use_variadic_range_form or fixed_variadic_count)
                 ""
             else if (is_variadic)
@@ -143192,12 +143223,34 @@ pub const Checker = struct {
                 if (!is_variadic or i < fixed_count) {
                     const is_union_arg = arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union;
                     if (!emitted_spread_shape_mismatch and
+                        self.spreadArrayLiteralElements(args[i]) == null and
                         (is_union_arg or self.fixedSpreadNeedsTupleDiagnostic(arg_t, param_ts, fixed_pos, fixed_count, min_required)))
                     {
                         try self.report(args[i], TsCodes.spread_argument_requires_tuple_or_rest, "A spread argument must either have a tuple type or be passed to a rest parameter.");
                         emitted_2556 = true;
                         emitted_spread_shape_mismatch = true;
                     }
+                }
+                if (self.spreadArrayLiteralElements(args[i])) |elements| {
+                    for (elements, 0..) |element, element_i| {
+                        const param_i = fixed_pos + element_i;
+                        if (param_i >= fixed_count) break;
+                        var element_param_t = param_ts[param_i];
+                        if (element_param_t >= self.interner.pool.typeCount()) continue;
+                        if (self.interner.pool.flagsOf(element_param_t).is_type_parameter) {
+                            element_param_t = self.scalarTypeParameterConstraint(element_param_t) orelse continue;
+                        }
+                        const element_t = self.hir.typeOf(element);
+                        if (element_t == types.Primitive.none or
+                            (self.isArgumentAssignableToParam(element, element_t, element_param_t) catch true)) continue;
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = element,
+                            .code = TsCodes.argument_type_mismatch,
+                            .message = try self.formatArgumentNotAssignable(element_t, element_param_t, param_i),
+                        });
+                        break;
+                    }
+                    continue;
                 }
                 if (self.isTupleShapedTarget(arg_t)) {
                     const tuple_limit = if (self.fixedTupleLength(arg_t)) |len|
@@ -206720,6 +206773,18 @@ test "checker: tagged template recursive interface preserves nested construct si
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_not_void));
 }
 
+test "checker: tagged super recovery does not check constructor arity" {
+    const s = try newSetup(
+        \\class Base<A, B, C> {}
+        \\class Derived<T> extends Base<number, string, T> {
+        \\  constructor() { super<number, string, T> `value`; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
 test "checker: adjacent template expressions in array report missing comma recovery" {
     const s = try newSetup(
         \\const inArray = [`a` `b`];
@@ -208290,6 +208355,25 @@ test "checker: non-tuple spread into fixed parameter reports TS2556" {
         if (d.code == TsCodes.spread_argument_requires_tuple_or_rest) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: array literal spread uses fixed parameter context and arity" {
+    const s = try newSetup(
+        \\declare function fixed(a: number, b: number, c: number): void;
+        \\fixed(...[1, 2, 3]);
+        \\interface Action { run(event?: unknown): unknown; }
+        \\declare const action: Action;
+        \\action.run(...[100, "extra"]);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.spread_argument_requires_tuple_or_rest));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    const arity = for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.expected_n_arguments) break diagnostic;
+    } else return error.MissingDiagnostic;
+    try T.expectEqualStrings("Expected 0-1 arguments, but got 2.", arity.message);
 }
 
 test "checker: spread tuple fixed prefix satisfies required parameter count" {
