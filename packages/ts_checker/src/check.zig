@@ -137190,9 +137190,16 @@ pub const Checker = struct {
         };
     }
 
-    fn reportAddOperatorCannotBeApplied(self: *Checker, node: NodeId, lhs_t: TypeId, rhs_t: TypeId) CheckError!void {
-        if (try self.addOperatorDiagnosticTypeName(lhs_t)) |a_name| {
-            if (try self.addOperatorDiagnosticTypeName(rhs_t)) |b_name| {
+    fn reportAddOperatorCannotBeApplied(
+        self: *Checker,
+        node: NodeId,
+        lhs_node: NodeId,
+        lhs_t: TypeId,
+        rhs_node: NodeId,
+        rhs_t: TypeId,
+    ) CheckError!void {
+        if (try self.addOperatorDiagnosticTypeName(lhs_node, lhs_t)) |a_name| {
+            if (try self.addOperatorDiagnosticTypeName(rhs_node, rhs_t)) |b_name| {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Operator '+' cannot be applied to types '{s}' and '{s}'.",
@@ -137209,9 +137216,31 @@ pub const Checker = struct {
         try self.report(node, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to these operand types.");
     }
 
-    fn addOperatorDiagnosticTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+    fn addOperatorDiagnosticTypeName(self: *Checker, value_node: NodeId, t: TypeId) CheckError!?[]const u8 {
         if (self.typeHasStringPrimitivePart(t) and self.typeHasNumericPrimitivePart(t)) return "string | number";
-        return try self.simpleDiagnosticTypeName(t);
+        if (value_node != hir_mod.none_node_id and
+            self.hir.kindOf(value_node) == .array_literal and
+            hir_mod.arrayLiteralElements(self.hir, value_node).len == 0)
+        {
+            return "never[]";
+        }
+        if (t < self.interner.pool.typeCount()) {
+            if (self.interner.enumLiteralInfo(t)) |info| return self.string_interner.get(info.enum_name);
+        }
+        if (self.enumNameFromNominal(t)) |enum_name| return self.string_interner.get(enum_name);
+        if (try self.simpleDiagnosticTypeName(t)) |name| return name;
+        if (value_node != hir_mod.none_node_id and self.hir.kindOf(value_node) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, value_node);
+            const path = [_]hir_mod.StringId{id.name};
+            if (self.findVisibleNamespaceByPath(value_node, &path) != null) {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "typeof {s}",
+                    .{self.string_interner.get(id.name)},
+                );
+            }
+        }
+        return try self.allocSimpleTypeName(t);
     }
 
     fn strictOffNullishAdditionUsesOperatorDiagnostic(self: *Checker, node: NodeId) bool {
@@ -137228,6 +137257,16 @@ pub const Checker = struct {
             if (pos >= sp.start and pos < sp.end) return true;
         }
         return false;
+    }
+
+    fn binaryOperatorPosition(self: *Checker, lhs: NodeId, rhs: NodeId, operator: []const u8) ?u32 {
+        const src = self.source orelse return null;
+        const lhs_span = self.hir.spanOf(lhs);
+        const rhs_span = self.hir.spanOf(rhs);
+        if (lhs_span.end > rhs_span.start or rhs_span.start > src.len) return null;
+        const gap = src[lhs_span.end..rhs_span.start];
+        const offset = std.mem.indexOf(u8, gap, operator) orelse return null;
+        return @intCast(lhs_span.end + offset);
     }
 
     fn checkBinop(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -137372,7 +137411,7 @@ pub const Checker = struct {
                             self.typeHasNumericPrimitivePart(rhs_eff) and
                             !self.typeIsPureStringLike(lhs_eff))))
                 {
-                    try self.reportAddOperatorCannotBeApplied(node, lhs_eff, rhs_eff);
+                    try self.reportAddOperatorCannotBeApplied(node, b.lhs, lhs_eff, b.rhs, rhs_eff);
                     break :blk types.Primitive.number_t;
                 }
                 if (self.typeMaybeStringLike(lhs_eff) or self.typeMaybeStringLike(rhs_eff)) {
@@ -137385,7 +137424,7 @@ pub const Checker = struct {
                     break :blk types.Primitive.number_t;
                 }
                 if (!self.typeIsAnyLike(lhs_eff) and !self.typeIsAnyLike(rhs_eff)) {
-                    try self.reportAddOperatorCannotBeApplied(node, lhs_eff, rhs_eff);
+                    try self.reportAddOperatorCannotBeApplied(node, b.lhs, lhs_eff, b.rhs, rhs_eff);
                 }
                 break :blk types.Primitive.number_t;
             },
@@ -137444,7 +137483,12 @@ pub const Checker = struct {
                         "The '{s}' operator is not allowed for boolean types. Consider using '{s}' instead.",
                         .{ op_str, suggested },
                     );
-                    try self.report(node, TsCodes.bitwise_operator_not_allowed_for_boolean, msg);
+                    try self.reportAt(
+                        node,
+                        self.binaryOperatorPosition(b.lhs, b.rhs, op_str),
+                        TsCodes.bitwise_operator_not_allowed_for_boolean,
+                        msg,
+                    );
                     break :blk types.Primitive.number_t;
                 }
                 const lhs_nullish = self.nullishLiteralOperandName(b.lhs);
@@ -168883,15 +168927,14 @@ pub const Checker = struct {
         if (t == types.Primitive.void_t) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
-        if (f.is_undefined or f.is_any or f.is_unknown) return true;
-        if (!f.is_union) return false;
-        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
-        for (self.interner.unionMembers(t)) |m| {
-            if (m >= self.interner.pool.typeCount()) continue;
-            const mf = self.interner.pool.flagsOf(m);
-            if (mf.is_undefined or mf.is_void) return true;
+        if (f.is_union) {
+            if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+            for (self.interner.unionMembers(t)) |m| {
+                if (m == types.Primitive.undefined_t or m == types.Primitive.void_t) return true;
+            }
+            return false;
         }
-        return false;
+        return f.is_undefined or f.is_any or f.is_unknown;
     }
 
     fn recordSignatureMinArgs(self: *Checker, sig: TypeId, omittable: []const bool) CheckError!void {
@@ -169255,14 +169298,14 @@ pub const Checker = struct {
     fn typeIncludesNull(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
-        if (f.is_null or f.is_any or f.is_unknown) return true;
-        if (!f.is_union) return false;
-        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
-        for (self.interner.unionMembers(t)) |m| {
-            if (m >= self.interner.pool.typeCount()) continue;
-            if (self.interner.pool.flagsOf(m).is_null) return true;
+        if (f.is_union) {
+            if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+            for (self.interner.unionMembers(t)) |m| {
+                if (m == types.Primitive.null_t) return true;
+            }
+            return false;
         }
-        return false;
+        return f.is_null or f.is_any or f.is_unknown;
     }
 
     fn typeIsPossiblyNullish(self: *Checker, t: TypeId) bool {
@@ -169280,6 +169323,13 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         if (f.is_any or f.is_unknown) return false;
+        if (f.is_union) {
+            if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+            for (self.interner.unionMembers(t)) |m| {
+                if (m == types.Primitive.null_t or m == types.Primitive.undefined_t) return true;
+            }
+            return false;
+        }
         if (f.is_intersection) {
             if (self.interner.pool.payloadOf(t) >= self.interner.pool.intersection_payloads.items.len) return false;
             for (self.interner.intersectionMembers(t)) |member| {
@@ -169287,20 +169337,12 @@ pub const Checker = struct {
             }
             return true;
         }
-        if (f.is_null or f.is_undefined) return true;
         // tsc deliberately does NOT classify bare `void` as
         // nullish for TS18048 purposes ÃÂ¢ÃÂÃÂ `void.foo` should fall
         // through to TS2339 "Property 'foo' does not exist on
         // type 'void'.". Mirrors
         // `parserNoASIOnCallAfterFunctionExpression1` baseline.
-        if (!f.is_union) return false;
-        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
-        for (self.interner.unionMembers(t)) |m| {
-            if (m >= self.interner.pool.typeCount()) continue;
-            const mf = self.interner.pool.flagsOf(m);
-            if (mf.is_null or mf.is_undefined) return true;
-        }
-        return false;
+        return f.is_null or f.is_undefined;
     }
 
     /// Classification of which nullish constituents a possibly-nullish
@@ -223790,6 +223832,42 @@ test "checker: TS2365 renders type-rich form for boolean + number" {
     try T.expect(saw_rich);
 }
 
+test "checker: TS2365 renders callable enum and namespace operands" {
+    const s = try newSetup(
+        \\function foo() {}
+        \\class C { value: string; static foo() {} }
+        \\enum E { a }
+        \\namespace M { export let value: number; }
+        \\let callable = 1 + foo;
+        \\let enumValue = E.a + new C();
+        \\let namespaceValue = E.a + M;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.operator_cannot_be_applied));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to types 'number' and '() => void'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to types 'E' and 'C'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to types 'E' and 'typeof M'."));
+}
+
+test "checker: numeric enum unions are not treated as nullish addition operands" {
+    const s = try newSetup(
+        \\enum E { a, b }
+        \\enum F { c, d }
+        \\var value: E | F;
+        \\let sum = value + value;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_nullish));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+}
+
 test "checker: strict-off nullish addition uses TS2365 under selected unary parents" {
     const s = try newSetup(
         \\var a = +(null + undefined);
@@ -232287,17 +232365,20 @@ test "checker: TS6502 related info points to target signature return type" {
 test "checker: TS2447 fires for bitwise & on boolean operands suggesting &&" {
     // Mirrors upstream `checkBinaryLikeExpression`: `&` between two
     // booleans is flagged with a `&&` suggestion.
-    const s = try newSetup(
+    const source =
         \\const a = true;
         \\const b = false;
         \\const c = a & b;
-    );
+    ;
+    const s = try newSetup(source);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.bitwise_operator_not_allowed_for_boolean));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.bitwise_operator_not_allowed_for_boolean) {
             try T.expectEqualStrings("The '&' operator is not allowed for boolean types. Consider using '&&' instead.", d.message);
+            const expected_pos = std.mem.indexOfScalar(u8, source, '&') orelse return error.MissingOperator;
+            try T.expectEqual(@as(?u32, @intCast(expected_pos)), d.pos);
         }
     }
 }
