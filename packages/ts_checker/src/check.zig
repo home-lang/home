@@ -99198,11 +99198,9 @@ pub const Checker = struct {
                     self.hir.kindOf(c.callee) == .identifier)
                 {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
-                    if (self.jsConstructorFunctionDeclForName(c.callee, id.name)) |fn_node| {
-                        if (!self.fnHasJsDocClassOrConstructorTag(fn_node)) {
-                            try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                            break :blk types.Primitive.any;
-                        }
+                    if (self.jsConstructorFunctionDeclForName(c.callee, id.name) != null) {
+                        try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                        break :blk types.Primitive.any;
                     }
                 }
                 if ((self.strict_flags.no_implicit_any or
@@ -217222,6 +217220,21 @@ test "checker: strict checked JavaScript rejects untagged constructor functions"
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: strict checked JavaScript rejects tagged constructor functions" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\/** @constructor */
+        \\function C() { this.x = 1; }
+        \\new C();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
 }
 
 test "checker: checkjs prototype method assignments use constructor-inferred this members" {
