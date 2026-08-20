@@ -144735,11 +144735,14 @@ pub const Checker = struct {
             else if (inferred_contextual_return_error)
                 false
             else if (inferred_generic_callback) blk: {
-                const diagnostic_source_t = (try self.contextualFunctionExpressionDiagnosticSignature(
-                    args[i],
-                    arg_t,
-                    param_t,
-                )) orelse arg_t;
+                const diagnostic_source_t = if (self.generic_signature_params.get(arg_t) != null)
+                    arg_t
+                else
+                    (try self.contextualFunctionExpressionDiagnosticSignature(
+                        args[i],
+                        arg_t,
+                        param_t,
+                    )) orelse arg_t;
                 break :blk try self.functionExpressionAssignableToSignatureTarget(args[i], diagnostic_source_t, param_t);
             } else self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             const predicate_assignable = if (declared_param_predicate) |target_pred|
@@ -157398,6 +157401,18 @@ pub const Checker = struct {
                 self.strict_flags.strict_function_types,
                 true,
             );
+        }
+        if (self.generic_signature_params.get(source_t) == null and
+            self.generic_signature_params.get(target_t) != null)
+        {
+            const source_params = self.interner.signatureParams(source_t);
+            const target_params = self.interner.signatureParams(target_t);
+            if (self.signatureMinRequiredArgs(source_t, source_params) > target_params.len) return false;
+            const shared_len = @min(source_params.len, target_params.len);
+            for (source_params[0..shared_len], 0..) |source_param, i| {
+                if (!try self.contextualTargetParamAssignableToSource(target_params[i], source_param)) return false;
+            }
+            return true;
         }
         const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.any;
         const source_params = self.interner.signatureParams(source_t);
@@ -173268,6 +173283,7 @@ test "checker: Function constraints accept callable and constructable arguments"
         \\accept(C);
         \\accept<Callable>(callable);
         \\accept<{ new (): string }>(constructable);
+        \\accept(<U extends Date>(x: U) => x);
         \\function forward<T extends { (): void }, U extends T>(x: T, y: U) {
         \\    accept(x);
         \\    accept(y);
@@ -173280,6 +173296,21 @@ test "checker: Function constraints accept callable and constructable arguments"
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+}
+
+test "checker: context-sensitive arrow satisfies generic callback parameter" {
+    const s = try newSetup(
+        \\declare function f<T>(cb: <S>(x: S) => T): T;
+        \\const value = f(x => x);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: Function constraint failures keep upstream call diagnostics" {
