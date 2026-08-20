@@ -19786,8 +19786,17 @@ pub const Parser = struct {
     // The parser diagnoses these and continues.
 
     fn parseJsx(self: *Parser) ParseError!NodeId {
+        const diagnostic_start = self.diagnostics.items.len;
         var node = try self.parseJsxElementOrFragment();
+        var recovered_malformed_fragment = false;
+        for (self.diagnostics.items[diagnostic_start..]) |diagnostic| {
+            if (diagnostic.code == 17014 or diagnostic.code == 17015) {
+                recovered_malformed_fragment = true;
+                break;
+            }
+        }
         while (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
+            if (recovered_malformed_fragment and self.peek().flags.preceded_by_newline) break;
             // tsgo wraps adjacent JSX elements in expression position in a
             // synthetic comma BinaryExpression so EVERY sibling stays in the
             // AST and still gets checked (each yields its own open/close
@@ -27761,6 +27770,18 @@ test "parser: adjacent JSX children inside a parent do not report TS2657" {
     try T.expectEqual(@as(usize, 2), children.len);
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 2657);
+    }
+}
+
+test "parser: malformed fragment recovery does not join the next line as a JSX sibling" {
+    var s = try newTsxTestSetup(
+        \\<>hi</div>
+        \\<>eof
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2657);
     }
 }
 
