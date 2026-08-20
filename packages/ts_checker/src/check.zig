@@ -28242,9 +28242,53 @@ pub const Checker = struct {
         }
         if (params.len == 0) return null;
         const fixed_count = params.len - 1;
+        if (source_is_rest) return self.contextualSignatureRestCaptureType(params, fixed_count, param_index);
         if (param_index < fixed_count) return params[param_index];
-        if (source_is_rest) return params[params.len - 1];
         return self.contextualRestTupleElementType(params[params.len - 1], param_index - fixed_count);
+    }
+
+    fn contextualSignatureRestCaptureType(
+        self: *Checker,
+        params: []const TypeId,
+        fixed_count: usize,
+        start: usize,
+    ) ?TypeId {
+        const rest_t = params[params.len - 1];
+        if (start >= fixed_count) {
+            const rest_offset = start - fixed_count;
+            if (rest_offset == 0) return rest_t;
+            if (self.tupleSliceType(rest_t, rest_offset) catch null) |slice_t| return slice_t;
+        }
+
+        var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elements.deinit(self.gpa);
+        var fixed_i = start;
+        while (fixed_i < fixed_count) : (fixed_i += 1) {
+            elements.append(self.gpa, params[fixed_i]) catch return null;
+        }
+
+        const rest_offset = start -| fixed_count;
+        const rest_prefix = self.tupleFixedPrefixCount(rest_t);
+        var rest_i = rest_offset;
+        while (rest_i < rest_prefix) : (rest_i += 1) {
+            const element_t = self.tupleElementType(rest_t, rest_i);
+            if (element_t != types.Primitive.none) elements.append(self.gpa, element_t) catch return null;
+        }
+        const tail_t = self.tuple_trailing_rest_types.get(rest_t) orelse blk: {
+            const number_index = self.interner.objectNumberIndex(rest_t);
+            break :blk if (number_index != types.Primitive.none and rest_prefix == 0)
+                number_index
+            else
+                types.Primitive.none;
+        };
+        if (tail_t != types.Primitive.none) elements.append(self.gpa, tail_t) catch return null;
+
+        const element_t = switch (elements.items.len) {
+            0 => types.Primitive.never,
+            1 => elements.items[0],
+            else => self.interner.internUnion(elements.items) catch return null,
+        };
+        return self.interner.internArrayType(self.string_interner, element_t) catch null;
     }
 
     fn contextualRestTupleElementType(self: *Checker, rest_t: TypeId, index: usize) ?TypeId {
@@ -107342,14 +107386,15 @@ pub const Checker = struct {
         self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
-        const n = @min(params.len, param_ts.len);
-        const effective_param_ts = try self.gpa.dupe(TypeId, param_ts[0..n]);
+        const n = params.len;
+        const effective_param_ts = try self.gpa.alloc(TypeId, n);
         defer self.gpa.free(effective_param_ts);
         for (0..n) |i| {
             const pp = hir_mod.parameterOf(self.hir, params[i]);
+            var effective_param_t = self.contextualParameterTypeForSignature(sig, i, pp.flags.is_rest) orelse types.Primitive.any;
+            effective_param_ts[i] = effective_param_t;
             if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, pp.name);
-            var effective_param_t = param_ts[i];
             if (pp.type_annotation != hir_mod.none_node_id) {
                 effective_param_t = self.lowererLowerWithTypeParams(pp.type_annotation) catch effective_param_t;
                 if (self.objectAnnotationName(pp.type_annotation) != null and
@@ -154057,14 +154102,43 @@ pub const Checker = struct {
                 return try self.contextualFunctionSignatureAssignable(diagnostic_source, target_t);
             }
         }
+        const contextual_rest_params_fit = self.unannotatedContextualCallbackFitsConcreteRestTarget(arg_node, target_t);
+        if (contextual_rest_params_fit and
+            (target_ret == types.Primitive.void_t or
+                target_ret == types.Primitive.any or
+                target_ret == types.Primitive.unknown))
+        {
+            return true;
+        }
         if (!self.containsFreeTypeParameter(target_t)) {
             if (try self.contextualFunctionExpressionReturnAssignable(arg_node, relation_source_t, target_t)) |ok| return ok;
         }
         if (try self.contextualFunctionBodyAssignableToTargetReturn(arg_node, target_ret)) {
+            if (contextual_rest_params_fit) return true;
             return try self.functionExpressionParametersAssignableToTarget(relation_source_t, target_t);
         }
         if (self.engine.isAssignableTo(relation_source_t, target_t) catch false) return true;
         return self.contextualFunctionSignatureAssignable(relation_source_t, target_t) catch false;
+    }
+
+    fn unannotatedContextualCallbackFitsConcreteRestTarget(
+        self: *Checker,
+        fn_node: NodeId,
+        target_t: TypeId,
+    ) bool {
+        if (!self.rest_signatures.contains(target_t) or self.containsFreeTypeParameter(target_t)) return false;
+        const target_params = self.interner.signatureParams(target_t);
+        if (target_params.len == 0) return false;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            if (hir_mod.parameterOf(self.hir, param_node).type_annotation != hir_mod.none_node_id) return false;
+        }
+        const required = self.functionExpressionRequiredValueParamCount(fn_node);
+        const fixed_count = target_params.len - 1;
+        if (self.restTupleMaxCount(target_params[target_params.len - 1])) |rest_max| {
+            return required <= fixed_count + rest_max;
+        }
+        return true;
     }
 
     fn contextualFunctionBodyAssignableToTargetReturn(
@@ -210788,6 +210862,29 @@ test "checker: variadic tuple contexts reach nested and inferred callbacks" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: contextual tuple rest expands fixed parameters and remaining rest capture" {
+    const s = try newSetup(
+        \\declare function fixed(cb: (...args: [number, boolean, string]) => void): void;
+        \\fixed((a, b, c) => {});
+        \\fixed((...x) => {});
+        \\fixed((a, ...x) => {});
+        \\fixed((a, b, ...x) => {});
+        \\declare function open(cb: (...args: [number, boolean, ...string[]]) => void): void;
+        \\open((a, b, c) => {});
+        \\open((...x) => {});
+        \\open((a, ...x) => {});
+        \\open((a, b, ...x) => {});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: variadic rest tuple suffix callback accepts captured values" {
