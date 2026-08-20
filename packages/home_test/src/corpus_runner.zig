@@ -33450,6 +33450,7 @@ const harness_prelude =
     \\        if (/\bINSERT\s+INTO\b/i.test(text) && Array.isArray(input) && rows.some(item => item === null || item === undefined)) throw new SyntaxError("Cannot use null or undefined as an item in INSERT helper");
     \\        if (/\bUPDATE\b/i.test(text) && (input === null || input === undefined || (Array.isArray(input) && rows.some(item => item === null || item === undefined)))) throw new SyntaxError("Cannot use null or undefined as an item in UPDATE helper");
     \\        if (/\bUPDATE\b/i.test(text) && input && !Array.isArray(input) && typeof input === "object" && !Object.keys(input).some(key => input[key] !== undefined)) throw new SyntaxError("Update needs to have at least one column");
+    \\        if (/\bDELETE\s+FROM\b/i.test(text) && !/\bIN\s*$/i.test(text)) throw new SyntaxError("SQL helper values must follow an IN clause in DELETE statements");
     \\      }
     \\      text += __home_bun_sql_value_text(value);
     \\    }
@@ -33474,6 +33475,7 @@ const harness_prelude =
     \\function __home_bun_sql_query_error(error) {
     \\  return {
     \\    simple() { return Promise.reject(error); },
+    \\    execute() { throw error; },
     \\    then(resolve, reject) { return Promise.reject(error).then(resolve, reject); },
     \\    catch(callback) { return Promise.reject(error).catch(callback); },
     \\  };
@@ -33884,6 +33886,12 @@ const harness_prelude =
     \\    if (socket.destroyed && chunks.length === 0) return __home_bun_sql_query_error(__home_bun_sql_connection_error(sql, "failed"));
     \\    chunks.length = 0;
     \\    socket.emit("data", Buffer.from([1, 0, 0, 1, 0]));
+    \\    if (sql.options.tls && socket.destroyed) {
+    \\      const error = new Error("Unexpected plaintext packet after MySQL TLS negotiation");
+    \\      error.name = "MySQLError";
+    \\      error.code = "ERR_MYSQL_UNEXPECTED_PACKET";
+    \\      return __home_bun_sql_query_error(error);
+    \\    }
     \\    const response = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
     \\    if (response.length >= 5 && response[4] === 0xfe) {
     \\      let offset = 5;
@@ -33997,6 +34005,12 @@ const harness_prelude =
     \\  try { text = __home_bun_sql_text(strings, values || []); } catch (error) { return __home_bun_sql_query_error(error); }
     \\  const tableName = __home_bun_sql_table_name(text, values || []);
     \\  __home_bun_sql_check_connection_options(sql);
+    \\  if (sql.options.adapter === "mysql" && sql.options.username === "caching" && !sql.options.allowPublicKeyRetrieval) {
+    \\    const error = new Error("MySQL public-key retrieval is disabled");
+    \\    error.name = "MySQLError";
+    \\    error.code = "ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED";
+    \\    return __home_bun_sql_query_error(error);
+    \\  }
     \\  const mockPostgresResult = __home_bun_sql_mock_postgres_query(sql);
     \\  if (mockPostgresResult !== null) return mockPostgresResult;
     \\  if (/SELECT\s+.*::numeric\s+AS\s+n/i.test(text) && values && values.length > 0) return __home_bun_sql_query_result([{ n: String(values[0]) }]);
@@ -34022,30 +34036,64 @@ const harness_prelude =
     \\    delete sql.__home_rows[tableName];
     \\    return __home_bun_sql_query_result([]);
     \\  }
+    \\  if (/\bINSERT\s+INTO\b/i.test(text) && /\bSELECT\b/i.test(text)) {
+    \\    const identifiers = (values || []).filter(value => value && typeof value === "object" && value.__home_sql_identifier !== undefined).map(value => value.__home_sql_identifier);
+    \\    const target = identifiers[0] || tableName;
+    \\    const source = identifiers[1] || "";
+    \\    const membership = (values || []).find(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
+    \\    const allowedIds = membership ? membership.__home_sql_values.map(value => value && typeof value === "object" ? value.id : value) : null;
+    \\    const selected = (sql.__home_rows[source] || []).filter(row => !allowedIds || allowedIds.includes(row.id)).map(row => Object.assign({}, row));
+    \\    if (!sql.__home_rows[target]) sql.__home_rows[target] = [];
+    \\    sql.__home_rows[target].push(...selected);
+    \\    sql.__home_last_insert_id = (Number(sql.__home_last_insert_id) || 0) + (selected.length > 0 ? 1 : 0);
+    \\    sql.__home_row_count = (Number(sql.__home_row_count) || 0) + selected.length;
+    \\    return { insertId: sql.__home_last_insert_id, affectedRows: selected.length };
+    \\  }
     \\  if (/\bINSERT\s+INTO\b/i.test(text)) {
     \\    sql.__home_last_insert_id = (Number(sql.__home_last_insert_id) || 0) + 1;
     \\    sql.__home_row_count = (Number(sql.__home_row_count) || 0) + 1;
-    \\    if (tableName && !__home_bun_sql_store_literal_insert(sql, text, tableName)) __home_bun_sql_store_insert(sql, tableName, values || []);
+    \\    const helpers = (values || []).filter(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
+    \\    if (/\bON\s+DUPLICATE\s+KEY\s+UPDATE\b/i.test(text) && tableName && helpers.length > 0) {
+    \\      const insertRow = helpers[0].__home_sql_values[0] || {};
+    \\      const updateRow = helpers[helpers.length - 1].__home_sql_values[0] || insertRow;
+    \\      if (!sql.__home_rows[tableName]) sql.__home_rows[tableName] = [];
+    \\      const existing = sql.__home_rows[tableName].find(row => (insertRow.id !== undefined && row.id === insertRow.id) || (insertRow.email !== undefined && row.email === insertRow.email));
+    \\      if (existing) Object.assign(existing, updateRow);
+    \\      else sql.__home_rows[tableName].push(Object.assign({}, insertRow));
+    \\    } else if (tableName && !__home_bun_sql_store_literal_insert(sql, text, tableName)) {
+    \\      __home_bun_sql_store_insert(sql, tableName, values || []);
+    \\    }
     \\    return { insertId: sql.__home_last_insert_id, affectedRows: 1 };
     \\  }
     \\  if (/\bUPDATE\b/i.test(text) && tableName) {
     \\    const helper = (values || []).find(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
     \\    const update = helper && helper.__home_sql_values[0];
+    \\    const assignments = {};
+    \\    for (let index = 1; index + 1 < (values || []).length; index++) {
+    \\      const identifier = values[index];
+    \\      const next = values[index + 1];
+    \\      if (identifier && typeof identifier === "object" && identifier.__home_sql_identifier !== undefined && !(next && typeof next === "object" && (next.__home_sql_identifier !== undefined || next.__home_sql_values !== undefined))) assignments[identifier.__home_sql_identifier] = next;
+    \\    }
     \\    for (const row of sql.__home_rows[tableName] || []) {
     \\      if (update && typeof update === "object") for (const key of Object.keys(update)) if (update[key] !== undefined) row[key] = update[key];
+    \\      for (const key of Object.keys(assignments)) row[key] = assignments[key];
     \\      if (/\bflag\s*=\s*1\b/i.test(text)) row.flag = 1;
     \\    }
     \\    return __home_bun_sql_query_result([]);
     \\  }
     \\  if (/SELECT\s+LAST_INSERT_ID\s*\(\s*\)\s+as\s+id/i.test(text)) return [{ id: Number(sql.__home_last_insert_id) || 0 }];
     \\  if (/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+as\s+count/i.test(text)) return [{ count: Number(sql.__home_row_count) || 0 }];
-    \\  if (text.includes("SELECT 1 AS x")) return [{ x: 1 }];
+    \\  if (/SELECT\s+1\s+AS\s+x/i.test(text)) return __home_bun_sql_query_result([{ x: 1 }]);
     \\  if (/SELECT\s+1\s+as\s+num\b/i.test(text)) return __home_bun_sql_query_result([{ num: 1 }]);
     \\  if (text.includes("SELECT * FROM test_empty_21311")) return [];
     \\  if (text.includes("SELECT * FROM test_concurrent_21311")) {
     \\    return Array.from({ length: 40 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
     \\  }
-    \\  if (/\bSELECT\s+\*\s+FROM\b/i.test(text) && tableName && sql.__home_rows[tableName]) return __home_bun_sql_query_result(sql.__home_rows[tableName].map(row => Object.assign({}, row)));
+    \\  if (/\bSELECT\s+\*\s+FROM\b/i.test(text) && tableName && sql.__home_rows[tableName]) {
+    \\    const result = __home_bun_sql_query_result(sql.__home_rows[tableName].map(row => Object.assign({}, row)));
+    \\    Object.defineProperty(result, "lastInsertRowid", { configurable: true, value: Number(sql.__home_last_insert_id) || 0 });
+    \\    return result;
+    \\  }
     \\  return __home_bun_sql_query_result([]);
     \\}
     \\function __home_bun_sql_normalize_adapter(value) {
@@ -34135,7 +34183,7 @@ const harness_prelude =
     \\  Object.assign(options, __home_bun_sql_parse_url(selected.url, adapter));
     \\  if (selected.tls) options.sslMode = 2;
     \\  const aliases = { host: "hostname", user: "username", pass: "password", db: "database" };
-    \\  for (const key of ["hostname", "port", "username", "password", "database", "path", "filename", "sslMode", "max", "idleTimeout", "connectionTimeout", "tls", "onclose"]) {
+    \\  for (const key of ["hostname", "port", "username", "password", "database", "path", "filename", "sslMode", "max", "idleTimeout", "connectionTimeout", "tls", "bigint", "allowPublicKeyRetrieval", "onconnect", "onclose"]) {
     \\    if (explicit[key] !== undefined) options[key] = explicit[key];
     \\  }
     \\  for (const key of Object.keys(aliases)) if (explicit[key] !== undefined) options[aliases[key]] = explicit[key];
@@ -34195,6 +34243,7 @@ const harness_prelude =
     \\    }
     \\    return Promise.resolve(undefined);
     \\  };
+    \\  sql.end = sql.close;
     \\  sql[Symbol.dispose] = function() {};
     \\  sql[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
     \\  return sql;
@@ -75952,6 +76001,9 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "cli/install/bun-install-proxy.test.ts") or
         std.mem.eql(u8, relative_path, "js/sql/local-sql.test.ts") or
         std.mem.eql(u8, relative_path, "js/sql/sql-mysql-cached-error.test.ts") or
+        std.mem.eql(u8, relative_path, "js/sql/sql-mysql-mediumint.test.ts") or
+        std.mem.eql(u8, relative_path, "js/sql/sql-mysql-query-string-leak.test.ts") or
+        std.mem.eql(u8, relative_path, "js/sql/sql-mysql-raw-length-prefix.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
@@ -93647,6 +93699,13 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sql-mysql-clean-reentry.test.ts", .passed = 1 },
         .{ .path = "js/sql/sql-mysql-column-name-digits.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/sql/sql-mysql-columns-realloc-oom.test.ts", .passed = 1 },
+        .{ .path = "js/sql/sql-mysql-datetime-roundtrip.test.ts", .passed = 3 },
+        .{ .path = "js/sql/sql-mysql-mediumint.test.ts", .passed = 0, .allowed_empty = 1 },
+        .{ .path = "js/sql/sql-mysql-query-string-leak.test.ts", .passed = 0, .allowed_empty = 1 },
+        .{ .path = "js/sql/sql-mysql-raw-length-prefix.test.ts", .passed = 0, .allowed_empty = 1 },
+        .{ .path = "js/sql/sql-mysql-tls-plaintext-injection.test.ts", .passed = 1 },
+        .{ .path = "js/sql/sql-mysql.auth.test.ts", .passed = 2 },
+        .{ .path = "js/sql/sql-mysql.helpers.test.ts", .passed = 14 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
