@@ -36930,6 +36930,57 @@ const harness_prelude =
     \\  async close() { this.closed = true; }
     \\}
     \\globalThis.__home_modules["@electric-sql/pglite"] = { PGlite: __home_PGlite };
+    \\function __home_fastify_websocket_plugin(instance) { instance.__home_websocket_enabled = true; }
+    \\__home_fastify_websocket_plugin.__home_fastify_websocket = true;
+    \\globalThis.__home_modules["@fastify/websocket"] = { default: __home_fastify_websocket_plugin };
+    \\function __home_Fastify(options) {
+    \\  const routes = Object.create(null);
+    \\  const websocketRoutes = Object.create(null);
+    \\  const connections = new WeakMap();
+    \\  const instance = {
+    \\    options: options || {}, server: {}, __home_websocket_enabled: false, __home_server: null,
+    \\    register(plugin, pluginOptions) { if (typeof plugin === "function") plugin(this, pluginOptions || {}); return this; },
+    \\    get(path, routeOptions, handler) {
+    \\      if (typeof routeOptions === "function") routes[String(path)] = routeOptions;
+    \\      else if (routeOptions && routeOptions.websocket && typeof handler === "function") websocketRoutes[String(path)] = handler;
+    \\      else if (typeof handler === "function") routes[String(path)] = handler;
+    \\      return this;
+    \\    },
+    \\    async listen(listenOptions) {
+    \\      const requested = listenOptions || {};
+    \\      this.__home_server = Bun.serve({
+    \\        port: Number(requested.port) || 0,
+    \\        hostname: requested.host || "127.0.0.1",
+    \\        fetch(request, server) {
+    \\          const path = new URL(request.url).pathname;
+    \\          if (String(request.headers.get("upgrade") || "").toLowerCase() === "websocket" && websocketRoutes[path]) {
+    \\            server.upgrade(request, { data: { path } });
+    \\            return request.__home_upgrade_response;
+    \\          }
+    \\          const route = routes[path];
+    \\          if (!route) return new Response("Not Found", { status: 404 });
+    \\          return Promise.resolve(route(request)).then(value => value instanceof Response ? value : Response.json(value));
+    \\        },
+    \\        websocket: {
+    \\          open(peer) {
+    \\            const listeners = Object.create(null);
+    \\            const connection = { on(type, callback) { listeners[String(type)] = callback; return this; }, send(value) { return peer.send(value); }, close() { return peer.close(); } };
+    \\            connections.set(peer, listeners);
+    \\            const route = websocketRoutes[peer.data && peer.data.path];
+    \\            if (route) route(connection, { raw: null });
+    \\          },
+    \\          message(peer, message) { const listeners = connections.get(peer); if (listeners && typeof listeners.message === "function") listeners.message(Buffer.from(String(message))); },
+    \\          close(peer) { connections.delete(peer); },
+    \\        },
+    \\      });
+    \\      this.server = this.__home_server;
+    \\      return "ws://127.0.0.1:" + this.__home_server.port;
+    \\    },
+    \\    close() { if (this.__home_server) this.__home_server.stop(true); this.__home_server = null; },
+    \\  };
+    \\  return instance;
+    \\}
+    \\globalThis.__home_modules["fastify"] = { default: __home_Fastify };
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -75353,10 +75404,11 @@ fn isJsIdentifierStart(byte: u8) bool {
 /// namespace object directly. Matches the per-file hardcoded `.default` patches.
 fn moduleDefaultExportIsApi(name: []const u8) bool {
     const defaulted = [_][]const u8{
-        "fs",          "node:fs",
-        "fs/promises", "node:fs/promises",
-        "zlib",        "node:zlib",
-        "ws",
+        "fs",                 "node:fs",
+        "fs/promises",        "node:fs/promises",
+        "zlib",               "node:zlib",
+        "ws",                 "fastify",
+        "@fastify/websocket",
     };
     for (defaulted) |m| {
         if (std.mem.eql(u8, name, m)) return true;
@@ -75564,6 +75616,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "@connectrpc/connect-node",
         "@azure/service-bus",
         "@electric-sql/pglite",
+        "@fastify/websocket",
+        "fastify",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -100110,6 +100164,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/@azure/service-bus/azure-service-bus.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/@duckdb/node-api/duckdb.test.ts", .passed = 18 },
         .{ .path = "js/third_party/@electric-sql/pglite/pglite.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/@fastify/websocket/fastity-test-websocket.test.js", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
