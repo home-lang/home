@@ -75020,6 +75020,28 @@ fn rewriteSqlMysqlCleanReentryCorpus(allocator: std.mem.Allocator, source: []con
     );
 }
 
+fn rewriteSqlMysqlColumnNameDigitsCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_docker_guard = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import { bunEnv, bunExe, describeWithContainer } from \"harness\";",
+        "import { bunEnv, bunExe, describeWithContainer, isDockerEnabled } from \"harness\";",
+    );
+    defer allocator.free(with_docker_guard);
+
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_docker_guard,
+        "describeWithContainer(\"mysql\", { image: \"mysql_plain\" }, container => {",
+        \\if (!isDockerEnabled()) {
+        \\  test.todo("a digits-with-interior-underscore column stays a named key (requires MySQL)");
+        \\} else describeWithContainer("mysql", { image: "mysql_plain" }, container => {
+        ,
+    );
+}
+
 fn rewriteResolvedPassiveListenerSkip(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     // Bun carries Node's historical known-issue guard in this test. Home's
     // EventTarget shim implements the missing passive semantics, so keep
@@ -75128,6 +75150,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeTlsRenegotiationCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/sql/sql-mysql-clean-reentry.test.ts"))
         try rewriteSqlMysqlCleanReentryCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/sql/sql-mysql-column-name-digits.test.ts"))
+        try rewriteSqlMysqlColumnNameDigitsCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
@@ -93516,6 +93540,7 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sql-mysql-bind-oob.test.ts", .passed = 1 },
         .{ .path = "js/sql/sql-mysql-cached-error.test.ts", .passed = 0, .allowed_empty = 1 },
         .{ .path = "js/sql/sql-mysql-clean-reentry.test.ts", .passed = 1 },
+        .{ .path = "js/sql/sql-mysql-column-name-digits.test.ts", .passed = 0, .todo = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});

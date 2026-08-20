@@ -67,5 +67,30 @@ test "ColumnIdentifier: index variant carries u32 payload" {
     try std.testing.expectEqual(@as(u32, 42), ci.index);
 }
 
+test "ColumnIdentifier: digit separators stay named" {
+    var ci = try ColumnIdentifier.init(.{ .temporary = "2024_01" });
+    defer ci.deinit();
+
+    try std.testing.expect(ci == .name);
+    try std.testing.expectEqualStrings("2024_01", ci.name.slice());
+}
+
+test "ColumnIdentifier: only in-range plain decimals become indices" {
+    var decimal = try ColumnIdentifier.init(.{ .temporary = "0008" });
+    defer decimal.deinit();
+    try std.testing.expect(decimal == .index);
+    try std.testing.expectEqual(@as(u32, 8), decimal.index);
+
+    var largest_index = try ColumnIdentifier.init(.{ .temporary = "4294967294" });
+    defer largest_index.deinit();
+    try std.testing.expect(largest_index == .index);
+    try std.testing.expectEqual(std.math.maxInt(u32) - 1, largest_index.index);
+
+    var outside_index_range = try ColumnIdentifier.init(.{ .temporary = "4294967295" });
+    defer outside_index_range.deinit();
+    try std.testing.expect(outside_index_range == .name);
+    try std.testing.expectEqualStrings("4294967295", outside_index_range.name.slice());
+}
+
 const std = @import("std");
 const Data = @import("./Data.zig").Data;
