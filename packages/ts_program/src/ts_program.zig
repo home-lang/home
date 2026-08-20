@@ -3239,6 +3239,7 @@ pub const Program = struct {
                 c,
                 f.source,
                 commonjs_module,
+                options.emit.es_target == .es5,
                 options.emit.es_target != .esnext or
                     options.resource_management_helpers_required or
                     sourceTargetNeedsResourceLowering(f.source),
@@ -3257,6 +3258,9 @@ pub const Program = struct {
         };
 
         try appendImportedPrivateHelperArityDiagnostics(self.gpa, c, f.source, tslib.source);
+        if (options.emit.es_target == .es5) {
+            try appendImportedArraySpreadHelperArityDiagnostic(self.gpa, c, tslib.source);
+        }
         try ts_driver.appendMissingStage3DecoratorHelperDiagnostics(
             self.gpa,
             c,
@@ -3323,6 +3327,32 @@ pub const Program = struct {
             });
             c.has_errors = true;
         }
+    }
+
+    fn appendImportedArraySpreadHelperArityDiagnostic(
+        gpa: std.mem.Allocator,
+        c: *ts_driver.Compilation,
+        tslib_source: []const u8,
+    ) ProgramError!void {
+        const use = firstArraySpreadUse(&c.hir) orelse return;
+        const actual = helperParameterCount(tslib_source, "__spreadArray") orelse {
+            try appendMissingNamedHelperDiagnostic(gpa, c, "__spreadArray", use);
+            return;
+        };
+        if (actual >= 3) return;
+        const msg = try gpa.dupe(
+            u8,
+            "This syntax requires an imported helper named '__spreadArray' with 3 parameters, which is not compatible with the one in 'tslib'. Consider upgrading your version of 'tslib'.",
+        );
+        try c.diagnostics.append(gpa, .{
+            .phase = .bind,
+            .pos = @intCast(use.pos),
+            .line = 0,
+            .span_len = @intCast(use.span_len),
+            .code = 2807,
+            .message = msg,
+        });
+        c.has_errors = true;
     }
 
     fn appendMissingCommonJsInteropHelperDiagnostics(
@@ -3464,16 +3494,35 @@ pub const Program = struct {
         c: *const ts_driver.Compilation,
         source: []const u8,
         commonjs_module: bool,
+        lower_array_spread: bool,
         lower_resource_declarations: bool,
     ) ?usize {
         var best: ?usize = null;
         if (firstPrivateIdentifierHash(source)) |hash| best = minOptionalPos(best, hash);
+        if (lower_array_spread) {
+            if (firstArraySpreadUse(&c.hir)) |use| best = minOptionalPos(best, use.pos);
+        }
         if (lower_resource_declarations) {
             if (firstResourceDeclarationPosition(&c.hir)) |using_pos| best = minOptionalPos(best, using_pos);
         }
         if (commonjs_module) {
             if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
             if (firstCommonJsInteropImportPosition(c)) |import_pos| best = minOptionalPos(best, import_pos);
+        }
+        return best;
+    }
+
+    fn firstArraySpreadUse(hir: *const hir_mod_ns.Hir) ?HelperUse {
+        var best: ?HelperUse = null;
+        var node: hir_mod_ns.NodeId = 1;
+        while (node < hir.nodeCount()) : (node += 1) {
+            if (hir.kindOf(node) != .array_literal) continue;
+            for (hir_mod_ns.arrayLiteralElements(hir, node)) |element| {
+                if (element == hir_mod_ns.none_node_id or hir.kindOf(element) != .spread) continue;
+                const span = hir.spanOf(element);
+                const use: HelperUse = .{ .pos = span.start, .span_len = span.end - span.start };
+                if (best == null or use.pos < best.?.pos) best = use;
+            }
         }
         return best;
     }
@@ -6266,6 +6315,37 @@ test "Program: importHelpers reports incompatible private field helper arity" {
     }
     try T.expect(saw_get);
     try T.expect(saw_set);
+}
+
+test "Program: importHelpers reports incompatible array spread helper arity at ES5" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const source =
+        \\export {};
+        \\const values = [1, , 2];
+        \\const result = [0, ...values, 3];
+    ;
+    const main_id = try p.add("/main.ts", source);
+    _ = try p.add(
+        "/tslib.d.ts",
+        "export declare function __spreadArray(to: any[], from: any[]): any[];\n",
+    );
+    try p.compileAll(.{ .no_emit = true, .emit = .{ .import_helpers = true, .es_target = .es5 } });
+
+    const c = p.fileById(main_id).compilation.?;
+    const spread_pos: u32 = @intCast(std.mem.indexOf(u8, source, "...values").?);
+    var saw_2807 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2807 or std.mem.indexOf(u8, d.message, "'__spreadArray' with 3 parameters") == null) continue;
+        try T.expectEqual(spread_pos, d.pos);
+        try T.expectEqual(@as(u32, "...values".len), d.span_len);
+        saw_2807 = true;
+    }
+    try T.expect(saw_2807);
 }
 
 test "Program: parity helper cycle batch reports a missing private setter for destructuring writes" {

@@ -2305,6 +2305,7 @@ pub fn compileSource(
             source,
             helperDiagnosticsUseCommonJsModule(source, options),
             options.emit.es_target != .esnext,
+            options.emit.es_target == .es5,
             options.emit.es_target != .esnext or
                 options.resource_management_helpers_required or
                 sourceTargetNeedsResourceLowering(source),
@@ -2431,10 +2432,11 @@ fn appendMissingImportedHelperDiagnostics(
     source: []const u8,
     commonjs_module: bool,
     lower_stage3_decorators: bool,
+    lower_array_spread: bool,
     lower_resource_declarations: bool,
 ) CompileError!void {
     const tslib_source = tslibDeclarationSource(source) orelse {
-        if (sourceExternalEmitHelperPosition(c, source, commonjs_module, lower_resource_declarations)) |pos| {
+        if (sourceExternalEmitHelperPosition(c, source, commonjs_module, lower_array_spread, lower_resource_declarations)) |pos| {
             try c.diagnostics.append(gpa, .{
                 .phase = .bind,
                 .pos = @intCast(pos),
@@ -2448,6 +2450,7 @@ fn appendMissingImportedHelperDiagnostics(
         return;
     };
     try appendImportedPrivateHelperArityDiagnostics(gpa, c, source, tslib_source);
+    if (lower_array_spread) try appendImportedArraySpreadHelperArityDiagnostic(gpa, c, tslib_source);
     try appendMissingStage3DecoratorHelperDiagnostics(gpa, c, source, tslib_source, lower_stage3_decorators);
     if (commonjs_module) try appendMissingCommonJsInteropHelperDiagnostics(gpa, c, tslib_source);
 }
@@ -2737,6 +2740,32 @@ fn appendImportedPrivateHelperArityDiagnostics(
     }
 }
 
+fn appendImportedArraySpreadHelperArityDiagnostic(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    tslib_source: []const u8,
+) CompileError!void {
+    const use = firstArraySpreadUse(&c.hir) orelse return;
+    const actual = helperParameterCount(tslib_source, "__spreadArray") orelse {
+        try appendMissingNamedHelperDiagnostic(gpa, c, "__spreadArray", use);
+        return;
+    };
+    if (actual >= 3) return;
+    const msg = try gpa.dupe(
+        u8,
+        "This syntax requires an imported helper named '__spreadArray' with 3 parameters, which is not compatible with the one in 'tslib'. Consider upgrading your version of 'tslib'.",
+    );
+    try c.diagnostics.append(gpa, .{
+        .phase = .bind,
+        .pos = @intCast(use.pos),
+        .line = 0,
+        .span_len = @intCast(use.span_len),
+        .code = 2807,
+        .message = msg,
+    });
+    c.has_errors = true;
+}
+
 fn appendMissingCommonJsInteropHelperDiagnostics(
     gpa: std.mem.Allocator,
     c: *Compilation,
@@ -2876,16 +2905,35 @@ fn sourceExternalEmitHelperPosition(
     c: *const Compilation,
     source: []const u8,
     commonjs_module: bool,
+    lower_array_spread: bool,
     lower_resource_declarations: bool,
 ) ?usize {
     var best: ?usize = null;
     if (firstPrivateIdentifierHash(source)) |hash| best = minOptionalPos(best, hash);
+    if (lower_array_spread) {
+        if (firstArraySpreadUse(&c.hir)) |use| best = minOptionalPos(best, use.pos);
+    }
     if (lower_resource_declarations) {
         if (firstResourceDeclarationPosition(&c.hir)) |using_pos| best = minOptionalPos(best, using_pos);
     }
     if (commonjs_module) {
         if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
         if (firstCommonJsInteropImportPosition(c)) |import_pos| best = minOptionalPos(best, import_pos);
+    }
+    return best;
+}
+
+fn firstArraySpreadUse(hir: *const Hir) ?HelperUse {
+    var best: ?HelperUse = null;
+    var node: NodeId = 1;
+    while (node < hir.nodeCount()) : (node += 1) {
+        if (hir.kindOf(node) != .array_literal) continue;
+        for (hir_mod.arrayLiteralElements(hir, node)) |element| {
+            if (element == hir_mod.none_node_id or hir.kindOf(element) != .spread) continue;
+            const span = hir.spanOf(element);
+            const use: HelperUse = .{ .pos = span.start, .span_len = span.end - span.start };
+            if (best == null or use.pos < best.?.pos) best = use;
+        }
     }
     return best;
 }
@@ -4992,6 +5040,38 @@ test "driver: importHelpers reports incompatible private field helper arity" {
     }
     try T.expect(saw_get);
     try T.expect(saw_set);
+}
+
+test "driver: importHelpers reports incompatible array spread helper arity at ES5" {
+    const source =
+        \\// @importHelpers: true
+        \\// @filename: main.ts
+        \\export {};
+        \\const values = [1, , 2];
+        \\const result = [0, ...values, 3];
+        \\// @filename: tslib.d.ts
+        \\declare module "tslib" {
+        \\    function __spreadArray(to: any[], from: any[]): any[];
+        \\}
+    ;
+    var c = try compileSource(T.allocator, source, .{
+        .no_emit = true,
+        .emit = .{ .import_helpers = true, .es_target = .es5 },
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    const spread_pos: u32 = @intCast(std.mem.indexOf(u8, source, "...values").?);
+    var saw_2807 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2807 or std.mem.indexOf(u8, d.message, "'__spreadArray' with 3 parameters") == null) continue;
+        try T.expectEqual(spread_pos, d.pos);
+        try T.expectEqual(@as(u32, "...values".len), d.span_len);
+        saw_2807 = true;
+    }
+    try T.expect(saw_2807);
 }
 
 test "driver: importHelpers resolves private helpers from tslib package index" {
