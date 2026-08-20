@@ -27147,6 +27147,7 @@ pub const Checker = struct {
                     callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
+                if (self.callUsesNonArrayReceiverForArrayCallback(c.callee)) return null;
                 const sig = self.contextualSignatureForCall(parent, callee_t, args) orelse return null;
                 target_t = (self.contextualCallArgumentType(sig, c.callee, args, idx) catch null) orelse return null;
             },
@@ -28027,6 +28028,14 @@ pub const Checker = struct {
                 .var_decl, .let_decl, .const_decl => {
                     const v = hir_mod.varDeclOf(self.hir, cur);
                     if (v.init != prev) return false;
+                    if (contextual_member_name) |member_name| {
+                        if (self.hir.kindOf(prev) == .object_literal) {
+                            if ((self.jsDocSatisfiesTypeForExpression(prev) catch null)) |target_t| {
+                                const member_t = (self.contextualObjectLiteralMemberTarget(target_t, member_name) catch null) orelse return false;
+                                return self.contextualParameterTypeForFunctionParam(fn_node, param_node, member_t) != null;
+                            }
+                        }
+                    }
                     if (v.type_annotation != hir_mod.none_node_id) {
                         const target_t = self.hir.typeOf(cur);
                         if ((self.contextualArrayLiteralFunctionElementTarget(fn_node, v.init) catch null)) |element_target_t| {
@@ -28046,14 +28055,6 @@ pub const Checker = struct {
                             }
                         }
                         return self.contextualParameterTypeForFunctionParam(fn_node, param_node, target_t) != null;
-                    }
-                    if (contextual_member_name) |member_name| {
-                        if (self.hir.kindOf(prev) == .object_literal) {
-                            if ((self.jsDocSatisfiesTypeForExpression(prev) catch null)) |target_t| {
-                                const member_t = (self.contextualObjectLiteralMemberTarget(target_t, member_name) catch null) orelse return false;
-                                return self.contextualParameterTypeForFunctionParam(fn_node, param_node, member_t) != null;
-                            }
-                        }
                     }
                     // In `.js` files a leading `/** @type {T} */` on
                     // the var-decl supplies a contextual signature for
@@ -28511,6 +28512,49 @@ pub const Checker = struct {
     /// surface TS18048 on optional properties inside a comparator.
     /// Returns `none` when the receiver isn't an array-like so callers
     /// fall back to the implicit-any path (and its TS7006 reporting).
+    fn isArrayCallbackMethodName(method: []const u8) bool {
+        const element_first = std.StaticStringMap(void).initComptime(.{
+            .{"map"},       .{"filter"},   .{"forEach"},
+            .{"some"},      .{"every"},    .{"find"},
+            .{"findIndex"}, .{"findLast"}, .{"findLastIndex"},
+            .{"flatMap"},   .{"sort"},
+        });
+        return element_first.has(method);
+    }
+
+    fn arrayCallbackReceiverIsArrayLike(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.none or self.typeIsAnyLike(t)) return false;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            return constraint != t and self.arrayCallbackReceiverIsArrayLike(constraint);
+        }
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.arrayCallbackReceiverIsArrayLike(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.arrayCallbackReceiverIsArrayLike(member)) return true;
+            }
+            return false;
+        }
+        return self.typeIsArrayLikeObject(t);
+    }
+
+    fn callUsesNonArrayReceiverForArrayCallback(self: *Checker, callee: NodeId) bool {
+        if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, callee);
+        if (!isArrayCallbackMethodName(self.string_interner.get(member.name))) return false;
+        const receiver_t = self.hir.typeOf(member.object);
+        return receiver_t != types.Primitive.none and !self.arrayCallbackReceiverIsArrayLike(receiver_t);
+    }
+
     fn arrayCallbackParameterType(
         self: *Checker,
         fn_node: NodeId,
@@ -28540,15 +28584,9 @@ pub const Checker = struct {
         const is_sort = std.mem.eql(u8, method, "sort");
         if (is_sort and param_index > 1) return null;
         if (!is_sort and param_index > 2) return null;
-        const element_first = std.StaticStringMap(void).initComptime(.{
-            .{"map"},       .{"filter"},   .{"forEach"},
-            .{"some"},      .{"every"},    .{"find"},
-            .{"findIndex"}, .{"findLast"}, .{"findLastIndex"},
-            .{"flatMap"},   .{"sort"},
-        });
-        if (!element_first.has(method)) return null;
+        if (!isArrayCallbackMethodName(method)) return null;
         const recv_t = try self.checkExpression(m.object);
-        if (recv_t >= self.interner.pool.typeCount()) return null;
+        if (!self.arrayCallbackReceiverIsArrayLike(recv_t)) return null;
         const elem_t = try self.contextualArrayElementType(recv_t);
         if (elem_t == types.Primitive.none) return null;
         if (is_sort or param_index == 0) return elem_t;
@@ -32521,6 +32559,7 @@ pub const Checker = struct {
                 const parent = self.hir.parentOf(node);
                 if (parent == hir_mod.none_node_id) break :blk null;
                 var object_member_target: ?TypeId = null;
+                var object_context_claimed = false;
                 switch (self.hir.kindOf(parent)) {
                     .assignment, .var_decl, .let_decl, .const_decl => {},
                     .call_expr, .new_expr, .conditional, .binary_op => {},
@@ -32529,7 +32568,9 @@ pub const Checker = struct {
                         if (property.value != node) break :blk null;
                         const object_node = self.hir.parentOf(parent);
                         if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) break :blk null;
-                        const object_target = (try self.jsDocSatisfiesTypeForExpression(object_node)) orelse
+                        const satisfies_target = try self.jsDocSatisfiesTypeForExpression(object_node);
+                        object_context_claimed = satisfies_target != null;
+                        const object_target = satisfies_target orelse
                             self.contextualTargetTypeForExpression(object_node) orelse break :blk null;
                         if (object_target >= self.interner.pool.typeCount()) break :blk null;
                         const object_flags = self.interner.pool.flagsOf(object_target);
@@ -32542,7 +32583,10 @@ pub const Checker = struct {
                 if (try self.contextualParameterTypeFromFunctionAnnotation(node, p)) |syntax_t| {
                     break :blk syntax_t;
                 }
-                const target_t = object_member_target orelse self.contextualTargetTypeForFunction(node) orelse break :blk null;
+                const target_t = object_member_target orelse if (object_context_claimed)
+                    break :blk null
+                else
+                    self.contextualTargetTypeForFunction(node) orelse break :blk null;
                 if (target_t >= self.interner.pool.typeCount()) break :blk null;
                 if (self.containsEscapingContextualTypeParameter(target_t)) break :blk null;
                 break :blk self.contextualParameterTypeForFunctionParam(node, p, target_t);
@@ -81266,7 +81310,8 @@ pub const Checker = struct {
                 }
                 if (self.hir.kindOf(v.init) == .object_literal) {
                     const contextual_diag_start = self.diagnostics.items.len;
-                    try self.checkObjectLiteralMethodsWithContextualTypeMode(v.init, declared_type, true);
+                    const object_target = (try self.jsDocSatisfiesTypeForExpression(v.init)) orelse declared_type;
+                    try self.checkObjectLiteralMethodsWithContextualTypeMode(v.init, object_target, true);
                     contextual_object_return_diag_emitted = self.diagnostics.items.len > contextual_diag_start;
                 }
                 self.clearContextualAnyObjectLiteralNullishImplicitAnyDiagnostics(v.init, declared_type, init_diag_start);
@@ -136533,6 +136578,21 @@ pub const Checker = struct {
         try self.reportPossiblyNullishMember(node, t);
     }
 
+    fn expressionRecoveredFromNullishDiagnostic(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        const span = self.hir.spanOf(node);
+        for (self.diagnostics.items) |diagnostic| {
+            const is_nullish = diagnostic.code == TsCodes.object_possibly_null or
+                diagnostic.code == TsCodes.object_possibly_undefined_18048 or
+                diagnostic.code == TsCodes.object_possibly_nullish or
+                diagnostic.code == TsCodes.nullish_relational_operand;
+            if (!is_nullish) continue;
+            const start = self.diagnosticStart(diagnostic);
+            if (start >= span.start and start < span.end) return true;
+        }
+        return false;
+    }
+
     /// `null` / `undefined` literal name, anchored on the node kind
     /// (not the type) so we mirror tsgo's "checkNonNullType" branch
     /// that gates on whether the operand source token is literally
@@ -138038,9 +138098,11 @@ pub const Checker = struct {
                 const rhs_app = self.operandApparentType(rhs);
                 const add_string_like = self.typeMaybeStringLike(lhs_app) or self.typeMaybeStringLike(rhs_app);
                 const add_any_like = self.typeIsAnyLike(lhs_app) or self.typeIsAnyLike(rhs_app);
+                const recovered_nullish_any = (self.typeIsAnyLike(lhs_app) and self.expressionRecoveredFromNullishDiagnostic(b.lhs)) or
+                    (self.typeIsAnyLike(rhs_app) and self.expressionRecoveredFromNullishDiagnostic(b.rhs));
                 var lhs_eff = lhs_app;
                 var rhs_eff = rhs_app;
-                if (!add_string_like and !add_any_like and !self.checking_update_assignment_target) {
+                if (!add_string_like and (!add_any_like or recovered_nullish_any) and !self.checking_update_assignment_target) {
                     // After checkNonNullType, a literal null/undefined
                     // operand contributes the non-nullable variant of
                     // its type ÃÂ¢ÃÂÃÂ and because tsc emits TS18050 and
