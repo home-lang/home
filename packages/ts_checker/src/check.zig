@@ -4042,6 +4042,9 @@ pub const Checker = struct {
     /// declaration ids rather than conflating same-named parameters from
     /// unrelated generic scopes.
     type_parameter_placeholder_targets: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// Provisional object types used while lowering recursive interfaces point
+    /// at the finalized interface once all self-referential members are known.
+    recursive_interface_targets: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     /// Names of NON-generic type aliases whose body is currently being
     /// lowered. A bare reference to one of these, reached while a
     /// type-argument / tuple-element context is active (see
@@ -4766,6 +4769,7 @@ pub const Checker = struct {
             .active_generic_aliases = .empty,
             .mapped_type_params = .empty,
             .type_parameter_placeholder_targets = .empty,
+            .recursive_interface_targets = .empty,
             .resolving_value_types = .empty,
             .namespace_value_in_progress = .empty,
             .namespace_value_object_types = .empty,
@@ -5167,6 +5171,7 @@ pub const Checker = struct {
         self.pending_instantiated_mapped_cycles.deinit(self.gpa);
         self.mapped_type_params.deinit(self.gpa);
         self.type_parameter_placeholder_targets.deinit(self.gpa);
+        self.recursive_interface_targets.deinit(self.gpa);
         self.alias_lower_in_progress.deinit(self.gpa);
         self.typeof_query_in_progress.deinit(self.gpa);
         self.circ_ctx_stack.deinit(self.gpa);
@@ -5868,6 +5873,44 @@ pub const Checker = struct {
                 d.code == TsCodes.rest_parameter_implicitly_any_suggestion;
             const start = self.diagnosticStart(d);
             const remove = implicit_any and start >= span.start and start < span.end;
+            if (!remove) {
+                self.diagnostics.items[write] = d;
+                write += 1;
+            }
+        }
+        self.diagnostics.items.len = write;
+    }
+
+    fn removeUntypedCallsForContextualCallableParameters(
+        self: *Checker,
+        fn_node: NodeId,
+        params: []const NodeId,
+        param_ts: []const TypeId,
+    ) void {
+        const span = self.hir.spanOf(fn_node);
+        const count = @min(params.len, param_ts.len);
+        var write: usize = 0;
+        for (self.diagnostics.items) |d| {
+            var remove = false;
+            const start = self.diagnosticStart(d);
+            if (d.code == TsCodes.untyped_function_type_args and
+                start >= span.start and start < span.end and
+                (self.hir.kindOf(d.node) == .call_expr or self.hir.kindOf(d.node) == .new_expr))
+            {
+                const callee = hir_mod.callOf(self.hir, d.node).callee;
+                if (callee != hir_mod.none_node_id and self.hir.kindOf(callee) == .identifier) {
+                    const callee_name = hir_mod.identifierOf(self.hir, callee).name;
+                    for (params[0..count], param_ts[0..count]) |param_node, param_t| {
+                        if (self.firstSignatureType(param_t) == null or self.hir.kindOf(param_node) != .parameter) continue;
+                        const param = hir_mod.parameterOf(self.hir, param_node);
+                        if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier) continue;
+                        if (hir_mod.identifierOf(self.hir, param.name).name == callee_name) {
+                            remove = true;
+                            break;
+                        }
+                    }
+                }
+            }
             if (!remove) {
                 self.diagnostics.items[write] = d;
                 write += 1;
@@ -26981,7 +27024,7 @@ pub const Checker = struct {
                     callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
-                const sig = self.firstSignatureType(callee_t) orelse return null;
+                const sig = self.contextualSignatureForCall(parent, callee_t, args) orelse return null;
                 target_t = (self.contextualCallArgumentType(sig, c.callee, args, idx) catch null) orelse return null;
             },
             else => return null,
@@ -27028,7 +27071,7 @@ pub const Checker = struct {
                     callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
-                const sig = self.firstSignatureType(callee_t) orelse return null;
+                const sig = self.contextualSignatureForCall(parent, callee_t, args) orelse return null;
                 return self.contextualCallArgumentType(sig, c.callee, args, idx) catch null;
             },
             .object_property => {
@@ -27083,6 +27126,34 @@ pub const Checker = struct {
             return target_t;
         }
         return self.contextualRestTupleElementType(rest_tuple_t, rest_index);
+    }
+
+    fn contextualSignatureForCall(
+        self: *Checker,
+        call_node: NodeId,
+        callee_t: TypeId,
+        args: []const NodeId,
+    ) ?TypeId {
+        if (self.callExprIsTaggedTemplate(call_node)) {
+            const call = hir_mod.callOf(self.hir, call_node);
+            if (self.hir.kindOf(call.callee) == .identifier) {
+                const name = hir_mod.identifierOf(self.hir, call.callee).name;
+                if (self.overloads.get(name)) |overload_list| {
+                    const has_impl = self.overload_has_implementation.contains(name);
+                    const visible_len = overload_list.items.len - @intFromBool(has_impl);
+                    var selected: TypeId = types.Primitive.none;
+                    for (overload_list.items[0..visible_len]) |sig| {
+                        if (!self.callArityFitsSignature(call_node, sig, args)) continue;
+                        if (selected != types.Primitive.none) {
+                            return self.firstSignatureType(callee_t);
+                        }
+                        selected = sig;
+                    }
+                    if (selected != types.Primitive.none) return selected;
+                }
+            }
+        }
+        return self.firstSignatureType(callee_t);
     }
 
     fn contextualSymbolicTupleElementTypeAt(
@@ -32140,6 +32211,7 @@ pub const Checker = struct {
                 var object_member_target: ?TypeId = null;
                 switch (self.hir.kindOf(parent)) {
                     .assignment, .var_decl, .let_decl, .const_decl => {},
+                    .call_expr => if (!self.callExprIsTaggedTemplate(parent)) break :blk null,
                     .object_property => {
                         const property = hir_mod.objectPropertyOf(self.hir, parent);
                         if (property.value != node) break :blk null;
@@ -32160,7 +32232,7 @@ pub const Checker = struct {
                 }
                 const target_t = object_member_target orelse self.contextualTargetTypeForFunction(node) orelse break :blk null;
                 if (target_t >= self.interner.pool.typeCount()) break :blk null;
-                if (self.containsFreeTypeParameter(target_t)) break :blk null;
+                if (self.containsEscapingContextualTypeParameter(target_t)) break :blk null;
                 break :blk self.contextualParameterTypeForFunctionParam(node, p, target_t);
             } else null;
             const contextual_default_param_t: ?TypeId = if (!has_anno and !has_jsdoc_param_type and !is_this_param and
@@ -59390,9 +59462,19 @@ pub const Checker = struct {
         try self.checkPatternIndexSignatureCompatibility(pattern_indexes.items);
 
         var iface_t = self.interner.internObjectTypeWithIndexAndSymbol(iface_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
+        var recursive_provisional_t = types.Primitive.none;
         if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, it.name);
-            if (try self.refreshSelfReferentialInterfaceMembers(id.name, iface_t, members, iface_members.items, string_idx, number_idx, symbol_idx)) |refreshed| {
+            if (try self.refreshSelfReferentialInterfaceMembers(
+                id.name,
+                iface_t,
+                members,
+                iface_members.items,
+                string_idx,
+                number_idx,
+                symbol_idx,
+                &recursive_provisional_t,
+            )) |refreshed| {
                 iface_t = refreshed;
             }
         }
@@ -59548,6 +59630,10 @@ pub const Checker = struct {
             }
             if (has_readonly_index) try self.readonly_index_types.put(self.gpa, final_t, {});
             try self.type_names.put(self.gpa, id.name, final_t);
+            if (recursive_provisional_t != types.Primitive.none and recursive_provisional_t != final_t) {
+                try self.recursive_interface_targets.put(self.gpa, recursive_provisional_t, final_t);
+            }
+            if (iface_t != final_t) try self.recursive_interface_targets.put(self.gpa, iface_t, final_t);
             if (final_t != iface_t) {
                 self.hir.setType(node, final_t);
                 self.hir.setType(it.name, final_t);
@@ -59693,23 +59779,56 @@ pub const Checker = struct {
         string_idx: TypeId,
         number_idx: TypeId,
         symbol_idx: TypeId,
+        provisional_out: *TypeId,
     ) CheckError!?TypeId {
         var any_self_ref = false;
         for (member_nodes) |member_node| {
-            if (self.hir.kindOf(member_node) != .interface_member) continue;
-            const im = hir_mod.interfaceMemberOf(self.hir, member_node);
-            if (im.name == 0 or im.type_node == hir_mod.none_node_id) continue;
-            if (self.typeNodeReferencesBareName(im.type_node, iface_name)) {
-                any_self_ref = true;
-                break;
+            switch (self.hir.kindOf(member_node)) {
+                .interface_member => {
+                    const im = hir_mod.interfaceMemberOf(self.hir, member_node);
+                    if (im.name == 0 or im.type_node == hir_mod.none_node_id) continue;
+                    if (self.typeNodeReferencesBareName(im.type_node, iface_name)) {
+                        any_self_ref = true;
+                        break;
+                    }
+                },
+                .index_signature => {
+                    const index = hir_mod.indexSignatureOf(self.hir, member_node);
+                    if (index.value_type != hir_mod.none_node_id and
+                        self.typeNodeReferencesBareName(index.value_type, iface_name))
+                    {
+                        any_self_ref = true;
+                        break;
+                    }
+                },
+                else => {},
             }
         }
         if (!any_self_ref) return null;
+        provisional_out.* = provisional_t;
 
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         try self.registerAliasDisplayText(provisional_t, self.string_interner.get(iface_name));
         try self.recordNarrow(iface_name, provisional_t);
+
+        var refreshed_string_idx = string_idx;
+        var refreshed_number_idx = number_idx;
+        var refreshed_symbol_idx = symbol_idx;
+        for (member_nodes) |member_node| {
+            if (self.hir.kindOf(member_node) != .index_signature) continue;
+            const index = hir_mod.indexSignatureOf(self.hir, member_node);
+            if (index.value_type == hir_mod.none_node_id or
+                !self.typeNodeReferencesBareName(index.value_type, iface_name)) continue;
+            const value_t = try self.lowererLowerWithTypeParams(index.value_type);
+            const key_t = if (index.key_type != hir_mod.none_node_id)
+                try self.lowererLowerWithTypeParams(index.key_type)
+            else
+                types.Primitive.string_t;
+            if (key_t == types.Primitive.string_t) refreshed_string_idx = value_t;
+            if (key_t == types.Primitive.number_t) refreshed_number_idx = value_t;
+            if (key_t == types.Primitive.symbol_t) refreshed_symbol_idx = value_t;
+        }
 
         var refreshed_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer refreshed_members.deinit(self.gpa);
@@ -59722,7 +59841,12 @@ pub const Checker = struct {
             }
             try refreshed_members.append(self.gpa, refreshed);
         }
-        return self.interner.internObjectTypeWithIndexAndSymbol(refreshed_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
+        return self.interner.internObjectTypeWithIndexAndSymbol(
+            refreshed_members.items,
+            refreshed_string_idx,
+            refreshed_number_idx,
+            refreshed_symbol_idx,
+        ) catch return error.OutOfMemory;
     }
 
     fn interfaceMemberTypeNodeByName(self: *Checker, member_nodes: []const NodeId, member_name: hir_mod.StringId) ?NodeId {
@@ -74981,6 +75105,108 @@ pub const Checker = struct {
         if (flags.is_string_mapping) {
             return self.containsFreeTypeParameter(self.interner.stringMappingPayload(t).inner);
         }
+        return false;
+    }
+
+    fn containsEscapingContextualTypeParameter(self: *Checker, t: TypeId) bool {
+        var bound: [64]TypeId = undefined;
+        return self.containsEscapingContextualTypeParameterInner(t, &bound, 0, 0);
+    }
+
+    fn containsEscapingContextualTypeParameterInner(
+        self: *Checker,
+        t: TypeId,
+        bound: *[64]TypeId,
+        bound_len: usize,
+        depth: u8,
+    ) bool {
+        if (depth == 64 or t >= self.interner.pool.typeCount()) return depth == 64;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            for (bound[0..bound_len]) |owned| {
+                if (owned == t) return false;
+            }
+            return true;
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.containsEscapingContextualTypeParameterInner(member, bound, bound_len, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.containsEscapingContextualTypeParameterInner(member, bound, bound_len, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_signature) {
+            var next_bound_len = bound_len;
+            if (self.generic_signature_params.get(t)) |owned_params| {
+                if (next_bound_len + owned_params.len > bound.len) return true;
+                for (owned_params) |owned| {
+                    bound[next_bound_len] = owned;
+                    next_bound_len += 1;
+                }
+            }
+            for (self.interner.signatureParams(t)) |param| {
+                if (self.containsEscapingContextualTypeParameterInner(param, bound, next_bound_len, depth + 1)) return true;
+            }
+            if (self.interner.signatureReturn(t)) |ret| {
+                if (self.containsEscapingContextualTypeParameterInner(ret, bound, next_bound_len, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |member| {
+                if (self.containsEscapingContextualTypeParameterInner(member.type, bound, bound_len, depth + 1)) return true;
+            }
+            const string_index = self.interner.objectStringIndex(t);
+            if (string_index != types.Primitive.none and
+                self.containsEscapingContextualTypeParameterInner(string_index, bound, bound_len, depth + 1)) return true;
+            const number_index = self.interner.objectNumberIndex(t);
+            return number_index != types.Primitive.none and
+                self.containsEscapingContextualTypeParameterInner(number_index, bound, bound_len, depth + 1);
+        }
+        if (flags.is_keyof) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
+            return self.containsEscapingContextualTypeParameterInner(
+                self.interner.pool.keyof_payloads.items[payload_idx].operand,
+                bound,
+                bound_len,
+                depth + 1,
+            );
+        }
+        if (flags.is_indexed_access) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return false;
+            const indexed = self.interner.pool.indexed_access_payloads.items[payload_idx];
+            return self.containsEscapingContextualTypeParameterInner(indexed.object, bound, bound_len, depth + 1) or
+                self.containsEscapingContextualTypeParameterInner(indexed.index, bound, bound_len, depth + 1);
+        }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            return self.containsEscapingContextualTypeParameterInner(conditional.check_type, bound, bound_len, depth + 1) or
+                self.containsEscapingContextualTypeParameterInner(conditional.extends_type, bound, bound_len, depth + 1) or
+                self.containsEscapingContextualTypeParameterInner(conditional.true_branch, bound, bound_len, depth + 1) or
+                self.containsEscapingContextualTypeParameterInner(conditional.false_branch, bound, bound_len, depth + 1);
+        }
+        if (flags.is_template_literal) {
+            for (self.interner.templateLiteralTypes(t)) |part| {
+                if (self.containsEscapingContextualTypeParameterInner(part, bound, bound_len, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_string_mapping) {
+            return self.containsEscapingContextualTypeParameterInner(
+                self.interner.stringMappingPayload(t).inner,
+                bound,
+                bound_len,
+                depth + 1,
+            );
+        }
+        if (flags.is_mapped) return self.containsFreeTypeParameter(t);
         return false;
     }
 
@@ -98942,6 +99168,9 @@ pub const Checker = struct {
                     self.subtractNullUndefined(raw_callee_t) catch raw_callee_t
                 else
                     raw_callee_t;
+                if (self.callExprIsTaggedTemplate(node)) {
+                    callee_t = self.resolvedRecursiveInterfaceType(callee_t);
+                }
                 if (self.hir.kindOf(c.callee) == .identifier and
                     self.callableObjectHasOnlyConstructSignatures(callee_t))
                 {
@@ -99265,11 +99494,23 @@ pub const Checker = struct {
                                     break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
                                 }
                             }
-                            if (visible_len == 1 and self.callArityFitsSignature(node, overloads[0], args)) {
+                            var unique_arity_sig: TypeId = types.Primitive.none;
+                            for (overloads) |sig| {
+                                if (overload_type_arg_nodes.len > 0 and overload_type_arg_count_matches and
+                                    !self.signatureTypeArgCountMatches(sig, overload_type_arg_nodes.len)) continue;
+                                if (!self.callArityFitsSignature(node, sig, args)) continue;
+                                if (unique_arity_sig != types.Primitive.none) {
+                                    unique_arity_sig = types.Primitive.any;
+                                    break;
+                                }
+                                unique_arity_sig = sig;
+                            }
+                            if (unique_arity_sig != types.Primitive.none and unique_arity_sig != types.Primitive.any) {
+                                const sole_sig = unique_arity_sig;
                                 const effective_sig = if (overload_type_arg_nodes.len > 0) blk_eff: {
                                     var used_explicit_type_args = false;
-                                    break :blk_eff try self.instantiateSignatureWithExplicitTypeArgs(node, overloads[0], overload_type_arg_nodes, &used_explicit_type_args);
-                                } else try self.instantiateSignatureFromArgs(overloads[0], args, arg_types.items);
+                                    break :blk_eff try self.instantiateSignatureWithExplicitTypeArgs(node, sole_sig, overload_type_arg_nodes, &used_explicit_type_args);
+                                } else try self.instantiateSignatureFromArgs(sole_sig, args, arg_types.items);
                                 const diag_start = self.diagnostics.items.len;
                                 try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_sig);
                                 if (has_impl) {
@@ -99945,6 +100186,7 @@ pub const Checker = struct {
                         obj_t = self.interner.internStringLiteral(literal.value) catch return error.OutOfMemory;
                     }
                 }
+                obj_t = self.resolvedRecursiveInterfaceType(obj_t);
                 try self.reportPendingInstantiatedMappedCycleAtMemberAccess(node, m.object);
                 if (try self.reportPrivateIdentifierOutsideClassBody(node, m.object, obj_t, m.name)) {
                     break :blk types.Primitive.any;
@@ -100854,21 +101096,22 @@ pub const Checker = struct {
                     }
                     break :blk_obj try self.checkExpression(e.object);
                 };
+                const resolved_raw_obj_t = self.resolvedRecursiveInterfaceType(raw_obj_t);
                 const obj_t = if (element_is_optional_chain)
-                    self.subtractNullUndefined(raw_obj_t) catch raw_obj_t
+                    self.subtractNullUndefined(resolved_raw_obj_t) catch resolved_raw_obj_t
                 else if (self.strict_flags.strict_null_checks and
-                    self.typeIsPossiblyNullishStrict(raw_obj_t))
+                    self.typeIsPossiblyNullishStrict(resolved_raw_obj_t))
                 blk_non_nullish: {
                     if (!self.identifierIsPendingJsDocTypedVar(e.object)) {
                         if (try self.checkJsThisMemberAssignedOnlyInMethods(e.object)) {
                             try self.report(e.object, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
                         } else {
-                            try self.reportPossiblyNullishMember(e.object, raw_obj_t);
+                            try self.reportPossiblyNullishMember(e.object, resolved_raw_obj_t);
                         }
                     }
-                    break :blk_non_nullish self.subtractNullUndefined(raw_obj_t) catch raw_obj_t;
+                    break :blk_non_nullish self.subtractNullUndefined(resolved_raw_obj_t) catch resolved_raw_obj_t;
                 } else
-                    raw_obj_t;
+                    resolved_raw_obj_t;
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
                 const idx_t = try self.checkExpression(e.index);
                 if (self.sourceHasCheckJsDirective() and
@@ -106442,6 +106685,7 @@ pub const Checker = struct {
         const params = hir_mod.fnParams(self.hir, fn_node);
         const param_ts = self.interner.signatureParams(sig);
         self.removeImplicitAnyDiagnosticsWithin(fn_node);
+        self.removeUntypedCallsForContextualCallableParameters(fn_node, params, param_ts);
         self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
@@ -127259,6 +127503,17 @@ pub const Checker = struct {
         var depth: u8 = 0;
         while (depth < 16) : (depth += 1) {
             const next = self.type_parameter_placeholder_targets.get(current) orelse return current;
+            if (next == current) return current;
+            current = next;
+        }
+        return current;
+    }
+
+    fn resolvedRecursiveInterfaceType(self: *Checker, t: TypeId) TypeId {
+        var current = t;
+        var depth: u8 = 0;
+        while (depth < 16) : (depth += 1) {
+            const next = self.recursive_interface_targets.get(current) orelse return current;
             if (next == current) return current;
             current = next;
         }
@@ -206404,6 +206659,65 @@ test "checker: tagged template callback can return object spread identity" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: tagged template overload arity contextually types substitutions" {
+    const s = try newSetup(
+        \\// @strict: true
+        \\type FuncType = (x: <T>(p: T) => T) => typeof x;
+        \\function tag<T>(strings: TemplateStringsArray, f: FuncType, x: T): T;
+        \\function tag<T>(strings: TemplateStringsArray, f: FuncType, h: FuncType, x: T): T;
+        \\function tag<T>(...args: any[]): T { return undefined; }
+        \\tag `${x => { x<number>("bad"); return x; }}${10}`;
+        \\tag `${x => { x<number>("bad"); return x; }}${y => { y<number>("bad"); return y; }}${10}`;
+        \\tag `${x => { x<number>("bad"); return x; }}${undefined}${10}`;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var argument_mismatches: usize = 0;
+    var untyped_calls: usize = 0;
+    var implicit_any_params: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) argument_mismatches += 1;
+        if (d.code == TsCodes.untyped_function_type_args) untyped_calls += 1;
+        if (d.code == TsCodes.parameter_implicitly_any) implicit_any_params += 1;
+    }
+    try T.expectEqual(@as(usize, 5), argument_mismatches);
+    try T.expectEqual(@as(usize, 0), untyped_calls);
+    try T.expectEqual(@as(usize, 0), implicit_any_params);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
+}
+
+test "checker: tagged template callable interface preserves self index type" {
+    const s = try newSetup(
+        \\interface I {
+        \\  (strings: TemplateStringsArray, ...rest: boolean[]): I;
+        \\  member: I;
+        \\  [index: number]: I;
+        \\}
+        \\declare var tag: I;
+        \\tag `head`[0].member `value ${1}`;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_is_unknown));
+}
+
+test "checker: tagged template recursive interface preserves nested construct signatures" {
+    const s = try newSetup(
+        \\interface I {
+        \\  (strings: TemplateStringsArray, ...rest: number[]): I;
+        \\  member: { new (s: string): { new (n: number): { new (): boolean } } };
+        \\}
+        \\declare var tag: I;
+        \\const value = new new new tag `head ${0}`.member("value")(42);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_not_void));
 }
 
 test "checker: adjacent template expressions in array report missing comma recovery" {
