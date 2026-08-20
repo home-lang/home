@@ -37439,6 +37439,8 @@ const harness_prelude =
     \\    if (!handlers.length || handlers.some(handler => typeof handler !== "function")) throw new TypeError("argument handler must be a function");
     \\    router.__home_layers.push({ method, path, handlers }); return router;
     \\  };
+    \\  const registerGet = router.get;
+    \\  router.get = function(name) { if (arguments.length === 1 && typeof name === "string") return router.__home_settings[name]; return registerGet.apply(router, arguments); };
     \\  router.enable = function(name) { router.__home_settings[String(name)] = true; return router; };
     \\  router.disable = function(name) { router.__home_settings[String(name)] = false; return router; };
     \\  router.enabled = function(name) { return !!router.__home_settings[String(name)]; };
@@ -37468,6 +37470,7 @@ const harness_prelude =
     \\  response.status = function(code) { this.statusCode = Number(code) || 200; return this; };
     \\  response.set = function(name, value) { if (name && typeof name === "object") { for (const key of Object.keys(name)) this.setHeader(key, name[key]); } else this.setHeader(name, value); return this; };
     \\  response.header = response.set;
+    \\  response.type = function(value) { const type = String(value || "application/octet-stream"); this.setHeader("Content-Type", type.includes("/") ? type : ({ json: "application/json", html: "text/html", text: "text/plain" })[type.toLowerCase()] || "application/octet-stream"); return this; };
     \\  response.send = function(body) {
     \\    let payload = body === undefined || body === null ? "" : body;
     \\    if (!(payload instanceof Uint8Array) && typeof payload === "object") { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); payload = JSON.stringify(payload); }
@@ -37475,12 +37478,19 @@ const harness_prelude =
     \\    if (typeof this.setHeader === "function") this.setHeader("Content-Length", String(typeof payload === "string" ? Buffer.byteLength(payload) : payload.byteLength));
     \\    return this.end(payload);
     \\  };
-    \\  response.json = function(value) { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); return this.send(JSON.stringify(value)); };
+    \\  response.json = function(value) {
+    \\    const app = this.app, replacer = app && app.get("json replacer"), spaces = app && app.get("json spaces"); let payload = JSON.stringify(value, replacer, spaces);
+    \\    if (payload !== undefined && app && app.enabled("json escape")) payload = payload.replace(/&/g, "\\u0026").replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+    \\    const current = typeof this.getHeader === "function" ? this.getHeader("Content-Type") : this.headers && this.headers["content-type"], contentType = String(current || "application/json");
+    \\    if (typeof this.setHeader === "function") this.setHeader("Content-Type", /charset=/i.test(contentType) ? contentType : contentType + "; charset=utf-8");
+    \\    return this.send(payload);
+    \\  };
     \\}
     \\function __home_express() {
     \\  const app = __home_express_router();
     \\  const events = Object.create(null);
     \\  const application = function homeExpressApplication(request, response) {
+    \\    request.app = response.app = application;
     \\    __home_express_prepare(request, response);
     \\    const dispatched = __home_express_dispatch(application, request, response);
     \\    dispatched.then(result => {
@@ -37492,7 +37502,8 @@ const harness_prelude =
     \\  };
     \\  Object.assign(application, app);
     \\  application.__home_layers = app.__home_layers; application.__home_options = app.__home_options; application.__home_merge_params = app.__home_merge_params; application.__home_settings = app.__home_settings;
-    \\  for (const name of ["use", "enable", "disable", "set"].concat(__home_http_methods.map(method => method.toLowerCase()), "all")) application[name] = function() { app[name].apply(app, arguments); return application; };
+    \\  for (const name of ["use", "enable", "disable", "set"].concat(__home_http_methods.map(method => method.toLowerCase()).filter(name => name !== "get"), "all")) application[name] = function() { app[name].apply(app, arguments); return application; };
+    \\  application.get = function(name) { if (arguments.length === 1 && typeof name === "string") return app.get(name); app.get.apply(app, arguments); return application; };
     \\  application.enabled = name => app.enabled(name); application.disabled = name => app.disabled(name);
     \\  application.on = function(name, handler) { if (typeof handler === "function") (events[String(name)] || (events[String(name)] = [])).push(handler); return application; };
     \\  application.emit = function(name) { const args = Array.prototype.slice.call(arguments, 1); for (const handler of (events[String(name)] || []).slice()) handler.apply(application, args); return (events[String(name)] || []).length > 0; };
@@ -100949,6 +100960,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/express.json.test.ts", .passed = 47, .todo = 7 },
         .{ .path = "js/third_party/express/express.test.ts", .passed = 1 },
         .{ .path = "js/third_party/express/express.text.test.ts", .passed = 33, .todo = 7 },
+        .{ .path = "js/third_party/express/res.json.test.ts", .passed = 13 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
