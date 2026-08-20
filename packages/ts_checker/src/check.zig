@@ -107818,6 +107818,7 @@ pub const Checker = struct {
         if (self.jsxClassInstanceTypeForTag(tag)) |_| return false;
         const tag_t = try self.checkedExpressionType(tag);
         if ((try self.propertyNameFromLiteralType(tag_t))) |intrinsic_name| {
+            if (!try self.jsxHasIntrinsicElementsDecl(tag)) return false;
             return (try self.jsxIntrinsicPropsType(tag, intrinsic_name)) == null;
         }
         return !(try self.jsxComponentTypeIsValid(tag_t));
@@ -137818,7 +137819,7 @@ pub const Checker = struct {
 
     fn expressionHasObservableSideEffect(self: *Checker, node: NodeId) bool {
         return switch (self.hir.kindOf(node)) {
-            .call_expr, .new_expr, .assignment, .await_expr, .yield_expr => true,
+            .call_expr, .new_expr, .assignment, .await_expr, .yield_expr, .member_access, .element_access => true,
             .unary_op => blk: {
                 const u = hir_mod.unaryOf(self.hir, node);
                 break :blk u.op == .delete or u.op == .void_;
@@ -180467,6 +180468,18 @@ test "checker: string literal JSX component without intrinsic entry has no signa
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsx_element_no_construct_or_call));
 }
 
+test "checker: dynamic string-literal JSX tag needs no component signature without IntrinsicElements" {
+    const s = try newTsxSetup(
+        \\class Text {
+        \\  _tagName: "div" = "div";
+        \\  render() { return <this._tagName />; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_element_no_construct_or_call));
+}
+
 test "checker: JSX shorthand attribute is true literal" {
     const s = try newTsxSetup(
         \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
@@ -208557,6 +208570,19 @@ test "checker: typed object arrows report contextual comma return mismatches at 
         if (diagnostic.code != TsCodes.type_not_assignable) continue;
         try T.expectEqual(expected_pos, diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start);
     }
+}
+
+test "checker: property reads are observable comma operands" {
+    const s = try newSetup(
+        \\declare const ns: { value: number };
+        \\declare const value: number;
+        \\ns.value, 1;
+        \\ns["value"], 2;
+        \\value, 3;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.comma_left_unused));
 }
 
 test "checker: strict-off undefined assertions stay permissive and truthiness anchors survive wrappers" {
