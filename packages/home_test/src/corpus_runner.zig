@@ -57793,6 +57793,8 @@ const harness_prelude =
     \\function __home_grpc_EchoService(target, credentials, options) {
     \\  this.__home_target = String(target || "");
     \\  this.__home_port = __home_grpc_port(target);
+    \\  this.__home_credentials = credentials || null;
+    \\  this.__home_options = Object.assign({}, options || {});
     \\}
     \\__home_grpc_EchoService.service = { __home_name: "EchoService" };
     \\__home_grpc_EchoService.prototype.__home_server = function() {
@@ -57819,6 +57821,10 @@ const harness_prelude =
     \\__home_grpc_Metadata.prototype.get = function(name) {
     \\  const key = String(name || "").toLowerCase();
     \\  return (this.__home_values[key] || []).slice();
+    \\};
+    \\__home_grpc_Metadata.prototype.set = function(name, value) {
+    \\  const key = String(name || "").toLowerCase();
+    \\  this.__home_values[key] = [String(value)];
     \\};
     \\__home_grpc_Metadata.prototype.merge = function(other) {
     \\  if (!other || !other.__home_values) return this;
@@ -57896,17 +57902,44 @@ const harness_prelude =
     \\__home_grpc_TestService.prototype.serverStream = function(request, options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("serverStream", "serverStream", request, options); };
     \\__home_grpc_TestService.prototype.bidiStream = function(options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("bidiStream", "bidiStream", {}, options); };
     \\__home_grpc_TestService.prototype.close = function() {};
+    \\function __home_grpc_channel_error(error, operation, component) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const owner = String(component || "ChannelCredentials");
+    \\  const failure = new Error(owner + "." + operation + " failed: " + String(cause.message || cause));
+    \\  failure.code = cause.code;
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + owner + "." + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
     \\__home_grpc_EchoService.prototype.echo = function(request, options, callback) {
     \\  if (typeof options === "function") {
     \\    callback = options;
-    \\    options = {};
+    \\    options = new __home_grpc_Metadata();
     \\  }
+    \\  const clientCall = __home_grpc_stream();
+    \\  const metadata = options instanceof __home_grpc_Metadata ? options : new __home_grpc_Metadata();
     \\  const handler = this.__home_server() && this.__home_server().__home_services.echo;
     \\  if (!handler && String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-grpc.test.ts") && typeof callback === "function") {
-    \\    return __home_grpc_synthetic_echo(request, options, callback);
+    \\    __home_grpc_synthetic_echo(request, metadata, callback);
+    \\    return clientCall;
     \\  }
-    \\  if (!handler) return callback(new Error("gRPC method not implemented"));
-    \\  return handler({ request }, callback);
+    \\  const invoke = effectiveMetadata => {
+    \\    if (!handler) { if (typeof callback === "function") callback(__home_grpc_status_error(__home_grpc_status.UNIMPLEMENTED)); return; }
+    \\    const serverCall = {
+    \\      request,
+    \\      metadata: effectiveMetadata,
+    \\      sendMetadata(value) { clientCall.emit("metadata", value); },
+    \\    };
+    \\    let callbackInvoked = false;
+    \\    const guardedCallback = typeof callback === "function" ? function() { callbackInvoked = true; return callback.apply(this, arguments); } : undefined;
+    \\    try { handler(serverCall, guardedCallback); }
+    \\    catch (error) { if (callbackInvoked || typeof callback !== "function") throw error; callback(__home_grpc_channel_error(error, "invokeUnary", "EchoService")); }
+    \\  };
+    \\  const callCredentials = this.__home_credentials && typeof this.__home_credentials._getCallCredentials === "function" ? this.__home_credentials._getCallCredentials() : null;
+    \\  if (callCredentials && typeof callCredentials.generateMetadata === "function") {
+    \\    Promise.resolve(callCredentials.generateMetadata({ service_url: this.__home_target })).then(generated => { metadata.merge(generated); invoke(metadata); }, error => { if (typeof callback === "function") callback(__home_grpc_channel_error(error, "generateMetadata")); });
+    \\  } else Promise.resolve().then(() => invoke(metadata));
+    \\  return clientCall;
     \\};
     \\__home_grpc_EchoService.prototype.echoServerStream = function(request, options) {
     \\  const clientStream = __home_grpc_stream();
@@ -58076,15 +58109,49 @@ const harness_prelude =
     \\  if (this.latestIdentityUpdate !== undefined) Promise.resolve().then(() => { if (this.identityListeners.has(listener)) this.__home_notify_listener(listener, this.latestIdentityUpdate, "notifyIdentityListener", this.config.certificateFile); });
     \\};
     \\__home_grpc_FileWatcherCertificateProvider.prototype.removeIdentityCertificateListener = function(listener) { this.identityListeners.delete(listener); this.__home_maybe_stop(); };
+    \\function __home_grpc_ChannelCredentials(connectionOptions, callCredentials, secure) {
+    \\  this.__home_connection_options = Object.assign({}, connectionOptions || {});
+    \\  this.__home_call_credentials = callCredentials || null;
+    \\  this.__home_secure = !!secure;
+    \\}
+    \\__home_grpc_ChannelCredentials.createInsecure = function() { return new __home_grpc_ChannelCredentials({}, null, false); };
+    \\__home_grpc_ChannelCredentials.createSsl = function(rootCerts, privateKey, certChain, verifyOptions) {
+    \\  const hasPrivateKey = privateKey !== undefined && privateKey !== null;
+    \\  const hasCertChain = certChain !== undefined && certChain !== null;
+    \\  if (hasPrivateKey !== hasCertChain) {
+    \\    const cause = new TypeError("privateKey and certChain must be provided together");
+    \\    cause.code = "ERR_INVALID_ARG_VALUE";
+    \\    throw __home_grpc_channel_error(cause, "createSsl");
+    \\  }
+    \\  const secureContext = { ca: rootCerts || null, key: hasPrivateKey ? privateKey : null, cert: hasCertChain ? certChain : null };
+    \\  return new __home_grpc_ChannelCredentials({ secureContext, checkServerIdentity: verifyOptions && verifyOptions.checkServerIdentity }, null, true);
+    \\};
+    \\__home_grpc_ChannelCredentials.prototype.compose = function(callCredentials) {
+    \\  if (!callCredentials || typeof callCredentials.generateMetadata !== "function") throw __home_grpc_channel_error(new TypeError("callCredentials must implement generateMetadata"), "compose");
+    \\  const combined = this.__home_call_credentials && typeof this.__home_call_credentials.compose === "function" ? this.__home_call_credentials.compose(callCredentials) : callCredentials;
+    \\  return new __home_grpc_ChannelCredentials(this.__home_connection_options, combined, this.__home_secure);
+    \\};
+    \\__home_grpc_ChannelCredentials.prototype._getConnectionOptions = function() { return Object.assign({}, this.__home_connection_options); };
+    \\__home_grpc_ChannelCredentials.prototype._getCallCredentials = function() { return this.__home_call_credentials; };
+    \\__home_grpc_ChannelCredentials.prototype._isSecure = function() { return this.__home_secure; };
     \\const __home_grpc_credentials = {
-    \\  createSsl(ca) { return { type: "ssl", ca }; },
-    \\  createInsecure() { return { type: "insecure" }; },
+    \\  createSsl(rootCerts, privateKey, certChain, verifyOptions) { return __home_grpc_ChannelCredentials.createSsl(rootCerts, privateKey, certChain, verifyOptions); },
+    \\  createInsecure() { return __home_grpc_ChannelCredentials.createInsecure(); },
+    \\};
+    \\const __home_grpc_ServerCredentials = {
+    \\  createSsl(rootCerts, keyCertPairs, checkClientCertificate) {
+    \\    if (!Array.isArray(keyCertPairs) || keyCertPairs.length === 0) throw __home_grpc_channel_error(new TypeError("keyCertPairs must contain at least one private key and certificate chain"), "createSsl", "ServerCredentials");
+    \\    for (const pair of keyCertPairs) if (!pair || pair.private_key == null || pair.cert_chain == null) throw __home_grpc_channel_error(new TypeError("each keyCertPair must include private_key and cert_chain"), "createSsl", "ServerCredentials");
+    \\    return { type: "ssl-server", rootCerts: rootCerts || null, keyCertPairs: keyCertPairs.slice(), checkClientCertificate: !!checkClientCertificate };
+    \\  },
+    \\  createInsecure() { return { type: "insecure-server" }; },
     \\};
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
+    \\  ChannelCredentials: __home_grpc_ChannelCredentials,
     \\  Metadata: __home_grpc_Metadata,
     \\  Server: __home_grpc_Server,
-    \\  ServerCredentials: __home_grpc_credentials,
+    \\  ServerCredentials: __home_grpc_ServerCredentials,
     \\  credentials: __home_grpc_credentials,
     \\  status: __home_grpc_status,
     \\  propagate: __home_grpc_propagate,
@@ -58093,6 +58160,9 @@ const harness_prelude =
     \\};
     \\__home_grpc_module.default = __home_grpc_module;
     \\globalThis.__home_modules["@grpc/grpc-js"] = __home_grpc_module;
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/call-credentials"] = { CallCredentials: __home_grpc_CallCredentials };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/channel-credentials"] = { ChannelCredentials: __home_grpc_ChannelCredentials };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/make-client"] = { ServiceClient: __home_grpc_EchoService, ServiceClientConstructor: __home_grpc_EchoService };
     \\globalThis.__home_modules["@grpc/proto-loader"] = {
     \\  loadSync(file, options) { return { __home_proto_file: String(file), options: options || {} }; },
     \\};
@@ -70643,6 +70713,25 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "let compressed: Uint8Array;", .replacement = "let compressed;" },
         .{ .needle = "let server: grpc.Server;", .replacement = "let server;" },
         .{ .needle = "import { loadProtoFile } from \"./common.ts\";", .replacement = "const loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
+        .{ .needle = "import grpc, { sendUnaryData, ServerUnaryCall, ServiceError } from \"@grpc/grpc-js\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
+        .{ .needle = "import { CallCredentials } from \"@grpc/grpc-js/build/src/call-credentials\";", .replacement = "const { CallCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/call-credentials\");" },
+        .{ .needle = "import { ChannelCredentials } from \"@grpc/grpc-js/build/src/channel-credentials\";", .replacement = "const { ChannelCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/channel-credentials\");" },
+        .{ .needle = "import { ServiceClient, ServiceClientConstructor } from \"@grpc/grpc-js/build/src/make-client\";", .replacement = "" },
+        .{ .needle = "import { assert2, loadProtoFile, mockFunction } from \"./common\";", .replacement = "let __home_grpc_pending_must_calls = 0;\nconst assert2 = { noThrowAndReturn(fn) { return fn(); }, mustCall(fn) { __home_grpc_pending_must_calls += 1; let called = false; return function() { if (called) throw new Error(\"mustCall callback invoked more than once\"); called = true; __home_grpc_pending_must_calls -= 1; return fn.apply(this, arguments); }; }, afterMustCallsSatisfied(done) { const check = () => { if (__home_grpc_pending_must_calls === 0) done(); else setTimeout(check, 0); }; check(); } };\nconst loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));\nconst mockFunction = function() {};" },
+        .{ .needle = "const echoService = loadProtoFile(protoFile).EchoService as ServiceClientConstructor;", .replacement = "const echoService = loadProtoFile(protoFile).EchoService;" },
+        .{ .needle = "class CallCredentialsMock implements CallCredentials {", .replacement = "class CallCredentialsMock {" },
+        .{ .needle = "child: CallCredentialsMock | null = null;", .replacement = "child = null;" },
+        .{ .needle = "constructor(child?: CallCredentialsMock)", .replacement = "constructor(child)" },
+        .{ .needle = "compose(callCredentials: CallCredentialsMock): CallCredentialsMock", .replacement = "compose(callCredentials)" },
+        .{ .needle = "_equals(other: CallCredentialsMock): boolean", .replacement = "_equals(other)" },
+        .{ .needle = "const readFile: (...args: any[]) => Promise<Buffer> = promisify(fs.readFile);", .replacement = "const readFile = promisify(fs.readFile);" },
+        .{ .needle = "const creds: ChannelCredentials =", .replacement = "const creds =" },
+        .{ .needle = " as CallCredentialsMock", .replacement = "" },
+        .{ .needle = "let client: ServiceClient;", .replacement = "let client;" },
+        .{ .needle = "let caCert: Buffer;", .replacement = "let caCert;" },
+        .{ .needle = "echo(call: ServerUnaryCall<any, any>, callback: sendUnaryData<any>)", .replacement = "echo(call, callback)" },
+        .{ .needle = "(error: ServiceError, response: any) =>", .replacement = "(error, response) =>" },
+        .{ .needle = "(metadata: grpc.Metadata) =>", .replacement = "(metadata) =>" },
         .{ .needle = "function multiDone(done: () => void, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = ": grpc.ClientUnaryCall;", .replacement = ";" },
         .{ .needle = ": grpc.ClientWritableStream<unknown>;", .replacement = ";" },
@@ -86846,7 +86935,7 @@ test "bootstrap runner mirrors http2 frame-size connect corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
-test "bootstrap grpc certificate provider errors retain causes and operation stacks" {
+test "bootstrap grpc credential errors retain causes and operation stacks" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
@@ -86881,6 +86970,30 @@ test "bootstrap grpc certificate provider errors retain causes and operation sta
         \\    provider.addCaCertificateListener(listener);
         \\  });
         \\});
+        \\
+        \\test("channel credential diagnostics", async () => {
+        \\  let sslError;
+        \\  try {
+        \\    grpc.ChannelCredentials.createSsl(null, Buffer.from("key-only"));
+        \\  } catch (error) {
+        \\    sslError = error;
+        \\  }
+        \\  assert.strictEqual(sslError.code, "ERR_INVALID_ARG_VALUE");
+        \\  assert.ok(sslError.cause instanceof Error);
+        \\  assert.ok(String(sslError.stack).includes("ChannelCredentials.createSsl"));
+        \\  assert.ok(String(sslError.stack).includes("Caused by:"));
+        \\
+        \\  const callCredentials = grpc.CallCredentials.createFromMetadataGenerator((options, callback) => {
+        \\    callback(new Error("metadata generator failed"));
+        \\  });
+        \\  const channelCredentials = grpc.ChannelCredentials.createSsl().compose(callCredentials);
+        \\  const EchoService = grpc.loadPackageDefinition({ __home_proto_file: "echo_service.proto" }).EchoService;
+        \\  const client = new EchoService("127.0.0.1:1", channelCredentials);
+        \\  const metadataError = await new Promise(resolve => client.echo({}, error => resolve(error)));
+        \\  assert.ok(metadataError.cause instanceof Error);
+        \\  assert.ok(String(metadataError.stack).includes("ChannelCredentials.generateMetadata"));
+        \\  assert.ok(String(metadataError.stack).includes("CallCredentials.generateMetadata"));
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/certificate-provider-errors.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -86895,10 +87008,10 @@ test "bootstrap grpc certificate provider errors retain causes and operation sta
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) {
-        std.debug.print("grpc certificate provider diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
+        std.debug.print("grpc credential diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -101385,6 +101498,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-call-credentials.test.ts", .passed = 6 },
         .{ .path = "js/third_party/grpc-js/test-call-propagation.test.ts", .passed = 8 },
         .{ .path = "js/third_party/grpc-js/test-certificate-provider.test.ts", .passed = 9 },
+        .{ .path = "js/third_party/grpc-js/test-channel-credentials.test.ts", .passed = 9, .todo = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
