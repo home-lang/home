@@ -10612,6 +10612,7 @@ pub const Checker = struct {
         const name_str = self.string_interner.get(id.name);
         if (name_str.len > 0 and name_str[0] == '_') return;
         if (refs.contains(id.name)) return;
+        if (self.jsxPragmaReferencesImport(import_node, id.name)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "'{s}' is declared but its value is never read.",
@@ -10634,6 +10635,7 @@ pub const Checker = struct {
         const name_str = self.string_interner.get(name);
         if (name_str.len > 0 and name_str[0] == '_') return;
         if (refs.contains(name)) return;
+        if (self.jsxPragmaReferencesImport(node, name)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "'{s}' is declared but its value is never read.",
@@ -103650,9 +103652,10 @@ pub const Checker = struct {
             .jsx_element, .jsx_self_closing => try self.checkJsxElement(node),
             .jsx_fragment => blk: {
                 try self.reportMissingJsxOption(node);
-                if (!try self.reportMissingJsxFragmentFactory(node)) {
-                    try self.reportMissingJsxFragmentFactoryScope(node);
-                }
+                try self.reportMissingJsxClassicFactoryScope(node, node);
+                try self.reportMissingJsxFragmentAliasScope(node);
+                _ = try self.reportMissingJsxFragmentFactory(node);
+                try self.reportMissingJsxFragmentFactoryScope(node);
                 const frag = hir_mod.jsxFragmentOf(self.hir, node);
                 for (self.hir.childSlice(frag.children_start, frag.children_len)) |child| {
                     _ = try self.checkExpression(child);
@@ -103940,8 +103943,8 @@ pub const Checker = struct {
         // from the IntrinsicElements lookup path instead.
     }
 
-    fn sourceHasJsxPragma(self: *Checker) bool {
-        const src = self.source orelse return false;
+    fn sourceHasJsxPragma(self: *Checker, anchor: NodeId) bool {
+        const src = self.sourceSectionForNode(anchor);
         var offset: usize = 0;
         while (std.mem.indexOf(u8, src[offset..], "@jsx")) |rel| {
             const after_idx = offset + rel + "@jsx".len;
@@ -103953,8 +103956,8 @@ pub const Checker = struct {
         return false;
     }
 
-    fn sourceHasJsxFragPragma(self: *Checker) bool {
-        const src = self.source orelse return false;
+    fn sourceHasJsxFragPragma(self: *Checker, anchor: NodeId) bool {
+        const src = self.sourceSectionForNode(anchor);
         inline for (.{ "@jsxFrag", "@jsxfrag" }) |needle| {
             var offset: usize = 0;
             while (std.mem.indexOf(u8, src[offset..], needle)) |rel| {
@@ -103970,11 +103973,11 @@ pub const Checker = struct {
 
     fn reportMissingJsxFragmentFactory(self: *Checker, node: NodeId) CheckError!bool {
         if (!self.jsx_transform_enabled) return false;
-        if (self.jsx_fragment_factory_compiler_option_present or self.sourceHasJsxFragPragma()) return false;
+        if (self.jsx_fragment_factory_compiler_option_present or self.sourceHasJsxFragPragma(node)) return false;
         if (self.jsx_factory_compiler_option_present) {
             try self.report(node, TsCodes.jsx_fragment_factory_missing_for_jsx_factory, "The 'jsxFragmentFactory' compiler option must be provided to use JSX fragments with the 'jsxFactory' compiler option.");
             return true;
-        } else if (self.sourceHasJsxPragma()) {
+        } else if (self.sourceHasJsxPragma(node)) {
             try self.report(node, TsCodes.jsx_frag_pragma_required, "An @jsxFrag pragma is required when using an @jsx pragma with JSX fragments.");
             return true;
         }
@@ -103983,7 +103986,7 @@ pub const Checker = struct {
 
     fn reportMissingJsxFragmentFactoryScope(self: *Checker, node: NodeId) CheckError!void {
         if (!self.jsx_fragment_factory_scope_required) return;
-        const factory_name = self.jsxFragmentFactoryNameText();
+        const factory_name = self.jsxFragmentFactoryNameText(node);
         if (std.mem.eql(u8, factory_name, "null")) return;
         const root_name = self.jsxFactoryRootName(factory_name) orelse return;
         if (std.mem.eql(u8, root_name, "React") and self.sourceHasReactJsxReference()) return;
@@ -104009,7 +104012,7 @@ pub const Checker = struct {
     /// `preserve`/`react-native` never reference one.
     fn reportMissingJsxClassicFactoryScope(self: *Checker, node: NodeId, tag: NodeId) CheckError!void {
         if (!self.jsx_classic_runtime) return;
-        const scope_name = self.jsxClassicScopeName();
+        const scope_name = self.jsxClassicScopeName(node);
         if (std.mem.eql(u8, scope_name, "React") and self.sourceHasReactJsxReference()) return;
         const root_id = self.string_interner.intern(scope_name) catch return error.OutOfMemory;
         if ((try self.jsxRootValueType(node, root_id)) != null) return;
@@ -104021,12 +104024,29 @@ pub const Checker = struct {
         try self.report(tag, TsCodes.jsx_factory_not_in_scope, msg);
     }
 
+    fn reportMissingJsxFragmentAliasScope(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.jsx_classic_runtime) return;
+        const fragment_factory = self.jsxFragmentFactoryNameText(node);
+        if (std.mem.eql(u8, fragment_factory, "null")) return;
+        const fragment_root = self.jsxFactoryRootName(fragment_factory) orelse return;
+        if (std.mem.eql(u8, fragment_root, self.jsxClassicScopeName(node))) return;
+        if (std.mem.eql(u8, fragment_root, "React") and self.sourceHasReactJsxReference()) return;
+        const root_id = self.string_interner.intern(fragment_root) catch return error.OutOfMemory;
+        if ((try self.jsxRootValueType(node, root_id)) != null) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "This JSX tag requires '{s}' to be in scope, but it could not be found.",
+            .{fragment_root},
+        );
+        try self.report(node, TsCodes.jsx_factory_not_in_scope, msg);
+    }
+
     /// The factory scope name tsgo's `getJsxNamespace` yields for the
     /// classic runtime: the `@jsxFactory` root when the directive is
     /// present, then `reactNamespace`, then the configured factory name
     /// (default `React.createElement` → `React`).
-    fn jsxClassicScopeName(self: *Checker) []const u8 {
-        if (self.sourceJsxFactoryPragmaValue()) |name| {
+    fn jsxClassicScopeName(self: *Checker, anchor: NodeId) []const u8 {
+        if (self.sourceJsxFactoryPragmaValueAt(anchor)) |name| {
             if (self.jsxFactoryRootName(name)) |root| return root;
         }
         if (self.sourceDirectiveValue("reactNamespace")) |name| return name;
@@ -108206,7 +108226,7 @@ pub const Checker = struct {
     fn checkJsxFactoryTagArity(self: *Checker, tag: NodeId) CheckError!void {
         if (tag == hir_mod.none_node_id or self.jsxTagIsIntrinsic(tag)) return;
 
-        const factory_name = self.jsxFactoryNameText();
+        const factory_name = self.jsxFactoryNameText(tag);
         if (factory_name.len == 0) return;
 
         var tag_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -108424,16 +108444,50 @@ pub const Checker = struct {
         try self.collectCallSignatures(tag_t, out);
     }
 
-    fn jsxFactoryNameText(self: *Checker) []const u8 {
-        return self.sourceJsxFactoryPragmaValue() orelse self.jsx_factory_name;
+    fn jsxFactoryNameText(self: *Checker, anchor: NodeId) []const u8 {
+        return self.sourceJsxFactoryPragmaValueAt(anchor) orelse self.jsx_factory_name;
     }
 
-    fn jsxFragmentFactoryNameText(self: *Checker) []const u8 {
-        return self.sourceJsxFragPragmaValue() orelse self.jsx_fragment_factory_name;
+    fn jsxFragmentFactoryNameText(self: *Checker, anchor: NodeId) []const u8 {
+        return self.sourceJsxFragPragmaValueAt(anchor) orelse self.jsx_fragment_factory_name;
     }
 
-    fn sourceJsxFactoryPragmaValue(self: *Checker) ?[]const u8 {
-        const src = self.source orelse return null;
+    fn sourceSectionForNode(self: *Checker, anchor: NodeId) []const u8 {
+        const src = self.source orelse return "";
+        if (!self.sourceHasVirtualFilenameSections()) return src;
+        const start = self.virtualSectionStartForNode(anchor);
+        const end = self.virtualSectionEndForNode(anchor);
+        if (start > end or end > src.len) return src;
+        return src[start..end];
+    }
+
+    fn sourceSectionHasJsxSyntax(self: *Checker, anchor: NodeId) bool {
+        const src = self.sourceSectionForNode(anchor);
+        return std.mem.indexOf(u8, src, "<>") != null or
+            std.mem.indexOf(u8, src, "</") != null or
+            std.mem.indexOf(u8, src, "/>") != null;
+    }
+
+    fn jsxPragmaReferencesImport(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        if (!self.sourceSectionHasJsxSyntax(anchor)) return false;
+        const name_text = self.string_interner.get(name);
+        const factory = self.sourceJsxFactoryPragmaValueAt(anchor) orelse
+            if (self.jsx_classic_runtime) self.jsx_factory_name else "";
+        if (self.jsxFactoryRootName(factory)) |root| {
+            if (std.mem.eql(u8, root, name_text)) return true;
+        }
+        if (std.mem.indexOf(u8, self.sourceSectionForNode(anchor), "<>") == null) return false;
+        const fragment_factory = self.sourceJsxFragPragmaValueAt(anchor) orelse
+            if (self.jsx_fragment_factory_scope_required) self.jsx_fragment_factory_name else "";
+        if (std.mem.eql(u8, fragment_factory, "null")) return false;
+        if (self.jsxFactoryRootName(fragment_factory)) |root| {
+            return std.mem.eql(u8, root, name_text);
+        }
+        return false;
+    }
+
+    fn sourceJsxFactoryPragmaValueAt(self: *Checker, anchor: NodeId) ?[]const u8 {
+        const src = self.sourceSectionForNode(anchor);
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r/*");
@@ -108447,8 +108501,8 @@ pub const Checker = struct {
         return null;
     }
 
-    fn sourceJsxFragPragmaValue(self: *Checker) ?[]const u8 {
-        const src = self.source orelse return null;
+    fn sourceJsxFragPragmaValueAt(self: *Checker, anchor: NodeId) ?[]const u8 {
+        const src = self.sourceSectionForNode(anchor);
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r/*");
@@ -108494,12 +108548,17 @@ pub const Checker = struct {
     }
 
     fn jsxRootValueType(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
-        if (try self.overloadedFunctionValueType(name)) |overloaded_t| return overloaded_t;
-        if (self.class_static_types.get(name)) |static_t| return static_t;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        if (!has_sections) {
+            if (try self.overloadedFunctionValueType(name)) |overloaded_t| return overloaded_t;
+            if (self.class_static_types.get(name)) |static_t| return static_t;
+        }
 
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (has_sections and self.virtualSectionStartForNode(raw) != anchor_section) continue;
             const decl = self.unwrapExportDecl(raw);
             if (decl == hir_mod.none_node_id) continue;
             if (self.hir.kindOf(decl) == .import_decl) {
@@ -108578,7 +108637,10 @@ pub const Checker = struct {
         const intrinsic_name = self.string_interner.intern("IntrinsicElements") catch return error.OutOfMemory;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse {
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const jsx_path = [_]hir_mod.StringId{jsx_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &jsx_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) orelse {
             if (self.sourceHasReactJsxReference()) return try self.jsxReactIntrinsicPropsType();
             return null;
         };
@@ -108797,7 +108859,10 @@ pub const Checker = struct {
         const intrinsic_name = self.string_interner.intern("IntrinsicElements") catch return error.OutOfMemory;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return false;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const jsx_path = [_]hir_mod.StringId{jsx_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &jsx_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) orelse return false;
         return self.findNamedTypeDeclInNamespace(ns_node, intrinsic_name) != null;
     }
 
@@ -108805,7 +108870,10 @@ pub const Checker = struct {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-        return self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) != null;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const jsx_path = [_]hir_mod.StringId{jsx_name};
+        return self.findNamespaceByPath(root_stmts, &jsx_path) != null or
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) != null;
     }
 
     fn nodeIsSuperReference(self: *Checker, node: NodeId) bool {
@@ -180760,6 +180828,52 @@ test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
         if (d.code == TsCodes.jsx_element_implicit_any_no_intrinsic) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: inline JSX pragmas are scoped to each virtual file" {
+    const s = try newTsxSetup(
+        \\// @filename: renderer.d.ts
+        \\declare global {
+        \\  namespace JSX { interface IntrinsicElements { [name: string]: any; } }
+        \\}
+        \\export function h(): void;
+        \\export function jsx(): void;
+        \\export {};
+        \\// @filename: present.tsx
+        \\/** @jsx h
+        \\ * @jsxFrag Fragment */
+        \\import { h, Fragment } from "./renderer";
+        \\<><div /></>;
+        \\// @filename: no-fragment.tsx
+        \\/** @jsx h
+        \\ * @jsxFrag Fragment */
+        \\import { h, Fragment } from "./renderer";
+        \\<div />;
+        \\// @filename: missing-h.tsx
+        \\/** @jsx h
+        \\ * @jsxFrag Fragment */
+        \\import { Fragment } from "./renderer";
+        \\<></>;
+        \\// @filename: missing-jsx.tsx
+        \\/* @jsx jsx */
+        \\/* @jsxfrag null */
+        \\import {} from "./renderer";
+        \\<></>;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .no_unused_locals = true });
+    s.checker.setJsxOptionPresent(true);
+    s.checker.setJsxClassicRuntime(true);
+    s.checker.setJsxFragmentFactoryContext(true, false, false, "React.Fragment", true);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_element_implicit_any_no_intrinsic));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.declared_but_not_read));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.declared_but_not_read) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "'Fragment'") != null);
+    }
 }
 
 test "checker: JSX intrinsic type arguments report TS2558" {
