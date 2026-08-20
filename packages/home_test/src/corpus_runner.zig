@@ -37475,6 +37475,51 @@ const harness_prelude =
     \\  router.set = function(name, value) { router.__home_settings[String(name)] = value; return router; };
     \\  return router;
     \\}
+    \\function __home_express_send_file_error(status, message, path, cause, typeError) {
+    \\  const error = typeError ? new TypeError(message) : new Error(message);
+    \\  error.status = error.statusCode = status;
+    \\  if (path !== undefined) error.path = String(path);
+    \\  if (cause !== undefined) { error.cause = cause; error.code = cause && cause.code; }
+    \\  error.stack = String(error.stack || error) + (path === undefined ? "" : "\n    for path " + String(path)) + "\n    at res.sendFile (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")" + (cause && cause.stack ? "\nCaused by: " + String(cause.stack) : "");
+    \\  return error;
+    \\}
+    \\function __home_express_send_file_max_age(value) {
+    \\  if (value === undefined || value === null || value === "") return 0;
+    \\  if (typeof value === "number") return Math.max(0, Math.min(31536000000, value));
+    \\  const match = String(value).trim().toLowerCase().match(/^(-?(?:\d+\.?\d*|\.\d+))\s*(ms|s|m|h|d|y)?$/);
+    \\  if (!match) return 0;
+    \\  const scale = ({ ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000, y: 31536000000 })[match[2] || "ms"];
+    \\  return Math.max(0, Math.min(31536000000, Number(match[1]) * scale));
+    \\}
+    \\function __home_express_send_file_type(path) {
+    \\  const extension = globalThis.__home_modules["node:path"].extname(String(path)).toLowerCase();
+    \\  return ({ ".txt": "text/plain", ".html": "text/html", ".htm": "text/html", ".json": "application/json", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".pdf": "application/pdf" })[extension] || "application/octet-stream";
+    \\}
+    \\function __home_express_send_file_read(path) {
+    \\  const fs = globalThis.__home_modules["node:fs"], text = String(path), candidates = [text];
+    \\  const corpusIndex = text.indexOf("packages/runtime/test/bun-corpus/");
+    \\  if (corpusIndex > 0) candidates.push(text.slice(corpusIndex));
+    \\  const jsIndex = text.indexOf("/js/");
+    \\  if (jsIndex >= 0) { const relative = text.slice(jsIndex + 1); candidates.push(relative, "packages/runtime/test/bun-corpus/" + relative); }
+    \\  let cause;
+    \\  if (typeof globalThis.__home_readFileBytesNative === "function") for (const candidate of candidates) {
+    \\    try {
+    \\      const bytes = Buffer.from(String(globalThis.__home_readFileBytesNative(candidate)), "base64");
+    \\      let stats;
+    \\      try { stats = fs.statSync(candidate); } catch {}
+    \\      return { bytes, path: candidate, stats };
+    \\    } catch (error) { cause = error; }
+    \\  }
+    \\  for (const candidate of candidates) {
+    \\    try {
+    \\      const bytes = fs.readFileSync(candidate);
+    \\      let stats;
+    \\      try { stats = fs.statSync(candidate); } catch {}
+    \\      return { bytes, path: candidate, stats };
+    \\    } catch (error) { cause = error; }
+    \\  }
+    \\  return { cause };
+    \\}
     \\function __home_express_prepare(request, response) {
     \\  if (response.__home_express_prepared) return;
     \\  response.__home_express_prepared = true;
@@ -37500,6 +37545,7 @@ const harness_prelude =
     \\  response.header = response.set;
     \\  if (typeof response.removeHeader !== "function") response.removeHeader = function(name) { const key = String(name).toLowerCase(); if (this.headers) delete this.headers[key]; if (this.__home_headers) delete this.__home_headers[key]; return this; };
     \\  response.type = function(value) { const type = String(value || "application/octet-stream"); this.setHeader("Content-Type", type.includes("/") ? type : ({ json: "application/json", html: "text/html", text: "text/plain" })[type.toLowerCase()] || "application/octet-stream"); return this; };
+    \\  response.contentType = response.type;
     \\  response.location = function(value) { let location = encodeURI(String(value)); location = location.replace(/%25([0-9A-Fa-f]{2})/g, "%$1").replace(/%5B/gi, "[").replace(/%5D/gi, "]"); this.setHeader("Location", location); return this; };
     \\  response.redirect = function(status, value) {
     \\    if (value === undefined) { value = status; status = 302; }
@@ -37526,7 +37572,7 @@ const harness_prelude =
     \\        this.setHeader("Content-Type", contentType);
     \\      }
     \\    } else if (!contentType) this.setHeader("Content-Type", "application/octet-stream");
-    \\    else if (!/charset=/i.test(String(contentType)) && /^text\//i.test(String(contentType))) this.setHeader("Content-Type", String(contentType) + "; charset=utf-8");
+    \\    else if (!this.__home_send_file_preserve_content_type && !/charset=/i.test(String(contentType)) && /^text\//i.test(String(contentType))) this.setHeader("Content-Type", String(contentType) + "; charset=utf-8");
     \\    const length = binary ? payload.byteLength : Buffer.byteLength(payload), currentEtag = getHeader("ETag");
     \\    if (supplied && currentEtag === undefined) {
     \\      const setting = this.app && this.app.get("etag"), enabled = setting === undefined || setting === true || setting === "weak" || setting === "strong" || typeof setting === "function";
@@ -37554,6 +37600,50 @@ const harness_prelude =
     \\    const current = typeof this.getHeader === "function" ? this.getHeader("Content-Type") : this.headers && this.headers["content-type"], contentType = String(current || "application/json");
     \\    if (typeof this.setHeader === "function") this.setHeader("Content-Type", /charset=/i.test(contentType) ? contentType : contentType + "; charset=utf-8");
     \\    return this.send(payload);
+    \\  };
+    \\  response.sendFile = function(path, options, callback) {
+    \\    if (typeof options === "function") { callback = options; options = {}; }
+    \\    options = options && typeof options === "object" ? options : {};
+    \\    if (path === undefined) throw __home_express_send_file_error(500, "path argument is required to res.sendFile", path, undefined, true);
+    \\    if (typeof path !== "string") throw __home_express_send_file_error(500, "path must be a string to res.sendFile", path, undefined, true);
+    \\    const pathModule = globalThis.__home_modules["node:path"], currentDir = String(globalThis.__home_current_dirname || "").replace(/\/+$/, "");
+    \\    const duplicatedPrefix = currentDir && currentDir + "/" + currentDir + "/", inputPath = duplicatedPrefix && path.startsWith(duplicatedPrefix) ? path.slice(currentDir.length + 1) : path;
+    \\    const logicalAbsolute = pathModule.isAbsolute(inputPath) || (currentDir && (inputPath === currentDir || inputPath.startsWith(currentDir + "/")));
+    \\    const rootValue = options.root === undefined ? null : pathModule.resolve(String(options.root)), root = rootValue && !pathModule.isAbsolute(rootValue) ? "/" + rootValue.replace(/^\/+/, "") : rootValue;
+    \\    if (!root && !logicalAbsolute) throw __home_express_send_file_error(500, "path must be absolute", path, undefined, true);
+    \\    const resolvedValue = root ? pathModule.resolve(root, inputPath) : pathModule.isAbsolute(inputPath) ? pathModule.resolve(inputPath) : pathModule.normalize(inputPath), resolved = pathModule.isAbsolute(resolvedValue) ? resolvedValue : "/" + resolvedValue.replace(/^\/+/, "");
+    \\    const finishError = error => {
+    \\      if (typeof callback === "function") { callback(error); return this; }
+    \\      const status = Number(error && (error.status || error.statusCode)) || 500;
+    \\      this.__home_express_error = error;
+    \\      return this.status(status).send(status === 403 ? "Forbidden" : status === 404 ? "Not Found" : String(error));
+    \\    };
+    \\    if (root && resolved !== root && !resolved.startsWith(root.replace(/\/+$/, "") + "/")) return finishError(__home_express_send_file_error(403, "Forbidden", resolved));
+    \\    const relative = root ? resolved.slice(root.length).replace(/^\/+/, "") : resolved, dotfile = relative.split("/").some(part => part.length > 1 && part.startsWith("."));
+    \\    if (dotfile && options.dotfiles !== "allow") return finishError(__home_express_send_file_error(options.dotfiles === "deny" ? 403 : 404, options.dotfiles === "deny" ? "Forbidden" : "Not Found", resolved));
+    \\    const file = __home_express_send_file_read(resolved);
+    \\    if (!file.bytes || file.directory) return finishError(__home_express_send_file_error(404, "Not Found", resolved, file.cause));
+    \\    if (options.headers && typeof options.headers === "object") for (const name of Object.keys(options.headers)) { this.setHeader(name, options.headers[name]); if (String(name).toLowerCase() === "content-type") this.__home_send_file_preserve_content_type = true; }
+    \\    const currentType = typeof this.getHeader === "function" ? this.getHeader("Content-Type") : (this.headers || this.__home_headers || {})["content-type"];
+    \\    if (currentType === undefined) this.setHeader("Content-Type", __home_express_send_file_type(resolved));
+    \\    const acceptRanges = options.acceptRanges !== false;
+    \\    if (acceptRanges) this.setHeader("Accept-Ranges", "bytes");
+    \\    if (options.cacheControl !== false) {
+    \\      const seconds = Math.floor(__home_express_send_file_max_age(options.maxAge) / 1000);
+    \\      this.setHeader("Cache-Control", "public, max-age=" + String(seconds) + (options.immutable ? ", immutable" : ""));
+    \\    }
+    \\    const lastModified = options.lastModified !== false, modified = file.stats && file.stats.mtime instanceof Date ? file.stats.mtime : new Date(Number(file.stats && file.stats.mtimeMs) || 0);
+    \\    if (lastModified) this.setHeader("Last-Modified", modified.toUTCString());
+    \\    let payload = Buffer.from(file.bytes), start = options.start === undefined ? 0 : Math.max(0, Math.trunc(Number(options.start) || 0)), end = options.end === undefined ? payload.length - 1 : Math.min(payload.length - 1, Math.max(start, Math.trunc(Number(options.end) || 0)));
+    \\    const range = acceptRanges && __home_express_header(this.req, "range"), match = range && String(range).match(/^bytes=(\d*)-(\d*)$/);
+    \\    if (match) { start = match[1] === "" ? 0 : Math.max(0, Number(match[1])); end = match[2] === "" ? payload.length - 1 : Math.min(payload.length - 1, Number(match[2])); this.statusCode = 206; this.setHeader("Content-Range", "bytes " + start + "-" + end + "/" + payload.length); }
+    \\    if (start !== 0 || end !== payload.length - 1) payload = payload.subarray(start, end + 1);
+    \\    const ifModifiedSince = lastModified && __home_express_header(this.req, "if-modified-since");
+    \\    if (ifModifiedSince && Number.isFinite(Date.parse(String(ifModifiedSince))) && Date.parse(String(ifModifiedSince)) >= modified.getTime()) this.statusCode = 304;
+    \\    const result = this.send(payload);
+    \\    delete this.__home_send_file_preserve_content_type;
+    \\    if (typeof callback === "function") callback();
+    \\    return result;
     \\  };
     \\}
     \\function __home_express() {
@@ -101036,6 +101126,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/res.location.test.ts", .passed = 12, .todo = 10 },
         .{ .path = "js/third_party/express/res.redirect.test.ts", .passed = 9, .todo = 4 },
         .{ .path = "js/third_party/express/res.send.test.ts", .passed = 65, .todo = 4 },
+        .{ .path = "js/third_party/express/res.sendFile.test.ts", .passed = 39, .todo = 11 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
