@@ -36981,6 +36981,94 @@ const harness_prelude =
     \\  return instance;
     \\}
     \\globalThis.__home_modules["fastify"] = { default: __home_Fastify };
+    \\function __home_png_u32(bytes, offset) { return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0; }
+    \\function __home_png_huffman(lengths) {
+    \\  let maximum = 0; for (const length of lengths) maximum = Math.max(maximum, length);
+    \\  const counts = new Array(maximum + 1).fill(0), next = new Array(maximum + 1).fill(0), lookup = Object.create(null);
+    \\  for (const length of lengths) if (length) counts[length]++;
+    \\  let code = 0; for (let bits = 1; bits <= maximum; bits++) { code = (code + counts[bits - 1]) << 1; next[bits] = code; }
+    \\  for (let symbol = 0; symbol < lengths.length; symbol++) {
+    \\    const length = lengths[symbol]; if (!length) continue;
+    \\    let value = next[length]++, reversed = 0; for (let bit = 0; bit < length; bit++) { reversed = (reversed << 1) | (value & 1); value >>>= 1; }
+    \\    lookup[length + ":" + reversed] = symbol;
+    \\  }
+    \\  return { lookup, maximum };
+    \\}
+    \\function __home_png_inflate(bytes) {
+    \\  let byte = 2, bits = 0, count = 0; const output = [];
+    \\  const read = length => { let value = 0; for (let index = 0; index < length; index++) { if (!count) { bits = bytes[byte++]; count = 8; } value |= (bits & 1) << index; bits >>>= 1; count--; } return value; };
+    \\  const symbol = table => { let code = 0; for (let length = 1; length <= table.maximum; length++) { code |= read(1) << (length - 1); const found = table.lookup[length + ":" + code]; if (found !== undefined) return found; } throw new Error("Invalid PNG Huffman code"); };
+    \\  const lengthsBase = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+    \\  const lengthsExtra = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+    \\  const distanceBase = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+    \\  const distanceExtra = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+    \\  let final = false;
+    \\  while (!final) {
+    \\    final = !!read(1); const type = read(2);
+    \\    if (type === 0) { count = 0; bits = 0; const length = bytes[byte] | (bytes[byte + 1] << 8); byte += 4; for (let index = 0; index < length; index++) output.push(bytes[byte++]); continue; }
+    \\    let literalTable, distanceTable;
+    \\    if (type === 1) { literalTable = __home_png_huffman(Array.from({ length: 288 }, (_, index) => index <= 143 ? 8 : index <= 255 ? 9 : index <= 279 ? 7 : 8)); distanceTable = __home_png_huffman(new Array(32).fill(5)); }
+    \\    else if (type === 2) {
+    \\      const literalCount = read(5) + 257, distanceCount = read(5) + 1, codeCount = read(4) + 4, order = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15], codeLengths = new Array(19).fill(0);
+    \\      for (let index = 0; index < codeCount; index++) codeLengths[order[index]] = read(3);
+    \\      const codeTable = __home_png_huffman(codeLengths), all = [];
+    \\      while (all.length < literalCount + distanceCount) {
+    \\        const value = symbol(codeTable);
+    \\        if (value <= 15) all.push(value);
+    \\        else if (value === 16) { const repeated = all[all.length - 1], amount = read(2) + 3; for (let index = 0; index < amount; index++) all.push(repeated); }
+    \\        else { const amount = read(value === 17 ? 3 : 7) + (value === 17 ? 3 : 11); for (let index = 0; index < amount; index++) all.push(0); }
+    \\      }
+    \\      literalTable = __home_png_huffman(all.slice(0, literalCount)); distanceTable = __home_png_huffman(all.slice(literalCount));
+    \\    } else throw new Error("Invalid PNG DEFLATE block");
+    \\    while (true) {
+    \\      const value = symbol(literalTable); if (value < 256) { output.push(value); continue; } if (value === 256) break;
+    \\      const lengthIndex = value - 257, length = lengthsBase[lengthIndex] + read(lengthsExtra[lengthIndex]), distanceCode = symbol(distanceTable), distance = distanceBase[distanceCode] + read(distanceExtra[distanceCode]);
+    \\      for (let index = 0; index < length; index++) output.push(output[output.length - distance]);
+    \\    }
+    \\  }
+    \\  return new Uint8Array(output);
+    \\}
+    \\function __home_png_decode(input) {
+    \\  const bytes = new Uint8Array(input), idat = []; let offset = 8, width = 0, height = 0, colorType = 0, bitDepth = 0, interlace = 0;
+    \\  if (bytes.length < 8 || __home_png_u32(bytes, 0) !== 0x89504e47 || __home_png_u32(bytes, 4) !== 0x0d0a1a0a) throw new Error("Invalid PNG signature");
+    \\  while (offset + 12 <= bytes.length) { const length = __home_png_u32(bytes, offset), type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]), data = bytes.slice(offset + 8, offset + 8 + length); offset += length + 12; if (type === "IHDR") { width = __home_png_u32(data, 0); height = __home_png_u32(data, 4); bitDepth = data[8]; colorType = data[9]; interlace = data[12]; } else if (type === "IDAT") idat.push(data); else if (type === "IEND") break; }
+    \\  if (bitDepth !== 8 || interlace !== 0 || ![0,2,4,6].includes(colorType)) throw new Error("Unsupported PNG pixel format");
+    \\  const compressedLength = idat.reduce((sum, part) => sum + part.length, 0), compressed = new Uint8Array(compressedLength); let cursor = 0; for (const part of idat) { compressed.set(part, cursor); cursor += part.length; }
+    \\  const raw = __home_png_inflate(compressed), channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 4 ? 2 : 1, stride = width * channels, pixels = new Uint8Array(width * height * channels); let source = 0;
+    \\  const paeth = (a, b, c) => { const estimate = a + b - c, da = Math.abs(estimate - a), db = Math.abs(estimate - b), dc = Math.abs(estimate - c); return da <= db && da <= dc ? a : db <= dc ? b : c; };
+    \\  for (let row = 0; row < height; row++) { const filter = raw[source++], rowOffset = row * stride; for (let column = 0; column < stride; column++) { const value = raw[source++], left = column >= channels ? pixels[rowOffset + column - channels] : 0, above = row ? pixels[rowOffset + column - stride] : 0, upperLeft = row && column >= channels ? pixels[rowOffset + column - stride - channels] : 0; pixels[rowOffset + column] = (value + (filter === 1 ? left : filter === 2 ? above : filter === 3 ? Math.floor((left + above) / 2) : filter === 4 ? paeth(left, above, upperLeft) : 0)) & 255; } }
+    \\  const rgba = new Uint8Array(width * height * 4); for (let pixel = 0; pixel < width * height; pixel++) { const from = pixel * channels, to = pixel * 4; if (colorType === 6) rgba.set(pixels.slice(from, from + 4), to); else if (colorType === 2) { rgba.set(pixels.slice(from, from + 3), to); rgba[to + 3] = 255; } else { rgba[to] = rgba[to + 1] = rgba[to + 2] = pixels[from]; rgba[to + 3] = colorType === 4 ? pixels[from + 1] : 255; } }
+    \\  return { width, height, data: rgba };
+    \\}
+    \\function __home_png_crc(bytes) { let crc = 0xffffffff; for (const value of bytes) { crc ^= value; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); } return (crc ^ 0xffffffff) >>> 0; }
+    \\function __home_png_encode(width, height, pixels) {
+    \\  const raw = new Uint8Array(height * (width * 4 + 1)); for (let row = 0; row < height; row++) raw.set(pixels.slice(row * width * 4, (row + 1) * width * 4), row * (width * 4 + 1) + 1);
+    \\  const zlib = [0x78, 0x01]; for (let offset = 0; offset < raw.length;) { const length = Math.min(65535, raw.length - offset), final = offset + length === raw.length; zlib.push(final ? 1 : 0, length & 255, length >>> 8, (~length) & 255, ((~length) >>> 8) & 255); for (let index = 0; index < length; index++) zlib.push(raw[offset + index]); offset += length; }
+    \\  let a = 1, b = 0; for (const value of raw) { a = (a + value) % 65521; b = (b + a) % 65521; } zlib.push(b >>> 8, b & 255, a >>> 8, a & 255);
+    \\  const chunk = (name, data) => { const type = Array.from(name, character => character.charCodeAt(0)), body = type.concat(Array.from(data)), length = data.length, crc = __home_png_crc(body); return [length >>> 24, (length >>> 16) & 255, (length >>> 8) & 255, length & 255].concat(body, [crc >>> 24, (crc >>> 16) & 255, (crc >>> 8) & 255, crc & 255]); };
+    \\  const ihdr = [width >>> 24, (width >>> 16) & 255, (width >>> 8) & 255, width & 255, height >>> 24, (height >>> 16) & 255, (height >>> 8) & 255, height & 255, 8, 6, 0, 0, 0];
+    \\  return Buffer.from([137,80,78,71,13,10,26,10].concat(chunk("IHDR", ihdr), chunk("IDAT", zlib), chunk("IEND", [])));
+    \\}
+    \\function __home_canvas_color(value) {
+    \\  const colors = { red: [255, 0, 0, 255], blue: [0, 0, 255, 255], black: [0, 0, 0, 255], transparent: [0, 0, 0, 0] };
+    \\  return colors[String(value).toLowerCase()] || colors.black;
+    \\}
+    \\function __home_create_canvas(width, height) {
+    \\  const canvas = { width: Number(width), height: Number(height), data: new Uint8Array(Math.max(0, Number(width) * Number(height) * 4)), operations: [] };
+    \\  const context = {
+    \\    lineWidth: 1, strokeStyle: "black", fillStyle: "black",
+    \\    fillRect(x, y, rectWidth, rectHeight) { canvas.operations.push(["fillRect", x, y, rectWidth, rectHeight, this.fillStyle]); const color = __home_canvas_color(this.fillStyle); for (let row = Math.max(0, y); row < Math.min(canvas.height, y + rectHeight); row++) for (let column = Math.max(0, x); column < Math.min(canvas.width, x + rectWidth); column++) canvas.data.set(color, (row * canvas.width + column) * 4); },
+    \\    strokeRect(x, y, rectWidth, rectHeight) { canvas.operations.push(["strokeRect", x, y, rectWidth, rectHeight, this.strokeStyle, this.lineWidth]); const color = __home_canvas_color(this.strokeStyle), thickness = Math.max(1, Number(this.lineWidth) || 1); for (let row = y - thickness / 2; row < y + rectHeight + thickness / 2; row++) for (let column = x - thickness / 2; column < x + rectWidth + thickness / 2; column++) if (row >= 0 && column >= 0 && row < canvas.height && column < canvas.width && (row < y + thickness / 2 || row >= y + rectHeight - thickness / 2 || column < x + thickness / 2 || column >= x + rectWidth - thickness / 2)) canvas.data.set(color, (Math.floor(row) * canvas.width + Math.floor(column)) * 4); },
+    \\    drawImage(image, x, y) { if (!image || !image.data) throw new TypeError("Invalid canvas image"); for (let row = 0; row < image.height; row++) for (let column = 0; column < image.width; column++) { const targetX = Number(x) + column, targetY = Number(y) + row; if (targetX < 0 || targetY < 0 || targetX >= canvas.width || targetY >= canvas.height) continue; const from = (row * image.width + column) * 4, to = (targetY * canvas.width + targetX) * 4, alpha = image.data[from + 3] / 255, inverse = 1 - alpha; canvas.data[to] = Math.round(image.data[from] * alpha + canvas.data[to] * inverse); canvas.data[to + 1] = Math.round(image.data[from + 1] * alpha + canvas.data[to + 1] * inverse); canvas.data[to + 2] = Math.round(image.data[from + 2] * alpha + canvas.data[to + 2] * inverse); canvas.data[to + 3] = Math.round((alpha + canvas.data[to + 3] / 255 * inverse) * 255); } },
+    \\  };
+    \\  canvas.getContext = kind => String(kind) === "2d" ? context : null;
+    \\  canvas.encode = async format => { if (String(format).toLowerCase() !== "png") throw new TypeError("Only PNG encoding is supported"); return __home_png_encode(canvas.width, canvas.height, canvas.data); };
+    \\  return canvas;
+    \\}
+    \\async function __home_canvas_load_image(path) { const bytes = __home_file_bytes_sync(String(path)); if (!bytes) throw new Error("Image not found: " + String(path)); return __home_png_decode(bytes); }
+    \\class __home_Jimp { constructor(bitmap) { this.bitmap = { width: bitmap.width, height: bitmap.height, data: Buffer.from(bitmap.data) }; } static async read(input) { const bytes = typeof input === "string" ? __home_file_bytes_sync(input) : input; if (!bytes) throw new Error("Image not found: " + String(input)); return new __home_Jimp(__home_png_decode(bytes)); } }
+    \\globalThis.__home_modules["@napi-rs/canvas"] = { createCanvas: __home_create_canvas, loadImage: __home_canvas_load_image };
+    \\globalThis.__home_modules["jimp"] = { Jimp: __home_Jimp };
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -75618,6 +75706,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "@electric-sql/pglite",
         "@fastify/websocket",
         "fastify",
+        "@napi-rs/canvas",
+        "jimp",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -100165,6 +100255,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/@duckdb/node-api/duckdb.test.ts", .passed = 18 },
         .{ .path = "js/third_party/@electric-sql/pglite/pglite.test.ts", .passed = 1 },
         .{ .path = "js/third_party/@fastify/websocket/fastity-test-websocket.test.js", .passed = 1 },
+        .{ .path = "js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
