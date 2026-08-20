@@ -3115,6 +3115,7 @@ const DeclarationEntry = struct {
     is_block_scoped: bool = false,
     has_body: bool = false,
     is_exported: bool = false,
+    is_default_export: bool = false,
     is_ambient: bool = false,
     duplicate_exported_var_reported: bool = false,
     duplicate_class_reported: bool = false,
@@ -11779,6 +11780,7 @@ pub const Checker = struct {
         var previous_overload_section: usize = 0;
         for (stmts) |raw| {
             const exported = self.hir.kindOf(raw) == .export_decl;
+            const default_exported = exported and hir_mod.exportOf(self.hir, raw).is_default;
             const node = self.unwrapExportDecl(raw);
             if (node == hir_mod.none_node_id) continue;
             const virtual_section = self.declarationVirtualSectionKey(node);
@@ -11898,6 +11900,7 @@ pub const Checker = struct {
                     .is_block_scoped = is_block_scoped,
                     .has_body = has_body,
                     .is_exported = exported,
+                    .is_default_export = default_exported,
                     .is_ambient = is_ambient,
                     .last_bodyless_fn = if (is_fn and !has_body and !is_ambient and !self.virtualSectionIsJsLike(node)) node else hir_mod.none_node_id,
                 };
@@ -11959,6 +11962,7 @@ pub const Checker = struct {
             }
 
             if (gop.value_ptr.is_class and is_class) {
+                if (gop.value_ptr.is_default_export and default_exported) continue;
                 if (!gop.value_ptr.duplicate_class_reported) {
                     try self.reportDuplicateIdentifierWithOther(gop.value_ptr.node, name, node);
                     gop.value_ptr.duplicate_class_reported = true;
@@ -223574,6 +223578,17 @@ test "checker: TS2528 fires on every default export beyond the first" {
         if (d.code == TsCodes.multiple_default_exports) count += 1;
     }
     try T.expectEqual(@as(usize, 3), count);
+}
+
+test "checker: duplicate named default classes use TS2528 without TS2300" {
+    const s = try newSetup(
+        \\export default class C {}
+        \\export default class C {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.multiple_default_exports));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
 test "checker: simpleDiagnosticTypeName renders undefined and null after non-nullish in union" {
