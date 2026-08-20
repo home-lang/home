@@ -100077,6 +100077,7 @@ pub const Checker = struct {
                             try self.checkGenericSignatureArgumentConstraints(args, arg_types.items, param_ts, &call_subs);
                         }
                         try self.inferDescriptorLikeReturnTypeParameter(effective_callee_t, arg_types.items, &call_subs);
+                        try self.refineTaggedTemplateDirectInferences(node, param_ts, args, arg_types.items, &call_subs);
                         if (self.interner.signatureReturn(effective_callee_t)) |raw_return_t| {
                             failed_contextual_generic_return_inference = try self.callHasFailedContextualGenericReturnInference(
                                 param_ts,
@@ -140532,6 +140533,10 @@ pub const Checker = struct {
             !self.interner.pool.flagsOf(param_t).is_intersection)
         {
             if (subs.get(param_t)) |existing| {
+                if (arg_t == types.Primitive.any and self.hir.kindOf(arg_node) != .array_literal) {
+                    try subs.put(self.gpa, param_t, types.Primitive.any);
+                    return;
+                }
                 var literal_arg = self.literalizeForAsConst(arg_node, arg_t) catch arg_t;
                 literal_arg = self.substituteType(literal_arg, subs) catch literal_arg;
                 if (self.interner.typeParameterIsConst(param_t)) {
@@ -141756,6 +141761,223 @@ pub const Checker = struct {
             }
         }
         try self.inferDescriptorLikeReturnTypeParameter(sig, arg_types, subs);
+    }
+
+    fn refineTaggedTemplateDirectInferences(
+        self: *Checker,
+        call_node: NodeId,
+        param_ts: []const TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        if (args.len == 0) return;
+        if (!self.callExprIsTaggedTemplate(call_node)) return;
+
+        const count = @min(param_ts.len, @min(args.len, arg_types.len));
+        for (param_ts[0..count], 0..) |type_param, param_i| {
+            if (type_param >= self.interner.pool.typeCount()) continue;
+            const flags = self.interner.pool.flagsOf(type_param);
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) continue;
+            var previously_seen = false;
+            for (param_ts[0..param_i]) |prior| {
+                if (prior == type_param) {
+                    previously_seen = true;
+                    break;
+                }
+            }
+            if (previously_seen) continue;
+
+            var matching_count: usize = 0;
+            var saw_any = false;
+            var all_object_or_nullish = true;
+            var object_candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer object_candidates.deinit(self.gpa);
+            var nullish_candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer nullish_candidates.deinit(self.gpa);
+            for (param_ts[0..count], 0..) |candidate_param, arg_i| {
+                if (candidate_param != type_param) continue;
+                matching_count += 1;
+                if (arg_types[arg_i] == types.Primitive.any and self.hir.kindOf(args[arg_i]) != .array_literal) {
+                    saw_any = true;
+                    continue;
+                }
+                if (self.hir.kindOf(args[arg_i]) == .object_literal) {
+                    try object_candidates.append(
+                        self.gpa,
+                        try self.widenedMutableObjectLiteralInferenceType(args[arg_i], arg_types[arg_i]),
+                    );
+                    continue;
+                }
+                if (self.typeIsNullishOnly(arg_types[arg_i])) {
+                    if (std.mem.indexOfScalar(TypeId, nullish_candidates.items, arg_types[arg_i]) == null) {
+                        try nullish_candidates.append(self.gpa, arg_types[arg_i]);
+                    }
+                    continue;
+                }
+                all_object_or_nullish = false;
+            }
+            if (matching_count < 2) continue;
+            if (saw_any) {
+                try subs.put(self.gpa, type_param, types.Primitive.any);
+                continue;
+            }
+            if (all_object_or_nullish and object_candidates.items.len > 0) {
+                const object_union = try self.taggedInferenceObjectUnion(object_candidates.items);
+                var union_members: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer union_members.deinit(self.gpa);
+                try union_members.append(self.gpa, object_union);
+                try union_members.appendSlice(self.gpa, nullish_candidates.items);
+                const inferred = if (union_members.items.len == 1)
+                    union_members.items[0]
+                else
+                    self.interner.internUnion(union_members.items) catch return error.OutOfMemory;
+                try subs.put(self.gpa, type_param, inferred);
+                continue;
+            }
+        }
+    }
+
+    fn widenedMutableObjectLiteralInferenceType(
+        self: *Checker,
+        object_node: NodeId,
+        fallback: TypeId,
+    ) CheckError!TypeId {
+        if (self.hir.kindOf(object_node) != .object_literal) return fallback;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |property_node| {
+            if (self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            if (property.value == hir_mod.none_node_id) continue;
+            const name = self.propertyNameFromKeyNode(property.key) orelse continue;
+            const value_t = if (self.hir.typeOf(property.value) != types.Primitive.none)
+                self.hir.typeOf(property.value)
+            else
+                try self.checkExpression(property.value);
+            const widened = if (self.hir.kindOf(property.value) == .object_literal)
+                try self.widenedMutableObjectLiteralInferenceType(property.value, value_t)
+            else blk: {
+                const literal = self.literalizeForAsConst(property.value, value_t) catch value_t;
+                break :blk try self.widenFreshLiteralType(literal);
+            };
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = widened,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+        if (members.items.len == 0) return fallback;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn taggedInferenceObjectUnion(self: *Checker, objects: []const TypeId) CheckError!TypeId {
+        if (objects.len == 1) return objects[0];
+        var all_equivalent = true;
+        for (objects[1..]) |object_t| {
+            if (!(self.engine.isAssignableTo(objects[0], object_t) catch false) or
+                !(self.engine.isAssignableTo(object_t, objects[0]) catch false))
+            {
+                all_equivalent = false;
+                break;
+            }
+        }
+        if (all_equivalent) return objects[0];
+        var augmented: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer augmented.deinit(self.gpa);
+        for (objects, 0..) |object_t, object_i| {
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+
+            for (objects[0..object_i]) |prior_t| {
+                for (self.interner.objectMembers(prior_t)) |prior_member| {
+                    if (self.interner.objectMemberInfo(object_t, prior_member.name) != null) continue;
+                    var already_added = false;
+                    for (members.items) |member| {
+                        if (member.name == prior_member.name) {
+                            already_added = true;
+                            break;
+                        }
+                    }
+                    if (!already_added) try members.append(self.gpa, .{
+                        .name = prior_member.name,
+                        .type = types.Primitive.undefined_t,
+                        .is_optional = true,
+                        .is_readonly = false,
+                        .is_method = false,
+                    });
+                }
+            }
+            try members.appendSlice(self.gpa, self.interner.objectMembers(object_t));
+            for (objects[object_i + 1 ..]) |later_t| {
+                for (self.interner.objectMembers(later_t)) |later_member| {
+                    if (self.interner.objectMemberInfo(object_t, later_member.name) != null) continue;
+                    var already_added = false;
+                    for (members.items) |member| {
+                        if (member.name == later_member.name) {
+                            already_added = true;
+                            break;
+                        }
+                    }
+                    if (!already_added) try members.append(self.gpa, .{
+                        .name = later_member.name,
+                        .type = types.Primitive.undefined_t,
+                        .is_optional = true,
+                        .is_readonly = false,
+                        .is_method = false,
+                    });
+                }
+            }
+            try augmented.append(
+                self.gpa,
+                self.interner.internObjectType(members.items) catch return error.OutOfMemory,
+            );
+        }
+        return self.interner.internUnion(augmented.items) catch return error.OutOfMemory;
+    }
+
+    fn taggedTemplateRepeatedDirectLiteralTarget(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        param_index: usize,
+        effective_param_t: TypeId,
+    ) CheckError!?TypeId {
+        if (!self.callExprIsTaggedTemplate(call_node) or param_index >= args.len) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (call.callee == hir_mod.none_node_id) return null;
+        const raw_sig = self.hir.typeOf(call.callee);
+        if (!self.interner.isSignature(raw_sig)) return null;
+        const raw_params = self.interner.signatureParams(raw_sig);
+        if (param_index >= raw_params.len) return null;
+        const raw_param = raw_params[param_index];
+        if (raw_param >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(raw_param);
+        if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return null;
+
+        var first_index: ?usize = null;
+        for (raw_params[0..param_index], 0..) |prior, index| {
+            if (prior == raw_param) {
+                first_index = index;
+                break;
+            }
+        }
+        const source_index = first_index orelse return null;
+        if (source_index >= args.len or source_index >= arg_types.len) return null;
+        const source_kind = self.hir.kindOf(args[source_index]);
+        if (source_kind != .literal_string and
+            source_kind != .literal_number and
+            source_kind != .literal_bool)
+        {
+            return null;
+        }
+        const literal = try self.literalizeForAsConst(args[source_index], arg_types[source_index]);
+        const widened = try self.widenFreshLiteralType(literal);
+        if (widened != effective_param_t) return null;
+        return literal;
     }
 
     fn inferFromOverloadedCallableArgument(
@@ -143594,6 +143816,13 @@ pub const Checker = struct {
             });
             var constrained_type_parameter_target: ?TypeId = null;
             if (self.taggedTemplateStringsArrayArg(call_node, args, i, param_t)) continue;
+            param_t = (try self.taggedTemplateRepeatedDirectLiteralTarget(
+                call_node,
+                args,
+                arg_types,
+                fixed_pos,
+                param_t,
+            )) orelse param_t;
             if (self.interner.pool.flagsOf(param_t).is_type_parameter and
                 !self.interner.pool.flagsOf(param_t).is_union and
                 !self.interner.pool.flagsOf(param_t).is_intersection and
@@ -143861,8 +144090,12 @@ pub const Checker = struct {
                 self.hir.kindOf(inferred_call.callee) == .identifier and
                 self.generic_fns.contains(hir_mod.identifierOf(self.hir, inferred_call.callee).name) and
                 self.isContextualFunctionExpressionLike(args[i]);
-            if (inferred_generic_callback) {
+            if (inferred_generic_callback and self.containsFreeTypeParameter(param_t)) {
                 param_t = try self.inferredGenericCallbackTarget(call_node, param_t);
+            }
+            const inferred_generic_callback_identity = inferred_generic_callback and arg_t == param_t;
+            if (inferred_generic_callback_identity) {
+                _ = self.discardCallArgumentContextualReturnDiagnostics(args[i], true);
             }
             const inferred_contextual_return_error = inferred_generic_callback and
                 self.contextualFunctionReturnDiagnosticAlreadyEmitted(args[i]);
@@ -143870,6 +144103,8 @@ pub const Checker = struct {
             const arg_diag_start = self.diagnostics.items.len;
             const imported_class_parameter_match = try self.argumentMatchesImportedClassParameter(sig, fixed_pos, arg_t);
             const structurally_assignable = if (imported_class_parameter_match)
+                true
+            else if (inferred_generic_callback_identity)
                 true
             else if (inferred_contextual_return_error)
                 false
@@ -153987,6 +154222,7 @@ pub const Checker = struct {
     }
 
     fn contextualFunctionReturnAssignable(self: *Checker, source_ret: TypeId, target_ret: TypeId) CheckError!bool {
+        if (source_ret == target_ret) return true;
         if (target_ret == types.Primitive.void_t or
             target_ret == types.Primitive.any or
             target_ret == types.Primitive.unknown)
@@ -207419,6 +207655,52 @@ test "checker: tagged template overload selection rejects inferred constraint vi
         }
     }
     try T.expect(saw_last_overload_constraint);
+}
+
+test "checker: tagged template repeated type parameters refine inference candidates" {
+    const s = try newSetup(
+        \\declare function producer<T>(strs: TemplateStringsArray, value: () => T): void;
+        \\producer `${() => undefined}`;
+        \\declare function common<T>(strs: TemplateStringsArray, a: T, b: T, c: T): T;
+        \\var mixed = common `${""}${0}${[]}`;
+        \\var mixed: {};
+        \\var objects = common `${undefined}${{ x: 6, z: new Date() }}${{ x: 6, y: "" }}`;
+        \\var objects: {};
+        \\var equivalent = common `${{ x: 3 }}${{ x: 6 }}${{ x: 6 }}`;
+        \\var equivalent: { x: number };
+        \\declare const anyValue: any;
+        \\var anyResult = common `${7}${anyValue}${4}`;
+        \\var anyResult: any;
+        \\var empty = common `${[]}${null}${undefined}`;
+        \\var empty: any[];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '0' is not assignable to parameter of type '\"\"'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'mixed' must be of type 'string', but here has type '{}'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'objects' must be of type '{ x: number; z: Date; y?: undefined; } | { z?: undefined; x: number; y: string; } | undefined', but here has type '{}'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'empty' must be of type 'never[] | null | undefined', but here has type 'any[]'.",
+    ));
 }
 
 test "checker: tagged template callback can return object spread identity" {
