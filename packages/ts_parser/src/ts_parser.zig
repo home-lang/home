@@ -5003,6 +5003,12 @@ pub const Parser = struct {
                     } else {
                         try seen_names.put(self.gpa, id.name, name_span);
                     }
+                } else if (self.hir.kindOf(name_node) == .object_pattern or
+                    self.hir.kindOf(name_node) == .array_pattern)
+                {
+                    var pattern_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+                    defer pattern_names.deinit(self.gpa);
+                    try self.recordParameterPatternNames(name_node, &seen_names, &pattern_names);
                 }
                 var type_ann: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
@@ -5165,6 +5171,35 @@ pub const Parser = struct {
         }
         if (!missing_close_reported) _ = try self.expectClosingMatch(.close_paren, "')' to close parameter list", open_paren.span.start, "(", ")");
         return try params.toOwnedSlice(self.gpa);
+    }
+
+    fn recordParameterPatternNames(
+        self: *Parser,
+        pattern_node: NodeId,
+        seen_names: *std.AutoHashMapUnmanaged(hir_mod.StringId, Span),
+        pattern_names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) ParseError!void {
+        for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, elem);
+            if (p.name == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(p.name);
+            if (kind == .object_pattern or kind == .array_pattern) {
+                try self.recordParameterPatternNames(p.name, seen_names, pattern_names);
+                continue;
+            }
+            if (kind != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, p.name);
+            if (pattern_names.contains(id.name)) continue;
+            try pattern_names.put(self.gpa, id.name, {});
+            const name_span = self.hir.spanOf(p.name);
+            if (seen_names.get(id.name)) |previous| {
+                try self.reportDuplicateIdentifierNamed(previous.start, self.lineAt(previous.start), id.name);
+                try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), id.name);
+            } else {
+                try seen_names.put(self.gpa, id.name, name_span);
+            }
+        }
     }
 
     fn emptyBindingPatternParameterCanContinue(kind: TokenKind) bool {

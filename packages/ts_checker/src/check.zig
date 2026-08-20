@@ -31169,7 +31169,10 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(p.name)) {
             .array_pattern => try self.arrayBindingPatternParameterType(p.name),
             .object_pattern => try self.objectBindingPatternParameterType(p.name),
-            else => types.Primitive.any,
+            else => if (p.default_value != hir_mod.none_node_id)
+                self.widenForInference(try self.checkExpression(p.default_value))
+            else
+                types.Primitive.any,
         };
     }
 
@@ -31253,6 +31256,14 @@ pub const Checker = struct {
     /// back to the element-level default's widened type, then `any`.
     /// Mirrors the empty-baseline fixture `destructuringWithLiteralInitializers`.
     fn objectBindingPatternParameterType(self: *Checker, pattern_node: NodeId) CheckError!TypeId {
+        return self.objectBindingPatternParameterTypeWithDefault(pattern_node, hir_mod.none_node_id);
+    }
+
+    fn objectBindingPatternParameterTypeWithDefault(
+        self: *Checker,
+        pattern_node: NodeId,
+        parent_default: NodeId,
+    ) CheckError!TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
@@ -31267,12 +31278,24 @@ pub const Checker = struct {
             // `y?: number` shape on `{ y = 0 }` bindings.
             const has_own_default = p.default_value != hir_mod.none_node_id;
             const name_kind = self.hir.kindOf(p.name);
+            const parent_value = if (parent_default != hir_mod.none_node_id and
+                self.hir.kindOf(parent_default) == .object_literal)
+                self.findObjectLiteralPropValue(parent_default, key_name) orelse hir_mod.none_node_id
+            else
+                hir_mod.none_node_id;
             var member_t: TypeId = if (name_kind == .array_pattern)
                 try self.arrayBindingPatternParameterType(p.name)
             else if (name_kind == .object_pattern)
-                try self.objectBindingPatternParameterType(p.name)
+                try self.objectBindingPatternParameterTypeWithDefault(p.name, parent_value)
             else
                 types.Primitive.any;
+            if (parent_value != hir_mod.none_node_id and
+                name_kind != .array_pattern and
+                name_kind != .object_pattern)
+            {
+                const parent_t = self.widenForInference(try self.checkExpression(parent_value));
+                if (!self.typeIsAnyLike(parent_t) and parent_t != types.Primitive.none) member_t = parent_t;
+            }
             if (has_own_default and member_t == types.Primitive.any) {
                 const default_t = try self.checkExpression(p.default_value);
                 const widened = self.widenForInference(default_t);
@@ -32204,7 +32227,7 @@ pub const Checker = struct {
                 // `any` when no annotation/default is present.
                 blk_object_pattern: {
                     inferred_object_binding_pattern = true;
-                    break :blk_object_pattern try self.objectBindingPatternParameterType(pp.name);
+                    break :blk_object_pattern try self.objectBindingPatternParameterTypeWithDefault(pp.name, pp.default_value);
                 }
             else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
                 if (js_default_is_loose_nullish) break :blk_default types.Primitive.any;
@@ -39199,7 +39222,7 @@ pub const Checker = struct {
                 if (try self.reportClassWeakTypeNoOverlap(node, impl_node, instance_t, target_t, cid.name)) {
                     continue;
                 }
-                if (try self.reportClassImplementsMemberMismatches(node, instance_t, target_t)) {
+                if (try self.reportClassImplementsMemberMismatches(node, impl_node, instance_t, target_t)) {
                     continue;
                 }
                 if (!(self.classImplementsAssignable(instance_t, target_t) catch true)) {
@@ -39902,7 +39925,7 @@ pub const Checker = struct {
                     if (try self.reportClassWeakTypeNoOverlap(node, impl_node, instance_t, target_t, cid.name)) {
                         continue;
                     }
-                    if (try self.reportClassImplementsMemberMismatches(node, instance_t, target_t)) {
+                    if (try self.reportClassImplementsMemberMismatches(node, impl_node, instance_t, target_t)) {
                         continue;
                     }
                     if (!(self.heritageAssignable(instance_t, target_t) catch true)) {
@@ -46511,7 +46534,98 @@ pub const Checker = struct {
         const child_params = self.interner.signatureParams(child_t);
         const parent_params = self.interner.signatureParams(parent_t);
         if (self.rest_signatures.contains(parent_t)) return false;
-        return self.signatureMinRequiredArgs(child_t, child_params) > parent_params.len;
+        return self.signatureMinRequiredArgs(child_t, child_params) >
+            self.signatureMinRequiredArgs(parent_t, parent_params);
+    }
+
+    fn methodDeclMinRequiredArgs(self: *Checker, decl_node: NodeId) ?usize {
+        const params = self.methodDeclParams(decl_node) orelse return null;
+        var min_required: usize = 0;
+        var value_index: usize = 0;
+        for (params) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            if (!param.flags.is_optional and
+                !param.flags.is_rest and
+                param.default_value == hir_mod.none_node_id)
+            {
+                min_required = value_index + 1;
+            }
+            value_index += 1;
+        }
+        return min_required;
+    }
+
+    fn methodDeclParams(self: *Checker, decl_node: NodeId) ?[]const NodeId {
+        if (decl_node == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(decl_node)) {
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnParams(self.hir, decl_node),
+            .interface_member => blk: {
+                const type_node = hir_mod.interfaceMemberOf(self.hir, decl_node).type_node;
+                if (type_node == hir_mod.none_node_id) return null;
+                const kind = self.hir.kindOf(type_node);
+                if (kind != .fn_type and kind != .constructor_type) return null;
+                const function_type = hir_mod.fnTypeOf(self.hir, type_node);
+                break :blk self.hir.childSlice(function_type.params_start, function_type.params_len);
+            },
+            else => return null,
+        };
+    }
+
+    fn methodDeclHasExtraRequiredParams(
+        self: *Checker,
+        child_decl: NodeId,
+        parent_decl: NodeId,
+    ) bool {
+        const child_min = self.methodDeclMinRequiredArgs(child_decl) orelse return false;
+        const parent_min = self.methodDeclMinRequiredArgs(parent_decl) orelse return false;
+        return child_min > parent_min;
+    }
+
+    fn methodDeclHasIncompatibleBindingPattern(
+        self: *Checker,
+        child_decl: NodeId,
+        parent_decl: NodeId,
+    ) CheckError!bool {
+        const child_params = self.methodDeclParams(child_decl) orelse return false;
+        const parent_params = self.methodDeclParams(parent_decl) orelse return false;
+        const compare_len = @min(child_params.len, parent_params.len);
+        for (child_params[0..compare_len], parent_params[0..compare_len]) |child_node, parent_node| {
+            if (self.hir.kindOf(child_node) != .parameter or self.hir.kindOf(parent_node) != .parameter) continue;
+            const child = hir_mod.parameterOf(self.hir, child_node);
+            const parent = hir_mod.parameterOf(self.hir, parent_node);
+            const child_kind = self.hir.kindOf(child.name);
+            if (child_kind != self.hir.kindOf(parent.name)) continue;
+            const child_t = switch (child_kind) {
+                .array_pattern => try self.arrayBindingPatternParameterType(child.name),
+                .object_pattern => try self.objectBindingPatternParameterType(child.name),
+                else => continue,
+            };
+            const parent_t = switch (child_kind) {
+                .array_pattern => try self.arrayBindingPatternParameterType(parent.name),
+                .object_pattern => try self.objectBindingPatternParameterType(parent.name),
+                else => unreachable,
+            };
+            if (!(self.engine.isAssignableTo(child_t, parent_t) catch false) and
+                !(self.engine.isAssignableTo(parent_t, child_t) catch false))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn classMethodDeclNode(self: *Checker, class_node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const kind = self.hir.kindOf(class_node);
+        if (kind != .class_decl and kind != .class_expr) return null;
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            const member_kind = self.hir.kindOf(member);
+            if (member_kind != .fn_decl and member_kind != .fn_expr) continue;
+            const function = hir_mod.fnDeclOf(self.hir, member);
+            if (function.flags.is_static or function.flags.is_constructor) continue;
+            if ((self.classMemberNameFromFunctionName(function.name) catch null) == name) return member;
+        }
+        return null;
     }
 
     fn methodOverrideAssignable(self: *Checker, child_t: TypeId, parent_t: TypeId) CheckError!bool {
@@ -134924,6 +135038,7 @@ pub const Checker = struct {
     fn reportClassImplementsMemberMismatches(
         self: *Checker,
         class_node: NodeId,
+        impl_node: NodeId,
         source_t: TypeId,
         target_t: TypeId,
     ) CheckError!bool {
@@ -134934,13 +135049,36 @@ pub const Checker = struct {
             return false;
         }
 
+        const target_decl = if (self.unqualifiedTypeRefName(impl_node)) |name|
+            self.findVisibleNamedTypeDecl(impl_node, name)
+        else
+            null;
         var reported = false;
         for (self.interner.objectMembers(target_t)) |target_member| {
             if (target_member.visibility != .public) continue;
-            if (!std.mem.startsWith(u8, self.string_interner.get(target_member.name), "Symbol.")) continue;
             const source_member = self.interner.objectMemberInfo(source_t, target_member.name) orelse continue;
             if (source_member.visibility != .public) continue;
-            const assignable = if (!target_member.is_optional and source_member.is_optional)
+            const is_symbol_member = std.mem.startsWith(
+                u8,
+                self.string_interner.get(target_member.name),
+                "Symbol.",
+            );
+            const has_required_param_mismatch = source_member.is_method and
+                target_member.is_method and
+                (self.methodOverrideHasExtraRequiredParams(source_member.type, target_member.type) or
+                    blk: {
+                        const child_decl = self.classMethodDeclNode(class_node, target_member.name) orelse source_member.decl_node;
+                        const parent_decl = if (target_decl) |decl|
+                            self.classOrInterfaceMemberNode(decl, target_member.name)
+                        else
+                            target_member.decl_node;
+                        break :blk self.methodDeclHasExtraRequiredParams(child_decl, parent_decl) and
+                            try self.methodDeclHasIncompatibleBindingPattern(child_decl, parent_decl);
+                    });
+            if (!is_symbol_member and !has_required_param_mismatch) continue;
+            const assignable = if (has_required_param_mismatch)
+                false
+            else if (!target_member.is_optional and source_member.is_optional)
                 false
             else if (source_member.is_method and target_member.is_method)
                 try self.methodOverrideAssignable(source_member.type, target_member.type)
@@ -142335,10 +142473,18 @@ pub const Checker = struct {
         const call = hir_mod.callOf(self.hir, call_node);
         if (call.callee == hir_mod.none_node_id) return null;
         const callee_kind = self.hir.kindOf(call.callee);
-        if (callee_kind != .arrow_fn and callee_kind != .fn_expr) return null;
+        const fn_node = if (callee_kind == .arrow_fn or callee_kind == .fn_expr)
+            call.callee
+        else if (callee_kind == .identifier)
+            self.jsConstructorFunctionDeclForName(
+                call.callee,
+                hir_mod.identifierOf(self.hir, call.callee).name,
+            ) orelse return null
+        else
+            return null;
 
         var seen_value_params: usize = 0;
-        for (hir_mod.fnParams(self.hir, call.callee)) |param_node| {
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
             if (self.hir.kindOf(param_node) != .parameter) continue;
             if (self.isThisParameter(param_node)) continue;
             if (seen_value_params == value_param_index) {
@@ -142351,6 +142497,17 @@ pub const Checker = struct {
             seen_value_params += 1;
         }
         return null;
+    }
+
+    fn signaturePatternParam(self: *Checker, sig: TypeId, param_index: usize) ?NodeId {
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return null;
+        if (param_index >= param_nodes.len) return null;
+        const param_node = param_nodes[param_index];
+        if (self.hir.kindOf(param_node) != .parameter) return null;
+        const param = hir_mod.parameterOf(self.hir, param_node);
+        if (param.name == hir_mod.none_node_id) return null;
+        const kind = self.hir.kindOf(param.name);
+        return if (kind == .array_pattern or kind == .object_pattern) param.name else null;
     }
 
     /// Shared arg / signature checker used by both `call_expr` and
@@ -142892,6 +143049,31 @@ pub const Checker = struct {
                 try self.checkBindingPatternSourceType(pattern, arg_t, args[i])
             else
                 false;
+            if (!pattern_source_diag and self.has_parse_diagnostics and self.hir.kindOf(args[i]) == .object_literal) {
+                const pattern_param = self.directCalleePatternParam(call_node, i) orelse
+                    self.signaturePatternParam(sig, fixed_pos);
+                if (pattern_param) |pattern| {
+                    if (self.hir.kindOf(pattern) == .object_pattern) {
+                        const parent = self.hir.parentOf(pattern);
+                        const parent_param = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .parameter)
+                            hir_mod.parameterOf(self.hir, parent)
+                        else
+                            null;
+                        const pattern_target = if (parent_param) |parameter|
+                            if (parameter.type_annotation != hir_mod.none_node_id)
+                                (self.lowererLowerWithTypeParams(parameter.type_annotation) catch param_t)
+                            else
+                                try self.objectBindingPatternParameterTypeWithDefault(pattern, parameter.default_value)
+                        else
+                            try self.objectBindingPatternParameterType(pattern);
+                        if (try self.tryReportObjectLiteralBindingPatternPropertyMismatch(args[i], pattern_target))
+                        {
+                            stop_after_arg_mismatch = true;
+                            continue;
+                        }
+                    }
+                }
+            }
             const satisfies_context_ok = if (self.hir.kindOf(args[i]) == .satisfies_expr)
                 try self.checkSatisfiesExpressionInContext(args[i], arg_t, param_t, .argument)
             else
@@ -146156,7 +146338,7 @@ pub const Checker = struct {
         const param = hir_mod.parameterOf(self.hir, param_node);
         if (param.type_annotation == hir_mod.none_node_id) return false;
         const tuple_node = self.tupleAnnotationSourceNode(param.type_annotation) orelse return false;
-        if (!self.tupleTypeHasRestElement(tuple_node)) return false;
+        const has_rest = self.tupleTypeHasRestElement(tuple_node);
 
         const elements = hir_mod.arrayLiteralElements(self.hir, arg_node);
         for (elements) |el| {
@@ -146168,7 +146350,8 @@ pub const Checker = struct {
             return true;
         }
         const target_required = try self.tupleAnnotationMinRequiredCountForSignature(sig, tuple_node);
-        const chain = try self.tupleWidthChainForArity(elements.len, elements.len, target_required, null);
+        const target_max: ?usize = if (has_rest) null else hir_mod.tupleTypeElements(self.hir, tuple_node).len;
+        const chain = try self.tupleWidthChainForArity(elements.len, elements.len, target_required, target_max);
         if (chain.len == 0) return false;
 
         const source_name = try self.arrayLiteralTupleDisplayName(arg_node, param_t);
@@ -156818,6 +157001,34 @@ pub const Checker = struct {
                 );
                 try self.attachExpectedTypeFromPropertyRelated(resolved_target, tm);
             }
+            emitted = true;
+        }
+        return emitted;
+    }
+
+    fn tryReportObjectLiteralBindingPatternPropertyMismatch(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (self.hir.kindOf(init_node) != .object_literal) return false;
+        const resolved_target = self.objectTypeFromMaybeOptional(target_t) orelse return false;
+        var emitted = false;
+        for (self.interner.objectMembers(resolved_target)) |target_member| {
+            const prop_node = (try self.findObjectLiteralPropNodeForTargetMember(init_node, target_member.name)) orelse continue;
+            const property = hir_mod.objectPropertyOf(self.hir, prop_node);
+            if (property.value == hir_mod.none_node_id) continue;
+            var source_t = self.hir.typeOf(property.value);
+            if (source_t == types.Primitive.none) source_t = try self.checkExpression(property.value);
+            source_t = try self.diagnosticExpressionSourceType(property.value, source_t);
+            if (self.engine.isAssignableTo(source_t, target_member.type) catch false) continue;
+            const anchor = if (property.key != hir_mod.none_node_id) property.key else property.value;
+            try self.reportTypeNotAssignable(
+                anchor,
+                source_t,
+                target_member.type,
+                "Type is not assignable to property type.",
+            );
             emitted = true;
         }
         return emitted;
