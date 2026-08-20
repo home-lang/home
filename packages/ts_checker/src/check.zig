@@ -132435,7 +132435,8 @@ pub const Checker = struct {
         const object_is_global_this_receiver = object_is_global_this or self.memberAccessObjectIsGlobalThisThis(object_node);
         const object_is_top = self.hir.kindOf(object_node) == .identifier and
             std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name), "top");
-        const annotation_mentions_global = self.identifierAnnotationMentionsGlobalThis(object_node);
+        const annotation_target = self.identifierGlobalThisAnnotationTarget(object_node);
+        const annotation_mentions_global = annotation_target != null;
         if (self.globalWindowReceiverIncludesGlobalProperties(object_node) and self.globalThisHasProperty(node, name)) return true;
         if (self.globalTopReceiverHasProgramProperty(node, object_node, name)) return true;
         if (object_is_top) {
@@ -132443,7 +132444,9 @@ pub const Checker = struct {
             return true;
         }
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
-        if (annotation_mentions_global and self.sourceHasStrictFalseDirective()) return true;
+        if (annotation_target) |target| {
+            if (std.mem.eql(u8, target, "typeof globalThis") and self.sourceHasStrictFalseDirective()) return true;
+        }
         if (object_is_global_this and
             std.mem.eql(u8, self.string_interner.get(name), "globalThis") and
             self.isInAssignmentTargetChain(node))
@@ -132466,10 +132469,7 @@ pub const Checker = struct {
         }
         if (object_is_global_this_receiver and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
         if (object_is_global_this and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
-        const target = if (annotation_mentions_global)
-            "Window & typeof globalThis"
-        else
-            "typeof globalThis";
+        const target = annotation_target orelse "typeof globalThis";
         try self.reportGlobalThisMissingProperty(node, name, target);
         return true;
     }
@@ -132480,25 +132480,28 @@ pub const Checker = struct {
             std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, object_node).name), "globalThis");
         const object_is_global_this_receiver = object_is_global_this or self.memberAccessObjectIsGlobalThisThis(object_node);
         _ = obj_t;
-        const annotation_mentions_global = self.identifierAnnotationMentionsGlobalThis(object_node);
+        const annotation_target = self.identifierGlobalThisAnnotationTarget(object_node);
+        const annotation_mentions_global = annotation_target != null;
         if (self.globalWindowReceiverIncludesGlobalProperties(object_node) and self.globalThisHasProperty(node, name)) return true;
         if (self.globalTopReceiverHasProgramProperty(node, object_node, name)) return true;
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
         if (self.globalThisHasProperty(node, name)) return false;
         if (object_is_global_this_receiver and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
         if (object_is_global_this and !self.sourceHasBlockScopedGlobalDeclarationText(name)) return false;
-        const target = if (annotation_mentions_global)
-            "Window & typeof globalThis"
-        else
-            "typeof globalThis";
+        const target = annotation_target orelse "typeof globalThis";
         try self.reportGlobalThisMissingProperty(node, name, target);
         return true;
     }
 
     fn identifierAnnotationMentionsGlobalThis(self: *Checker, node: NodeId) bool {
-        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
-        const text = self.visibleAnnotatedIdentifierTypeText(node) orelse return false;
-        return std.mem.indexOf(u8, text, "typeof globalThis") != null;
+        return self.identifierGlobalThisAnnotationTarget(node) != null;
+    }
+
+    fn identifierGlobalThisAnnotationTarget(self: *Checker, node: NodeId) ?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const text = self.visibleAnnotatedIdentifierTypeText(node) orelse return null;
+        if (std.mem.indexOf(u8, text, "typeof globalThis") == null) return null;
+        return std.mem.trim(u8, text, " \t\r\n");
     }
 
     fn thisInsideEnumInitializer(self: *Checker, node: NodeId) bool {
@@ -245066,6 +245069,30 @@ test "checker: strict false suppresses constructor read and loose globalThis mem
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_used_before_assigned));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: strict false retains missing members on globalThis intersections" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\declare let win: Window & typeof globalThis;
+        \\win.hi;
+        \\this.hi;
+        \\globalThis.hi;
+        \\win['hi'];
+        \\this['hi'];
+        \\globalThis['hi'];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'hi' does not exist on type 'Window & typeof globalThis'.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any));
 }
 
 test "checker: polymorphic this default parameters merge with body var declarations" {
