@@ -57851,6 +57851,51 @@ const harness_prelude =
     \\  }));
     \\  return Promise.all(calls).then(results => { const metadata = new __home_grpc_Metadata(); for (const result of results) metadata.merge(result); return metadata; });
     \\};
+    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, DEADLINE_EXCEEDED: 4, UNIMPLEMENTED: 12 };
+    \\const __home_grpc_propagate = { DEADLINE: 1, CANCELLATION: 2 };
+    \\function __home_grpc_status_error(code) {
+    \\  const label = code === __home_grpc_status.CANCELLED ? "Cancelled" : code === __home_grpc_status.DEADLINE_EXCEEDED ? "Deadline exceeded" : code === __home_grpc_status.UNIMPLEMENTED ? "Method not implemented" : "gRPC call failed";
+    \\  const error = new Error(label); error.code = code; error.details = label;
+    \\  error.stack = String(error.stack || error) + "\n    at grpc call propagation (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\  return error;
+    \\}
+    \\function __home_grpc_client_call(kind, request, options, callback) {
+    \\  options = options && typeof options === "object" ? options : {};
+    \\  const call = __home_grpc_stream(), parent = options.parent, flags = options.propagate_flags;
+    \\  call.request = request || {}; call.__home_kind = kind; call.__home_callback = typeof callback === "function" ? callback : null; call.__home_children = []; call.__home_terminal = false;
+    \\  call.__home_deadline = options.deadline || (parent && (flags & __home_grpc_propagate.DEADLINE) ? parent.__home_deadline : null);
+    \\  call.__home_finish = function(code, value) {
+    \\    if (this.__home_terminal) return; this.__home_terminal = true;
+    \\    if (this.__home_deadline_timer) clearTimeout(this.__home_deadline_timer);
+    \\    const error = code === __home_grpc_status.OK ? null : __home_grpc_status_error(code);
+    \\    for (const child of this.__home_children.slice()) if ((code === __home_grpc_status.CANCELLED && child.cancellation) || (code === __home_grpc_status.DEADLINE_EXCEEDED && child.deadline)) child.call.__home_finish(code);
+    \\    if (this.__home_callback) this.__home_callback(error, value);
+    \\    if (kind === "serverStream" || kind === "bidiStream") { if (error) this.emit("error", error); this.emit("status", { code, details: error ? error.details : "OK", metadata: new __home_grpc_Metadata() }); }
+    \\  };
+    \\  call.cancel = function() { this.__home_finish(__home_grpc_status.CANCELLED); };
+    \\  if (parent && parent.__home_children) parent.__home_children.push({ call, cancellation: flags === undefined || !!(flags & __home_grpc_propagate.CANCELLATION), deadline: !!(flags & __home_grpc_propagate.DEADLINE) });
+    \\  if (call.__home_deadline) { const delay = Math.max(0, Number(new Date(call.__home_deadline)) - Date.now()); call.__home_deadline_timer = setTimeout(() => call.__home_finish(__home_grpc_status.DEADLINE_EXCEEDED), delay); }
+    \\  return call;
+    \\}
+    \\function __home_grpc_TestService(target, credentials, options) {
+    \\  this.__home_target = String(target || ""); this.__home_port = __home_grpc_port(target);
+    \\}
+    \\__home_grpc_TestService.service = { __home_name: "TestService" };
+    \\__home_grpc_TestService.prototype.__home_invoke = function(method, kind, request, options, callback) {
+    \\  const call = __home_grpc_client_call(kind, request, options, callback);
+    \\  Promise.resolve().then(() => {
+    \\    const server = __home_grpc_servers[this.__home_port], handler = server && server.__home_services[method];
+    \\    if (typeof handler !== "function") { call.__home_finish(__home_grpc_status.UNIMPLEMENTED); return; }
+    \\    try { handler(call, (error, value) => call.__home_finish(error ? Number(error.code) || __home_grpc_status.UNKNOWN : __home_grpc_status.OK, value)); }
+    \\    catch (error) { call.__home_finish(Number(error && error.code) || __home_grpc_status.UNKNOWN); }
+    \\  });
+    \\  return call;
+    \\};
+    \\__home_grpc_TestService.prototype.unary = function(request, options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke("unary", "unary", request, options, callback); };
+    \\__home_grpc_TestService.prototype.clientStream = function(options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke("clientStream", "clientStream", {}, options, callback); };
+    \\__home_grpc_TestService.prototype.serverStream = function(request, options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("serverStream", "serverStream", request, options); };
+    \\__home_grpc_TestService.prototype.bidiStream = function(options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("bidiStream", "bidiStream", {}, options); };
+    \\__home_grpc_TestService.prototype.close = function() {};
     \\__home_grpc_EchoService.prototype.echo = function(request, options, callback) {
     \\  if (typeof options === "function") {
     \\    callback = options;
@@ -57915,6 +57960,8 @@ const harness_prelude =
     \\__home_grpc_Server.prototype.addService = function(service, implementation) {
     \\  this.__home_services = Object.assign({}, implementation || {});
     \\};
+    \\__home_grpc_Server.prototype.removeService = function(service) { this.__home_services = {}; return true; };
+    \\__home_grpc_Server.prototype.start = function() {};
     \\__home_grpc_Server.prototype.bindAsync = function(address, credentials, callback) {
     \\  this.__home_port = __home_grpc_next_port++;
     \\  __home_grpc_servers[this.__home_port] = this;
@@ -57933,7 +57980,9 @@ const harness_prelude =
     \\  Server: __home_grpc_Server,
     \\  ServerCredentials: __home_grpc_credentials,
     \\  credentials: __home_grpc_credentials,
-    \\  loadPackageDefinition(definition) { return { EchoService: __home_grpc_EchoService }; },
+    \\  status: __home_grpc_status,
+    \\  propagate: __home_grpc_propagate,
+    \\  loadPackageDefinition(definition) { return String(definition && definition.__home_proto_file || "").includes("test_service.proto") ? { TestService: __home_grpc_TestService } : { EchoService: __home_grpc_EchoService }; },
     \\};
     \\__home_grpc_module.default = __home_grpc_module;
     \\globalThis.__home_modules["@grpc/grpc-js"] = __home_grpc_module;
@@ -70486,6 +70535,18 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "catch (err: any)", .replacement = "catch (err)" },
         .{ .needle = "let compressed: Uint8Array;", .replacement = "let compressed;" },
         .{ .needle = "let server: grpc.Server;", .replacement = "let server;" },
+        .{ .needle = "import { loadProtoFile } from \"./common.ts\";", .replacement = "const loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
+        .{ .needle = "function multiDone(done: () => void, target: number)", .replacement = "function multiDone(done, target)" },
+        .{ .needle = ": grpc.ClientUnaryCall;", .replacement = ";" },
+        .{ .needle = ": grpc.ClientWritableStream<unknown>;", .replacement = ";" },
+        .{ .needle = ": grpc.ClientReadableStream<unknown>;", .replacement = ";" },
+        .{ .needle = ": grpc.ClientDuplexStream<unknown, unknown>;", .replacement = ";" },
+        .{ .needle = "parent: grpc.ServerUnaryCall<any, any>", .replacement = "parent" },
+        .{ .needle = "parent: grpc.ServerReadableStream<any, any>", .replacement = "parent" },
+        .{ .needle = "parent: grpc.ServerWritableStream<any, any>", .replacement = "parent" },
+        .{ .needle = "parent: grpc.ServerDuplexStream<any, any>", .replacement = "parent" },
+        .{ .needle = "error: grpc.ServiceError", .replacement = "error" },
+        .{ .needle = "status: grpc.StatusObject", .replacement = "status" },
         .{ .needle = "let client: InstanceType<typeof echoService>;", .replacement = "let client;" },
         .{ .needle = "let serverPort: number;", .replacement = "let serverPort;" },
         .{ .needle = "let ctx: TestContext;", .replacement = "let ctx;" },
@@ -101160,6 +101221,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/res.send.test.ts", .passed = 65, .todo = 4 },
         .{ .path = "js/third_party/express/res.sendFile.test.ts", .passed = 39, .todo = 11 },
         .{ .path = "js/third_party/grpc-js/test-call-credentials.test.ts", .passed = 6 },
+        .{ .path = "js/third_party/grpc-js/test-call-propagation.test.ts", .passed = 8 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
