@@ -20721,14 +20721,6 @@ pub const Parser = struct {
                         .{name},
                     );
                     try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1042, msg);
-                    if (self.isJavaScriptSyntaxAt(modifier.span.start)) {
-                        const ts_only_msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "The '{s}' modifier can only be used in TypeScript files.",
-                            .{name},
-                        );
-                        try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 8009, ts_only_msg);
-                    }
                     if (modifier.kind == .kw_static) {
                         try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1184, "Modifiers cannot appear here.");
                     }
@@ -32226,6 +32218,25 @@ test "parser: JSDoc Closure type arguments report empty and trailing-comma diagn
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: invalid object literal modifiers do not add TS-only diagnostics" {
+    var s = try newTestSetup(
+        \\// @filename: index.js
+        \\const value = {
+        \\  static method() {},
+        \\  export property: 1,
+        \\};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var invalid_modifier_count: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1042) invalid_modifier_count += 1;
+        try T.expect(diagnostic.code != 8009);
+    }
+    try T.expectEqual(@as(usize, 2), invalid_modifier_count);
 }
 
 test "parser: JSDoc Array empty Closure type arguments default to any" {

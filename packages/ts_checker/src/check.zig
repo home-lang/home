@@ -88201,16 +88201,6 @@ pub const Checker = struct {
         const name = std.mem.trim(u8, type_text[0..open], " \t\r\n");
         const args_text = type_text[open + 1 .. type_text.len - 1];
         if (std.mem.trim(u8, args_text, " \t\r\n").len == 0) {
-            const type_pos = self.sliceStartPos(src, type_text) orelse 0;
-            const pos = type_pos + @as(u32, @intCast(open));
-            if (!self.hasDiagnosticAtPosition(TsCodes.empty_type_argument_list, pos)) {
-                try self.diagnostics.append(self.gpa, .{
-                    .node = self.jsdoc_diagnostic_anchor,
-                    .pos = pos,
-                    .code = TsCodes.empty_type_argument_list,
-                    .message = "Type argument list cannot be empty.",
-                });
-            }
             const bare_name = std.mem.trimEnd(u8, name, ".");
             return self.jsDocBareBuiltinGenericType(bare_name) orelse types.Primitive.any;
         }
@@ -158780,7 +158770,7 @@ pub const Checker = struct {
                 try self.reportTypeNotAssignable(
                     anchor,
                     value_t,
-                    contextual_target_t,
+                    tm.type,
                     "Type is not assignable to property type.",
                 );
                 try self.attachExpectedTypeFromPropertyRelated(resolved_target, tm);
@@ -215088,7 +215078,7 @@ test "checker: optional JSDoc rest parameter reports grammar and array diagnosti
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.rest_parameter_must_be_array_type));
 }
 
-test "checker: empty Closure type arguments report TS1099" {
+test "checker: empty Closure type arguments recover without TS1099" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -215097,7 +215087,25 @@ test "checker: empty Closure type arguments report TS1099" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.empty_type_argument_list));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.empty_type_argument_list));
+}
+
+test "checker: optional mapped property mismatch displays write type" {
+    const s = try newSetup(
+        \\// @strictNullChecks: true
+        \\type Source = { a?: number, [key: string]: any };
+        \\let partial: Partial<Source> = { a: "bad" };
+        \\let homomorphic: { [P in keyof Source]: Source[P] } = { a: "bad" };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "not assignable to type 'number'.") != null);
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "number | undefined") == null);
+    }
 }
 
 test "checker: checkjs malformed JSDoc @param star reports identifier expected" {
