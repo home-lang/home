@@ -8240,6 +8240,7 @@ test "conformance: selected emit target follows baseline variants and directives
         "case(target=es2021).errors.txt",
     ));
     try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget("// @target: es6", null));
+    try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget("\xEF\xBB\xBF//@target: es6\r\rconst x = 1;", null));
     try T.expectEqual(ts_driver.EsTarget.es5, selectedEmitTarget("const x = 1;", null));
     try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("// @target: es2024", null));
 }
@@ -8849,7 +8850,7 @@ fn directiveValueIs(source: []const u8, directive_name: []const u8, expected: []
 }
 
 fn directiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines = std.mem.tokenizeAny(u8, source, "\r\n");
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, stripUtf8Bom(raw_line), " \t\r");
         if (!std.mem.startsWith(u8, line, "//")) continue;
