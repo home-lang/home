@@ -91587,6 +91587,7 @@ test "bootstrap runner preserves node VM lifecycle contracts" {
         .{ .path = "js/node/vm/script-leak.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/sourcetextmodule-leak.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/sourcetextmodule-link-gc.test.ts", .passed = 1 },
+        .{ .path = "js/node/vm/vm-script-fetcher-leak.test.ts", .passed = 4 },
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
