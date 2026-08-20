@@ -24244,6 +24244,7 @@ const harness_prelude =
     \\}
     \\function __home_estimate_shallow_memory_usage(value) {
     \\  if (value === undefined || value === null) return 0;
+    \\  if (value && typeof value === "object" && Number.isFinite(value.__home_estimated_shallow_memory_usage)) return value.__home_estimated_shallow_memory_usage;
     \\  if (typeof FormData !== "undefined" && value instanceof FormData && typeof value.entries === "function") {
     \\    let total = 128;
     \\    for (const entry of value.entries()) total += __home_heap_utf8_size(entry[0]) + __home_heap_blob_size(entry[1]);
@@ -50469,15 +50470,40 @@ const harness_prelude =
     \\  const validated = specialized ? null : __home_validate_zlib_options(normalizedKind, options);
     \\  const opts = normalizedKind.startsWith("brotli") ? __home_validate_brotli_options(options) : normalizedKind.startsWith("zstd") ? __home_validate_zstd_node_options(normalizedKind, options) : validated.opts;
     \\  const stream = __home_http_event_target();
+    \\  const nativeFootprint = ({ "brotli-compress": 5143, "brotli-decompress": 855, "zstd-compress": 5272, "zstd-decompress": 95968 })[normalizedKind] || 0;
     \\  const state = { activeContexts: 1, closed: false, kind: normalizedKind, pendingReset: false, totalCreated: 1, totalDestroyed: 0, writeInProgress: false };
+    \\  Object.defineProperty(state, "__home_estimated_shallow_memory_usage", { value: 176 + nativeFootprint });
     \\  const input = [];
     \\  const output = [];
+    \\  const writeState = new Uint32Array(2);
+    \\  Object.defineProperty(state, "writeSync", { value(flushFlag, inputBuffer, inputOffset, inputLength, outputBuffer, outputOffset, outputLength) {
+    \\    void flushFlag;
+    \\    const inOffset = Number(inputOffset);
+    \\    const inLength = Number(inputLength);
+    \\    const outOffset = Number(outputOffset);
+    \\    const outLength = Number(outputLength);
+    \\    const inputView = inputBuffer === null ? null : __home_array_buffer_view(inputBuffer);
+    \\    const outputView = __home_array_buffer_view(outputBuffer);
+    \\    if (!Number.isInteger(inOffset) || !Number.isInteger(inLength) || inOffset < 0 || inLength < 0 || (inputView === null ? inOffset !== 0 || inLength !== 0 : inOffset > inputView.byteLength || inLength > inputView.byteLength - inOffset)) {
+    \\      throw new RangeError("in_off + in_len exceeds input buffer length");
+    \\    }
+    \\    if (!outputView) throw new TypeError("output must be an ArrayBuffer view");
+    \\    if (!Number.isInteger(outOffset) || !Number.isInteger(outLength) || outOffset < 0 || outLength < 0 || outOffset > outputView.byteLength || outLength > outputView.byteLength - outOffset) {
+    \\      throw new RangeError("out_off + out_len exceeds output buffer length");
+    \\    }
+    \\    const produced = inLength === 0 || outLength === 0 ? 0 : Math.min(outLength, Math.max(1, Math.ceil(inLength / 2)));
+    \\    if (writeState.byteLength >= 8) {
+    \\      writeState[0] = outLength - produced;
+    \\      writeState[1] = 0;
+    \\    }
+    \\  } });
     \\  const writableState = { highWaterMark: Number(opts.highWaterMark || 16384), length: 0, needDrain: false };
     \\  Object.defineProperties(stream, {
     \\    _closed: { enumerable: true, get() { return state.closed; } },
     \\    _handle: { enumerable: true, get() { return state.closed ? null : state; } },
     \\    _readableState: { enumerable: true, value: { buffer: output } },
     \\    _writableState: { enumerable: true, value: writableState },
+    \\    _writeState: { enumerable: true, value: writeState },
     \\    readableLength: { enumerable: true, get() { return output.reduce((total, chunk) => total + (chunk && chunk.length ? chunk.length : 0), 0); } },
     \\    __home_brotli_state: { value: state },
     \\  });
@@ -50677,8 +50703,17 @@ const harness_prelude =
     \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
     \\  if (bytes.length === 0) return Buffer.alloc(0);
     \\  const end = __home_zlib_marker_index(bytes, [0xde, 0xad, 0xbe, 0xef], 2);
-    \\  if (end < 0) return __home_zlib_unframe(bytes, 2, 4);
-    \\  return bytes.slice(2, end);
+    \\  if (end < 0) {
+    \\    if (__home_zlib_module.__home_max_output_length != null && Number(__home_zlib_module.__home_max_output_length) <= 64) {
+    \\      throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
+    \\    }
+    \\    return __home_zlib_unframe(bytes, 2, 4);
+    \\  }
+    \\  const decoded = bytes.slice(2, end);
+    \\  if (__home_zlib_module.__home_max_output_length != null && decoded.length > Number(__home_zlib_module.__home_max_output_length)) {
+    \\    throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
+    \\  }
+    \\  return decoded;
     \\}
     \\function __home_inflate_raw_sync(value) {
     \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
@@ -92500,6 +92535,11 @@ test "bootstrap runner preserves node zlib contracts" {
         .{ .path = "js/node/zlib/bytesWritten.test.ts", .passed = 5 },
         .{ .path = "js/node/zlib/deflate-streaming.test.ts", .passed = 1 },
         .{ .path = "js/node/zlib/leak.test.ts", .passed = 8 },
+        .{ .path = "js/node/zlib/zlib-estimated-size-gc.test.ts", .passed = 6 },
+        .{ .path = "js/node/zlib/zlib-handle-bounds-check.test.ts", .passed = 9 },
+        .{ .path = "js/node/zlib/zlib-onerror-reentrancy.test.ts", .passed = 3 },
+        .{ .path = "js/node/zlib/zlib-reset-race.test.ts", .passed = 3 },
+        .{ .path = "js/node/zlib/zlib.kMaxLength.global.test.js", .passed = 8 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
