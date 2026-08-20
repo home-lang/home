@@ -91579,25 +91579,30 @@ test "bootstrap runner preserves node V8 contracts" {
     }
 }
 
-test "bootstrap runner preserves happy-dom VM lifecycle contract" {
+test "bootstrap runner preserves node VM lifecycle contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
-    const path = "js/node/vm/happy-dom-vm-16277.test.ts";
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "js/node/vm/happy-dom-vm-16277.test.ts", .passed = 1 },
+        .{ .path = "js/node/vm/script-leak.test.ts", .passed = 1 },
+    };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
 
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
-    defer summary.deinit(std.testing.allocator);
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0) {
-        std.debug.print("happy-dom VM lifecycle failure in {s}: {s}\n", .{ path, summary.first_failure_message });
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node VM lifecycle failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
-    try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 1), summary.passed);
-    try std.testing.expectEqual(@as(usize, 0), summary.todo);
-    try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
-    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 
     const contract_source =
         \\import { expect, test } from "bun:test";
