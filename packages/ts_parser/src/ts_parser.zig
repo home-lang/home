@@ -15178,6 +15178,12 @@ pub const Parser = struct {
                     _ = try self.parseAssignmentExpressionWithIn(allow_in);
                     return left;
                 }
+                if (self.nodeIsSynthesizedUpdateAssignment(left)) {
+                    const equal = self.advance();
+                    try self.reportCodeAt(equal.span.start, equal.line, 1005, "';' expected.");
+                    _ = try self.parseAssignmentExpressionWithIn(allow_in);
+                    return left;
+                }
                 _ = self.advance();
                 try self.reportInvalidStrictIdentifierNode(left);
                 try self.reportInvalidAssignmentTarget(left);
@@ -18668,6 +18674,7 @@ pub const Parser = struct {
                     node = try self.finishElementAccess(node, false, ob.span.start);
                 },
                 .bang => {
+                    if (t.flags.preceded_by_newline) break;
                     // Postfix `!` — non-null assertion. TS only
                     // recognizes this as a postfix when there's no
                     // space between the operand and the `!` *and*
@@ -20605,6 +20612,14 @@ pub const Parser = struct {
                         .{name},
                     );
                     try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1042, msg);
+                    if (self.isJavaScriptSyntaxAt(modifier.span.start)) {
+                        const ts_only_msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "The '{s}' modifier can only be used in TypeScript files.",
+                            .{name},
+                        );
+                        try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 8009, ts_only_msg);
+                    }
                     if (modifier.kind == .kw_static) {
                         try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1184, "Modifiers cannot appear here.");
                     }
@@ -29097,6 +29112,28 @@ test "parser: prefix and postfix update expressions lower to compound assignment
     try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[2]));
     try T.expectEqual(@as(?hir_mod.BinOp, .add), hir_mod.assignmentOf(&s.hir, stmts[1]).op);
     try T.expectEqual(@as(?hir_mod.BinOp, .sub), hir_mod.assignmentOf(&s.hir, stmts[2]).op);
+}
+
+test "parser: update expressions reject a following assignment at equals" {
+    var s = try newTestSetup("x++ = 4;\n++x = 4;");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1005));
+    for (stmts) |stmt| {
+        try T.expect(s.parser.nodeIsSynthesizedUpdateAssignment(stmt));
+    }
+}
+
+test "parser: newline terminates before a prefix non-null token" {
+    var s = try newTestSetup("true, {}\n!BOOLEAN, []");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: prefix update expression reports arithmetic operand diagnostic for expression operands" {
