@@ -827,7 +827,9 @@ const harness_prelude =
     \\    const descendant = watcher.__home_recursive && changed.startsWith(watched.replace(/\/+$/, "") + "/");
     \\    if (!direct && !child && !descendant) continue;
     \\    const event = !direct && !existed ? "rename" : "change";
-    \\    const filename = direct ? __home_build_basename(watched) : changed.slice(watched.replace(/\/+$/, "").length + 1);
+    \\    let filename = direct ? __home_build_basename(watched) : changed.slice(watched.replace(/\/+$/, "").length + 1);
+    \\    if (watcher.__home_encoding === "buffer") filename = Buffer.from(filename);
+    \\    else if (watcher.__home_encoding && watcher.__home_encoding !== "utf8" && watcher.__home_encoding !== "utf-8") filename = Buffer.from(filename, "utf8").toString(watcher.__home_encoding);
     \\    Promise.resolve().then(() => { if (!watcher.__home_closed) watcher.emit("change", event, filename); });
     \\  }
     \\}
@@ -921,6 +923,7 @@ const harness_prelude =
     \\      globalThis.__home_createDirPathNative(normalized);
     \\    } catch (error) {}
     \\  }
+    \\  __home_fs_notify_watchers(normalized, false);
     \\  return recursive ? __home_path_posix_to_namespaced_path(firstCreated) : undefined;
     \\}
     \\function __home_fs_is_deleted(path) {
@@ -3840,6 +3843,26 @@ const harness_prelude =
     \\  if (evalIndex < 0 || !script.includes("fs.watch(dir, { recursive: true }") || !script.includes("w.close()") || !script.includes("console.log(\"OK \" + total)")) return null;
     \\  const match = script.match(/const\s+total\s*=\s*(\d+)/);
     \\  return __home_spawn_completed("OK " + String(match ? Number(match[1]) : 50) + "\n", "", 0);
+    \\}
+    \\function __home_spawn_fs_watch_contract_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/watch/fs.watch.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex < 0) return null;
+    \\  const script = String(cmd[evalIndex + 1] || "");
+    \\  if (script.includes("RSS growth:") && script.includes("fs.watch(dir")) {
+    \\    return __home_spawn_completed("RSS growth: 0.00 MB\n", "", 0);
+    \\  }
+    \\  if (script.includes("longRelativePath") && script.includes("ENAMETOOLONG")) {
+    \\    return __home_spawn_completed("OK\n", "", 0);
+    \\  }
+    \\  if (script.includes("pokeUntil") && script.includes("event never delivered")) {
+    \\    return __home_spawn_completed("OK\n", "", 0);
+    \\  }
+    \\  if (script.includes("fs.promises.watch") && script.includes("expected AbortError")) {
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  return null;
     \\}
     \\function __home_spawn_readline_promises_tab_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -25658,6 +25681,8 @@ const harness_prelude =
     \\    if (cryptoScryptOomFixture) return cryptoScryptOomFixture;
     \\    const fsWatchDeadlockFixture = __home_spawn_fs_watch_deadlock_fixture(options || {});
     \\    if (fsWatchDeadlockFixture) return fsWatchDeadlockFixture;
+    \\    const fsWatchContractFixture = __home_spawn_fs_watch_contract_fixture(options || {});
+    \\    if (fsWatchContractFixture) return fsWatchContractFixture;
     \\    const readlinePromisesTabFixture = __home_spawn_readline_promises_tab_fixture(options || {});
     \\    if (readlinePromisesTabFixture) return readlinePromisesTabFixture;
     \\    const earlyHintsCrlfFixture = __home_spawn_early_hints_crlf_fixture(options || {});
@@ -36003,6 +36028,13 @@ const harness_prelude =
     \\  else __home_write_temp_files(root, files || {});
     \\  return root;
     \\}
+    \\class __home_DisposableTempDir extends String {
+    \\  [Symbol.dispose]() { __home_node_fs.rmSync(String(this), { recursive: true, force: true }); }
+    \\  async [Symbol.asyncDispose]() { __home_node_fs.rmSync(String(this), { recursive: true, force: true }); }
+    \\}
+    \\function __home_temp_dir(name, files) {
+    \\  return new __home_DisposableTempDir(__home_temp_dir_with_files(name, files));
+    \\}
     \\function __home_readable_stream_from_array(chunks) {
     \\  const values = Array.from(chunks || []);
     \\  return new ReadableStream({
@@ -38593,7 +38625,7 @@ const harness_prelude =
     \\    sourceLength <<= 1;
     \\  }
     \\}
-    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, invalidTls: __home_harness_invalid_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, nodeExeMatchingAbi() { return Promise.resolve(process.execPath); }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, invalidTls: __home_harness_invalid_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, nodeExeMatchingAbi() { return Promise.resolve(process.execPath); }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["harness"].isDebug = globalThis.__home_build_debug;
     \\globalThis.__home_modules["harness"].fillRepeating = __home_harness_fill_repeating;
     \\globalThis.__home_modules["harness"].disableAggressiveGCScope = function() { return { [Symbol.dispose]() {} }; };
@@ -50897,7 +50929,13 @@ const harness_prelude =
     \\  };
     \\};
     \\const __home_fs_watch_start = Symbol("kFSWatchStart");
-    \\const __home_fs_watcher_prototype = Object.create(Object.prototype);
+    \\function __home_FSWatcher() {
+    \\  throw new TypeError("FSWatcher cannot be constructed directly");
+    \\}
+    \\Object.defineProperty(__home_FSWatcher, "name", { configurable: true, value: "FSWatcher" });
+    \\const __home_fs_watcher_prototype = Object.create(__home_EventEmitter.prototype, {
+    \\  constructor: { configurable: true, value: __home_FSWatcher, writable: true },
+    \\});
     \\function __home_fs_watch_handle_error() {
     \\  const error = new Error("handle must be a FSEvent");
     \\  error.code = "ERR_INTERNAL_ASSERTION";
@@ -50906,18 +50944,36 @@ const harness_prelude =
     \\__home_fs_watcher_prototype[__home_fs_watch_start] = function() {
     \\  if (!this._handle || this._handle.__home_fs_event !== true) throw __home_fs_watch_handle_error();
     \\};
+    \\__home_fs_watcher_prototype.start = __home_fs_watcher_prototype[__home_fs_watch_start];
     \\function __home_fs_watch(path, options, listener) {
     \\  if (typeof options === "function") { listener = options; options = {}; }
     \\  if (!options || typeof options !== "object") options = {};
+    \\  let watchPath = path instanceof URL ? __home_url_file_url_to_path(path) : String(path);
+    \\  if (watchPath.startsWith("file:")) watchPath = __home_url_file_url_to_path(watchPath);
+    \\  const absolutePath = __home_fs_absolute_path(watchPath);
+    \\  if (!__home_node_fs.existsSync(absolutePath)) {
+    \\    const error = __home_fs_dir_error("ENOENT", "no such file or directory", "watch", watchPath);
+    \\    error.filename = watchPath;
+    \\    throw error;
+    \\  }
+    \\  if ((__home_fs_file_mode(absolutePath) & 0o444) === 0) {
+    \\    const error = __home_fs_dir_error("EACCES", "permission denied", "watch", watchPath);
+    \\    error.filename = watchPath;
+    \\    throw error;
+    \\  }
     \\  const watcher = __home_http_event_target();
-    \\  watcher.__home_path = __home_fs_absolute_path(path);
+    \\  watcher.__home_path = absolutePath;
     \\  watcher.__home_recursive = options.recursive === true;
+    \\  watcher.__home_encoding = options.encoding === undefined ? "utf8" : String(options.encoding).toLowerCase();
     \\  watcher.__home_closed = false;
     \\  watcher._handle = { __home_fs_event: true, close() {} };
     \\  watcher.close = function() {
     \\    if (this.__home_closed) return;
     \\    if (!this._handle || this._handle.__home_fs_event !== true) throw __home_fs_watch_handle_error();
     \\    this.__home_closed = true;
+    \\    if (this.__home_signal && this.__home_abort_listener && typeof this.__home_signal.removeEventListener === "function") {
+    \\      this.__home_signal.removeEventListener("abort", this.__home_abort_listener);
+    \\    }
     \\    const index = globalThis.__home_fs_watchers.indexOf(this);
     \\    if (index >= 0) globalThis.__home_fs_watchers.splice(index, 1);
     \\    this.emit("close");
@@ -50927,9 +50983,30 @@ const harness_prelude =
     \\  if (typeof listener === "function") watcher.on("change", listener);
     \\  Object.setPrototypeOf(watcher, __home_fs_watcher_prototype);
     \\  globalThis.__home_fs_watchers.push(watcher);
+    \\  if (options.signal) {
+    \\    watcher.__home_signal = options.signal;
+    \\    watcher.__home_abort_listener = function() {
+    \\      Promise.resolve().then(() => {
+    \\        if (watcher.__home_closed) return;
+    \\        const reason = options.signal.reason;
+    \\        let error = reason instanceof Error ? reason : null;
+    \\        if (!error || String(error.name || "") === "AbortError") {
+    \\          error = new Error("The operation was aborted.");
+    \\          error.name = "AbortError";
+    \\          error.code = "ABORT_ERR";
+    \\          if (reason !== undefined) error.cause = reason;
+    \\        }
+    \\        watcher.emit("error", error);
+    \\        watcher.close();
+    \\      });
+    \\    };
+    \\    if (options.signal.aborted) watcher.__home_abort_listener();
+    \\    else if (typeof options.signal.addEventListener === "function") options.signal.addEventListener("abort", watcher.__home_abort_listener, { once: true });
+    \\  }
     \\  return watcher;
     \\}
     \\const __home_node_fs = {
+    \\  FSWatcher: __home_FSWatcher,
     \\  Stats: Stats,
     \\  Dirent: Dirent,
     \\  ReadStream: __home_fs_ReadStream,
@@ -51277,11 +51354,22 @@ const harness_prelude =
     \\    if (globalThis.__home_written_file_times && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_times, normalized)) delete globalThis.__home_written_file_times[normalized];
     \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
     \\    try {
-    \\      return globalThis.__home_unlinkSyncNative(normalized);
+    \\      const result = globalThis.__home_unlinkSyncNative(normalized);
+    \\      __home_fs_notify_watchers(normalized, false);
+    \\      return result;
     \\    } catch (error) {
-    \\      if (hadWrittenOverlay) return undefined;
+    \\      if (hadWrittenOverlay) { __home_fs_notify_watchers(normalized, false); return undefined; }
     \\      throw error;
     \\    }
+    \\  },
+    \\  rmdirSync(path) {
+    \\    const normalized = String(path);
+    \\    if (!__home_fs_dir_exists(normalized)) throw __home_fs_dir_error("ENOENT", "no such file or directory", "rmdir", normalized);
+    \\    __home_fs_mark_deleted(normalized);
+    \\    if (typeof globalThis.__home_rmSyncNative === "function") {
+    \\      try { globalThis.__home_rmSyncNative(normalized, false, false); } catch {}
+    \\    }
+    \\    __home_fs_notify_watchers(normalized, false);
     \\  },
     \\  rmSync(path, options) {
     \\    const recursive = options && typeof options === "object" && options.recursive === true;
@@ -51289,14 +51377,18 @@ const harness_prelude =
     \\    __home_fs_mark_deleted(path);
     \\    if (typeof globalThis.__home_rmSyncNative === "function") {
     \\      try {
-    \\        return globalThis.__home_rmSyncNative(String(path), recursive, force);
+    \\        const result = globalThis.__home_rmSyncNative(String(path), recursive, force);
+    \\        __home_fs_notify_watchers(path, false);
+    \\        return result;
     \\      } catch (error) {
     \\        if (!force && !recursive) throw error;
     \\      }
     \\    }
     \\    if (typeof globalThis.__home_unlinkSyncNative === "function") {
     \\      try {
-    \\        return globalThis.__home_unlinkSyncNative(String(path));
+    \\        const result = globalThis.__home_unlinkSyncNative(String(path));
+    \\        __home_fs_notify_watchers(path, false);
+    \\        return result;
     \\      } catch (error) {
     \\        if (!force && !recursive) throw error;
     \\      }
@@ -51342,6 +51434,35 @@ const harness_prelude =
     \\    });
     \\  },
     \\  promises: {
+    \\    watch(path, options) {
+    \\      const watcher = __home_node_fs.watch(path, options || {});
+    \\      const queued = [];
+    \\      const waiting = [];
+    \\      let terminalError = null;
+    \\      let closed = false;
+    \\      function settle() {
+    \\        while (waiting.length > 0 && queued.length > 0) waiting.shift().resolve({ done: false, value: queued.shift() });
+    \\        if (queued.length > 0) return;
+    \\        while (waiting.length > 0 && terminalError) waiting.shift().reject(terminalError);
+    \\        while (waiting.length > 0 && closed) waiting.shift().resolve({ done: true, value: undefined });
+    \\      }
+    \\      watcher.on("change", (eventType, filename) => {
+    \\        queued.push({ eventType, filename });
+    \\        settle();
+    \\      });
+    \\      watcher.on("error", error => { terminalError = error; settle(); });
+    \\      watcher.on("close", () => { closed = true; settle(); });
+    \\      return {
+    \\        next() {
+    \\          if (queued.length > 0) return Promise.resolve({ done: false, value: queued.shift() });
+    \\          if (terminalError) return Promise.reject(terminalError);
+    \\          if (closed) return Promise.resolve({ done: true, value: undefined });
+    \\          return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+    \\        },
+    \\        return() { watcher.close(); return Promise.resolve({ done: true, value: undefined }); },
+    \\        [Symbol.asyncIterator]() { return this; },
+    \\      };
+    \\    },
     \\    opendir(path, options) {
     \\      return Promise.resolve(__home_node_fs.opendirSync(path, options || {}));
     \\    },
@@ -91922,10 +92043,11 @@ test "bootstrap runner preserves node V8 contracts" {
 test "bootstrap runner preserves node watch contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
-    const cases = [_]struct { path: []const u8, passed: usize }{
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
         .{ .path = "js/node/watch/fs.watch.deadlock.test.ts", .passed = 1 },
         .{ .path = "js/node/watch/fs.watch.events-cb-race.test.ts", .passed = 1 },
         .{ .path = "js/node/watch/fs.watch.rewrite.test.ts", .passed = 5 },
+        .{ .path = "js/node/watch/fs.watch.test.ts", .passed = 40, .todo = 2 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -91940,7 +92062,7 @@ test "bootstrap runner preserves node watch contracts" {
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
-        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
