@@ -100314,6 +100314,7 @@ pub const Checker = struct {
                                         .signature = effective_callee_t,
                                         .param_index = @intCast(i),
                                     });
+                                    if (self.callbackHasQualifiedTypeofInstantiationReturn(args[i])) continue;
                                     const suppress_generic_callback_inference = try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
                                     if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs)) {
                                         if (suppress_generic_callback_inference) {
@@ -100376,6 +100377,7 @@ pub const Checker = struct {
                                             .signature = effective_callee_t,
                                             .param_index = @intCast(i),
                                         });
+                                        if (self.callbackHasQualifiedTypeofInstantiationReturn(args[i])) continue;
                                         const suppress_generic_callback_inference = try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
                                         if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs)) {
                                             if (suppress_generic_callback_inference) {
@@ -144496,7 +144498,10 @@ pub const Checker = struct {
             if (inferred_generic_callback and self.containsFreeTypeParameter(param_t)) {
                 param_t = try self.inferredGenericCallbackTarget(call_node, param_t);
             }
-            const inferred_generic_callback_identity = inferred_generic_callback and arg_t == param_t;
+            const inferred_instantiation_boundary = inferred_generic_callback and
+                self.callbackHasQualifiedTypeofInstantiationReturn(args[i]);
+            const inferred_generic_callback_identity = inferred_generic_callback and
+                !inferred_instantiation_boundary and arg_t == param_t;
             if (inferred_generic_callback_identity) {
                 _ = self.discardCallArgumentContextualReturnDiagnostics(args[i], true);
             }
@@ -144509,6 +144514,8 @@ pub const Checker = struct {
                 true
             else if (inferred_generic_callback_identity)
                 true
+            else if (inferred_instantiation_boundary)
+                false
             else if (inferred_contextual_return_error)
                 false
             else if (inferred_generic_callback) blk: {
@@ -147169,6 +147176,19 @@ pub const Checker = struct {
         param_t: TypeId,
         position: usize,
     ) CheckError!?[]const u8 {
+        const type_arg = self.qualifiedTypeofInstantiationReturnTypeArg(arg_node) orelse return null;
+        const boundary_return_t = try self.lowererLowerWithTypeParams(type_arg);
+        if (!self.interner.isSignature(boundary_return_t)) return null;
+        const source_t = self.interner.internSignature(&.{}, boundary_return_t, false) catch return error.OutOfMemory;
+        const display_param_t = try self.inferredInstantiationBoundaryDiagnosticTarget(param_t);
+        return try self.formatArgumentNotAssignable(source_t, display_param_t, position);
+    }
+
+    fn callbackHasQualifiedTypeofInstantiationReturn(self: *Checker, arg_node: NodeId) bool {
+        return self.qualifiedTypeofInstantiationReturnTypeArg(arg_node) != null;
+    }
+
+    fn qualifiedTypeofInstantiationReturnTypeArg(self: *Checker, arg_node: NodeId) ?NodeId {
         if (!self.isContextualFunctionExpressionLike(arg_node)) return null;
         const function = hir_mod.fnDeclOf(self.hir, arg_node);
         if (function.body == hir_mod.none_node_id or self.hir.kindOf(function.body) != .block_stmt) return null;
@@ -147187,12 +147207,7 @@ pub const Checker = struct {
         if (self.hir.kindOf(operand_call.callee) != .identifier) return null;
         const callee_name = self.string_interner.get(hir_mod.identifierOf(self.hir, operand_call.callee).name);
         if (std.mem.indexOfScalar(u8, callee_name, '.') == null) return null;
-
-        const boundary_return_t = try self.lowererLowerWithTypeParams(type_args[0]);
-        if (!self.interner.isSignature(boundary_return_t)) return null;
-        const source_t = self.interner.internSignature(&.{}, boundary_return_t, false) catch return error.OutOfMemory;
-        const display_param_t = try self.inferredInstantiationBoundaryDiagnosticTarget(param_t);
-        return try self.formatArgumentNotAssignable(source_t, display_param_t, position);
+        return type_args[0];
     }
 
     fn inferredInstantiationBoundaryDiagnosticTarget(self: *Checker, param_t: TypeId) CheckError!TypeId {
