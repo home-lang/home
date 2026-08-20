@@ -13252,6 +13252,10 @@ pub const Checker = struct {
         first_default: NodeId = hir_mod.none_node_id,
         default_fn_name: ?hir_mod.StringId = null,
         default_fn_impl: NodeId = hir_mod.none_node_id,
+        default_class: NodeId = hir_mod.none_node_id,
+        default_count: usize = 0,
+        class_function_merge_handled: bool = false,
+        class_function_merge_pending: bool = false,
         first_reported: bool = false,
     };
 
@@ -13263,17 +13267,26 @@ pub const Checker = struct {
             if (self.hir.kindOf(stmt) != .export_decl) continue;
             const ex = hir_mod.exportOf(self.hir, stmt);
             if (!ex.is_default) continue;
-
             const section = self.virtualSectionStartForNode(stmt);
             const gop = try by_section.getOrPut(self.gpa, section);
             if (!gop.found_existing) gop.value_ptr.* = .{};
-            const state = gop.value_ptr;
+            gop.value_ptr.default_count += 1;
+        }
+
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (!ex.is_default) continue;
+
+            const section = self.virtualSectionStartForNode(stmt);
+            const state = by_section.getPtr(section) orelse continue;
             if (state.first_default == hir_mod.none_node_id) {
                 state.first_default = stmt;
                 if (self.defaultExportFunctionInfo(stmt)) |info| {
                     state.default_fn_name = info.name;
                     if (info.has_body) state.default_fn_impl = stmt;
                 }
+                if (self.defaultExportClassNode(stmt)) |class_node| state.default_class = class_node;
                 continue;
             }
             if (self.defaultExportFunctionInfo(stmt)) |info| {
@@ -13300,6 +13313,27 @@ pub const Checker = struct {
                     state.first_reported = true;
                     continue;
                 }
+                if (info.has_body and
+                    state.default_class != hir_mod.none_node_id and
+                    !state.class_function_merge_handled)
+                {
+                    const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+                    const fn_node = self.unwrapExportDecl(stmt);
+                    const class_export = state.first_default;
+                    const fn_name_node = self.defaultExportNameNode(stmt);
+                    const class_name_node = self.defaultExportNameNode(class_export);
+                    try self.reportAt(class_name_node, self.defaultExportNamePos(class_export), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    try self.reportAt(fn_name_node, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    state.default_fn_impl = stmt;
+                    state.class_function_merge_handled = true;
+                    if (state.default_count == 2) {
+                        try self.reportClassFunctionOverloadMerge(state.default_class, default_name, true, state.default_class);
+                        try self.reportClassFunctionOverloadMerge(fn_node, default_name, false, state.default_class);
+                        state.first_reported = true;
+                        continue;
+                    }
+                    state.class_function_merge_pending = true;
+                }
                 if (state.default_fn_name) |name| {
                     if (info.name == name) {
                         if (info.has_body) state.default_fn_impl = stmt;
@@ -13314,11 +13348,16 @@ pub const Checker = struct {
                     const fn_name_node = self.defaultExportNameNode(state.default_fn_impl);
                     const class_name_node = self.defaultExportNameNode(stmt);
                     try self.reportAt(fn_name_node, self.defaultExportNamePos(state.default_fn_impl), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
-                    try self.reportClassFunctionOverloadMerge(fn_node, default_name, false, class_node);
                     try self.reportAt(class_name_node, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
-                    try self.reportClassFunctionOverloadMerge(class_node, default_name, true, class_node);
-                    state.first_reported = true;
-                    continue;
+                    state.default_class = class_node;
+                    state.class_function_merge_handled = true;
+                    if (state.default_count == 2) {
+                        try self.reportClassFunctionOverloadMerge(fn_node, default_name, false, class_node);
+                        try self.reportClassFunctionOverloadMerge(class_node, default_name, true, class_node);
+                        state.first_reported = true;
+                        continue;
+                    }
+                    state.class_function_merge_pending = true;
                 }
             }
             // Each subsequent default export piles on its own TS2528
@@ -13329,6 +13368,20 @@ pub const Checker = struct {
                 state.first_reported = true;
             }
             try self.reportMultipleDefaultExport(stmt, state.first_default, TsCodes.first_export_default_here, "The first export default is here.");
+        }
+
+        var states = by_section.valueIterator();
+        while (states.next()) |state| {
+            if (!state.class_function_merge_pending or
+                state.default_class == hir_mod.none_node_id or
+                state.default_fn_impl == hir_mod.none_node_id)
+            {
+                continue;
+            }
+            const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+            const fn_node = self.unwrapExportDecl(state.default_fn_impl);
+            try self.reportClassFunctionOverloadMerge(state.default_class, default_name, true, state.default_class);
+            try self.reportClassFunctionOverloadMerge(fn_node, default_name, false, state.default_class);
         }
     }
 
@@ -13347,7 +13400,7 @@ pub const Checker = struct {
             .message = related_message,
         }});
         try self.diagnostics.append(self.gpa, .{
-            .node = node,
+            .node = self.defaultExportNameNode(node),
             .pos = self.defaultExportNamePos(node),
             .code = TsCodes.multiple_default_exports,
             .message = msg,
@@ -13614,6 +13667,7 @@ pub const Checker = struct {
             .fn_decl => hir_mod.fnDeclOf(self.hir, decl).name,
             .class_decl => hir_mod.classOf(self.hir, decl).name,
             .interface_decl => hir_mod.interfaceOf(self.hir, decl).name,
+            .identifier => decl,
             else => return node,
         };
         if (name_node == hir_mod.none_node_id) return node;
@@ -13643,6 +13697,7 @@ pub const Checker = struct {
                 const it = hir_mod.interfaceOf(self.hir, decl);
                 break :blk it.name;
             },
+            .identifier => decl,
             else => return null,
         };
         if (name_node == hir_mod.none_node_id) return null;
@@ -224572,6 +224627,38 @@ test "checker: duplicate named default classes use TS2528 without TS2300" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.multiple_default_exports));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
+}
+
+test "checker: virtual default class function and value merge diagnostics" {
+    const src =
+        "// @filename: m1.ts\n" ++
+        "export default class foo {}\n" ++
+        "export default function bar() {}\n" ++
+        "const x = 1;\n" ++
+        "export default x;\n" ++
+        "// @filename: m2.ts\n" ++
+        "import Entity from \"./m1\";\n" ++
+        "Entity();\n";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.export_default_redeclared));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.multiple_default_exports));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_cannot_implement_overload_list));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_body_merge_requires_ambient_class));
+
+    const value_anchor = (std.mem.indexOf(u8, src, "export default x") orelse return error.TestUnexpectedResult) +
+        "export default ".len;
+    var anchored_value_default = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.multiple_default_exports and
+            s.checker.diagnosticStart(diagnostic) == value_anchor)
+        {
+            anchored_value_default = true;
+        }
+    }
+    try T.expect(anchored_value_default);
 }
 
 test "checker: simpleDiagnosticTypeName renders undefined and null after non-nullish in union" {
