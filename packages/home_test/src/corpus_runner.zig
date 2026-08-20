@@ -100389,6 +100389,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts", .passed = 1 },
         .{ .path = "js/third_party/astro/astro-post.test.js", .passed = 4 },
         .{ .path = "js/third_party/body-parser/express-body-parser-test.test.ts", .passed = 3 },
+        .{ .path = "js/third_party/body-parser/express-bun-build-compile.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
