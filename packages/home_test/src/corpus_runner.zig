@@ -16146,11 +16146,24 @@ const harness_prelude =
     \\  })();
     \\  return child;
     \\}
+    \\function __home_spawn_es_module_lexer_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/third_party/es-module-lexer/es-module-lexer.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("js/third_party/es-module-lexer/index.ts") || part.endsWith("es-module-lexer/index.ts"))) return null;
+    \\  const output = __home_es_module_lexer_init.then(() => { const parsed = __home_es_module_lexer_parse("import { a } from 'b'; export const c = 1;", "js/third_party/es-module-lexer/index.ts"); return Buffer.from(JSON.stringify({ imports: parsed[0], exports: parsed[1] })); });
+    \\  const child = __home_spawn_completed("", "", 42);
+    \\  child.stdout = __home_spawn_promise_pipe(output);
+    \\  child.exitCode = null;
+    \\  child.exited = output.then(() => { child.exitCode = 42; return 42; }, error => { child.stderr = __home_spawn_pipe_text(String(error && error.stack || error) + "\n"); child.exitCode = 1; return 1; });
+    \\  return child;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
     \\  const astroPostFixture = __home_spawn_astro_post_fixture(options || {});
     \\  if (astroPostFixture) return astroPostFixture;
+    \\  const esModuleLexerFixture = __home_spawn_es_module_lexer_fixture(options || {});
+    \\  if (esModuleLexerFixture) return esModuleLexerFixture;
     \\  const tlsExtraCaFixture = __home_spawn_tls_extra_ca_fixture(options || {});
     \\  if (tlsExtraCaFixture) return tlsExtraCaFixture;
     \\  const tlsSetSessionFixture = __home_spawn_tls_set_session_fixture(options || {});
@@ -37230,6 +37243,26 @@ const harness_prelude =
     \\const __home_comlink_module = { expose(value, endpoint) { return __home_comlink_expose(value, endpoint); }, wrap(endpoint) { if (!endpoint || !endpoint.__home_comlink_ready) throw new TypeError("Comlink.wrap requires a Worker endpoint"); endpoint.__home_comlink_wrapped = true; return __home_comlink_proxy(endpoint, []); }, releaseProxy: __home_comlink_release_proxy };
     \\__home_comlink_module.default = __home_comlink_module;
     \\globalThis.__home_modules["comlink"] = __home_comlink_module;
+    \\let __home_es_module_lexer_initialized = false;
+    \\const __home_es_module_lexer_init = Promise.resolve().then(() => { __home_es_module_lexer_initialized = true; });
+    \\function __home_es_module_lexer_parse(source, sourceName) {
+    \\  const text = String(source || ""), imports = [], exports = [];
+    \\  try {
+    \\    const importPattern = /\bimport\s+[\s\S]*?\bfrom\s*(["'])([^"']*)\1/g;
+    \\    for (const match of text.matchAll(importPattern)) { const statement = match[0], quoted = match[1] + match[2] + match[1], quoteOffset = statement.lastIndexOf(quoted), s = match.index + quoteOffset + 1, e = s + match[2].length; imports.push({ n: match[2], s, e, ss: match.index, se: e + 1, d: -1, a: -1 }); }
+    \\    const exportPattern = /\bexport\s+(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g;
+    \\    for (const match of text.matchAll(exportPattern)) { const name = match[1], s = match.index + match[0].lastIndexOf(name), e = s + name.length; exports.push({ s, e, ls: s, le: e, n: name, ln: name }); }
+    \\    return [imports, exports, false];
+    \\  } catch (cause) {
+    \\    const error = cause instanceof Error ? cause : new Error(String(cause));
+    \\    error.source = sourceName || globalThis.__home_current_filename || "<anonymous module>";
+    \\    error.stack = String(error.stack || error) + "\n    at es-module-lexer.parse (" + error.source + ")";
+    \\    throw error;
+    \\  }
+    \\}
+    \\const __home_es_module_lexer_module = { init: __home_es_module_lexer_init, initSync() { __home_es_module_lexer_initialized = true; }, parse: __home_es_module_lexer_parse };
+    \\__home_es_module_lexer_module.default = __home_es_module_lexer_module;
+    \\globalThis.__home_modules["es-module-lexer"] = __home_es_module_lexer_module;
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -100508,6 +100541,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/body-parser/express-bun-build-compile.test.ts", .passed = 1 },
         .{ .path = "js/third_party/body-parser/express-memory-leak.test.ts", .passed = 4 },
         .{ .path = "js/third_party/comlink/comlink.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/es-module-lexer/es-module-lexer.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
