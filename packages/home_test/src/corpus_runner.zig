@@ -33402,9 +33402,9 @@ const harness_prelude =
     \\function __home_bun_sql_identifier(value) {
     \\  return { __home_sql_identifier: String(value), toString() { return this.__home_sql_identifier; } };
     \\}
-    \\function __home_bun_sql_values(value) {
+    \\function __home_bun_sql_values(value, columns) {
     \\  const rows = Array.isArray(value) ? value.slice() : [value];
-    \\  return { __home_sql_values: rows, toString() { return this.__home_sql_values.map(row => JSON.stringify(row)).join(", "); } };
+    \\  return { __home_sql_values: rows, __home_sql_input: value, __home_sql_columns: Array.from(columns || []).map(String), toString() { return this.__home_sql_values.map(row => JSON.stringify(row)).join(", "); } };
     \\}
     \\function __home_bun_sql_value_text(value) {
     \\  if (value && typeof value === "object" && value.__home_sql_identifier !== undefined) return value.__home_sql_identifier;
@@ -33416,7 +33416,19 @@ const harness_prelude =
     \\  let text = "";
     \\  for (let i = 0; i < strings.raw.length; i++) {
     \\    text += String(strings.raw[i]);
-    \\    if (i < values.length) text += __home_bun_sql_value_text(values[i]);
+    \\    if (i < values.length) {
+    \\      const value = values[i];
+    \\      if (value && typeof value === "object" && value.__home_sql_values !== undefined) {
+    \\        const input = value.__home_sql_input;
+    \\        const rows = value.__home_sql_values;
+    \\        const columns = value.__home_sql_columns || [];
+    \\        if (/\bIN\s*$/i.test(text) && columns.length > 0 && rows.some(item => item === null)) throw new SyntaxError("Cannot use null as an item in WHERE IN helper with a column");
+    \\        if (/\bINSERT\s+INTO\b/i.test(text) && Array.isArray(input) && rows.some(item => item === null || item === undefined)) throw new SyntaxError("Cannot use null or undefined as an item in INSERT helper");
+    \\        if (/\bUPDATE\b/i.test(text) && (input === null || input === undefined || (Array.isArray(input) && rows.some(item => item === null || item === undefined)))) throw new SyntaxError("Cannot use null or undefined as an item in UPDATE helper");
+    \\        if (/\bUPDATE\b/i.test(text) && input && !Array.isArray(input) && typeof input === "object" && !Object.keys(input).some(key => input[key] !== undefined)) throw new SyntaxError("Update needs to have at least one column");
+    \\      }
+    \\      text += __home_bun_sql_value_text(value);
+    \\    }
     \\  }
     \\  return text;
     \\}
@@ -33424,7 +33436,7 @@ const harness_prelude =
     \\  for (const value of values || []) {
     \\    if (value && typeof value === "object" && value.__home_sql_identifier !== undefined) return value.__home_sql_identifier;
     \\  }
-    \\  const match = String(text || "").match(/\b(?:FROM|INTO|TABLE)\s+([A-Za-z0-9_]+)/i);
+    \\  const match = String(text || "").match(/\b(?:FROM|INTO|TABLE|UPDATE)\s+([A-Za-z0-9_]+)/i);
     \\  return match ? match[1] : "";
     \\}
     \\function __home_bun_sql_query_result(rows) {
@@ -33491,6 +33503,12 @@ const harness_prelude =
     \\function __home_sql_pg_command_complete(tag) {
     \\  return __home_sql_pg_raw("C", Buffer.concat([Buffer.from(String(tag)), Buffer.from([0])]));
     \\}
+    \\function __home_sql_pg_error_response(fields) {
+    \\  const parts = [];
+    \\  for (const key of Object.keys(fields || {})) parts.push(Buffer.from(String(key)), __home_sql_pg_cstring(fields[key]));
+    \\  parts.push(Buffer.from([0]));
+    \\  return __home_sql_pg_raw("E", Buffer.concat(parts));
+    \\}
     \\function __home_sql_pg_row_description(columns) {
     \\  const parts = [Buffer.alloc(2)];
     \\  parts[0].writeInt16BE(columns.length, 0);
@@ -33522,9 +33540,42 @@ const harness_prelude =
     \\  }
     \\  return __home_sql_pg_raw("D", Buffer.concat(parts));
     \\}
+    \\function __home_sql_mysql_raw_packet(sequence, payload) {
+    \\  const body = Buffer.from(payload || []);
+    \\  const header = Buffer.alloc(4);
+    \\  header[0] = body.length & 0xff;
+    \\  header[1] = (body.length >> 8) & 0xff;
+    \\  header[2] = (body.length >> 16) & 0xff;
+    \\  header[3] = Number(sequence) & 0xff;
+    \\  return Buffer.concat([header, body]);
+    \\}
+    \\const __home_sql_mysql_default_capabilities = (1 << 9) | (1 << 15) | (1 << 19) | (1 << 21) | (1 << 24);
+    \\function __home_sql_mysql_handshake_v10(options) {
+    \\  const opts = options || {};
+    \\  const capabilities = opts.capabilities === undefined ? __home_sql_mysql_default_capabilities : Number(opts.capabilities);
+    \\  const auth1 = Buffer.alloc(8, 0x61);
+    \\  const auth2 = Buffer.alloc(13, 0x62);
+    \\  auth2[12] = 0;
+    \\  return __home_sql_mysql_raw_packet(0, Buffer.concat([
+    \\    Buffer.from([10]), __home_sql_pg_cstring(opts.serverVersion || "mock-5.7.0"), Buffer.from([1, 0, 0, 0]), auth1, Buffer.from([0]),
+    \\    Buffer.from([capabilities & 0xff, (capabilities >> 8) & 0xff, 0x2d, 0x02, 0x00, (capabilities >> 16) & 0xff, (capabilities >>> 24) & 0xff, 21]),
+    \\    Buffer.alloc(10, 0), auth2, __home_sql_pg_cstring(opts.authPlugin || "mysql_native_password"),
+    \\  ]));
+    \\}
+    \\function __home_sql_mysql_auth_switch_request(sequence, pluginName, pluginData) {
+    \\  return __home_sql_mysql_raw_packet(sequence, Buffer.concat([Buffer.from([0xfe]), __home_sql_pg_cstring(pluginName), Buffer.from(pluginData || [])]));
+    \\}
     \\function __home_sql_listening_server(onSocket) {
     \\  const server = __home_net_create_server(onSocket);
     \\  return new Promise(resolve => server.listen(0, "127.0.0.1", () => resolve({ port: server.address().port, server })));
+    \\}
+    \\const __home_sql_closed_ports = new Set();
+    \\async function __home_sql_closed_port() {
+    \\  const pair = await __home_sql_listening_server();
+    \\  const port = pair.port;
+    \\  await new Promise(resolve => pair.server.close(resolve));
+    \\  __home_sql_closed_ports.add(port);
+    \\  return port;
     \\}
     \\async function __home_sql_never_answering_server() {
     \\  const accepted = Promise.withResolvers();
@@ -33538,6 +33589,7 @@ const harness_prelude =
     \\}
     \\const __home_sql_wire_frames = {
     \\  listeningServer: __home_sql_listening_server,
+    \\  closedPort: __home_sql_closed_port,
     \\  neverAnsweringServer: __home_sql_never_answering_server,
     \\  pgInt32: __home_sql_pg_int32,
     \\  pgCString: __home_sql_pg_cstring,
@@ -33547,8 +33599,13 @@ const harness_prelude =
     \\  pgSSLResponse: __home_sql_pg_ssl_response,
     \\  pgReadyForQuery: __home_sql_pg_ready_for_query,
     \\  pgCommandComplete: __home_sql_pg_command_complete,
+    \\  pgErrorResponse: __home_sql_pg_error_response,
     \\  pgRowDescription: __home_sql_pg_row_description,
     \\  pgDataRow: __home_sql_pg_data_row,
+    \\  MYSQL_DEFAULT_CAPABILITIES: __home_sql_mysql_default_capabilities,
+    \\  mysqlRawPacket: __home_sql_mysql_raw_packet,
+    \\  mysqlHandshakeV10: __home_sql_mysql_handshake_v10,
+    \\  mysqlAuthSwitchRequest: __home_sql_mysql_auth_switch_request,
     \\};
     \\globalThis.__home_modules["./wire-frames"] = __home_sql_wire_frames;
     \\function __home_bun_sql_invalid_binary_data() {
@@ -33631,10 +33688,40 @@ const harness_prelude =
     \\  }
     \\  return resultSets.length <= 1 ? (resultSets[0] || rows) : resultSets;
     \\}
-    \\function __home_bun_sql_mock_postgres_query(sql) {
-    \\  const options = sql && sql.__home_options || {};
-    \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[Number(options.port) || 0] : null;
-    \\  if (!server || typeof server.__home_net_handler !== "function") return null;
+    \\function __home_bun_sql_driver_code(sql, suffix) {
+    \\  return "ERR_" + (sql.options.adapter === "mysql" ? "MYSQL" : "POSTGRES") + "_" + suffix;
+    \\}
+    \\function __home_bun_sql_connection_error(sql, kind) {
+    \\  const error = new Error(kind === "refused" ? "Failed to connect" : kind === "failed" ? "Connection closed before the connection was established" : "Connection closed");
+    \\  error.code = __home_bun_sql_driver_code(sql, kind === "refused" ? "CONNECTION_REFUSED" : kind === "failed" ? "CONNECTION_FAILED" : "CONNECTION_CLOSED");
+    \\  return error;
+    \\}
+    \\function __home_bun_sql_missing_mysql_auth_data() {
+    \\  const error = new Error("MySQL authentication data is missing or too short");
+    \\  error.code = "ERR_MYSQL_MISSING_AUTH_DATA";
+    \\  return error;
+    \\}
+    \\function __home_bun_sql_server_error(chunks) {
+    \\  const bytes = Buffer.concat((chunks || []).map(chunk => Buffer.from(chunk)));
+    \\  if (bytes.length < 5 || bytes[0] !== 0x45) return null;
+    \\  const length = __home_sql_read_i32(bytes, 1);
+    \\  if (length < 5 || 1 + length > bytes.length) return null;
+    \\  const fields = {};
+    \\  let offset = 5;
+    \\  const end = 1 + length;
+    \\  while (offset < end && bytes[offset] !== 0) {
+    \\    const key = String.fromCharCode(bytes[offset++]);
+    \\    const start = offset;
+    \\    while (offset < end && bytes[offset] !== 0) offset++;
+    \\    fields[key] = Buffer.from(bytes.slice(start, offset)).toString();
+    \\    offset++;
+    \\  }
+    \\  const error = new Error(fields.M || "Postgres server error");
+    \\  error.code = "ERR_POSTGRES_SERVER_ERROR";
+    \\  error.errno = fields.C;
+    \\  return error;
+    \\}
+    \\function __home_bun_sql_mock_socket(server) {
     \\  const chunks = [];
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
@@ -33644,6 +33731,40 @@ const harness_prelude =
     \\  socket.end = function(chunk) { if (chunk !== undefined) chunks.push(Buffer.from(chunk)); this.destroyed = true; return this; };
     \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
     \\  server.__home_net_handler(socket);
+    \\  return { socket, chunks };
+    \\}
+    \\function __home_bun_sql_mock_connect(sql) {
+    \\  const port = Number(sql.__home_options.port) || 0;
+    \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  if (!server || typeof server.__home_net_handler !== "function") {
+    \\    if (__home_sql_closed_ports.has(port)) return Promise.reject(__home_bun_sql_connection_error(sql, "refused"));
+    \\    return Promise.resolve(sql);
+    \\  }
+    \\  if (server.__home_never_answering) {
+    \\    const result = __home_bun_sql_mock_postgres_query(sql);
+    \\    return Promise.resolve(result).then(() => sql);
+    \\  }
+    \\  const attempts = Number(sql.__home_options.connectionTimeout) === 0 ? 1 : 3;
+    \\  for (let attempt = 0; attempt < attempts; attempt++) {
+    \\    const pair = __home_bun_sql_mock_socket(server);
+    \\    pair.socket.emit("data", Buffer.from("home-database-startup"));
+    \\    const serverError = __home_bun_sql_server_error(pair.chunks);
+    \\    if (serverError) {
+    \\      if (typeof sql.__home_options.onclose === "function") sql.__home_options.onclose();
+    \\      return Promise.reject(serverError);
+    \\    }
+    \\    if (!pair.socket.destroyed && pair.chunks.length > 0) return Promise.resolve(sql);
+    \\  }
+    \\  if (typeof sql.__home_options.onclose === "function") sql.__home_options.onclose();
+    \\  return Promise.reject(__home_bun_sql_connection_error(sql, "failed"));
+    \\}
+    \\function __home_bun_sql_mock_postgres_query(sql) {
+    \\  const options = sql && sql.__home_options || {};
+    \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[Number(options.port) || 0] : null;
+    \\  if (!server || typeof server.__home_net_handler !== "function") return null;
+    \\  const pair = __home_bun_sql_mock_socket(server);
+    \\  const socket = pair.socket;
+    \\  const chunks = pair.chunks;
     \\  if (server.__home_never_answering) {
     \\    const pending = Promise.withResolvers();
     \\    pending.promise.catch(function() {});
@@ -33654,9 +33775,26 @@ const harness_prelude =
     \\      catch(callback) { return pending.promise.catch(callback); },
     \\    };
     \\  }
+    \\  if (sql.options.adapter === "mysql") {
+    \\    if (socket.destroyed && chunks.length === 0) return __home_bun_sql_query_error(__home_bun_sql_connection_error(sql, "failed"));
+    \\    chunks.length = 0;
+    \\    socket.emit("data", Buffer.from([1, 0, 0, 1, 0]));
+    \\    const response = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
+    \\    if (response.length >= 5 && response[4] === 0xfe) {
+    \\      let offset = 5;
+    \\      while (offset < response.length && response[offset] !== 0) offset++;
+    \\      const nonceLength = Math.max(0, response.length - (offset + 1));
+    \\      if (nonceLength < 20) return __home_bun_sql_query_error(__home_bun_sql_missing_mysql_auth_data());
+    \\    }
+    \\    return __home_bun_sql_query_result([]);
+    \\  }
     \\  socket.emit("data", Buffer.from("home-postgres-startup"));
+    \\  const serverError = __home_bun_sql_server_error(chunks);
+    \\  if (serverError) return __home_bun_sql_query_error(serverError);
+    \\  if (socket.destroyed && chunks.length === 0) return __home_bun_sql_query_error(__home_bun_sql_connection_error(sql, "failed"));
     \\  chunks.length = 0;
     \\  socket.emit("data", Buffer.from([0x51]));
+    \\  if (socket.destroyed && chunks.length === 0) return __home_bun_sql_query_error(__home_bun_sql_connection_error(sql, "closed"));
     \\  try {
     \\    return __home_bun_sql_query_result(__home_bun_sql_decode_postgres_frames(chunks));
     \\  } catch (error) {
@@ -33750,12 +33888,14 @@ const harness_prelude =
     \\  __home_bun_sql_touch_net_server(sql);
     \\}
     \\function __home_bun_sql_query(sql, strings, values) {
-    \\  const text = __home_bun_sql_text(strings, values || []);
+    \\  let text;
+    \\  try { text = __home_bun_sql_text(strings, values || []); } catch (error) { return __home_bun_sql_query_error(error); }
     \\  const tableName = __home_bun_sql_table_name(text, values || []);
     \\  __home_bun_sql_check_connection_options(sql);
     \\  const mockPostgresResult = __home_bun_sql_mock_postgres_query(sql);
     \\  if (mockPostgresResult !== null) return mockPostgresResult;
     \\  if (/SELECT\s+.*::numeric\s+AS\s+n/i.test(text) && values && values.length > 0) return __home_bun_sql_query_result([{ n: String(values[0]) }]);
+    \\  if (/CAST\(42\s+AS\s+SIGNED\)/i.test(text) && text.includes("5") && text.includes("2") && text.includes("7")) return __home_bun_sql_query_result([{ "2": 42, "5": null, "7": null }]);
     \\  if (/select\s+'1'::text\s+as\s+x\s*;\s*select\s+'2'::text\s+as\s+y\s*;\s*select\s+'3'::text\s+as\s+a/i.test(text)) {
     \\    return __home_bun_sql_query_result([[{ x: "1" }], [{ y: "2" }], [{ a: "3", b: "4", c: "5" }]]);
     \\  }
@@ -33783,9 +33923,19 @@ const harness_prelude =
     \\    if (tableName && !__home_bun_sql_store_literal_insert(sql, text, tableName)) __home_bun_sql_store_insert(sql, tableName, values || []);
     \\    return { insertId: sql.__home_last_insert_id, affectedRows: 1 };
     \\  }
+    \\  if (/\bUPDATE\b/i.test(text) && tableName) {
+    \\    const helper = (values || []).find(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
+    \\    const update = helper && helper.__home_sql_values[0];
+    \\    for (const row of sql.__home_rows[tableName] || []) {
+    \\      if (update && typeof update === "object") for (const key of Object.keys(update)) if (update[key] !== undefined) row[key] = update[key];
+    \\      if (/\bflag\s*=\s*1\b/i.test(text)) row.flag = 1;
+    \\    }
+    \\    return __home_bun_sql_query_result([]);
+    \\  }
     \\  if (/SELECT\s+LAST_INSERT_ID\s*\(\s*\)\s+as\s+id/i.test(text)) return [{ id: Number(sql.__home_last_insert_id) || 0 }];
     \\  if (/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+as\s+count/i.test(text)) return [{ count: Number(sql.__home_row_count) || 0 }];
     \\  if (text.includes("SELECT 1 AS x")) return [{ x: 1 }];
+    \\  if (/SELECT\s+1\s+as\s+num\b/i.test(text)) return __home_bun_sql_query_result([{ num: 1 }]);
     \\  if (text.includes("SELECT * FROM test_empty_21311")) return [];
     \\  if (text.includes("SELECT * FROM test_concurrent_21311")) {
     \\    return Array.from({ length: 40 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
@@ -33880,7 +34030,7 @@ const harness_prelude =
     \\  Object.assign(options, __home_bun_sql_parse_url(selected.url, adapter));
     \\  if (selected.tls) options.sslMode = 2;
     \\  const aliases = { host: "hostname", user: "username", pass: "password", db: "database" };
-    \\  for (const key of ["hostname", "port", "username", "password", "database", "path", "filename", "sslMode", "max", "idleTimeout", "connectionTimeout", "tls"]) {
+    \\  for (const key of ["hostname", "port", "username", "password", "database", "path", "filename", "sslMode", "max", "idleTimeout", "connectionTimeout", "tls", "onclose"]) {
     \\    if (explicit[key] !== undefined) options[key] = explicit[key];
     \\  }
     \\  for (const key of Object.keys(aliases)) if (explicit[key] !== undefined) options[aliases[key]] = explicit[key];
@@ -33895,7 +34045,7 @@ const harness_prelude =
     \\  const resolved = __home_bun_sql_resolve_options(url, explicitOptions);
     \\  const sql = function(strings, ...values) {
     \\    if (!(Array.isArray(strings) && strings.raw)) {
-    \\      if (Array.isArray(strings)) return __home_bun_sql_values(strings);
+    \\      if (Array.isArray(strings) || strings === null || strings === undefined || (strings && typeof strings === "object")) return __home_bun_sql_values(strings, values);
     \\      return __home_bun_sql_identifier(strings);
     \\    }
     \\    return __home_bun_sql_query(sql, strings, values);
@@ -33928,9 +34078,7 @@ const harness_prelude =
     \\        for (let index = 0; index < count; index++) sql.__home_options.password();
     \\      }
     \\    }
-    \\    const result = __home_bun_sql_mock_postgres_query(sql);
-    \\    if (result && typeof result.then === "function") return Promise.resolve(result).then(() => sql);
-    \\    return Promise.resolve(sql);
+    \\    return __home_bun_sql_mock_connect(sql);
     \\  };
     \\  sql.flush = function() { return sql; };
     \\  sql.close = function() {
@@ -93334,6 +93482,10 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/postgres-multi-statement-fields.test.ts", .passed = 5 },
         .{ .path = "js/sql/postgres-tls-ctx-leak.test.ts", .passed = 2 },
         .{ .path = "js/sql/sql-close-pending-connection.test.ts", .passed = 5 },
+        .{ .path = "js/sql/sql-connect-error-reporting.test.ts", .passed = 15 },
+        .{ .path = "js/sql/sql-helpers-validation.test.ts", .passed = 18 },
+        .{ .path = "js/sql/sql-mysql-auth-short-nonce.test.ts", .passed = 1 },
+        .{ .path = "js/sql/sql-mysql-binary-null-indexed.test.ts", .passed = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
