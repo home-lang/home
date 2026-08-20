@@ -155556,7 +155556,8 @@ pub const Checker = struct {
         if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
             if (!self.pathIsJsLike(filename)) return null;
         }
-        if (!self.fnProvidesCheckJsConstructorInstance(fn_node)) return null;
+        if (!self.fnProvidesCheckJsConstructorInstance(fn_node) and
+            !self.fnHasJsDocClassOrConstructorTag(fn_node)) return null;
         return try self.jsConstructorInstanceType(name, anchor);
     }
 
@@ -155571,7 +155572,8 @@ pub const Checker = struct {
         if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
             if (!self.pathIsJsLike(filename)) return null;
         }
-        if (!self.fnProvidesCheckJsConstructorInstance(fn_node)) return null;
+        if (!self.fnProvidesCheckJsConstructorInstance(fn_node) and
+            !self.fnHasJsDocClassOrConstructorTag(fn_node)) return null;
         const instance_t = try self.jsConstructorInstanceType(name, anchor);
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
@@ -232980,6 +232982,28 @@ test "checker: JSDoc RegExp resolves as builtin type" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: propertyless JSDoc constructor is construct-only" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @constructor */
+        \\function Dependency(value) { return value; }
+        \\Dependency({});
+        \\new Dependency({});
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_only_constructable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.value_only_constructable,
+        "Value of type 'typeof Dependency' is not callable. Did you mean to include 'new'?",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
 }
 
 test "checker: Boolean + BigInt global call/static access" {
