@@ -66566,6 +66566,9 @@ const harness_prelude =
     \\    }
     \\    return Promise.resolve(0);
     \\  };
+    \\  worker[Symbol.asyncDispose] = async function() {
+    \\    await worker.terminate();
+    \\  };
     \\  const workerModule = Object.assign({}, globalThis.__home_modules["worker_threads"] || {}, {
     \\    isMainThread: false,
     \\    parentPort,
@@ -73822,6 +73825,18 @@ fn rewriteResolvedPassiveListenerSkip(allocator: std.mem.Allocator, source: []co
     );
 }
 
+fn rewriteWorkerAsyncDisposeCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const without_import = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import { Worker } from \"worker_threads\";",
+        "const { Worker } = globalThis.__home_import(\"worker_threads\");",
+    );
+    defer allocator.free(without_import);
+    return std.mem.replaceOwned(u8, allocator, without_import, "await using worker =", "const worker =");
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -73838,6 +73853,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteVmModuleReferrerRealmCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-whatwg-events-add-event-listener-options-passive.js"))
         try rewriteResolvedPassiveListenerSkip(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/worker_threads/worker-async-dispose.test.ts"))
+        try rewriteWorkerAsyncDisposeCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/tls/node-tls-connect.test.ts"))
         try rewriteNodeTlsConnectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/tls/renegotiation.test.ts"))
@@ -92133,6 +92150,33 @@ test "bootstrap runner preserves node watch contracts" {
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves node worker contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "js/node/worker_threads/15787.test.ts", .passed = 1 },
+        .{ .path = "js/node/worker_threads/worker-async-dispose.test.ts", .passed = 2 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node worker contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
