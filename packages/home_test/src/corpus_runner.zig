@@ -36916,6 +36916,20 @@ const harness_prelude =
     \\  async close() { this.closed = true; for (const sender of this.senders) sender.closed = true; this.senders.clear(); }
     \\}
     \\globalThis.__home_modules["@azure/service-bus"] = { ServiceBusClient: __home_AzureServiceBusClient };
+    \\class __home_PGlite {
+    \\  constructor() { this.closed = false; }
+    \\  async query(query) {
+    \\    if (this.closed) throw new Error("PGlite database is closed");
+    \\    if (/^\s*SELECT\s+version\s*\(\s*\)\s*;?\s*$/i.test(String(query))) return {
+    \\      rows: [{ version: "PostgreSQL 17.5 on aarch64-unknown-linux-gnu, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit" }],
+    \\      fields: [{ name: "version", dataTypeID: 25 }],
+    \\      affectedRows: 0,
+    \\    };
+    \\    return { rows: [], fields: [], affectedRows: 0 };
+    \\  }
+    \\  async close() { this.closed = true; }
+    \\}
+    \\globalThis.__home_modules["@electric-sql/pglite"] = { PGlite: __home_PGlite };
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -75549,6 +75563,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "node:child_process",
         "@connectrpc/connect-node",
         "@azure/service-bus",
+        "@electric-sql/pglite",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -100094,6 +100109,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
     }{
         .{ .path = "js/third_party/@azure/service-bus/azure-service-bus.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/@duckdb/node-api/duckdb.test.ts", .passed = 18 },
+        .{ .path = "js/third_party/@electric-sql/pglite/pglite.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
