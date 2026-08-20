@@ -5881,6 +5881,21 @@ pub const Checker = struct {
         self.diagnostics.items.len = write;
     }
 
+    fn removeStaticTruthinessDiagnosticsWithin(self: *Checker, node: NodeId) void {
+        if (node == hir_mod.none_node_id) return;
+        const span = self.hir.spanOf(node);
+        var write: usize = 0;
+        for (self.diagnostics.items) |diagnostic| {
+            const is_truthiness = diagnostic.code == TsCodes.expression_always_truthy or
+                diagnostic.code == TsCodes.expression_always_falsy;
+            const start = self.diagnosticStart(diagnostic);
+            if (is_truthiness and start >= span.start and start < span.end) continue;
+            self.diagnostics.items[write] = diagnostic;
+            write += 1;
+        }
+        self.diagnostics.items.len = write;
+    }
+
     fn removeUntypedCallsForContextualCallableParameters(
         self: *Checker,
         fn_node: NodeId,
@@ -37419,6 +37434,7 @@ pub const Checker = struct {
                             try self.reportCannotFindNamePlain(fn_p.name, id_p.name);
                         }
                         if (!key_is_bare_unresolved_id and !try self.computedPropertyKeyTypeIsValid(computed_fn_key_t)) {
+                            self.removeStaticTruthinessDiagnosticsWithin(fn_p.name);
                             try self.reportComputedKeyBracket(fn_p.name, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
                         if (fn_p.body == hir_mod.none_node_id and
@@ -37962,6 +37978,7 @@ pub const Checker = struct {
                             try self.reportCannotFindNamePlain(op.key, id_p.name);
                         }
                         if (!op_key_is_bare_unresolved_id and !try self.computedPropertyKeyTypeIsValid(computed_op_key_t)) {
+                            self.removeStaticTruthinessDiagnosticsWithin(op.key);
                             try self.reportComputedKeyBracket(op.key, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         } else if (!op_is_method and
                             !self.computedKeyIsUnresolvedIdentifier(op.key) and
@@ -102361,6 +102378,7 @@ pub const Checker = struct {
                             // the bracket column instead of the leading
                             // `get` keyword. Mirrors upstream tsc on
                             // `symbolProperty3.ts(5,9)`.
+                            self.removeStaticTruthinessDiagnosticsWithin(op.key);
                             try self.reportComputedKeyBracket(op.key, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
                         if (op.value == hir_mod.none_node_id) continue;
@@ -225285,6 +225303,16 @@ test "checker: any computed key is valid in object destructuring assignment" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+}
+
+test "checker: invalid computed key suppresses nested truthiness diagnostic" {
+    const s = try newSetup(
+        \\const value = { [!1]: {} };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.computed_property_name_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expression_always_truthy));
 }
 
 test "checker: computed binding keys require an applicable container index" {
