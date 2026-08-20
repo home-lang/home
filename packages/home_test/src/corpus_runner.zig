@@ -37127,6 +37127,66 @@ const harness_prelude =
     \\  return { port: server.port, host: server.hostname, async stop() { server.stop(); } };
     \\}
     \\globalThis.__home_modules["astro"] = { build: __home_astro_build, preview: __home_astro_preview };
+    \\function __home_express_json() {
+    \\  return async function homeExpressJson(request, response, next) {
+    \\    try {
+    \\      const contentType = String(request.headers && (typeof request.headers.get === "function" ? request.headers.get("content-type") : request.headers["content-type"]) || "").toLowerCase();
+    \\      if (contentType.includes("application/json")) {
+    \\        let text = request.__home_raw_body;
+    \\        if (text === undefined && request.__home_web_request && typeof request.__home_web_request.text === "function") text = await request.__home_web_request.text();
+    \\        request.body = String(text || "").length ? JSON.parse(String(text)) : {};
+    \\      }
+    \\      next();
+    \\    } catch (error) { next(error); }
+    \\  };
+    \\}
+    \\function __home_express() {
+    \\  const middleware = [], routes = [], events = Object.create(null);
+    \\  const app = async function homeExpressApplication(request, response) {
+    \\    const parsed = new URL(String(request.url || "/"), "http://localhost");
+    \\    request.query = Object.fromEntries(parsed.searchParams);
+    \\    request.path = parsed.pathname;
+    \\    request.res = response;
+    \\    const originalEnd = response.end.bind(response);
+    \\    let closed = false;
+    \\    response.end = function() {
+    \\      const result = originalEnd.apply(response, arguments);
+    \\      if (!closed) { closed = true; Promise.resolve().then(() => { request.emit("close"); response.emit("close"); }); }
+    \\      return result;
+    \\    };
+    \\    response.status = function(code) { this.statusCode = Number(code) || 200; return this; };
+    \\    response.send = function(body) { const text = body === undefined || body === null ? "" : String(body); if (typeof this.setHeader === "function") this.setHeader("Content-Length", String(Buffer.byteLength(text))); return this.end(text); };
+    \\    try {
+    \\      for (const handler of middleware) await new Promise((resolve, reject) => { let called = false; const next = error => { if (called) return; called = true; error ? reject(error) : resolve(); }; try { const result = handler(request, response, next); if (result && typeof result.then === "function") result.catch(next); } catch (error) { next(error); } });
+    \\      const route = routes.find(entry => entry.method === String(request.method || "GET").toUpperCase() && entry.path === parsed.pathname);
+    \\      if (!route) return response.status(404).send("Not Found");
+    \\      return await route.handler(request, response);
+    \\    } catch (error) {
+    \\      app.emit("error", error);
+    \\      if (!closed) response.status(500).send("Internal Server Error");
+    \\    }
+    \\  };
+    \\  app.use = function(handler) { if (typeof handler !== "function") throw new TypeError("Express middleware must be a function"); middleware.push(handler); return app; };
+    \\  for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) app[method.toLowerCase()] = function(path, handler) { routes.push({ method, path: String(path), handler }); return app; };
+    \\  app.on = function(name, handler) { if (typeof handler === "function") (events[String(name)] || (events[String(name)] = [])).push(handler); return app; };
+    \\  app.emit = function(name) { const args = Array.prototype.slice.call(arguments, 1); for (const handler of (events[String(name)] || []).slice()) handler.apply(app, args); return (events[String(name)] || []).length > 0; };
+    \\  app.listen = function(port, callback) { const server = globalThis.__home_modules["http"].createServer(app); server.listen(port, () => { const address = server.address(); if (typeof callback === "function") callback(null, address.address, address.port); }); return server; };
+    \\  return app;
+    \\}
+    \\__home_express.json = __home_express_json;
+    \\globalThis.__home_modules["express"] = { default: __home_express, Application: Function, Request: Object, Response: Object, json: __home_express_json };
+    \\globalThis.__home_modules["body-parser"] = { json: __home_express_json };
+    \\const __home_cp1251_special = [0x0402,0x0403,0x201a,0x0453,0x201e,0x2026,0x2020,0x2021,0x20ac,0x2030,0x0409,0x2039,0x040a,0x040c,0x040b,0x040f,0x0452,0x2018,0x2019,0x201c,0x201d,0x2022,0x2013,0x2014,0xfffd,0x2122,0x0459,0x203a,0x045a,0x045c,0x045b,0x045f,0x00a0,0x040e,0x045e,0x0408,0x00a4,0x0490,0x00a6,0x00a7,0x0401,0x00a9,0x0404,0x00ab,0x00ac,0x00ad,0x00ae,0x0407,0x00b0,0x00b1,0x0406,0x0456,0x0491,0x00b5,0x00b6,0x00b7,0x0451,0x2116,0x0454,0x00bb,0x0458,0x0405,0x0455,0x0457];
+    \\function __home_iconv_encoding(value) { return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+    \\function __home_iconv_cp1251_decode(value) { let text = ""; for (const byte of Buffer.from(value)) text += String.fromCodePoint(byte < 0x80 ? byte : byte >= 0xc0 ? 0x0410 + byte - 0xc0 : __home_cp1251_special[byte - 0x80]); return text; }
+    \\function __home_iconv_cp1251_encode(value) { const reverse = Object.create(null); for (let byte = 0x80; byte < 0xc0; byte++) reverse[__home_cp1251_special[byte - 0x80]] = byte; const bytes = []; for (const character of String(value)) { const point = character.codePointAt(0); if (point < 0x80) bytes.push(point); else if (point >= 0x0410 && point <= 0x044f) bytes.push(0xc0 + point - 0x0410); else bytes.push(reverse[point] === undefined ? 0x3f : reverse[point]); } return Buffer.from(bytes); }
+    \\const __home_iconv_lite = {
+    \\  decode(value, encoding) { const normalized = __home_iconv_encoding(encoding); if (!this.encodingExists(normalized)) throw new Error("Encoding not recognized: " + String(encoding)); if (normalized === "win1251" || normalized === "windows1251") return __home_iconv_cp1251_decode(value); return Buffer.from(value).toString(normalized === "utf8" ? "utf8" : normalized === "utf16le" ? "utf16le" : "latin1"); },
+    \\  encode(value, encoding) { const normalized = __home_iconv_encoding(encoding); if (!this.encodingExists(normalized)) throw new Error("Encoding not recognized: " + String(encoding)); if (normalized === "win1251" || normalized === "windows1251") return __home_iconv_cp1251_encode(value); return Buffer.from(String(value), normalized === "utf8" ? "utf8" : normalized === "utf16le" ? "utf16le" : "latin1"); },
+    \\  encodingExists(encoding) { return ["ascii", "usascii", "latin1", "win1251", "windows1251", "utf8", "utf16le"].includes(__home_iconv_encoding(encoding)); },
+    \\};
+    \\__home_iconv_lite.default = __home_iconv_lite;
+    \\globalThis.__home_modules["iconv-lite"] = __home_iconv_lite;
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -54098,9 +54158,15 @@ const harness_prelude =
     \\      if (typeof callback === "function") Promise.resolve().then(() => callback());
     \\      return true;
     \\    }
-    \\    const requestText = __home_net_latin1(bytes);
+    \\    const requestBytes = socket.__home_h2c_pending;
+    \\    const requestText = __home_net_latin1(requestBytes);
     \\    const headerEnd = requestText.indexOf("\r\n\r\n");
     \\    if (headerEnd === -1) return true;
+    \\    const contentLengthMatch = requestText.slice(0, headerEnd).match(/(?:^|\r\n)Content-Length:\s*(\d+)/i);
+    \\    const contentLength = contentLengthMatch ? Number(contentLengthMatch[1]) : 0;
+    \\    if (requestBytes.length < headerEnd + 4 + contentLength) return true;
+    \\    const rawBody = requestBytes.slice(headerEnd + 4, headerEnd + 4 + contentLength);
+    \\    socket.__home_h2c_pending = requestBytes.slice(headerEnd + 4 + contentLength);
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/http/hspec.test.ts")) {
     \\      const status = __home_http_raw_request_status(requestText);
     \\      if (status !== 200) {
@@ -54191,9 +54257,10 @@ const harness_prelude =
     \\      Promise.resolve().then(() => socket.emit("error", new Error("ECONNREFUSED")));
     \\      return true;
     \\    }
-    \\    Promise.resolve(handle.fetch(new Request(origin + path, { method, headers }))).then(response => {
+    \\    Promise.resolve(handle.fetch({ url: origin + path, method, headers, __home_raw_body: Buffer.from(rawBody).toString() })).then(response => {
     \\      return Promise.resolve(response && typeof response.text === "function" ? response.text() : "").then(body => {
     \\        socket.emit("data", Buffer.from(__home_http_raw_response_text(response, body)));
+    \\        if (String(headers.get("connection") || "").toLowerCase() === "close") socket.emit("end");
     \\      });
     \\    }, error => socket.emit("error", error));
     \\    if (typeof callback === "function") Promise.resolve().then(() => callback());
@@ -56778,10 +56845,13 @@ const harness_prelude =
     \\        stopped: false,
     \\        fetch(request) {
     \\          return new Promise(resolve => {
+    \\            const parsedRequestUrl = new URL(request && request.url || origin + "/");
     \\            const serverRequest = Object.assign(__home_http_event_target(), {
     \\              method: String(request && request.method || "GET").toUpperCase(),
     \\              headers: request && request.headers ? request.headers : new Headers(),
-    \\              url: request && request.url ? new URL(request.url).pathname : "/",
+    \\              url: parsedRequestUrl.pathname + parsedRequestUrl.search,
+    \\              __home_raw_body: request && request.__home_raw_body,
+    \\              __home_web_request: request,
     \\              resume() { this.__home_resumed = true; return this; },
     \\            });
     \\            const responseEvents = __home_http_event_target();
@@ -75550,11 +75620,11 @@ fn isJsIdentifierStart(byte: u8) bool {
 /// namespace object directly. Matches the per-file hardcoded `.default` patches.
 fn moduleDefaultExportIsApi(name: []const u8) bool {
     const defaulted = [_][]const u8{
-        "fs",                 "node:fs",
-        "fs/promises",        "node:fs/promises",
-        "zlib",               "node:zlib",
-        "ws",                 "fastify",
-        "@fastify/websocket",
+        "fs",          "node:fs",
+        "fs/promises", "node:fs/promises",
+        "zlib",        "node:zlib",
+        "ws",          "fastify",
+        "express",     "@fastify/websocket",
     };
     for (defaulted) |m| {
         if (std.mem.eql(u8, name, m)) return true;
@@ -75767,6 +75837,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "@napi-rs/canvas",
         "jimp",
         "astro",
+        "body-parser",
+        "express",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -100316,6 +100388,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/@fastify/websocket/fastity-test-websocket.test.js", .passed = 1 },
         .{ .path = "js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts", .passed = 1 },
         .{ .path = "js/third_party/astro/astro-post.test.js", .passed = 4 },
+        .{ .path = "js/third_party/body-parser/express-body-parser-test.test.ts", .passed = 3 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
