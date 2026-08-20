@@ -141518,7 +141518,11 @@ pub const Checker = struct {
         for (0..2) |phase| {
             for (elements, 0..) |element, index| {
                 if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
-                const raw_target = self.tupleElementType(param_t, index);
+                const raw_target = (try self.contextualSymbolicTupleElementTypeAt(
+                    param_t,
+                    index,
+                    elements.len,
+                )) orelse self.tupleElementType(param_t, index);
                 if (raw_target == types.Primitive.none) continue;
                 const defer_contextual = self.contextualFunctionParametersContainFreeType(element, raw_target);
                 if (phase == 1 and !defer_contextual) continue;
@@ -200592,6 +200596,17 @@ test "checker: tuple rest inference unions unrelated primitive candidates" {
     const s = try newSetup(
         \\declare function f<T, U>(value: [T, ...U[]]): [T, U];
         \\const result = f([1, "hello", true]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: middle tuple rest inference maps trailing fixed candidate from the end" {
+    const s = try newSetup(
+        \\declare function f<T, U>(value: [T, ...unknown[], U]): [T, U];
+        \\const pair = f([1, "middle", true]);
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
