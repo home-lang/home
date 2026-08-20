@@ -57346,6 +57346,8 @@ const harness_prelude =
     \\          });
     \\        },
     \\      };
+    \\      globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(this.__home_port)] = globalThis.__home_serve_handles_by_origin[origin];
+    \\      globalThis.__home_serve_handles_by_origin["http://[::1]:" + String(this.__home_port)] = globalThis.__home_serve_handles_by_origin[origin];
     \\      if (typeof callback === "function") this.once("listening", callback);
     \\      Promise.resolve().then(() => this.emit("listening"));
     \\      return this;
@@ -57357,6 +57359,8 @@ const harness_prelude =
     \\      for (const websocketServer of this.__home_ws_servers) websocketServer.__home_unbind_port(this.__home_port);
     \\      delete __home_http_servers[this.__home_port];
     \\      delete globalThis.__home_serve_handles_by_origin["http://localhost:" + String(this.__home_port)];
+    \\      delete globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(this.__home_port)];
+    \\      delete globalThis.__home_serve_handles_by_origin["http://[::1]:" + String(this.__home_port)];
     \\      if (typeof callback === "function") this.once("close", callback);
     \\      Promise.resolve().then(() => this.emit("close"));
     \\    },
@@ -100901,6 +100905,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/esbuild/esbuild-child_process.test.ts", .passed = 1 },
         .{ .path = "js/third_party/express/app.router.test.ts", .passed = 77, .todo = 45 },
         .{ .path = "js/third_party/express/express.json.test.ts", .passed = 47, .todo = 7 },
+        .{ .path = "js/third_party/express/express.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
