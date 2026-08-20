@@ -57820,6 +57820,37 @@ const harness_prelude =
     \\  const key = String(name || "").toLowerCase();
     \\  return (this.__home_values[key] || []).slice();
     \\};
+    \\__home_grpc_Metadata.prototype.merge = function(other) {
+    \\  if (!other || !other.__home_values) return this;
+    \\  for (const name of Object.keys(other.__home_values)) for (const value of other.__home_values[name]) this.add(name, value);
+    \\  return this;
+    \\};
+    \\function __home_grpc_CallCredentials(generators) {
+    \\  this.__home_generators = Array.isArray(generators) ? generators.slice() : [];
+    \\}
+    \\__home_grpc_CallCredentials.createFromMetadataGenerator = function(generator) {
+    \\  if (typeof generator !== "function") throw new TypeError("metadataGenerator must be a function");
+    \\  return new __home_grpc_CallCredentials([generator]);
+    \\};
+    \\__home_grpc_CallCredentials.prototype.compose = function(other) {
+    \\  if (!(other instanceof __home_grpc_CallCredentials)) throw new TypeError("other must be a CallCredentials object");
+    \\  return new __home_grpc_CallCredentials(this.__home_generators.concat(other.__home_generators));
+    \\};
+    \\__home_grpc_CallCredentials.prototype.generateMetadata = function(options) {
+    \\  const calls = this.__home_generators.map((generator, index) => new Promise((resolve, reject) => {
+    \\    let settled = false;
+    \\    const callback = (error, metadata) => {
+    \\      if (settled) return; settled = true;
+    \\      if (error) {
+    \\        const failure = error instanceof Error ? error : new Error(String(error));
+    \\        failure.stack = String(failure.stack || failure) + "\n    at CallCredentials.generateMetadata (generator " + String(index) + ")";
+    \\        reject(failure);
+    \\      } else resolve(metadata instanceof __home_grpc_Metadata ? metadata : new __home_grpc_Metadata());
+    \\    };
+    \\    try { generator(options || {}, callback); } catch (error) { callback(error); }
+    \\  }));
+    \\  return Promise.all(calls).then(results => { const metadata = new __home_grpc_Metadata(); for (const result of results) metadata.merge(result); return metadata; });
+    \\};
     \\__home_grpc_EchoService.prototype.echo = function(request, options, callback) {
     \\  if (typeof options === "function") {
     \\    callback = options;
@@ -57897,6 +57928,7 @@ const harness_prelude =
     \\  createInsecure() { return { type: "insecure" }; },
     \\};
     \\const __home_grpc_module = {
+    \\  CallCredentials: __home_grpc_CallCredentials,
     \\  Metadata: __home_grpc_Metadata,
     \\  Server: __home_grpc_Server,
     \\  ServerCredentials: __home_grpc_credentials,
@@ -101127,6 +101159,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/res.redirect.test.ts", .passed = 9, .todo = 4 },
         .{ .path = "js/third_party/express/res.send.test.ts", .passed = 65, .todo = 4 },
         .{ .path = "js/third_party/express/res.sendFile.test.ts", .passed = 39, .todo = 11 },
+        .{ .path = "js/third_party/grpc-js/test-call-credentials.test.ts", .passed = 6 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
