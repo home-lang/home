@@ -137854,8 +137854,7 @@ pub const Checker = struct {
             },
             .conditional => blk: {
                 const c = hir_mod.conditionalOf(self.hir, node);
-                break :blk self.expressionHasObservableSideEffect(c.cond) or
-                    self.expressionHasObservableSideEffect(c.then_branch) or
+                break :blk self.expressionHasObservableSideEffect(c.then_branch) or
                     self.expressionHasObservableSideEffect(c.else_branch);
             },
             else => false,
@@ -155557,7 +155556,7 @@ pub const Checker = struct {
             if (!self.pathIsJsLike(filename)) return null;
         }
         if (!self.fnProvidesCheckJsConstructorInstance(fn_node) and
-            !self.fnHasJsDocClassOrConstructorTag(fn_node)) return null;
+            !self.fnHasJsDocTag(fn_node, "@constructor")) return null;
         return try self.jsConstructorInstanceType(name, anchor);
     }
 
@@ -155573,7 +155572,7 @@ pub const Checker = struct {
             if (!self.pathIsJsLike(filename)) return null;
         }
         if (!self.fnProvidesCheckJsConstructorInstance(fn_node) and
-            !self.fnHasJsDocClassOrConstructorTag(fn_node)) return null;
+            !self.fnHasJsDocTag(fn_node, "@constructor")) return null;
         const instance_t = try self.jsConstructorInstanceType(name, anchor);
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
@@ -208601,10 +208600,12 @@ test "checker: property reads are observable comma operands" {
         \\ns.value, 1;
         \\ns["value"], 2;
         \\value, 3;
+        \\ns.value ? 1 : 2, 4;
+        \\ns.value ? ns.value : 2, 5;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.comma_left_unused));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.comma_left_unused));
 }
 
 test "checker: strict-off undefined assertions stay permissive and truthiness anchors survive wrappers" {
@@ -233004,6 +233005,26 @@ test "checker: propertyless JSDoc constructor is construct-only" {
         "Value of type 'typeof Dependency' is not callable. Did you mean to include 'new'?",
     ));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+}
+
+test "checker: JSDoc class with self-return remains callable under tsgo semantics" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: false
+        \\/** @class */
+        \\function Factory() {
+        \\  if (!(this instanceof Factory)) return new Factory();
+        \\}
+        \\Factory();
+        \\new Factory();
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_only_constructable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_not_void));
 }
 
 test "checker: Boolean + BigInt global call/static access" {
