@@ -44617,6 +44617,40 @@ pub const Checker = struct {
         return best_name;
     }
 
+    fn closestPropertyMemberName(self: *Checker, target_t: TypeId, typo: []const u8) CheckError!?[]const u8 {
+        if (self.closestBaseClassMemberName(target_t, typo)) |suggestion| return suggestion;
+        if (!self.typeHasStringPrimitivePart(target_t)) return null;
+
+        const string_name = self.string_interner.intern("String") catch return error.OutOfMemory;
+        if (self.type_names.get(string_name)) |string_t| {
+            if (self.closestBaseClassMemberName(string_t, typo)) |suggestion| return suggestion;
+        }
+        const proto = lib.stringProto(
+            &self.lib_cache,
+            self.interner,
+            self.string_interner,
+            self.gpa,
+            &self.rest_signatures,
+        ) catch return null;
+        if (self.closestBaseClassMemberName(proto, typo)) |suggestion| return suggestion;
+
+        const legacy_members = [_][]const u8{
+            "anchor", "big", "blink", "bold", "fixed", "fontcolor", "fontsize",
+            "italics", "link", "small", "strike", "sub", "sup",
+        };
+        const threshold: usize = @min((typo.len * 4) / 10, @as(usize, 4));
+        var best_name: []const u8 = "";
+        var best_dist: usize = std.math.maxInt(usize);
+        for (legacy_members) |candidate| {
+            const distance = spellingSuggestionDistanceIcase(typo, candidate);
+            if (distance < best_dist) {
+                best_name = candidate;
+                best_dist = distance;
+            }
+        }
+        return if (best_name.len > 0 and best_dist <= threshold) best_name else null;
+    }
+
     fn collectClosestMember(
         self: *Checker,
         pt: TypeId,
@@ -99626,7 +99660,8 @@ pub const Checker = struct {
                                     self.rest_signatures.contains(effective_sig) and
                                     (selected_applicable == types.Primitive.none or
                                         !self.rest_signatures.contains(selected_applicable));
-                                if (try self.signatureAccepts(node, effective_sig, args, arg_types.items) and
+                                if (try self.inferredCallSatisfiesGenericConstraints(sig, args, arg_types.items) and
+                                    try self.signatureAccepts(node, effective_sig, args, arg_types.items) and
                                     (selected_applicable == types.Primitive.none or
                                         prefers_rest_for_array_spread or
                                         self.signatureHasMoreExactAnyMatches(effective_sig, selected_applicable, args, arg_types.items)))
@@ -111068,9 +111103,8 @@ pub const Checker = struct {
         arg_types: []const TypeId,
         last_sig: TypeId,
     ) CheckError!void {
-        const effective_sig = self.instantiateSignatureFromArgs(last_sig, args, arg_types) catch last_sig;
-        const chain = (try self.lastOverloadArgumentErrorChain(call_node, args, arg_types, effective_sig)) orelse &.{};
-        const error_node = if (try self.signatureArgumentErrorEntry(call_node, args, arg_types, effective_sig)) |arg_error|
+        const chain = (try self.lastOverloadArgumentErrorChain(call_node, args, arg_types, last_sig)) orelse &.{};
+        const error_node = if (try self.overloadSignatureArgumentErrorEntry(call_node, args, arg_types, last_sig)) |arg_error|
             arg_error.node
         else
             call_node;
@@ -111102,6 +111136,16 @@ pub const Checker = struct {
         arg_types: []const TypeId,
         overloads: []const TypeId,
     ) CheckError!void {
+        var last_arity_compatible: ?TypeId = null;
+        for (overloads) |sig| {
+            if (self.callArityFitsSignature(call_node, sig, args)) last_arity_compatible = sig;
+        }
+        if (last_arity_compatible) |sig| {
+            if (try self.genericConstraintArgumentErrorEntry(args, arg_types, sig) != null) {
+                try self.reportNoOverloadMatchesWithLastOverload(call_node, args, arg_types, sig);
+                return;
+            }
+        }
         if (overloads.len >= 2 and overloads.len <= 3) {
             const chain = try self.overloadArgumentErrorChains(call_node, args, arg_types, overloads);
             if (chain.len > 0) {
@@ -111186,7 +111230,7 @@ pub const Checker = struct {
         arg_types: []const TypeId,
         sig: TypeId,
     ) CheckError!?[]const DiagnosticChainEntry {
-        const arg_error = (try self.signatureArgumentErrorEntry(call_node, args, arg_types, sig)) orelse return null;
+        const arg_error = (try self.overloadSignatureArgumentErrorEntry(call_node, args, arg_types, sig)) orelse return null;
         const arena = self.diag_arena.allocator();
         const outer = try arena.alloc(DiagnosticChainEntry, 1);
         const child = try arena.alloc(DiagnosticChainEntry, 1);
@@ -111203,6 +111247,20 @@ pub const Checker = struct {
         node: NodeId,
         entry: DiagnosticChainEntry,
     };
+
+    fn overloadSignatureArgumentErrorEntry(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        sig: TypeId,
+    ) CheckError!?SignatureArgumentError {
+        if (try self.genericConstraintArgumentErrorEntry(args, arg_types, sig)) |constraint_error| {
+            return constraint_error;
+        }
+        const effective_sig = self.instantiateSignatureFromArgs(sig, args, arg_types) catch sig;
+        return try self.signatureArgumentErrorEntry(call_node, args, arg_types, effective_sig);
+    }
 
     fn signatureArgumentErrorEntry(
         self: *Checker,
@@ -113466,6 +113524,75 @@ pub const Checker = struct {
         try self.applyInferredConditionalConstraintsFromCallArgs(self.interner.signatureParams(sig), arg_types, &subs);
         try self.applyInferredConditionalConstraintsToSubs(sig, &subs);
         return self.substituteType(sig, &subs) catch sig;
+    }
+
+    fn inferredCallSatisfiesGenericConstraints(
+        self: *Checker,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!bool {
+        return try self.genericConstraintArgumentErrorEntry(args, arg_types, sig) == null;
+    }
+
+    fn genericConstraintArgumentErrorEntry(
+        self: *Checker,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        sig: TypeId,
+    ) CheckError!?SignatureArgumentError {
+        if (self.generic_signature_params.get(sig) == null) return null;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferCallSubstitutions(sig, args, arg_types, &subs);
+        try self.normalizeCallInferenceSubstitutions(sig, &subs);
+        try self.applyInferredConditionalConstraintsFromCallArgs(self.interner.signatureParams(sig), arg_types, &subs);
+        try self.applyInferredConditionalConstraintsToSubs(sig, &subs);
+
+        const param_ts = self.interner.signatureParams(sig);
+        var arg_i: usize = 0;
+        while (arg_i < args.len and arg_i < arg_types.len) : (arg_i += 1) {
+            const fixed_pos = self.fixedParamPositionBeforeArg(args, arg_types, arg_i);
+            if (fixed_pos >= param_ts.len) continue;
+            const type_param = param_ts[fixed_pos];
+            if (type_param >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(type_param).is_type_parameter)
+            {
+                continue;
+            }
+            const candidate = subs.get(type_param) orelse arg_types[arg_i];
+            if (candidate == types.Primitive.any or
+                candidate == types.Primitive.unknown or
+                candidate == types.Primitive.never)
+            {
+                continue;
+            }
+            const raw_constraint = self.typeParameterConstraint(type_param) orelse continue;
+            if (raw_constraint == types.Primitive.any or
+                raw_constraint == types.Primitive.unknown or
+                raw_constraint == types.Primitive.none)
+            {
+                continue;
+            }
+            const constraint = self.substituteType(raw_constraint, &subs) catch raw_constraint;
+            const satisfies = !self.strictNullishInferenceExcludedByConstraint(candidate, constraint) and
+                ((try self.literalSatisfiesRecursiveTemplatePathConstraint(raw_constraint, candidate, &subs)) or
+                    self.functionObjectTargetAcceptsArgument(candidate, constraint, 0) or
+                    (!self.builtinFunctionSourceCannotSatisfyCallTarget(candidate, constraint) and
+                        (try self.genericConstraintAssignable(candidate, constraint))));
+            if (satisfies) continue;
+
+            const message = (try self.formatNullishLiteralArgumentNotAssignable(args[arg_i], constraint)) orelse
+                try self.formatArgumentNotAssignable(arg_types[arg_i], constraint, arg_i);
+            return .{
+                .node = args[arg_i],
+                .entry = .{
+                    .code = TsCodes.argument_type_mismatch,
+                    .message = message,
+                },
+            };
+        }
+        return null;
     }
 
     fn normalizeCallInferenceSubstitutions(
@@ -135116,7 +135243,7 @@ pub const Checker = struct {
             // constituent has a close member name.
             const target_is_union = target_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target_t).is_union;
             if (!target_is_union and !self.memberNameIsEcmaPrivate(name)) {
-                if (self.closestBaseClassMemberName(target_t, name_str)) |suggestion| {
+                if (try self.closestPropertyMemberName(target_t, name_str)) |suggestion| {
                     // In an unchecked `.js` file (JS-like, no checkJs),
                     // upstream softens this to TS2568 "may not exist" and
                     // emits it as a SUGGESTION rather than an error.
@@ -207261,6 +207388,39 @@ test "checker: tagged template overloads distinguish synthetic strings from ordi
     try T.expectEqualStrings("Expected 1-3 arguments, but got 4.", s.checker.diagnostics.items[7].message);
 }
 
+test "checker: tagged template overload selection rejects inferred constraint violations" {
+    const s = try newSetup(
+        \\function fn<T extends string, U extends number>(strs: TemplateStringsArray, n: T, m: U): void;
+        \\function fn<T extends number, U extends string>(strs: TemplateStringsArray, n: T, m: U): void;
+        \\function fn(...stuff: any[]): void {}
+        \\fn `${""}${3}`;
+        \\fn `${3}${""}`;
+        \\fn `${3}${undefined}`;
+        \\fn `${""}${null}`;
+        \\fn `${null}${null}`;
+        \\fn `${true}${null}`;
+        \\fn `${null}${true}`;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    var saw_last_overload_constraint = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.no_overload_matches) continue;
+        for (diagnostic.chain) |entry| {
+            for (entry.children) |child| {
+                if (std.mem.eql(u8, child.message, "Argument of type 'undefined' is not assignable to parameter of type 'string'.")) {
+                    saw_last_overload_constraint = true;
+                }
+            }
+        }
+    }
+    try T.expect(saw_last_overload_constraint);
+}
+
 test "checker: tagged template callback can return object spread identity" {
     const s = try newSetup(
         \\interface Stuff { x: number; y: string; z: boolean; }
@@ -230942,6 +231102,22 @@ test "checker: TS2551 did-you-mean for misspelled property access" {
             try T.expectEqualStrings("Property 'widht' does not exist on type 'Box'. Did you mean 'width'?", d.message);
         }
     }
+}
+
+test "checker: TS2551 suggests primitive string prototype members" {
+    const s = try newSetup(
+        \\declare const value: string;
+        \\value.toFixed();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.property_does_not_exist_did_you_mean, s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings(
+        "Property 'toFixed' does not exist on type 'string'. Did you mean 'fixed'?",
+        s.checker.diagnostics.items[0].message,
+    );
 }
 
 test "checker: TS2551 does NOT fire when no similar property exists" {
