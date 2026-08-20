@@ -152901,6 +152901,7 @@ pub const Checker = struct {
         if (try self.mappedArgumentAssignableWithReverseInference(arg_t, param_t)) return true;
         if (self.mappedArrayLikeArgumentAssignable(arg_t, param_t)) return true;
         if (try self.deferredConditionalSourceAssignableToTarget(arg_t, param_t)) |ok| return ok;
+        if (self.indexedSourceToOpenStringIndexTargetRelation(arg_t, param_t)) |ok| return ok;
         if (try self.checkerAssignableTo(arg_t, param_t)) return true;
         return self.engine.isAssignableTo(arg_t, param_t);
     }
@@ -221510,6 +221511,12 @@ test "checker: repeated var mismatch compares unknown array call result" {
         try T.expect(std.mem.indexOf(u8, diag.message, "Variable 'v1' must be of type 'Function[]', but here has type 'unknown[]'.") != null);
     }
     try T.expect(saw_2403);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'NumberMap<Function>' is not assignable to parameter of type 'StringMap<unknown>'.",
+    ));
 }
 
 test "checker: subsequent var mismatch respects private class origins" {
