@@ -27004,6 +27004,11 @@ pub const Checker = struct {
                 if (b.op != .comma or b.rhs != fn_node) return null;
                 return self.contextualTargetTypeForExpression(parent);
             },
+            .conditional => {
+                const conditional = hir_mod.conditionalOf(self.hir, parent);
+                if (conditional.then_branch != fn_node and conditional.else_branch != fn_node) return null;
+                return self.contextualTargetTypeForExpression(parent);
+            },
             .array_literal => return self.contextualArrayLiteralFunctionElementTarget(fn_node, parent) catch null,
             .var_decl, .let_decl, .const_decl => {
                 const v = hir_mod.varDeclOf(self.hir, parent);
@@ -27295,6 +27300,27 @@ pub const Checker = struct {
         if (!self.interner.isSignature(target_sig)) return source_t;
         if (source_t != types.Primitive.none and !self.interner.isSignature(source_t)) return source_t;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        const target_params = self.interner.signatureParams(target_sig);
+        const param_nodes = hir_mod.fnParams(self.hir, fn_node);
+        const source_params = if (source_t != types.Primitive.none)
+            self.interner.signatureParams(source_t)
+        else
+            &.{};
+        var contextual_params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer contextual_params.deinit(self.gpa);
+        try contextual_params.ensureTotalCapacity(self.gpa, param_nodes.len);
+        for (param_nodes, 0..) |param_node, i| {
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            const param_t = if (param.type_annotation != hir_mod.none_node_id and i < source_params.len)
+                source_params[i]
+            else if (i < target_params.len)
+                target_params[i]
+            else if (i < source_params.len)
+                source_params[i]
+            else
+                types.Primitive.any;
+            contextual_params.appendAssumeCapacity(param_t);
+        }
         const contextual_predicate = self.signature_predicates.get(target_sig);
         const source_ret = if (f.flags.is_generator)
             try self.inferredGeneratorTypeForFunction(fn_node, f, false)
@@ -27311,6 +27337,11 @@ pub const Checker = struct {
             else
                 self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
         } else if (f.body != hir_mod.none_node_id) blk: {
+            if (try self.contextualFunctionBodyExpressionType(
+                f.body,
+                param_nodes,
+                contextual_params.items,
+            )) |contextual_body_t| break :blk contextual_body_t;
             const body_t = self.hir.typeOf(f.body);
             break :blk if (body_t != types.Primitive.none) body_t else try self.checkExpression(f.body);
         } else if (source_t != types.Primitive.none)
@@ -27321,17 +27352,22 @@ pub const Checker = struct {
             try self.buildStructuralPromise(source_ret)
         else
             source_ret;
-        const target_params = self.interner.signatureParams(target_sig);
-        const sig = self.interner.internSignature(target_params, effective_source_ret, false) catch return error.OutOfMemory;
+        const sig = self.interner.internSignature(contextual_params.items, effective_source_ret, false) catch return error.OutOfMemory;
         if (self.rest_signatures.contains(target_sig)) try self.rest_signatures.put(self.gpa, sig, {});
         if (self.signature_min_args.get(target_sig)) |min_args| try self.signature_min_args.put(self.gpa, sig, min_args);
         if (contextual_predicate) |predicate| {
             try self.signature_predicates.put(self.gpa, sig, predicate);
         }
-        if (source_t != types.Primitive.none) {
-            try self.copySignatureParamNames(sig, source_t);
-        } else {
-            try self.recordSignatureParamNames(sig, hir_mod.fnParams(self.hir, fn_node));
+        // Signature interning is structural. When the inferred source has
+        // exactly the target shape, `sig == target_sig`; attaching the
+        // source arrow's parameter names would then overwrite the target's
+        // declaration names and corrupt assignment diagnostics.
+        if (sig != target_sig) {
+            if (source_t != types.Primitive.none) {
+                try self.copySignatureParamNames(sig, source_t);
+            } else {
+                try self.recordSignatureParamNames(sig, param_nodes);
+            }
         }
         self.hir.setType(fn_node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
@@ -81206,6 +81242,9 @@ pub const Checker = struct {
                         (self.interner.pool.flagsOf(init_type).is_union or
                             self.interner.pool.flagsOf(init_type).is_intersection)) and
                     self.unrelatedTypeParameterAssignment(init_type, declared_type)) break :blk false;
+                if (self.hir.kindOf(v.init) == .conditional) {
+                    break :blk try self.conditionalExpressionAssignableToTarget(v.init, declared_type);
+                }
                 if (try self.genericSignaturesAlphaAssignable(
                     init_type,
                     declared_type,
@@ -85528,16 +85567,32 @@ pub const Checker = struct {
     fn conditionalExpressionAssignableToTarget(self: *Checker, value_node: NodeId, target_t: TypeId) CheckError!bool {
         if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .conditional) return false;
         const c = hir_mod.conditionalOf(self.hir, value_node);
-        const then_t = if (self.hir.typeOf(c.then_branch) != types.Primitive.none)
+        var then_t = if (self.hir.typeOf(c.then_branch) != types.Primitive.none)
             self.hir.typeOf(c.then_branch)
         else
             try self.checkExpression(c.then_branch);
-        const else_t = if (self.hir.typeOf(c.else_branch) != types.Primitive.none)
+        var else_t = if (self.hir.typeOf(c.else_branch) != types.Primitive.none)
             self.hir.typeOf(c.else_branch)
         else
             try self.checkExpression(c.else_branch);
-        return (try self.expressionNodeAssignableToTarget(c.then_branch, then_t, target_t)) and
-            (try self.expressionNodeAssignableToTarget(c.else_branch, else_t, target_t));
+        const target_sig = self.firstSignatureType(target_t);
+        if (target_sig) |sig| {
+            if (self.isContextualFunctionExpressionLike(c.then_branch)) {
+                then_t = try self.contextualFunctionSignatureWithInferredReturn(c.then_branch, sig);
+            }
+            if (self.isContextualFunctionExpressionLike(c.else_branch)) {
+                else_t = try self.contextualFunctionSignatureWithInferredReturn(c.else_branch, sig);
+            }
+        }
+        const then_ok = if (target_sig != null and self.isContextualFunctionExpressionLike(c.then_branch))
+            try self.contextualFunctionSignatureAssignable(then_t, target_sig.?)
+        else
+            try self.expressionNodeAssignableToTarget(c.then_branch, then_t, target_t);
+        const else_ok = if (target_sig != null and self.isContextualFunctionExpressionLike(c.else_branch))
+            try self.contextualFunctionSignatureAssignable(else_t, target_sig.?)
+        else
+            try self.expressionNodeAssignableToTarget(c.else_branch, else_t, target_t);
+        return then_ok and else_ok;
     }
 
     fn conditionalArrayBranchesAssignableToTupleUnion(self: *Checker, value_node: NodeId, target_t: TypeId) CheckError!bool {
@@ -92883,6 +92938,42 @@ pub const Checker = struct {
             return init_t;
         if (target_flags.is_enum_literal) return init_t;
         return self.widenLiteralType(init_t);
+    }
+
+    fn allocConditionalFunctionUnionDisplayName(
+        self: *Checker,
+        conditional: hir_mod.ConditionalPayload,
+        then_t: TypeId,
+        else_t: TypeId,
+    ) CheckError!?[]const u8 {
+        const branches = [_]NodeId{ conditional.then_branch, conditional.else_branch };
+        const branch_types = [_]TypeId{ then_t, else_t };
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        for (branches, branch_types, 0..) |branch, branch_t, branch_index| {
+            if (!self.isContextualFunctionExpressionLike(branch)) return null;
+            const sig = self.firstSignatureType(branch_t) orelse return null;
+            const type_params = self.interner.signatureParams(sig);
+            const params = hir_mod.fnParams(self.hir, branch);
+            if (params.len != type_params.len) return null;
+            if (branch_index != 0) try out.appendSlice(arena, " | ");
+            try out.appendSlice(arena, "((");
+            for (params, type_params, 0..) |param_node, param_t, param_index| {
+                if (self.hir.kindOf(param_node) != .parameter) return null;
+                const param = hir_mod.parameterOf(self.hir, param_node);
+                if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier) return null;
+                if (param_index != 0) try out.appendSlice(arena, ", ");
+                try out.appendSlice(arena, self.string_interner.get(hir_mod.identifierOf(self.hir, param.name).name));
+                try out.appendSlice(arena, ": ");
+                const param_name = (try self.allocSignatureConstituentDisplayName(param_t)) orelse return null;
+                try out.appendSlice(arena, param_name);
+            }
+            try out.appendSlice(arena, ") => ");
+            const return_name = (try self.allocSignatureReturnDisplayName(sig)) orelse return null;
+            try out.appendSlice(arena, return_name);
+            try out.append(arena, ')');
+        }
+        return out.items;
     }
 
     fn unnarrowedAnnotatedUnionType(self: *Checker, node: NodeId) ?TypeId {
@@ -138281,6 +138372,7 @@ pub const Checker = struct {
     fn checkConditional(self: *Checker, node: NodeId) CheckError!TypeId {
         const c = hir_mod.conditionalOf(self.hir, node);
         const cond_t = try self.checkExpression(c.cond);
+        try self.reportVoidTruthiness(c.cond, cond_t);
         try self.reportKnownTruthyCallableCondition(c.cond, cond_t, c.then_branch);
         try self.reportStaticTruthiness(c.cond);
         // TS narrows through `cond ? then : else`: the test expression's
@@ -138322,8 +138414,12 @@ pub const Checker = struct {
         body: NodeId,
     ) CheckError!void {
         if (!self.strict_flags.strict_null_checks) return;
-        if (cond == hir_mod.none_node_id or self.hir.kindOf(cond) != .identifier) return;
-        const tested_name = hir_mod.identifierOf(self.hir, cond).name;
+        if (cond == hir_mod.none_node_id) return;
+        const tested_name = switch (self.hir.kindOf(cond)) {
+            .identifier => hir_mod.identifierOf(self.hir, cond).name,
+            .member_access => (self.identifierRootedMemberKey(cond) orelse return).obj_name,
+            else => return,
+        };
         var refs = std.AutoHashMapUnmanaged(hir_mod.StringId, void).empty;
         defer refs.deinit(self.gpa);
         try self.collectIdentifierRefs(body, &refs);
@@ -138377,9 +138473,9 @@ pub const Checker = struct {
             },
             .literal_number => {
                 const value = hir_mod.literalNumberOf(self.hir, node);
-                if (value == 0) {
-                    try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-                } else {
+                // TypeScript deliberately permits `while (0)` / `while (1)`
+                // idioms in every truthiness slot, including conditionals.
+                if (value != 0 and value != 1) {
                     try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
                 }
             },
@@ -159749,7 +159845,34 @@ pub const Checker = struct {
         if ((try self.missingEcmaPrivateMemberAssignmentChainForNodes(source, init_node, target_node)) != null) {
             return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
         }
+        if (try self.tryReportConditionalFunctionVarDeclMismatch(node, init_node, target_node, target)) return;
         try self.reportTypeNotAssignable(node, source, target, fallback);
+    }
+
+    fn tryReportConditionalFunctionVarDeclMismatch(
+        self: *Checker,
+        node: NodeId,
+        init_node: NodeId,
+        target_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .conditional) return false;
+        const conditional = hir_mod.conditionalOf(self.hir, init_node);
+        const then_t = self.hir.typeOf(conditional.then_branch);
+        const else_t = self.hir.typeOf(conditional.else_branch);
+        if (then_t == types.Primitive.none or else_t == types.Primitive.none) return false;
+        const source_name = (try self.allocConditionalFunctionUnionDisplayName(conditional, then_t, else_t)) orelse return false;
+        const target_name = if (self.visibleAnnotatedIdentifierTypeNode(target_node)) |annotation|
+            try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(annotation))
+        else
+            (try self.allocSimpleTypeName(target_t)) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(node, TsCodes.type_not_assignable, msg);
+        return true;
     }
 
     /// Prefer source annotation text when an intersection contains a call
@@ -181335,6 +181458,41 @@ test "checker: TS2872 anchors at opening paren for conditional-expression cond" 
         }
     }
     try T.expect(found_at_paren);
+}
+
+test "checker: conditional truthiness follows void callable and numeric semantics" {
+    const source =
+        \\declare function returnsVoid(): void;
+        \\declare var text: string;
+        \\returnsVoid() ? "yes" : "no";
+        \\text.toUpperCase ? "yes" : "no";
+        \\0 ? "yes" : "no";
+        \\1 ? "yes" : "no";
+        \\2 ? "yes" : "no";
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.void_truthiness));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.condition_function_always_defined));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_always_truthy));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expression_always_falsy));
+}
+
+test "checker: conditional callback branches retain inferred return types" {
+    const s = try newSetup(
+        \\declare class X { n: number; s: string }
+        \\let asNumber: (value: X) => number = true ? value => value.n : value => value.s;
+        \\let asString: (value: X) => string = true ? value => value.n : value => value.s;
+        \\let asBoolean: (value: X) => boolean = true ? value => value.n : value => value.s;
+        \\let asUnion: (value: X) => number | string = true ? value => value.n : value => value.s;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2367 widens boolean literal when other side is symbol" {
