@@ -99656,6 +99656,15 @@ pub const Checker = struct {
                                     .code = TsCodes.no_overload_expects_n_args_but_others_exist,
                                     .message = msg,
                                 });
+                            } else if (try self.reportOverloadSetBoundaryArity(
+                                node,
+                                args,
+                                arg_types.items,
+                                overloads,
+                            )) {
+                                // The supplied count lies outside the entire
+                                // visible overload range, so TS2554 above is
+                                // the complete diagnostic.
                             } else {
                                 const diag_start = self.diagnostics.items.len;
                                 try self.reportNoOverloadMatchesWithOverloads(node, args, arg_types.items, overloads);
@@ -110980,6 +110989,7 @@ pub const Checker = struct {
             if (param_t >= self.interner.pool.typeCount()) continue;
             if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
             if (self.taggedTemplateStringsArrayArg(call_node, args, arg_i, param_t)) continue;
+            if (self.ordinaryArrayLiteralMissingTemplateStringsRaw(call_node, args, arg_i, sig, fixed_pos, param_t)) return false;
             if (try self.literalExpressionAssignableToTarget(arg, param_t)) continue;
             if (try self.templateExpressionAssignableToType(arg, param_t)) continue;
             const arg_t = arg_types[arg_i];
@@ -111212,6 +111222,15 @@ pub const Checker = struct {
             if (param_t >= self.interner.pool.typeCount()) continue;
             if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
             if (self.taggedTemplateStringsArrayArg(call_node, args, arg_i, param_t)) continue;
+            if (self.ordinaryArrayLiteralMissingTemplateStringsRaw(call_node, args, arg_i, sig, fixed_pos, param_t)) {
+                return .{
+                    .node = arg,
+                    .entry = .{
+                        .code = TsCodes.property_missing_required,
+                        .message = try self.templateStringsArrayMissingRawMessage(arg, arg_types[arg_i]),
+                    },
+                };
+            }
             if (try self.literalExpressionAssignableToTarget(arg, param_t)) continue;
             if (try self.templateExpressionAssignableToType(arg, param_t)) continue;
 
@@ -111273,6 +111292,44 @@ pub const Checker = struct {
         if (self.hir.kindOf(args[0]) != .array_literal) return false;
         if (!self.callExprIsTaggedTemplate(call_node)) return false;
         return self.typeIsTemplateStringsArray(param_t);
+    }
+
+    fn ordinaryArrayLiteralMissingTemplateStringsRaw(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_i: usize,
+        sig: TypeId,
+        param_i: usize,
+        param_t: TypeId,
+    ) bool {
+        if (arg_i != 0 or args.len == 0) return false;
+        if (self.hir.kindOf(args[0]) != .array_literal) return false;
+        if (self.callExprIsTaggedTemplate(call_node)) return false;
+        if (self.typeIsTemplateStringsArray(param_t)) return true;
+
+        const param_nodes = self.signature_param_nodes.get(sig) orelse return false;
+        if (param_i >= param_nodes.len) return false;
+        const param_node = param_nodes[param_i];
+        if (self.hir.kindOf(param_node) != .parameter) return false;
+        const annotation = hir_mod.parameterOf(self.hir, param_node).type_annotation;
+        if (annotation == hir_mod.none_node_id or self.hir.kindOf(annotation) != .type_ref) return false;
+        const ref = hir_mod.typeRefOf(self.hir, annotation);
+        return ref.qualifier_len == 0 and
+            std.mem.eql(u8, self.string_interner.get(ref.name), "TemplateStringsArray");
+    }
+
+    fn templateStringsArrayMissingRawMessage(self: *Checker, source_node: NodeId, source_t: TypeId) CheckError![]const u8 {
+        const source_name = if (self.hir.kindOf(source_node) == .array_literal and
+            hir_mod.arrayLiteralElements(self.hir, source_node).len == 0)
+            "never[]"
+        else
+            (try self.allocSimpleTypeName(source_t)) orelse "never[]";
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property 'raw' is missing in type '{s}' but required in type 'TemplateStringsArray'.",
+            .{source_name},
+        );
     }
 
     fn typeIsTemplateStringsArray(self: *Checker, t: TypeId) bool {
@@ -143464,6 +143521,15 @@ pub const Checker = struct {
                 }
             }
             var arg_t = arg_types[i];
+            if (self.ordinaryArrayLiteralMissingTemplateStringsRaw(call_node, args, i, sig, fixed_pos, param_t)) {
+                try self.diagnostics.append(self.gpa, .{
+                    .node = args[i],
+                    .code = TsCodes.property_missing_required,
+                    .message = try self.templateStringsArrayMissingRawMessage(args[i], arg_t),
+                });
+                stop_after_arg_mismatch = true;
+                continue;
+            }
             // Track whether this arg already triggered the spread-shape
             // diagnostic so the trailing TS2345 fall-through (which
             // checks the IteratorElementType<T> against the param) can
@@ -207161,6 +207227,38 @@ test "checker: tagged template ÃÂ¢ÃÂÃÂ untyped tag (any) yields
     const decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
     const call_expr = decl.init;
     try T.expectEqual(types.Primitive.any, s.hir.typeOf(call_expr));
+}
+
+test "checker: tagged template overloads distinguish synthetic strings from ordinary arrays" {
+    const s = try newSetup(
+        \\function foo(strs: TemplateStringsArray): number;
+        \\function foo(strs: TemplateStringsArray, x: number): string;
+        \\function foo(strs: TemplateStringsArray, x: number, y: number): boolean;
+        \\function foo(strs: TemplateStringsArray, x: number, y: string): {};
+        \\function foo(...stuff: any[]): any { return undefined; }
+        \\foo([]);
+        \\foo([], 1);
+        \\foo([], 1, 2);
+        \\foo([], 1, true);
+        \\foo([], 1, "2");
+        \\foo([], 1, 2, 3);
+        \\foo `${1}${true}`;
+        \\foo `${1}${2}${3}`;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const expected_codes = [_]u32{ 2741, 2741, 2769, 2769, 2769, 2554, 2769, 2554 };
+    try T.expectEqual(expected_codes.len, s.checker.diagnostics.items.len);
+    for (expected_codes, s.checker.diagnostics.items) |code, diagnostic| {
+        try T.expectEqual(code, diagnostic.code);
+    }
+    try T.expectEqualStrings(
+        "Property 'raw' is missing in type 'never[]' but required in type 'TemplateStringsArray'.",
+        s.checker.diagnostics.items[0].message,
+    );
+    try T.expectEqualStrings("Expected 1-3 arguments, but got 4.", s.checker.diagnostics.items[5].message);
+    try T.expectEqualStrings("Expected 1-3 arguments, but got 4.", s.checker.diagnostics.items[7].message);
 }
 
 test "checker: tagged template callback can return object spread identity" {
