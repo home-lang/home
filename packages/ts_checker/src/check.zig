@@ -16244,6 +16244,7 @@ pub const Checker = struct {
         try self.checkExportedTypeParamPrivateNames(node, hir_mod.fnTypeParams(self.hir, node), .function);
         const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0 or self.fnHasJsDocTemplateTags(node);
         _ = try self.checkFnSignatureOnly(node);
+        try self.seedRepeatedVarsFromPolymorphicThisParameters(node);
         const f = hir_mod.fnDeclOf(self.hir, node);
         if (f.return_type == hir_mod.none_node_id) {
             if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
@@ -16274,6 +16275,32 @@ pub const Checker = struct {
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
         try self.checkFnReturnPathExits(node);
         try self.checkSetterReturnValue(node);
+    }
+
+    fn seedRepeatedVarsFromPolymorphicThisParameters(self: *Checker, fn_node: NodeId) CheckError!void {
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            if (param.type_annotation != hir_mod.none_node_id or
+                param.default_value == hir_mod.none_node_id or
+                !self.nodeIsThisReference(param.default_value) or
+                param.name == hir_mod.none_node_id or
+                self.hir.kindOf(param.name) != .identifier)
+            {
+                continue;
+            }
+            const param_t = self.hir.typeOf(param_node);
+            if (!self.isThisTypeParameter(param_t)) continue;
+            const id = hir_mod.identifierOf(self.hir, param.name);
+            const key: VarDeclKey = .{
+                .scope = fn_node,
+                .name = id.name,
+                .virtual_section_start = self.repeatedVarVirtualSectionKey(fn_node),
+            };
+            if (self.var_decl_types.contains(key)) continue;
+            try self.var_decl_types.put(self.gpa, key, param_t);
+            try self.var_decl_explicit.put(self.gpa, key, false);
+        }
     }
 
     /// TS2408 ÃÂ¢ÃÂÃÂ a `set` accessor body must not `return <value>;`. A bare
@@ -17433,7 +17460,7 @@ pub const Checker = struct {
                 // return incompatibilities are owned by overload resolution
                 // (TS2345 at the argument), not by an eager TS2322 inside the
                 // callback body.
-                const candidate_sig = if (self.functionContextComesFromCallArgument(node))
+                const candidate_sig = if (self.functionContextReturnDiagnosticOwnedByOuterExpression(node))
                     null
                 else
                     self.contextualReturnSignatureForFunction(node);
@@ -27128,7 +27155,7 @@ pub const Checker = struct {
         return target_t;
     }
 
-    fn functionContextComesFromCallArgument(self: *Checker, fn_node: NodeId) bool {
+    fn functionContextReturnDiagnosticOwnedByOuterExpression(self: *Checker, fn_node: NodeId) bool {
         var child = fn_node;
         var parent = self.hir.parentOf(child);
         while (parent != hir_mod.none_node_id) {
@@ -27136,6 +27163,7 @@ pub const Checker = struct {
                 .conditional => {
                     const conditional = hir_mod.conditionalOf(self.hir, parent);
                     if (conditional.then_branch != child and conditional.else_branch != child) return false;
+                    return true;
                 },
                 .binary_op => {
                     const binary = hir_mod.binopOf(self.hir, parent);
@@ -27143,7 +27171,7 @@ pub const Checker = struct {
                 },
                 .call_expr, .new_expr => {
                     for (hir_mod.callArgs(self.hir, parent)) |argument| {
-                        if (argument == child) return true;
+                        if (argument == child) return self.contextualCallOwnsReturnDiagnostic(parent);
                     }
                     return false;
                 },
@@ -27151,6 +27179,43 @@ pub const Checker = struct {
             }
             child = parent;
             parent = self.hir.parentOf(parent);
+        }
+        return false;
+    }
+
+    fn contextualCallOwnsReturnDiagnostic(self: *Checker, call_node: NodeId) bool {
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (self.hir.kindOf(call.callee) == .identifier) {
+            const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+            if (self.generic_fns.contains(callee_name)) return true;
+            if (self.findFunctionDeclForNameNearNode(call.callee, callee_name)) |decl| {
+                if (hir_mod.fnTypeParams(self.hir, decl).len > 0) return true;
+            }
+        }
+        var callee_t = self.hir.typeOf(call.callee);
+        if (callee_t == types.Primitive.none) {
+            if (self.resolving_function_signatures.contains(call.callee)) return false;
+            callee_t = self.checkExpression(call.callee) catch return false;
+        }
+        if (self.contextualCallableTypeIsGeneric(callee_t)) return true;
+        return self.callableSignatureCount(callee_t) > 1;
+    }
+
+    fn contextualCallableTypeIsGeneric(self: *Checker, t: TypeId) bool {
+        if (self.generic_signature_params.contains(t)) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.contextualCallableTypeIsGeneric(member)) return true;
+            }
+        } else if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.contextualCallableTypeIsGeneric(member)) return true;
+            }
+        } else if (flags.is_object_type) {
+            const sig = self.firstSignatureType(t) orelse return false;
+            return self.generic_signature_params.contains(sig);
         }
         return false;
     }
@@ -37129,25 +37194,25 @@ pub const Checker = struct {
             }
         }
 
-        // Pre-scan strict-property-init candidates before constructor
-        // definite-assignment analysis. TS2565 ("used before being
-        // assigned") only applies to fields that participate in
-        // strict initialization.
-        for (members) |m| {
-            if (self.hir.kindOf(m) != .object_property) continue;
-            const op = hir_mod.objectPropertyOf(self.hir, m);
-            if (op.is_static or op.type_annotation == hir_mod.none_node_id or op.value != hir_mod.none_node_id) continue;
-            if (self.classFieldHasOptionalToken(m) or self.classFieldHasDefiniteAssertion(m)) continue;
-            if (self.classMemberSourceHasLeadingKeyword(m, "abstract")) continue;
-            if (self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare")) continue;
-            if (!self.strictPropertyInitializationChecksField(m, op.key, op.is_computed)) continue;
-            const field_t = try self.lowererLowerWithTypeParams(op.type_annotation);
-            if (self.typeAnnotationContainsUnresolvedRef(op.type_annotation)) continue;
-            if (self.typeExplicitlyIncludesUndefined(field_t)) continue;
-            if (self.classFieldTypeIsAnyOrUnknown(field_t) and
-                self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) continue;
-            const member_name = (try self.strictPropertyInitNameFromKey(op.key, op.is_computed)) orelse continue;
-            try strict_init_candidate_names.put(self.gpa, member_name, {});
+        // TS2565 belongs to strict property initialization. A fixture-level
+        // `@strict: false` must override the harness defaults.
+        if (self.strict_flags.strict_property_initialization and !self.sourceHasStrictFalseDirective()) {
+            for (members) |m| {
+                if (self.hir.kindOf(m) != .object_property) continue;
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                if (op.is_static or op.type_annotation == hir_mod.none_node_id or op.value != hir_mod.none_node_id) continue;
+                if (self.classFieldHasOptionalToken(m) or self.classFieldHasDefiniteAssertion(m)) continue;
+                if (self.classMemberSourceHasLeadingKeyword(m, "abstract")) continue;
+                if (self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare")) continue;
+                if (!self.strictPropertyInitializationChecksField(m, op.key, op.is_computed)) continue;
+                const field_t = try self.lowererLowerWithTypeParams(op.type_annotation);
+                if (self.typeAnnotationContainsUnresolvedRef(op.type_annotation)) continue;
+                if (self.typeExplicitlyIncludesUndefined(field_t)) continue;
+                if (self.classFieldTypeIsAnyOrUnknown(field_t) and
+                    self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) continue;
+                const member_name = (try self.strictPropertyInitNameFromKey(op.key, op.is_computed)) orelse continue;
+                try strict_init_candidate_names.put(self.gpa, member_name, {});
+            }
         }
 
         // Pre-scan the constructor body for `this.X = ...` so the
@@ -91101,6 +91166,12 @@ pub const Checker = struct {
                 if (self.varNameHasSelfReferencedTypeAnnotation(name)) return;
                 const initializer_display = try self.repeatedVarInitializerDisplay(node);
                 const prior_annotation_display = try self.repeatedVarPriorAnnotationDisplay(prior_explicit, prior_annotation, prior);
+                const polymorphic_this_annotation_display = if (self.isThisTypeParameter(prior) and
+                    v.type_annotation != hir_mod.none_node_id)
+                    self.annotationSourceText(v.type_annotation) orelse
+                        try self.allocTypeAnnotationDiagnosticName(v.type_annotation, false)
+                else
+                    null;
                 const msg = if (annotation_text_mismatch) |texts|
                     try self.formatSubsequentVarTypeMismatchWithTexts(name, texts.prior, texts.current)
                 else if (self.repeatedVarThisArrayNullishMismatch(prior, final_type))
@@ -91111,6 +91182,8 @@ pub const Checker = struct {
                     )
                 else if (try self.mappedAnnotationDisplayPair(prior_annotation, v.type_annotation)) |texts|
                     try self.formatSubsequentVarTypeMismatchWithTexts(name, texts.prior, texts.current)
+                else if (polymorphic_this_annotation_display) |current_text|
+                    try self.formatSubsequentVarTypeMismatchWithCurrentText(name, prior, current_text)
                 else if (initializer_display) |current_text|
                     if (prior_annotation_display) |prior_text|
                         try self.formatSubsequentVarTypeMismatchWithTexts(name, prior_text, current_text)
@@ -118862,6 +118935,20 @@ pub const Checker = struct {
                     }
                 }
                 if (self.reportLibGatedTypeOnlyValueIfNeeded(node, id.name) catch false) return types.Primitive.any;
+                if (self.sourceLibDirectiveExcludesDomElement() and
+                    std.mem.eql(u8, self.string_interner.get(id.name), "window") and
+                    !self.nodeIsMemberOrElementAccessReceiver(node))
+                {
+                    if (!self.rootHasVarDeclarationNamed(node, id.name) and
+                        !self.sourceHasVarDeclarationText(id.name) and
+                        !self.moduleHasRuntimeNamespacePrefix(module, id.name) and
+                        !self.identifierNamesEnclosingClassExpression(node, id.name) and
+                        !self.virtualSectionIsJsLike(node))
+                    {
+                        self.reportCannotFindName(node, id.name) catch {};
+                        return types.Primitive.any;
+                    }
+                }
                 if (self.sourceLibDirectiveExcludesDomElement() and self.domGatedGlobalName(self.string_interner.get(id.name))) {
                     if (!self.rootHasVarDeclarationNamed(node, id.name) and
                         !self.sourceHasVarDeclarationText(id.name) and
@@ -120083,6 +120170,16 @@ pub const Checker = struct {
         _ = self;
         return std.mem.eql(u8, name_str, "console") or
             std.mem.eql(u8, name_str, "name");
+    }
+
+    fn nodeIsMemberOrElementAccessReceiver(self: *const Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(parent)) {
+            .member_access => hir_mod.memberOf(self.hir, parent).object == node,
+            .element_access => hir_mod.elementOf(self.hir, parent).object == node,
+            else => false,
+        };
     }
 
     /// True when the source-file lib directive (e.g. `// @lib: es5`)
@@ -132184,6 +132281,7 @@ pub const Checker = struct {
             return true;
         }
         if (!object_is_global_this_receiver and !annotation_mentions_global) return false;
+        if (annotation_mentions_global and self.sourceHasStrictFalseDirective()) return true;
         if (object_is_global_this and
             std.mem.eql(u8, self.string_interner.get(name), "globalThis") and
             self.isInAssignmentTargetChain(node))
@@ -244578,4 +244676,70 @@ test "checker: class typeof this queries honor member narrowing" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+}
+
+test "checker: conditional callback return errors belong to the outer assignment" {
+    const s = try newSetup(
+        \\interface X { propertyX1: number; propertyX2: string; }
+        \\var a: (t: X) => number = true ? (m) => m.propertyX1 : (n) => n.propertyX2;
+        \\var b: (t: X) => string = true ? (m) => m.propertyX1 : (n) => n.propertyX2;
+        \\var c: (t: X) => boolean = true ? (m) => m.propertyX1 : (n) => n.propertyX2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: explicit es5 lib excludes window and leaves derived updates as any" {
+    const b = try newBoundSetup(
+        \\// @lib: es5
+        \\// @target: es2015
+        \\var w = window;
+        \\w++;
+        \\--w;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, 2356));
+}
+
+test "checker: strict false suppresses constructor read and loose globalThis member errors" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\class C {
+        \\  value: number;
+        \\  constructor() { var n = this.value; this.value = 1; }
+        \\}
+        \\var globalValue!: typeof globalThis;
+        \\globalValue.looseExpando = 1;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_used_before_assigned));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: polymorphic this default parameters merge with body var declarations" {
+    const s = try newSetup(
+        \\class Plain {
+        \\  method(value = this) { var value!: Plain; }
+        \\}
+        \\class Generic<T, U> {
+        \\  method(value = this) { var value!: Generic<T, U>; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'value' must be of type 'this', but here has type 'Generic<T, U>'.",
+    ));
 }
